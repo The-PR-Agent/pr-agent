@@ -6,6 +6,7 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.output_models import Labels
 from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_user_labels, load_yaml, set_custom_labels
@@ -13,22 +14,6 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
-
-
-def _label_name(label) -> str:
-    """Read one label entry, tolerating the mapping form a model may return.
-
-    The prompt asks for a list of strings, but a schema presented as a class invites entries
-    such as ``- name: bug fix``. An entry with no readable name is dropped.
-    """
-    if isinstance(label, dict):
-        for key in ("name", "label", "title", "value"):
-            if isinstance(label.get(key), str) and label[key].strip():
-                return label[key].strip()
-        return ""
-    if isinstance(label, bool) or not isinstance(label, (str, int, float)):
-        return ""
-    return str(label).strip()
 
 
 class PRGenerateLabels:
@@ -73,26 +58,28 @@ class PRGenerateLabels:
             get_settings().pr_custom_labels_prompt.user,
         )
 
-        # Initialize patches_diff and prediction attributes
+        # Initialize prediction state
         self.patches_diff = None
         self.prediction = None
+        self.data = None
 
     async def run(self):
         """
         Generates a PR labels using an AI model and publishes it to the PR.
         """
 
+        progress_comment = None
         try:
             get_logger().info(f"Generating a PR labels {self.pr_id}")
             if get_settings().config.publish_output:
-                self.git_provider.publish_comment("Preparing PR labels...", is_temporary=True)
+                progress_comment = self.git_provider.publish_comment(
+                    "Preparing PR labels...", is_temporary=True
+                )
 
             await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
 
             get_logger().info(f"Preparing answer {self.pr_id}")
-            if self.prediction:
-                self._prepare_data()
-            else:
+            if self.prediction is None:
                 return None
 
             pr_labels = self._prepare_labels()
@@ -110,9 +97,16 @@ class PRGenerateLabels:
                     value = ', '.join(v for v in pr_labels)
                     pr_labels_text = f"## PR Labels:\n{value}\n"
                     self.git_provider.publish_comment(pr_labels_text, is_temporary=False)
-                self.git_provider.remove_initial_comment()
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
+        finally:
+            if progress_comment is not None:
+                try:
+                    self.git_provider.remove_initial_comment()
+                except Exception as e:
+                    get_logger().error(f"Failed to remove temporary PR labels comment {self.pr_id}: {e}")
 
         return ""
 
@@ -131,10 +125,17 @@ class PRGenerateLabels:
 
         """
 
+        self.prediction = None
+        self.data = None
+
         get_logger().info(f"Getting PR diff {self.pr_id}")
         self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
         get_logger().info(f"Getting AI prediction {self.pr_id}")
-        self.prediction = await self._get_prediction(model)
+        prediction = await self._get_prediction(model)
+        data = self._load_valid_labels_yaml(prediction)
+
+        self.prediction = prediction
+        self.data = data
 
     async def _get_prediction(self, model: str) -> str:
         """
@@ -166,21 +167,16 @@ class PRGenerateLabels:
         return response
 
     def _prepare_data(self):
-        # Load the AI prediction data into a dictionary
-        self.data = load_yaml(self.prediction.strip())
+        self.data = self._load_valid_labels_yaml(self.prediction)
 
-
+    @staticmethod
+    def _load_valid_labels_yaml(prediction: str) -> dict:
+        """Load a usable labels response or fail the current model attempt."""
+        data = load_yaml(prediction.strip())
+        return Labels.model_validate(data).model_dump()
 
     def _prepare_labels(self) -> List[str]:
-        pr_types = []
-
-        # If the 'labels' key is present in the dictionary, split its value by comma and assign it to 'pr_types'
-        if "labels" in self.data:
-            if isinstance(self.data["labels"], list):
-                pr_types = self.data["labels"]
-            elif isinstance(self.data["labels"], str):
-                pr_types = self.data["labels"].split(",")
-        pr_types = [name for name in (_label_name(label) for label in pr_types) if name]
+        pr_types = self.data["labels"].copy()
 
         # convert lowercase labels to original case
         try:

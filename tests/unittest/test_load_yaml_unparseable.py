@@ -46,16 +46,15 @@ def test_code_suggestions_returns_an_empty_list_instead_of_crashing():
     assert tool._prepare_pr_code_suggestions(UNPARSEABLE) == {"code_suggestions": []}
 
 
-def test_generate_labels_membership_check_does_not_raise():
-    """Support `'labels' in self.data`, which pr_generate_labels does before anything else."""
+def test_generate_labels_rejects_an_unparseable_prediction():
+    """Let /generate_labels retry another model when its output cannot be parsed."""
     from pr_agent.tools.pr_generate_labels import PRGenerateLabels
 
     tool = PRGenerateLabels.__new__(PRGenerateLabels)
     tool.prediction = UNPARSEABLE
-    tool._prepare_data()
 
-    assert tool.data == {}
-    assert "labels" not in tool.data
+    with pytest.raises(ValueError):
+        tool._prepare_data()
 
 
 @pytest.mark.parametrize("payload", ["code_suggestions:\n", "code_suggestions: 5\n",

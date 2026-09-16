@@ -511,6 +511,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `max_artifact_size` | 50000 | Max artifact size in characters (content is truncated if exceeded) |
 
 
+## `[mosaico]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `health_timeout_seconds` | 10 | finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work |
+
+
 ## `[asana]`
 
 | Key | Default | Description |

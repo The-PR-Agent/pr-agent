@@ -114,7 +114,7 @@ def return_document_headings(text: str, ext: str) -> str:
             return ""
 
         return '\n'.join(headings)
-    except Exception as e:
+    except Exception:
         get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
@@ -140,7 +140,7 @@ def map_documentation_files_to_contents(base_path: str, doc_files: list[str], ma
         if not returned_dict:
             get_logger().error("Couldn't find any usable documentation files. Returning empty dict.")
         return returned_dict
-    except Exception as e:
+    except Exception:
         get_logger().exception("Unexpected exception thrown. Returning empty dict.")
         return {}
 
@@ -164,7 +164,7 @@ def aggregate_documentation_files_for_prompt_contents(file_path_to_contents: dic
             else:
                 docs_prompt += f"\n==file name==\n\n{file_path}\n\n==file content==\n\n{file_contents}\n=========\n\n"
         return docs_prompt
-    except Exception as e:
+    except Exception:
         get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
@@ -205,7 +205,7 @@ def format_markdown_q_and_a_response(question_str: str, response_str: str, relev
             answer_str += "#### Relevant Sources:\n\n"
             answer_str += ''.join(source_links)
         return answer_str
-    except Exception as e:
+    except Exception:
         get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
@@ -293,7 +293,7 @@ def clean_markdown_content(content: str) -> str:
         content = re.sub(r'<(?!table|tr|td|th|thead|tbody)([a-zA-Z][a-zA-Z0-9]*)[^>]*>(.*?)</\1>',
                          r'\2', content, flags=re.DOTALL)
         return content.strip()
-    except Exception as e:
+    except Exception:
         get_logger().exception("Unexpected exception thrown. Returning empty result.")
         return ""
 
@@ -305,7 +305,7 @@ class PredictionPreparator:
             environment = Environment(undefined=StrictUndefined)
             self.system_prompt = environment.from_string(system_prompt).render(variables)
             self.user_prompt = environment.from_string(user_prompt).render(variables)
-        except Exception as e:
+        except Exception:
             get_logger().exception("Caught exception during init. Setting ai_handler to None to prevent __call__.")
             self.ai_handler = None
 
@@ -363,7 +363,7 @@ class PRHelpDocs(object):
                                                   self.vars,
                                                   get_settings().pr_help_docs_prompts.system,
                                                   get_settings().pr_help_docs_prompts.user)
-        except Exception as e:
+        except Exception:
             get_logger().exception("Caught exception during init. Setting self.question to None to prevent run() to do anything.")
             self.question = None
 
@@ -433,7 +433,7 @@ class PRHelpDocs(object):
             else:
                 get_logger().info("Answer:", artifacts={'answer_str': answer_str})
             return answer_str
-        except Exception as e:
+        except Exception:
             get_logger().exception('failed to provide answer to given user question as a result of a thrown exception (see above)')
 
     def _find_all_document_files_matching_exts(self, abs_docs_path: str, ignore_readme=False, max_allowed_files=5000) -> list[str]:
@@ -457,7 +457,7 @@ class PRHelpDocs(object):
                             get_logger().warning(f"Found at least {max_allowed_files} files in {abs_docs_path}, skipping the rest.")
                             return matching_files
             return matching_files
-        except Exception as e:
+        except Exception:
             get_logger().exception("Unexpected exception thrown. Returning empty list.")
             return []
 
@@ -525,7 +525,7 @@ class PRHelpDocs(object):
                                   artifacts={'doc_files': doc_files})
 
                 return map_documentation_files_to_contents(returned_cloned_repo_root.path, doc_files)
-        except Exception as e:
+        except Exception:
             get_logger().exception("Unexpected exception thrown. Returning empty dict.")
             return {}
 
@@ -601,7 +601,7 @@ class PRHelpDocs(object):
                 get_logger().error("_trim_docs_input returned an empty result.")
                 return ""
             return docs_prompt_to_send_to_model
-        except Exception as e:
+        except Exception:
             get_logger().exception("Unexpected exception thrown. Returning empty result.")
             return ""
 
@@ -627,6 +627,6 @@ class PRHelpDocs(object):
                 answer_str += HelpMessage.get_help_docs_usage_guide()
                 answer_str += "\n</details>\n"
             return answer_str
-        except Exception as e:
+        except Exception:
             get_logger().exception("Unexpected exception thrown. Returning empty result.")
             return ""

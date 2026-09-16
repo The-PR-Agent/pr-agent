@@ -1132,16 +1132,16 @@ class TestLiteLLMReasoningEffortGrok:
         assert LiteLLMAIHandler._clamp_grok_reasoning_effort(model, configured) == expected
 
     @pytest.mark.parametrize(
-        ("model", "effort", "requires_allowlist"),
+        ("model", "effort"),
         [
-            ("grok-4.5", "low", False),
-            ("grok-4.5-latest", "low", False),
-            ("grok-build-latest", "low", True),
-            ("grok-4.6", "xhigh", False),
+            ("grok-4.5", "low"),
+            ("grok-4.5-latest", "low"),
+            ("grok-build-latest", "low"),
+            ("grok-4.6", "xhigh"),
         ],
     )
-    def test_xai_grok_litellm_reasoning_param_support(self, monkeypatch, model, effort, requires_allowlist):
-        """Pin LiteLLM capability gaps so upgrades expose removable workarounds."""
+    def test_xai_grok_litellm_reasoning_param_support(self, monkeypatch, model, effort):
+        """Verify LiteLLM forwards reasoning_effort for every supported Grok alias."""
         monkeypatch.setattr(litellm, "drop_params", False)
         bundled_model_cost = GetModelCostMap.load_local_model_cost_map()
         pinned_model_cost = dict(litellm.model_cost)
@@ -1154,20 +1154,10 @@ class TestLiteLLMReasoningEffortGrok:
             with monkeypatch.context() as registry_patch:
                 registry_patch.setattr(litellm, "model_cost", pinned_model_cost)
                 litellm_utils._invalidate_model_cost_lowercase_map()
-                if requires_allowlist:
-                    with pytest.raises(litellm.UnsupportedParamsError):
-                        get_optional_params(
-                            model=model,
-                            custom_llm_provider="xai",
-                            reasoning_effort=effort,
-                        )
-
-                allowed = ["reasoning_effort"] if requires_allowlist else None
                 params = get_optional_params(
                     model=model,
                     custom_llm_provider="xai",
                     reasoning_effort=effort,
-                    allowed_openai_params=allowed,
                 )
                 assert params["reasoning_effort"] == effort
         finally:
@@ -1175,20 +1165,25 @@ class TestLiteLLMReasoningEffortGrok:
 
     def test_openai_gateway_grok_litellm_reasoning_param_support(self, monkeypatch):
         monkeypatch.setattr(litellm, "drop_params", False)
-        with pytest.raises(litellm.UnsupportedParamsError):
-            get_optional_params(
-                model="x-ai/grok-4.6",
-                custom_llm_provider="openai",
-                reasoning_effort="xhigh",
-            )
-
-        params = get_optional_params(
-            model="x-ai/grok-4.6",
-            custom_llm_provider="openai",
-            reasoning_effort="xhigh",
-            allowed_openai_params=["reasoning_effort"],
-        )
-        assert params["reasoning_effort"] == "xhigh"
+        bundled_model_cost = GetModelCostMap.load_local_model_cost_map()
+        pinned_model_cost = dict(litellm.model_cost)
+        for model_key in ("x-ai/grok-4.6", "openai/x-ai/grok-4.6"):
+            if model_key in bundled_model_cost:
+                pinned_model_cost[model_key] = bundled_model_cost[model_key]
+            else:
+                pinned_model_cost.pop(model_key, None)
+        try:
+            with monkeypatch.context() as registry_patch:
+                registry_patch.setattr(litellm, "model_cost", pinned_model_cost)
+                litellm_utils._invalidate_model_cost_lowercase_map()
+                params = get_optional_params(
+                    model="x-ai/grok-4.6",
+                    custom_llm_provider="openai",
+                    reasoning_effort="xhigh",
+                )
+                assert params["reasoning_effort"] == "xhigh"
+        finally:
+            litellm_utils._invalidate_model_cost_lowercase_map()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

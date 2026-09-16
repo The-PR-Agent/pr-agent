@@ -37,7 +37,7 @@ def test_e2e_run_bitbucket_app():
         # Create a new branch from the base branch
         logger.info(f"Creating a new branch {new_branch} from {base_branch}")
         source_branch = repo.branches.get(base_branch)
-        target_repo = repo.branches.create(new_branch,source_branch.hash)
+        repo.branches.create(new_branch,source_branch.hash)
 
         # Update the file content
         url = f"https://api.bitbucket.org/2.0/repositories/{project_key}/{repo_slug}/src"

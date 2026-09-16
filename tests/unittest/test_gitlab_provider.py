@@ -278,6 +278,119 @@ class TestGitLabProvider:
             "libs/b": "git@gitlab.com:b.git",
         }
 
+    @staticmethod
+    def _gitmodules_file(url, path="libs/a"):
+        file_obj = MagicMock(ProjectFile)
+        file_obj.decode.return_value = f"[submodule \"{path}\"]\n    path = {path}\n    url = {url}\n"
+        return file_obj
+
+    @staticmethod
+    def _mr(diff_refs=None, source_project_id=1):
+        mr = MagicMock()
+        mr.source_branch = "feature"
+        mr.target_branch = "main"
+        mr.diff_refs = diff_refs
+        mr.source_project_id = source_project_id
+        return mr
+
+    def test_get_gitmodules_map_reads_mr_head_sha(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(diff_refs={"head_sha": "h1", "base_sha": "b1"}, source_project_id=99)
+        mock_project.id = 1
+        # The source branch moved on since the MR diff was fetched; its content must not be used.
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "h1": self._gitmodules_file("../new/a.git"),
+            "feature": self._gitmodules_file("../newer/a.git"),
+            "b1": self._gitmodules_file("../old/a.git"),
+            "main": self._gitmodules_file("../old/a.git"),
+        }[ref]
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        assert gitlab_provider._get_gitmodules_map() == {"libs/a": "../new/a.git"}
+        mock_project.files.get.assert_called_once_with(file_path=".gitmodules", ref="h1")
+        # The fork project is not looked up when the head commit could be read from the target project.
+        assert all(call.args[0] != 99 for call in gitlab_provider.gl.projects.get.call_args_list)
+
+    def test_get_gitmodules_map_falls_back_to_source_branch_without_diff_refs(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(diff_refs=None, source_project_id=mock_project.id)
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "feature": self._gitmodules_file("../new/a.git"),
+            "main": self._gitmodules_file("../old/a.git"),
+        }[ref]
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        assert gitlab_provider._get_gitmodules_map() == {"libs/a": "../new/a.git"}
+
+    @pytest.mark.parametrize("available_ref,expected", [
+        ("b1", "../base/a.git"),
+        ("main", "../old/a.git"),
+    ])
+    def test_get_gitmodules_map_falls_back_to_base_sha_then_target_branch(self, gitlab_provider, mock_project,
+                                                                          available_ref, expected):
+        gitlab_provider.mr = self._mr(diff_refs={"head_sha": "h1", "base_sha": "b1"}, source_project_id=mock_project.id)
+        files = {"b1": "../base/a.git", "main": "../old/a.git"}
+
+        def _files_get(file_path, ref):
+            if ref == available_ref:
+                return self._gitmodules_file(files[ref])
+            raise GitlabGetError("404 File Not Found")
+
+        mock_project.files.get.side_effect = _files_get
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        assert gitlab_provider._get_gitmodules_map() == {"libs/a": expected}
+
+    def test_get_gitmodules_map_reads_fork_source_project(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(diff_refs=None, source_project_id=99)
+        mock_project.id = 1
+        fork = MagicMock()
+        fork.id = 99
+        fork.files.get.return_value = self._gitmodules_file("../fork/a.git")
+        mock_project.files.get.return_value = self._gitmodules_file("../old/a.git")
+        gitlab_provider.gl.projects.get.side_effect = lambda pid, **kw: fork if str(pid) == "99" else mock_project
+
+        assert gitlab_provider._get_gitmodules_map() == {"libs/a": "../fork/a.git"}
+        fork.files.get.assert_called_once_with(file_path=".gitmodules", ref="feature")
+        mock_project.files.get.assert_not_called()
+
+    def test_get_gitmodules_map_failed_fork_lookup_skips_source_read(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(diff_refs=None, source_project_id=99)
+        mock_project.id = 1
+        # The target project happens to have a branch named like the fork's source branch.
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "feature": self._gitmodules_file("../unrelated/a.git"),
+            "main": self._gitmodules_file("../old/a.git"),
+        }[ref]
+
+        def _projects_get(pid, **kw):
+            if str(pid) == "99":
+                raise GitlabGetError("404 Project Not Found")
+            return mock_project
+
+        gitlab_provider.gl.projects.get.side_effect = _projects_get
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
+            assert gitlab_provider._get_gitmodules_map() == {"libs/a": "../old/a.git"}
+
+        mock_project.files.get.assert_called_once_with(file_path=".gitmodules", ref="main")
+        assert "99" in mock_logger.return_value.warning.call_args.args[0]
+
+    def test_expand_submodule_changes_uses_mr_head_url(self, gitlab_provider, mock_project):
+        gitlab_provider.id_project = "group/repo"
+        gitlab_provider.mr = self._mr(diff_refs={"head_sha": "h1", "base_sha": "b1"}, source_project_id=mock_project.id)
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "h1": self._gitmodules_file("../new/a.git", path="src/lib_a"),
+            "main": self._gitmodules_file("../old/a.git", path="src/lib_a"),
+        }[ref]
+        gitlab_provider.gl.projects.get.return_value = mock_project
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_compare_submodule", return_value=[]) as m_cmp:
+            gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+
+        m_cmp.assert_called_once_with("group/new/a", "aaa1111", "bbb2222")
+
     def test_project_by_path_requires_exact_match(self, gitlab_provider):
         gitlab_provider.gl.projects.get.reset_mock()
         gitlab_provider.gl.projects.get.side_effect = Exception("not found")
@@ -294,6 +407,87 @@ class TestGitLabProvider:
         assert list_kwargs["search"] == "repo"
         assert list_kwargs["membership"] is True
         assert all(call.args[0] != fake.id for call in gitlab_provider.gl.projects.get.call_args_list)
+
+    @pytest.mark.parametrize("url,base,expected", [
+        ("https://gitlab.com/group/repo.git", None, "group/repo"),
+        ("git@gitlab.com:group/sub/repo.git", None, "group/sub/repo"),
+        ("ssh://git@gitlab.com/group/repo.git", None, "group/repo"),
+        # Relative URLs resolve against the superproject path.
+        ("../../../../libs/lib_a.git", "group/subgroup/nested/repo", "libs/lib_a"),
+        ("../../libs/lib_a.git", "group/subgroup/nested/repo", "group/subgroup/libs/lib_a"),
+        ("../lib_b.git", "group/sub/repo", "group/sub/lib_b"),
+        ("./nested/lib_c.git", "group/repo", "group/repo/nested/lib_c"),
+        # Query/fragment are dropped for relative URLs just like for absolute ones.
+        ("../lib_b.git?ref=main", "group/repo", "group/lib_b"),
+        ("https://gitlab.com/group/repo.git#main", None, "group/repo"),
+        # Relative URL without a superproject to resolve against.
+        ("../lib_b.git", None, None),
+        # Relative URL that climbs past the instance root.
+        ("../../../lib_b.git", "group/repo", None),
+    ])
+    def test_url_to_project_path(self, gitlab_provider, url, base, expected):
+        assert gitlab_provider._url_to_project_path(url, base) == expected
+
+    def test_superproject_path_prefers_id_project_path(self, gitlab_provider):
+        gitlab_provider.id_project = "group/sub/repo"
+        gitlab_provider.gl.projects.get.reset_mock()
+
+        assert gitlab_provider._superproject_path() == "group/sub/repo"
+        gitlab_provider.gl.projects.get.assert_not_called()
+
+    def test_superproject_path_resolves_numeric_project_id(self, gitlab_provider, mock_project):
+        gitlab_provider.id_project = "42"
+        mock_project.path_with_namespace = "group/sub/repo"
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        assert gitlab_provider._superproject_path() == "group/sub/repo"
+
+    def test_superproject_path_logs_lookup_failure(self, gitlab_provider):
+        gitlab_provider.id_project = "42"
+        gitlab_provider.gl.projects.get.side_effect = GitlabGetError("401 Unauthorized")
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
+            assert gitlab_provider._superproject_path() is None
+
+        warning = mock_logger.return_value.warning
+        warning.assert_called_once()
+        assert "42" in warning.call_args.args[0]
+        assert "401 Unauthorized" in warning.call_args.args[0]
+
+    def _submodule_bump(self, path="src/lib_a"):
+        return {"new_path": path, "old_path": path,
+                "diff": "-Subproject commit aaa1111\n+Subproject commit bbb2222\n",
+                "new_file": False, "deleted_file": False, "renamed_file": False}
+
+    def test_expand_submodule_changes_resolves_relative_url(self, gitlab_provider):
+        gitlab_provider.id_project = "group/subgroup/nested/repo"
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        sub_diffs = [{"old_path": "src/a.c", "new_path": "src/a.c", "diff": "@@ -1 +1 @@\n-x\n+y\n"}]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map",
+                          return_value={"src/lib_a": "../../../../libs/lib_a.git"}), \
+             patch.object(gitlab_provider, "_compare_submodule", return_value=sub_diffs) as m_cmp:
+            out = gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+
+        m_cmp.assert_called_once_with("libs/lib_a", "aaa1111", "bbb2222")
+        assert [c["new_path"] for c in out] == ["src/lib_a", "src/lib_a/src/a.c"]
+
+    def test_expand_submodule_changes_skips_unresolvable_relative_url(self, gitlab_provider):
+        gitlab_provider.id_project = "group/repo"
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        changes = [self._submodule_bump()]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map",
+                          return_value={"src/lib_a": "../../../libs/lib_a.git"}), \
+             patch.object(gitlab_provider, "_compare_submodule") as m_cmp:
+            out = gitlab_provider._expand_submodule_changes(changes)
+
+        m_cmp.assert_not_called()
+        assert out == changes
 
     def test_compare_submodule_cached(self, gitlab_provider):
         proj = MagicMock()

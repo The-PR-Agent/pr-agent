@@ -38,6 +38,7 @@ from pr_agent.algo.utils import (
     format_pr_code_suggestions_header,
     get_max_tokens,
     get_model,
+    hidden_marker_forms,
     load_yaml,
     push_outputs,
     replace_code_tags,
@@ -400,6 +401,7 @@ class PRCodeSuggestions:
                         pr_body = add_comment_identity(
                             pr_body,
                             PRCodeSuggestionsIdentity.SUMMARY.value,
+                            self.git_provider,
                         )
                         if self.progress_response:
                             if not _edit_comment_safely(self.git_provider, self.progress_response, pr_body):
@@ -502,6 +504,7 @@ class PRCodeSuggestions:
             pr_body = add_comment_identity(
                 pr_body,
                 PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
+                self.git_provider,
             )
             # Output the agent run details (model, tokens, time cost) if enabled, so the
             # "no suggestions" result still shows which model produced it.
@@ -672,12 +675,13 @@ class PRCodeSuggestions:
         def _without_heading(comment_text: str) -> str:
             if comment_text.startswith(initial_header):
                 comment_text = comment_text[len(initial_header):].lstrip("\n")
-            if identity_marker and comment_text.startswith(identity_marker):
-                comment_text = comment_text[len(identity_marker):].lstrip("\n")
+            for marker in hidden_marker_forms(identity_marker) if identity_marker else ():
+                if comment_text.startswith(marker):
+                    comment_text = comment_text[len(marker):].lstrip("\n")
             return comment_text.strip()
 
         def _with_identity(comment_text: str) -> str:
-            return add_comment_identity(comment_text, identity_marker)
+            return add_comment_identity(comment_text, identity_marker, git_provider)
 
         history_header = "#### Previous suggestions\n"
         last_commit_num = git_provider.get_latest_commit_url().split('/')[-1][:7]
@@ -949,7 +953,7 @@ class PRCodeSuggestions:
                         get_logger().error(f"Failed to log suggestion statistics, error: {e}")
                         pass
 
-                except Exception as e:  #
+                except Exception:
                     get_logger().error(f"Error processing suggestion score {i}",
                                        artifact={"suggestion": suggestion,
                                                  "code_suggestions_feedback": code_suggestions_feedback[i]})
@@ -1869,7 +1873,7 @@ class PRCodeSuggestions:
                         patch_final = clip_tokens(patch_final, max_tokens_full - delta_output)
                     patches_diff_list.append(patch_final)
                 return patches_diff_list
-            except Exception as e:
+            except Exception:
                 get_logger().exception("Error converting to decoupled with line numbers",
                                        artifact={'patches_diff_list_no_line_numbers': patches_diff_list_no_line_numbers})
                 return []

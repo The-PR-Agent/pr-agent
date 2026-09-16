@@ -156,13 +156,30 @@ def format_pr_questions_header(*, escape_markdown: bool = True) -> str:
     return f"### **{heading}** ❓"
 
 
+def hidden_marker_forms(identity: str) -> tuple[str, ...]:
+    """Return both stored forms of a known comment identity."""
+    for marker in _ALL_COMMENT_IDENTITIES:
+        reference = f"[{marker[5:-4]}]: https://github.com/The-PR-Agent/pr-agent"
+        if identity in (marker, reference):
+            return marker, reference
+    return (identity,)
+
+
+def render_hidden_marker(identity: str, git_provider=None) -> str:
+    """Use a link reference on providers that escape HTML comments."""
+    forms = hidden_marker_forms(identity)
+    supports_html = getattr(git_provider, "supports_html_comment_markers", lambda: True)
+    return forms[-1] if supports_html() is False else forms[0]
+
+
 def comment_matches_identity(body: str, identity: str) -> bool:
     """Match hidden markers only as exact lines near the top; legacy headers as prefixes."""
     if not isinstance(body, str) or not isinstance(identity, str) or not identity:
         return False
-    if identity.startswith("<!--"):
+    forms = hidden_marker_forms(identity)
+    if identity.startswith("<!--") or len(forms) > 1:
         return any(
-            line.strip() == identity
+            line.strip() in forms
             for line in body.splitlines()[:_REVIEW_IDENTITY_HEADER_LINES]
         )
     return body.startswith(identity)
@@ -176,7 +193,7 @@ def comment_carries_other_identity(body: str, identity_marker: str | None) -> bo
     """Return whether the comment carries a different hidden identity."""
     return comment_matches_any_identity(
         body,
-        [identity for identity in _ALL_COMMENT_IDENTITIES if identity != identity_marker],
+        [identity for identity in _ALL_COMMENT_IDENTITIES if identity not in hidden_marker_forms(identity_marker)],
     )
 
 
@@ -190,18 +207,19 @@ def get_pr_review_comment_identifiers(*, full: bool, incremental: bool) -> tuple
     return tuple(identifiers)
 
 
-def add_comment_identity(pr_comment: str, identity_marker: str | None) -> str:
+def add_comment_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
     """Insert a hidden identity after the visible heading without changing rendered output."""
     if not pr_comment or not identity_marker or comment_matches_identity(pr_comment, identity_marker):
         return pr_comment
+    identity_marker = render_hidden_marker(identity_marker, git_provider)
     heading, separator, remainder = pr_comment.partition("\n\n")
     if not separator:
         return f"{pr_comment.rstrip()}\n\n{identity_marker}"
     return f"{heading}\n\n{identity_marker}\n\n{remainder}"
 
 
-def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
-    return add_comment_identity(pr_comment, identity_marker)
+def add_pr_review_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
+    return add_comment_identity(pr_comment, identity_marker, git_provider)
 
 
 class ReasoningEffort(str, Enum):
@@ -481,6 +499,11 @@ def convert_to_markdown_v2(output_data: dict,
                 for issue in issues:
                     try:
                         if not issue or not isinstance(issue, dict):
+                            continue
+                        if any(
+                            field in issue and not isinstance(issue[field], str)
+                            for field in ('relevant_file', 'issue_header', 'issue_content')
+                        ):
                             continue
                         relevant_file = issue.get('relevant_file', '').strip()
                         issue_header = issue.get('issue_header', '').strip()
@@ -904,7 +927,7 @@ def load_large_diff(filename, new_file_content_str: str, original_file_content_s
         if get_verbosity_level() >= 2 and show_warning:
             get_logger().info(f"File was modified, but no patch was found. Manually creating patch: {filename}.")
         return to_hunk_only_patch(''.join(diff))
-    except Exception as e:
+    except Exception:
         get_logger().exception(f"Failed to generate patch for file: {filename}")
         return ""
 
