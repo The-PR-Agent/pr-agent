@@ -3375,6 +3375,21 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
 
     @staticmethod
+    def _is_gemini_minimal_reasoning_model(model: str) -> bool:
+        """Return whether Gemini's ``minimal`` effort needs a supported-level fallback."""
+        return any(
+            model == gemini_id or model.endswith("/" + gemini_id)
+            for gemini_id in ("gemini-3.7-flash", "gemini-3.8-flash")
+        )
+
+    @classmethod
+    def _clamp_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
+        """Map unsupported Gemini 3.x ``minimal`` effort to the nearest level."""
+        if cls._is_gemini_minimal_reasoning_model(model) and reasoning_effort == "minimal":
+            return "low"
+        return reasoning_effort
+
+    @staticmethod
     def _grok_reasoning_levels_for(model: str) -> set[str] | None:
         """Return the reasoning-effort levels accepted by a registered Grok model."""
         normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
@@ -3415,9 +3430,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                 )
 
         clamped_effort = self._clamp_grok_reasoning_effort(model, reasoning_effort)
+        clamped_effort = self._clamp_gemini_reasoning_effort(model, clamped_effort)
         if clamped_effort != reasoning_effort:
             get_logger().info(
-                f"Grok model {model} does not support reasoning_effort='{reasoning_effort}'; "
+                f"Model {model} does not support reasoning_effort='{reasoning_effort}'; "
                 f"using '{clamped_effort}' instead."
             )
         return clamped_effort
