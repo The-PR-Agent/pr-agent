@@ -187,7 +187,11 @@ async def run_action():
         if response_language.lower() != 'en-us':
             get_logger().info(f'User has set the response language to: {response_language}')
 
-            lang_instruction_text = f"Your response MUST be written in the language corresponding to locale code: '{response_language}'. This is crucial."
+            lang_instruction_text = (
+                f"Your response MUST be written in the language corresponding to locale code: "
+                f"'{response_language}'. This is crucial. Keep schema control values "
+                f"(such as 'No', 'Yes', 'None', 'false') in their original English form "
+                f"and do not translate them.")
             separator_text = "\n======\n\nIn addition, "
 
             for key in get_settings():

@@ -263,7 +263,9 @@ class PRAgent:
 
                         # Define the language-specific instruction and the separator
                         lang_instruction_text = (f"Your response MUST be written in the language corresponding "
-                                                 f"to locale code: '{response_language}'. This is crucial.")
+                                                 f"to locale code: '{response_language}'. This is crucial. "
+                                                 f"Keep schema control values (such as 'No', 'Yes', 'None', "
+                                                 f"'false') in their original English form and do not translate them.")
                         separator_text = "\n======\n\nIn addition, "
 
                         # Check if the specific language instruction is already present to avoid duplication
