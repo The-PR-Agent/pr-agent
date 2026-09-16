@@ -133,6 +133,19 @@ def test_anchor_is_positional_not_first_text_match(start, expected):
     assert (position['old_line'], position['new_line']) == expected
 
 
+def test_inverted_line_range_is_skipped_before_building_suggestion_body():
+    p = _gl_provider()
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([
+            _suggestion(relevant_lines_start=3, relevant_lines_end=2)
+        ]) is True
+    finally:
+        gs.stop()
+
+    p.mr.discussions.create.assert_not_called()
+
+
 def test_flag_on_queues_draft_notes_and_bulk_publishes_once():
     p = _gl_provider()
     gs = _settings(as_review=True)
