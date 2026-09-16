@@ -203,6 +203,66 @@ async def test_add_docs_removes_temporary_comment_after_terminal_failure(monkeyp
 
 
 @pytest.mark.parametrize(
+    "tool_class, tool_module, attributes, expected_comment",
+    [
+        (
+            questions_module.PRQuestions,
+            questions_module,
+            {
+                "pr_url": "https://example.test/pr/1",
+                "identify_image_in_comment": MagicMock(return_value=None),
+            },
+            "Preparing answer...",
+        ),
+        (
+            update_changelog_module.PRUpdateChangelog,
+            update_changelog_module,
+            {"push_skipped_reason": None},
+            "Preparing changelog updates...",
+        ),
+    ],
+    ids=["questions", "update-changelog"],
+)
+@pytest.mark.asyncio
+async def test_prompt_tool_removes_temporary_comment_after_terminal_failure(
+    monkeypatch,
+    tool_class,
+    tool_module,
+    attributes,
+    expected_comment,
+):
+    class AttrDict(dict):
+        __getattr__ = dict.__getitem__
+
+    settings = SimpleNamespace(
+        config=AttrDict(publish_output=True),
+        pr_questions=AttrDict(),
+        get=lambda *_args, **_kwargs: {},
+    )
+    tool = tool_class.__new__(tool_class)
+    tool.git_provider = MagicMock()
+    tool._prepare_prediction = AsyncMock()
+    for name, value in attributes.items():
+        setattr(tool, name, value)
+
+    monkeypatch.setattr(tool_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        tool_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=RuntimeError("all attempts failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="all attempts failed"):
+        await tool.run()
+
+    tool.git_provider.publish_comment.assert_called_once_with(
+        expected_comment,
+        is_temporary=True,
+    )
+    tool.git_provider.remove_initial_comment.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
     "tool_class, tool_module, command",
     [
         (questions_module.PRQuestions, questions_module, "/ask"),

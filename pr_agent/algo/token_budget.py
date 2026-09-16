@@ -407,8 +407,8 @@ class AttemptTokenBudget:
                 return "".join(retained)
 
         # Start near the available token capacity, then use each exact count to
-        # reduce the retained token slice. This avoids assuming that rendered BPE
-        # counts are monotonic in the number of source characters.
+        # reduce the retained token slice. Avoid assuming that rendered BPE counts
+        # are monotonic in the number of source characters.
         marker_capacity = max(input_limit - marker_prompt.input_tokens, 0)
         keep_tokens = min(len(encoded) - 1, marker_capacity)
         while keep_tokens > 0:

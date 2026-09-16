@@ -100,31 +100,41 @@ class PRUpdateChangelog:
                 f"publishing the changelog as a comment instead"
             )
 
+        temporary_comment_published = False
         if get_settings().config.publish_output:
             self.git_provider.publish_comment("Preparing changelog updates...", is_temporary=True)
+            temporary_comment_published = True
 
-        await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+        try:
+            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
 
-        new_file_content, answer = self._prepare_changelog_update()
+            new_file_content, answer = self._prepare_changelog_update()
 
-        # Output the relevant configurations if enabled
-        if get_settings().get('config', {}).get('output_relevant_configurations', False):
-            answer += show_relevant_configurations(relevant_section='pr_update_changelog')
+            # Output the relevant configurations if enabled
+            if get_settings().get('config', {}).get('output_relevant_configurations', False):
+                answer += show_relevant_configurations(relevant_section='pr_update_changelog')
 
-        get_logger().debug("PR output", artifact=answer)
+            get_logger().debug("PR output", artifact=answer)
 
-        if get_settings().config.publish_output:
-            self.git_provider.remove_initial_comment()
-            if self.commit_changelog:
-                self._push_changelog_update(new_file_content, answer)
-            else:
-                changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
-                if self.push_skipped_reason:
-                    changelog_comment += (
-                        f"\n\n> ℹ️ These changes were not pushed to the repository "
-                        f"({self.push_skipped_reason})."
+            if get_settings().config.publish_output:
+                if self.commit_changelog:
+                    self._push_changelog_update(new_file_content, answer)
+                else:
+                    changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
+                    if self.push_skipped_reason:
+                        changelog_comment += (
+                            f"\n\n> ℹ️ These changes were not pushed to the repository "
+                            f"({self.push_skipped_reason})."
+                        )
+                    self.git_provider.publish_comment(changelog_comment)
+        finally:
+            if temporary_comment_published:
+                try:
+                    self.git_provider.remove_initial_comment()
+                except Exception as cleanup_error:
+                    get_logger().warning(
+                        f"Failed to remove the temporary changelog comment: {cleanup_error}"
                     )
-                self.git_provider.publish_comment(changelog_comment)
 
     async def _prepare_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)

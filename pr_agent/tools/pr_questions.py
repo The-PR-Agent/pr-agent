@@ -65,27 +65,37 @@ class PRQuestions:
         relevant_configs = {'pr_questions': dict(get_settings().pr_questions),
                             'config': dict(get_settings().config)}
         get_logger().debug("Relevant configs", artifacts=relevant_configs)
+        temporary_comment_published = False
         if get_settings().config.publish_output:
             self.git_provider.publish_comment("Preparing answer...", is_temporary=True)
+            temporary_comment_published = True
 
-        # identify image
-        img_path = self.identify_image_in_comment()
-        if img_path:
-            get_logger().debug("Image path identified", artifact=img_path)
+        try:
+            # identify image
+            img_path = self.identify_image_in_comment()
+            if img_path:
+                get_logger().debug("Image path identified", artifact=img_path)
 
-        await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
 
-        pr_comment = self._prepare_pr_answer()
-        get_logger().debug("PR output", artifact=pr_comment)
+            pr_comment = self._prepare_pr_answer()
+            get_logger().debug("PR output", artifact=pr_comment)
 
-        if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
-            pr_comment += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
-            pr_comment += HelpMessage.get_ask_usage_guide()
-            pr_comment += "\n</details>\n"
+            if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
+                pr_comment += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
+                pr_comment += HelpMessage.get_ask_usage_guide()
+                pr_comment += "\n</details>\n"
 
-        if get_settings().config.publish_output:
-            self._publish_answer(pr_comment)
-            self.git_provider.remove_initial_comment()
+            if get_settings().config.publish_output:
+                self._publish_answer(pr_comment)
+        finally:
+            if temporary_comment_published:
+                try:
+                    self.git_provider.remove_initial_comment()
+                except Exception as cleanup_error:
+                    get_logger().warning(
+                        f"Failed to remove the temporary question comment: {cleanup_error}"
+                    )
         return ""
 
     def _publish_answer(self, answer: str):
