@@ -60,7 +60,7 @@ def chunking_enabled():
     snapshot = snapshot_settings(_TRACKED_KEYS)
     get_settings().set("pr_reviewer.enable_large_pr_chunking", True)
     get_settings().set("pr_reviewer.max_number_of_calls", 3)
-    with patch("pr_agent.tools.pr_reviewer.get_max_tokens", return_value=10000):
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000):
         yield
     restore_settings(snapshot)
 
@@ -156,12 +156,12 @@ async def test_final_fit_clipping_marks_a_review_chunk_failed(chunking_enabled):
             "pr_agent.tools.pr_reviewer.AttemptTokenBudget.for_attempt",
             return_value=SelectiveBudget(),
         ),
+        pytest.raises(ValueError, match="complete packed review diff"),
     ):
         await reviewer._prepare_prediction("model")
 
-    assert reviewer.review_chunk_count == 2
-    assert reviewer.review_failed_chunk_count == 1
-    assert reviewer.remaining_files_list == []
+    assert list(reviewer._chunked_results) == [0]
+    assert reviewer.prediction is None
     reviewer.ai_handler.chat_completion.assert_awaited_once()
 
 
@@ -483,7 +483,7 @@ async def test_larger_fallback_includes_omitted_files_without_repeating_successe
         ]) as get_diff,
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=([chunk_a, chunk_b], ["c.py"])) as get_multi,
-        patch("pr_agent.tools.pr_reviewer.get_max_tokens",
+        patch("pr_agent.algo.token_budget.get_max_tokens",
               return_value=10000 if fallback_fits else 1500 + len(chunk_b)),
     ):
         with pytest.raises(RuntimeError, match="model refused"):
@@ -520,8 +520,8 @@ async def test_a_smaller_fallback_splits_an_oversized_pending_chunk(chunking_ena
               side_effect=[(combined_chunk, ["c.py", "blong.py"]), (combined_chunk, [])]),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=([combined_chunk, chunk_c], [])),
-        patch("pr_agent.tools.pr_reviewer.get_max_tokens",
-              side_effect=lambda model: 10000 if model == "primary" else 1540),
+        patch("pr_agent.algo.token_budget.get_max_tokens",
+              side_effect=lambda model, **_kwargs: 10000 if model == "primary" else 1540),
     ):
         with pytest.raises(RuntimeError, match="model refused"):
             await reviewer._prepare_prediction("primary")
