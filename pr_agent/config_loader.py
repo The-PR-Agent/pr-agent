@@ -51,7 +51,7 @@ global_settings = Dynaconf(
 )
 
 
-def get_settings(use_context=False):
+def get_settings(use_context=True):
     """
     Retrieves the current settings.
 
@@ -61,10 +61,12 @@ def get_settings(use_context=False):
     Returns:
         Dynaconf: The current settings object, either from the context or the global default.
     """
-    try:
-        return context["settings"]
-    except Exception:
-        return global_settings
+    if use_context:
+        try:
+            return context["settings"]
+        except Exception:
+            pass
+    return global_settings
 
 
 def get_verbosity_level() -> int:
