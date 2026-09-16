@@ -337,11 +337,16 @@ async def test_changelog_counts_pr_link_before_packing(monkeypatch):
 @pytest.mark.asyncio
 async def test_questions_keep_recent_history_before_diff_packing(monkeypatch):
     budget_variables = []
+    budget_images = []
     fit_calls = []
     tool = questions_module.PRQuestions.__new__(questions_module.PRQuestions)
     tool.git_provider = SimpleNamespace(pr=None)
     tool.ai_handler = SimpleNamespace()
-    tool.vars = {"diff": "", "conversation_history": "old\nrecent"}
+    tool.vars = {
+        "diff": "",
+        "conversation_history": "old\nrecent",
+        "img_path": "https://example.test/image.png",
+    }
     tool._get_prediction = AsyncMock(return_value="prediction")
 
     class FakeBudget:
@@ -353,7 +358,9 @@ async def test_questions_keep_recent_history_before_diff_packing(monkeypatch):
             return 1
 
         def fit_prompt_variable(self, _variables, name, optional_text, **kwargs):
-            fit_calls.append((self.index, name, optional_text, kwargs.get("keep")))
+            fit_calls.append(
+                (self.index, name, optional_text, kwargs.get("keep"), kwargs.get("image_path"))
+            )
             fitted_text = "recent" if name == "conversation_history" else optional_text
             return SimpleNamespace(
                 optional_text=fitted_text,
@@ -361,8 +368,9 @@ async def test_questions_keep_recent_history_before_diff_packing(monkeypatch):
                 user_prompt="user",
             )
 
-    def make_budget(_model, _pr, variables, *_args, **_kwargs):
+    def make_budget(_model, _pr, variables, *_args, **kwargs):
         budget_variables.append(variables.copy())
+        budget_images.append(kwargs.get("image_path"))
         return FakeBudget(len(budget_variables))
 
     monkeypatch.setattr(
@@ -375,12 +383,21 @@ async def test_questions_keep_recent_history_before_diff_packing(monkeypatch):
     await tool._prepare_prediction("fallback-model")
 
     assert budget_variables == [
-        {"diff": "", "conversation_history": ""},
-        {"diff": "", "conversation_history": "recent"},
+        {
+            "diff": "",
+            "conversation_history": "",
+            "img_path": "https://example.test/image.png",
+        },
+        {
+            "diff": "",
+            "conversation_history": "recent",
+            "img_path": "https://example.test/image.png",
+        },
     ]
+    assert budget_images == ["https://example.test/image.png"] * 2
     assert fit_calls == [
-        (1, "conversation_history", "old\nrecent", "suffix"),
-        (2, "diff", "diff", None),
+        (1, "conversation_history", "old\nrecent", "suffix", "https://example.test/image.png"),
+        (2, "diff", "diff", None, "https://example.test/image.png"),
     ]
     assert tool.vars["conversation_history"] == "old\nrecent"
     tool._get_prediction.assert_awaited_once_with("fallback-model")

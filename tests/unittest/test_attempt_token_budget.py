@@ -254,6 +254,52 @@ def test_prepare_request_normalizes_and_counts_the_dispatched_messages(monkeypat
     assert observed[1][0] == "attempt-model"
 
 
+def test_prepare_request_counts_image_message_with_conservative_floor(monkeypatch):
+    handler = FakeTokenHandler()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 10_000)
+    observed = []
+    settings = SimpleNamespace(get=lambda _key, default=None: default)
+
+    def count_messages(*, model, messages):
+        observed.append((model, messages))
+        return 100
+
+    monkeypatch.setattr(token_budget_module, "token_counter", count_messages)
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+
+    prepared = budget.prepare_request(
+        object(),
+        "system",
+        "user",
+        image_path="https://example.test/image.png",
+    )
+
+    assert observed == [
+        (
+            "attempt-model",
+            [
+                {"role": "system", "content": "system"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "user"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.test/image.png"},
+                        },
+                    ],
+                },
+            ],
+        )
+    ]
+    assert prepared.input_tokens == (
+        len("systemuserhttps://example.test/image.png")
+        + 2 * token_budget_module.MESSAGE_FRAMING_TOKEN_ALLOWANCE
+        + token_budget_module.REPLY_FRAMING_TOKEN_ALLOWANCE
+        + token_budget_module.IMAGE_INPUT_TOKEN_ALLOWANCE
+    )
+
+
 @pytest.mark.parametrize("counter_result", [0, True, "not-a-count"])
 def test_count_request_tokens_falls_back_to_framed_model_bound_estimate(monkeypatch, counter_result):
     handler = FakeTokenHandler()

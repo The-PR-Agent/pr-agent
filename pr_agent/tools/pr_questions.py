@@ -135,6 +135,9 @@ class PRQuestions:
         variables = copy.deepcopy(self.vars)
         raw_history = variables.get("conversation_history", "")
         variables["conversation_history"] = ""
+        image_path = variables.get("img_path")
+        if not isinstance(image_path, str) or not image_path.strip():
+            image_path = None
         output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
         history_budget = AttemptTokenBudget.for_prompt_attempt(
             model,
@@ -143,6 +146,7 @@ class PRQuestions:
             get_settings().pr_questions_prompt.system,
             get_settings().pr_questions_prompt.user,
             ai_handler=self.ai_handler,
+            image_path=image_path,
             output_token_reserve=output_token_reserve,
         )
         fitted_history = history_budget.fit_prompt_variable(
@@ -153,6 +157,7 @@ class PRQuestions:
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
             additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            image_path=image_path,
             keep="suffix",
         )
         variables["conversation_history"] = fitted_history.optional_text
@@ -164,6 +169,7 @@ class PRQuestions:
             get_settings().pr_questions_prompt.system,
             get_settings().pr_questions_prompt.user,
             ai_handler=self.ai_handler,
+            image_path=image_path,
             output_token_reserve=output_token_reserve,
         )
         budget.require_input_capacity(
@@ -186,6 +192,7 @@ class PRQuestions:
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
+            image_path=image_path,
         )
         self.patches_diff = fitted.optional_text
         self._attempt_system_prompt = fitted.system_prompt

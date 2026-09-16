@@ -59,7 +59,7 @@ def _tickets(count, tokens=200):
     ],
 )
 def test_related_ticket_prompts_disclose_omitted_records(prompt_name):
-    template = Environment().from_string(get_settings().get(prompt_name).user)
+    template = Environment(autoescape=True).from_string(get_settings().get(prompt_name).user)
 
     rendered = template.render(related_tickets=[], related_tickets_omitted=2)
 

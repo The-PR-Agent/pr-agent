@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from math import ceil, isfinite
 from typing import Callable, Literal
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
+from jinja2.sandbox import SandboxedEnvironment
 from litellm import token_counter
 
 from pr_agent.algo.token_handler import TokenHandler
@@ -15,6 +16,7 @@ from pr_agent.log import get_logger
 MESSAGE_FRAMING_TOKEN_ALLOWANCE = 16
 REPLY_FRAMING_TOKEN_ALLOWANCE = 16
 DEFAULT_TRUNCATION_MARKER = "\n...(truncated)\n"
+IMAGE_INPUT_TOKEN_ALLOWANCE = 4_096
 
 
 def _positive_int(value) -> int | None:
@@ -74,6 +76,7 @@ class AttemptTokenBudget:
         user_template: str,
         *,
         ai_handler,
+        image_path: str | None = None,
         output_token_reserve=None,
         ignore_max_model_tokens: bool = False,
     ) -> AttemptTokenBudget:
@@ -92,7 +95,12 @@ class AttemptTokenBudget:
             ignore_max_model_tokens=ignore_max_model_tokens,
         )
         system_prompt, user_prompt = budget.render_prompt_templates(variables)
-        prepared = budget.prepare_request(ai_handler, system_prompt, user_prompt)
+        prepared = budget.prepare_request(
+            ai_handler,
+            system_prompt,
+            user_prompt,
+            image_path=image_path,
+        )
         token_handler.prompt_tokens = prepared.input_tokens
         return budget
 
@@ -204,28 +212,44 @@ class AttemptTokenBudget:
 
     def render_prompt_templates(self, variables: dict) -> tuple[str, str]:
         """Render this attempt handler's templates with the supplied variables."""
-        # Preserve plain-text model input; HTML escaping would corrupt code and diffs.
-        # codeql[py/jinja2/autoescape-false]
-        environment = Environment(undefined=StrictUndefined)
+        # Preserve plain-text model input in a sandbox; HTML escaping would corrupt code and diffs.
+        environment = SandboxedEnvironment(undefined=StrictUndefined)
         system_prompt = environment.from_string(self.token_handler.system).render(variables)
         user_prompt = environment.from_string(self.token_handler.user).render(variables)
         return system_prompt, user_prompt
 
-    def count_request_tokens(self, system_prompt: str, user_prompt: str) -> int:
-        """Count a two-message request, including provider message framing."""
+    def count_request_tokens(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        image_path: str | None = None,
+    ) -> int:
+        """Count a two-message request, including framing and optional image input."""
+        user_content = user_prompt
+        if image_path:
+            user_content = [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": image_path}},
+            ]
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": user_content},
         ]
+        model_token_count = None
         try:
-            model_token_count = token_counter(model=self.model, messages=messages)
-            if isinstance(model_token_count, int) and not isinstance(model_token_count, bool) and model_token_count > 0:
+            counted = token_counter(model=self.model, messages=messages)
+            if isinstance(counted, int) and not isinstance(counted, bool) and counted > 0:
+                model_token_count = counted
+            if model_token_count is not None and not image_path:
                 return model_token_count
         except Exception as error:
             get_logger().debug(f"Model-aware token counting failed for {self.model}: {error}")
 
         content_tokens = self.count_tokens(system_prompt) + self.count_tokens(user_prompt)
         raw_estimate = content_tokens + MESSAGE_FRAMING_TOKEN_ALLOWANCE * len(messages) + REPLY_FRAMING_TOKEN_ALLOWANCE
+        if image_path:
+            raw_estimate += self.count_tokens(image_path) + IMAGE_INPUT_TOKEN_ALLOWANCE
         raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
         try:
             extra_factor = float(raw_factor)
@@ -238,7 +262,10 @@ class AttemptTokenBudget:
             estimated_tokens = raw_estimate * multiplier
             if not isfinite(estimated_tokens):
                 raise ValueError("non-finite token estimate")
-            return ceil(estimated_tokens)
+            fallback_estimate = ceil(estimated_tokens)
+            if model_token_count is not None:
+                return max(model_token_count, fallback_estimate)
+            return fallback_estimate
         except (OverflowError, ValueError):
             get_logger().warning(
                 f"model_token_count_estimate_factor is too large ({raw_factor!r}), using the estimate as is"
@@ -252,6 +279,7 @@ class AttemptTokenBudget:
         user_prompt: str,
         *,
         optional_text: str = "",
+        image_path: str | None = None,
     ) -> FittedPrompt:
         """Normalize and count the exact prompt pair that will be dispatched."""
         system_prompt, user_prompt = self.normalize_request_prompts(
@@ -263,7 +291,11 @@ class AttemptTokenBudget:
             optional_text=optional_text,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            input_tokens=self.count_request_tokens(system_prompt, user_prompt),
+            input_tokens=self.count_request_tokens(
+                system_prompt,
+                user_prompt,
+                image_path=image_path,
+            ),
         )
 
     def fit_optional_text(
@@ -275,6 +307,7 @@ class AttemptTokenBudget:
         default_output_tokens: int,
         preserve_minimum: bool = False,
         additional_input_reserve: int = 0,
+        image_path: str | None = None,
         keep: Literal["prefix", "suffix"] = "prefix",
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
     ) -> FittedPrompt:
@@ -295,6 +328,7 @@ class AttemptTokenBudget:
                 system_prompt,
                 user_prompt,
                 optional_text=candidate,
+                image_path=image_path,
             )
 
         full_prompt = prepare(optional_text)
@@ -340,6 +374,7 @@ class AttemptTokenBudget:
         default_output_tokens: int,
         preserve_minimum: bool = False,
         additional_input_reserve: int = 0,
+        image_path: str | None = None,
         keep: Literal["prefix", "suffix"] = "prefix",
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
     ) -> FittedPrompt:
@@ -357,6 +392,7 @@ class AttemptTokenBudget:
             default_output_tokens=default_output_tokens,
             preserve_minimum=preserve_minimum,
             additional_input_reserve=additional_input_reserve,
+            image_path=image_path,
             keep=keep,
             truncation_marker=truncation_marker,
         )
