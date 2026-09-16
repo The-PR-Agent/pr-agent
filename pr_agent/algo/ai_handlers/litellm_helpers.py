@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import sys
+from dataclasses import dataclass, field
 from math import isfinite
 
 import httpx
@@ -62,6 +63,26 @@ def _stream_usage(chunk):
     return None
 
 
+@dataclass
+class ToolCall:
+    id: str = ""
+    type: str = "function"
+    name: str = ""
+    arguments: str = ""
+
+
+@dataclass
+class AssistantTurn:
+    content: str = ""
+    finish_reason: str | None = None
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    response_obj: object = None
+
+    @property
+    def has_tool_calls(self) -> bool:
+        return bool(self.tool_calls)
+
+
 async def _handle_streaming_response(response, model=None):
     """
     Handle streaming response from acompletion and collect the full response.
@@ -75,6 +96,7 @@ async def _handle_streaming_response(response, model=None):
     full_response = ""
     finish_reason = None
     finalized_usage = None
+    tool_calls_dict: dict[int, dict] = {}
 
     try:
         async for chunk in response:
@@ -89,31 +111,71 @@ async def _handle_streaming_response(response, model=None):
                     full_response += content
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
+                delta_tool_calls = getattr(delta, "tool_calls", None)
+                if delta_tool_calls:
+                    for tc in delta_tool_calls:
+                        idx = getattr(tc, "index", 0) if not isinstance(tc, dict) else tc.get("index", 0)
+                        if idx not in tool_calls_dict:
+                            tool_calls_dict[idx] = {"id": "", "type": "function", "name": "", "arguments": ""}
+                        tc_id = getattr(tc, "id", None) if not isinstance(tc, dict) else tc.get("id")
+                        if tc_id:
+                            tool_calls_dict[idx]["id"] = tc_id
+                        tc_type = getattr(tc, "type", None) if not isinstance(tc, dict) else tc.get("type")
+                        if tc_type:
+                            tool_calls_dict[idx]["type"] = tc_type
+                        fn = getattr(tc, "function", None) if not isinstance(tc, dict) else tc.get("function")
+                        if fn:
+                            fn_name = getattr(fn, "name", None) if not isinstance(fn, dict) else fn.get("name")
+                            if fn_name:
+                                tool_calls_dict[idx]["name"] = fn_name
+                            fn_args = getattr(fn, "arguments", None) if not isinstance(fn, dict) else fn.get("arguments")
+                            if fn_args:
+                                tool_calls_dict[idx]["arguments"] += fn_args
     except Exception as e:
         get_logger().error(f"Error handling streaming response: {e}")
         raise
 
-    if not full_response and finish_reason is None:
+    tool_calls = [
+        ToolCall(
+            id=tc["id"],
+            type=tc["type"],
+            name=tc["name"],
+            arguments=tc["arguments"],
+        )
+        for _, tc in sorted(tool_calls_dict.items())
+    ]
+
+    if not full_response and not tool_calls and finish_reason is None:
         get_logger().warning("Streaming response resulted in empty content with no finish reason")
         raise openai.APIError("Empty streaming response received without proper completion",
                               request=httpx.Request("POST", model or ""), body=None)
-    elif not full_response and finish_reason:
+    elif not full_response and not tool_calls and finish_reason:
         get_logger().debug(f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}")
         raise openai.APIError(
             f"Streaming response completed with finish_reason '{finish_reason}' but no content received",
             request=httpx.Request("POST", model or ""), body=None)
-    return full_response, finish_reason, MockResponse(full_response, finish_reason, finalized_usage, model)
+    return full_response, finish_reason, MockResponse(full_response, finish_reason, finalized_usage, model, tool_calls=tool_calls)
 
 
 class MockResponse:
     """Represent a completed streaming response while retaining LiteLLM's finalized usage object."""
 
-    def __init__(self, resp, finish_reason, usage=None, model=None):
+    def __init__(self, resp, finish_reason, usage=None, model=None, tool_calls=None):
         self.usage = usage
+        message_dict = {"content": resp}
+        if tool_calls:
+            message_dict["tool_calls"] = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {"name": tc.name, "arguments": tc.arguments},
+                }
+                for tc in tool_calls
+            ]
         self._data = {
             "choices": [
                 {
-                    "message": {"content": resp},
+                    "message": message_dict,
                     "finish_reason": finish_reason
                 }
             ]
@@ -129,8 +191,39 @@ class MockResponse:
             elif isinstance(self.usage, dict):
                 data["usage"] = self.usage.copy()
             else:
-                data["usage"] = vars(self.usage).copy()
+                data["usage"] = self.usage
         return data
+
+
+def _extract_tool_calls(response_obj) -> list[ToolCall]:
+    """Extract and normalize tool calls from a completed response or MockResponse object."""
+    if not response_obj:
+        return []
+    try:
+        choices = response_obj.get("choices") if isinstance(response_obj, dict) else getattr(response_obj, "choices", None)
+        if not choices:
+            return []
+        choice = choices[0]
+        msg = choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+        if not msg:
+            return []
+        raw_tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+        if not raw_tool_calls:
+            return []
+        tool_calls = []
+        for tc in raw_tool_calls:
+            if isinstance(tc, ToolCall):
+                tool_calls.append(tc)
+                continue
+            tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+            tc_type = tc.get("type", "function") if isinstance(tc, dict) else getattr(tc, "type", "function")
+            fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
+            fn_name = fn.get("name", "") if isinstance(fn, dict) else getattr(fn, "name", "")
+            fn_args = fn.get("arguments", "") if isinstance(fn, dict) else getattr(fn, "arguments", "")
+            tool_calls.append(ToolCall(id=tc_id, type=tc_type, name=fn_name, arguments=fn_args))
+        return tool_calls
+    except Exception:
+        return []
 
 
 def get_repetition_penalty():

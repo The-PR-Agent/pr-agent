@@ -53,6 +53,8 @@ from pr_agent.algo import (
 )
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_helpers import (
+    AssistantTurn,
+    _extract_tool_calls,
     _get_azure_ad_credential,
     _get_azure_ad_token,
     _handle_streaming_response,
@@ -3843,7 +3845,35 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
         return cache_control_injection_points
 
-    async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
+    async def chat_completion(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        temperature: float = 0.2,
+        img_path: str = None,
+    ) -> tuple[str, str]:
+        configured_deployment_id = self.deployment_id
+        turn = await self._chat_completion_with_retry(
+            model,
+            system,
+            user,
+            temperature,
+            img_path,
+            configured_deployment_id=configured_deployment_id,
+        )
+        return turn.content, turn.finish_reason
+
+    async def chat_completion_with_tools(
+        self,
+        model: str,
+        system: str | None = None,
+        user: str | None = None,
+        temperature: float = 0.2,
+        img_path: str = None,
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+    ) -> AssistantTurn:
         configured_deployment_id = self.deployment_id
         return await self._chat_completion_with_retry(
             model,
@@ -3852,7 +3882,23 @@ class LiteLLMAIHandler(BaseAiHandler):
             temperature,
             img_path,
             configured_deployment_id=configured_deployment_id,
+            tools=tools,
+            messages=messages,
         )
+
+    def supports_tool_calling(self, model: str) -> bool:
+        """Check whether the model/provider supports function/tool calling."""
+        try:
+            custom_llm_provider = self._custom_llm_provider
+            routed_model = self._route_model_for_request(model, custom_llm_provider, self.deployment_id)
+            params = litellm.get_supported_openai_params(
+                model=routed_model,
+                custom_llm_provider=custom_llm_provider or None,
+            )
+            return "tools" in (params or [])
+        except Exception as e:
+            get_logger().debug(f"supports_tool_calling failed for {model}: {e}")
+            return False
 
     @retry(
         retry=retry_if_exception(_should_retry_same_model),
@@ -3862,13 +3908,15 @@ class LiteLLMAIHandler(BaseAiHandler):
     async def _chat_completion_with_retry(
         self,
         model: str,
-        system: str,
-        user: str,
+        system: str | None = None,
+        user: str | None = None,
         temperature: float = 0.2,
         img_path: str = None,
         *,
         configured_deployment_id: str | None,
-    ):
+        tools: list[dict] | None = None,
+        messages: list[dict] | None = None,
+    ) -> AssistantTurn:
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
@@ -3899,10 +3947,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if r.status_code == 404:
                     error_msg = "The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
                     get_logger().error(error_msg)
-                    return f"{error_msg}", "error"
+                    return AssistantTurn(content=f"{error_msg}", finish_reason="error")
             except Exception as e:
                 get_logger().error(f"Error fetching image: {img_path}", e)
-                return f"Error fetching image: {img_path}", "error"
+                return AssistantTurn(content=f"Error fetching image: {img_path}", finish_reason="error")
 
         _aws_imds = self._should_use_aws_imds(request_provider)
         async with self._snapshot_aws_request_credentials(_aws_imds) as (
@@ -3925,16 +3973,19 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # prefixes must remain intact in multi-provider configurations.
                 model = completion_model
                 openrouter_model = self._canonical_openrouter_model(model, request_provider)
-                normalized_system, user = self.normalize_request_prompts(model, system, user)
-                if normalized_system != system:
-                    get_logger().warning(
-                        "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error.")
-                system = normalized_system
-                messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+                if messages is not None:
+                    request_messages = messages
+                else:
+                    normalized_system, user = self.normalize_request_prompts(model, system or "", user or "")
+                    if normalized_system != (system or ""):
+                        get_logger().warning(
+                            "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error.")
+                    system = normalized_system
+                    request_messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
-                if img_path:
-                    messages[1]["content"] = [{"type": "text", "text": messages[1]["content"]},
-                                              {"type": "image_url", "image_url": {"url": img_path}}]
+                    if img_path:
+                        request_messages[1]["content"] = [{"type": "text", "text": request_messages[1]["content"]},
+                                                  {"type": "image_url", "image_url": {"url": img_path}}]
 
                 thinking_kwargs_gpt5 = None
                 openrouter_reasoning_effort = None
@@ -3984,7 +4035,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     model_family = "GPT-6 Astra" if is_gpt6_astra else "GPT-5"
                     get_logger().info(f"Using reasoning_effort='{effort}' for {model_family} model")
                 # Currently, some models do not support a separate system and user prompts
-                if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+                if messages is None and (model in self.user_message_only_models or get_settings().config.custom_reasoning_model):
                     user = f"{system}\n\n\n{user}"
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
@@ -3993,17 +4044,19 @@ class LiteLLMAIHandler(BaseAiHandler):
                                    {"type": "image_url", "image_url": {"url": img_path}}]
                     else:
                         content = user
-                    messages = [{"role": "user", "content": content}]
+                    request_messages = [{"role": "user", "content": content}]
 
                 # Build request kwargs after normalizing the model and messages so credentials and
                 # endpoints can be selected for the provider that will actually receive this call.
                 kwargs = {
                     "model": model,
-                    "messages": messages,
+                    "messages": request_messages,
                     "timeout": get_settings().config.ai_timeout,
                 }
                 if deployment_id:
                     kwargs["deployment_id"] = deployment_id
+                if tools is not None:
+                    kwargs["tools"] = tools
                 kwargs.update(provider_request_params)
 
                 # Caps the completion client's own per-call retries, which otherwise
@@ -4170,11 +4223,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                         openrouter_reasoning_effort,
                     )
 
-                get_logger().debug("Prompts", artifact={"system": system, "user": user})
+                get_logger().debug("Prompts", artifact={"system": system, "user": user} if messages is None else {"messages": messages})
 
                 if get_verbosity_level() >= 2:
-                    get_logger().info(f"\nSystem prompt:\n{system}")
-                    get_logger().info(f"\nUser prompt:\n{user}")
+                    if messages is None:
+                        get_logger().info(f"\nSystem prompt:\n{system}")
+                        get_logger().info(f"\nUser prompt:\n{user}")
+                    else:
+                        get_logger().info(f"\nMessages:\n{messages}")
 
                 # Optional fixed provider override, so a raw hosted model id reaches the
                 # provider unchanged instead of being rewritten by LiteLLM's prefix inference.
@@ -4222,7 +4278,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         get_logger().debug(f"\nAI response:\n{resp}")
 
         # log the full response for debugging
-        response_log = self.prepare_logs(response_obj, system, user, resp, finish_reason)
+        response_log = self.prepare_logs(response_obj, system or "", user or "", resp, finish_reason)
         get_logger().debug("Full_response", artifact=response_log)
 
         # for CLI debugging
@@ -4231,7 +4287,13 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         self._record_completion_metadata(response_obj, model=model, display_model=user_model)
 
-        return resp, finish_reason
+        tool_calls = _extract_tool_calls(response_obj)
+        return AssistantTurn(
+            content=resp or "",
+            finish_reason=finish_reason,
+            tool_calls=tool_calls,
+            response_obj=response_obj,
+        )
 
     async def probe_completion(self, model: str, *, max_tokens: int = 10, timeout: int = 10, _completion=None) -> None:
         """Preserve the single-call health probe using request-local credentials."""
@@ -4308,9 +4370,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                     request=httpx.Request("POST", model),
                     body=None,
                 )
-            content = response["choices"][0]['message']['content']
-            finish_reason = response["choices"][0]["finish_reason"]
-            if not content:
+            choice = response["choices"][0]
+            message = choice["message"] if isinstance(choice, dict) else getattr(choice, "message", {})
+            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+            finish_reason = choice.get("finish_reason") if isinstance(choice, dict) else getattr(choice, "finish_reason", None)
+            raw_tool_calls = message.get("tool_calls") if isinstance(message, dict) else getattr(message, "tool_calls", None)
+            if not content and not raw_tool_calls:
                 get_logger().warning(
                     f"Empty content in model response, finish_reason: {finish_reason}")
                 raise openai.APIError(
