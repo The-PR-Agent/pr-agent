@@ -109,7 +109,7 @@ class TestExtractRelevantLinesStr:
         result = extract_relevant_lines_str(end_line=1, files=[file], relevant_file="src/foo.py", start_line=1)
         assert result == "```python\nline1\n```"
 
-    def test_content_with_inner_fenced_block_uses_longer_fence(self):
+    def test_content_with_inner_fenced_block_uses_safe_fence(self):
         # When the extracted lines contain ```, the outer fence must not collide with that run.
         # The new implementation chooses a tilde fence (~~~) because it is shorter than ````.
         readme = "Usage:\n\n```bash\necho hello\n```\n"
@@ -128,19 +128,14 @@ class TestExtractRelevantLinesStr:
 
 
 class TestDetailsBlockWithCodeFence:
-    """Verifies that a <details> block renders correctly when the extracted lines
-    from the file themselves contain triple backticks (e.g. a README with a ```bash
-    code block inside it).
+    """Preserve nested fences from extracted file lines inside review details.
 
-    Without the fix, extract_relevant_lines_str wrapped any content in ```lang...```
-    regardless of whether the content contained its own ```, which caused the parser
-    to see two fenced blocks and emit a stray ``` before </details>.
-
-    The fix uses a longer fence (````markdown...````) whenever the content contains ```.
+    Choose a safe backtick or tilde wrapper without altering the extracted content.
+    Keep issue-content interpolation outside this extraction regression's scope.
     """
 
-    def test_fenced_block_in_issue_content_uses_longer_fence(self):
-        # issue_content as the LLM produces it — no triple backticks (confirmed by real log)
+    def test_fenced_block_in_extracted_readme_uses_safe_fence(self):
+        # Keep issue prose free of block fences to isolate the extracted README regression.
         issue_content = (
             "Lorem ipsum `foo_param` and `bar_param` dolor sit amet. "
             "Consectetur adipiscing elit, sed do `'<placeholder-value>'` eiusmod.\n"
@@ -206,12 +201,10 @@ class TestDetailsBlockWithCodeFence:
 
 
 class TestConvertToMarkdownV2ThreeIssues:
-    """Tests using synthetic input shaped after a three-issue review:
+    """Verify fence selection using a synthetic three-issue review.
 
-      1. Python file, lines 59-63 — no inner fences → plain ```python fence expected.
-      2. Python file, lines 25-38 — no inner fences → plain ```python fence expected.
-      3. README.md, lines 41-43 — line 43 IS a closing ``` fence inside the README,
-         so the outer fence must use 4 backticks (````markdown).
+    Use plain backtick fences for the two Python snippets and a tilde fence for
+    README lines containing a closing triple-backtick fence.
     """
 
     # Generic Python block at lines 59-63: no backtick sequences inside.
@@ -315,7 +308,7 @@ class TestConvertToMarkdownV2ThreeIssues:
         }
 
     def test_python_issue_lines_59_63_uses_plain_fence(self):
-        """Python code with no inner fences must use a plain ```python fence."""
+        """Use a plain Python fence for extracted code without inner fences."""
         result = extract_relevant_lines_str(
             end_line=63,
             files=[self._make_py_file()],
@@ -330,7 +323,7 @@ class TestConvertToMarkdownV2ThreeIssues:
         assert "````" not in result, "Should not need a 4-backtick fence for plain Python code"
 
     def test_python_issue_lines_25_38_uses_plain_fence(self):
-        """Python code block (lines 25-38) with no inner fences must use a plain ```python fence."""
+        """Use a plain Python fence for lines 25-38 without inner fences."""
         result = extract_relevant_lines_str(
             end_line=38,
             files=[self._make_py_file()],
@@ -343,10 +336,7 @@ class TestConvertToMarkdownV2ThreeIssues:
         assert "````" not in result, "Should not need a 4-backtick fence for plain Python code"
 
     def test_readme_issue_lines_41_43_uses_tilde_fence(self):
-        """README lines 41-43 include a closing ``` fence on line 43.
-        The outer fence must not collide with that inner ```. The new implementation
-        picks a tilde fence (~~~markdown) because it is shorter than a 4-backtick fence.
-        """
+        """Use the shorter tilde fence around README lines containing closing backticks."""
         result = extract_relevant_lines_str(
             end_line=43,
             files=[self._make_readme_file()],
@@ -364,7 +354,7 @@ class TestConvertToMarkdownV2ThreeIssues:
         )
 
     def test_convert_to_markdown_v2_uses_fenced_blocks_not_pre(self):
-        """In the gfm_supported <details> path, all issues must use fenced code blocks, not <pre>."""
+        """Preserve fenced code rendering for every issue in the GFM details path."""
         mock_git_provider = Mock()
         mock_git_provider.get_line_link.return_value = (
             "https://example.com/repo/-/blob/main/src/lorem/script.py#L59-63"
