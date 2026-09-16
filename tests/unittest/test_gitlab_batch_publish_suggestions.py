@@ -1,3 +1,4 @@
+import re
 from unittest.mock import MagicMock, patch
 
 from pr_agent.algo import inline_comment_dedup as dedup
@@ -14,6 +15,7 @@ class _FakeTargetFile:
     filename = "a.py"
     old_filename = "a.py"
     head_file = "line1\nline2\nline3\n"
+    patch = "@@ -1,3 +1,4 @@\n line1\n+changed\n line2\n line3\n"
 
 
 def _suggestion(**overrides):
@@ -38,6 +40,7 @@ def _gl_provider():
     clears them - so tests exercise the same create -> list -> bulk_publish flow the real code
     depends on, instead of asserting on call counts alone."""
     p = GitLabProvider.__new__(GitLabProvider)
+    p.RE_HUNK_HEADER = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)")
     p.id_mr = 1
     p.mr = MagicMock()
     p.mr.discussions.list.return_value = []
@@ -92,6 +95,19 @@ def test_flag_off_posts_live_discussions_and_skips_bulk_publish():
     assert p.mr.discussions.create.call_count == 1
     p.mr.draft_notes.create.assert_not_called()
     p.mr.draft_notes.bulk_publish.assert_not_called()
+
+
+def test_context_anchor_includes_both_gitlab_line_numbers():
+    p = _gl_provider()
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    position = p.mr.discussions.create.call_args.args[0]['position']
+    assert position['old_line'] == 2
+    assert position['new_line'] == 3
 
 
 def test_flag_on_queues_draft_notes_and_bulk_publishes_once():
@@ -205,7 +221,7 @@ def test_bulk_publish_still_fires_for_stuck_drafts_even_if_this_run_dedupes_ever
     suggestion = _suggestion()
     range_ = suggestion['relevant_lines_end'] - suggestion['relevant_lines_start']
     posted_body = suggestion['body'].replace('```suggestion', f'```suggestion:-0+{range_}')
-    anchor_line = suggestion['relevant_lines_start'] + 1  # target_line_no for an 'addition' edit
+    anchor_line = suggestion['relevant_lines_start'] + 2  # context line's new-file position
     seen_fp = dedup.body_fingerprint(suggestion['relevant_file'], anchor_line, posted_body)
     stuck_draft = MagicMock()
     stuck_draft.note = f"stuck from a previous run\n\n<!-- pr-agent-dedup: {seen_fp} -->"

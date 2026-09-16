@@ -1328,13 +1328,10 @@ class GitLabProvider(GitProvider):
                     continue
                 relevant_line_in_file = lines[relevant_lines_start - 1]
 
-                # edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(target_file,
-                #                                                                            relevant_line_in_file)
-                # for code suggestions, we want to edit the new code
-                source_line_no = -1
-                target_line_no = relevant_lines_start + 1
-                found = True
-                edit_type = 'addition'
+                # Classify the anchor from the diff. GitLab committable suggestions can target
+                # added lines with new_line, but context lines require both old_line and new_line.
+                edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(
+                    target_file, relevant_line_in_file)
 
                 self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
                                          source_line_no, target_file, target_line_no, original_suggestion,
