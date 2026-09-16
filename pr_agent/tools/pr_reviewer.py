@@ -830,7 +830,7 @@ class PRReviewer:
             self.prediction = prediction
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
-            self.prediction = None
+            raise ValueError(f"No PR diff fits the /review request for {model}")
 
     async def _prepare_chunked_prediction(self, model: str,
                                           prepared_diff: PreparedPRDiff | None = None) -> bool:

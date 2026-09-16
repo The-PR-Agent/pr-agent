@@ -118,6 +118,56 @@ async def test_normal_description_rejects_clipped_packed_diff():
     tool.ai_handler.chat_completion.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_empty_primary_description_diff_uses_fallback_model(monkeypatch):
+    obj = _make_large_pr_instance()
+    obj._get_prediction = AsyncMock(return_value=_header_prediction())
+    monkeypatch.setattr(
+        get_settings().pr_description,
+        "enable_large_pr_handling",
+        False,
+    )
+    monkeypatch.setattr(
+        get_settings().pr_description,
+        "enable_semantic_files_types",
+        False,
+    )
+
+    def get_pr_diff(_provider, _handler, model, **_kwargs):
+        if model == "primary-model":
+            return "", ["src/too-large.py"]
+        return "fallback diff", []
+
+    with (
+        patch("pr_agent.tools.pr_description.get_pr_diff", side_effect=get_pr_diff),
+        patch(
+            "pr_agent.tools.pr_description.fit_related_tickets_to_prompt_budget",
+            side_effect=lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (
+                raw_vars,
+                obj.token_handler,
+            ),
+        ),
+        patch(
+            "pr_agent.algo.pr_processing._get_all_models",
+            return_value=["primary-model", "fallback-model"],
+        ),
+        patch(
+            "pr_agent.algo.pr_processing._get_all_deployments",
+            return_value=[None, None],
+        ),
+        patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None),
+    ):
+        await retry_with_fallback_models(obj._prepare_prediction, ModelType.WEAK)
+
+    obj._get_prediction.assert_awaited_once_with(
+        "fallback-model",
+        "fallback diff",
+        prompt="pr_description_prompt",
+    )
+    assert obj.patches_diff == "fallback diff"
+    assert obj.prediction == _header_prediction()
+
+
 def _mock_settings(pr_diagram_direction: str = 'adaptive', pr_diagram_direction_threshold: int = 5):
     """Mock get_settings used by _prepare_data."""
     settings = MagicMock()

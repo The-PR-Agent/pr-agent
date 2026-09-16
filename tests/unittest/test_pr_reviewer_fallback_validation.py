@@ -70,6 +70,36 @@ async def test_malformed_primary_review_uses_fallback_model(fallback_models):
 
 
 @pytest.mark.asyncio
+async def test_empty_primary_diff_uses_fallback_model(fallback_models):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_REVIEW)
+
+    def get_pr_diff(_provider, _handler, model, **_kwargs):
+        if model == "primary-model":
+            return "", ["src/too-large.py"]
+        return "fallback diff", []
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", side_effect=get_pr_diff),
+        patch(
+            "pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+            side_effect=lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (
+                raw_vars,
+                reviewer.token_handler,
+            ),
+        ),
+    ):
+        await retry_with_fallback_models(
+            reviewer._prepare_prediction,
+            git_provider=reviewer.git_provider,
+        )
+
+    reviewer._get_prediction.assert_awaited_once_with("fallback-model")
+    assert reviewer.patches_diff == "fallback diff"
+    assert reviewer.prediction == _VALID_REVIEW
+
+
+@pytest.mark.asyncio
 async def test_malformed_primary_then_valid_fallback_publishes_review_without_failure(
     monkeypatch, fallback_models
 ):

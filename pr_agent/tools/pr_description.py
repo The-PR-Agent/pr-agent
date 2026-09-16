@@ -323,7 +323,9 @@ class PRDescription:
             else:
                 get_logger().error(f"Error getting PR diff {self.pr_id}",
                                    artifact={"traceback": traceback.format_exc()})
-                self.prediction = None
+                raise ValueError(
+                    f"No PR diff fits the /describe request for {model}"
+                )
         else:
             # get the diff in multiple patches, with the token handler only for the files prompt
             get_logger().debug('large_pr_handling for describe')
