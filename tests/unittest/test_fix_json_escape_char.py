@@ -2,6 +2,11 @@ from pr_agent.algo.utils import fix_json_escape_char
 
 
 class TestFixJsonEscapeChar:
+    def test_empty_or_missing_json_returns_empty_dict(self):
+        assert fix_json_escape_char("") == {}
+        assert fix_json_escape_char("   ") == {}
+        assert fix_json_escape_char(None) == {}
+
     def test_valid_json(self):
         """Return unchanged when input JSON is already valid"""
         text = '{"a": 1, "b": "ok"}'

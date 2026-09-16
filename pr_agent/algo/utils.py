@@ -880,11 +880,19 @@ def fix_json_escape_char(json_message=None):
         None
 
     """
+    if not json_message or not isinstance(json_message, str) or not json_message.strip():
+        return {}
+
     try:
         result = json.loads(json_message)
     except Exception as e:
         # Find the offending character index:
-        idx_to_replace = int(str(e).split(' ')[-1].replace(')', ''))
+        try:
+            idx_to_replace = int(str(e).split(' ')[-1].replace(')', ''))
+        except (TypeError, ValueError):
+            return {}
+        if idx_to_replace >= len(json_message):
+            return {}
         # Remove the offending character:
         json_message = list(json_message)
         json_message[idx_to_replace] = ' '
