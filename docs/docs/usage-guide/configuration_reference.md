@@ -71,7 +71,7 @@ to-do list.
 | `custom_model_max_tokens` | -1 | for models not in the default list |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
-| `image_input_token_allowance` | 4096 | conservative per-image input reserve used when provider token counting omits or underestimates image cost |
+| `image_input_token_allowance` | 4096 | reserve tokens per image when provider counting omits or underestimates image cost |
 **patch extension logic**
 
 | Key | Default | Description |
@@ -88,7 +88,7 @@ to-do list.
 | `output_run_cost` | false | if true, collect estimated LiteLLM API cost and include it inside the enabled run details section |
 | `large_patch_policy` | "clip" | "clip", "skip" |
 | `duplicate_prompt_examples` | false |  |
-| `persistent_inline_comments` | false | Persistent inline comments (issue #2037): when true, providers with inline-comment deduplication support fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip re-posting suggestions already present on the PR/MR across runs. |
+| `persistent_inline_comments` | false | Enable persistent inline comments (issue #2037) to fingerprint each inline comment and embed a provider-compatible marker, then skip re-posting suggestions already present on the PR/MR across runs. |
 **seed**
 
 | Key | Default | Description |

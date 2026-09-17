@@ -41,3 +41,23 @@ def test_config_reference_page_lists_every_active_key():
         "docs/docs/usage-guide/configuration_reference.md is out of date; "
         "run scripts/generate_config_reference.py"
     )
+
+
+def test_persistent_inline_comments_description_keeps_skip_phrase():
+    """Regression for #3454: a mid-sentence short comment line must not become a heading.
+
+    The generated description for persistent_inline_comments has to retain the
+    skip/re-post wording; a dropped fragment inverted the feature's meaning.
+    """
+    page = OUTPUT_PAGE.read_text(encoding="utf-8")
+    row = next(
+        (line for line in page.splitlines() if line.startswith("| `persistent_inline_comments`")),
+        None,
+    )
+    assert row is not None, "persistent_inline_comments missing from configuration_reference.md"
+    lowered = row.lower()
+    assert "and skip" in lowered or "then skip" in lowered, (
+        f"persistent_inline_comments description lost the skip phrase: {row}"
+    )
+    assert "embed a provider-compatible marker" in lowered
+    assert "**embed a provider-compatible marker, and skip**" not in page
