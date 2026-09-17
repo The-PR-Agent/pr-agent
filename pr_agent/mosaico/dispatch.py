@@ -23,6 +23,7 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.mosaico.diff_provider import parse_unified_diff
@@ -352,14 +353,15 @@ async def _run_ask(target: str, question: str) -> "RouteResult":
 
 
 def _simple_languages(files) -> dict:
-    """Best-effort language map (extension -> count) for get_main_pr_language; tolerant
-    of empties (downstream handles an empty dict)."""
+    """Return configured language-name counts, tolerating an empty file list."""
+    language_map = get_settings().get("language_extension_map_org", {}) or {}
+    get_language = build_language_file_matcher(language_map)
     langs = {}
     for f in files:
         name = getattr(f, "filename", "") or ""
-        if "." in name:
-            ext = name.rsplit(".", 1)[1].lower()
-            langs[ext] = langs.get(ext, 0) + 1
+        language = get_language(name)
+        if language:
+            langs[language] = langs.get(language, 0) + 1
     return langs
 
 
