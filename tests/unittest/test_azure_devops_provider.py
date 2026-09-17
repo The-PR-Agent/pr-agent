@@ -524,6 +524,10 @@ class TestAzureDevopsProviderSuggestionAnchoring:
             "relevant_file": "/src/app.py",
             "relevant_lines_start": 1,
             "relevant_lines_end": 1,
+            "original_suggestion": {
+                "existing_code": "value = 2",
+                "improved_code": "value = 1",
+            },
         }
 
         with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
@@ -1835,3 +1839,146 @@ class TestAzureDevopsGlobalSettings:
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
 
         assert provider.azure_devops_client.get_item_content.call_count == 1
+
+
+class TestAzureDevopsProviderSuggestionFence:
+    """Regression tests for #2110: Azure DevOps has no committable suggestion blocks, so the
+    ```suggestion fence /improve emits was published verbatim and rendered as a raw block.
+    """
+
+    @staticmethod
+    def _committable_suggestion(relevant_file="/src/app.py"):
+        suggestion = _suggestion(relevant_file)
+        suggestion["body"] = "**Suggestion:** use a set [best practice]\n```suggestion\nvalues = set()\n```"
+        suggestion["original_suggestion"] = {
+            "existing_code": "values = []",
+            "improved_code": "values = set()",
+        }
+        return suggestion
+
+    def test_suggestion_fence_is_published_as_a_diff_block(self):
+        provider = _provider_with_diff("/src/app.py")
+
+        provider.publish_code_suggestions([self._committable_suggestion()])
+
+        body = _created_threads(provider)[-1].comments[0].content
+        assert "```suggestion" not in body
+        assert "```diff" in body
+        assert "-values = []" in body
+        assert "+values = set()" in body
+        assert body.startswith("**Suggestion:** use a set [best practice]")
+
+    def test_body_is_left_alone_when_there_is_no_original_suggestion(self):
+        provider = _provider_with_diff("/src/app.py")
+
+        provider.publish_code_suggestions([_suggestion("/src/app.py")])
+
+        assert _created_threads(provider)[-1].comments[0].content == "```suggestion\nfixed\n```"
+
+    def test_pr_level_fallback_also_carries_the_diff_block(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.publish_comment = MagicMock()
+
+        provider.publish_code_suggestions([self._committable_suggestion("/src/removed.py")])
+
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
+        assert "```suggestion" not in published
+
+    def test_unusable_original_suggestion_keeps_the_suggestion(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        del suggestion["original_suggestion"]["improved_code"]
+
+        provider.publish_code_suggestions([suggestion])
+
+        assert "```suggestion" in _created_threads(provider)[-1].comments[0].content
+
+    def test_backslashes_in_proposed_code_are_preserved(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        suggestion["original_suggestion"] = {
+            "existing_code": "print(1)",
+            "improved_code": "print(\t\\1\\d)",
+        }
+
+        provider.publish_code_suggestions([suggestion])
+
+        body = _created_threads(provider)[-1].comments[0].content
+        assert "```diff" in body
+        assert "+print(\t\\1\\d)" in body
+
+    def test_invalid_range_still_falls_back_to_pr_comment(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.publish_comment = MagicMock()
+        suggestion = self._committable_suggestion()
+        suggestion["relevant_lines_start"] = 200
+        suggestion["relevant_lines_end"] = 202
+
+        provider.publish_code_suggestions([suggestion])
+
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
+        assert "```suggestion" not in published
+
+    def test_rendered_thread_still_feeds_the_next_run(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        suggestion["relevant_lines_start"] = suggestion["relevant_lines_end"] = 2
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
+            settings.return_value.get.side_effect = lambda key, default=None: (
+                True if key == "config.persistent_inline_comments" else default
+            )
+            settings.return_value.azure_devops.get.return_value = "active"
+            provider.publish_code_suggestions([suggestion])
+            stored = SimpleNamespace(
+                id=17,
+                status="active",
+                thread_context=SimpleNamespace(
+                    file_path="/src/app.py",
+                    right_file_start=SimpleNamespace(line=2),
+                    right_file_end=SimpleNamespace(line=2),
+                ),
+                comments=[
+                    _created_threads(provider)[0].comments[0],
+                    SimpleNamespace(content="Not doing this.", author=SimpleNamespace(display_name="Alex")),
+                ],
+            )
+            provider.azure_devops_client.get_threads.return_value = [stored]
+            provider.pr = SimpleNamespace(last_merge_commit=SimpleNamespace(commit_id="head"))
+            provider.azure_devops_client.get_item.return_value = SimpleNamespace(content="before\nvalues = set()\nafter")
+            assert "Not doing this." in provider.get_code_suggestion_thread_context()
+            assert provider.reconcile_code_suggestion_threads() == 1
+
+    def test_rendered_thread_without_markers_is_not_reposted(self):
+        """A thread published before persistent_inline_comments was enabled carries no
+        dedup marker, but the fingerprint bootstrap must still recognize its rendered
+        diff block so the suggestion is not re-posted once the feature is switched on.
+        """
+        suggestion = self._committable_suggestion()
+        first_run = _provider_with_diff("/src/app.py")
+        first_run.publish_code_suggestions([suggestion])
+        stored = SimpleNamespace(
+            thread_context=SimpleNamespace(
+                file_path="/src/app.py",
+                right_file_start=SimpleNamespace(line=10),
+                right_file_end=SimpleNamespace(line=12),
+            ),
+            comments=[_created_threads(first_run)[0].comments[0]],
+        )
+        provider = _provider_with_diff("/src/app.py")
+        provider.azure_devops_client.get_threads.return_value = [stored]
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
+            settings.return_value.get.side_effect = lambda key, default=None: (
+                True if key == "config.persistent_inline_comments" else default
+            )
+            settings.return_value.azure_devops.get.return_value = "active"
+            provider.publish_code_suggestions([suggestion])
+        provider.azure_devops_client.create_thread.assert_not_called()
+
+    def test_no_op_suggestion_keeps_its_fence(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        suggestion["original_suggestion"]["improved_code"] = "values = []   "
+        provider.publish_code_suggestions([suggestion])
+        assert "```suggestion" in _created_threads(provider)[-1].comments[0].content

@@ -1220,6 +1220,8 @@ class PRCodeSuggestions:
                 existing_code if new_code_snippet else None)
             if new_code_snippet and has_valid_anchor:
                 new_code_snippet = self.dedent_code(relevant_file, relevant_lines_start, new_code_snippet)
+                existing_code = self.dedent_code(relevant_file, relevant_lines_start, existing_code)
+                d = {**d, "existing_code": existing_code, "improved_code": new_code_snippet}
 
             requires_pr_fallback = False
             if d.get('_is_truncated'):

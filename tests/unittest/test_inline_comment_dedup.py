@@ -69,6 +69,25 @@ def test_code_fingerprint_whitespace_insensitive():
     assert fp1 == fp2 and len(fp1) == 12
 
 
+def test_extract_suggestion_code_reads_rendered_diff_blocks():
+    body = ("**Suggestion:** use a set [best practice]\n\n\n"
+            "```diff\n-values = []\n+values = set()\n```")
+    assert d.extract_suggestion_code(body) == "values = set()"
+
+
+def test_extract_suggestion_code_diff_keeps_context_and_drops_removed_lines():
+    body = ("```diff\n"
+            "-def old(a, b):\n"
+            " def shared(x):\n"
+            "+def shared(x, y):\n"
+            "```")
+    assert d.extract_suggestion_code(body) == "def shared(x):\ndef shared(x, y):"
+
+
+def test_extract_suggestion_code_returns_none_for_empty_diff_block():
+    assert d.extract_suggestion_code("prose\n```diff\n```") is None
+
+
 def test_build_markers():
     assert d.build_markers("aaaaaaaaaaaa", None) == "<!-- pr-agent-dedup: aaaaaaaaaaaa -->"
     out = d.build_markers("aaaaaaaaaaaa", "bbbbbbbbbbbb")

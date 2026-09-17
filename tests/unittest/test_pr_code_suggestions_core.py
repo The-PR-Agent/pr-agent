@@ -1079,6 +1079,26 @@ async def test_suggestion_covering_the_anchored_range_is_published_as_committabl
 
 
 @pytest.mark.asyncio
+async def test_aligned_original_suggestion_matches_rendered_fence_indentation():
+    git_provider = _provider_with_file("def f():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
+            score=8,
+        )
+    ]})
+
+    original = _published_suggestion(git_provider)["original_suggestion"]
+    assert original["existing_code"] == "    return old()"
+    assert original["improved_code"] == "    return new()"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("improved_code", ["return new(", "return await new()"])
 async def test_invalid_python_replacement_is_published_as_a_pr_comment(improved_code):
     git_provider = _provider_with_file("def fetch():\n    return old()\n")

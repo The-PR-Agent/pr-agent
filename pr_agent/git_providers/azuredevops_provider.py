@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
 import json
 import re
 from collections import Counter
@@ -60,6 +61,10 @@ def _is_not_found_error(error: Exception) -> bool:
     if status_code is not None:
         return status_code == 404
     return re.search(r"\b404\b", str(error)) is not None
+
+
+def _is_code_suggestion_body(body: str) -> bool:
+    return "```suggestion" in body or "```diff" in body
 
 
 try:
@@ -206,6 +211,28 @@ class AzureDevopsProvider(GitProvider):
         return None
 
     @staticmethod
+    def _render_suggestion_as_diff(body: str, original_suggestion: Optional[dict]) -> str:
+        """Azure DevOps has no committable suggestion blocks, so a ```suggestion fence is
+        published verbatim and renders as an uneditable raw block. Replace it with a diff
+        block, the same way the Bitbucket providers do."""
+        if not original_suggestion:
+            return body
+        try:
+            existing_code = original_suggestion['existing_code'].rstrip() + "\n"
+            improved_code = original_suggestion['improved_code'].rstrip() + "\n"
+            diff = difflib.unified_diff(existing_code.split('\n'),
+                                        improved_code.split('\n'), n=999)
+            patch_orig = "\n".join(diff)
+            patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+            if not patch.strip():
+                return body
+            diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+            return re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
+        except Exception as e:
+            get_logger().exception(f"Azure failed to render a code suggestion as a diff, error: {e}")
+            return body
+
+    @staticmethod
     def _fallback_suggestion_section(suggestion: dict, reason: str) -> str:
         relevant_file = str(suggestion["relevant_file"]).strip().strip("`").strip().replace("`", "")
         location = (f"`{relevant_file}` "
@@ -296,6 +323,11 @@ class AzureDevopsProvider(GitProvider):
                                        f"relevant_lines_start is {relevant_lines_start}")
                 continue
 
+            has_suggestion_fence = "```suggestion" in body
+            raw_body = body
+            body = self._render_suggestion_as_diff(body, suggestion.get("original_suggestion"))
+            suggestion = {**suggestion, "body": body}
+
             publishable_count += 1
             fallback_to_pr_comment = suggestion.get("fallback_to_pr_comment", True)
             fingerprint_file = relevant_file.strip().strip("`").strip().lstrip("/")
@@ -306,8 +338,8 @@ class AzureDevopsProvider(GitProvider):
             should_mark = store is not None and not has_marker(body)
             fingerprints = set()
             if should_mark:
-                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, body)
-                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, body)
+                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
+                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
                 fingerprints.add(body_fp)
                 if code_fp is not None:
                     fingerprints.add(code_fp)
@@ -334,7 +366,7 @@ class AzureDevopsProvider(GitProvider):
                 continue
 
             end_offset = 1
-            if "```suggestion" in body:
+            if has_suggestion_fence:
                 end_offset = self._get_suggestion_end_offset(resolved_file, relevant_lines_end)
                 if end_offset is None:
                     if fallback_to_pr_comment:
@@ -1263,7 +1295,7 @@ class AzureDevopsProvider(GitProvider):
             root_body = self._value(comments[0], "content")
             if not isinstance(root_body, str):
                 continue
-            if "```suggestion" not in root_body:
+            if not _is_code_suggestion_body(root_body):
                 continue
             replies = []
             for comment in comments[1:][-_MAX_DISCUSSION_REPLIES:]:
@@ -1317,11 +1349,11 @@ class AzureDevopsProvider(GitProvider):
             if not isinstance(content, str):
                 continue
             if isinstance(path, str) and path and anchor:
-                if "```suggestion" not in content:
+                if not _is_code_suggestion_body(content):
                     continue
                 self._add_suggestion_fingerprints(fingerprints, path, anchor, content)
                 continue
-            if ("```suggestion" not in content and not comment_matches_identity(
+            if (not _is_code_suggestion_body(content) and not comment_matches_identity(
                     content, PRCodeSuggestionsIdentity.UNANCHORED.value)):
                 continue
             for section in content.split("\n\n---\n\n"):
