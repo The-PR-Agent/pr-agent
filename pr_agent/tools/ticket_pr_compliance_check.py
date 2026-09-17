@@ -911,7 +911,7 @@ async def extract_tickets(git_provider):
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
                         issue_main = repo_obj.get_issue(original_issue_number)
                     except Exception as e:
-                        get_logger().error(f"Error getting main issue {ticket}: {e}",
+                        get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
                         continue
 
@@ -956,7 +956,7 @@ async def extract_tickets(git_provider):
                                 get_logger().warning(f"Failed to fetch sub-issue content for {sub_issue_url}: {e}")
 
                     except Exception as e:
-                        get_logger().warning(f"Failed to fetch sub-issues for {ticket}: {e}")
+                        get_logger().warning(f"Failed to fetch sub-issues for {ticket!r}: {e}")
 
                     # Extract labels
                     labels = []
