@@ -135,6 +135,43 @@ def _get_azure_change_path(change):
     return getattr(item, "path", None)
 
 
+def _get_azure_change_old_path(change):
+    additional = getattr(change, "additional_properties", None)
+    if not isinstance(additional, dict):
+        additional = {}
+
+    for attribute, serialized_attribute in (
+        ("original_path", "originalPath"),
+        ("source_server_item", "sourceServerItem"),
+    ):
+        values = (
+            getattr(change, attribute, None),
+            getattr(change, serialized_attribute, None),
+            additional.get(serialized_attribute),
+            additional.get(attribute),
+        )
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
+
+
+def _get_azure_change_type(change):
+    additional = getattr(change, "additional_properties", None)
+    if not isinstance(additional, dict):
+        additional = {}
+
+    for value in (
+        getattr(change, "change_type", None),
+        getattr(change, "changeType", None),
+        additional.get("changeType"),
+        additional.get("change_type"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value
+    return "Unknown"
+
+
 class AzureDevopsProvider(GitProvider):
 
     _INCREMENTAL_ANCHOR_PREFIXES = {
@@ -857,11 +894,15 @@ class AzureDevopsProvider(GitProvider):
             diff_files = []
             diffs = []
             diff_types = {}
+            old_paths = {}
             for change in self._get_pr_iteration_changes():
                 path = _get_azure_change_path(change)
                 if path:
                     diffs.append(path)
-                    diff_types[path] = change.additional_properties.get("changeType", "Unknown")
+                    change_type = _get_azure_change_type(change)
+                    diff_types[path] = change_type
+                    if "rename" in change_type:
+                        old_paths[path] = _get_azure_change_old_path(change)
 
             # wrong implementation - gets all the files that were changed in any commit in the PR
             # commits = self.azure_devops_client.get_pull_request_commits(
@@ -944,7 +985,13 @@ class AzureDevopsProvider(GitProvider):
                 elif "rename" in diff_types[file]: # diff_type can be `rename` | `edit, rename`
                     edit_type = EDIT_TYPE.RENAMED
 
-                if edit_type == EDIT_TYPE.ADDED or edit_type == EDIT_TYPE.RENAMED:
+                old_filename = old_paths.get(file) if edit_type == EDIT_TYPE.RENAMED else None
+                if edit_type == EDIT_TYPE.RENAMED and old_filename is None:
+                    get_logger().warning(
+                        f"Azure rename entry for {file} has no usable old path; using empty base content"
+                    )
+
+                if edit_type == EDIT_TYPE.ADDED or (edit_type == EDIT_TYPE.RENAMED and old_filename is None):
                     original_file_content_str = ""
                 elif incremental_active:
                     inc_version = GitVersionDescriptor(
@@ -953,7 +1000,7 @@ class AzureDevopsProvider(GitProvider):
                     try:
                         inc_original = self.azure_devops_client.get_item(
                             repository_id=self.repo_slug,
-                            path=file,
+                            path=old_filename or file,
                             project=self.workspace_slug,
                             version_descriptor=inc_version,
                             download=False,
@@ -962,7 +1009,8 @@ class AzureDevopsProvider(GitProvider):
                         original_file_content_str = inc_original.content or ""
                     except Exception as error:
                         get_logger().warning(
-                            f"Failed to retrieve original of {file} at {self.incremental.last_seen_commit_sha}: {error}"
+                            f"Failed to retrieve original of {old_filename or file} "
+                            f"at {self.incremental.last_seen_commit_sha}: {error}"
                         )
                         original_file_content_str = ""
                 else:
@@ -972,7 +1020,7 @@ class AzureDevopsProvider(GitProvider):
                     try:
                         base_original = self.azure_devops_client.get_item(
                             repository_id=self.repo_slug,
-                            path=file,
+                            path=old_filename or file,
                             project=self.workspace_slug,
                             version_descriptor=base_version,
                             download=False,
@@ -982,7 +1030,7 @@ class AzureDevopsProvider(GitProvider):
                     except Exception as error:
                         get_logger().error(
                             "Failed to retrieve original file content of {file} at version {version}",
-                            file=file,
+                            file=old_filename or file,
                             version=str(base_version),
                             error=error,
                         )
@@ -1006,6 +1054,7 @@ class AzureDevopsProvider(GitProvider):
                         patch=patch,
                         filename=file,
                         edit_type=edit_type,
+                        old_filename=old_filename,
                         num_plus_lines=num_plus_lines,
                         num_minus_lines=num_minus_lines,
                     )

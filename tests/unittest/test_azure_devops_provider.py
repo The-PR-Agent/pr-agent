@@ -5,13 +5,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pr_agent.algo.inline_comment_dedup import code_fingerprint
-from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import PRCodeSuggestionsIdentity
 from pr_agent.git_providers.azuredevops_provider import (
     AzureDevopsProvider,
     Comment,
     CommentThread,
 )
+from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.log import get_logger
 
 
@@ -218,11 +219,12 @@ class TestAzureDevopsProviderRepoContext:
 
 class TestAzureDevopsProviderFiles:
     @staticmethod
-    def _change(path, change_type="edit", git_object_type="blob"):
+    def _change(path="/src/app.py", change_type="edit", git_object_type="blob", **metadata):
         return SimpleNamespace(
             additional_properties={
                 "item": {"path": path, "gitObjectType": git_object_type},
                 "changeType": change_type,
+                **metadata,
             }
         )
 
@@ -365,35 +367,19 @@ class TestAzureDevopsProviderFiles:
         provider.azure_devops_client.get_pull_request_commits.assert_not_called()
         provider.azure_devops_client.get_changes.assert_not_called()
 
+    @classmethod
+    def _provider_with_change(cls, change, *get_item_results, incremental=None):
+        provider = cls._provider([
+            SimpleNamespace(change_entries=[change], next_skip=0, next_top=0),
+        ])
+        provider.azure_devops_client.get_item.side_effect = get_item_results
+        provider.incremental = incremental
+        return provider
+
     @staticmethod
     def _provider_with_pull_request_diff(*get_item_results):
-        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-        provider.repo_slug = "my-repo"
-        provider.workspace_slug = "my-project"
-        provider.pr_num = 1
-        provider.pr = SimpleNamespace(
-            last_merge_target_commit=SimpleNamespace(commit_id="base-sha"),
-            last_merge_commit=SimpleNamespace(commit_id="head-sha"),
-        )
-        provider.azure_devops_client = MagicMock()
-        client = provider.azure_devops_client
-        client.get_pull_request_iterations.return_value = [SimpleNamespace(id=1)]
-        client.get_pull_request_iteration_changes.return_value = SimpleNamespace(
-            change_entries=[
-                SimpleNamespace(
-                    additional_properties={
-                        "item": {"path": "/src/app.py"},
-                        "changeType": "edit",
-                    }
-                )
-            ]
-        )
-        client.get_item.side_effect = get_item_results
-        provider.diff_files = None
-        provider._pr_iteration_changes_cache = None
-        provider.incremental = None
-        provider.unreviewed_files_map = {}
-        return provider
+        change = TestAzureDevopsProviderFiles._change()
+        return TestAzureDevopsProviderFiles._provider_with_change(change, *get_item_results)
 
     def test_get_diff_files_keeps_file_when_new_content_fetch_fails(self):
         provider = self._provider_with_pull_request_diff(
@@ -432,6 +418,257 @@ class TestAzureDevopsProviderFiles:
         assert diff_files[0].head_file == "new content\n"
         assert diff_files[0].base_file == ""
         assert any("/src/app.py" in message and "base-sha" in message for message in captured)
+
+    def test_pure_rename_uses_old_path_and_preserves_identity(self):
+        change = self._change(
+            path="/new/name.py",
+            change_type="rename",
+            originalPath="/old/name.py",
+        )
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="same content\n"),
+            SimpleNamespace(content="same content\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.filename == "/new/name.py"
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
+        assert diff_file.base_file == diff_file.head_file == "same content\n"
+        assert diff_file.patch == ""
+        assert diff_file.num_plus_lines == 0
+        assert diff_file.num_minus_lines == 0
+        calls = provider.azure_devops_client.get_item.call_args_list
+        assert calls[0].kwargs["path"] == "/new/name.py"
+        assert calls[0].kwargs["version_descriptor"].version == "head-sha"
+        assert calls[1].kwargs["path"] == "/old/name.py"
+        assert calls[1].kwargs["version_descriptor"].version == "base-sha"
+
+    def test_rename_on_later_page_preserves_old_path_and_base_content(self):
+        provider = self._provider([
+            SimpleNamespace(
+                change_entries=[self._change("/src/first.py")],
+                next_skip=1,
+                next_top=1,
+            ),
+            SimpleNamespace(
+                change_entries=[
+                    self._change(
+                        path="/new/name.py",
+                        change_type="rename",
+                        originalPath="/old/name.py",
+                    )
+                ],
+                next_skip=0,
+                next_top=0,
+            ),
+        ])
+
+        diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["/src/first.py", "/new/name.py"]
+        assert diff_files[1].old_filename == "/old/name.py"
+        assert diff_files[1].head_file == "content for /new/name.py\n"
+        assert diff_files[1].base_file == "content for /old/name.py\n"
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_count == 2
+
+    def test_rename_with_edit_only_reports_the_actual_change_and_keeps_head_anchor(self):
+        change = self._change(
+            path="/new/name.py",
+            change_type="edit, rename",
+            originalPath="/old/name.py",
+        )
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="value = 2\n"),
+            SimpleNamespace(content="value = 1\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+        inline_comment = provider.create_inline_comment("body", "/new/name.py", "value = 2")
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.num_plus_lines == 1
+        assert diff_file.num_minus_lines == 1
+        assert "+value = 2" in diff_file.patch
+        assert "-value = 1" in diff_file.patch
+        assert inline_comment["path"] == "/new/name.py"
+        assert inline_comment["subject_type"] == "LINE"
+
+    @pytest.mark.parametrize(
+        ("change", "expected_old_path"),
+        [
+            (
+                SimpleNamespace(
+                    original_path="/attribute/original.py",
+                    source_server_item="/attribute/source.py",
+                    additional_properties={
+                        "item": {"path": "/new/name.py"},
+                        "changeType": "rename",
+                        "originalPath": "/mapping/original.py",
+                        "sourceServerItem": "/mapping/source.py",
+                    },
+                ),
+                "/attribute/original.py",
+            ),
+            (
+                SimpleNamespace(
+                    original_path="",
+                    source_server_item="/attribute/source.py",
+                    additional_properties={
+                        "item": {"path": "/new/name.py"},
+                        "changeType": "rename",
+                        "originalPath": "/mapping/original.py",
+                    },
+                ),
+                "/mapping/original.py",
+            ),
+            (
+                SimpleNamespace(
+                    additional_properties={
+                        "item": {"path": "/new/name.py"},
+                        "changeType": "rename",
+                        "sourceServerItem": "/mapping/source.py",
+                    },
+                ),
+                "/mapping/source.py",
+            ),
+            (
+                SimpleNamespace(
+                    item=SimpleNamespace(path="/new/name.py"),
+                    change_type="rename",
+                    source_server_item="/attribute/source.py",
+                    additional_properties={},
+                ),
+                "/attribute/source.py",
+            ),
+        ],
+    )
+    def test_rename_old_path_metadata_precedence(self, change, expected_old_path):
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="new\n"),
+            SimpleNamespace(content="old\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.old_filename == expected_old_path
+        assert provider.azure_devops_client.get_item.call_args_list[1].kwargs["path"] == expected_old_path
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {},
+            {"originalPath": {"path": "/old/name.py"}, "sourceServerItem": 17},
+            {"originalPath": "   ", "sourceServerItem": []},
+        ],
+    )
+    def test_rename_with_missing_or_malformed_old_path_keeps_empty_base_fallback(self, metadata):
+        change = self._change(path="/new/name.py", change_type="rename", **metadata)
+        provider = self._provider_with_change(change, SimpleNamespace(content="new\n"))
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_file = provider.get_diff_files()[0]
+        finally:
+            get_logger().remove(sink_id)
+
+        assert diff_file.old_filename is None
+        assert diff_file.base_file == ""
+        assert provider.azure_devops_client.get_item.call_count == 1
+        assert any("/new/name.py" in message and "no usable old path" in message for message in captured)
+
+    def test_incremental_rename_reads_old_path_at_last_seen_commit(self):
+        change = self._change(
+            path="/new/name.py",
+            change_type="rename",
+            originalPath="/old/name.py",
+        )
+        incremental = IncrementalPR(True)
+        incremental.last_seen_commit = SimpleNamespace(sha="last-seen-sha")
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="new\n"),
+            SimpleNamespace(content="old\n"),
+            incremental=incremental,
+        )
+        provider.unreviewed_files_map = {"/new/name.py": "/new/name.py"}
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.old_filename == "/old/name.py"
+        old_content_call = provider.azure_devops_client.get_item.call_args_list[1]
+        assert old_content_call.kwargs["path"] == "/old/name.py"
+        assert old_content_call.kwargs["version_descriptor"].version == "last-seen-sha"
+        assert provider.unreviewed_files_map["/new/name.py"] == diff_file.patch
+
+    def test_failed_rename_old_content_read_keeps_identity_and_logs_the_failure(self):
+        change = self._change(
+            path="/new/name.py",
+            change_type="rename",
+            originalPath="/old/name.py",
+        )
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="new\n"),
+            Exception("base fetch failed"),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_file = provider.get_diff_files()[0]
+        finally:
+            get_logger().remove(sink_id)
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.base_file == ""
+        assert any("/old/name.py" in message and "base-sha" in message for message in captured)
+
+    @pytest.mark.parametrize(
+        ("change_type", "get_item_results", "expected_type", "expected_base", "expected_paths"),
+        [
+            (
+                "add",
+                (SimpleNamespace(content="new\n"),),
+                EDIT_TYPE.ADDED,
+                "",
+                ["/src/app.py"],
+            ),
+            (
+                "edit",
+                (SimpleNamespace(content="new\n"), SimpleNamespace(content="old\n")),
+                EDIT_TYPE.MODIFIED,
+                "old\n",
+                ["/src/app.py", "/src/app.py"],
+            ),
+            (
+                "delete",
+                (Exception("head missing"), SimpleNamespace(content="old\n")),
+                EDIT_TYPE.DELETED,
+                "old\n",
+                ["/src/app.py", "/src/app.py"],
+            ),
+        ],
+    )
+    def test_non_rename_change_handling_is_unchanged(
+        self, change_type, get_item_results, expected_type, expected_base, expected_paths
+    ):
+        provider = self._provider_with_change(
+            self._change(change_type=change_type),
+            *get_item_results,
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.edit_type == expected_type
+        assert diff_file.old_filename is None
+        assert diff_file.base_file == expected_base
+        assert [call.kwargs["path"] for call in provider.azure_devops_client.get_item.call_args_list] == expected_paths
 
 
 def _provider_with_diff(*filenames):
