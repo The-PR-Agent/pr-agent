@@ -33,12 +33,12 @@ def test_e2e_run_gitea_app():
         if not gitea_url:
             logger.error("GITEA.URL is not set in the configuration")
             logger.info("Please set GITEA.URL in .env file or environment variables")
-            assert False, "GITEA.URL is not set in the configuration"
+            raise AssertionError("GITEA.URL is not set in the configuration")
 
         if not gitea_token:
             logger.error("GITEA.TOKEN is not set in the configuration")
             logger.info("Please set GITEA.TOKEN in .env file or environment variables")
-            assert False, "GITEA.TOKEN is not set in the configuration"
+            raise AssertionError("GITEA.TOKEN is not set in the configuration")
 
         headers = {
             'Authorization': f'token {gitea_token}',
@@ -142,7 +142,7 @@ def test_e2e_run_gitea_app():
             else:
                 logger.info(f"Waiting for the PR to get all the tool results. {i + 1} minute(s) passed")
         else:
-            assert False, f"After {NUM_MINUTES} minutes, the PR did not get all the tool results"
+            raise AssertionError(f"After {NUM_MINUTES} minutes, the PR did not get all the tool results")
 
         logger.info(f"Cleaning up: closing PR and deleting branch {new_branch}")
 

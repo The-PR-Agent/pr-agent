@@ -135,7 +135,7 @@ dev = [
   "pytest-cov==7.1.0",
   "httpx==0.28.1",
   "pre-commit>=4,<5",
-  "ruff==0.16.5",
+  "ruff==0.16.8",
 ]
 
 [tool.uv]
@@ -172,7 +172,6 @@ lint.ignore = [
   "E402", # import not at top of file
   "E501", # line too long
   "E722", # bare `except`
-  "B011", # `assert False`
   "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
   "B027", # empty method without @abstractmethod
