@@ -110,8 +110,8 @@ class TestExtractRelevantLinesStr:
         assert result == "```python\nline1\n```"
 
     def test_content_with_inner_fenced_block_uses_safe_fence(self):
-        # When the extracted lines contain ```, the outer fence must not collide with that run.
-        # The new implementation chooses a tilde fence (~~~) because it is shorter than ````.
+        # Avoid colliding with a triple-backtick run in the extracted lines.
+        # Choose the shorter tilde fence (~~~) instead of four backticks.
         readme = "Usage:\n\n```bash\necho hello\n```\n"
         file = _make_file("README.md", readme, language="markdown")
         result = extract_relevant_lines_str(end_line=5, files=[file], relevant_file="README.md", start_line=1)
