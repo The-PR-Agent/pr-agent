@@ -795,6 +795,27 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"Failed to publish inline code comments fallback, error: {e}")
                 raise
 
+    def get_persistent_comment_bodies(self) -> list[str]:
+        """Return existing inline review comment bodies for cross-run deduplication."""
+        return self._get_inline_comment_bodies()
+
+    def get_recent_inline_comment_bodies(self) -> list[str]:
+        """Return the PR's inline review comment bodies, including this run's.
+
+        Read back from the API so callers only treat a finding as published
+        once GitHub accepted its comment, whichever publication fallback path
+        carried it.
+        """
+        return self._get_inline_comment_bodies()
+
+    def _get_inline_comment_bodies(self) -> list[str]:
+        bodies = []
+        for comment in self.pr.get_comments():
+            body = getattr(comment, "body", "") or ""
+            if body:
+                bodies.append(body)
+        return bodies
+
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         """
         Retrieves all comments in the same thread as the given comment.

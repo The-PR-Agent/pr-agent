@@ -174,7 +174,7 @@ def _azure_provider(existing_threads=None):
 
 def test_inline_publication_verification_supports_providers_with_comment_capability():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
-    assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
+    assert d.can_verify_inline_comment_publication(_gh_provider([])) is True
     assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
 
     class FooProvider:
