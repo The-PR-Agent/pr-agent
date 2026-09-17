@@ -2169,7 +2169,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Model that doesn't support temperature argument
         self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
 
-        # Models that support reasoning effort (config override appends to the built-in list)
+        # Append config-listed models to the built-in reasoning-effort list
         additional_reasoning_models = get_settings().config.get("additional_reasoning_effort_models", []) or []
         if additional_reasoning_models and not isinstance(additional_reasoning_models, list):
             get_logger().warning(
@@ -4104,7 +4104,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # configured reasoning_effort is not silently dropped for models the
                 # user references with a provider prefix. OpenRouter routing variants
                 # such as :nitro and :floor are stripped only for this membership test.
-                if any(
+                # Skip GPT-5/GPT-6 Astra here so a model registered via config cannot
+                # overwrite the reasoning_effort normalization of its dedicated branch.
+                if not (is_gpt5_model or is_gpt6_astra) and any(
                     reasoning_model == m or reasoning_model.endswith("/" + m)
                     for m in self.support_reasoning_models
                 ):
@@ -4119,9 +4121,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     else:
                         get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
                         kwargs["reasoning_effort"] = reasoning_effort
-                        # LiteLLM may omit reasoning_effort from the params it reports for
-                        # unknown or OpenAI-compatible gateway-prefixed model IDs. Whitelist
-                        # the param so it is forwarded to the endpoint, merging into any
+                        # Whitelist reasoning_effort through allowed_openai_params when
+                        # LiteLLM omits it from the params it reports for unknown or
+                        # OpenAI-compatible gateway-prefixed model IDs. Merge into any
                         # existing allowed_openai_params instead of overwriting it.
                         try:
                             supported_params = litellm.get_supported_openai_params(
