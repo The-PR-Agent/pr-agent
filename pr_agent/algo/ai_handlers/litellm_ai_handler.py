@@ -2169,8 +2169,28 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Model that doesn't support temperature argument
         self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
 
-        # Models that support reasoning effort
-        self.support_reasoning_models = SUPPORT_REASONING_EFFORT_MODELS
+        # Models that support reasoning effort (config override appends to the built-in list)
+        additional_reasoning_models = get_settings().config.get("additional_reasoning_effort_models", []) or []
+        if additional_reasoning_models and not isinstance(additional_reasoning_models, list):
+            get_logger().warning(
+                "Invalid additional_reasoning_effort_models in config; expected a list of model names. "
+                "Falling back to the built-in reasoning-effort model list."
+            )
+            additional_reasoning_models = []
+        elif additional_reasoning_models and not all(
+            isinstance(model, str) and model.strip() for model in additional_reasoning_models
+        ):
+            get_logger().warning(
+                "Invalid additional_reasoning_effort_models in config; "
+                "expected a list of model name strings. "
+                "Falling back to the built-in reasoning-effort model list."
+            )
+            additional_reasoning_models = []
+        # Store stripped names so exact-match checks against the model succeed even when the
+        # config entries contain surrounding whitespace (validation above already used strip()).
+        self.support_reasoning_models = SUPPORT_REASONING_EFFORT_MODELS + [
+            model.strip() for model in additional_reasoning_models
+        ]
 
         # Models that support extended thinking (config override replaces the built-in list when non-empty)
         override = get_settings().config.get("claude_extended_thinking_models_override", []) or []
@@ -4099,18 +4119,21 @@ class LiteLLMAIHandler(BaseAiHandler):
                     else:
                         get_logger().info(f"Adding reasoning_effort with value {reasoning_effort} to model {model}.")
                         kwargs["reasoning_effort"] = reasoning_effort
-                        if self._grok_reasoning_levels_for(model):
-                            try:
-                                supported_params = litellm.get_supported_openai_params(
-                                    model=model,
-                                    custom_llm_provider=custom_llm_provider or None,
-                                ) or []
-                            except Exception:
-                                supported_params = []
-                            # LiteLLM may omit reasoning_effort for unknown or
-                            # OpenAI-compatible gateway-prefixed Grok IDs.
-                            if "reasoning_effort" not in supported_params:
-                                kwargs["allowed_openai_params"] = ["reasoning_effort"]
+                        # LiteLLM may omit reasoning_effort from the params it reports for
+                        # unknown or OpenAI-compatible gateway-prefixed model IDs. Whitelist
+                        # the param so it is forwarded to the endpoint, merging into any
+                        # existing allowed_openai_params instead of overwriting it.
+                        try:
+                            supported_params = litellm.get_supported_openai_params(
+                                model=model,
+                                custom_llm_provider=custom_llm_provider or None,
+                            ) or []
+                        except Exception:
+                            supported_params = []
+                        if "reasoning_effort" not in supported_params:
+                            allowed_params = kwargs.get("allowed_openai_params") or []
+                            if "reasoning_effort" not in allowed_params:
+                                kwargs["allowed_openai_params"] = [*allowed_params, "reasoning_effort"]
 
                 # https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking
                 adaptive_thinking_enabled = self._claude_thinking_controls["enable_claude_adaptive_thinking"]

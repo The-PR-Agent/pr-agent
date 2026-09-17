@@ -98,6 +98,16 @@ propagate_tool_errors = false # when true, a tool re-raises instead of swallowin
 enable_ai_metadata = false # will enable adding ai metadata
 add_user_to_requests = false # send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user")
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
+# Optional: additional model IDs that accept config.reasoning_effort. Appends to the built-in
+# SUPPORT_REASONING_EFFORT_MODELS list (pr_agent/algo/__init__.py) instead of replacing it, so
+# fallback_models mixing a custom endpoint model with a built-in reasoning model keep receiving
+# the configured effort. Model IDs match exactly or through any provider prefix
+# (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists
+# reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not
+# recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by
+# providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom
+# model id now surfaces a provider-side error instead of the previous silent drop.
+additional_reasoning_effort_models = []
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
