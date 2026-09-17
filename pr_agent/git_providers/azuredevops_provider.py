@@ -162,6 +162,7 @@ class AzureDevopsProvider(GitProvider):
         self.azure_devops_client, self.azure_devops_board_client = self._get_azure_devops_client()
         self.diff_files = None
         self._diff_path_map = None
+        self._pr_iteration_changes_cache = None
         self.workspace_slug = None
         self.repo_slug = None
         self.repo = None
@@ -486,6 +487,7 @@ class AzureDevopsProvider(GitProvider):
     def set_pr(self, pr_url: str):
         self.diff_files = None
         self._diff_path_map = None
+        self._pr_iteration_changes_cache = None
         self.pr_commits = None
         self.previous_review = None
         self.unreviewed_files_map = {}
@@ -743,26 +745,64 @@ class AzureDevopsProvider(GitProvider):
                 and self.incremental.is_incremental
                 and self.unreviewed_files_map):
             return list(self.unreviewed_files_map.keys())
-        return self._get_files_full()
+        return [
+            path
+            for change in self._get_pr_iteration_changes()
+            if (path := _get_azure_change_path(change))
+        ]
 
-    def _get_files_full(self):
-        files = []
-        for i in self.azure_devops_client.get_pull_request_commits(
-                project=self.workspace_slug,
+    def _get_pr_iteration_changes(self):
+        cached_changes = getattr(self, "_pr_iteration_changes_cache", None)
+        if cached_changes is not None:
+            return cached_changes
+
+        iterations = self.azure_devops_client.get_pull_request_iterations(
+            repository_id=self.repo_slug,
+            pull_request_id=self.pr_num,
+            project=self.workspace_slug,
+        )
+        if not iterations:
+            self._pr_iteration_changes_cache = []
+            return self._pr_iteration_changes_cache
+
+        iteration_id = iterations[-1].id
+        all_changes = []
+        skip = 0
+        top = 2000
+        seen_continuations = set()
+        while True:
+            page = self.azure_devops_client.get_pull_request_iteration_changes(
                 repository_id=self.repo_slug,
                 pull_request_id=self.pr_num,
-        ):
-            changes_obj = self.azure_devops_client.get_changes(
+                iteration_id=iteration_id,
                 project=self.workspace_slug,
-                repository_id=self.repo_slug,
-                commit_id=i.commit_id,
+                top=top,
+                skip=skip,
+                compare_to=0,
             )
+            all_changes.extend(getattr(page, "change_entries", None) or [])
 
-            for c in (changes_obj.changes or []):
-                path = _get_azure_change_path(c)
-                if path:
-                    files.append(path)
-        return list(set(files))
+            next_skip = getattr(page, "next_skip", None) or 0
+            next_top = getattr(page, "next_top", None) or 0
+            if next_skip == 0 and next_top == 0:
+                break
+
+            continuation = (next_skip, next_top)
+            valid_continuation = (
+                all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+                    for value in continuation)
+                and next_skip > skip
+                and continuation not in seen_continuations
+            )
+            if not valid_continuation:
+                raise RuntimeError(
+                    f"Invalid Azure iteration changes continuation: skip={next_skip}, top={next_top}"
+                )
+            seen_continuations.add(continuation)
+            skip, top = continuation
+
+        self._pr_iteration_changes_cache = all_changes
+        return self._pr_iteration_changes_cache
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         try:
@@ -782,33 +822,14 @@ class AzureDevopsProvider(GitProvider):
             base_sha = self.pr.last_merge_target_commit
             head_sha = self.pr.last_merge_commit
 
-            # Get PR iterations
-            iterations = self.azure_devops_client.get_pull_request_iterations(
-                repository_id=self.repo_slug,
-                pull_request_id=self.pr_num,
-                project=self.workspace_slug
-            )
-            changes = None
-            if iterations:
-                iteration_id = iterations[-1].id  # Get the last iteration (most recent changes)
-
-                # Get changes for the iteration
-                changes = self.azure_devops_client.get_pull_request_iteration_changes(
-                    repository_id=self.repo_slug,
-                    pull_request_id=self.pr_num,
-                    iteration_id=iteration_id,
-                    project=self.workspace_slug
-                )
             diff_files = []
             diffs = []
             diff_types = {}
-            if changes:
-                for change in changes.change_entries:
-                    item = change.additional_properties.get('item', {})
-                    path = item.get('path', None)
-                    if path:
-                        diffs.append(path)
-                        diff_types[path] = change.additional_properties.get('changeType', 'Unknown')
+            for change in self._get_pr_iteration_changes():
+                path = _get_azure_change_path(change)
+                if path:
+                    diffs.append(path)
+                    diff_types[path] = change.additional_properties.get("changeType", "Unknown")
 
             # wrong implementation - gets all the files that were changed in any commit in the PR
             # commits = self.azure_devops_client.get_pull_request_commits(

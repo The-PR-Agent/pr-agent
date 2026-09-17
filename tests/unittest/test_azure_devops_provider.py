@@ -206,55 +206,152 @@ class TestAzureDevopsProviderRepoContext:
 
 class TestAzureDevopsProviderFiles:
     @staticmethod
-    def _provider():
+    def _change(path, change_type="edit", git_object_type="blob"):
+        return SimpleNamespace(
+            additional_properties={
+                "item": {"path": path, "gitObjectType": git_object_type},
+                "changeType": change_type,
+            }
+        )
+
+    @classmethod
+    def _provider(cls, pages=None):
         provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
         provider.repo_slug = "my-repo"
         provider.workspace_slug = "my-project"
         provider.pr_num = 1
+        provider.pr = SimpleNamespace(
+            last_merge_target_commit=SimpleNamespace(commit_id="base-sha"),
+            last_merge_commit=SimpleNamespace(commit_id="head-sha"),
+        )
         provider.azure_devops_client = MagicMock()
-        provider.azure_devops_client.get_pull_request_commits.return_value = [SimpleNamespace(commit_id="m1")]
+        provider.azure_devops_client.get_pull_request_iterations.return_value = [SimpleNamespace(id=7)]
+        if pages is not None:
+            provider.azure_devops_client.get_pull_request_iteration_changes.side_effect = pages
+        provider.azure_devops_client.get_item.side_effect = lambda **kwargs: SimpleNamespace(
+            content=f"content for {kwargs['path']}\n"
+        )
+        provider.diff_files = None
+        provider._diff_path_map = None
+        provider._pr_iteration_changes_cache = None
+        provider.incremental = None
+        provider.unreviewed_files_map = {}
         return provider
 
-    def test_get_files_full_skips_commits_without_changes(self):
+    def test_complete_iteration_collection_is_shared_by_file_consumers(self):
+        entries = [self._change(f"/src/file_{index:03}.py") for index in range(101)]
+        provider = self._provider([
+            SimpleNamespace(change_entries=entries[:100], next_skip=100, next_top=1),
+            SimpleNamespace(change_entries=entries[100:], next_skip=0, next_top=0),
+        ])
+
+        assert provider.get_files() == [entry.additional_properties["item"]["path"] for entry in entries]
+        assert [file.filename for file in provider.get_diff_files()] == provider.get_files()
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_count == 2
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_args_list[0].kwargs == {
+            "repository_id": "my-repo",
+            "pull_request_id": 1,
+            "iteration_id": 7,
+            "project": "my-project",
+            "top": 2000,
+            "skip": 0,
+            "compare_to": 0,
+        }
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_args_list[1].kwargs["top"] == 1
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_args_list[1].kwargs["skip"] == 100
+
+    def test_collection_follows_continuation_beyond_max_page_size(self):
+        entries = [self._change(f"/src/file_{index:04}.py") for index in range(2007)]
+        provider = self._provider([
+            SimpleNamespace(change_entries=entries[:2000], next_skip=2000, next_top=7),
+            SimpleNamespace(change_entries=entries[2000:], next_skip=0, next_top=0),
+        ])
+
+        assert provider._get_pr_iteration_changes() == entries
+        calls = provider.azure_devops_client.get_pull_request_iteration_changes.call_args_list
+        assert [(call.kwargs["skip"], call.kwargs["top"]) for call in calls] == [(0, 2000), (2000, 7)]
+
+    def test_collection_handles_terminal_empty_page_and_no_iterations(self):
+        provider = self._provider([
+            SimpleNamespace(change_entries=[], next_skip=0, next_top=0),
+        ])
+
+        assert provider._get_pr_iteration_changes() == []
+        assert provider.get_files() == []
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_count == 1
+
         provider = self._provider()
-        provider.azure_devops_client.get_pull_request_commits.return_value = [
-            SimpleNamespace(commit_id="m1"),
-            SimpleNamespace(commit_id="m2"),
+        provider.azure_devops_client.get_pull_request_iterations.return_value = []
+
+        assert provider._get_pr_iteration_changes() == []
+        provider.azure_devops_client.get_pull_request_iteration_changes.assert_not_called()
+
+    def test_collection_rejects_non_advancing_continuation(self):
+        provider = self._provider([
+            SimpleNamespace(change_entries=[self._change("/first.py")], next_skip=100, next_top=100),
+            SimpleNamespace(change_entries=[self._change("/second.py")], next_skip=100, next_top=100),
+        ])
+
+        with pytest.raises(RuntimeError, match="continuation"):
+            provider._get_pr_iteration_changes()
+
+        assert provider._pr_iteration_changes_cache is None
+
+    @pytest.mark.parametrize("next_skip,next_top", [(0, 1), (1, 0), ("1", 1), (True, 1)])
+    def test_collection_rejects_malformed_continuation(self, next_skip, next_top):
+        provider = self._provider([
+            SimpleNamespace(
+                change_entries=[self._change("/first.py")],
+                next_skip=next_skip,
+                next_top=next_top,
+            ),
+        ])
+
+        with pytest.raises(RuntimeError, match="continuation"):
+            provider._get_pr_iteration_changes()
+
+        assert provider._pr_iteration_changes_cache is None
+
+    def test_later_page_failure_does_not_cache_partial_collection(self):
+        entries = [self._change(f"/src/file_{index:03}.py") for index in range(101)]
+        provider = self._provider()
+        provider.azure_devops_client.get_pull_request_iteration_changes.side_effect = [
+            SimpleNamespace(change_entries=entries[:100], next_skip=100, next_top=1),
+            RuntimeError("page failed"),
+            SimpleNamespace(change_entries=entries[:100], next_skip=100, next_top=1),
+            SimpleNamespace(change_entries=entries[100:], next_skip=0, next_top=0),
         ]
-        provider.azure_devops_client.get_changes.side_effect = [
-            SimpleNamespace(changes=None),
-            SimpleNamespace(changes=[{"item": {"path": "/src/app.py"}}]),
-        ]
 
-        assert provider._get_files_full() == ["/src/app.py"]
+        with pytest.raises(RuntimeError, match="page failed"):
+            provider._get_pr_iteration_changes()
+        assert provider._pr_iteration_changes_cache is None
 
-    def test_get_files_full_skips_changes_without_paths(self):
-        provider = self._provider()
-        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
-            {},
-            {"item": None},
-            {"item": {"path": ""}},
-            {"item": {"path": "/src/app.py"}},
+        assert provider._get_pr_iteration_changes() == entries
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_count == 4
+
+    def test_get_files_uses_current_iteration_and_skips_non_file_entries(self):
+        provider = self._provider([
+            SimpleNamespace(
+                change_entries=[
+                    self._change("/src", git_object_type="tree"),
+                    self._change(""),
+                    self._change("/src/current.py"),
+                ],
+                next_skip=0,
+                next_top=0,
+            ),
         ])
+        provider.azure_devops_client.get_pull_request_commits.return_value = [SimpleNamespace(commit_id="old")]
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(
+            changes=[
+                {"item": {"path": "/src/reverted.py"}},
+                {"item": {"path": "/src/current.py"}},
+            ]
+        )
 
-        assert provider._get_files_full() == ["/src/app.py"]
-
-    def test_get_files_full_supports_sdk_change_objects(self):
-        provider = self._provider()
-        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
-            SimpleNamespace(item=SimpleNamespace(path="/src/sdk.py")),
-        ])
-
-        assert provider._get_files_full() == ["/src/sdk.py"]
-
-    def test_get_files_full_skips_tree_entries(self):
-        provider = self._provider()
-        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
-            {"item": {"path": "/src", "gitObjectType": "tree"}},
-            {"item": {"path": "/src/app.py", "gitObjectType": "blob"}},
-        ])
-
-        assert provider._get_files_full() == ["/src/app.py"]
+        assert provider.get_files() == ["/src/current.py"]
+        provider.azure_devops_client.get_pull_request_commits.assert_not_called()
+        provider.azure_devops_client.get_changes.assert_not_called()
 
     @staticmethod
     def _provider_with_pull_request_diff(*get_item_results):
@@ -281,6 +378,7 @@ class TestAzureDevopsProviderFiles:
         )
         client.get_item.side_effect = get_item_results
         provider.diff_files = None
+        provider._pr_iteration_changes_cache = None
         provider.incremental = None
         provider.unreviewed_files_map = {}
         return provider
@@ -846,6 +944,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         provider.pr_commits = ["stale"]
         provider.previous_review = "stale"
         provider.unreviewed_files_map = {"stale.cs": "stale.cs"}
+        provider._pr_iteration_changes_cache = ["stale"]
         provider.temp_comments = ["stale"]
         provider._parse_pr_url = MagicMock(return_value=("project", "repo", 2))
         provider._get_pr = MagicMock(return_value=MagicMock())
@@ -857,6 +956,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         assert provider.pr_commits is None
         assert provider.previous_review is None
         assert provider.unreviewed_files_map == {}
+        assert provider._pr_iteration_changes_cache is None
         assert provider.temp_comments == []
 
     def test_unmatched_suggestion_path_does_not_break_markdown(self):
