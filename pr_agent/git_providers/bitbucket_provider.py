@@ -26,6 +26,10 @@ def _gef_filename(diff):
     return diff.old.path
 
 
+def _split_raw_diff(raw_diff: str) -> list[str]:
+    return [part for part in re.split(r"(?m)(?=^diff --git )", raw_diff) if part.startswith("diff --git ")]
+
+
 class BitbucketProvider(GitProvider):
     def __init__(
         self, pr_url: Optional[str] = None, incremental: Optional[bool] = False
@@ -287,7 +291,7 @@ class BitbucketProvider(GitProvider):
             if pr_patches is None:
                 raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}")
 
-        diff_split = ["diff --git" + x for x in pr_patches.split("diff --git") if x.strip()]
+        diff_split = _split_raw_diff(pr_patches)
         # filter all elements of 'diff_split' that are of indices in 'diffs_original' that are not in 'diffs'
         if len(diff_split) > len(diffs) and len(diffs_original) == len(diff_split):
             diff_split = [diff_split[i] for i in range(len(diff_split)) if diffs_original[i] in diffs]

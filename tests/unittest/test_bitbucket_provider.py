@@ -281,6 +281,80 @@ not a valid hunk
             "Bitbucket failed to get diff for file src/example.py"
         )
 
+    def test_get_diff_files_keeps_diff_header_literals_inside_hunks(self):
+        raw_diff = """diff --git a/src/parser.py b/src/parser.py
+index 1111111..2222222 100644
+--- a/src/parser.py
++++ b/src/parser.py
+@@ -1,2 +1,2 @@
+ diff --git context literal
+-diff --git removed literal
++diff --git added literal
+"""
+
+        diff_file = self._get_single_diff_file(
+            raw_diff,
+            "modified",
+            1,
+            1,
+            "src/parser.py",
+        )
+
+        assert diff_file.patch == (
+            "@@ -1,2 +1,2 @@\n"
+            " diff --git context literal\n"
+            "-diff --git removed literal\n"
+            "+diff --git added literal\n"
+        )
+
+    def test_get_diff_files_splits_crlf_headers_after_preamble_in_diffstat_order(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.diff_files = None
+        provider.pr = MagicMock()
+
+        first = MagicMock()
+        first.new.path = "src/first.py"
+        first.old.path = "src/first.py"
+        first.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+
+        second = MagicMock()
+        second.new.path = "src/second.py"
+        second.old.path = "src/second.py"
+        second.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+
+        diffstats = [first, second]
+        provider.pr.diffstat.return_value = diffstats
+        provider.pr.diff.return_value = (
+            "Bitbucket generated diff\r\n"
+            "\r\n"
+            "diff --git a/src/first.py b/src/first.py\r\n"
+            "index 1111111..2222222 100644\r\n"
+            "--- a/src/first.py\r\n"
+            "+++ b/src/first.py\r\n"
+            "@@ -1 +1 @@\r\n"
+            "-old first\r\n"
+            "+new first\r\n"
+            "diff --git a/src/second.py b/src/second.py\r\n"
+            "index 3333333..4444444 100644\r\n"
+            "--- a/src/second.py\r\n"
+            "+++ b/src/second.py\r\n"
+            "@@ -1 +1 @@\r\n"
+            "-old second\r\n"
+            "+new second\r\n"
+        )
+
+        settings = MagicMock()
+        settings.get.return_value = True
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
+        ):
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["src/first.py", "src/second.py"]
+        assert diff_files[0].patch.startswith("@@ -1 +1 @@\r\n-old first")
+        assert diff_files[1].patch.startswith("@@ -1 +1 @@\r\n-old second")
+
     def test_get_repo_file_content_reads_from_target_branch(self):
         # Repo-context files must be read from the PR destination (target) branch,
         # matching the other providers.
