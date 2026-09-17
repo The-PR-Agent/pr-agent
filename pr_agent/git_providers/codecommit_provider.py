@@ -53,6 +53,7 @@ class CodeCommitFile:
         repository_name: Optional[str] = None,
         source_commit: Optional[str] = None,
         destination_commit: Optional[str] = None,
+        comparison_base_commit: Optional[str] = None,
     ):
         self.a_path = a_path
         self.a_blob_id = a_blob_id
@@ -63,6 +64,7 @@ class CodeCommitFile:
         self.repository_name = repository_name
         self.source_commit = source_commit
         self.destination_commit = destination_commit
+        self.comparison_base_commit = comparison_base_commit
 
 
 class CodeCommitProvider(GitProvider):
@@ -117,7 +119,7 @@ class CodeCommitProvider(GitProvider):
         self.git_files = []
         for target in self._get_target_contexts():
             differences = self.codecommit_client.get_differences(
-                target["repository_name"], target["destination_commit"], target["source_commit"]
+                target["repository_name"], target["comparison_base_commit"], target["source_commit"]
             )
             for item in differences:
                 self.git_files.append(
@@ -130,6 +132,7 @@ class CodeCommitProvider(GitProvider):
                         repository_name=target["repository_name"],
                         source_commit=target["source_commit"],
                         destination_commit=target["destination_commit"],
+                        comparison_base_commit=target["comparison_base_commit"],
                     )
                 )
         return self.git_files
@@ -159,11 +162,12 @@ class CodeCommitProvider(GitProvider):
             repository_name = diff_item.repository_name or self.repo_name
             destination_commit = diff_item.destination_commit or self.pr.destination_commit
             source_commit = diff_item.source_commit or self.pr.source_commit
+            comparison_base_commit = diff_item.comparison_base_commit or destination_commit
             try:
                 if diff_item.a_blob_id:
                     patch_filename = diff_item.a_path
                     original_file_content_str = self.codecommit_client.get_file(
-                        repository_name, diff_item.a_path, destination_commit)
+                        repository_name, diff_item.a_path, comparison_base_commit)
                     if isinstance(original_file_content_str, (bytes, bytearray)):
                         original_file_content_str = original_file_content_str.decode("utf-8")
                 else:
@@ -544,6 +548,7 @@ class CodeCommitProvider(GitProvider):
                 "repository_name": self.repo_name,
                 "source_commit": self.pr.source_commit,
                 "destination_commit": self.pr.destination_commit,
+                "comparison_base_commit": self.pr.destination_commit,
             }]
 
         return [
@@ -551,6 +556,7 @@ class CodeCommitProvider(GitProvider):
                 "repository_name": getattr(target, "repository_name", "") or self.repo_name,
                 "source_commit": target.source_commit,
                 "destination_commit": target.destination_commit,
+                "comparison_base_commit": getattr(target, "merge_base", "") or target.destination_commit,
             }
             for target in targets
         ]

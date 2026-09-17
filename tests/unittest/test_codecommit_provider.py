@@ -19,8 +19,16 @@ class TestCodeCommitFile:
         b_path = "path/to/file_b"
         b_blob_id = "67890"
         edit_type = EDIT_TYPE.ADDED
+        comparison_base_commit = "merge-base"
 
-        file = CodeCommitFile(a_path, a_blob_id, b_path, b_blob_id, edit_type)
+        file = CodeCommitFile(
+            a_path,
+            a_blob_id,
+            b_path,
+            b_blob_id,
+            edit_type,
+            comparison_base_commit=comparison_base_commit,
+        )
 
         assert file.a_path == a_path
         assert file.a_blob_id == a_blob_id
@@ -28,6 +36,7 @@ class TestCodeCommitFile:
         assert file.b_blob_id == b_blob_id
         assert file.edit_type == edit_type
         assert file.filename == b_path
+        assert file.comparison_base_commit == comparison_base_commit
 
 
 class TestCodeCommitProvider:
@@ -62,6 +71,7 @@ class TestCodeCommitProvider:
                 source_branch="refs/heads/feature",
                 destination_commit="destination-commit-1",
                 destination_branch="refs/heads/main",
+                merge_base="merge-base-1",
             )
         ]
         provider.pr = PullRequestCCMimic("Persistent PR", [], targets=targets)
@@ -221,6 +231,7 @@ class TestCodeCommitProvider:
             source_branch="feature/one",
             destination_commit="destination-commit-1",
             destination_branch="main",
+            merge_base="merge-base-1",
         )
         second_target = MagicMock(
             repository_name="destination-repository",
@@ -228,18 +239,50 @@ class TestCodeCommitProvider:
             source_branch="feature/two",
             destination_commit="destination-commit-2",
             destination_branch="release",
+            merge_base="merge-base-2",
         )
         provider.codecommit_client.get_pr.return_value = MagicMock(
             title="Multi-target PR",
             description="Review both targets",
             targets=[first_target, second_target],
         )
-        provider.codecommit_client.get_differences.side_effect = [
-            [MagicMock(before_blob_path="one.py", before_blob_id="before-1",
-                       after_blob_path="one.py", after_blob_id="after-1", change_type="M")],
-            [MagicMock(before_blob_path="two.py", before_blob_id="before-2",
-                       after_blob_path="two.py", after_blob_id="after-2", change_type="M")],
-        ]
+        differences_by_repository = {
+            "source-repository": [
+                MagicMock(
+                    before_blob_path="one.py",
+                    before_blob_id="before-1",
+                    after_blob_path="one.py",
+                    after_blob_id="after-1",
+                    change_type="M",
+                )
+            ],
+            "destination-repository": [
+                MagicMock(
+                    before_blob_path="two.py",
+                    before_blob_id="before-2",
+                    after_blob_path="two.py",
+                    after_blob_id="after-2",
+                    change_type="M",
+                )
+            ],
+        }
+
+        def get_differences(repository, comparison_base, _source_commit):
+            differences = differences_by_repository[repository]
+            if comparison_base.startswith("destination-"):
+                return [
+                    MagicMock(
+                        before_blob_path="target-only.py",
+                        before_blob_id="target-only-before",
+                        after_blob_path="",
+                        after_blob_id="",
+                        change_type="D",
+                    ),
+                    *differences,
+                ]
+            return differences
+
+        provider.codecommit_client.get_differences.side_effect = get_differences
 
         provider.pr = provider._get_pr()
         files = provider.get_files()
@@ -248,20 +291,23 @@ class TestCodeCommitProvider:
             "source-repository", "destination-repository"
         ]
         assert [file.filename for file in files] == ["one.py", "two.py"]
-        assert [(file.repository_name, file.destination_commit, file.source_commit) for file in files] == [
-            ("source-repository", "destination-commit-1", "source-commit-1"),
-            ("destination-repository", "destination-commit-2", "source-commit-2"),
+        assert [
+            (file.repository_name, file.comparison_base_commit, file.destination_commit, file.source_commit)
+            for file in files
+        ] == [
+            ("source-repository", "merge-base-1", "destination-commit-1", "source-commit-1"),
+            ("destination-repository", "merge-base-2", "destination-commit-2", "source-commit-2"),
         ]
         assert provider.codecommit_client.get_differences.call_args_list == [
-            call("source-repository", "destination-commit-1", "source-commit-1"),
-            call("destination-repository", "destination-commit-2", "source-commit-2"),
+            call("source-repository", "merge-base-1", "source-commit-1"),
+            call("destination-repository", "merge-base-2", "source-commit-2"),
         ]
 
         provider.codecommit_client.get_file.side_effect = (
             lambda repository, path, commit: {
-                ("source-repository", "one.py", "destination-commit-1"): b"before one\n",
+                ("source-repository", "one.py", "merge-base-1"): b"before one\n",
                 ("source-repository", "one.py", "source-commit-1"): b"after one\n",
-                ("destination-repository", "two.py", "destination-commit-2"): b"before two\n",
+                ("destination-repository", "two.py", "merge-base-2"): b"before two\n",
                 ("destination-repository", "two.py", "source-commit-2"): b"after two\n",
             }[(repository, path, commit)]
         )
@@ -271,6 +317,27 @@ class TestCodeCommitProvider:
             ("one.py", "before one\n", "after one\n"),
             ("two.py", "before two\n", "after two\n"),
         ]
+
+    def test_get_files_falls_back_to_destination_when_merge_base_is_missing(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.git_files = None
+        provider.codecommit_client = MagicMock()
+        provider.codecommit_client.get_differences.return_value = []
+        target = SimpleNamespace(
+            repository_name="source-repository",
+            source_commit="source-commit",
+            destination_commit="destination-commit",
+            merge_base="",
+        )
+        provider.pr = PullRequestCCMimic("Legacy target", [], targets=[target])
+        provider.pr.source_commit = target.source_commit
+        provider.pr.destination_commit = target.destination_commit
+
+        assert provider.get_files() == []
+        provider.codecommit_client.get_differences.assert_called_once_with(
+            "source-repository", "destination-commit", "source-commit"
+        )
 
     def test_prepare_comment_body_caps_at_codecommit_limit(self):
         # PostCommentForPullRequest rejects bodies above 10,240 characters and
@@ -355,11 +422,13 @@ class TestCodeCommitProvider:
                     repository_name="source-repository",
                     source_commit="source-commit-1",
                     destination_commit="destination-commit-1",
+                    merge_base="merge-base-1",
                 ),
                 MagicMock(
                     repository_name="destination-repository",
                     source_commit="source-commit-2",
                     destination_commit="destination-commit-2",
+                    merge_base="merge-base-2",
                 ),
             ],
         )
@@ -391,6 +460,7 @@ class TestCodeCommitProvider:
                 source_branch="refs/heads/feature",
                 destination_commit="destination-commit-1",
                 destination_branch="refs/heads/main",
+                merge_base="merge-base-1",
             ),
             SimpleNamespace(
                 repository_name="source-repository",
@@ -398,6 +468,7 @@ class TestCodeCommitProvider:
                 source_branch="refs/heads/feature",
                 destination_commit="destination-commit-2",
                 destination_branch="refs/heads/release",
+                merge_base="merge-base-2",
             ),
         ]
         provider = self._make_persistent_provider(targets=targets)
@@ -868,11 +939,13 @@ class TestCodeCommitProvider:
                     repository_name="source-repository",
                     source_commit="source-commit-1",
                     destination_commit="destination-commit-1",
+                    merge_base="merge-base-1",
                 ),
                 MagicMock(
                     repository_name="destination-repository",
                     source_commit="source-commit-2",
                     destination_commit="destination-commit-2",
+                    merge_base="merge-base-2",
                 ),
             ],
         )
@@ -886,6 +959,7 @@ class TestCodeCommitProvider:
                 repository_name="destination-repository",
                 source_commit="source-commit-2",
                 destination_commit="destination-commit-2",
+                comparison_base_commit="merge-base-2",
             )
         ]
 
