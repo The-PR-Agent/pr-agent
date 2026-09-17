@@ -164,6 +164,206 @@ class TestPRUpdateChangelog:
         provider.supports_changelog_update_review.return_value = False
         return provider
 
+    def _make_push_provider(self):
+        provider = self._make_no_push_provider(extra_spec=["create_or_update_pr_file"])
+        provider.is_supported.return_value = True
+        return provider
+
+    @staticmethod
+    def _configure_settings(mock_settings, publish_output=True):
+        settings = mock_settings.return_value
+        settings.pr_update_changelog.push_changelog_changes = True
+        settings.pr_update_changelog.extra_instructions = ""
+        settings.pr_update_changelog_prompt.system = ""
+        settings.pr_update_changelog_prompt.user = ""
+        settings.config.publish_output = publish_output
+        settings.config.temperature = 0.2
+        settings.get.return_value = {}
+
+    @pytest.mark.asyncio
+    async def test_strict_read_error_generates_one_fallback_never_writes_and_reraises_original(
+            self, mock_ai_handler):
+        provider = self._make_push_provider()
+        read_error = RuntimeError("read unavailable")
+        provider.get_pr_file_content.side_effect = read_error
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models") as retry, \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings)
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+            tool.prediction = "## v1.1.0\n- Safe generated entry"
+
+            with pytest.raises(RuntimeError) as exc_info:
+                await tool.run()
+
+        assert exc_info.value is read_error
+        provider.get_pr_file_content.assert_called_once_with(
+            "CHANGELOG.md", "feature-branch", propagate_errors=True
+        )
+        provider.create_or_update_pr_file.assert_not_called()
+        assert retry.await_count == 1
+        fallback_calls = [
+            call for call in provider.publish_comment.call_args_list
+            if "not pushed" in call.args[0]
+        ]
+        assert len(fallback_calls) == 1
+        assert "Safe generated entry" in fallback_calls[0].args[0]
+        provider.remove_initial_comment.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_strict_read_fallback_failure_does_not_mask_original(self, mock_ai_handler):
+        provider = self._make_push_provider()
+        read_error = RuntimeError("read unavailable")
+        fallback_error = RuntimeError("comment unavailable")
+        provider.get_pr_file_content.side_effect = read_error
+
+        def publish_comment(_body, is_temporary=False):
+            if not is_temporary:
+                raise fallback_error
+
+        provider.publish_comment.side_effect = publish_comment
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"), \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings)
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+            tool.prediction = "## v1.1.0\n- Safe generated entry"
+
+            with pytest.raises(RuntimeError) as exc_info:
+                await tool.run()
+
+        assert exc_info.value is read_error
+        provider.create_or_update_pr_file.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strict_read_progress_failure_still_generates_fallback_and_reraises_original(
+            self, mock_ai_handler):
+        provider = self._make_push_provider()
+        read_error = RuntimeError("read unavailable")
+        progress_error = RuntimeError("progress unavailable")
+        provider.get_pr_file_content.side_effect = read_error
+
+        def publish_comment(_body, is_temporary=False):
+            if is_temporary:
+                raise progress_error
+
+        provider.publish_comment.side_effect = publish_comment
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models") as retry, \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings)
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+            tool.prediction = "## v1.1.0\n- Safe generated entry"
+
+            with pytest.raises(RuntimeError) as exc_info:
+                await tool.run()
+
+        assert exc_info.value is read_error
+        assert retry.await_count == 1
+        provider.create_or_update_pr_file.assert_not_called()
+        fallback_calls = [
+            call for call in provider.publish_comment.call_args_list
+            if "not pushed" in call.args[0]
+        ]
+        assert len(fallback_calls) == 1
+        assert "Safe generated entry" in fallback_calls[0].args[0]
+        provider.remove_initial_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strict_read_generation_failure_attempts_fallback_and_reraises_original(
+            self, mock_ai_handler):
+        provider = self._make_push_provider()
+        read_error = RuntimeError("read unavailable")
+        generation_error = RuntimeError("generation unavailable")
+        provider.get_pr_file_content.side_effect = read_error
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models",
+                   side_effect=generation_error) as retry, \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings)
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+
+            with pytest.raises(RuntimeError) as exc_info:
+                await tool.run()
+
+        assert exc_info.value is read_error
+        assert retry.await_count == 1
+        provider.create_or_update_pr_file.assert_not_called()
+        fallback_calls = [
+            call for call in provider.publish_comment.call_args_list
+            if "not pushed" in call.args[0]
+        ]
+        assert len(fallback_calls) == 1
+        assert "could not be generated" in fallback_calls[0].args[0]
+        provider.remove_initial_comment.assert_called_once_with()
+
+    def test_custom_provider_without_strict_keyword_fails_closed_without_retry(self, mock_ai_handler):
+        provider = self._make_push_provider()
+
+        def legacy_getter(_file_path, _branch):
+            return "existing content"
+
+        provider.get_pr_file_content.side_effect = legacy_getter
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings)
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+
+        assert isinstance(tool.changelog_read_error, TypeError)
+        assert provider.get_pr_file_content.call_count == 1
+        provider.get_pr_file_content.assert_called_once_with(
+            "CHANGELOG.md", "feature-branch", propagate_errors=True
+        )
+
+    @pytest.mark.parametrize("content", ["", "# Changelog\n\n## v1.0.0\n- Existing entry"])
+    def test_strict_read_accepts_successful_empty_and_nonempty_content(self, mock_ai_handler, content):
+        provider = self._make_push_provider()
+        provider.get_pr_file_content.return_value = content
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings)
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+
+        assert tool.changelog_read_error is None
+        assert tool.changelog_file == content
+        provider.get_pr_file_content.assert_called_once_with(
+            "CHANGELOG.md", "feature-branch", propagate_errors=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_output_disabled_keeps_lenient_read_and_never_writes(self, mock_ai_handler):
+        provider = self._make_push_provider()
+        provider.get_pr_file_content.side_effect = RuntimeError("read unavailable")
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models") as retry, \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings, publish_output=False)
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+            tool.prediction = "## v1.1.0\n- Safe generated entry"
+
+            await tool.run()
+
+        assert tool.changelog_read_error is None
+        assert retry.await_count == 1
+        provider.get_pr_file_content.assert_called_once_with("CHANGELOG.md", "feature-branch")
+        provider.create_or_update_pr_file.assert_not_called()
+        provider.publish_comment.assert_not_called()
+        provider.remove_initial_comment.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_run_without_push_support(self, mock_ai_handler):
         """When the provider can't push (no create_or_update_pr_file), the changelog must still

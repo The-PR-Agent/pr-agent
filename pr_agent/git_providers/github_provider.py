@@ -1661,14 +1661,22 @@ class GithubProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().get_pull(self.pr_num)
 
-    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False) -> str:
         try:
             file_content_str = str(
                 self._get_repo()
                 .get_contents(file_path, ref=branch)
                 .decoded_content.decode()
             )
+        except GithubException as e:
+            if e.status == 404:
+                return ""
+            if propagate_errors:
+                raise
+            file_content_str = ""
         except Exception:
+            if propagate_errors:
+                raise
             file_content_str = ""
         return file_content_str
 

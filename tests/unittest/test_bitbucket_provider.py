@@ -412,6 +412,23 @@ index 1111111..2222222 100644
 
         response.raise_for_status.assert_called_once_with()
 
+    def test_get_pr_file_content_strict_missing_file_is_empty(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "workspace"
+        provider.repo_slug = "repository"
+        provider.headers = {"Authorization": "Bearer token"}
+        provider.pr = MagicMock(
+            source_branch="feature",
+            destination_branch="main",
+            data={"destination": {"commit": {"hash": "base-sha"}}},
+        )
+        response = MagicMock(status_code=404, text="not found")
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            assert provider.get_pr_file_content("CHANGELOG.md", "main", propagate_errors=True) == ""
+
+        response.raise_for_status.assert_not_called()
+
     @pytest.mark.parametrize("comment", [{"id": 123}, 123])
     def test_remove_comment_accepts_returned_comment_or_stored_id(self, comment):
         provider = BitbucketProvider.__new__(BitbucketProvider)

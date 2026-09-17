@@ -890,16 +890,18 @@ class GitLabProvider(GitProvider):
                 self._own_user_id = None
         return self._own_user_id
 
-    def get_pr_file_content(self, file_path: str, branch: str) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False) -> str:
         try:
             file_obj = self.gl.projects.get(self.id_project, lazy=True).files.get(file_path, branch)
             content = file_obj.decode()
             return decode_if_bytes(content)
-        except GitlabGetError:
-            # In case of file creation the method returns GitlabGetError (404 file not found).
-            # In this case we return an empty string for the diff.
+        except GitlabGetError as e:
+            if propagate_errors and getattr(e, "response_code", None) != 404:
+                raise
             return ''
         except Exception as e:
+            if propagate_errors:
+                raise
             get_logger().warning(f"Error retrieving file {file_path} from branch {branch}: {e}")
             return ''
 

@@ -134,6 +134,34 @@ class TestGitLabProvider:
 
         assert content == ""
 
+    def test_get_pr_file_content_strict_missing_file_is_empty(self, gitlab_provider, mock_project):
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
+
+        content = gitlab_provider.get_pr_file_content("CHANGELOG.md", "main", propagate_errors=True)
+
+        assert content == ""
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            GitlabGetError("500 Server Error", response_code=500, response_body=b"upstream failure"),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+            RuntimeError("transport failed"),
+        ],
+    )
+    def test_get_pr_file_content_strict_reraises_original_error(self, gitlab_provider, mock_project, error):
+        mock_file = MagicMock(ProjectFile)
+        if isinstance(error, UnicodeDecodeError):
+            mock_file.decode.side_effect = error
+            mock_project.files.get.return_value = mock_file
+        else:
+            mock_project.files.get.side_effect = error
+
+        with pytest.raises(type(error)) as exc_info:
+            gitlab_provider.get_pr_file_content("CHANGELOG.md", "main", propagate_errors=True)
+
+        assert exc_info.value is error
+
     def test_get_repo_file_content_loads_from_mr_target_branch(self, gitlab_provider, mock_gitlab_client, mock_project):
         mock_project.default_branch = "main"
         gitlab_provider.mr = MagicMock(target_branch="release-1.0")
