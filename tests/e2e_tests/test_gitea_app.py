@@ -25,6 +25,7 @@ def test_e2e_run_gitea_app():
 
     headers = None
     pr_number = None
+    branch_created = False
 
     try:
         gitea_url = get_settings().get("GITEA.URL", None)
@@ -48,24 +49,17 @@ def test_e2e_run_gitea_app():
 
         logger.info(f"Creating a new branch {new_branch} from {base_branch}")
 
-        response = requests.get(
-            f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/branches/{base_branch}",
-            headers=headers
-        )
-        response.raise_for_status()
-        base_branch_data = response.json()
-        base_commit_sha = base_branch_data['commit']['id']
-
         branch_data = {
-            'ref': f"refs/heads/{new_branch}",
-            'sha': base_commit_sha
+            'new_branch_name': new_branch,
+            'old_ref_name': base_branch
         }
         response = requests.post(
-            f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/git/refs",
+            f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/branches",
             headers=headers,
             json=branch_data
         )
         response.raise_for_status()
+        branch_created = True
 
         logger.info(f"Updating file {FILE_PATH} in branch {new_branch}")
 
@@ -153,33 +147,41 @@ def test_e2e_run_gitea_app():
             json=close_data
         )
         response.raise_for_status()
+        pr_number = None
 
         response = requests.delete(
-            f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/git/refs/heads/{new_branch}",
+            f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/branches/{new_branch}",
             headers=headers
         )
         response.raise_for_status()
+        branch_created = False
 
         logger.info("Succeeded in running e2e test for Gitea app on the PR")
     except Exception as e:
         logger.error(f"Failed to run e2e test for Gitea app: {e}")
         raise
     finally:
-        try:
-            if headers is not None and gitea_url is not None:
-                if pr_number is not None:
-                    requests.patch(
+        if headers is not None and gitea_url is not None:
+            if pr_number is not None:
+                try:
+                    response = requests.patch(
                         f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/pulls/{pr_number}",
                         headers=headers,
                         json={'state': 'closed'}
                     )
+                    response.raise_for_status()
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to clean up after test: {cleanup_error}")
 
-                requests.delete(
-                    f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/git/refs/heads/{new_branch}",
-                    headers=headers
-                )
-        except Exception as cleanup_error:
-            logger.error(f"Failed to clean up after test: {cleanup_error}")
+            if branch_created:
+                try:
+                    response = requests.delete(
+                        f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/branches/{new_branch}",
+                        headers=headers
+                    )
+                    response.raise_for_status()
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to clean up after test: {cleanup_error}")
 
 if __name__ == '__main__':
     test_e2e_run_gitea_app()
