@@ -1377,9 +1377,9 @@ class TestAdditionalReasoningEffortModels:
             assert kwargs["reasoning_effort"] == "low", f"failed for {model}"
 
     @pytest.mark.asyncio
-    async def test_invalid_override_falls_back_to_builtin_list(self, monkeypatch, mock_logger):
-        """Reject a non-list override with a warning and fall back to the built-in list."""
-        fake_settings = self._settings(additional="deepseek-v4-flash-0731")
+    async def test_invalid_mapping_override_falls_back_to_builtin_list(self, monkeypatch, mock_logger):
+        """Reject an unsupported override with a warning and fall back to the built-in list."""
+        fake_settings = self._settings(additional={"model": "deepseek-v4-flash-0731"})
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_supported_openai_params", lambda **kwargs: [])
         self._isolate_env(monkeypatch)
@@ -1396,6 +1396,24 @@ class TestAdditionalReasoningEffortModels:
             "additional_reasoning_effort_models" in call.args[0]
             for call in mock_logger.warning.call_args_list
         )
+
+    @pytest.mark.asyncio
+    async def test_env_string_override_forwards_reasoning_effort(self, monkeypatch, mock_logger):
+        """Accept an env-style string override and forward reasoning_effort for its model."""
+        fake_settings = self._settings(additional="deepseek-v4-flash-0731")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_supported_openai_params", lambda **kwargs: [])
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(
+                model="openai/deepseek-v4-flash-0731", system="system", user="user",
+            )
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "low"
+        assert kwargs["allowed_openai_params"] == ["reasoning_effort"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("configured", "expected"), [("none", "low"), ("minimal", "low")])

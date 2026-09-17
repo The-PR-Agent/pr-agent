@@ -1921,6 +1921,30 @@ def _as_list(value) -> list:
     return []
 
 
+def _coerce_string_list_config(value):
+    """Return a list-like config value while accepting env-style strings."""
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        stripped_value = value.strip()
+        if not stripped_value:
+            return []
+        if stripped_value.startswith("[") and stripped_value.endswith("]"):
+            try:
+                parsed_value = json.loads(stripped_value)
+            except json.JSONDecodeError:
+                return None
+            if isinstance(parsed_value, list):
+                return parsed_value
+            return None
+        return [model.strip() for model in stripped_value.split(",") if model.strip()]
+    return None
+
+
 def _configured_client_retries():
     """config.num_retries as a non-negative int, or None (unset/invalid = client defaults).
 
@@ -2170,8 +2194,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
 
         # Append config-listed models to the built-in reasoning-effort list
-        additional_reasoning_models = get_settings().config.get("additional_reasoning_effort_models", []) or []
-        if additional_reasoning_models and not isinstance(additional_reasoning_models, list):
+        additional_reasoning_models = _coerce_string_list_config(
+            get_settings().config.get("additional_reasoning_effort_models", [])
+        )
+        if additional_reasoning_models is None:
             get_logger().warning(
                 "Invalid additional_reasoning_effort_models in config; expected a list of model names. "
                 "Falling back to the built-in reasoning-effort model list."
