@@ -324,10 +324,6 @@ def apply_repo_settings(pr_url):
                 except Exception as e:
                     get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}: {e}")
 
-    # enable switching models with a short definition
-    if get_settings().config.model.lower() == 'claude-3-5-sonnet':
-        set_claude_model()
-
 
 def _restore_per_directory_settings():
     """Remove the previous directory overlay before applying this command's trusted settings."""
@@ -834,13 +830,3 @@ def handle_configurations_errors(config_errors, git_provider):
                     git_provider.publish_comment(body)
     except Exception as e:
         get_logger().exception("Failed to handle configurations errors", e)
-
-
-def set_claude_model():
-    """
-    set the claude-sonnet-3.5 model easily (even by users), just by stating: --config.model='claude-3-5-sonnet'
-    """
-    model_claude = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
-    get_settings().set('config.model', model_claude)
-    get_settings().set('config.model_weak', model_claude)
-    get_settings().set('config.fallback_models', [model_claude])
