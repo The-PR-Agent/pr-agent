@@ -59,6 +59,10 @@ def _next_page_url(headers: dict) -> str:
     return ""
 
 
+class IncompletePullRequestFilesError(RuntimeError):
+    """GitHub did not provide a complete, self-consistent pull-request file set."""
+
+
 class GithubProvider(GitProvider):
     def __init__(self, pr_url: Optional[str] = None):
         self.repo_obj = None
@@ -267,20 +271,36 @@ class GithubProvider(GitProvider):
                 return self.comments[index]
         return None
 
+    def _get_complete_files(self):
+        if context.exists():
+            context_files = context.get("git_files", None)
+            if context_files is not None:
+                return context_files
+
+        git_files = getattr(self, "git_files", None)
+        if git_files is not None:
+            return git_files
+
+        git_files = list(self.pr.get_files()) # 'list' to handle pagination
+        changed_files = self.pr.changed_files
+        if isinstance(changed_files, bool) or not isinstance(changed_files, int):
+            raise IncompletePullRequestFilesError(
+                f"GitHub returned an invalid changed_files count: {changed_files!r}"
+            )
+        if len(git_files) != changed_files:
+            raise IncompletePullRequestFilesError(
+                f"GitHub returned {len(git_files)} pull-request files but reported {changed_files}"
+            )
+
+        self.git_files = git_files
+        if context.exists():
+            context["git_files"] = git_files
+        return git_files
+
     def get_files(self):
         if self.incremental.is_incremental and self.unreviewed_files_map:
             return self.unreviewed_files_map.values()
-        try:
-            git_files = context.get("git_files", None)
-            if git_files:
-                return git_files
-            self.git_files = list(self.pr.get_files()) # 'list' to handle pagination
-            context["git_files"] = self.git_files
-            return self.git_files
-        except Exception:
-            if not self.git_files:
-                self.git_files = list(self.pr.get_files())
-            return self.git_files
+        return self._get_complete_files()
 
     def get_pr_file_paths(self):
         """Return the complete PR file set regardless of incremental review state.
@@ -292,19 +312,7 @@ class GithubProvider(GitProvider):
         move apply). Reuses the same context["git_files"] cache as get_files() and
         never falls back to the incremental-aware listing.
         """
-        try:
-            git_files = context.get("git_files", None)
-            if git_files:
-                return git_files
-            if getattr(self, "git_files", None):
-                return self.git_files
-            git_files = list(self.pr.get_files())
-            context["git_files"] = git_files
-            return git_files
-        except Exception:
-            if getattr(self, "git_files", None):
-                return self.git_files
-            return list(self.pr.get_files())
+        return self._get_complete_files()
 
     def get_num_of_files(self):
         if hasattr(self.git_files, "totalCount"):
@@ -454,6 +462,8 @@ class GithubProvider(GitProvider):
 
             return diff_files
 
+        except IncompletePullRequestFilesError:
+            raise
         except Exception as e:
             get_logger().error(f"Failing to get diff files: {e}",
                                artifact={"traceback": traceback.format_exc()})

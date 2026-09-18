@@ -12,7 +12,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.git_providers import github_provider
+from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
 
 
 def _bare_provider():
@@ -225,6 +226,7 @@ def _make_provider_for_diff(files):
         base=SimpleNamespace(sha="base-sha"),
         head=SimpleNamespace(sha="head-sha"),
         get_files=lambda: files,
+        changed_files=len(files),
     )
     # repo_obj.compare returns an object with a merge_base_commit.
     p.repo_obj = SimpleNamespace(
@@ -427,3 +429,223 @@ class TestGetDiffFilesRename:
         original_content_call = spy.call_args_list[-1]
         assert original_content_call.args[1] == "prev-sha"
         assert original_content_call.kwargs.get("path") == "old_dir/module.py"
+
+
+# ---------------------------------------------------------------------------
+# Complete pull-request file collection
+# ---------------------------------------------------------------------------
+class _RequestContext(dict):
+    def __init__(self, values=None, *, exists=True):
+        super().__init__(values or {})
+        self._exists = exists
+
+    def exists(self):
+        return self._exists
+
+
+class _FakePullRequest:
+    def __init__(self, files, changed_files):
+        self.files = files
+        self.changed_files = changed_files
+        self.get_files_calls = 0
+
+    def get_files(self):
+        self.get_files_calls += 1
+        if isinstance(self.files, BaseException):
+            raise self.files
+        return self.files
+
+
+class _ChangedFilesErrorPullRequest(_FakePullRequest):
+    def __init__(self, files, error):
+        super().__init__(files, 0)
+        self.error = error
+        self.changed_files_calls = 0
+
+    @property
+    def changed_files(self):
+        self.changed_files_calls += 1
+        raise self.error
+
+    @changed_files.setter
+    def changed_files(self, value):
+        pass
+
+
+class _ExplodingIterable:
+    def __init__(self, error):
+        self.error = error
+        self.iteration_calls = 0
+
+    def __iter__(self):
+        self.iteration_calls += 1
+        raise self.error
+
+
+def _make_provider_for_file_collection(pr, *, incremental=False, unreviewed_files_map=None):
+    provider = _bare_provider()
+    provider.pr = pr
+    provider.git_files = None
+    provider.diff_files = None
+    provider.incremental = SimpleNamespace(is_incremental=incremental)
+    provider.unreviewed_files_map = unreviewed_files_map or {}
+    return provider
+
+
+def _set_request_context(monkeypatch, values=None):
+    request_context = _RequestContext(values)
+    monkeypatch.setattr(github_provider, "context", request_context)
+    return request_context
+
+
+class TestCompletePullRequestFiles:
+    @pytest.mark.parametrize(
+        ("files", "changed_files"),
+        [(["first"], 2), (["first", "second"], 1)],
+        ids=["fewer-files-than-reported", "more-files-than-reported"],
+    )
+    def test_mismatched_count_fails_closed_without_caching(self, monkeypatch, files, changed_files):
+        request_context = _set_request_context(monkeypatch)
+        provider = _make_provider_for_file_collection(_FakePullRequest(files, changed_files))
+
+        with pytest.raises(IncompletePullRequestFilesError):
+            provider.get_files()
+
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    @pytest.mark.parametrize("changed_files", [None, "two", True])
+    def test_invalid_changed_files_metadata_fails_closed_without_caching(self, monkeypatch, changed_files):
+        request_context = _set_request_context(monkeypatch)
+        provider = _make_provider_for_file_collection(_FakePullRequest(["first"], changed_files))
+
+        with pytest.raises(IncompletePullRequestFilesError):
+            provider.get_files()
+
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_changed_files_access_error_propagates_without_caching(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        error = RuntimeError("changed_files failed")
+        pr = _ChangedFilesErrorPullRequest(["first"], error)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(RuntimeError, match="changed_files failed") as raised:
+            provider.get_files()
+
+        assert raised.value is error
+        assert pr.changed_files_calls == 1
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    @pytest.mark.parametrize("failure", [RuntimeError("request failed"), _ExplodingIterable(RuntimeError("page failed"))])
+    def test_file_collection_errors_propagate_once_without_caching(self, monkeypatch, failure):
+        request_context = _set_request_context(monkeypatch)
+        pr = _FakePullRequest(failure, 1)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(RuntimeError):
+            provider.get_files()
+
+        assert pr.get_files_calls == 1
+        if isinstance(failure, _ExplodingIterable):
+            assert failure.iteration_calls == 1
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_get_diff_files_preserves_completeness_error_without_retrying(self, monkeypatch):
+        _set_request_context(monkeypatch)
+        pr = _FakePullRequest(["first"], 2)
+        provider = _make_provider_for_file_collection(pr)
+        settings = Mock()
+        settings.get.return_value = 5
+        monkeypatch.setattr(github_provider, "get_settings", lambda: settings)
+
+        with pytest.raises(IncompletePullRequestFilesError):
+            provider.get_diff_files()
+
+        assert pr.get_files_calls == 1
+
+    def test_matching_count_populates_request_and_instance_caches(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["first", "second"]
+        pr = _FakePullRequest(files, len(files))
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+        assert pr.get_files_calls == 1
+
+    def test_request_context_cache_avoids_another_api_call(self, monkeypatch):
+        files = ["first"]
+        _set_request_context(monkeypatch, {"git_files": files})
+        pr = _FakePullRequest(RuntimeError("should not fetch"), 1)
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 0
+
+    def test_none_request_context_cache_is_refetched(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch, {"git_files": None})
+        files = ["first"]
+        pr = _FakePullRequest(files, len(files))
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert request_context["git_files"] == files
+        assert pr.get_files_calls == 1
+
+    def test_instance_cache_avoids_another_api_call(self, monkeypatch):
+        _set_request_context(monkeypatch)
+        files = ["first"]
+        pr = _FakePullRequest(RuntimeError("should not fetch"), 1)
+        provider = _make_provider_for_file_collection(pr)
+        provider.git_files = files
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 0
+
+    @pytest.mark.parametrize("cache_owner", ["request", "instance"])
+    def test_empty_cache_is_reused_without_fetching(self, monkeypatch, cache_owner):
+        request_context = _set_request_context(monkeypatch, {"git_files": []} if cache_owner == "request" else None)
+        pr = _FakePullRequest(RuntimeError("should not fetch"), 0)
+        provider = _make_provider_for_file_collection(pr)
+        if cache_owner == "instance":
+            provider.git_files = []
+
+        assert provider.get_files() == []
+        assert pr.get_files_calls == 0
+        if cache_owner == "request":
+            assert request_context["git_files"] == []
+
+    def test_get_pr_file_paths_uses_complete_collector_during_incremental_review(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["full-file"]
+        pr = _FakePullRequest(files, len(files))
+        provider = _make_provider_for_file_collection(
+            pr,
+            incremental=True,
+            unreviewed_files_map={"incremental-file": "incremental-file"},
+        )
+
+        assert provider.get_pr_file_paths() == files
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+        assert pr.get_files_calls == 1
+
+    def test_incremental_subset_bypasses_full_collection_and_count_access(self, monkeypatch):
+        _set_request_context(monkeypatch)
+        error = RuntimeError("changed_files should not be read")
+        pr = _ChangedFilesErrorPullRequest([], error)
+        file = "incremental-file"
+        provider = _make_provider_for_file_collection(
+            pr,
+            incremental=True,
+            unreviewed_files_map={file: file},
+        )
+
+        assert list(provider.get_files()) == [file]
+        assert pr.get_files_calls == 0
+        assert pr.changed_files_calls == 0
