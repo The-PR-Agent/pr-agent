@@ -7,8 +7,8 @@ run only inside docker/Dockerfile's base image, so whichever minor that image
 did not carry went declared and never tested (#3187). The base has since moved
 to 3.14 (#3294), which is why both declared minors now need native jobs.
 
-The Lambda image (docker/Dockerfile.lambda) pins its own base image, which
-#3294 left behind on 3.12 while the main Dockerfile moved to 3.14. The sync
+Keep docker/Dockerfile.lambda on the same Python minor: #3294 left the
+Lambda image behind on 3.12 while the main Dockerfile moved to 3.14. The sync
 test below pins the two bases together so a one-file bump cannot slip
 through silently again.
 

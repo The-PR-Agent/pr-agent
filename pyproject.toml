@@ -105,7 +105,11 @@ include = [
 
 [project.optional-dependencies]
 # AWS Lambda deployment (docker/Dockerfile.lambda).
-lambda = ["mangum==0.17.0"]
+# Keep mangum >=0.21.0 for Python 3.14: older releases call
+# asyncio.get_event_loop() with no fallback, which raises RuntimeError
+# when no loop is set. Skip 0.20.0, whose 3.14 support was reverted
+# upstream; 0.22.0 is end-to-end tested against a real Lambda runtime.
+lambda = ["mangum==0.22.0"]
 # OTLP/gRPC transport for pr-agent telemetry (OTEL.OTLP_PROTOCOL = "grpc").
 # The default OTLP/HTTP transport needs no extra: its exporter is a base dependency.
 otel-grpc = ["opentelemetry-exporter-otlp-proto-grpc==1.43.0"]
