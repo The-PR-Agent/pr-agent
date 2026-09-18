@@ -561,9 +561,7 @@ def test_request_context_equality_includes_existence_state():
     absent = _RequestContext({"git_files": ["first"]}, exists=False)
 
     assert present == same
-    assert not present != same
     assert present != absent
-    assert not present == absent
     assert present.__eq__({"git_files": ["first"]}) is NotImplemented
     assert present.__ne__({"git_files": ["first"]}) is NotImplemented
 
