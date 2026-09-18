@@ -9,6 +9,7 @@ from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequ
 from pr_agent.algo.utils import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
+    DiffNotFoundError,
     GitLabProvider,
     _GitLabIncrementalCommit,
     _GitLabIncrementalNote,
@@ -1563,6 +1564,60 @@ class TestGitLabIncrementalReview:
             call(access_raw_diffs=True),
         ]
 
+    def test_merge_request_changes_rejects_raw_diffs_that_still_overflow(self, gitlab_provider):
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+        ]
+
+        with pytest.raises(DiffNotFoundError, match="raw diffs remain overflowed for merge request 1"):
+            gitlab_provider._get_merge_request_changes()
+
+        assert gitlab_provider.mr.changes.call_args_list == [
+            call(),
+            call(access_raw_diffs=True),
+        ]
+
+    def test_get_files_does_not_cache_raw_diffs_that_still_overflow(self, gitlab_provider):
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+        ]
+
+        with pytest.raises(DiffNotFoundError, match="raw diffs remain overflowed"):
+            gitlab_provider.get_files()
+
+        assert gitlab_provider.git_files is None
+
+    def test_get_diff_files_does_not_cache_raw_diffs_that_still_overflow(self, gitlab_provider):
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+        ]
+
+        with pytest.raises(DiffNotFoundError, match="raw diffs remain overflowed"):
+            gitlab_provider.get_diff_files()
+
+        assert gitlab_provider.diff_files is None
+
+    def test_get_pr_file_paths_rejects_raw_diffs_that_still_overflow(self, gitlab_provider):
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+        ]
+
+        with pytest.raises(DiffNotFoundError, match="raw diffs remain overflowed"):
+            gitlab_provider.get_pr_file_paths()
+
+    def test_get_relevant_diff_rejects_raw_diffs_that_still_overflow(self, gitlab_provider):
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+        ]
+
+        with pytest.raises(DiffNotFoundError, match="raw diffs remain overflowed"):
+            gitlab_provider.get_relevant_diff("visible.py", "+new")
+
     def test_incremental_scope_retries_raw_diffs_when_changes_overflow(
         self, gitlab_provider, mock_project
     ):
@@ -1593,6 +1648,40 @@ class TestGitLabIncrementalReview:
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
         assert set(gitlab_provider.unreviewed_files_map) == {"visible.py", "hidden.py"}
+        assert gitlab_provider.mr.changes.call_args_list == [
+            call(),
+            call(access_raw_diffs=True),
+        ]
+
+    def test_incremental_scope_keeps_compare_paths_when_raw_diffs_still_overflow(
+        self, gitlab_provider, mock_project
+    ):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2024-05-01T11:00:00Z"),
+            self._make_commit("c0", "2024-05-01T09:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [
+                {"new_path": "visible.py"},
+                {"new_path": "hidden.py"},
+                {"new_path": "merged-target.py"},
+            ]
+        }
+        gitlab_provider.mr.changes.side_effect = [
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+            {"changes": [{"new_path": "visible.py"}], "overflow": True},
+        ]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert set(gitlab_provider.unreviewed_files_map) == {
+            "visible.py",
+            "hidden.py",
+            "merged-target.py",
+        }
         assert gitlab_provider.mr.changes.call_args_list == [
             call(),
             call(access_raw_diffs=True),

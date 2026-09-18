@@ -5,6 +5,7 @@ import pytest
 
 import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.gitlab_provider import DiffNotFoundError
 
 
 def _identity_args(args):
@@ -189,6 +190,22 @@ async def test_handle_request_wrapper_returns_false_on_exception(monkeypatch):
     monkeypatch.setattr(pr_agent_module.PRAgent, "_handle_request", raise_error)
 
     handled = await pr_agent_module.PRAgent().handle_request("https://example/pr/1", "/review")
+
+    assert handled is False
+
+
+@pytest.mark.asyncio
+async def test_handle_request_returns_false_when_command_setup_has_no_complete_diff(monkeypatch):
+    class RawOverflowTool:
+        def __init__(self, pr_url, ai_handler, args):
+            raise DiffNotFoundError("GitLab raw diffs remain overflowed for merge request 1")
+
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setitem(pr_agent_module.command2class, "raw-overflow", RawOverflowTool)
+
+    handled = await pr_agent_module.PRAgent()._handle_request(
+        "https://example/pr/1", "/raw-overflow"
+    )
 
     assert handled is False
 

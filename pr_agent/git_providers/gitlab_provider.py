@@ -43,7 +43,7 @@ from .git_provider import (
 
 
 class DiffNotFoundError(Exception):
-    """Raised when the diff for a merge request cannot be found."""
+    """Raised when no usable complete diff is available for a merge request."""
     pass
 
 
@@ -466,7 +466,12 @@ class GitLabProvider(GitProvider):
                 f"GitLab returned an overflowed diff for merge request {self.id_mr}; "
                 "retrying with access_raw_diffs=True"
             )
-            return self.mr.changes(access_raw_diffs=True)
+            raw_changes = self.mr.changes(access_raw_diffs=True)
+            if isinstance(raw_changes, dict) and raw_changes.get("overflow"):
+                raise DiffNotFoundError(
+                    f"GitLab raw diffs remain overflowed for merge request {self.id_mr}"
+                )
+            return raw_changes
         return changes
 
     def is_supported(self, capability: str) -> bool:
