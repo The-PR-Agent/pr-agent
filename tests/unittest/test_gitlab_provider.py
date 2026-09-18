@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 from gitlab import Gitlab
-from gitlab.exceptions import GitlabGetError
+from gitlab.exceptions import GitlabGetError, GitlabHttpError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
 from pr_agent.algo.utils import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
@@ -1462,11 +1462,9 @@ class TestGitLabIncrementalReview:
                  "new_file": True, "deleted_file": False, "renamed_file": False},
             ]
         }
-        # mr.changes() is intersected with repository_compare to exclude files brought in
+        # MR diffs are intersected with repository_compare to exclude files brought in
         # via a merge from the target branch. Here both files are part of the MR.
-        gitlab_provider.mr.changes.return_value = {
-            "changes": [{"new_path": "a.py"}, {"new_path": "b.py"}]
-        }
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}, {"new_path": "b.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
@@ -1511,16 +1509,19 @@ class TestGitLabIncrementalReview:
         gitlab_provider.unreviewed_files_map = {"a.py": {"new_path": "a.py"}}
 
         assert gitlab_provider.get_files() == ["a.py"]
+        gitlab_provider.gl.http_list.assert_not_called()
         gitlab_provider.mr.changes.assert_not_called()
 
-    def test_get_files_falls_back_to_mr_changes_when_not_incremental(self, gitlab_provider):
+    def test_get_files_fetches_mr_diffs_when_not_incremental(self, gitlab_provider):
         gitlab_provider.incremental = IncrementalPR(False)
         gitlab_provider.git_files = None
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "x.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "x.py"}]
 
         assert gitlab_provider.get_files() == ["x.py"]
 
-    def test_get_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
+    def test_legacy_get_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
+        gitlab_provider.gl.http_list.side_effect = GitlabHttpError("Not found", response_code=404)
+        gitlab_provider.gl.version.return_value = ("15.6.9-ee", "revision")
         gitlab_provider.git_files = None
         gitlab_provider.mr.changes.side_effect = [
             {"changes": [{"new_path": "visible.py"}], "overflow": True},
@@ -1539,7 +1540,9 @@ class TestGitLabIncrementalReview:
             call(access_raw_diffs=True),
         ]
 
-    def test_get_diff_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
+    def test_legacy_get_diff_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
+        gitlab_provider.gl.http_list.side_effect = GitlabHttpError("Not found", response_code=404)
+        gitlab_provider.gl.version.return_value = ("15.6.9-ee", "revision")
         change = {
             "old_path": "visible.py",
             "new_path": "visible.py",
@@ -1563,9 +1566,11 @@ class TestGitLabIncrementalReview:
             call(access_raw_diffs=True),
         ]
 
-    def test_incremental_scope_retries_raw_diffs_when_changes_overflow(
+    def test_legacy_incremental_scope_retries_raw_diffs_when_changes_overflow(
         self, gitlab_provider, mock_project
     ):
+        gitlab_provider.gl.http_list.side_effect = GitlabHttpError("Not found", response_code=404)
+        gitlab_provider.gl.version.return_value = ("15.6.9-ee", "revision")
         gitlab_provider.mr.notes.list.return_value = [
             self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
         ]
@@ -1654,11 +1659,9 @@ class TestGitLabIncrementalReview:
                  "new_file": False, "deleted_file": False, "renamed_file": False},
             ]
         }
-        # mr.changes() returns only the MR's actual contribution; .gitlab-ci.yml is absent
+        # MR diffs contain only the MR's actual contribution; .gitlab-ci.yml is absent
         # because the change to it lives in the target branch already.
-        gitlab_provider.mr.changes.return_value = {
-            "changes": [{"new_path": "src/feature.js"}]
-        }
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "src/feature.js"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
@@ -1758,7 +1761,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1782,7 +1785,7 @@ class TestGitLabIncrementalReview:
         obj_diff = SimpleNamespace(new_path="a.py", old_path="a.py", diff="@@ ... @@",
                                    new_file=False, deleted_file=False, renamed_file=False)
         mock_project.repository_compare.return_value = SimpleNamespace(diffs=[obj_diff])
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
@@ -1812,7 +1815,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1837,7 +1840,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1897,7 +1900,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1932,7 +1935,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1967,7 +1970,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -2027,7 +2030,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -2142,7 +2145,10 @@ class TestGitLabRelevantDiff:
         provider = GitLabProvider.__new__(GitLabProvider)
         provider.mr = MagicMock()
         provider.mr.diffs.list.return_value = list(self.VERSIONS)
-        provider.mr.changes.return_value = {"changes": changes}
+        provider.gl = MagicMock()
+        provider.gl.http_list.return_value = changes
+        provider.id_project = "group/repo"
+        provider.id_mr = 1
         provider.last_diff = "latest-at-construction"
         return provider
 

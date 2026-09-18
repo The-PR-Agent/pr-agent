@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import gitlab
-from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabUpdateError
+from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabHttpError, GitlabUpdateError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
@@ -46,6 +46,10 @@ from .git_provider import (
 class DiffNotFoundError(Exception):
     """Raised when the diff for a merge request cannot be found."""
     pass
+
+
+class IncompleteGitLabDiffError(DiffNotFoundError):
+    """Represent an incomplete GitLab merge-request diff response."""
 
 
 def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
@@ -460,7 +464,37 @@ class GitLabProvider(GitProvider):
         return out
 
     def _get_merge_request_changes(self) -> dict:
-        """Retrieve the complete merge request change set when GitLab reports overflow."""
+        """Collect all MR diff pages and reject known incomplete results."""
+        project_id = quote(str(self.id_project), safe="")
+        path = f"/projects/{project_id}/merge_requests/{self.id_mr}/diffs"
+        try:
+            changes = self.gl.http_list(path, get_all=True)
+        except GitlabHttpError as error:
+            if error.response_code == 404:
+                version, _ = self.gl.version()
+                match = re.match(r"^(\d+)\.(\d+)(?:\.|-|$)", version) if isinstance(version, str) else None
+                if match and tuple(map(int, match.groups())) < (15, 7):
+                    return self._get_legacy_merge_request_changes()
+            raise
+
+        changes_count = getattr(self.mr, "changes_count", None)
+        if isinstance(changes_count, str):
+            if not changes_count or changes_count.endswith("+"):
+                raise IncompleteGitLabDiffError(
+                    f"GitLab merge request {self.id_mr} diff collection is incomplete or not ready"
+                )
+            if changes_count.isdecimal() and len(changes) != int(changes_count):
+                raise IncompleteGitLabDiffError(
+                    f"GitLab returned {len(changes)} merge-request files but reported {changes_count}"
+                )
+        if any(change.get("too_large") or change.get("collapsed") for change in changes):
+            raise IncompleteGitLabDiffError(
+                f"GitLab omitted diff content for merge request {self.id_mr} (too_large or collapsed)"
+            )
+        return {"changes": changes}
+
+    def _get_legacy_merge_request_changes(self) -> dict:
+        """Preserve changes retrieval for GitLab versions before 15.7."""
         changes = self.mr.changes()
         if isinstance(changes, dict) and changes.get("overflow"):
             get_logger().warning(
@@ -649,7 +683,7 @@ class GitLabProvider(GitProvider):
         # via the merge) appear in `diffs` — even though they are not part of the MR's own
         # contribution and would never appear in a full /review.
         #
-        # `mr.changes()` is anchored on the MR's merge-base with target, so it correctly excludes
+        # The MR diff is anchored on the merge-base with target, so it correctly excludes
         # target-side changes. Intersect file paths to drop "phantom" files brought in via merge.
         mr_change_paths = None
         try:
@@ -658,9 +692,11 @@ class GitLabProvider(GitProvider):
                 for c in self._get_merge_request_changes().get('changes', [])
                 if c.get('new_path')
             }
+        except IncompleteGitLabDiffError:
+            raise
         except Exception as e:
             get_logger().warning(
-                f"Could not fetch mr.changes() to filter incremental scope; "
+                f"Could not fetch MR diffs to filter incremental scope; "
                 f"merge-from-target changes may leak into the review: {e}"
             )
 

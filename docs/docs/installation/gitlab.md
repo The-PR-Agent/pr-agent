@@ -1,3 +1,17 @@
+## Merge request diff limits
+
+On GitLab 15.7 and later, PR-Agent retrieves all pages from the merge request
+[`/diffs` endpoint](https://docs.gitlab.com/api/merge_requests/#list-merge-request-diffs).
+Pagination does not bypass GitLab's server-side diff limits. PR-Agent raises a provider
+error if the returned file count disagrees with an exact `changes_count`, that count
+indicates overflow or is not ready, or an entry reports omitted content through
+`too_large` or `collapsed`. These flags are available from GitLab 18.4; their absence
+on older versions does not establish that every patch is complete.
+
+If `/diffs` is unavailable and the server confirms a version before 15.7, PR-Agent
+retains the legacy `/changes` request and its raw-diff retry. It does not fall back
+for authentication failures or an unknown server version.
+
 ## Run as a GitLab Pipeline
 
 You can use a pre-built Action Docker image to run PR-Agent as a GitLab pipeline. This is a simple way to get started with PR-Agent without setting up your own server.
