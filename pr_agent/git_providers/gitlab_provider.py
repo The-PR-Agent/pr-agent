@@ -43,7 +43,7 @@ from .git_provider import (
 
 
 class DiffNotFoundError(Exception):
-    """Raised when no usable complete diff is available for a merge request."""
+    """Raise when no usable complete diff is available for a merge request."""
     pass
 
 
