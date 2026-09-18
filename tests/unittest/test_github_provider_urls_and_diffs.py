@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+from github import GithubException, RateLimitExceededException
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import github_provider
@@ -607,6 +608,49 @@ class TestCompletePullRequestFiles:
         assert raised.value is error
         assert pr.get_files_calls == 2
         assert pr.changed_files_calls == 2
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_rate_limit_request_propagates_immediately_without_caching(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        error = RateLimitExceededException(403, {"message": "API rate limit exceeded"}, None)
+        pr = _FakePullRequest(error, 1)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(RateLimitExceededException) as raised:
+            provider.get_files()
+
+        assert raised.value is error
+        assert pr.get_files_calls == 1
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_rate_limit_metadata_error_propagates_immediately_without_caching(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        error = RateLimitExceededException(403, {"message": "API rate limit exceeded"}, None)
+        pr = _ChangedFilesErrorPullRequest(["first"], error)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(RateLimitExceededException) as raised:
+            provider.get_files()
+
+        assert raised.value is error
+        assert pr.get_files_calls == 1
+        assert pr.changed_files_calls == 1
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_non_rate_limit_403_uses_the_ordinary_retry_policy(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        error = GithubException(403, {"message": "Resource not accessible by integration"}, None)
+        pr = _FakePullRequest(error, 1)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(GithubException) as raised:
+            provider.get_files()
+
+        assert raised.value is error
+        assert pr.get_files_calls == 2
         assert provider.git_files is None
         assert "git_files" not in request_context
 

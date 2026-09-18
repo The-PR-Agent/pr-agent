@@ -8,7 +8,7 @@ wraps the provider's JSON, so the braces in that text turn the handler into the 
 from unittest.mock import MagicMock
 
 import pytest
-from github import GithubException
+from github import GithubException, RateLimitExceededException
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -17,10 +17,15 @@ from pr_agent.servers.utils import RateLimitExceeded
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 
-RATE_LIMITED = GithubException(
+RATE_LIMITED = RateLimitExceededException(
     403,
     {"message": "API rate limit exceeded for installation ID 1.",
      "documentation_url": "https://docs.github.com/rest#rate-limiting"},
+    None,
+)
+RATE_LIMITED_429 = GithubException(
+    429,
+    {"message": "Too many requests", "documentation_url": "https://docs.github.com/rest#rate-limiting"},
     None,
 )
 NOT_ACCESSIBLE = GithubException(
@@ -92,8 +97,9 @@ def publishing(monkeypatch):
     return settings
 
 
-def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep):
-    """Each outer rate-limit retry performs the collector's two file-list attempts."""
+@pytest.mark.parametrize("rate_limit_error", [RATE_LIMITED, RATE_LIMITED_429], ids=["403", "429"])
+def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep, rate_limit_error):
+    """Verify one file-list request for each outer rate-limit retry."""
     get_settings().set("GITHUB.RATELIMIT_RETRIES", 3)
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
@@ -102,13 +108,13 @@ def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep):
 
     def rate_limited():
         attempts.append(1)
-        raise RATE_LIMITED
+        raise rate_limit_error
 
     provider.pr.get_files.side_effect = rate_limited
 
     with pytest.raises(RateLimitExceeded):
         provider.get_diff_files()
-    assert len(attempts) == 6
+    assert len(attempts) == 3
 
 
 async def test_describe_swallows_a_provider_error(publishing):

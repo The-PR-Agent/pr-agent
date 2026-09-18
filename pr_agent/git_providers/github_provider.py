@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
-from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
+from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
 from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
@@ -60,7 +60,7 @@ def _next_page_url(headers: dict) -> str:
 
 
 class IncompletePullRequestFilesError(RuntimeError):
-    """GitHub did not provide a complete, self-consistent pull-request file set."""
+    """Represent an incomplete or inconsistent GitHub pull-request file set."""
 
 
 class GithubProvider(GitProvider):
@@ -296,6 +296,11 @@ class GithubProvider(GitProvider):
                 break
             except IncompletePullRequestFilesError:
                 raise
+            except RateLimitExceededException:
+                raise
+            except GithubException as e:
+                if e.status == 429 or attempt == 1:
+                    raise
             except Exception:
                 if attempt == 1:
                     raise
