@@ -1210,8 +1210,11 @@ class TestGitLabProviderPerDirectory:
             {"new_path": "services/api.py", "old_path": "legacy/api.py"},
             {"new_path": "services/fresh.py", "old_path": "services/fresh.py"},
         ]
-        provider._get_merge_request_changes = MagicMock(return_value={"changes": changes})
-        provider._expand_submodule_changes = lambda ch: ch
+        provider._get_merge_request_changes = MagicMock(return_value={
+            "changes": changes,
+            "diff_refs": {"base_sha": "base", "head_sha": "head"},
+        })
+        provider._expand_submodule_changes = lambda ch, diff_refs=None: ch
 
         result = provider.get_pr_file_paths()
 

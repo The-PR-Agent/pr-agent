@@ -10,6 +10,12 @@ indicates overflow or is not ready. A file whose patch GitLab omits (`too_large`
 The `/diffs` endpoint must be available. PR-Agent does not fall back to the deprecated
 `/changes` endpoint or its raw-diff retry.
 
+PR-Agent reads fresh merge request metadata before and after collecting the diff pages.
+If the revision or file count changes during collection, it retries once, then raises a
+provider error if they change again. Non-empty results also require usable base/head
+references for loading file content. If the merge request moves after incremental
+setup, PR-Agent falls back to a full review instead of mixing revisions.
+
 ## Run as a GitLab Pipeline
 
 You can use a pre-built Action Docker image to run PR-Agent as a GitLab pipeline. This is a simple way to get started with PR-Agent without setting up your own server.

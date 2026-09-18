@@ -31,8 +31,9 @@ def test_get_relevant_diff_fetches_only_latest_diff_version():
     provider.last_diff = latest_diff
     provider._get_merge_request_changes = Mock(return_value={
         "changes": [{"new_path": "src/app.py", "diff": "@@\n+hello"}],
+        "diff_refs": {"base_sha": "base", "head_sha": "head"},
     })
-    provider._expand_submodule_changes = Mock(side_effect=lambda changes: changes)
+    provider._expand_submodule_changes = Mock(side_effect=lambda changes, diff_refs=None: changes)
 
     assert provider.get_relevant_diff("src/app.py", "hello") is latest_diff
 

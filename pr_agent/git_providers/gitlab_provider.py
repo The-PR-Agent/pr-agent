@@ -205,7 +205,7 @@ class GitLabProvider(GitProvider):
         self.incremental = incremental
 
     # --- submodule expansion helpers (opt-in) ---
-    def _get_gitmodules_map(self) -> dict[str, str]:
+    def _get_gitmodules_map(self, diff_refs: dict | None = None) -> dict[str, str]:
         """
         Return {submodule_path -> repo_url} from '.gitmodules' (best effort).
         Reads the MR head commit first (it carries the submodule URLs the MR introduces, e.g. after a
@@ -217,7 +217,8 @@ class GitLabProvider(GitProvider):
         except Exception:
             return {}
 
-        diff_refs = getattr(self.mr, "diff_refs", None)
+        if diff_refs is None:
+            diff_refs = getattr(self.mr, "diff_refs", None)
         diff_refs = diff_refs if isinstance(diff_refs, dict) else {}
 
         def _source_project():
@@ -403,7 +404,7 @@ class GitLabProvider(GitProvider):
             self._submodule_cache[key] = []
             return []
 
-    def _expand_submodule_changes(self, changes: list[dict]) -> list[dict]:
+    def _expand_submodule_changes(self, changes: list[dict], diff_refs: dict | None = None) -> list[dict]:
         """
         If enabled, expand 'Subproject commit' bumps into real file diffs from the submodule.
         Soft-fail on any issue.
@@ -414,7 +415,7 @@ class GitLabProvider(GitProvider):
         except Exception:
             return changes
 
-        gitmodules = self._get_gitmodules_map()
+        gitmodules = self._get_gitmodules_map(diff_refs)
         if not gitmodules:
             return changes
 
@@ -464,22 +465,38 @@ class GitLabProvider(GitProvider):
         return out
 
     def _get_merge_request_changes(self) -> dict:
-        """Collect all MR diff pages and reject known incomplete results."""
+        """Collect all MR diff pages with stable metadata and their matching refs."""
         project_id = quote(str(self.id_project), safe="")
-        path = f"/projects/{project_id}/merge_requests/{self.id_mr}/diffs"
-        changes = self.gl.http_list(path, get_all=True)
+        path = f"/projects/{project_id}/merge_requests/{self.id_mr}"
+        for attempt in range(2):
+            before = self.gl.http_get(path)
+            changes = self.gl.http_list(f"{path}/diffs", get_all=True)
+            after = self.gl.http_get(path)
+            if any(before.get(key) != after.get(key) for key in ("sha", "diff_refs", "changes_count")):
+                if attempt == 0:
+                    continue
+                raise IncompleteGitLabDiffError(
+                    f"GitLab merge request {self.id_mr} changed while collecting its diff pages"
+                )
 
-        changes_count = getattr(self.mr, "changes_count", None)
-        if isinstance(changes_count, str):
-            if not changes_count or changes_count.endswith("+"):
+            changes_count = after.get("changes_count")
+            if isinstance(changes_count, str):
+                if not changes_count or changes_count.endswith("+"):
+                    raise IncompleteGitLabDiffError(
+                        f"GitLab merge request {self.id_mr} diff collection is incomplete or not ready"
+                    )
+                if changes_count.isdecimal() and len(changes) != int(changes_count):
+                    raise IncompleteGitLabDiffError(
+                        f"GitLab returned {len(changes)} merge-request files but reported {changes_count}"
+                    )
+            diff_refs = after.get("diff_refs")
+            if changes and (not isinstance(diff_refs, dict) or any(
+                not isinstance(diff_refs.get(key), str) or not diff_refs[key] for key in ("base_sha", "head_sha")
+            )):
                 raise IncompleteGitLabDiffError(
-                    f"GitLab merge request {self.id_mr} diff collection is incomplete or not ready"
+                    f"GitLab merge request {self.id_mr} diff refs are not ready"
                 )
-            if changes_count.isdecimal() and len(changes) != int(changes_count):
-                raise IncompleteGitLabDiffError(
-                    f"GitLab returned {len(changes)} merge-request files but reported {changes_count}"
-                )
-        return {"changes": changes}
+            return {"changes": changes, "diff_refs": diff_refs if isinstance(diff_refs, dict) else {}}
 
     def is_supported(self, capability: str) -> bool:
         if capability in ['create_inline_comment', 'publish_inline_comments']: # gfm_markdown is supported in gitlab !
@@ -579,6 +596,7 @@ class GitLabProvider(GitProvider):
         # a diff computed under a different incremental scope (or none). Invalidate it so the
         # next get_diff_files() call reflects the scope configured here.
         self.diff_files = None
+        self.mr_commits = None
         if not self.incremental.is_incremental:
             return
         self.unreviewed_files_map = {}
@@ -624,7 +642,8 @@ class GitLabProvider(GitProvider):
 
         last_seen_sha = self.incremental.last_seen_commit_sha
         try:
-            head_sha = self.mr.diff_refs['head_sha']
+            compare_refs = dict(self.mr.diff_refs)
+            head_sha = compare_refs['head_sha']
         except (KeyError, TypeError, AttributeError):
             head_sha = None
         self._incremental_head_sha = head_sha
@@ -664,9 +683,18 @@ class GitLabProvider(GitProvider):
         # Intersect file paths to drop "phantom" files brought in via merge.
         mr_change_paths = None
         try:
+            mr_changes = self._get_merge_request_changes()
+            if any(mr_changes["diff_refs"].get(key) != compare_refs.get(key)
+                   for key in ("base_sha", "start_sha", "head_sha")):
+                get_logger().info("MR diff refs changed since incremental setup; falling back to a full run")
+                self.unreviewed_files_map = {}
+                self.git_files = None
+                self.diff_files = None
+                self.incremental.is_incremental = False
+                return
             mr_change_paths = {
                 c.get('new_path')
-                for c in self._get_merge_request_changes().get('changes', [])
+                for c in mr_changes.get('changes', [])
                 if c.get('new_path')
             }
         except IncompleteGitLabDiffError:
@@ -868,20 +896,20 @@ class GitLabProvider(GitProvider):
 
         if incremental_active:
             raw_changes = list(self.unreviewed_files_map.values())
-            # Apply submodule expansion symmetrically with the full-review path so that
-            # `GITLAB.EXPAND_SUBMODULE_DIFFS` keeps working under `/review -i`.
-            raw_changes = self._expand_submodule_changes(raw_changes)
             base_sha_for_content = self.incremental.last_seen_commit_sha
             # `_incremental_head_sha` is populated by `_get_incremental_commits()` whenever
             # incremental_active is true; we still guard for defensive callers.
             head_sha_for_content = getattr(self, '_incremental_head_sha', None)
             if not head_sha_for_content:
                 head_sha_for_content = (self.mr.diff_refs or {}).get('head_sha')
+            diff_refs = {"base_sha": base_sha_for_content, "head_sha": head_sha_for_content}
         else:
-            raw_changes = self._get_merge_request_changes().get('changes', [])
-            raw_changes = self._expand_submodule_changes(raw_changes)
-            base_sha_for_content = self.mr.diff_refs['base_sha']
-            head_sha_for_content = self.mr.diff_refs['head_sha']
+            mr_changes = self._get_merge_request_changes()
+            raw_changes = mr_changes.get('changes', [])
+            diff_refs = mr_changes["diff_refs"]
+            base_sha_for_content = diff_refs.get('base_sha')
+            head_sha_for_content = diff_refs.get('head_sha')
+        raw_changes = self._expand_submodule_changes(raw_changes, diff_refs)
         diffs_original = raw_changes
         diffs = filter_ignored(diffs_original, 'gitlab')
         if diffs != diffs_original:
@@ -956,8 +984,8 @@ class GitLabProvider(GitProvider):
                 and getattr(self, 'unreviewed_files_map', None)):
             return list(self.unreviewed_files_map.keys())
         if not self.git_files:
-            raw_changes = self._get_merge_request_changes().get('changes', [])
-            raw_changes = self._expand_submodule_changes(raw_changes)
+            mr_changes = self._get_merge_request_changes()
+            raw_changes = self._expand_submodule_changes(mr_changes.get('changes', []), mr_changes["diff_refs"])
             self.git_files = [c.get('new_path') for c in raw_changes if c.get('new_path')]
         return self.git_files
 
@@ -969,8 +997,8 @@ class GitLabProvider(GitProvider):
         which files the review already covered. Discovery instead walks the full MR
         changes, keeping both old_path and new_path so both sides of a rename apply.
         """
-        raw_changes = self._get_merge_request_changes().get('changes', [])
-        raw_changes = self._expand_submodule_changes(raw_changes)
+        mr_changes = self._get_merge_request_changes()
+        raw_changes = self._expand_submodule_changes(mr_changes.get('changes', []), mr_changes["diff_refs"])
         return [c for c in raw_changes if c.get('new_path') or c.get('old_path')]
 
     def publish_description(self, pr_title: str, pr_body: str) -> None:
@@ -1288,7 +1316,7 @@ class GitLabProvider(GitProvider):
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> Optional[dict]:
         _changes = self._get_merge_request_changes()
-        _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []))
+        _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []), _changes["diff_refs"])
         changes = _changes
         if not changes:
             get_logger().error('No changes found for the merge request.')

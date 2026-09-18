@@ -85,6 +85,17 @@ class TestGitLabProvider:
             provider = GitLabProvider("https://gitlab.com/test/repo/-/merge_requests/1")
             provider.gl = mock_gitlab_client
             provider.id_project = "test/repo"
+
+            def _current_mr_metadata(*_args, **_kwargs):
+                diff_refs = getattr(provider.mr, "diff_refs", None)
+                changes = mock_gitlab_client.http_list.return_value
+                return {
+                    "sha": "current-mr",
+                    "diff_refs": dict(diff_refs) if isinstance(diff_refs, dict) else {},
+                    "changes_count": str(len(changes)) if isinstance(changes, list) else None,
+                }
+
+            mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
 
     def test_get_pr_file_content_success(self, gitlab_provider, mock_project):
@@ -309,6 +320,24 @@ class TestGitLabProvider:
         mock_project.files.get.assert_called_once_with(file_path=".gitmodules", ref="h1")
         # The fork project is not looked up when the head commit could be read from the target project.
         assert all(call.args[0] != 99 for call in gitlab_provider.gl.projects.get.call_args_list)
+
+    def test_get_gitmodules_map_uses_provided_snapshot_refs(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(
+            diff_refs={"head_sha": "cached-head", "base_sha": "cached-base"}, source_project_id=99
+        )
+        mock_project.id = 1
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "snapshot-head": self._gitmodules_file("../snapshot/a.git"),
+            "cached-head": self._gitmodules_file("../cached/a.git"),
+        }[ref]
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        result = gitlab_provider._get_gitmodules_map(
+            {"head_sha": "snapshot-head", "base_sha": "snapshot-base"}
+        )
+
+        assert result == {"libs/a": "../snapshot/a.git"}
+        mock_project.files.get.assert_called_once_with(file_path=".gitmodules", ref="snapshot-head")
 
     def test_get_gitmodules_map_falls_back_to_source_branch_without_diff_refs(self, gitlab_provider, mock_project):
         gitlab_provider.mr = self._mr(diff_refs=None, source_project_id=mock_project.id)
@@ -1409,6 +1438,16 @@ class TestGitLabIncrementalReview:
             provider.mr = MagicMock()
             provider.mr.web_url = "https://gitlab.com/test/repo/-/merge_requests/1"
             provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head", "start_sha": "base"}
+
+            def _current_mr_metadata(*_args, **_kwargs):
+                changes = mock_gitlab_client.http_list.return_value
+                return {
+                    "sha": "current-mr",
+                    "diff_refs": dict(provider.mr.diff_refs),
+                    "changes_count": str(len(changes)) if isinstance(changes, list) else None,
+                }
+
+            mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
 
     @staticmethod
@@ -1796,6 +1835,26 @@ class TestGitLabIncrementalReview:
 
         assert gitlab_provider.diff_files is None
 
+    def test_get_incremental_commits_reloads_commits_for_each_public_setup(self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2024-05-01T11:00:00Z"),
+            self._make_commit("c0", "2024-05-01T09:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert gitlab_provider.mr.commits.call_count == 2
+        assert mock_project.repository_compare.call_count == 2
+
     def test_incremental_suggestions_anchor_advances_with_in_place_edits(self, gitlab_provider, mock_project):
         # Default /improve config (persistent_comment=true, commitable_code_suggestions=false)
         # EDITS the "## PR Code Suggestions ✨" summary note in place on every run, so its
@@ -2061,8 +2120,14 @@ class TestGitLabRelevantDiff:
         provider = GitLabProvider.__new__(GitLabProvider)
         provider.mr = MagicMock()
         provider.mr.diffs.list.return_value = list(self.VERSIONS)
+        provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head", "start_sha": "base"}
         provider.gl = MagicMock()
         provider.gl.http_list.return_value = changes
+        provider.gl.http_get.side_effect = lambda *_args, **_kwargs: {
+            "sha": "current-mr",
+            "diff_refs": dict(provider.mr.diff_refs),
+            "changes_count": str(len(changes)),
+        }
         provider.id_project = "group/repo"
         provider.id_mr = 1
         provider.last_diff = "latest-at-construction"
