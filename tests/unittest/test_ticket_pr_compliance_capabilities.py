@@ -91,8 +91,8 @@ class _CustomGitHubSubstitute(_BaseStubProvider):
         self.github_client = MagicMock()
         self.repo_obj = MagicMock()
 
-        issue_101 = MagicMock(number=101, title="Issue 101", body="Body 101", labels=["bug"])
-        issue_102 = MagicMock(number=102, title="Issue 102", body="Body 102", labels=["core"])
+        issue_101 = MagicMock(number=101, title="Issue 101", body="Body 101", labels=["bug"], pull_request=None)
+        issue_102 = MagicMock(number=102, title="Issue 102", body="Body 102", labels=["core"], pull_request=None)
         self.repo_obj.get_issue.side_effect = lambda num: {101: issue_101, 102: issue_102}[num]
 
     def supports_issue_url_tickets(self) -> bool:
@@ -285,7 +285,9 @@ async def test_extract_tickets_routes_to_azure_capability():
 async def test_extract_tickets_supports_duck_typed_substitutes(route):
     provider = _IndependentDuckTypedSubstitute(route)
     if route == "github":
-        provider.repo_obj.get_issue.return_value = MagicMock(number=42, title="GH 42", body="GH Body", labels=[])
+        provider.repo_obj.get_issue.return_value = MagicMock(
+            number=42, title="GH 42", body="GH Body", labels=[], pull_request=None
+        )
     elif route == "gitlab":
         mock_proj = MagicMock()
         mock_proj.issues.get.return_value = MagicMock(

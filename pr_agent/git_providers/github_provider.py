@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
-from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
+from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
 from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
@@ -44,6 +44,7 @@ from .git_provider import (
     FilePatchInfo,
     GitProvider,
     IncrementalPR,
+    get_config_branch,
     redact_credentials,
 )
 
@@ -57,6 +58,10 @@ def _next_page_url(headers: dict) -> str:
         if match:
             return match.group(1)
     return ""
+
+
+class IncompletePullRequestFilesError(RuntimeError):
+    """Represent an incomplete or inconsistent GitHub pull-request file set."""
 
 
 class GithubProvider(GitProvider):
@@ -267,20 +272,49 @@ class GithubProvider(GitProvider):
                 return self.comments[index]
         return None
 
+    def _get_complete_files(self):
+        if context.exists():
+            context_files = context.get("git_files", None)
+            if context_files is not None:
+                return context_files
+
+        git_files = getattr(self, "git_files", None)
+        if git_files is not None:
+            return git_files
+
+        for attempt in range(2):
+            try:
+                git_files = list(self.pr.get_files())  # 'list' to handle pagination
+                changed_files = self.pr.changed_files
+                if isinstance(changed_files, bool) or not isinstance(changed_files, int):
+                    raise IncompletePullRequestFilesError(
+                        f"GitHub returned an invalid changed_files count: {changed_files!r}"
+                    )
+                if len(git_files) != changed_files:
+                    raise IncompletePullRequestFilesError(
+                        f"GitHub returned {len(git_files)} pull-request files but reported {changed_files}"
+                    )
+                break
+            except IncompletePullRequestFilesError:
+                raise
+            except RateLimitExceededException:
+                raise
+            except GithubException as e:
+                if e.status == 429 or attempt == 1:
+                    raise
+            except Exception:
+                if attempt == 1:
+                    raise
+
+        self.git_files = git_files
+        if context.exists():
+            context["git_files"] = git_files
+        return git_files
+
     def get_files(self):
         if self.incremental.is_incremental and self.unreviewed_files_map:
-            return self.unreviewed_files_map.values()
-        try:
-            git_files = context.get("git_files", None)
-            if git_files:
-                return git_files
-            self.git_files = list(self.pr.get_files()) # 'list' to handle pagination
-            context["git_files"] = self.git_files
-            return self.git_files
-        except Exception:
-            if not self.git_files:
-                self.git_files = list(self.pr.get_files())
-            return self.git_files
+            return list(self.unreviewed_files_map.values())
+        return self._get_complete_files()
 
     def get_pr_file_paths(self):
         """Return the complete PR file set regardless of incremental review state.
@@ -292,19 +326,7 @@ class GithubProvider(GitProvider):
         move apply). Reuses the same context["git_files"] cache as get_files() and
         never falls back to the incremental-aware listing.
         """
-        try:
-            git_files = context.get("git_files", None)
-            if git_files:
-                return git_files
-            if getattr(self, "git_files", None):
-                return self.git_files
-            git_files = list(self.pr.get_files())
-            context["git_files"] = git_files
-            return git_files
-        except Exception:
-            if getattr(self, "git_files", None):
-                return self.git_files
-            return list(self.pr.get_files())
+        return self._get_complete_files()
 
     def get_num_of_files(self):
         if hasattr(self.git_files, "totalCount"):
@@ -454,6 +476,8 @@ class GithubProvider(GitProvider):
 
             return diff_files
 
+        except IncompletePullRequestFilesError:
+            raise
         except Exception as e:
             get_logger().error(f"Failing to get diff files: {e}",
                                artifact={"traceback": traceback.format_exc()})
@@ -1223,12 +1247,7 @@ class GithubProvider(GitProvider):
         if global_settings:
             settings_files.append(("global", global_settings))
 
-        # Normalize each candidate before applying precedence so a whitespace-only
-        # settings value doesn't short-circuit the PR_AGENT_CONFIG_BRANCH fallback.
-        settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
-        settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
-        env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
-        config_branch = settings_branch or env_branch
+        config_branch = get_config_branch()
         if config_branch:
             # Only treat a missing branch/file (GithubException) as an expected
             # reason to fall back to the default branch. Unexpected errors are

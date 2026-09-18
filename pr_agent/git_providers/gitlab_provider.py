@@ -38,6 +38,7 @@ from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
     GitProvider,
     IncrementalPR,
+    get_config_branch,
     redact_credentials,
 )
 
@@ -1472,8 +1473,9 @@ class GitLabProvider(GitProvider):
         return self.mr.title
 
     def get_languages(self):
-        languages = self.gl.projects.get(self.id_project).languages()
-        return languages
+        if not hasattr(self, "_languages"):
+            self._languages = self.gl.projects.get(self.id_project).languages()
+        return self._languages
 
     def get_pr_branch(self):
         return self.mr.source_branch
@@ -1513,51 +1515,104 @@ class GitLabProvider(GitProvider):
         if global_settings:
             settings_files.append(("global", global_settings))
         try:
-            main_branch = self.gl.projects.get(self.id_project).default_branch
-            contents = self.gl.projects.get(self.id_project).files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
+            project = self.gl.projects.get(self.id_project)
+            contents = None
+            config_branch = get_config_branch()
+            if config_branch:
+                try:
+                    contents = project.files.get(file_path='.pr_agent.toml', ref=config_branch).decode()
+                    self._resolved_config_branch = config_branch
+                except GitlabGetError as e:
+                    # Fall back to the default branch only for a missing branch/file (404); let
+                    # other errors propagate so a fallback cannot mask them and apply unintended
+                    # settings.
+                    if getattr(e, "response_code", None) != 404:
+                        raise
+                    get_logger().debug(
+                        f"No .pr_agent.toml on branch '{config_branch}', falling back to default branch")
+            if contents is None:
+                main_branch = project.default_branch
+                contents = project.files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
+                self._resolved_config_branch = main_branch or ""
             if contents:
                 settings_files.append(("local", contents))
-        except GitlabGetError:
-            pass  # a missing local .pr_agent.toml is expected
+        except GitlabGetError as e:
+            if getattr(e, "response_code", None) == 404:
+                get_logger().debug("No local .pr_agent.toml found; using existing settings")
+            else:
+                get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
         except Exception as e:
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
         return settings_files if settings_files else ""
 
     def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
-        """Recursively list every `.pr_agent.toml` at the repository default branch.
+        """Recursively list every `.pr_agent.toml` at *ref* ("" = default branch).
 
-        GitLab root config is always read from the project default branch; the
-        per-directory layer follows the same branch so nested configs cannot read
-        a branch that the root does not use.  ``ref`` is accepted for interface
-        compatibility but ignored — a future follow-up could add CONFIG_BRANCH
-        support here.
+        Follows the same branch resolution as get_repo_settings(): when the root
+        lookup resolved a config, the tree is read from that same branch
+        (``_resolved_config_branch``) so nested configs cannot come from a branch
+        the root does not use; if that tree has vanished since (404), skip nested
+        configs rather than mixing in another branch. Otherwise *ref* is used,
+        falling back to the project default branch when it is empty or when its
+        tree does not exist (404), so a stale config branch does not hide nested
+        configs on the default branch.
         """
         if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
             return [], ""
+        project = self.gl.projects.get(self.id_project)
+        root_branch = getattr(self, "_resolved_config_branch", "")
+        resolved_ref = root_branch or ref or project.default_branch
         try:
-            project = self.gl.projects.get(self.id_project)
-            resolved_ref = project.default_branch
-            max_pages = get_settings().config.per_directory_settings_max_tree_pages
-            if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
-                get_logger().warning("Invalid per-directory tree page limit; skipping nested settings")
-                return [], resolved_ref
-            paths = []
-            for page in range(1, max_pages + 1):
-                tree = project.repository_tree(ref=resolved_ref, recursive=True, page=page, per_page=100)
-                paths.extend(
-                    item["path"] for item in tree
-                    if item.get("type") == "blob"
-                    and (item.get("path") or "").split("/")[-1] == ".pr_agent.toml"
-                )
-                if len(tree) < 100:
-                    return paths, resolved_ref
-            get_logger().warning("Per-directory tree page limit reached; skipping incomplete nested settings discovery")
-            return [], resolved_ref
+            return self._list_config_tree_paths(project, resolved_ref), resolved_ref
+        except GitlabGetError as e:
+            if getattr(e, "response_code", None) != 404:
+                raise
+            if root_branch:
+                get_logger().debug(
+                    f"No repository tree for branch '{resolved_ref}' that supplied the root .pr_agent.toml; "
+                    "skipping per-directory settings instead of reading them from another branch")
+                return [], ""
+            if resolved_ref == project.default_branch:
+                get_logger().debug("No repository tree found for per-directory settings; skipping")
+                return [], ""
+        # Match the root config fallback for a caller-provided branch hint: a missing branch/tree is an
+        # expected reason to retry the default branch; other errors propagate so they are not masked.
+        get_logger().debug(
+            f"No repository tree for branch '{resolved_ref}' while listing per-directory settings; "
+            "falling back to default branch")
+        resolved_ref = project.default_branch
+        try:
+            return self._list_config_tree_paths(project, resolved_ref), resolved_ref
         except GitlabGetError as e:
             if getattr(e, "response_code", None) == 404:
                 get_logger().debug("No repository tree found for per-directory settings; skipping")
                 return [], ""
             raise
+
+    @staticmethod
+    def _list_config_tree_paths(project, ref: str) -> list[str]:
+        """Return the `.pr_agent.toml` blob paths of the recursive tree at *ref*, paginated.
+
+        Give up with a warning (and no paths) when the tree needs more pages than
+        ``per_directory_settings_max_tree_pages`` allows, rather than applying an
+        incomplete subset of nested configs.
+        """
+        max_pages = get_settings().config.per_directory_settings_max_tree_pages
+        if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages < 1:
+            get_logger().warning("Invalid per-directory tree page limit; skipping nested settings")
+            return []
+        paths = []
+        for page in range(1, max_pages + 1):
+            tree = project.repository_tree(ref=ref, recursive=True, page=page, per_page=100)
+            paths.extend(
+                item["path"] for item in tree
+                if item.get("type") == "blob"
+                and (item.get("path") or "").split("/")[-1] == ".pr_agent.toml"
+            )
+            if len(tree) < 100:
+                return paths
+        get_logger().warning("Per-directory tree page limit reached; skipping incomplete nested settings discovery")
+        return []
 
     def get_repo_settings_contents(self, paths: list[str], ref: str) -> dict[str, bytes]:
         """Fetch raw content of per-directory settings files at *ref*."""

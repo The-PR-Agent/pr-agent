@@ -317,12 +317,14 @@ class TestGetIncrementalCommits:
         # filtering/rebuild is recomputed instead of returning the full-PR diff.
         provider = self._make_provider()
         provider.diff_files = ["stale-full-diff"]
+        provider._pr_iteration_changes_cache = ["complete-current-iteration"]
         provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[])
         provider.get_issue_comments = MagicMock(return_value=[])
 
         provider.get_incremental_commits(IncrementalPR(True))
 
         assert provider.diff_files is None
+        assert provider._pr_iteration_changes_cache == ["complete-current-iteration"]
 
 
 class TestPrReviewerGuard:

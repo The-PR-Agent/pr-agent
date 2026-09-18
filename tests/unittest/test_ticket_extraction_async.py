@@ -31,11 +31,16 @@ class _FakeLabel:
 
 
 class _FakeIssue:
-    def __init__(self, number, title="t", body="b", labels=None):
+    def __init__(self, number, title="t", body="b", labels=None, raw_data=None):
         self.number = number
         self.title = title
         self.body = body
         self.labels = labels if labels is not None else []
+        self.raw_data = raw_data or {}
+
+    @property
+    def pull_request(self):
+        return self.raw_data.get("pull_request")
 
 
 class _FakeRepoObj:
@@ -155,6 +160,53 @@ def settings_snapshot():
 # ---------------------------------------------------------------------------
 
 class TestGithubExtractionMerging:
+    def test_skipped_pr_does_not_displace_later_issue(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({
+            1: _FakeIssue(1, raw_data={"pull_request": {"url": "pr"}}),
+            **{number: _FakeIssue(number) for number in range(2, 6)},
+        })
+        provider = _make_github_provider(user_description="#1 #2 #3 #4 #5", repo_obj=repo_obj)
+        repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+        result = asyncio.run(extract_tickets(provider))
+        assert [ticket["ticket_id"] for ticket in result] == [2, 3, 4]
+        assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == [1, 2, 3, 4]
+
+    def test_malformed_url_does_not_discard_surrounding_issues(self, settings_snapshot):
+        provider = _make_github_provider(
+            user_description=f"#1 https://github.com/org/repo/issues/{'9' * 4301} #2",
+            repo_obj=_FakeRepoObj({1: _FakeIssue(1), 2: _FakeIssue(2)}),
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert [ticket["ticket_id"] for ticket in result] == [1, 2]
+
+    def test_pr_lookup_attempts_are_bounded(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({
+            number: _FakeIssue(number, raw_data={"pull_request": {"url": "pr"}})
+            for number in range(1, 100)
+        })
+        repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+        provider = _make_github_provider(
+            user_description=" ".join(f"#{number}" for number in range(1, 100)), repo_obj=repo_obj,
+        )
+        assert asyncio.run(extract_tickets(provider)) == []
+        assert repo_obj.get_issue.call_count == tpc.MAX_GITHUB_TICKET_LOOKUPS
+
+    def test_pull_request_reference_is_skipped(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({
+            56: _FakeIssue(56, raw_data={"pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/56"}}),
+            123: _FakeIssue(123, title="Real issue"),
+        })
+        provider = _make_github_provider(
+            user_description="Related PR #56. Fixes #123.",
+            repo_obj=repo_obj,
+        )
+        provider.fetch_sub_issues = MagicMock(return_value=[])
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["ticket_id"] for ticket in result] == [123]
+        provider.fetch_sub_issues.assert_called_once_with("https://github.com/org/repo/issues/123")
+
     def test_branch_extraction_contributes_ticket_not_in_description(self, settings_snapshot):
         # Description mentions only #1; branch contributes #2. Without branch
         # extraction the result would be [1]; with it, [1, 2] (description first).

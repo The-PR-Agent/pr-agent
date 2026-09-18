@@ -23,6 +23,7 @@ from pr_agent.config_security import (
 )
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.git_provider import get_config_branch
 from pr_agent.log import get_logger
 
 _MAX_EXTRA_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB cap for a remote .toml
@@ -324,10 +325,6 @@ def apply_repo_settings(pr_url):
                 except Exception as e:
                     get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}: {e}")
 
-    # enable switching models with a short definition
-    if get_settings().config.model.lower() == 'claude-3-5-sonnet':
-        set_claude_model()
-
 
 def _restore_per_directory_settings():
     """Remove the previous directory overlay before applying this command's trusted settings."""
@@ -531,18 +528,6 @@ def _normalize_repo_settings(repo_settings):
     return repo_settings
 
 
-def _get_config_branch() -> str:
-    """Resolve the branch repo configuration is read from.
-
-    Mirrors the per-provider resolution (CONFIG.CONFIG_BRANCH / PR_AGENT_CONFIG_BRANCH);
-    returns "" when unset, meaning the provider reads from its own default branch.
-    """
-    settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
-    settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
-    env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
-    return settings_branch or env_branch
-
-
 def _get_changed_file_paths(git_provider) -> list[str]:
     """Return the repository-relative paths the PR/MR touches.
 
@@ -609,7 +594,7 @@ def _get_per_directory_settings(git_provider) -> list:
     settings = get_settings()
     if not settings.config.get("enable_per_directory_settings", False):
         return []
-    config_branch = _get_config_branch()
+    config_branch = get_config_branch()
     tree_method = getattr(git_provider, "get_repo_settings_tree", None)
     if tree_method is None:
         return []
@@ -834,13 +819,3 @@ def handle_configurations_errors(config_errors, git_provider):
                     git_provider.publish_comment(body)
     except Exception as e:
         get_logger().exception("Failed to handle configurations errors", e)
-
-
-def set_claude_model():
-    """
-    set the claude-sonnet-3.5 model easily (even by users), just by stating: --config.model='claude-3-5-sonnet'
-    """
-    model_claude = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
-    get_settings().set('config.model', model_claude)
-    get_settings().set('config.model_weak', model_claude)
-    get_settings().set('config.fallback_models', [model_claude])

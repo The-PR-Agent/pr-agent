@@ -383,7 +383,6 @@ MAX_TOKENS = {
     "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     "bedrock/apac.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    'claude-3-5-sonnet': 100000,
     # -- Non-Claude models -------------------------------------------------
     "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
     'dashscope/qwen3.8-max': 1000000,  # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata), but may be limited by config.max_model_tokens
@@ -482,6 +481,8 @@ SUPPORT_REASONING_EFFORT_MODELS = [
     "grok-4.5-latest",
     "grok-build-latest",
     "grok-4.6",
+    "grok-4.3",
+    "grok-4.3-latest",
 ]
 
 # Clamp OpenAI-only levels for always-on Grok reasoning; allow xhigh on 4.6+.
@@ -490,6 +491,9 @@ GROK_REASONING_EFFORT_LEVELS = {
     "grok-4.5-latest": {"low", "medium", "high"},
     "grok-build-latest": {"low", "medium", "high"},
     "grok-4.6": {"low", "medium", "high", "xhigh"},
+    # 4.3 mirrors 4.5 and does not support xhigh.
+    "grok-4.3": {"low", "medium", "high"},
+    "grok-4.3-latest": {"low", "medium", "high"},
 }
 
 # Claude models that support "extended thinking" through the manual

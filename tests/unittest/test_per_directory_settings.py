@@ -1139,11 +1139,24 @@ class TestGitLabProviderPerDirectory:
         gl.projects.get.return_value = project
         provider = _gitlab_provider(gl)
 
-        paths, resolved_ref = provider.get_repo_settings_tree("ignored-ref")
+        paths, resolved_ref = provider.get_repo_settings_tree()
 
         assert resolved_ref == "main"
         assert paths == [".pr_agent.toml", "svc/.pr_agent.toml"]
         project.repository_tree.assert_called_once_with(ref="main", recursive=True, page=1, per_page=100)
+
+    def test_get_repo_settings_tree_reads_explicit_ref_when_root_did_not_resolve(self):
+        project = MagicMock()
+        project.default_branch = "main"
+        project.repository_tree.return_value = [{"path": "svc/.pr_agent.toml", "type": "blob"}]
+        gl = MagicMock()
+        gl.projects.get.return_value = project
+        provider = _gitlab_provider(gl)
+
+        paths, resolved_ref = provider.get_repo_settings_tree("feature-config")
+
+        assert (paths, resolved_ref) == (["svc/.pr_agent.toml"], "feature-config")
+        project.repository_tree.assert_called_once_with(ref="feature-config", recursive=True, page=1, per_page=100)
 
     @pytest.mark.parametrize("complete", [True, False])
     def test_tree_discovery_is_bounded_and_requires_complete_results(self, per_dir_settings, complete):

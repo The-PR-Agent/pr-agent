@@ -39,7 +39,18 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # repo_context_max_sibling_files bounds sibling-repository fetches per repo-context build.
     # Letting a repo's .pr_agent.toml or a comment command raise it would defeat the safety
     # bound and let a commenter force unbounded cross-repository API calls; it stays host-only.
-    "config": frozenset({"repo_context_max_sibling_files", "repo_context_sibling_repos"}),
+    # description_issue_regex is compiled and run with finditer over the whole
+    # pull-request description, which is attacker-supplied and not length-capped. A pattern
+    # whose matching is ambiguous backtracks exponentially, so a caller who can choose it can
+    # burn a worker for an unbounded time on a short body. The setting is only meaningful as
+    # an operator choice, and this is what makes it one: without it, [config] is otherwise
+    # repo-configurable, so a reviewed repo's .pr_agent.toml or a comment argument could
+    # supply the pattern. The operator still sets it through host configuration.
+    "config": frozenset({
+        "description_issue_regex",
+        "repo_context_max_sibling_files",
+        "repo_context_sibling_repos",
+    }),
 }
 
 # Keys that repositories may still configure from their own default-branch settings but that

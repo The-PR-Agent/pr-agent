@@ -22,6 +22,19 @@ from pr_agent.algo.utils import (
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
+
+def get_config_branch() -> str:
+    """Return the branch to read the repo `.pr_agent.toml` from, or "" for the provider default branch.
+
+    Prefer CONFIG.CONFIG_BRANCH (set by the CLI `--config-branch` flag) over the
+    PR_AGENT_CONFIG_BRANCH environment variable and ignore whitespace-only values.
+    """
+    settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
+    settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
+    env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+    return settings_branch or env_branch
+
+
 MAX_FILES_ALLOWED_FULL = 50
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
