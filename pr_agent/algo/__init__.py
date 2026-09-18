@@ -383,7 +383,6 @@ MAX_TOKENS = {
     "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     "bedrock/apac.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    'claude-3-5-sonnet': 100000,
     # -- Non-Claude models -------------------------------------------------
     "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
     'dashscope/qwen3.8-max': 1000000,  # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata), but may be limited by config.max_model_tokens
