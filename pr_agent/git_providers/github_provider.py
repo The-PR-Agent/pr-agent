@@ -313,7 +313,7 @@ class GithubProvider(GitProvider):
 
     def get_files(self):
         if self.incremental.is_incremental and self.unreviewed_files_map:
-            return self.unreviewed_files_map.values()
+            return list(self.unreviewed_files_map.values())
         return self._get_complete_files()
 
     def get_pr_file_paths(self):

@@ -40,8 +40,13 @@ def filter_ignored(files, platform = 'github'):
                     "Skipping invalid ignore pattern; files it was meant to exclude will be "
                     "sent to the model", artifact={"pattern": r, "error": str(e)})
 
+        # Materialize GitHub incremental dict_values and other iterable file views
+        # before applying the same ignore filtering as full-review lists.
+        if files and not isinstance(files, list):
+            files = list(files)
+
         # keep filenames that _don't_ match the ignore regex
-        if files and isinstance(files, list):
+        if files:
             for r in compiled_patterns:
                 if platform == 'github':
                     files = [f for f in files if (f.filename and not r.match(f.filename))]

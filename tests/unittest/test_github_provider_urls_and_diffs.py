@@ -826,6 +826,9 @@ class TestCompletePullRequestFiles:
             unreviewed_files_map={file: file},
         )
 
-        assert list(provider.get_files()) == [file]
+        files = provider.get_files()
+
+        assert files == [file]
+        assert isinstance(files, list)
         assert pr.get_files_calls == 0
         assert pr.changed_files_calls == 0
