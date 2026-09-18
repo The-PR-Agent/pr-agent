@@ -102,18 +102,14 @@ def test_numeric_project_identifier(provider_factory, project_id):
     assert urlparse(transport.requests[0].url).path.endswith("/projects/123/merge_requests/7/diffs")
 
 
-@pytest.mark.parametrize("method", ["get_files", "get_diff_files", "get_pr_file_paths", "get_relevant_diff"])
 @pytest.mark.parametrize("flag", ["too_large", "collapsed"])
-def test_omitted_patch_on_later_page_is_rejected_before_use(provider_factory, method, flag):
-    provider, transport = provider_factory(_pages([_change("visible.py")], [_change("hidden.py", diff="", **{flag: True})]))
+def test_pruned_patch_on_later_page_is_reconstructed_from_both_blobs(provider_factory, flag):
+    provider, transport = provider_factory(_pages([_change("visible.py")], [_change("pruned.py", diff="", **{flag: True})]))
 
-    args = ["hidden.py", "new"] if method == "get_relevant_diff" else []
-    with pytest.raises(IncompleteGitLabDiffError, match="omitted diff content"):
-        getattr(provider, method)(*args)
+    files = provider.get_diff_files()
 
-    assert provider.git_files is None
-    assert provider.diff_files is None
-    provider.get_pr_file_content.assert_not_called()
+    assert [file.filename for file in files] == ["visible.py", "pruned.py"]
+    assert "-old" in files[1].patch and "+new" in files[1].patch
     assert len(transport.requests) == 2
 
 
