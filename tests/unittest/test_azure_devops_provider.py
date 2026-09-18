@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from azure.devops.exceptions import AzureDevOpsServiceError
 
 from pr_agent.algo.inline_comment_dedup import code_fingerprint
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -381,6 +382,42 @@ class TestAzureDevopsProviderFiles:
         change = TestAzureDevopsProviderFiles._change()
         return TestAzureDevopsProviderFiles._provider_with_change(change, *get_item_results)
 
+    @staticmethod
+    def _status_error(status_code):
+        error = Exception(f"Operation returned a {status_code} status code.")
+        error.status_code = status_code
+        return error
+
+    @staticmethod
+    def _azure_item_not_found_error():
+        wrapped_error = SimpleNamespace(
+            inner_exception=None,
+            message="The specified item does not exist at the specified version.",
+            exception_id=None,
+            type_name="Microsoft.TeamFoundation.Git.Server.GitItemNotFoundException",
+            type_key="GitItemNotFoundException",
+            error_code=0,
+            event_id=0,
+            custom_properties=None,
+        )
+        return AzureDevOpsServiceError(wrapped_error)
+
+    @classmethod
+    def _provider_with_incremental_rename(cls, *get_item_results):
+        incremental = IncrementalPR(True)
+        incremental.last_seen_commit = SimpleNamespace(sha="last-seen-sha")
+        provider = cls._provider_with_change(
+            cls._change(
+                path="/new/name.py",
+                change_type="rename",
+                originalPath="/old/name.py",
+            ),
+            *get_item_results,
+            incremental=incremental,
+        )
+        provider.unreviewed_files_map = {"/new/name.py": "/new/name.py"}
+        return provider
+
     def test_get_diff_files_keeps_file_when_new_content_fetch_fails(self):
         provider = self._provider_with_pull_request_diff(
             Exception("head fetch failed"),
@@ -583,20 +620,10 @@ class TestAzureDevopsProviderFiles:
         assert any("/new/name.py" in message and "no usable old path" in message for message in captured)
 
     def test_incremental_rename_reads_old_path_at_last_seen_commit(self):
-        change = self._change(
-            path="/new/name.py",
-            change_type="rename",
-            originalPath="/old/name.py",
-        )
-        incremental = IncrementalPR(True)
-        incremental.last_seen_commit = SimpleNamespace(sha="last-seen-sha")
-        provider = self._provider_with_change(
-            change,
+        provider = self._provider_with_incremental_rename(
             SimpleNamespace(content="new\n"),
             SimpleNamespace(content="old\n"),
-            incremental=incremental,
         )
-        provider.unreviewed_files_map = {"/new/name.py": "/new/name.py"}
 
         diff_file = provider.get_diff_files()[0]
 
@@ -605,6 +632,101 @@ class TestAzureDevopsProviderFiles:
         assert old_content_call.kwargs["path"] == "/old/name.py"
         assert old_content_call.kwargs["version_descriptor"].version == "last-seen-sha"
         assert provider.unreviewed_files_map["/new/name.py"] == diff_file.patch
+
+    def test_incremental_rename_retries_current_path_when_old_path_is_missing_at_checkpoint(self):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="value = 3\n"),
+            self._azure_item_not_found_error(),
+            SimpleNamespace(content="value = 2\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
+        assert diff_file.base_file == "value = 2\n"
+        assert diff_file.head_file == "value = 3\n"
+        assert "-value = 2" in diff_file.patch
+        assert "+value = 3" in diff_file.patch
+        assert provider.unreviewed_files_map["/new/name.py"] == diff_file.patch
+        calls = provider.azure_devops_client.get_item.call_args_list
+        assert [call.kwargs["path"] for call in calls] == [
+            "/new/name.py",
+            "/old/name.py",
+            "/new/name.py",
+        ]
+        assert [call.kwargs["version_descriptor"].version for call in calls] == [
+            "head-sha",
+            "last-seen-sha",
+            "last-seen-sha",
+        ]
+
+    @pytest.mark.parametrize("retry_status_code", [404, 500])
+    def test_incremental_rename_uses_empty_base_when_both_checkpoint_paths_fail(self, retry_status_code):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="new\n"),
+            self._status_error(404),
+            self._status_error(retry_status_code),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_file = provider.get_diff_files()[0]
+        finally:
+            get_logger().remove(sink_id)
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
+        assert diff_file.base_file == ""
+        assert [call.kwargs["path"] for call in provider.azure_devops_client.get_item.call_args_list] == [
+            "/new/name.py",
+            "/old/name.py",
+            "/new/name.py",
+        ]
+        assert any(
+            "/new/name.py" in message and "last-seen-sha" in message and "retry" in message
+            for message in captured
+        )
+
+    def test_incremental_rename_does_not_retry_after_successful_empty_old_path_read(self):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="new\n"),
+            SimpleNamespace(content=""),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.base_file == ""
+        assert [call.kwargs["path"] for call in provider.azure_devops_client.get_item.call_args_list] == [
+            "/new/name.py",
+            "/old/name.py",
+        ]
+
+    def test_incremental_rename_does_not_retry_current_path_after_non_404_failure(self):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="new\n"),
+            self._status_error(500),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_file = provider.get_diff_files()[0]
+        finally:
+            get_logger().remove(sink_id)
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
+        assert diff_file.base_file == ""
+        assert [call.kwargs["path"] for call in provider.azure_devops_client.get_item.call_args_list] == [
+            "/new/name.py",
+            "/old/name.py",
+        ]
+        assert any(
+            "/old/name.py" in message and "last-seen-sha" in message and "500" in message
+            for message in captured
+        )
 
     def test_failed_rename_old_content_read_keeps_identity_and_logs_the_failure(self):
         change = self._change(

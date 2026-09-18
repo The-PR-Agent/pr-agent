@@ -60,6 +60,8 @@ def _is_not_found_error(error: Exception) -> bool:
         status_code = getattr(response, "status_code", None)
     if status_code is not None:
         return status_code == 404
+    if getattr(error, "type_key", None) == "GitItemNotFoundException":
+        return True
     return re.search(r"\b404\b", str(error)) is not None
 
 
@@ -1008,11 +1010,34 @@ class AzureDevopsProvider(GitProvider):
                         )
                         original_file_content_str = inc_original.content or ""
                     except Exception as error:
-                        get_logger().warning(
-                            f"Failed to retrieve original of {old_filename or file} "
-                            f"at {self.incremental.last_seen_commit_sha}: {error}"
-                        )
-                        original_file_content_str = ""
+                        if (
+                            edit_type == EDIT_TYPE.RENAMED
+                            and old_filename != file
+                            and _is_not_found_error(error)
+                        ):
+                            try:
+                                inc_original = self.azure_devops_client.get_item(
+                                    repository_id=self.repo_slug,
+                                    path=file,
+                                    project=self.workspace_slug,
+                                    version_descriptor=inc_version,
+                                    download=False,
+                                    include_content=True,
+                                )
+                                original_file_content_str = inc_original.content or ""
+                            except Exception as retry_error:
+                                get_logger().warning(
+                                    f"Failed to retrieve original of {old_filename} "
+                                    f"at {self.incremental.last_seen_commit_sha}; "
+                                    f"retry at {file} also failed: {retry_error}"
+                                )
+                                original_file_content_str = ""
+                        else:
+                            get_logger().warning(
+                                f"Failed to retrieve original of {old_filename or file} "
+                                f"at {self.incremental.last_seen_commit_sha}: {error}"
+                            )
+                            original_file_content_str = ""
                 else:
                     base_version = GitVersionDescriptor(
                         version=base_sha.commit_id, version_type="commit"
