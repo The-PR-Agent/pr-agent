@@ -461,30 +461,6 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     *_claude_no_temp,
 ]
 
-SUPPORT_REASONING_EFFORT_MODELS = [
-    "o3-mini",
-    "o3-mini-2025-01-31",
-    "o3",
-    "o3-2025-04-16",
-    "o4-mini",
-    "o4-mini-2025-04-16",
-    # Gemini 2.5 exposes a thinking budget controlled by reasoning_effort. Without
-    # these entries a configured effort is silently dropped, so a runaway thinking
-    # trace can consume the whole output budget and return an empty completion.
-    # LiteLLM maps native provider paths to thinkingConfig.thinkingBudget, while
-    # LiteLLMAIHandler routes OpenRouter-prefixed forms through extra_body.reasoning.
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    # Register each published Grok id separately so provider-prefixed forms match
-    # and the allowlist below can clamp model-specific reasoning levels.
-    "grok-4.5",
-    "grok-4.5-latest",
-    "grok-build-latest",
-    "grok-4.6",
-    "grok-4.3",
-    "grok-4.3-latest",
-]
-
 # Clamp OpenAI-only levels for always-on Grok reasoning; allow xhigh on 4.6+.
 GROK_REASONING_EFFORT_LEVELS = {
     "grok-4.5": {"low", "medium", "high"},

@@ -48,6 +48,33 @@ def mock_logger():
         yield mock_log_instance
 
 
+@pytest.fixture(autouse=True)
+def _pin_reasoning_support_metadata(monkeypatch):
+    """Pin the reasoning-support metadata this suite keys off.
+
+    CI runs litellm 1.99.0 and 1.101.0 in parallel and their bundled cost maps
+    differ (``xai/grok-build-latest`` is absent from the 1.99.0 map), so the
+    regression matrix forces the entries the reasoning_effort gate consults in
+    ``litellm.model_cost``: bare o3/o4/Gemini-2.5 ids register directly, the six
+    Grok ids register only under the ``xai/`` prefix (the bare forms are removed
+    so they resolve False), and claude-sonnet-4-5 / claude-haiku-4-5 report True
+    while the handler's claude-family check still keeps them out of the
+    reasoning_effort path. All other bundled entries stay untouched.
+    """
+    reasoning_models = (
+        "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16",
+        "o4-mini", "o4-mini-2025-04-16", "gemini-2.5-pro", "gemini-2.5-flash",
+        "xai/grok-4.5", "xai/grok-4.5-latest", "xai/grok-build-latest",
+        "xai/grok-4.6", "xai/grok-4.3", "xai/grok-4.3-latest",
+        "claude-sonnet-4-5", "claude-haiku-4-5",
+    )
+    for model in reasoning_models:
+        monkeypatch.setitem(litellm.model_cost, model, {"supports_reasoning": True})
+    for model in ("grok-4.5", "grok-4.5-latest", "grok-build-latest",
+                  "grok-4.6", "grok-4.3", "grok-4.3-latest"):
+        monkeypatch.delitem(litellm.model_cost, model, raising=False)
+
+
 class TestLiteLLMReasoningEffort:
     """
     Comprehensive test suite for GPT-5 reasoning_effort configuration handling.
@@ -985,10 +1012,10 @@ class TestLiteLLMReasoningEffortGPT6:
 
 
 class TestLiteLLMReasoningEffortGemini:
-    """Gemini 2.5 reasoning_effort handling via the SUPPORT_REASONING_EFFORT_MODELS path.
+    """Gemini 2.5 reasoning_effort handling via litellm's bundled metadata.
 
     Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort. The
-    membership test in chat_completion matches bare and provider-prefixed ids such as
+    support probe in chat_completion matches bare and provider-prefixed ids such as
     "vertex_ai/gemini-2.5-pro". OpenRouter models use extra_body.reasoning instead and
     are covered by test_litellm_openrouter_controls.py.
     """
@@ -1058,6 +1085,26 @@ class TestLiteLLMReasoningEffortGemini:
 
             call_kwargs = mock_completion.call_args[1]
             assert "reasoning_effort" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_claude_models_excluded_from_reasoning_effort_path(self, monkeypatch, mock_logger):
+        """Claude models must not receive reasoning_effort even though litellm metadata
+        marks claude-sonnet-4-5 / claude-haiku-4-5 as reasoning-capable; pr-agent routes
+        Claude reasoning only through the dedicated extended/adaptive thinking settings.
+        """
+        fake_settings = create_mock_settings("high")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        for model in ("claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"):
+            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                await handler.chat_completion(model=model, system="test system", user="test user")
+
+                call_kwargs = mock_completion.call_args[1]
+                assert "reasoning_effort" not in call_kwargs, f"reasoning_effort leaked for {model}"
 
 
 class TestLiteLLMReasoningEffortGrok:
@@ -1305,8 +1352,8 @@ class TestAdditionalReasoningEffortModels:
     """Verify config.additional_reasoning_effort_models opts custom OpenAI-compatible
     model IDs into config.reasoning_effort.
 
-    Keep the override additive so built-in SUPPORT_REASONING_EFFORT_MODELS entries stay
-    active and a fallback_models chain mixing a custom endpoint with a built-in reasoning
+    Keep the override additive so litellm's bundled reasoning metadata stays
+    active and a fallback_models chain mixing a custom endpoint with a reasoning
     model keeps receiving the configured effort. When LiteLLM does not recognize the model,
     whitelist reasoning_effort through allowed_openai_params so the endpoint receives it.
     """
@@ -1387,8 +1434,8 @@ class TestAdditionalReasoningEffortModels:
         ["deepseek-v4-flash-0731", 123],
         [""],
     ])
-    async def test_invalid_override_falls_back_to_builtin_list(self, monkeypatch, mock_logger, additional):
-        """Reject an unsupported override with a warning and fall back to the built-in list."""
+    async def test_invalid_override_ignored(self, monkeypatch, mock_logger, additional):
+        """Reject an unsupported override with a warning; the model just gets no effort."""
         fake_settings = self._settings(additional=additional)
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_supported_openai_params", lambda **kwargs: [])

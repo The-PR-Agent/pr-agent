@@ -48,7 +48,6 @@ from pr_agent.algo import (
     GROK_REASONING_EFFORT_LEVELS,
     NO_SUPPORT_TEMPERATURE_MODELS,
     STREAMING_REQUIRED_MODELS,
-    SUPPORT_REASONING_EFFORT_MODELS,
     USER_MESSAGE_ONLY_MODELS,
     normalize_litellm_model,
 )
@@ -2193,14 +2192,16 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Model that doesn't support temperature argument
         self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
 
-        # Append config-listed models to the built-in reasoning-effort list
+        # Config-listed models opt endpoints litellm does not know into receiving
+        # reasoning_effort. Reasoning support otherwise comes from litellm's own
+        # bundled model metadata (see _litellm_supports_reasoning).
         additional_reasoning_models = _coerce_string_list_config(
             get_settings().config.get("additional_reasoning_effort_models", [])
         )
         if additional_reasoning_models is None:
             get_logger().warning(
                 "Invalid additional_reasoning_effort_models in config; expected a list of model names. "
-                "Falling back to the built-in reasoning-effort model list."
+                "Ignoring it."
             )
             additional_reasoning_models = []
         elif additional_reasoning_models and not all(
@@ -2209,12 +2210,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             get_logger().warning(
                 "Invalid additional_reasoning_effort_models in config; "
                 "expected a list of model name strings. "
-                "Falling back to the built-in reasoning-effort model list."
+                "Ignoring it."
             )
             additional_reasoning_models = []
         # Store stripped names so exact-match checks against the model succeed even when the
         # config entries contain surrounding whitespace (validation above already used strip()).
-        self.support_reasoning_models = SUPPORT_REASONING_EFFORT_MODELS + [
+        self.additional_reasoning_effort_models = [
             model.strip() for model in additional_reasoning_models
         ]
 
@@ -3439,6 +3440,70 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
 
     @staticmethod
+    def _litellm_supports_reasoning(model: str) -> bool:
+        """Probe litellm's bundled model metadata for reasoning support.
+
+        The metadata lookup is exact per spelling, so a model id only resolves when
+        the queried form is registered. The six Grok ids are registered only under
+        the ``xai/`` provider prefix and bare o3/o4/Gemini ids resolve directly. To
+        mirror the old ``endswith("/<id>")`` membership, probe every suffix of the
+        id (after stripping a routing suffix such as ``:nitro`` and the leading
+        ``openrouter/`` segment, whose provider-prefixed slugs can carry metadata
+        for models this handler never routed there) plus the ``xai/``-prefixed bare
+        name. Claude models are excluded by the caller via _is_claude_family_model:
+        litellm maps their reasoning_effort to a thinking token budget.
+
+        The bundled cost map is consulted directly rather than via
+        ``litellm.supports_reasoning``: that public helper resolves the model through
+        ``get_llm_provider`` on every call, and provider resolution must stay out of
+        this gate because the api key guard snapshots the resolved provider and its
+        key. The map is also what #3475 pins through ``LITELLM_LOCAL_MODEL_COST_MAP``,
+        so the reads are deterministic for the model ids this gate handles.
+        """
+        probe = model
+        if probe.startswith("openrouter/"):
+            probe = probe.removeprefix("openrouter/")
+        base = probe.rsplit(":", 1)[0]
+        segments = base.split("/")
+        candidates = []
+        for i in range(len(segments)):
+            candidates.append("/".join(segments[i:]))
+            if i == len(segments) - 1:
+                candidates.append(f"xai/{segments[-1]}")
+        try:
+            return any(
+                LiteLLMAIHandler._model_cost_entry_supports_reasoning(candidate)
+                for candidate in candidates
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _model_cost_entry_supports_reasoning(model: str) -> bool:
+        """Return whether the bundled cost map flags one exact model id as reasoning-capable.
+
+        Mirrors ``litellm.supports_reasoning``'s field check for an entry that exists:
+        only an explicit True counts. Missing entries and absent capability fields do
+        not enable the reasoning-effort path; the caller probes every candidate spelling
+        so a provider-prefixed model still resolves through its bare or ``xai/`` form.
+        """
+        entry = litellm.model_cost.get(model)
+        return entry is not None and entry.get("supports_reasoning") is True
+
+    @staticmethod
+    def _is_claude_family_model(model: str) -> bool:
+        """Recognize Claude model ids through any provider prefix.
+
+        Claude reasoning is configured only through the dedicated extended/adaptive
+        thinking settings, so the generic reasoning_effort path must not pick these
+        models up even though litellm marks claude-sonnet-4-5 and claude-haiku-4-5
+        as reasoning-capable: litellm maps reasoning_effort to a thinking token
+        budget there, silently enabling thinking for a model not opted in.
+        """
+        normalized = model.lower().replace("_", "-").replace(".", "-")
+        return re.search(r"claude(?:-|$)", normalized) is not None
+
+    @staticmethod
     def _grok_reasoning_levels_for(model: str) -> set[str] | None:
         """Return the reasoning-effort levels accepted by a registered Grok model."""
         normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
@@ -4124,17 +4189,22 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs.pop('temperature', None)
 
                 reasoning_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
-                # Add reasoning_effort if model supports it. Match the bare model
-                # id as well as any provider-prefixed form (e.g.
-                # "openrouter/google/gemini-2.5-pro", "gemini/gemini-2.5-pro"), so a
-                # configured reasoning_effort is not silently dropped for models the
-                # user references with a provider prefix. OpenRouter routing variants
-                # such as :nitro and :floor are stripped only for this membership test.
-                # Skip GPT-5/GPT-6 Astra here so a model registered via config cannot
-                # overwrite the reasoning_effort normalization of its dedicated branch.
-                if not (is_gpt5_model or is_gpt6_astra) and any(
-                    reasoning_model == m or reasoning_model.endswith("/" + m)
-                    for m in self.support_reasoning_models
+                # Add reasoning_effort if the model supports it. Support now comes from
+                # litellm's bundled model metadata (probed over suffix forms so bare,
+                # provider-prefixed, and OpenRouter :nitro/:floor variants all resolve),
+                # combined with config.additional_reasoning_effort_models as the operator
+                # escape hatch for endpoints litellm does not know. Claude models are
+                # excluded because their reasoning is driven by the dedicated
+                # enable_claude_extended/adaptive_thinking settings. Skip GPT-5/GPT-6
+                # Astra here so a config-registered model cannot overwrite the
+                # reasoning_effort normalization of its dedicated branch.
+                if not (is_gpt5_model or is_gpt6_astra) and (
+                    not self._is_claude_family_model(reasoning_model)
+                    and self._litellm_supports_reasoning(reasoning_model)
+                    or any(
+                        reasoning_model == m or reasoning_model.endswith("/" + m)
+                        for m in self.additional_reasoning_effort_models
+                    )
                 ):
                     config_effort = self._default_reasoning_effort
                     reasoning_effort = self._resolve_reasoning_effort(openrouter_model or model, config_effort)

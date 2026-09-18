@@ -189,7 +189,7 @@ def _bare_handler():
     handler.add_litellm_callbacks = False
     handler.claude_extended_thinking_models = []
     handler.no_support_temperature_models = []
-    handler.support_reasoning_models = []
+    handler.additional_reasoning_effort_models = []
     handler.user_message_only_models = []
     handler._claude_thinking_controls = {
         "enable_claude_adaptive_thinking": False,
