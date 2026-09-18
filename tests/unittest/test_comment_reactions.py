@@ -431,7 +431,9 @@ async def test_incomplete_files_constructor_failure_is_visible_and_marked_failed
 
     assert result is False
     published = provider.publish_comment.call_args.args[0]
-    assert "GitHub returned an incomplete changed-file set" in published
+    assert "GitHub returned an incomplete or inconsistent changed-file set" in published
+    assert "If this pull request changes more than 3,000 files" in published
+    assert "Otherwise, retry the command" in published
     assert "private mismatch details" not in published
     assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
 

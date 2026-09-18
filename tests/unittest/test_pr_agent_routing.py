@@ -211,7 +211,9 @@ async def test_incomplete_github_files_constructor_error_publishes_sanitized_not
     assert handled is False
     provider.publish_comment.assert_called_once()
     published = provider.publish_comment.call_args.args[0]
-    assert "GitHub returned an incomplete changed-file set" in published
+    assert "GitHub returned an incomplete or inconsistent changed-file set" in published
+    assert "If this pull request changes more than 3,000 files" in published
+    assert "Otherwise, retry the command" in published
     assert "command was not run" in published
     assert secret not in published
     assert pr_agent_module.INCOMPLETE_GITHUB_FILES_COMMENT_MARKER in published.splitlines()[:5]

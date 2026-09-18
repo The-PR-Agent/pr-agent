@@ -59,20 +59,22 @@ command2class = {
 commands = list(command2class.keys())
 
 INCOMPLETE_GITHUB_FILES_COMMENT_MARKER = "<!-- pr-agent:github-incomplete-files -->"
-INCOMPLETE_GITHUB_FILES_COMMENT = """## PR-Agent command was not run
-
-GitHub returned an incomplete changed-file set for this pull request, so PR-Agent stopped instead of analyzing only part of it.
-
-GitHub limits this response to 3,000 files. Split larger pull requests into smaller ones, then run the command again."""
+INCOMPLETE_GITHUB_FILES_COMMENT = (
+    "## PR-Agent command was not run\n\n"
+    "GitHub returned an incomplete or inconsistent changed-file set for this pull request, so PR-Agent stopped "
+    "instead of analyzing only part of it.\n\n"
+    "GitHub limits changed-file responses to 3,000 files. If this pull request changes more than 3,000 files, "
+    "split it into smaller pull requests and run the command again. Otherwise, retry the command."
+)
 
 
 def publish_incomplete_github_files_comment(pr_url: str) -> None:
-    """Best-effort publication of one trusted, sanitized PR-level notice."""
+    """Publish one trusted, sanitized PR-level notice without replacing the primary failure."""
     try:
         _publish_incomplete_github_files_comment(pr_url)
     except Exception:
-        # This notice is secondary to the original completeness failure. Keep
-        # every ordinary provider/rendering failure from replacing it.
+        # Preserve the original completeness failure by containing every
+        # ordinary provider or rendering failure from this secondary notice.
         get_logger().exception("Failed to prepare the incomplete-files notice")
 
 
@@ -96,9 +98,9 @@ def _publish_incomplete_github_files_comment(pr_url: str) -> None:
         try:
             body = provider._get_comment_body(comment)
         except Exception:
-            # A malformed or provider-specific comment must not suppress the
-            # notice. Continue looking for a verifiable PR-Agent marker and
-            # publish if none can be confirmed.
+            # Ignore comments whose bodies cannot be read. Continue looking
+            # for a verifiable PR-Agent marker and publish if none can be
+            # confirmed.
             get_logger().warning(
                 "Failed to read an existing incomplete-files notice; continuing"
             )
