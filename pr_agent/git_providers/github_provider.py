@@ -794,7 +794,7 @@ class GithubProvider(GitProvider):
             ]
         try:
             # publish all comments in a single message
-            self.pr.create_review(commit=self.last_commit_id, comments=comments)
+            self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=comments)
             # The whole batch posted; record its fingerprints so the rest of this
             # run dedups against them. Cross-run dedup relies on the markers in the
             # posted bodies, so comments the fallback below drops stay unrecorded
@@ -984,7 +984,7 @@ class GithubProvider(GitProvider):
 
         # publish as a group the verified comments
         if verified_comments:
-            self.pr.create_review(commit=self.last_commit_id, comments=verified_comments)
+            self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=verified_comments)
             published_count += len(verified_comments)
 
         # try to publish one by one the invalid comments as a one-line code comment

@@ -277,6 +277,7 @@ class TestPRUpdateChangelog:
             )
             mock_git_provider.pr.create_review.assert_called_once_with(
                 commit="commit-123",
+                event="COMMENT",
                 comments=[
                     dict(
                         body="CHANGELOG.md update",

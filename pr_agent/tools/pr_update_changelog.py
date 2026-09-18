@@ -238,7 +238,7 @@ class PRUpdateChangelog:
                     line=max(2, len(answer.splitlines())),
                     start_line=1,
                 )
-                self.git_provider.pr.create_review(commit=last_commit_id, comments=[d])
+                self.git_provider.pr.create_review(commit=last_commit_id, event="COMMENT", comments=[d])
         except Exception:
             # we can't create a review for some reason, let's just publish a comment
             self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")

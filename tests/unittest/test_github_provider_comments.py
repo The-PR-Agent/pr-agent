@@ -33,9 +33,9 @@ class _FakePR:
         self._raise_on_first = raise_on_first
         self._calls = 0
 
-    def create_review(self, commit=None, comments=None):
+    def create_review(self, commit=None, event=None, comments=None):
         self._calls += 1
-        self.create_review_calls.append({"commit": commit, "comments": comments})
+        self.create_review_calls.append({"commit": commit, "event": event, "comments": comments})
         if self._raise_on_first is not None and self._calls == 1:
             exc = self._raise_on_first
             self._raise_on_first = None
@@ -570,7 +570,7 @@ def test_publish_code_suggestions_422_fallback_repaired_comment_failure_returns_
 
     calls = 0
 
-    def fail_repaired(commit=None, comments=None):
+    def fail_repaired(commit=None, event=None, comments=None):
         nonlocal calls
         calls += 1
         if calls == 1:
