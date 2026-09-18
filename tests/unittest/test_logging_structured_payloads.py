@@ -93,7 +93,7 @@ def publishing(monkeypatch):
 
 
 def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep):
-    """The handler converts the 403 into RateLimitExceeded, which `retry_call` retries."""
+    """Each outer rate-limit retry performs the collector's two file-list attempts."""
     get_settings().set("GITHUB.RATELIMIT_RETRIES", 3)
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
@@ -108,7 +108,7 @@ def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep):
 
     with pytest.raises(RateLimitExceeded):
         provider.get_diff_files()
-    assert len(attempts) == 3
+    assert len(attempts) == 6
 
 
 async def test_describe_swallows_a_provider_error(publishing):

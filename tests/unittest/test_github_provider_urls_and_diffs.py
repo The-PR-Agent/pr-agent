@@ -442,6 +442,17 @@ class _RequestContext(dict):
     def exists(self):
         return self._exists
 
+    def __eq__(self, other):
+        if not isinstance(other, _RequestContext):
+            return NotImplemented
+        return super().__eq__(other) and self._exists == other._exists
+
+    def __ne__(self, other):
+        equal = self.__eq__(other)
+        if equal is NotImplemented:
+            return NotImplemented
+        return not equal
+
 
 class _FakePullRequest:
     def __init__(self, files, changed_files):
@@ -472,6 +483,39 @@ class _ChangedFilesErrorPullRequest(_FakePullRequest):
         pass
 
 
+class _SequencedFilesPullRequest(_FakePullRequest):
+    def __init__(self, outcomes, changed_files):
+        super().__init__(None, changed_files)
+        self.outcomes = list(outcomes)
+
+    def get_files(self):
+        self.get_files_calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class _SequencedChangedFilesPullRequest:
+    def __init__(self, files, outcomes):
+        self.files = files
+        self.outcomes = list(outcomes)
+        self.get_files_calls = 0
+        self.changed_files_calls = 0
+
+    def get_files(self):
+        self.get_files_calls += 1
+        return self.files
+
+    @property
+    def changed_files(self):
+        self.changed_files_calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
 class _ExplodingIterable:
     def __init__(self, error):
         self.error = error
@@ -480,6 +524,19 @@ class _ExplodingIterable:
     def __iter__(self):
         self.iteration_calls += 1
         raise self.error
+
+
+class _TransientIterable:
+    def __init__(self, error, files):
+        self.error = error
+        self.files = files
+        self.iteration_calls = 0
+
+    def __iter__(self):
+        self.iteration_calls += 1
+        if self.iteration_calls == 1:
+            raise self.error
+        return iter(self.files)
 
 
 def _make_provider_for_file_collection(pr, *, incremental=False, unreviewed_files_map=None):
@@ -498,6 +555,19 @@ def _set_request_context(monkeypatch, values=None):
     return request_context
 
 
+def test_request_context_equality_includes_existence_state():
+    present = _RequestContext({"git_files": ["first"]})
+    same = _RequestContext({"git_files": ["first"]})
+    absent = _RequestContext({"git_files": ["first"]}, exists=False)
+
+    assert present == same
+    assert not present != same
+    assert present != absent
+    assert not present == absent
+    assert present.__eq__({"git_files": ["first"]}) is NotImplemented
+    assert present.__ne__({"git_files": ["first"]}) is NotImplemented
+
+
 class TestCompletePullRequestFiles:
     @pytest.mark.parametrize(
         ("files", "changed_files"),
@@ -506,13 +576,15 @@ class TestCompletePullRequestFiles:
     )
     def test_mismatched_count_fails_closed_without_caching(self, monkeypatch, files, changed_files):
         request_context = _set_request_context(monkeypatch)
-        provider = _make_provider_for_file_collection(_FakePullRequest(files, changed_files))
+        pr = _FakePullRequest(files, changed_files)
+        provider = _make_provider_for_file_collection(pr)
 
         with pytest.raises(IncompletePullRequestFilesError):
             provider.get_files()
 
         assert provider.git_files is None
         assert "git_files" not in request_context
+        assert pr.get_files_calls == 1
 
     @pytest.mark.parametrize("changed_files", [None, "two", True])
     def test_invalid_changed_files_metadata_fails_closed_without_caching(self, monkeypatch, changed_files):
@@ -535,24 +607,90 @@ class TestCompletePullRequestFiles:
             provider.get_files()
 
         assert raised.value is error
-        assert pr.changed_files_calls == 1
+        assert pr.get_files_calls == 2
+        assert pr.changed_files_calls == 2
         assert provider.git_files is None
         assert "git_files" not in request_context
 
-    @pytest.mark.parametrize("failure", [RuntimeError("request failed"), _ExplodingIterable(RuntimeError("page failed"))])
-    def test_file_collection_errors_propagate_once_without_caching(self, monkeypatch, failure):
+    @pytest.mark.parametrize(
+        "failure",
+        [RuntimeError("request failed"), _ExplodingIterable(RuntimeError("page failed"))],
+    )
+    def test_file_collection_errors_propagate_after_retry_without_caching(self, monkeypatch, failure):
         request_context = _set_request_context(monkeypatch)
         pr = _FakePullRequest(failure, 1)
         provider = _make_provider_for_file_collection(pr)
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError) as raised:
             provider.get_files()
 
-        assert pr.get_files_calls == 1
+        expected_error = failure.error if isinstance(failure, _ExplodingIterable) else failure
+        assert raised.value is expected_error
+        assert pr.get_files_calls == 2
         if isinstance(failure, _ExplodingIterable):
-            assert failure.iteration_calls == 1
+            assert failure.iteration_calls == 2
         assert provider.git_files is None
         assert "git_files" not in request_context
+
+    def test_transient_file_request_recovers_and_populates_caches(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["first"]
+        pr = _SequencedFilesPullRequest([RuntimeError("request failed"), files], len(files))
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 2
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+
+    def test_transient_materialization_error_recovers_and_populates_caches(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["first"]
+        iterable = _TransientIterable(RuntimeError("page failed"), files)
+        pr = _FakePullRequest(iterable, len(files))
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 2
+        assert iterable.iteration_calls == 2
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+
+    def test_transient_changed_files_error_recovers_and_populates_caches(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["first"]
+        pr = _SequencedChangedFilesPullRequest(files, [RuntimeError("metadata failed"), len(files)])
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 2
+        assert pr.changed_files_calls == 2
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+
+    def test_transient_failure_then_mismatch_fails_closed_without_caching(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        pr = _SequencedFilesPullRequest([RuntimeError("request failed"), ["first"]], 2)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(IncompletePullRequestFilesError):
+            provider.get_files()
+
+        assert pr.get_files_calls == 2
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_get_diff_files_recovers_within_collection_retry(self, monkeypatch, patched_helpers):
+        _set_request_context(monkeypatch)
+        file = _make_file("first.py", "modified")
+        provider = _make_provider_for_diff([file])
+        provider.pr.get_files = Mock(side_effect=[RuntimeError("request failed"), [file]])
+        provider._get_pr_file_content = lambda file, sha, path=None: "content"
+
+        diffs = provider.get_diff_files()
+
+        assert [diff.filename for diff in diffs] == ["first.py"]
+        assert provider.pr.get_files.call_count == 2
 
     def test_get_diff_files_preserves_completeness_error_without_retrying(self, monkeypatch):
         _set_request_context(monkeypatch)

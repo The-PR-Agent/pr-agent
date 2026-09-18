@@ -281,16 +281,24 @@ class GithubProvider(GitProvider):
         if git_files is not None:
             return git_files
 
-        git_files = list(self.pr.get_files()) # 'list' to handle pagination
-        changed_files = self.pr.changed_files
-        if isinstance(changed_files, bool) or not isinstance(changed_files, int):
-            raise IncompletePullRequestFilesError(
-                f"GitHub returned an invalid changed_files count: {changed_files!r}"
-            )
-        if len(git_files) != changed_files:
-            raise IncompletePullRequestFilesError(
-                f"GitHub returned {len(git_files)} pull-request files but reported {changed_files}"
-            )
+        for attempt in range(2):
+            try:
+                git_files = list(self.pr.get_files())  # 'list' to handle pagination
+                changed_files = self.pr.changed_files
+                if isinstance(changed_files, bool) or not isinstance(changed_files, int):
+                    raise IncompletePullRequestFilesError(
+                        f"GitHub returned an invalid changed_files count: {changed_files!r}"
+                    )
+                if len(git_files) != changed_files:
+                    raise IncompletePullRequestFilesError(
+                        f"GitHub returned {len(git_files)} pull-request files but reported {changed_files}"
+                    )
+                break
+            except IncompletePullRequestFilesError:
+                raise
+            except Exception:
+                if attempt == 1:
+                    raise
 
         self.git_files = git_files
         if context.exists():
