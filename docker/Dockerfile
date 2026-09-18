@@ -65,6 +65,7 @@ COPY tests tests
 COPY .github/workflows/publish.yml .github/workflows/publish.yml
 COPY .github/workflows/build-and-test.yaml .github/workflows/build-and-test.yaml
 COPY docker/Dockerfile docker/Dockerfile
+COPY docker/Dockerfile.lambda docker/Dockerfile.lambda
 COPY docker/mosaico docker/mosaico
 
 FROM base AS cli
