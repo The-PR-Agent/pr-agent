@@ -2641,7 +2641,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 try:
                     region = session.region_name
                 except Exception as e:
-                    get_logger().warning(f"AWS_USE_IMDS: failed to resolve region via boto3: {e}")
+                    get_logger().warning(f"AWS_USE_IMDS: failed to resolve region via boto3: {type(e).__name__}")
             creds = session.get_credentials()
             if creds:
                 frozen_credentials = creds.get_frozen_credentials()
@@ -2654,9 +2654,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                 get_logger().warning(
                     "AWS_USE_IMDS is set but boto3 found no credentials; falling through to static keys"
                 )
-        except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError, OSError):
-            get_logger().exception(
-                "AWS_USE_IMDS: failed to resolve credentials via boto3; falling through to static keys"
+        except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError, OSError) as e:
+            # Keep provider error text and traceback locals out of credential-resolution logs.
+            get_logger().error(
+                "AWS_USE_IMDS: failed to resolve credentials via boto3; falling through to static keys: "
+                f"{type(e).__name__}"
             )
 
         if not region:
