@@ -3445,13 +3445,15 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         The metadata lookup is exact per spelling, so a model id only resolves when
         the queried form is registered. The six Grok ids are registered only under
-        the ``xai/`` provider prefix and bare o3/o4/Gemini ids resolve directly. To
-        mirror the old ``endswith("/<id>")`` membership, probe every suffix of the
-        id (after stripping a routing suffix such as ``:nitro`` and the leading
-        ``openrouter/`` segment, whose provider-prefixed slugs can carry metadata
-        for models this handler never routed there) plus the ``xai/``-prefixed bare
-        name. Claude models are excluded by the caller via _is_claude_family_model:
-        litellm maps their reasoning_effort to a thinking token budget.
+        the ``xai/`` provider prefix (and are also guaranteed by the caller via the
+        GROK_REASONING_EFFORT_LEVELS registry, so they do not depend on map versions)
+        and bare o3/o4/Gemini ids resolve directly. To mirror the old
+        ``endswith("/<id>")`` membership, probe every suffix of the id (after
+        stripping a routing suffix such as ``:nitro`` and the leading ``openrouter/``
+        segment, whose provider-prefixed slugs can carry metadata for models this
+        handler never routed there) plus the ``xai/``-prefixed bare name. Claude
+        models are excluded by the caller via _is_claude_family_model: litellm maps
+        their reasoning_effort to a thinking token budget.
 
         The bundled cost map is consulted directly rather than via
         ``litellm.supports_reasoning``: that public helper resolves the model through
@@ -3475,7 +3477,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                 LiteLLMAIHandler._model_cost_entry_supports_reasoning(candidate)
                 for candidate in candidates
             )
-        except Exception:
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to probe litellm reasoning metadata for {model}: {e}"
+            )
             return False
 
     @staticmethod
@@ -3488,7 +3493,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         so a provider-prefixed model still resolves through its bare or ``xai/`` form.
         """
         entry = litellm.model_cost.get(model)
-        return entry is not None and entry.get("supports_reasoning") is True
+        return isinstance(entry, dict) and entry.get("supports_reasoning") is True
 
     @staticmethod
     def _is_claude_family_model(model: str) -> bool:
@@ -4189,17 +4194,20 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs.pop('temperature', None)
 
                 reasoning_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
-                # Add reasoning_effort if the model supports it. Support now comes from
+                # Add reasoning_effort if the model supports it. Support comes from
                 # litellm's bundled model metadata (probed over suffix forms so bare,
                 # provider-prefixed, and OpenRouter :nitro/:floor variants all resolve),
-                # combined with config.additional_reasoning_effort_models as the operator
-                # escape hatch for endpoints litellm does not know. Claude models are
-                # excluded because their reasoning is driven by the dedicated
+                # the GROK_REASONING_EFFORT_LEVELS registry (source of truth for the Grok
+                # ids, which older bundled maps do not all list), and
+                # config.additional_reasoning_effort_models as the operator escape hatch
+                # for endpoints litellm does not know. Claude models are excluded because
+                # their reasoning is driven by the dedicated
                 # enable_claude_extended/adaptive_thinking settings. Skip GPT-5/GPT-6
                 # Astra here so a config-registered model cannot overwrite the
                 # reasoning_effort normalization of its dedicated branch.
                 if not (is_gpt5_model or is_gpt6_astra) and (
-                    not self._is_claude_family_model(reasoning_model)
+                    self._grok_reasoning_levels_for(reasoning_model) is not None
+                    or not self._is_claude_family_model(reasoning_model)
                     and self._litellm_supports_reasoning(reasoning_model)
                     or any(
                         reasoning_model == m or reasoning_model.endswith("/" + m)

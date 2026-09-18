@@ -53,26 +53,22 @@ def _pin_reasoning_support_metadata(monkeypatch):
     """Pin the reasoning-support metadata this suite keys off.
 
     CI runs litellm 1.99.0 and 1.101.0 in parallel and their bundled cost maps
-    differ (``xai/grok-build-latest`` is absent from the 1.99.0 map), so the
-    regression matrix forces the entries the reasoning_effort gate consults in
-    ``litellm.model_cost``: bare o3/o4/Gemini-2.5 ids register directly, the six
-    Grok ids register only under the ``xai/`` prefix (the bare forms are removed
-    so they resolve False), and claude-sonnet-4-5 / claude-haiku-4-5 report True
-    while the handler's claude-family check still keeps them out of the
-    reasoning_effort path. All other bundled entries stay untouched.
+    differ, so the regression matrix forces the entries the reasoning_effort gate
+    consults in ``litellm.model_cost``: bare o3/o4/Gemini-2.5 ids register
+    directly and claude-sonnet-4-5 / claude-haiku-4-5 report True while the
+    handler's claude-family check still keeps them out of the reasoning_effort
+    path. The six Grok ids are not pinned here: the gate recognizes them through
+    the GROK_REASONING_EFFORT_LEVELS registry, so their coverage does not depend
+    on the bundled map (xai/grok-build-latest is absent from the 1.99.0 map).
+    All other bundled entries stay untouched.
     """
     reasoning_models = (
         "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16",
         "o4-mini", "o4-mini-2025-04-16", "gemini-2.5-pro", "gemini-2.5-flash",
-        "xai/grok-4.5", "xai/grok-4.5-latest", "xai/grok-build-latest",
-        "xai/grok-4.6", "xai/grok-4.3", "xai/grok-4.3-latest",
         "claude-sonnet-4-5", "claude-haiku-4-5",
     )
     for model in reasoning_models:
         monkeypatch.setitem(litellm.model_cost, model, {"supports_reasoning": True})
-    for model in ("grok-4.5", "grok-4.5-latest", "grok-build-latest",
-                  "grok-4.6", "grok-4.3", "grok-4.3-latest"):
-        monkeypatch.delitem(litellm.model_cost, model, raising=False)
 
 
 class TestLiteLLMReasoningEffort:
@@ -1097,7 +1093,10 @@ class TestLiteLLMReasoningEffortGemini:
         self._isolate_env(monkeypatch)
 
         for model in ("claude-sonnet-4-5", "anthropic/claude-sonnet-4-5"):
-            with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
+            with patch(
+                'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+                new_callable=AsyncMock,
+            ) as mock_completion:
                 mock_completion.return_value = create_mock_acompletion_response()
 
                 handler = LiteLLMAIHandler()
