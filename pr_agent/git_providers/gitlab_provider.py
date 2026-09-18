@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import gitlab
-from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabHttpError, GitlabUpdateError
+from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabUpdateError
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
@@ -467,15 +467,7 @@ class GitLabProvider(GitProvider):
         """Collect all MR diff pages and reject known incomplete results."""
         project_id = quote(str(self.id_project), safe="")
         path = f"/projects/{project_id}/merge_requests/{self.id_mr}/diffs"
-        try:
-            changes = self.gl.http_list(path, get_all=True)
-        except GitlabHttpError as error:
-            if error.response_code == 404:
-                version, _ = self.gl.version()
-                match = re.match(r"^(\d+)\.(\d+)(?:\.|-|$)", version) if isinstance(version, str) else None
-                if match and tuple(map(int, match.groups())) < (15, 7):
-                    return self._get_legacy_merge_request_changes()
-            raise
+        changes = self.gl.http_list(path, get_all=True)
 
         changes_count = getattr(self.mr, "changes_count", None)
         if isinstance(changes_count, str):
@@ -492,17 +484,6 @@ class GitLabProvider(GitProvider):
                 f"GitLab omitted diff content for merge request {self.id_mr} (too_large or collapsed)"
             )
         return {"changes": changes}
-
-    def _get_legacy_merge_request_changes(self) -> dict:
-        """Preserve changes retrieval for GitLab versions before 15.7."""
-        changes = self.mr.changes()
-        if isinstance(changes, dict) and changes.get("overflow"):
-            get_logger().warning(
-                f"GitLab returned an overflowed diff for merge request {self.id_mr}; "
-                "retrying with access_raw_diffs=True"
-            )
-            return self.mr.changes(access_raw_diffs=True)
-        return changes
 
     def is_supported(self, capability: str) -> bool:
         if capability in ['create_inline_comment', 'publish_inline_comments']: # gfm_markdown is supported in gitlab !
@@ -683,8 +664,8 @@ class GitLabProvider(GitProvider):
         # via the merge) appear in `diffs` — even though they are not part of the MR's own
         # contribution and would never appear in a full /review.
         #
-        # The MR diff is anchored on the merge-base with target, so it correctly excludes
-        # target-side changes. Intersect file paths to drop "phantom" files brought in via merge.
+        # Use the MR diff anchored on the merge-base with target to exclude target-side changes.
+        # Intersect file paths to drop "phantom" files brought in via merge.
         mr_change_paths = None
         try:
             mr_change_paths = {

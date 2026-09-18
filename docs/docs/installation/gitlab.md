@@ -1,6 +1,6 @@
 ## Merge request diff limits
 
-On GitLab 15.7 and later, PR-Agent retrieves all pages from the merge request
+PR-Agent requires GitLab 15.7 or later and retrieves all pages from the merge request
 [`/diffs` endpoint](https://docs.gitlab.com/api/merge_requests/#list-merge-request-diffs).
 Pagination does not bypass GitLab's server-side diff limits. PR-Agent raises a provider
 error if the returned file count disagrees with an exact `changes_count`, that count
@@ -8,9 +8,8 @@ indicates overflow or is not ready, or an entry reports omitted content through
 `too_large` or `collapsed`. These flags are available from GitLab 18.4; their absence
 on older versions does not establish that every patch is complete.
 
-If `/diffs` is unavailable and the server confirms a version before 15.7, PR-Agent
-retains the legacy `/changes` request and its raw-diff retry. It does not fall back
-for authentication failures or an unknown server version.
+The `/diffs` endpoint must be available. PR-Agent does not fall back to the deprecated
+`/changes` endpoint or its raw-diff retry.
 
 ## Run as a GitLab Pipeline
 
@@ -131,7 +130,7 @@ git clone https://github.com/the-pr-agent/pr-agent.git
     2. In the secrets file/variables:
         - Set your AI model key in the respective section
         - In the [gitlab] section, set `personal_access_token` (with token from step 2) and `shared_secret` (with secret from step 3)
-        - **Authentication type**: Set `auth_type` to `"private_token"` for older GitLab versions (e.g., 11.x) or private deployments. Default is `"oauth_token"` for gitlab.com and newer versions.
+        - **Authentication type**: Set `auth_type` to `"private_token"` to send the token in the `PRIVATE-TOKEN` header, or use the default `"oauth_token"` for the `Authorization: Bearer` header. Both are supported on GitLab.com and self-managed instances.
 
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
@@ -150,7 +149,7 @@ CONFIG__GIT_PROVIDER=gitlab
 GITLAB__PERSONAL_ACCESS_TOKEN=<personal_access_token>
 GITLAB__SHARED_SECRET=<shared_secret>
 GITLAB__URL=https://gitlab.com
-GITLAB__AUTH_TYPE=oauth_token  # Use "private_token" for older GitLab versions
+GITLAB__AUTH_TYPE=oauth_token  # Use "private_token" for the PRIVATE-TOKEN header
 OPENAI__KEY=<your_openai_api_key>
 PORT=3000  # Optional: override the webhook server port
 ```

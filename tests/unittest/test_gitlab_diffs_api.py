@@ -158,30 +158,19 @@ def test_later_page_failure_does_not_cache_a_prefix_and_can_retry(provider_facto
     assert len(transport.requests) == 4
 
 
-@pytest.mark.parametrize("version", ["11.11.8", "15.6.9-ee"])
-def test_only_confirmed_old_servers_use_legacy_changes(provider_factory, version):
-    responses = [
-        (404, {"message": "not found"}, {}),
-        (200, {"version": version, "revision": "rev"}, {}),
-        (200, {"changes": [_change("a.py")], "overflow": False}, {}),
-    ]
-    provider, transport = provider_factory(responses, count="1")
-    assert provider.get_files() == ["a.py"]
-    assert [urlparse(request.url).path.rsplit("/", 1)[-1] for request in transport.requests] == [
-        "diffs", "version", "changes",
-    ]
-
-
-@pytest.mark.parametrize("version", ["15.7", "15.10.0-ee", "18.4.0", "unknown", "invalid", "15", None])
-def test_modern_or_unknown_version_does_not_fall_back_on_404(provider_factory, version):
+@pytest.mark.parametrize("method", ["get_files", "get_diff_files", "get_pr_file_paths", "get_relevant_diff"])
+def test_missing_diffs_endpoint_propagates_without_fallback(provider_factory, method):
     provider, transport = provider_factory([
         (404, {"message": "original missing endpoint"}, {}),
-        (200, {"version": version, "revision": "rev"}, {}),
     ])
+    args = ["a.py", "new"] if method == "get_relevant_diff" else []
     with pytest.raises(gitlab.GitlabHttpError, match="original missing endpoint") as error:
-        provider.get_files()
+        getattr(provider, method)(*args)
     assert error.value.response_code == 404
-    assert len(transport.requests) == 2
+    assert provider.git_files is None
+    assert provider.diff_files is None
+    provider.get_pr_file_content.assert_not_called()
+    assert [urlparse(request.url).path.rsplit("/", 1)[-1] for request in transport.requests] == ["diffs"]
 
 
 @pytest.mark.parametrize("status", [401, 403, 500])
@@ -220,8 +209,10 @@ def test_incremental_filter_propagates_known_incomplete_response(provider_factor
     assert provider.unreviewed_files_map == {}
 
 
-def test_incremental_filter_retains_best_effort_on_transient_failure(provider_factory):
-    provider, _ = provider_factory([(503, {"message": "unavailable"}, {})])
+@pytest.mark.parametrize("status", [404, 503])
+def test_incremental_filter_retains_best_effort_on_http_failure(provider_factory, status):
+    provider, transport = provider_factory([(status, {"message": "unavailable"}, {})])
     _prepare_incremental(provider)
     provider._get_incremental_commits()
     assert set(provider.unreviewed_files_map) == {"a.py", "b.py", "target-only.py"}
+    assert [urlparse(request.url).path.rsplit("/", 1)[-1] for request in transport.requests] == ["diffs"]

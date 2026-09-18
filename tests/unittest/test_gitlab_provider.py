@@ -1,9 +1,9 @@
 from datetime import datetime
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from gitlab import Gitlab
-from gitlab.exceptions import GitlabGetError, GitlabHttpError
+from gitlab.exceptions import GitlabGetError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
 from pr_agent.algo.utils import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
@@ -1462,8 +1462,8 @@ class TestGitLabIncrementalReview:
                  "new_file": True, "deleted_file": False, "renamed_file": False},
             ]
         }
-        # MR diffs are intersected with repository_compare to exclude files brought in
-        # via a merge from the target branch. Here both files are part of the MR.
+        # Intersect MR diffs with repository_compare to exclude files merged from the target branch.
+        # Include both fixture files in the MR's own changes.
         gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}, {"new_path": "b.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
@@ -1519,90 +1519,6 @@ class TestGitLabIncrementalReview:
 
         assert gitlab_provider.get_files() == ["x.py"]
 
-    def test_legacy_get_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
-        gitlab_provider.gl.http_list.side_effect = GitlabHttpError("Not found", response_code=404)
-        gitlab_provider.gl.version.return_value = ("15.6.9-ee", "revision")
-        gitlab_provider.git_files = None
-        gitlab_provider.mr.changes.side_effect = [
-            {"changes": [{"new_path": "visible.py"}], "overflow": True},
-            {
-                "changes": [
-                    {"new_path": "visible.py"},
-                    {"new_path": "hidden.py"},
-                ],
-                "overflow": False,
-            },
-        ]
-
-        assert gitlab_provider.get_files() == ["visible.py", "hidden.py"]
-        assert gitlab_provider.mr.changes.call_args_list == [
-            call(),
-            call(access_raw_diffs=True),
-        ]
-
-    def test_legacy_get_diff_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
-        gitlab_provider.gl.http_list.side_effect = GitlabHttpError("Not found", response_code=404)
-        gitlab_provider.gl.version.return_value = ("15.6.9-ee", "revision")
-        change = {
-            "old_path": "visible.py",
-            "new_path": "visible.py",
-            "diff": "@@ -1 +1 @@\n-old\n+new\n",
-            "new_file": False,
-            "deleted_file": False,
-            "renamed_file": False,
-        }
-        hidden_change = {**change, "old_path": "hidden.py", "new_path": "hidden.py"}
-        gitlab_provider.mr.changes.side_effect = [
-            {"changes": [change], "overflow": True},
-            {"changes": [change, hidden_change], "overflow": False},
-        ]
-        gitlab_provider.get_pr_file_content = MagicMock(return_value="")
-
-        diff_files = gitlab_provider.get_diff_files()
-
-        assert [file.filename for file in diff_files] == ["visible.py", "hidden.py"]
-        assert gitlab_provider.mr.changes.call_args_list == [
-            call(),
-            call(access_raw_diffs=True),
-        ]
-
-    def test_legacy_incremental_scope_retries_raw_diffs_when_changes_overflow(
-        self, gitlab_provider, mock_project
-    ):
-        gitlab_provider.gl.http_list.side_effect = GitlabHttpError("Not found", response_code=404)
-        gitlab_provider.gl.version.return_value = ("15.6.9-ee", "revision")
-        gitlab_provider.mr.notes.list.return_value = [
-            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
-        ]
-        gitlab_provider.mr.commits.return_value = [
-            self._make_commit("c1", "2024-05-01T11:00:00Z"),
-            self._make_commit("c0", "2024-05-01T09:00:00Z"),
-        ]
-        mock_project.repository_compare.return_value = {
-            "diffs": [
-                {"new_path": "visible.py"},
-                {"new_path": "hidden.py"},
-            ]
-        }
-        gitlab_provider.mr.changes.side_effect = [
-            {"changes": [{"new_path": "visible.py"}], "overflow": True},
-            {
-                "changes": [
-                    {"new_path": "visible.py"},
-                    {"new_path": "hidden.py"},
-                ],
-                "overflow": False,
-            },
-        ]
-
-        gitlab_provider.get_incremental_commits(IncrementalPR(True))
-
-        assert set(gitlab_provider.unreviewed_files_map) == {"visible.py", "hidden.py"}
-        assert gitlab_provider.mr.changes.call_args_list == [
-            call(),
-            call(access_raw_diffs=True),
-        ]
-
     def test_get_previous_review_returns_most_recent_match(self, gitlab_provider):
         # GitLab returns notes in created_at-DESC order. The helper relies on that order
         # (no local sort) — the unrelated newest note must be skipped, the newer matching
@@ -1638,9 +1554,9 @@ class TestGitLabIncrementalReview:
     def test_master_merge_files_are_excluded_from_incremental_scope(self, gitlab_provider, mock_project):
         # Reproduction of the MR !1115 bug: user ran `git merge master` on the feature branch,
         # which brought CI/config changes into the branch via a merge commit. Those files are
-        # NOT part of mr.changes() (the MR's actual contribution against its merge-base), but
+        # NOT part of the MR diffs (the MR's actual contribution against its merge-base), but
         # repository_compare(last_seen, head) walks through the merge and surfaces them.
-        # The fix intersects with mr.changes() to drop these "phantom" files.
+        # Intersect with the MR diffs to drop these "phantom" files.
         gitlab_provider.mr.notes.list.return_value = [
             self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
         ]
@@ -1659,7 +1575,7 @@ class TestGitLabIncrementalReview:
                  "new_file": False, "deleted_file": False, "renamed_file": False},
             ]
         }
-        # MR diffs contain only the MR's actual contribution; .gitlab-ci.yml is absent
+        # Include only the MR's actual contribution in its diffs; exclude .gitlab-ci.yml
         # because the change to it lives in the target branch already.
         gitlab_provider.gl.http_list.return_value = [{"new_path": "src/feature.js"}]
 
