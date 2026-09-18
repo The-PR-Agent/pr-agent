@@ -1377,9 +1377,14 @@ class TestAdditionalReasoningEffortModels:
             assert kwargs["reasoning_effort"] == "low", f"failed for {model}"
 
     @pytest.mark.asyncio
-    async def test_invalid_mapping_override_falls_back_to_builtin_list(self, monkeypatch, mock_logger):
+    @pytest.mark.parametrize("additional", [
+        {"model": "deepseek-v4-flash-0731"},
+        ["deepseek-v4-flash-0731", 123],
+        [""],
+    ])
+    async def test_invalid_override_falls_back_to_builtin_list(self, monkeypatch, mock_logger, additional):
         """Reject an unsupported override with a warning and fall back to the built-in list."""
-        fake_settings = self._settings(additional={"model": "deepseek-v4-flash-0731"})
+        fake_settings = self._settings(additional=additional)
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_supported_openai_params", lambda **kwargs: [])
         self._isolate_env(monkeypatch)
