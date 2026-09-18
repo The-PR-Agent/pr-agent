@@ -83,6 +83,12 @@ FORBIDDEN_ARGS = [
     "--config.repo_context_sibling_repos=[]",
     "--config__repo_context_sibling_repos=[]",
     '--config={"repo_context_sibling_repos": []}',
+    # description_issue_regex is compiled and run with finditer over the whole pull-request
+    # description. An ambiguous pattern backtracks exponentially, so a commenter who can choose
+    # it can burn a worker on a short body; it stays an operator choice.
+    "--config.description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
+    "--config__description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
+    '--config={"description_issue_regex": "(?:[A-Za-z ]+)+X(d+)"}',
 ]
 
 
