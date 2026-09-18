@@ -52,10 +52,19 @@ CMD ["python", "pr_agent/mosaico/server.py"]
 
 
 FROM base AS test
+# litellm fetches its model cost map over the network at import time, so a
+# third-party change to that map can turn the suite red with no change here
+# and no version bump. Use the map bundled with the litellm pinned in uv.lock
+# so the suite tests the dependency we ship rather than today's remote data.
+ENV LITELLM_LOCAL_MODEL_COST_MAP=True
 RUN uv sync --frozen --no-install-project
 COPY pr_agent pr_agent
 COPY tests tests
+# Config the unit suite asserts against, copied file by file so an unrelated
+# workflow edit does not invalidate this layer.
 COPY .github/workflows/publish.yml .github/workflows/publish.yml
+COPY .github/workflows/build-and-test.yaml .github/workflows/build-and-test.yaml
+COPY docker/Dockerfile docker/Dockerfile
 COPY docker/mosaico docker/mosaico
 
 FROM base AS cli
