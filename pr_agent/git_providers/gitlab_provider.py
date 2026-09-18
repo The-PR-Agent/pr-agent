@@ -479,10 +479,6 @@ class GitLabProvider(GitProvider):
                 raise IncompleteGitLabDiffError(
                     f"GitLab returned {len(changes)} merge-request files but reported {changes_count}"
                 )
-        if any(change.get("too_large") or change.get("collapsed") for change in changes):
-            raise IncompleteGitLabDiffError(
-                f"GitLab omitted diff content for merge request {self.id_mr} (too_large or collapsed)"
-            )
         return {"changes": changes}
 
     def is_supported(self, capability: str) -> bool:
