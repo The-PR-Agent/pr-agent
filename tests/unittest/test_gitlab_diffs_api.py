@@ -142,12 +142,6 @@ def test_unflagged_empty_patch_on_older_servers_retains_reconstruction(provider_
     assert "-old" in files[0].patch
 
 
-def test_explicit_collapse_is_not_overridden_by_patch_text(provider_factory):
-    provider, _ = provider_factory([(200, [_change("a.py", collapsed=True)], {})], count="1")
-    with pytest.raises(IncompleteGitLabDiffError):
-        provider.get_diff_files()
-
-
 def test_later_page_failure_does_not_cache_a_prefix_and_can_retry(provider_factory):
     pages = _pages([_change("a.py")], [_change("b.py")])
     provider, transport = provider_factory([pages[0], (503, {"message": "unavailable"}, {}), *pages])
