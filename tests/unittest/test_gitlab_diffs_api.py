@@ -202,7 +202,7 @@ def test_incremental_membership_uses_all_pages(provider_factory):
 
 
 def test_incremental_filter_propagates_known_incomplete_response(provider_factory):
-    provider, _ = provider_factory([(200, [_change("a.py", too_large=True, diff="")], {})], "1")
+    provider, _ = provider_factory([(200, [_change("a.py")], {})], "2")
     _prepare_incremental(provider)
     with pytest.raises(IncompleteGitLabDiffError):
         provider._get_incremental_commits()
