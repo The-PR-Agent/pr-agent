@@ -3,10 +3,9 @@
 PR-Agent requires GitLab 15.7 or later and retrieves all pages from the merge request
 [`/diffs` endpoint](https://docs.gitlab.com/api/merge_requests/#list-merge-request-diffs).
 Pagination does not bypass GitLab's server-side diff limits. PR-Agent raises a provider
-error if the returned file count disagrees with an exact `changes_count`, that count
-indicates overflow or is not ready, or an entry reports omitted content through
-`too_large` or `collapsed`. These flags are available from GitLab 18.4; their absence
-on older versions does not establish that every patch is complete.
+error if the returned file count disagrees with an exact `changes_count`, or that count
+indicates overflow or is not ready. A file whose patch GitLab omits (`too_large`, or
+`collapsed` before GitLab 19.2) is diffed locally from its two revisions instead.
 
 The `/diffs` endpoint must be available. PR-Agent does not fall back to the deprecated
 `/changes` endpoint or its raw-diff retry.
