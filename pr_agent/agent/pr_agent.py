@@ -11,8 +11,10 @@ from starlette_context import context, request_cycle_context
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.algo.utils import add_comment_identity, comment_matches_identity, update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
@@ -55,6 +57,69 @@ command2class = {
 }
 
 commands = list(command2class.keys())
+
+INCOMPLETE_GITHUB_FILES_COMMENT_MARKER = "<!-- pr-agent:github-incomplete-files -->"
+INCOMPLETE_GITHUB_FILES_COMMENT = """## PR-Agent command was not run
+
+GitHub returned an incomplete changed-file set for this pull request, so PR-Agent stopped instead of analyzing only part of it.
+
+GitHub limits this response to 3,000 files. Split larger pull requests into smaller ones, then run the command again."""
+
+
+def publish_incomplete_github_files_comment(pr_url: str) -> None:
+    """Best-effort publication of one trusted, sanitized PR-level notice."""
+    try:
+        _publish_incomplete_github_files_comment(pr_url)
+    except Exception:
+        # This notice is secondary to the original completeness failure. Keep
+        # every ordinary provider/rendering failure from replacing it.
+        get_logger().exception("Failed to prepare the incomplete-files notice")
+
+
+def _publish_incomplete_github_files_comment(pr_url: str) -> None:
+    if not get_settings().get("CONFIG.PUBLISH_OUTPUT", True):
+        return
+
+    try:
+        provider = get_git_provider_with_context(pr_url)
+    except Exception:
+        get_logger().exception("Failed to get a GitHub provider for the incomplete-files notice")
+        return
+
+    try:
+        comments = provider.get_issue_comments_newest_first()
+    except Exception:
+        get_logger().exception("Failed to inspect existing incomplete-files notices")
+        comments = []
+
+    for comment in comments:
+        try:
+            body = provider._get_comment_body(comment)
+        except Exception:
+            # A malformed or provider-specific comment must not suppress the
+            # notice. Continue looking for a verifiable PR-Agent marker and
+            # publish if none can be confirmed.
+            get_logger().warning(
+                "Failed to read an existing incomplete-files notice; continuing"
+            )
+            continue
+        if not comment_matches_identity(body, INCOMPLETE_GITHUB_FILES_COMMENT_MARKER):
+            continue
+        try:
+            if provider.is_comment_authored_by_pr_agent(comment):
+                return
+        except Exception:
+            get_logger().exception("Failed to verify the author of an incomplete-files notice")
+
+    body = add_comment_identity(
+        INCOMPLETE_GITHUB_FILES_COMMENT,
+        INCOMPLETE_GITHUB_FILES_COMMENT_MARKER,
+        provider,
+    )
+    try:
+        provider.publish_comment(body)
+    except Exception:
+        get_logger().exception("Failed to publish the incomplete-files notice")
 
 
 def _split_command(command: str) -> list[tuple[str, bool]]:
@@ -213,6 +278,8 @@ class PRAgent:
                 )
             except Exception as e:
                 get_logger().exception("Failed to process the command.")
+                if isinstance(e, IncompletePullRequestFilesError):
+                    publish_incomplete_github_files_comment(pr_url)
                 # Status carries no description: it is free text, and the exception
                 # message can embed PR URLs, repo names, or other request content.
                 span.set_status(StatusCode.ERROR)

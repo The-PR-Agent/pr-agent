@@ -401,6 +401,42 @@ async def test_a_swallowed_tool_failure_gets_a_failure_outcome(
 
 
 @pytest.mark.asyncio
+async def test_incomplete_files_constructor_failure_is_visible_and_marked_failed(
+    reactions, comment_handler, monkeypatch
+):
+    import pr_agent.agent.pr_agent as pr_agent_module
+
+    reactions(failure="confused")
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
+    monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
+    monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)
+
+    class IncompleteReviewTool:
+        def __init__(self, _pr_url, ai_handler=None, args=None):
+            raise pr_agent_module.IncompletePullRequestFilesError("private mismatch details")
+
+    monkeypatch.setitem(pr_agent_module.command2class, "review", IncompleteReviewTool)
+
+    github_app, provider = comment_handler
+    provider.publish_comment = MagicMock()
+    monkeypatch.setattr(
+        pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider
+    )
+    agent = pr_agent_module.PRAgent(ai_handler="fake-ai")
+
+    result = await github_app.handle_comments_on_pr(
+        _comment_event(), "issue_comment", "user", "1", "created", {}, agent
+    )
+
+    assert result is False
+    published = provider.publish_comment.call_args.args[0]
+    assert "GitHub returned an incomplete changed-file set" in published
+    assert "private mismatch details" not in published
+    assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("command", ["add_docs", "generate_labels"])
 async def test_documentation_and_label_failures_get_failure_outcomes(
     reactions, comment_handler, monkeypatch, command

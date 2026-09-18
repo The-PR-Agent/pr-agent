@@ -1,10 +1,13 @@
 import copy
 import json
+from unittest.mock import Mock
 
 import pytest
 
+import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.servers.github_action_runner as github_action_runner
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 
 
 def test_is_true_accepts_bool_and_case_insensitive_true_string():
@@ -22,6 +25,64 @@ async def test_run_action_returns_when_required_env_is_missing(monkeypatch, caps
     await github_action_runner.run_action()
 
     assert "GITHUB_EVENT_NAME not set" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_direct_auto_tool_notifies_and_reraises_incomplete_constructor_error(monkeypatch):
+    error = IncompletePullRequestFilesError("private repository details")
+    notify = Mock()
+
+    class IncompleteTool:
+        def __init__(self, _pr_url):
+            raise error
+
+    monkeypatch.setattr(github_action_runner, "publish_incomplete_github_files_comment", notify)
+
+    with pytest.raises(IncompletePullRequestFilesError) as raised:
+        await github_action_runner._run_auto_tool(IncompleteTool, "https://example/pr/1")
+
+    assert raised.value is error
+    notify.assert_called_once_with("https://example/pr/1")
+
+
+@pytest.mark.asyncio
+async def test_direct_auto_tool_leaves_unexpected_constructor_error_unchanged(monkeypatch):
+    error = RuntimeError("unrelated")
+    notify = Mock()
+
+    class BrokenTool:
+        def __init__(self, _pr_url):
+            raise error
+
+    monkeypatch.setattr(github_action_runner, "publish_incomplete_github_files_comment", notify)
+
+    with pytest.raises(RuntimeError) as raised:
+        await github_action_runner._run_auto_tool(BrokenTool, "https://example/pr/1")
+
+    assert raised.value is error
+    notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_auto_tool_publishes_and_preserves_error_when_comment_decode_fails(
+    monkeypatch
+):
+    error = IncompletePullRequestFilesError("private repository details")
+    provider = Mock()
+    provider.get_issue_comments_newest_first.return_value = [object()]
+    provider._get_comment_body.side_effect = RuntimeError("comment decoding failed")
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
+
+    class IncompleteTool:
+        def __init__(self, _pr_url):
+            raise error
+
+    with pytest.raises(IncompletePullRequestFilesError) as raised:
+        await github_action_runner._run_auto_tool(IncompleteTool, "https://example/pr/1")
+
+    assert raised.value is error
+    provider.publish_comment.assert_called_once()
 
 
 @pytest.mark.asyncio

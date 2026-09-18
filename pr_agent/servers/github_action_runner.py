@@ -5,7 +5,7 @@ from typing import Union
 
 import dynaconf
 
-from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.agent.pr_agent import PRAgent, publish_incomplete_github_files_comment
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -14,6 +14,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.servers.github_app import handle_line_comments, matches_review_state
@@ -55,6 +56,15 @@ def get_list_setting_or_env(key, fallback=None):
     if isinstance(value, (list, tuple, set)):
         return list(value)
     return [value]
+
+
+async def _run_auto_tool(tool_class, pr_url):
+    """Run a direct auto tool while preserving GitHub Action failure semantics."""
+    try:
+        await tool_class(pr_url).run()
+    except IncompletePullRequestFilesError:
+        publish_incomplete_github_files_comment(pr_url)
+        raise
 
 
 async def _run_review_commands(event_payload):
@@ -286,11 +296,11 @@ async def run_action():
 
                 # invoke by default all three tools
                 if auto_describe is None or is_true(auto_describe):
-                    await PRDescription(pr_url).run()
+                    await _run_auto_tool(PRDescription, pr_url)
                 if auto_review is None or is_true(auto_review):
-                    await PRReviewer(pr_url).run()
+                    await _run_auto_tool(PRReviewer, pr_url)
                 if auto_improve is None or is_true(auto_improve):
-                    await PRCodeSuggestions(pr_url).run()
+                    await _run_auto_tool(PRCodeSuggestions, pr_url)
         else:
             get_logger().info(f"Skipping action: {action}")
 
@@ -401,11 +411,11 @@ async def run_action():
         )
 
         if auto_describe is None or is_true(auto_describe):
-            await PRDescription(pr_url).run()
+            await _run_auto_tool(PRDescription, pr_url)
         if auto_review is None or is_true(auto_review):
-            await PRReviewer(pr_url).run()
+            await _run_auto_tool(PRReviewer, pr_url)
         if auto_improve is None or is_true(auto_improve):
-            await PRCodeSuggestions(pr_url).run()
+            await _run_auto_tool(PRCodeSuggestions, pr_url)
 
 
 def _inject_ci_conclusion(conclusion):
