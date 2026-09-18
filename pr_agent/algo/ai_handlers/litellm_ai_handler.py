@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 from contextvars import ContextVar
 from functools import lru_cache, wraps
 from types import FunctionType, SimpleNamespace
@@ -2014,6 +2015,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         self._aws_credential_chain_environment = {}
         self._aws_credential_chain_files = {}
         self._aws_bedrock_lock = asyncio.Lock()
+        self._aws_refresh_lock = threading.Lock()
         self._vertex_credentials, self._vertex_credentials_error = self._snapshot_vertex_credentials()
         self._vertex_aws_environment = {
             variable: os.environ.get(variable)
@@ -2677,7 +2679,22 @@ class LiteLLMAIHandler(BaseAiHandler):
             params["aws_region_name"] = region
         return params
 
-    def _refresh_aws_imds_credentials(self) -> bool:
+    def _read_aws_frozen_credentials(self, credentials):
+        """Serialize SDK refreshes without modifying handler request state."""
+        try:
+            with self._aws_refresh_lock:
+                self._validate_aws_credential_chain_environment()
+                frozen = credentials.get_frozen_credentials()
+                self._validate_aws_credential_chain_environment()
+                return frozen
+        except Exception as error:
+            # Keep worker errors observable after cancellation without exposing
+            # provider details or replacing SDK errors when logging fails.
+            with contextlib.suppress(Exception):
+                get_logger().error(f"AWS credential refresh failed: {type(error).__name__}")
+            raise
+
+    async def _refresh_aws_imds_credentials(self) -> bool:
         """Refresh ambient AWS credentials from boto3 provider chain. Called before each Bedrock call
         to avoid serving stale credentials from long-lived processes (EC2 roles rotate every ~6h).
 
@@ -2689,16 +2706,17 @@ class LiteLLMAIHandler(BaseAiHandler):
             if self._aws_boto3_creds is None:
                 get_logger().warning("IMDS credential refresh: no boto3 credentials object stored")
                 return False
-            self._validate_aws_credential_chain_environment()
             region = self._aws_active_creds.get("aws_region_name")
-            frozen_credentials = self._aws_boto3_creds.get_frozen_credentials()
-            self._validate_aws_credential_chain_environment()
-            self._aws_active_creds = self._aws_request_params_from_frozen(frozen_credentials, region)
-            return True
+            frozen_credentials = await asyncio.to_thread(self._read_aws_frozen_credentials, self._aws_boto3_creds)
+            params = self._aws_request_params_from_frozen(frozen_credentials, region)
         except (botocore.exceptions.BotoCoreError, botocore.exceptions.ClientError, OSError):
             # ClientError (STS/AssumeRole failures) is not a BotoCoreError subclass.
-            get_logger().exception("IMDS credential refresh failed")
             return False
+        # Commit only the uncancelled caller's result under the async lock.
+        # Recheck after resumption without turning trust failures into fallback.
+        self._validate_aws_credential_chain_environment()
+        self._aws_active_creds = params
+        return True
 
     def _activate_static_aws_fallback(self):
         """Select static request credentials for an AWS provider fallback after IMDS failure."""
@@ -2788,14 +2806,14 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @contextlib.asynccontextmanager
     async def _snapshot_aws_request_credentials(self, enabled):
-        """Refresh synchronously and serialize this handler's AWS call and static fallback."""
+        """Refresh off-loop and serialize this handler's AWS call and static fallback."""
         if not enabled:
             yield dict(self._aws_active_creds), False
             return
         async with self._aws_bedrock_lock:
             if not self._aws_imds_fell_back:
                 self._validate_aws_credential_chain_environment()
-                if self._aws_imds_mode and not self._refresh_aws_imds_credentials() and self._aws_static_creds:
+                if self._aws_imds_mode and not await self._refresh_aws_imds_credentials() and self._aws_static_creds:
                     self._activate_static_aws_fallback()
             can_fallback = self._aws_imds_mode and not self._aws_imds_fell_back and bool(self._aws_static_creds)
             yield dict(self._aws_active_creds), can_fallback
@@ -3646,6 +3664,47 @@ class LiteLLMAIHandler(BaseAiHandler):
             system_prompt = "No system prompt provided"
         return system_prompt, user_prompt
 
+    def build_request_messages(
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        image_path: str | None = None,
+    ) -> list[dict]:
+        """Build the exact message payload for normalized prompt strings."""
+        combine_prompts = (
+            self._uses_user_message_only(model)
+            or get_settings().config.custom_reasoning_model
+        )
+        if combine_prompts:
+            user_prompt = f"{system_prompt}\n\n\n{user_prompt}"
+            content = user_prompt
+            if image_path:
+                content = [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": image_path}},
+                ]
+            return [{"role": "user", "content": content}]
+
+        user_content = user_prompt
+        if image_path:
+            user_content = [
+                {"type": "text", "text": user_prompt},
+                {"type": "image_url", "image_url": {"url": image_path}},
+            ]
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+
+    def _uses_user_message_only(self, model: str) -> bool:
+        """Recognize user-only models through any routed provider prefix."""
+        return any(
+            model == registered_model or model.endswith(f"/{registered_model}")
+            for registered_model in self.user_message_only_models
+        )
+
     def _configure_claude_extended_thinking(self, model: str, kwargs: dict) -> dict:
         """
         Configure Claude extended thinking parameters if applicable.
@@ -3930,11 +3989,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                     get_logger().warning(
                         "Empty system prompt for claude model. Adding a newline character to prevent OpenAI API error.")
                 system = normalized_system
-                messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-
-                if img_path:
-                    messages[1]["content"] = [{"type": "text", "text": messages[1]["content"]},
-                                              {"type": "image_url", "image_url": {"url": img_path}}]
+                messages = self.build_request_messages(
+                    model,
+                    system,
+                    user,
+                    image_path=img_path,
+                )
 
                 thinking_kwargs_gpt5 = None
                 openrouter_reasoning_effort = None
@@ -3984,16 +4044,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                     model_family = "GPT-6 Astra" if is_gpt6_astra else "GPT-5"
                     get_logger().info(f"Using reasoning_effort='{effort}' for {model_family} model")
                 # Currently, some models do not support a separate system and user prompts
-                if model in self.user_message_only_models or get_settings().config.custom_reasoning_model:
+                if self._uses_user_message_only(model) or get_settings().config.custom_reasoning_model:
                     user = f"{system}\n\n\n{user}"
                     system = ""
                     get_logger().info(f"Using model {model}, combining system and user prompts")
-                    if img_path:
-                        content = [{"type": "text", "text": user},
-                                   {"type": "image_url", "image_url": {"url": img_path}}]
-                    else:
-                        content = user
-                    messages = [{"role": "user", "content": content}]
 
                 # Build request kwargs after normalizing the model and messages so credentials and
                 # endpoints can be selected for the provider that will actually receive this call.

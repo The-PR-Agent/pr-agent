@@ -122,7 +122,7 @@ class Review(BaseModel):
 {%- endif %}
     key_issues_to_review: List[KeyIssuesComponentLink] = Field("A concise list (0-{{ num_max_findings }} issues) of bugs, security vulnerabilities, or significant performance concerns introduced in this PR. Only include issues you are confident about. If confidence is limited but the potential impact is high (e.g., data loss, security), you may include it only if you explicitly note what remains uncertain. Each issue must identify a concrete problem with a realistic trigger scenario. An empty list is acceptable if no clear issues are found.")
 {%- if require_security_review %}
-    security_concerns: str = Field(description="Does this PR code introduce vulnerabilities such as exposure of sensitive information (e.g., API keys, secrets, passwords), or security concerns like SQL injection, XSS, CSRF, and others? Answer 'No' (without explaining why) if there are no possible issues. If there are security concerns or issues, start your answer with a short header, such as: 'Sensitive information exposure: ...', 'SQL injection: ...', etc. Explain your answer. Be specific and give examples if possible")
+    security_concerns: str = Field(description="Does this PR code introduce vulnerabilities such as exposure of sensitive information (e.g., API keys, secrets, passwords), or security concerns like SQL injection, XSS, CSRF, and others? Answer 'No' (without explaining why) if there are no possible issues. Answer with the exact English literal 'No', and do not translate it into another language, even if extra instructions ask you to write your response in another language. If there are security concerns or issues, start your answer with a short header, such as: 'Sensitive information exposure: ...', 'SQL injection: ...', etc. Explain your answer. Be specific and give examples if possible")
 {%- endif %}
 {%- if require_todo_scan %}
     todo_sections: Union[List[TodoSection], str] = Field(description="A list of TODO comments found in the PR code. Return 'No' (as a string) if there are no TODO comments in the PR")
@@ -239,6 +239,9 @@ Ticket Requirements:
 {%- endif %}
 =====
 {% endfor %}
+{%- endif %}
+{%- if related_tickets_omitted is defined and related_tickets_omitted %}
+Context notice: {{ related_tickets_omitted }} additional related ticket(s) were omitted to fit the model context.
 {%- endif %}
 
 

@@ -196,6 +196,7 @@ def test_non_decoupled_suggestions_render_without_the_shared_fragment(monkeypatc
 
 
 @pytest.mark.parametrize("include_ai_metadata", [False, True])
+@pytest.mark.asyncio
 async def test_reflection_supplies_the_numbered_fragment(
     include_ai_metadata,
     restore_prompt_settings,
@@ -210,7 +211,7 @@ async def test_reflection_supplies_the_numbered_fragment(
     result = await tool.self_reflect_on_suggestions(
         [{"one_sentence_summary": "Keep the shared prompt accurate"}],
         diff,
-        "test-model",
+        settings.config.model,
     )
 
     call = ai_handler.chat_completion.await_args.kwargs

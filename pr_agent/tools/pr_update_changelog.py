@@ -5,11 +5,15 @@ from functools import partial
 from time import sleep
 from typing import Tuple
 
-from jinja2 import Environment, StrictUndefined
-
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, show_relevant_configurations
 from pr_agent.config_loader import get_settings
@@ -96,56 +100,90 @@ class PRUpdateChangelog:
                 f"publishing the changelog as a comment instead"
             )
 
+        temporary_comment_published = False
         if get_settings().config.publish_output:
             self.git_provider.publish_comment("Preparing changelog updates...", is_temporary=True)
+            temporary_comment_published = True
 
-        await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+        try:
+            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
 
-        new_file_content, answer = self._prepare_changelog_update()
+            new_file_content, answer = self._prepare_changelog_update()
 
-        # Output the relevant configurations if enabled
-        if get_settings().get('config', {}).get('output_relevant_configurations', False):
-            answer += show_relevant_configurations(relevant_section='pr_update_changelog')
+            # Output the relevant configurations if enabled
+            if get_settings().get('config', {}).get('output_relevant_configurations', False):
+                answer += show_relevant_configurations(relevant_section='pr_update_changelog')
 
-        get_logger().debug("PR output", artifact=answer)
+            get_logger().debug("PR output", artifact=answer)
 
-        if get_settings().config.publish_output:
-            self.git_provider.remove_initial_comment()
-            if self.commit_changelog:
-                self._push_changelog_update(new_file_content, answer)
-            else:
-                changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
-                if self.push_skipped_reason:
-                    changelog_comment += (
-                        f"\n\n> ℹ️ These changes were not pushed to the repository "
-                        f"({self.push_skipped_reason})."
+            if get_settings().config.publish_output:
+                if self.commit_changelog:
+                    self._push_changelog_update(new_file_content, answer)
+                else:
+                    changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
+                    if self.push_skipped_reason:
+                        changelog_comment += (
+                            f"\n\n> ℹ️ These changes were not pushed to the repository "
+                            f"({self.push_skipped_reason})."
+                        )
+                    self.git_provider.publish_comment(changelog_comment)
+        finally:
+            if temporary_comment_published:
+                try:
+                    self.git_provider.remove_initial_comment()
+                except Exception as cleanup_error:
+                    get_logger().warning(
+                        f"Failed to remove the temporary changelog comment: {cleanup_error}"
                     )
-                self.git_provider.publish_comment(changelog_comment)
 
     async def _prepare_prediction(self, model: str):
-        self.patches_diff = get_pr_diff(
-            self.git_provider,
-            self.token_handler,
-            model,
-            output_token_reserve=getattr(
-                getattr(self, "ai_handler", None), "get_output_token_reserve", None
-            ),
-        )
-        if self.patches_diff:
-            get_logger().debug("PR diff", artifact=self.patches_diff)
-            self.prediction = await self._get_prediction(model)
-        else:
-            get_logger().error("Error getting PR diff")
-            self.prediction = ""
-
-    async def _get_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
         if get_settings().pr_update_changelog.add_pr_link:
             variables["pr_link"] = self.git_provider.get_pr_url()
-        environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_update_changelog_prompt.user).render(variables)
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_update_changelog_prompt.system,
+            get_settings().pr_update_changelog_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
+        )
+        budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
+        patches_diff = get_pr_diff(
+            self.git_provider,
+            budget.token_handler,
+            model,
+            output_token_reserve=output_token_reserve,
+        )
+        if not patches_diff:
+            raise ValueError(f"No PR diff fits the /update_changelog request for {model}")
+
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+        if fitted.optional_text != patches_diff:
+            raise ValueError(
+                f"The complete packed changelog diff does not fit the token limit for {model}"
+            )
+        self.patches_diff = fitted.optional_text
+        self._attempt_system_prompt = fitted.system_prompt
+        self._attempt_user_prompt = fitted.user_prompt
+        get_logger().debug("PR diff", artifact=self.patches_diff)
+        self.prediction = await self._get_prediction(model)
+
+    async def _get_prediction(self, model: str):
+        system_prompt = self._attempt_system_prompt
+        user_prompt = self._attempt_user_prompt
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, system=system_prompt, user=user_prompt, temperature=get_settings().config.temperature)
 

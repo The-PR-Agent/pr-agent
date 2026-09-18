@@ -310,3 +310,37 @@ async def test_handle_request_returns_false_for_unknown_command(monkeypatch):
     handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/unknown")
 
     assert handled is False
+
+
+@pytest.mark.asyncio
+async def test_handle_request_language_instruction_preserves_control_values(monkeypatch):
+    settings = get_settings()
+    original = {
+        key: settings.get(key).extra_instructions
+        for key in settings
+        if hasattr(settings.get(key), "extra_instructions")
+    }
+    settings.config.response_language = "de-DE"
+
+    class FakeReviewer:
+        def __init__(self, pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
+            pass
+
+        async def run(self):
+            pass
+
+    try:
+        _patch_request_dependencies(monkeypatch)
+        monkeypatch.setattr(pr_agent_module, "PRReviewer", FakeReviewer)
+
+        await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/review")
+
+        instructions = str(settings.pr_reviewer.extra_instructions)
+        assert "de-DE" in instructions
+        assert "Keep schema control values" in instructions
+        assert "'No'" in instructions
+        assert "do not translate them" in instructions
+    finally:
+        settings.config.response_language = "en-us"
+        for key, value in original.items():
+            settings.get(key).extra_instructions = value

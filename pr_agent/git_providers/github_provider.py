@@ -9,7 +9,7 @@ import time
 import traceback
 from datetime import datetime
 from typing import Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry
 from github.Issue import Issue
@@ -198,7 +198,7 @@ class GithubProvider(GitProvider):
             get_logger().error("Unable to get canonical url parts since missing context (PR or explicit git url)")
             return ("", "")
 
-        prefix = f"{scheme_and_netloc}/{owner}/{repo}/blob/{desired_branch}"
+        prefix = f"{scheme_and_netloc}/{owner}/{repo}/blob/{quote(desired_branch)}"
         suffix = ""  # github does not add a suffix
         return (prefix, suffix)
 
@@ -216,6 +216,16 @@ class GithubProvider(GitProvider):
         self.previous_review = self.get_previous_review(full=True, incremental=True)
         if self.previous_review:
             self.incremental.commits_range = self.get_commit_range()
+            if self.incremental.commits_range and self.incremental.last_seen_commit is None:
+                # Every commit post-dates the review (e.g. the branch was fully rebased), so there
+                # is no baseline commit to diff against. Fall back to a full review rather than
+                # diffing against a None ref, which silently yields empty original content.
+                get_logger().info(
+                    "Incremental review cannot anchor a base commit (no commit predates the "
+                    "previous review); falling back to a full review"
+                )
+                self.incremental.is_incremental = False
+                return
             # Get all files changed during the commit range
 
             for commit in self.incremental.commits_range:
@@ -227,11 +237,18 @@ class GithubProvider(GitProvider):
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
 
+    @staticmethod
+    def _commit_timeline_date(commit):
+        """Prefer the committer date: rebasing rewrites content but preserves the author
+        date, so anchoring on it classifies rewritten commits as already-reviewed."""
+        committer_date = getattr(getattr(commit.commit, 'committer', None), 'date', None)
+        return committer_date or commit.commit.author.date
+
     def get_commit_range(self):
         last_review_time = self.previous_review.created_at
         first_new_commit_index = None
         for index in range(len(self.pr_commits) - 1, -1, -1):
-            if self.pr_commits[index].commit.author.date > last_review_time:
+            if self._commit_timeline_date(self.pr_commits[index]) > last_review_time:
                 self.incremental.first_new_commit = self.pr_commits[index]
                 first_new_commit_index = index
             else:
@@ -378,7 +395,8 @@ class GithubProvider(GitProvider):
                         if counter_valid == MAX_FILES_ALLOWED_FULL:
                             get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
 
-                    if avoid_load:
+                    pr_level_status = not (self.incremental.is_incremental and self.unreviewed_files_map)
+                    if avoid_load or (pr_level_status and file.status == "removed"):
                         new_file_content_str = ""
                     else:
                         new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
@@ -389,7 +407,7 @@ class GithubProvider(GitProvider):
                         patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
                         self.unreviewed_files_map[file.filename] = patch
                     else:
-                        if avoid_load:
+                        if avoid_load or file.status == "added":
                             original_file_content_str = ""
                         else:
                             original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha, path=old_filename)
