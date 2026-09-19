@@ -55,6 +55,7 @@ def _settings(
     extended_budget_tokens=2048,
     extended_max_output_tokens=4096,
     adaptive_override=None,
+    custom_llm_provider="",
 ):
     flags = {
         "enable_claude_adaptive_thinking": enabled,
@@ -81,7 +82,10 @@ def _settings(
     }
     return SimpleNamespace(
         config=config,
-        litellm=SimpleNamespace(get=lambda key, default=None: default),
+        litellm=SimpleNamespace(
+            custom_llm_provider=custom_llm_provider,
+            get=lambda key, default=None: default,
+        ),
         get=lambda key, default=None: aws.get(key, default),
     )
 
@@ -327,6 +331,10 @@ _PROFILE_ARN = (
     "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
     "application-inference-profile/abc123def456"
 )
+_RAW_PROFILE_ARN = (
+    "arn:aws:bedrock:eu-central-1:000000000000:"
+    "application-inference-profile/abc123def456"
+)
 _UNLISTED_PROFILE_ARN = (
     "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
     "application-inference-profile/unlisted789"
@@ -372,6 +380,48 @@ def test_registered_opaque_model_keeps_adaptive_payload(monkeypatch):
     assert before["thinking"] == {"type": "enabled", "budget_tokens": 2048}
     assert after["thinking"] == {"type": "adaptive"}
     assert unlisted["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
+
+def test_registered_raw_bedrock_arn_keeps_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(adaptive_override=[_RAW_PROFILE_ARN]),
+    )
+    config = AmazonConverseConfig()
+    params = {"thinking": {"type": "adaptive"}}
+
+    before = config.map_openai_params(params.copy(), {}, _RAW_PROFILE_ARN, False)
+    LiteLLMAIHandler()
+    after = config.map_openai_params(params.copy(), {}, _RAW_PROFILE_ARN, False)
+
+    assert before["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+    assert after["thinking"] == {"type": "adaptive"}
+
+
+@pytest.mark.asyncio
+async def test_raw_bedrock_arn_with_custom_provider_receives_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(
+            enabled=True,
+            adaptive_override=[_RAW_PROFILE_ARN],
+            custom_llm_provider="bedrock",
+        ),
+    )
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        handler = LiteLLMAIHandler()
+        await handler.chat_completion(model=_RAW_PROFILE_ARN, system="sys", user="usr")
+
+    kwargs = completion.call_args.kwargs
+    assert kwargs["model"] == _RAW_PROFILE_ARN
+    assert kwargs["custom_llm_provider"] == "bedrock"
+    assert kwargs["thinking"] == {"type": "adaptive"}
 
 
 def test_named_override_keeps_litellm_model_info(monkeypatch):

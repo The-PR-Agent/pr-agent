@@ -2229,7 +2229,9 @@ class LiteLLMAIHandler(BaseAiHandler):
             "claude_adaptive_thinking_models_override"
         )
         bedrock_overrides = [
-            model for model in self.claude_adaptive_thinking_models_override if model.startswith("bedrock/")
+            model
+            for model in self.claude_adaptive_thinking_models_override
+            if model.startswith("bedrock/") or re.match(r"^arn:[^:]+:bedrock:", model)
         ]
         if bedrock_overrides:
             litellm.register_model({
