@@ -3451,24 +3451,27 @@ class LiteLLMAIHandler(BaseAiHandler):
         GROK_REASONING_EFFORT_LEVELS registry, so they do not depend on map versions)
         and bare o3/o4/Gemini ids resolve directly. To mirror the old
         ``endswith("/<id>")`` membership, probe every suffix of the id (after
-        stripping a routing suffix such as ``:nitro`` and the leading ``openrouter/``
-        segment, whose provider-prefixed slugs can carry metadata for models this
-        handler never routed there) plus the ``xai/``-prefixed bare name. Claude
-        models are excluded by the caller via _is_claude_family_model: litellm maps
-        their reasoning_effort to a thinking token budget.
+        stripping the leading ``openrouter/`` segment, whose provider-prefixed slugs
+        can carry metadata for models this handler never routed there) plus the
+        ``xai/``-prefixed bare name. Routing suffixes such as ``:nitro`` are stripped
+        by the OpenRouter caller before this gate runs; for every other provider the
+        full tagged id is kept, so a local ``ollama/o3:latest`` only resolves when its
+        exact spelling is registered and does not fall through to the bare ``o3``
+        entry. Claude models are excluded by the caller via _is_claude_family_model:
+        litellm maps their reasoning_effort to a thinking token budget.
 
         The bundled cost map is consulted directly rather than via
         ``litellm.supports_reasoning``: that public helper resolves the model through
         ``get_llm_provider`` on every call, and provider resolution must stay out of
         this gate because the api key guard snapshots the resolved provider and its
-        key. The map is also what #3475 pins through ``LITELLM_LOCAL_MODEL_COST_MAP``,
-        so the reads are deterministic for the model ids this gate handles.
+        key. The map is also what #3475 pins through ``LITELLM_LOCAL_MODEL_COST_MAP``
+        (now in every Dockerfile stage), so the reads are deterministic for the model
+        ids this gate handles.
         """
         probe = model
         if probe.startswith("openrouter/"):
             probe = probe.removeprefix("openrouter/")
-        base = probe.rsplit(":", 1)[0]
-        segments = base.split("/")
+        segments = probe.split("/")
         candidates = []
         for i in range(len(segments)):
             candidates.append("/".join(segments[i:]))
