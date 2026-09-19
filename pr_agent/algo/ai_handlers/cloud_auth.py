@@ -3,7 +3,7 @@
 Extracted verbatim from ``litellm_ai_handler`` (see issue #3508): Azure OIDC
 token exchange, Vertex WIF/ADC loading, Bedrock Mantle request signing, IMDS
 snapshots, SDK header bridges and the request-local API-key guard overrides
-they install. Behaviour is deliberately unchanged -- ``litellm_ai_handler``
+they install. Behaviour is deliberately unchanged: ``litellm_ai_handler``
 re-imports every name defined here, so module attributes and bare references
 resolve exactly as before the move.
 """

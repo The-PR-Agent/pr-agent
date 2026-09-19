@@ -1777,7 +1777,7 @@ async def test_missing_private_import_preserves_module_and_fails_closed(monkeypa
             module.LiteLLMAIHandler()
         return
     # The guarded LiteLLM interfaces now live in cloud_auth, while the handler module
-    # keeps its own guarded try/except copies -- hence the isolated reload above still
+    # keeps its own guarded try/except copies; hence the isolated reload above still
     # proves the handler imports and exposes ``None`` when the private interface is
     # unavailable. Trigger the fail-closed guards through the moved module, which reads
     # these slots off the handler module at call time (see cloud_auth._handler_attr).

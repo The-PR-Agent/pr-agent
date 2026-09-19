@@ -214,7 +214,7 @@ def _configured_client_retries():
     """config.num_retries as a non-negative int, or None (unset/invalid = client defaults).
 
     Invalid values are logged and ignored rather than raised: this is read on the request
-    path, and a config typo should not fail the run — nor be wrapped and retried as an API
+    path, and a config typo should not fail the run nor be wrapped and retried as an API
     error by the caller's exception handling.
     """
     value = get_settings().config.get("num_retries", None)
