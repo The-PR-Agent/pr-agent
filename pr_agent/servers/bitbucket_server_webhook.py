@@ -83,7 +83,8 @@ def should_process_pr_logic(data) -> bool:
 
                     if all_files_outside:
                         get_logger().info(
-                            f"Ignoring PR because all files {changed_files} are outside allowed folders {allowed_folders}"
+                            f"Ignoring PR because all files {changed_files} are outside "
+                            f"allowed folders {allowed_folders}"
                         )
                         return False
     except Exception as e:
