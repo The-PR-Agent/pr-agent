@@ -127,6 +127,15 @@ def test_suggestion_prompts_allow_dependencies_introduced_by_improved_code(promp
     assert "standalone or unrelated missing" in rendered
 
 
+def test_reflection_prompt_does_not_zero_required_imports():
+    prompt = get_settings().pr_code_suggestions_reflect_prompt.system
+
+    rendered = Environment().from_string(prompt).render({"diff_hunk_format": "diff"})
+
+    assert "- Add standalone or unrelated missing import statements" in rendered
+    assert "- Add missing import statements" not in rendered
+
+
 def test_fragment_renderer_sandboxes_host_overrides(restore_prompt_settings):
     get_settings().set(
         "prompt_fragments.diff_hunk_format",
