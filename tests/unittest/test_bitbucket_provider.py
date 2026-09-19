@@ -3,7 +3,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from atlassian.bitbucket import Bitbucket
-from requests.exceptions import HTTPError
+from requests import Request, Response
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import HTTPError, Timeout
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import (
@@ -24,6 +26,24 @@ def _added_file(filename="src/example.py", lines=("a = 1", "b = 2", "c = 3")):
 
 
 class TestBitbucketProvider:
+    @staticmethod
+    def _source_write_provider():
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "workspace"
+        provider.repo_slug = "repository"
+        provider.headers = {"Authorization": "Bearer test-value"}
+        return provider
+
+    @staticmethod
+    def _source_write_response(status_code: int):
+        url = "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/"
+        response = Response()
+        response.status_code = status_code
+        response.url = url
+        response.request = Request("POST", url).prepare()
+        response._content = b"response-body-sentinel"
+        return response
+
     @staticmethod
     def _code_suggestion(line: int, end_line: int = None):
         return {
@@ -102,6 +122,64 @@ class TestBitbucketProvider:
 
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
             provider.publish_description("AI title", "Updated description")
+
+    @pytest.mark.parametrize("status_code", [200, 201, 204])
+    def test_create_or_update_pr_file_accepts_success_response(self, status_code):
+        provider = self._source_write_provider()
+        response = self._source_write_response(status_code)
+
+        with patch(
+            "pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response
+        ) as request:
+            result = provider.create_or_update_pr_file(
+                "CHANGELOG.md", "feature", "new content", "Update changelog"
+            )
+
+        assert result is None
+        request.assert_called_once()
+        assert request.call_args.args == (
+            "POST",
+            "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/",
+        )
+        assert request.call_args.kwargs["data"] == {"message": "Update changelog", "branch": "feature"}
+        assert request.call_args.kwargs["files"] == {"CHANGELOG.md": "new content"}
+        assert set(request.call_args.kwargs["headers"]) == {"Authorization"}
+
+    @pytest.mark.parametrize("status_code", [401, 403, 409, 500, 503])
+    def test_create_or_update_pr_file_propagates_http_errors(self, status_code):
+        provider = self._source_write_provider()
+        response = self._source_write_response(status_code)
+
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request,
+            patch("pr_agent.git_providers.bitbucket_provider.get_logger") as get_logger,
+            pytest.raises(HTTPError) as raised,
+        ):
+            provider.create_or_update_pr_file(
+                "CHANGELOG.md", "feature", "new content", "Update changelog"
+            )
+
+        assert raised.value.response is response
+        request.assert_called_once()
+        get_logger.assert_not_called()
+
+    @pytest.mark.parametrize("error_type", [RequestsConnectionError, Timeout])
+    def test_create_or_update_pr_file_propagates_transport_errors(self, error_type):
+        provider = self._source_write_provider()
+        error = error_type("transport failed")
+
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.requests.request", side_effect=error) as request,
+            patch("pr_agent.git_providers.bitbucket_provider.get_logger") as get_logger,
+            pytest.raises(error_type) as raised,
+        ):
+            provider.create_or_update_pr_file(
+                "CHANGELOG.md", "feature", "new content", "Update changelog"
+            )
+
+        assert raised.value is error
+        request.assert_called_once()
+        get_logger.assert_not_called()
 
     def test_parse_pr_url(self):
         url = "https://bitbucket.org/WORKSPACE_XYZ/MY_TEST_REPO/pull-requests/321"

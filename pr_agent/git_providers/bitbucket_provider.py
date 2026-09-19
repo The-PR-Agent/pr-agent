@@ -672,10 +672,8 @@ class BitbucketProvider(GitProvider):
             "branch": branch
         }
         headers = {'Authorization': self.headers['Authorization']} if 'Authorization' in self.headers else {}
-        try:
-            requests.request("POST", url, headers=headers, data=data, files=files)
-        except Exception:
-            get_logger().exception(f"Failed to create empty file {file_path} in branch {branch}")
+        response = requests.request("POST", url, headers=headers, data=data, files=files)
+        response.raise_for_status()
 
     def _get_pr_file_content(self, remote_link: str):
         try:

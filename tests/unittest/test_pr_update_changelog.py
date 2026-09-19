@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from requests.exceptions import HTTPError
 
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
@@ -288,6 +289,61 @@ class TestPRUpdateChangelog:
                 ],
             )
             mock_git_provider.publish_comment.assert_not_called()
+
+    def test_push_changelog_update_stops_success_follow_up_after_write_failure(
+        self, changelog_tool, mock_git_provider
+    ):
+        write_error = HTTPError("403 Client Error")
+        mock_git_provider.create_or_update_pr_file.side_effect = write_error
+        mock_git_provider.get_pr_branch.return_value = "feature-branch"
+        mock_git_provider.supports_changelog_update_review.return_value = True
+
+        with patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings, patch(
+            "pr_agent.tools.pr_update_changelog.sleep"
+        ) as sleep:
+            mock_settings.return_value.pr_update_changelog.get.return_value = True
+
+            with pytest.raises(HTTPError) as raised:
+                changelog_tool._push_changelog_update("new content", "answer")
+
+        assert raised.value is write_error
+        mock_git_provider.create_or_update_pr_file.assert_called_once()
+        sleep.assert_not_called()
+        mock_git_provider.pr.get_commits.assert_not_called()
+        mock_git_provider.pr.create_review.assert_not_called()
+        mock_git_provider.publish_comment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_preserves_write_failure_after_temporary_comment_cleanup(
+        self, changelog_tool, mock_git_provider
+    ):
+        write_error = HTTPError("403 Client Error")
+        mock_git_provider.create_or_update_pr_file.side_effect = write_error
+        mock_git_provider.remove_initial_comment.side_effect = RuntimeError("cleanup failed")
+        mock_git_provider.supports_changelog_update_review.return_value = True
+        changelog_tool.commit_changelog = True
+        changelog_tool.prediction = "## v1.1.0\n- New feature"
+
+        with (
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
+            patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"),
+            patch("pr_agent.tools.pr_update_changelog.sleep") as sleep,
+        ):
+            mock_settings.return_value.config.publish_output = True
+            mock_settings.return_value.pr_update_changelog.get.return_value = True
+            mock_settings.return_value.get.return_value = {}
+
+            with pytest.raises(HTTPError) as raised:
+                await changelog_tool.run()
+
+        assert raised.value is write_error
+        mock_git_provider.publish_comment.assert_called_once_with(
+            "Preparing changelog updates...", is_temporary=True
+        )
+        mock_git_provider.remove_initial_comment.assert_called_once_with()
+        sleep.assert_not_called()
+        mock_git_provider.pr.get_commits.assert_not_called()
+        mock_git_provider.pr.create_review.assert_not_called()
 
     def test_push_changelog_update_skips_review_when_not_supported(self, changelog_tool, mock_git_provider):
         """A provider without the capability is never asked for a commit-scoped review."""
