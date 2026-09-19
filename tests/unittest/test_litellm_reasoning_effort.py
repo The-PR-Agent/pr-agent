@@ -1129,6 +1129,77 @@ class TestLiteLLMReasoningEffortGemini:
                 assert call_kwargs.get("reasoning_effort") == "low", f"reasoning_effort dropped for {model}"
 
 
+class TestLiteLLMReasoningEffortTaggedModels:
+    """Reasoning support is probed on the exact model id, so a ``:tag`` a local
+    provider attaches (ollama/replicate Bedrock) must not fall through to the
+    bare metadata entry. The OpenRouter caller strips its own routing suffix
+    before this gate, so only non-OpenRouter tagged ids are exercised here.
+    """
+
+    def _isolate_env(self, monkeypatch):
+        # LiteLLMAIHandler.__init__ branches on these; clear them for a deterministic handler.
+        for name in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+
+    @pytest.mark.asyncio
+    async def test_tagged_ollama_id_does_not_fall_through_to_bare_entry(self, monkeypatch, mock_logger):
+        """ollama/o3:latest must not receive reasoning_effort just because the bare o3
+        entry is reasoning-capable; the tagged spelling is not what litellm registers.
+        """
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(
+                model="ollama/o3:latest", system="system", user="user",
+            )
+
+        kwargs = completion.call_args.kwargs
+        assert "reasoning_effort" not in kwargs
+        assert "allowed_openai_params" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", [
+        "ollama/deepseek-r1:8b",
+        "gpt-oss:20b",
+        "replicate/deepseek-ai/deepseek-r1:2025-01-12",
+    ])
+    async def test_tagged_non_reasoning_spellings_receive_no_effort(self, monkeypatch, mock_logger, model):
+        """Tagged ids litellm does not register as reasoning-capable stay off the path."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(model=model, system="system", user="user")
+
+        kwargs = completion.call_args.kwargs
+        assert "reasoning_effort" not in kwargs, f"unexpected reasoning_effort for {model}"
+
+    @pytest.mark.asyncio
+    async def test_exact_tagged_spelling_still_enables_reasoning(self, monkeypatch, mock_logger):
+        """A tagged id registered with its exact spelling still resolves to reasoning_effort."""
+        monkeypatch.setitem(
+            litellm.model_cost, "ollama/qwen3:8b", {"supports_reasoning": True}
+        )
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(
+                model="ollama/qwen3:8b", system="system", user="user",
+            )
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "low"
+
+
 class TestLiteLLMReasoningEffortGrok:
     """Cover Grok-specific reasoning levels without duplicating generic OpenRouter tests."""
 
