@@ -432,12 +432,6 @@ class GitProvider(ABC):
     def edit_comment(self, comment, body: str):
         pass
 
-    def edit_comment_from_comment_id(self, comment_id: int, body: str):
-        pass
-
-    def get_comment_body_from_comment_id(self, comment_id: int) -> str:
-        pass
-
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         pass
 
@@ -646,9 +640,6 @@ class GitProvider(ABC):
         repo-context support at all.
         """
         return None
-
-    def get_workspace_name(self):
-        return ""
 
     def get_pr_id(self):
         return ""
@@ -878,9 +869,6 @@ class GitProvider(ABC):
 
     @abstractmethod
     def get_pr_labels(self, update=False):
-        pass
-
-    def get_repo_labels(self):
         pass
 
     def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:

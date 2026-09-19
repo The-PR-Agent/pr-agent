@@ -28,11 +28,10 @@ from ..algo.utils import (
     PRCodeSuggestionsIdentity,
     clip_tokens,
     comment_matches_any_identity,
-    find_line_number_of_relevant_line_in_file,
     get_pr_review_comment_identifiers,
     load_large_diff,
 )
-from ..config_loader import get_settings, get_verbosity_level
+from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
@@ -1313,12 +1312,6 @@ class GitLabProvider(GitProvider):
                 f"Resolved {resolved} fixed inline thread(s) on merge request {self.id_mr}")
         return resolved
 
-    def edit_comment_from_comment_id(self, comment_id: int, body: str):
-        body = self.limit_output_characters(body, self.max_comment_chars)
-        comment = self.mr.notes.get(comment_id)
-        comment.body = body
-        comment.save()
-
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
         discussion = self.mr.discussions.get(comment_id)
@@ -1333,13 +1326,6 @@ class GitLabProvider(GitProvider):
 
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, absolute_position: int = None):
         raise NotImplementedError("GitLab provider does not support creating inline comments yet")
-
-    def create_inline_comments(self, comments: list[dict]):
-        raise NotImplementedError("GitLab provider does not support publishing inline comments yet")
-
-    def get_comment_body_from_comment_id(self, comment_id: int):
-        comment = self.mr.notes.get(comment_id).body
-        return comment
 
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
@@ -1965,9 +1951,6 @@ class GitLabProvider(GitProvider):
             self._repo_context_default_branch = self.gl.projects.get(self.id_project).default_branch
         return self._repo_context_default_branch
 
-    def get_workspace_name(self):
-        return self.id_project.split('/')[0]
-
     def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
         try:
             if not self.id_mr:
@@ -2139,9 +2122,6 @@ class GitLabProvider(GitProvider):
                 get_logger().warning(f"Failed to refresh merge request {self.id_mr}, using cached labels, error: {e}")
         return self._read_mr_labels()
 
-    def get_repo_labels(self):
-        return self.gl.projects.get(self.id_project).labels.list()
-
     def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
@@ -2195,29 +2175,6 @@ class GitLabProvider(GitProvider):
         return link
 
 
-    def generate_link_to_relevant_line_number(self, suggestion) -> str:
-        try:
-            relevant_file = suggestion['relevant_file'].strip('`').strip("'").rstrip()
-            relevant_line_str = suggestion['relevant_line'].rstrip()
-            if not relevant_line_str:
-                return ""
-
-            position, absolute_position = find_line_number_of_relevant_line_in_file \
-                (self.diff_files, relevant_file, relevant_line_str)
-
-            if absolute_position != -1:
-                # link to right file only
-                link = self.get_line_link(relevant_file, absolute_position)
-
-                # # link to diff
-                # sha_file = hashlib.sha1(relevant_file.encode('utf-8')).hexdigest()
-                # link = f"{self.pr.web_url}/diffs#{sha_file}_{absolute_position}_{absolute_position}"
-                return link
-        except Exception as e:
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Failed adding line link, error: {e}")
-
-        return ""
     #Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
         if "gitlab." not in repo_url_to_clone:

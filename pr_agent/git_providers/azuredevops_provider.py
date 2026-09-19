@@ -1663,12 +1663,6 @@ class AzureDevopsProvider(GitProvider):
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
 
-    def set_like(self, thread_id: int, comment_id: int, create: bool = True):
-        if create:
-            self.azure_devops_client.create_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
-        else:
-            self.azure_devops_client.delete_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
-
     def set_thread_status(self, thread_id: int, status: str) -> bool:
         try:
             self.azure_devops_client.update_thread(

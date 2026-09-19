@@ -311,9 +311,6 @@ class GiteaProvider(GitProvider):
             return f"{self.base_url_html}/{self.owner}/{self.repo}/pulls/{self.pr_number}"
         return self.pr_url
 
-    def get_issue_url(self) -> str:
-        return self.issue_url
-
     def get_latest_commit_url(self) -> str:
         return self.last_commit.html_url if self.last_commit else ""
 
@@ -1189,19 +1186,6 @@ class RepoApi(giteapy.RepositoryApi):
         return self.repository.repo_get_all_commits(
             owner=owner,
             repo=repo
-        )
-
-    def add_reviewer(self, owner: str, repo: str, pr_number: int, reviewers: List[str]):
-        body = {
-            "reviewers": reviewers
-        }
-        return self.api_client.call_api(
-            '/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers',
-            'POST',
-            path_params={'owner': owner, 'repo': repo, 'pr_number': pr_number},
-            body=body,
-            response_type='Repository',
-            auth_settings=['AuthorizationHeaderToken']
         )
 
     def add_reaction_comment(self, owner: str, repo: str, comment_id: int, reaction: str):

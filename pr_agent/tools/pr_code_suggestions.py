@@ -9,8 +9,6 @@ from datetime import datetime
 from functools import partial
 from typing import Dict, List, Optional
 
-from jinja2 import Environment, StrictUndefined
-
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
@@ -860,15 +858,6 @@ class PRCodeSuggestions:
 
         data = self.prediction
         return data
-
-    def _render_prediction_prompts(self, patches_diff: str, patches_diff_no_line_number: str) -> tuple[str, str]:
-        variables = copy.deepcopy(self.vars)
-        variables["diff"] = patches_diff  # update diff
-        variables["diff_no_line_numbers"] = patches_diff_no_line_number  # update diff
-        environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(self.pr_code_suggestions_prompt_system).render(variables)
-        user_prompt = environment.from_string(self.pr_code_suggestions_prompt_user).render(variables)
-        return system_prompt, user_prompt
 
     async def _get_prediction(self, model: str, patches_diff: str, patches_diff_no_line_number: str) -> dict:
         budget = getattr(self, "_suggestion_attempt_budget", None)

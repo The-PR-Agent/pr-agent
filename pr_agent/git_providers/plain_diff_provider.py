@@ -179,11 +179,6 @@ class PlainDiffGitProvider(GitProvider):
         return ""
 
     # ---- code suggestions: rendered to stdout/--output (no hosting platform) ----
-    def publish_code_suggestion(self, body: str, relevant_file: str,
-                                relevant_lines_start: int, relevant_lines_end: int):
-        location = f"{relevant_file}:{relevant_lines_start}-{relevant_lines_end}"
-        self._write_output(f"### {location}\n\n{body}")
-
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         # The 'improve' tool calls this unconditionally; render the suggestions
         # as a single markdown document to stdout/--output instead of pushing

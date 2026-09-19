@@ -486,37 +486,6 @@ class BitbucketServerProvider(GitProvider):
             link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
         return link
 
-    def generate_link_to_relevant_line_number(self, suggestion) -> str:
-        try:
-            relevant_file = suggestion['relevant_file'].strip('`').strip("'").rstrip()
-            relevant_line_str = suggestion['relevant_line'].rstrip()
-            if not relevant_line_str:
-                return ""
-
-            diff_files = self.get_diff_files()
-            position, absolute_position = find_line_number_of_relevant_line_in_file \
-                (diff_files, relevant_file, relevant_line_str)
-
-            if absolute_position != -1:
-                if self.pr:
-                    link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={absolute_position}"
-                    return link
-                else:
-                    if get_verbosity_level() >= 2:
-                        get_logger().info(f"Failed adding line link to '{relevant_file}' since PR not set")
-            else:
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"Failed adding line link to '{relevant_file}' since position not found")
-
-            if absolute_position != -1 and self.pr_url:
-                link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={absolute_position}"
-                return link
-        except Exception as e:
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Failed adding line link to '{relevant_file}', error: {e}")
-
-        return ""
-
     def publish_inline_comments(self, comments: list[dict]) -> bool:
         publishable_count = 0
         published_count = 0
@@ -561,9 +530,6 @@ class BitbucketServerProvider(GitProvider):
 
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
-
-    def get_pr_owner_id(self) -> str | None:
-        return self.workspace_slug
 
     def get_owning_namespace(self) -> str | None:
         return self.workspace_slug

@@ -1,7 +1,6 @@
 import copy
 import difflib
 import hashlib
-import itertools
 import json
 import os
 import re
@@ -1147,17 +1146,6 @@ class GithubProvider(GitProvider):
             get_logger().exception("Failed to edit github comment", artifact={"error": e})
             return False
 
-    def edit_comment_from_comment_id(self, comment_id: int, body: str):
-        try:
-            # self.pr.get_issue_comment(comment_id).edit(body)
-            body = self.limit_output_characters(body, self.max_comment_chars)
-            headers, data_patch = self.pr._requester.requestJsonAndCheck(
-                "PATCH", f"{self.base_url}/repos/{self.repo}/issues/comments/{comment_id}",
-                input={"body": body}
-            )
-        except Exception as e:
-            get_logger().exception(f"Failed to edit comment, error: {e}")
-
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         try:
             # self.pr.get_issue_comment(comment_id).edit(body)
@@ -1168,17 +1156,6 @@ class GithubProvider(GitProvider):
             )
         except Exception as e:
             get_logger().exception(f"Failed to reply comment, error: {e}")
-
-    def get_comment_body_from_comment_id(self, comment_id: int):
-        try:
-            # self.pr.get_issue_comment(comment_id).edit(body)
-            headers, data_patch = self.pr._requester.requestJsonAndCheck(
-                "GET", f"{self.base_url}/repos/{self.repo}/issues/comments/{comment_id}"
-            )
-            return data_patch.get("body","")
-        except Exception as e:
-            get_logger().exception(f"Failed to edit comment, error: {e}")
-            return None
 
     def remove_initial_comment(self):
         try:
@@ -1203,11 +1180,6 @@ class GithubProvider(GitProvider):
 
     def get_pr_branch(self):
         return self.pr.head.ref
-
-    def get_pr_owner_id(self) -> str | None:
-        if not self.repo:
-            return None
-        return self.repo.split('/')[0]
 
     def get_owning_namespace(self, *, resolved: bool = False) -> Optional[str]:
         # Be robust to providers built without full __init__ (e.g. __new__ in tests/helpers):
@@ -1512,9 +1484,6 @@ class GithubProvider(GitProvider):
             get_logger().debug(f"Could not resolve the default branch revision for repo context: {e}")
             return None
 
-    def get_workspace_name(self):
-        return self.repo.split('/')[0]
-
     # The reaction API accepts only this closed set; anything else is rejected with 422.
     SUPPORTED_REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 
@@ -1720,10 +1689,6 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to get labels, error: {e}")
             return []
 
-    def get_repo_labels(self):
-        labels = self.repo_obj.get_labels()
-        return [label for label in itertools.islice(labels, 50)]
-
     def get_commit_messages(self) -> str:
         """
         Retrieves the commit messages of a pull request.
@@ -1741,30 +1706,6 @@ class GithubProvider(GitProvider):
         if max_tokens:
             commit_messages_str = clip_tokens(commit_messages_str, max_tokens)
         return commit_messages_str
-
-    def generate_link_to_relevant_line_number(self, suggestion) -> str:
-        try:
-            relevant_file = suggestion['relevant_file'].strip('`').strip("'").strip('\n')
-            relevant_line_str = suggestion['relevant_line'].strip('\n')
-            if not relevant_line_str:
-                return ""
-
-            position, absolute_position = find_line_number_of_relevant_line_in_file \
-                (self.diff_files, relevant_file, relevant_line_str)
-
-            if absolute_position != -1:
-                # # link to right file only
-                # link = f"https://github.com/{self.repo}/blob/{self.pr.head.sha}/{relevant_file}" \
-                #        + "#" + f"L{absolute_position}"
-
-                # link to diff
-                sha_file = hashlib.sha256(relevant_file.encode('utf-8')).hexdigest()
-                link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}R{absolute_position}"
-                return link
-        except Exception as e:
-            get_logger().info(f"Failed adding line link, error: {e}")
-
-        return ""
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         sha_file = hashlib.sha256(relevant_file.encode('utf-8')).hexdigest()

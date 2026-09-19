@@ -151,10 +151,6 @@ class LocalGitProvider(GitProvider):
     def publish_inline_comments(self, comments: list[dict]):
         raise NotImplementedError('Publishing inline comments is not implemented for the local git provider')
 
-    def publish_code_suggestion(self, body: str, relevant_file: str,
-                                relevant_lines_start: int, relevant_lines_end: int):
-        raise NotImplementedError('Publishing code suggestions is not implemented for the local git provider')
-
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         return self.publish_code_suggestions_artifact(code_suggestions)
 
