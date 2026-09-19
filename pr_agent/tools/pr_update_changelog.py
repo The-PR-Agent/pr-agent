@@ -90,13 +90,14 @@ class PRUpdateChangelog:
                                               get_settings().pr_update_changelog_prompt.system,
                                               get_settings().pr_update_changelog_prompt.user)
         except Exception as setup_error:
-            if self.changelog_read_error is None:
+            changelog_read_error = self.changelog_read_error
+            if changelog_read_error is None:
                 raise
             get_logger().exception(
                 f"Failed to initialize changelog generation after a read error: {setup_error}"
             )
             self._publish_changelog_read_error_fallback()
-            raise self.changelog_read_error
+            raise changelog_read_error
 
     async def run(self):
         get_logger().info('Updating the changelog...')
