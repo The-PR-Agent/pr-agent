@@ -345,7 +345,7 @@ def test_opaque_model_override_registers_adaptive_support(monkeypatch):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: _settings(adaptive_override=[f"  {_PROFILE_ARN}  "]),
+        lambda: _settings(enabled=True, adaptive_override=[f"  {_PROFILE_ARN}  "]),
     )
     register_model = MagicMock()
     monkeypatch.setattr(litellm, "register_model", register_model)
@@ -367,7 +367,7 @@ def test_registered_opaque_model_keeps_adaptive_payload(monkeypatch):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: _settings(adaptive_override=[_PROFILE_ARN]),
+        lambda: _settings(enabled=True, adaptive_override=[_PROFILE_ARN]),
     )
     config = AmazonConverseConfig()
     params = {"thinking": {"type": "adaptive"}}
@@ -386,7 +386,7 @@ def test_registered_raw_bedrock_arn_keeps_adaptive_payload(monkeypatch):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: _settings(adaptive_override=[_RAW_PROFILE_ARN]),
+        lambda: _settings(enabled=True, adaptive_override=[_RAW_PROFILE_ARN]),
     )
     config = AmazonConverseConfig()
     params = {"thinking": {"type": "adaptive"}}
@@ -429,7 +429,7 @@ def test_named_override_keeps_litellm_model_info(monkeypatch):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: _settings(adaptive_override=[named, _PROFILE_ARN]),
+        lambda: _settings(enabled=True, adaptive_override=[named, _PROFILE_ARN]),
     )
     provider_before = litellm.get_model_info(named)["litellm_provider"]
 
@@ -438,6 +438,26 @@ def test_named_override_keeps_litellm_model_info(monkeypatch):
     assert litellm.get_model_info(named)["litellm_provider"] == provider_before
     assert handler._model_uses_adaptive_thinking(named) is True
     assert _PROFILE_ARN in litellm.model_cost
+
+
+def test_disabled_adaptive_thinking_does_not_register_override(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(
+            enabled=False,
+            extended_enabled=True,
+            adaptive_override=[_PROFILE_ARN],
+        ),
+    )
+    register_model = MagicMock()
+    monkeypatch.setattr(litellm, "register_model", register_model)
+
+    handler = LiteLLMAIHandler()
+    handler.claude_extended_thinking_models = [_PROFILE_ARN]
+
+    register_model.assert_not_called()
+    assert handler._claude_thinking_mode(_PROFILE_ARN) == "unsupported_extended"
 
 
 @pytest.mark.parametrize("bad_override", ["not-a-list", [""], ["ok", 5], [None]])

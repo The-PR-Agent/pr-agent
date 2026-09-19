@@ -2233,7 +2233,10 @@ class LiteLLMAIHandler(BaseAiHandler):
             for model in self.claude_adaptive_thinking_models_override
             if model.startswith("bedrock/") or re.match(r"^arn:[^:]+:bedrock:", model)
         ]
-        if bedrock_overrides:
+        if (
+            bedrock_overrides
+            and self._claude_thinking_controls["enable_claude_adaptive_thinking"]
+        ):
             litellm.register_model({
                 model: {
                     "litellm_provider": "bedrock",
