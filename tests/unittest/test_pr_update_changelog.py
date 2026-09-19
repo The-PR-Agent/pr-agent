@@ -212,6 +212,35 @@ class TestPRUpdateChangelog:
         assert "Safe generated entry" in fallback_calls[0].args[0]
         provider.remove_initial_comment.assert_called_once_with()
 
+    def test_strict_read_setup_failure_attempts_fallback_and_reraises_original(self):
+        provider = self._make_push_provider()
+        read_error = RuntimeError("read unavailable")
+        setup_error = RuntimeError("handler unavailable")
+        provider.get_pr_file_content.side_effect = read_error
+        handler_factory = MagicMock(side_effect=setup_error)
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.get_logger") as mock_get_logger, \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings)
+
+            with pytest.raises(RuntimeError) as exc_info:
+                PRUpdateChangelog("https://example.com/pr/1", ai_handler=handler_factory)
+
+        assert exc_info.value is read_error
+        handler_factory.assert_called_once_with()
+        provider.create_or_update_pr_file.assert_not_called()
+        fallback_calls = [
+            call for call in provider.publish_comment.call_args_list
+            if "not pushed" in call.args[0]
+        ]
+        assert len(fallback_calls) == 1
+        assert "could not be generated" in fallback_calls[0].args[0]
+        mock_get_logger.return_value.exception.assert_called_once_with(
+            "Failed to initialize changelog generation after a read error: handler unavailable"
+        )
+
     @pytest.mark.asyncio
     async def test_strict_read_fallback_failure_does_not_mask_original(self, mock_ai_handler):
         provider = self._make_push_provider()

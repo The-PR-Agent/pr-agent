@@ -65,29 +65,38 @@ class PRUpdateChangelog:
         self.changelog_read_error = None
         self._get_changelog_file()  # self.changelog_file_str
 
-        self.ai_handler = ai_handler()
-        if self.main_language:
-            self.ai_handler.main_pr_language = self.main_language
+        try:
+            self.ai_handler = ai_handler()
+            if self.main_language:
+                self.ai_handler.main_pr_language = self.main_language
 
-        self.patches_diff = None
-        self.prediction = None
-        self.cli_mode = cli_mode
-        self.vars = {
-            "title": self.git_provider.pr.title,
-            "branch": self.git_provider.get_pr_branch(),
-            "description": self.git_provider.get_pr_description(),
-            "language": self.main_language,
-            "diff": "",  # empty diff for initial calculation
-            "pr_link": "",
-            "changelog_file_str": self.changelog_file_str,
-            "today": date.today(),
-            "extra_instructions": get_settings().pr_update_changelog.extra_instructions,
-            "commit_messages_str": self.git_provider.get_commit_messages(),
-        }
-        self.token_handler = TokenHandler(self.git_provider.pr,
-                                          self.vars,
-                                          get_settings().pr_update_changelog_prompt.system,
-                                          get_settings().pr_update_changelog_prompt.user)
+            self.patches_diff = None
+            self.prediction = None
+            self.cli_mode = cli_mode
+            self.vars = {
+                "title": self.git_provider.pr.title,
+                "branch": self.git_provider.get_pr_branch(),
+                "description": self.git_provider.get_pr_description(),
+                "language": self.main_language,
+                "diff": "",  # empty diff for initial calculation
+                "pr_link": "",
+                "changelog_file_str": self.changelog_file_str,
+                "today": date.today(),
+                "extra_instructions": get_settings().pr_update_changelog.extra_instructions,
+                "commit_messages_str": self.git_provider.get_commit_messages(),
+            }
+            self.token_handler = TokenHandler(self.git_provider.pr,
+                                              self.vars,
+                                              get_settings().pr_update_changelog_prompt.system,
+                                              get_settings().pr_update_changelog_prompt.user)
+        except Exception as setup_error:
+            if self.changelog_read_error is None:
+                raise
+            get_logger().exception(
+                f"Failed to initialize changelog generation after a read error: {setup_error}"
+            )
+            self._publish_changelog_read_error_fallback()
+            raise self.changelog_read_error
 
     async def run(self):
         get_logger().info('Updating the changelog...')
