@@ -49,7 +49,7 @@ When you open your next PR, you should see a comment from `github-actions` bot w
         # ... previous environment values
         OPENAI.ORG: "<Your organization name under your OpenAI account>"
         PR_REVIEWER.REQUIRE_TESTS_REVIEW: "false" # Disable tests review
-        PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS: 6 # Increase number of code suggestions
+        PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS_PER_CHUNK: 6 # Increase number of code suggestions
 ```
 
 See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-action)
@@ -380,7 +380,7 @@ Configure for specific programming languages:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Language-specific settings
         pr_reviewer.extra_instructions: "Focus on Python best practices, type hints, and docstrings."
-        pr_code_suggestions.num_code_suggestions: "8"
+        pr_code_suggestions.num_code_suggestions_per_chunk: "8"
         pr_code_suggestions.suggestions_score_threshold: "7"
         # Tool configuration
         github_action_config.auto_review: "true"
@@ -459,7 +459,7 @@ fallback_models = ["anthropic/claude-3-opus-20240229"]
 extra_instructions = "Focus on security issues and code quality."
 
 [pr_code_suggestions]
-num_code_suggestions = 6
+num_code_suggestions_per_chunk = 6
 suggestions_score_threshold = 7
 ```
 
