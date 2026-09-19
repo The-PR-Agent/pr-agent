@@ -170,7 +170,7 @@ class PRUpdateChangelog:
         try:
             self.git_provider.publish_comment(changelog_comment)
         except Exception as fallback_error:
-            get_logger().warning(
+            get_logger().exception(
                 f"Failed to publish changelog fallback after a read error: {fallback_error}"
             )
 

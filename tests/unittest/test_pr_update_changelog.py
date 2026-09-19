@@ -228,6 +228,7 @@ class TestPRUpdateChangelog:
         with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"), \
+             patch("pr_agent.tools.pr_update_changelog.get_logger") as mock_get_logger, \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
             self._configure_settings(mock_settings)
             tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
@@ -238,6 +239,9 @@ class TestPRUpdateChangelog:
 
         assert exc_info.value is read_error
         provider.create_or_update_pr_file.assert_not_called()
+        mock_get_logger.return_value.exception.assert_called_once_with(
+            "Failed to publish changelog fallback after a read error: comment unavailable"
+        )
 
     @pytest.mark.asyncio
     async def test_strict_read_progress_failure_still_generates_fallback_and_reraises_original(
