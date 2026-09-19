@@ -309,6 +309,7 @@ def should_process_pr_logic(
     labels: Sequence[str] | None = None,
     source_branch: str = "",
     target_branch: str = "",
+    raise_on_error: bool = False,
 ) -> bool:
     """Determine whether a pull/merge request should be processed based on configuration.
 
@@ -322,6 +323,9 @@ def should_process_pr_logic(
 
     Can be called with a webhook payload dict (`data`), explicit keyword arguments, or both
     (explicit kwargs override extracted payload values).
+
+    When `raise_on_error` is True, exceptions raised during filtering are re-raised so callers
+    can distinguish error fallbacks from successful evaluations. Otherwise, returns True.
 
     Returns True if the PR should be processed, False if it should be ignored.
     """
@@ -341,7 +345,7 @@ def should_process_pr_logic(
 
         labels = labels or []
 
-        # logic to ignore PRs from specific repositories
+        # Ignore PRs from specific repositories
         ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
         if repo_full_name and ignore_repos:
             if any(re.search(regex, repo_full_name) for regex in ignore_repos):
@@ -350,14 +354,14 @@ def should_process_pr_logic(
                 )
                 return False
 
-        # logic to ignore PRs from specific users
+        # Ignore PRs from specific users
         ignore_pr_users = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
         if sender and ignore_pr_users:
             if any(re.search(regex, sender) for regex in ignore_pr_users):
                 get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
                 return False
 
-        # logic to ignore PRs with specific titles
+        # Ignore PRs with specific titles
         if title:
             ignore_pr_title_re = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
             if not isinstance(ignore_pr_title_re, list):
@@ -366,7 +370,7 @@ def should_process_pr_logic(
                 get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
                 return False
 
-        # logic to ignore PRs with specific labels
+        # Ignore PRs with specific labels
         ignore_pr_labels = get_settings().get("CONFIG.IGNORE_PR_LABELS", [])
         if labels and ignore_pr_labels:
             if any(label in ignore_pr_labels for label in labels):
@@ -374,7 +378,7 @@ def should_process_pr_logic(
                 get_logger().info(f"Ignoring PR with labels '{labels_str}' due to config.ignore_pr_labels settings")
                 return False
 
-        # logic to ignore PRs with specific source or target branches
+        # Ignore PRs with specific source or target branches
         ignore_pr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
         ignore_pr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
         if ignore_pr_source_branches or ignore_pr_target_branches:
@@ -390,5 +394,7 @@ def should_process_pr_logic(
                 return False
     except Exception as e:
         get_logger().error(f"Failed 'should_process_pr_logic': {e}")
+        if raise_on_error:
+            raise
         return True
     return True

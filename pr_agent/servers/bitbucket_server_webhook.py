@@ -50,10 +50,14 @@ def handle_request(
 
 def should_process_pr_logic(data) -> bool:
     try:
-        if not _should_process_pr_logic(data, provider="bitbucket_server"):
+        if not _should_process_pr_logic(data, provider="bitbucket_server", raise_on_error=True):
             return False
+    except Exception:
+        # Preserve fail-open fallback without continuing into folder filtering on error
+        return True
 
-        # Allow_only_specific_folders
+    try:
+        # Filter by allowed folders if configured
         allowed_folders = get_settings().config.get("allow_only_specific_folders", [])
         if allowed_folders:
             pr_data = data.get("pullRequest", {})

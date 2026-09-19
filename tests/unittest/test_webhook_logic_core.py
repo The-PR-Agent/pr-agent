@@ -1259,7 +1259,7 @@ def test_shared_should_process_pr_logic_rules():
         "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
     }
     try:
-        # Default with no ignore rules: returns True
+        # Verify the default permits processing
         settings.set("CONFIG.IGNORE_REPOSITORIES", [])
         settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
         settings.set("CONFIG.IGNORE_PR_TITLE", [])
@@ -1276,20 +1276,20 @@ def test_shared_should_process_pr_logic_rules():
             target_branch="main",
         ) is True
 
-        # Repo ignore
+        # Verify repository ignore rules
         settings.set("CONFIG.IGNORE_REPOSITORIES", ["^org/ignored-.*$"])
         assert should_process_pr_logic(repo_full_name="org/ignored-repo") is False
         assert should_process_pr_logic(repo_full_name="org/allowed-repo") is True
         settings.set("CONFIG.IGNORE_REPOSITORIES", [])
 
-        # Author ignore
+        # Verify author ignore rules
         settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^bot-.*$", "renovate"])
         assert should_process_pr_logic(sender="bot-service") is False
         assert should_process_pr_logic(sender="renovate") is False
         assert should_process_pr_logic(sender="alice") is True
         settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
 
-        # Title ignore - string vs list
+        # Verify title ignore rules for both string and list formats
         settings.set("CONFIG.IGNORE_PR_TITLE", "^WIP:")  # as single string
         assert should_process_pr_logic(title="WIP: something") is False
         assert should_process_pr_logic(title="feat: done") is True
@@ -1298,13 +1298,13 @@ def test_shared_should_process_pr_logic_rules():
         assert should_process_pr_logic(title="feat: done") is True
         settings.set("CONFIG.IGNORE_PR_TITLE", [])
 
-        # Label ignore
+        # Verify label ignore rules
         settings.set("CONFIG.IGNORE_PR_LABELS", ["skip-review", "do-not-merge"])
         assert should_process_pr_logic(labels=["skip-review", "bug"]) is False
         assert should_process_pr_logic(labels=["bug"]) is True
         settings.set("CONFIG.IGNORE_PR_LABELS", [])
 
-        # Branch ignore
+        # Verify source and target branch ignore rules
         settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^release/.*$"])
         settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^production$"])
         assert should_process_pr_logic(source_branch="release/1.0", target_branch="main") is False
@@ -1322,7 +1322,7 @@ def test_shared_should_process_pr_logic_payload_parsing():
     original_repos = settings.get("CONFIG.IGNORE_REPOSITORIES", [])
     settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
     try:
-        # GitHub payload
+        # Verify GitHub payload parsing
         gh_payload = {
             "pull_request": {"title": "GH PR", "head": {"ref": "feat"}, "base": {"ref": "main"}},
             "repository": {"full_name": "ignore-org/repo"},
@@ -1330,7 +1330,7 @@ def test_shared_should_process_pr_logic_payload_parsing():
         }
         assert should_process_pr_logic(gh_payload) is False
 
-        # GitLab payload
+        # Verify GitLab payload parsing
         gl_payload = {
             "object_attributes": {"title": "GL MR", "source_branch": "feat", "target_branch": "main"},
             "project": {"path_with_namespace": "ignore-org/repo"},
@@ -1338,10 +1338,10 @@ def test_shared_should_process_pr_logic_payload_parsing():
         }
         assert should_process_pr_logic(gl_payload) is False
 
-        # GitLab non-MR payload (missing object_attributes) should return False
+        # Verify a GitLab non-merge payload is rejected
         assert should_process_pr_logic({}, provider="gitlab") is False
 
-        # Bitbucket Cloud payload
+        # Verify Bitbucket Cloud payload parsing
         bb_cloud_payload = {
             "data": {
                 "pullrequest": {
@@ -1352,7 +1352,7 @@ def test_shared_should_process_pr_logic_payload_parsing():
         }
         assert should_process_pr_logic(bb_cloud_payload) is False
 
-        # Bitbucket Server payload
+        # Verify Bitbucket Server payload parsing
         bb_server_payload = {
             "pullRequest": {
                 "title": "BBS PR",
@@ -1362,3 +1362,27 @@ def test_shared_should_process_pr_logic_payload_parsing():
         assert should_process_pr_logic(bb_server_payload) is False
     finally:
         settings.set("CONFIG.IGNORE_REPOSITORIES", original_repos)
+
+
+def test_bitbucket_server_should_process_pr_logic_fails_open_on_filter_exception(monkeypatch):
+    """Verify that a filtering error fails open and does not continue into folder filtering."""
+    settings = get_settings()
+    original_folders = settings.config.get("allow_only_specific_folders", [])
+    settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", ["allowed_dir"])
+
+    # Simulate an error inside the shared filtering logic (e.g. malformed regex)
+    def broken_filter(*args, **kwargs):
+        raise re.error("bad regex")
+
+    import re
+
+    from pr_agent.servers import bitbucket_server_webhook
+
+    monkeypatch.setattr(bitbucket_server_webhook, "_should_process_pr_logic", broken_filter)
+
+    try:
+        payload = _bitbucket_server_payload(title="Test PR")
+        # Ensure it returns True (fail-open) and does not call BitbucketServerProvider
+        assert bitbucket_server_webhook.should_process_pr_logic(payload) is True
+    finally:
+        settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", original_folders)
