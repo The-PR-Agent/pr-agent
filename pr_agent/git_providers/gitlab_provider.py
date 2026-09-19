@@ -1518,6 +1518,12 @@ class GitLabProvider(GitProvider):
                 if target_file is None:
                     get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
                     continue
+                if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
+                    get_logger().warning(
+                        f"Skipping suggestion: invalid line range "
+                        f"{relevant_lines_start}-{relevant_lines_end} for '{relevant_file}'"
+                    )
+                    continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
                 lines = target_file.head_file.splitlines() if target_file.head_file else []
