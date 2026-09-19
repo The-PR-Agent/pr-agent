@@ -120,7 +120,7 @@ class PRUpdateChangelog:
             except Exception as progress_error:
                 if changelog_read_error is None:
                     raise
-                get_logger().warning(
+                get_logger().exception(
                     f"Failed to publish changelog progress after a read error: {progress_error}"
                 )
 
@@ -130,7 +130,7 @@ class PRUpdateChangelog:
             except Exception as generation_error:
                 if changelog_read_error is None:
                     raise
-                get_logger().warning(
+                get_logger().exception(
                     f"Failed to generate changelog fallback after a read error: {generation_error}"
                 )
                 self._publish_changelog_read_error_fallback()

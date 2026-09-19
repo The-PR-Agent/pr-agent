@@ -320,6 +320,7 @@ class TestPRUpdateChangelog:
         with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models") as retry, \
+             patch("pr_agent.tools.pr_update_changelog.get_logger") as mock_get_logger, \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
             self._configure_settings(mock_settings)
             tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
@@ -338,6 +339,9 @@ class TestPRUpdateChangelog:
         assert len(fallback_calls) == 1
         assert "Safe generated entry" in fallback_calls[0].args[0]
         provider.remove_initial_comment.assert_not_called()
+        mock_get_logger.return_value.exception.assert_called_once_with(
+            "Failed to publish changelog progress after a read error: progress unavailable"
+        )
 
     @pytest.mark.asyncio
     async def test_strict_read_generation_failure_attempts_fallback_and_reraises_original(
@@ -351,6 +355,7 @@ class TestPRUpdateChangelog:
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models",
                    side_effect=generation_error) as retry, \
+             patch("pr_agent.tools.pr_update_changelog.get_logger") as mock_get_logger, \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
             self._configure_settings(mock_settings)
             tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
@@ -368,6 +373,9 @@ class TestPRUpdateChangelog:
         assert len(fallback_calls) == 1
         assert "could not be generated" in fallback_calls[0].args[0]
         provider.remove_initial_comment.assert_called_once_with()
+        mock_get_logger.return_value.exception.assert_called_once_with(
+            "Failed to generate changelog fallback after a read error: generation unavailable"
+        )
 
     def test_custom_provider_without_strict_keyword_fails_closed_without_retry(self, mock_ai_handler):
         provider = self._make_push_provider()
