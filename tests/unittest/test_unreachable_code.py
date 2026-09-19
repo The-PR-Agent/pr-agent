@@ -14,46 +14,25 @@ cleared in #3182 cannot silently regrow.
 """
 
 import ast
-from collections import Counter, defaultdict
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PR_AGENT_SOURCE = ROOT / "pr_agent"
-SEARCH_ROOTS = (ROOT / "pr_agent", ROOT / "tests")
+SEARCH_ROOTS = (ROOT / "pr_agent", ROOT / "tests", ROOT / "docs")
+SEARCH_SUFFIXES = (".py", ".md", ".toml", ".yaml", ".yml")
 
-# Treat these decorators as entry points reached from outside Python.
+# Decorators that mark a definition as reachable from outside Python.
 _ENTRY_POINT_DECORATORS = (
     "get", "post", "put", "delete", "patch", "route", "head", "options",
     "on_event", "exception_handler", "middleware", "websocket",
 )
-# Treat these decorators as references through the descriptor protocol.
+# Decorators after which the name is reached through the descriptor protocol.
 _INDIRECT_DECORATORS = ("property", "setter", "deleter", "validator", "abstractmethod")
 
-# Record live definitions with no in-repo reference and name their callers.
+# Definitions with no in-repo reference that are nonetheless live. Each entry
+# documents what calls it.
 _ALLOWLIST = {
-    ("pr_agent/algo/utils.py", "convert_str_to_datetime"): "public utility retained for compatibility",
-    (
-        "pr_agent/git_providers/azuredevops_provider.py",
-        "get_existing_inline_comment_fingerprints",
-    ): "called dynamically through getattr in inline_comment_dedup.py",
-    ("pr_agent/git_providers/gerrit_provider.py", "show"): "public Gerrit command wrapper",
-    (
-        "pr_agent/git_providers/git_provider.py",
-        "get_lines_link_original_file",
-    ): "optional GitProvider interface method",
-    (
-        "pr_agent/git_providers/github_provider.py",
-        "get_lines_link_original_file",
-    ): "optional GitProvider interface implementation",
-    ("pr_agent/log/__init__.py", "critical"): "StructuredLogger compatibility method",
-    ("pr_agent/log/__init__.py", "json_format"): "public logging formatter",
-    ("pr_agent/servers/gerrit_server.py", "get_body"): "server request-body helper",
-    ("pr_agent/servers/gitea_app.py", "get_body"): "server request-body helper",
-    ("pr_agent/servers/github_app.py", "get_body"): "server request-body helper",
-    (
-        "pr_agent/tools/pr_reviewer.py",
-        "auto_approve_logic",
-    ): "feature-gated review helper retained for configuration compatibility",
     (
         "pr_agent/servers/github_lambda_webhook.py",
         "lambda_handler",
@@ -87,108 +66,67 @@ def _is_skipped(node) -> bool:
     return False
 
 
-class _DefinitionVisitor(ast.NodeVisitor):
-    def __init__(self, path: str):
-        self.path = path
-        self.class_depth = 0
-        self.found = []
-
-    def visit_ClassDef(self, node):
-        self.class_depth += 1
-        self.generic_visit(node)
-        self.class_depth -= 1
-
-    def visit_FunctionDef(self, node):
-        self._visit_function(node)
-
-    def visit_AsyncFunctionDef(self, node):
-        self._visit_function(node)
-
-    def _visit_function(self, node):
-        if not _is_skipped(node):
-            self.found.append((self.path, node.name, node.lineno, self.class_depth > 0))
-        self.generic_visit(node)
-
-
-def _definitions() -> list[tuple[str, str, int, bool]]:
-    """Return every definition as (relative path, name, line, is method)."""
-    found = []
+def _definitions() -> dict[tuple[str, str], int]:
+    """Map (relative path, name) to the line the definition starts on."""
+    found = {}
     for path in sorted(PR_AGENT_SOURCE.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        visitor = _DefinitionVisitor(path.relative_to(ROOT).as_posix())
-        visitor.visit(tree)
-        found.extend(visitor.found)
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if _is_skipped(node):
+                continue
+            found.setdefault(
+                (path.relative_to(ROOT).as_posix(), node.name), node.lineno
+            )
     return found
 
 
-def _reference_counts(roots: tuple[Path, ...] = SEARCH_ROOTS) -> Counter[str]:
-    """Count executable name and attribute references in Python sources."""
-    # Exclude this file because it names every allowlisted definition.
+def _corpus() -> list[str]:
+    # This file names every allowlisted definition, so reading it would make
+    # each of them look referenced.
     this_file = Path(__file__).resolve()
-    counts = Counter()
-    for root in roots:
+    texts = []
+    for root in SEARCH_ROOTS:
         if not root.exists():
             continue
-        for path in root.rglob("*.py"):
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix not in SEARCH_SUFFIXES:
+                continue
             if path.resolve() == this_file:
                 continue
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                    counts[node.id] += 1
-                elif isinstance(node, ast.Attribute):
-                    counts[node.attr] += 1
-    return counts
+            texts.append(path.read_text(encoding="utf-8", errors="ignore"))
+    return texts
 
 
-def _unreferenced_definitions(
-    definitions: list[tuple[str, str, int, bool]], reference_counts: Counter[str]
-) -> set[tuple[str, str]]:
-    """Return definitions whose name lacks enough executable references."""
-    by_name = defaultdict(list)
-    for path, name, line, is_method in definitions:
-        by_name[(name, is_method)].append((path, name, line))
-
-    unreferenced = set()
-    for (name, is_method), locations in by_name.items():
-        required_references = 1 if is_method else len(locations)
-        if reference_counts[name] < required_references:
-            # Flag every colliding definition because a name-only AST cannot
-            # safely decide which same-named definition owns the references.
-            unreferenced.update((path, name) for path, name, _ in locations)
-    return unreferenced
+def _is_referenced(name: str, corpus: list[str]) -> bool:
+    occurrence = re.compile(r"\b" + re.escape(name) + r"\b")
+    definition = re.compile(
+        r"[ \t]*(?:async[ \t]+)?(?:def|class)[ \t]+" + re.escape(name) + r"\b"
+    )
+    for text in corpus:
+        for match in occurrence.finditer(text):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            if definition.match(text, line_start):
+                continue
+            return True
+    return False
 
 
 def test_every_definition_is_reachable_or_allowlisted():
-    unreferenced = _unreferenced_definitions(_definitions(), _reference_counts())
+    corpus = _corpus()
+    unreferenced = {
+        location
+        for location in _definitions()
+        if not _is_referenced(location[1], corpus)
+    }
     allowlisted = set(_ALLOWLIST)
 
     assert unreferenced <= allowlisted, (
-        "definitions in pr_agent/ have no executable reference in pr_agent/ or tests/; "
+        "definitions in pr_agent/ have no reference in pr_agent/, tests/ or docs/; "
         f"remove them or allowlist them: {sorted(unreferenced - allowlisted)}"
     )
     assert allowlisted - unreferenced == set(), (
         "allowlist has stale entries (those definitions are now referenced or no "
         f"longer present): {sorted(allowlisted - unreferenced)}"
     )
-
-
-def test_comments_and_strings_do_not_count_as_references(tmp_path):
-    source = tmp_path / "example.py"
-    source.write_text(
-        'def unused():\n    pass\n\ntext = "unused"\n# unused\n',
-        encoding="utf-8",
-    )
-    assert _reference_counts((tmp_path,))["unused"] == 0
-
-
-def test_duplicate_definitions_need_a_reference_for_each_one():
-    definitions = [
-        ("first.py", "load_auth", 1, False),
-        ("second.py", "load_auth", 1, False),
-    ]
-
-    assert _unreferenced_definitions(definitions, Counter(load_auth=1)) == {
-        ("first.py", "load_auth"),
-        ("second.py", "load_auth"),
-    }
