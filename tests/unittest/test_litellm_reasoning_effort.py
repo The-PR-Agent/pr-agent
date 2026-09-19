@@ -1008,12 +1008,13 @@ class TestLiteLLMReasoningEffortGPT6:
 
 
 class TestLiteLLMReasoningEffortGemini:
-    """Gemini 2.5 reasoning_effort handling via litellm's bundled metadata.
+    """Gemini 2.5/3.x reasoning_effort handling via litellm's bundled metadata.
 
-    Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort. The
-    support probe in chat_completion matches bare and provider-prefixed ids such as
-    "vertex_ai/gemini-2.5-pro". OpenRouter models use extra_body.reasoning instead and
-    are covered by test_litellm_openrouter_controls.py.
+    Gemini 2.5 and 3.x expose a thinking budget that LiteLLM maps from
+    reasoning_effort. The support probe in chat_completion matches bare and
+    provider-prefixed ids such as "vertex_ai/gemini-2.5-pro" and
+    "gemini/gemini-3.5-flash". OpenRouter models use extra_body.reasoning instead
+    and are covered by test_litellm_openrouter_controls.py.
     """
 
     def _isolate_env(self, monkeypatch):
@@ -1055,7 +1056,7 @@ class TestLiteLLMReasoningEffortGemini:
 
     @pytest.mark.asyncio
     async def test_non_listed_gemini_gets_no_reasoning_effort(self, monkeypatch, mock_logger):
-        """A Gemini model not in the support list must not receive reasoning_effort.
+        """A Gemini id the bundled cost map does not flag as reasoning-capable must not receive reasoning_effort.
 
         Locks in the deliberate 3.x exclusions: gemini-3.1-flash and gemini-3.5-pro
         are absent from litellm's bundled cost map, and gemini-3.1-pro resolves
