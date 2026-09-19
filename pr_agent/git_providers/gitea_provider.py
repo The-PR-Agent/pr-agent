@@ -8,8 +8,9 @@ from giteapy.rest import ApiException
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import clip_tokens, find_line_number_of_relevant_line_in_file
+from pr_agent.algo.utils import find_line_number_of_relevant_line_in_file
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
     MAX_FILES_ALLOWED_FULL,

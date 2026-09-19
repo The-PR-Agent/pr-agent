@@ -6,8 +6,8 @@ from typing import Callable, Literal
 from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 
-from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import get_max_tokens
+from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -26,6 +26,214 @@ def _non_negative_int(value) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return None
+
+
+def _as_int(value, default: int = 0) -> int:
+    """Coerce a settings value to int, tolerating the quoted numbers TOML allows."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        get_logger().warning(f"Expected a number in configuration, got {value!r}; using {default}")
+        return default
+
+
+def get_max_tokens(model, ignore_max_model_tokens=False):
+    """
+    Get the maximum number of tokens allowed for a model.
+    logic:
+    (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
+    (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
+    (3) else if it is a GPT-5.x _thinking alias registered under its base name, use that value.
+    (4) else, query LiteLLM for provider-qualified and bare alias bases before the original model.
+    (5) else, raise an error.
+
+    For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
+    This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
+    Pass ignore_max_model_tokens=True to keep the unreduced value, for sites that deliberately use the
+    raw model context size rather than the conservative clamp.
+    """
+    settings = get_settings()
+    custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
+    # Resolve GPT-6 Astra aliases before diff token accounting, just as the handler does.
+    # Preserve explicit custom limits for provider aliases that were not in the registry.
+    model_base = model
+    while model_base.startswith(("openai/", "azure/")):
+        model_base = model_base.removeprefix("openai/").removeprefix("azure/")
+    if custom_max_tokens <= 0 and model_base.removesuffix("_thinking") == "gpt-6-astra":
+        model = "gpt-6-astra"
+    # Normalize GPT-5.x _thinking aliases before token-limit lookup to match
+    # LiteLLMAIHandler request normalization.
+    model_for_max_tokens = model
+    litellm_lookup_models = (model,)
+    if isinstance(model, str):
+        tmp = model
+        while tmp.startswith(("openai/", "azure/")):
+            tmp = tmp.removeprefix("openai/").removeprefix("azure/")
+        if tmp.startswith("gpt-5") and "_thinking" in tmp:
+            model_for_max_tokens = tmp.replace("_thinking", "")
+            settings_get = getattr(settings, "get", None)
+            azure_mode = callable(settings_get) and (
+                settings_get("OPENAI.API_TYPE", None) == "azure"
+                or bool(settings_get("AZURE_AD.CLIENT_ID", None))
+            )
+            if azure_mode or model.startswith("azure/"):
+                provider_prefix = "azure/"
+            else:
+                provider_prefix = "openai/"
+            provider_model = provider_prefix + model_for_max_tokens
+            litellm_lookup_models = tuple(dict.fromkeys((provider_model, model_for_max_tokens, model)))
+    if model in MAX_TOKENS:
+        max_tokens_model = MAX_TOKENS[model]
+    elif custom_max_tokens > 0:
+        max_tokens_model = custom_max_tokens
+    elif model_for_max_tokens in MAX_TOKENS:
+        max_tokens_model = MAX_TOKENS[model_for_max_tokens]
+    else:
+        # Fallback: ask LiteLLM for the model's metadata before giving up.
+        max_tokens_model = 0
+        import litellm
+        # Try provider-qualified and bare bases before the raw alias.
+        for lookup_model in litellm_lookup_models:
+            try:
+                model_info = litellm.get_model_info(lookup_model)
+            except Exception:
+                get_logger().debug(f"litellm.get_model_info could not resolve model '{lookup_model}'")
+                model_info = None
+            if model_info:
+                litellm_max = model_info.get("max_input_tokens")
+                try:
+                    parsed_max_tokens = int(litellm_max)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if parsed_max_tokens > 0:
+                    max_tokens_model = parsed_max_tokens
+                    get_logger().debug(
+                        f"Resolved max_input_tokens for '{model}' from litellm "
+                        f"(lookup '{lookup_model}'): {max_tokens_model}"
+                    )
+                    break
+
+        if max_tokens_model <= 0:
+            get_logger().error(
+                f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
+                f" and no custom_model_max_tokens is set"
+            )
+            raise Exception(
+                f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
+                f" or set a positive value for it in config.custom_model_max_tokens"
+            )
+
+    max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
+    if max_model_tokens > 0 and not ignore_max_model_tokens:
+        max_tokens_model = min(max_model_tokens, max_tokens_model)
+    return max_tokens_model
+
+
+def clip_tokens(text: str, max_tokens: int, add_three_dots=True, num_input_tokens=None, delete_last_line=False) -> str:
+    """
+    Clip the number of tokens in a string to a maximum number of tokens.
+
+    This function limits text to a specified token count by calculating the approximate
+    character-to-token ratio and truncating the text accordingly. A safety factor of 0.9
+    (10% reduction) is applied to ensure the result stays within the token limit.
+
+    Args:
+        text (str): The string to clip. If empty or None, returns the input unchanged.
+        max_tokens (int): The maximum number of tokens allowed in the string.
+                         If negative, returns an empty string.
+        add_three_dots (bool, optional): Whether to add "\\n...(truncated)" at the end
+                                       of the clipped text to indicate truncation.
+                                       Defaults to True.
+        num_input_tokens (int, optional): Pre-computed number of tokens in the input text.
+                                        If provided, skips token encoding step for efficiency.
+                                        If None, tokens will be counted using TokenEncoder.
+                                        Defaults to None.
+        delete_last_line (bool, optional): Whether to remove the last line from the
+                                         clipped content before adding truncation indicator.
+                                         Useful for ensuring clean breaks at line boundaries.
+                                         Defaults to False.
+
+    Returns:
+        str: The clipped string. Returns original text if:
+             - Text is empty/None
+             - Token count is within limit
+             - An error occurs during processing
+
+             Returns empty string if max_tokens <= 0.
+
+    Examples:
+        Basic usage:
+        >>> text = "This is a sample text that might be too long"
+        >>> result = clip_tokens(text, max_tokens=10)
+        >>> print(result)
+        This is a sample...
+        (truncated)
+
+        Without truncation indicator:
+        >>> result = clip_tokens(text, max_tokens=10, add_three_dots=False)
+        >>> print(result)
+        This is a sample
+
+        With pre-computed token count:
+        >>> result = clip_tokens(text, max_tokens=5, num_input_tokens=15)
+        >>> print(result)
+        This...
+        (truncated)
+
+        With line deletion:
+        >>> multiline_text = "Line 1\\nLine 2\\nLine 3"
+        >>> result = clip_tokens(multiline_text, max_tokens=3, delete_last_line=True)
+        >>> print(result)
+        Line 1
+        Line 2
+        ...
+        (truncated)
+
+    Notes:
+        The function uses a safety factor of 0.9 (10% reduction) to ensure the
+        result stays within the token limit, as character-to-token ratios can vary.
+        If token encoding fails, the original text is returned with a warning logged.
+    """
+    try:
+        max_tokens = int(max_tokens)
+    except (TypeError, ValueError, OverflowError):
+        get_logger().warning(
+            f"clip_tokens got a non-numeric max_tokens ({max_tokens!r}); returning the text "
+            f"unclipped, which may exceed the model's context window")
+        return text
+
+    if not text:
+        return text
+
+    try:
+        if num_input_tokens is None:
+            encoder = TokenEncoder.get_token_encoder()
+            num_input_tokens = len(encoder.encode(text))
+        if num_input_tokens <= max_tokens:
+            return text
+        if max_tokens < 0:
+            return ""
+
+        # calculate the number of characters to keep
+        num_chars = len(text)
+        chars_per_token = num_chars / num_input_tokens
+        factor = 0.9  # reduce by 10% to be safe
+        num_output_chars = int(factor * chars_per_token * max_tokens)
+
+        # clip the text
+        if num_output_chars > 0:
+            clipped_text = text[:num_output_chars]
+            if delete_last_line:
+                clipped_text = clipped_text.rsplit("\n", 1)[0]
+            if add_three_dots:
+                clipped_text += "\n...(truncated)"
+        else:  # text is empty
+            clipped_text = ""
+
+        return clipped_text
+    except Exception as e:
+        get_logger().warning(f"Failed to clip tokens: {e}")
+        return text
 
 
 @dataclass(frozen=True)

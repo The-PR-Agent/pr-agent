@@ -10,8 +10,9 @@ from jinja2 import Environment, StrictUndefined
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.token_budget import clip_tokens, get_max_tokens
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType, clip_tokens, get_max_tokens, load_yaml
+from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.log import get_logger

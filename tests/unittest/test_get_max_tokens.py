@@ -1,15 +1,16 @@
 import litellm
 import pytest
 
-import pr_agent.algo.utils as utils
+import pr_agent.algo.token_budget as token_budget
 from pr_agent.algo import (
     _CLAUDE_MODEL_FAMILIES,
     CLAUDE_EXTENDED_THINKING_MODELS,
+    MAX_TOKENS,
     NO_SUPPORT_TEMPERATURE_MODELS,
     _generate_claude_registries,
     _validate_claude_model_family,
 )
-from pr_agent.algo.utils import MAX_TOKENS, get_max_tokens
+from pr_agent.algo.token_budget import get_max_tokens
 
 
 def _expected_max_tokens(model: str) -> int:
@@ -34,7 +35,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         model = "gpt-3.5-turbo"
         expected = MAX_TOKENS[model]
@@ -50,7 +51,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 272000
 
@@ -63,7 +64,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 400000
 
@@ -76,7 +77,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 400000
 
@@ -89,7 +90,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1050000
 
@@ -102,7 +103,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1050000
 
@@ -116,7 +117,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": cap,
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_model_info", lambda *args, **kwargs: pytest.fail("Static lookup expected"))
 
         assert get_max_tokens(f"{prefix}gpt-6-astra{suffix}") == (cap or 1050000)
@@ -133,7 +134,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": cap,
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == expected
 
@@ -153,7 +154,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         expected = _expected_max_tokens(model.removesuffix("_thinking"))
         assert get_max_tokens(model) == expected
 
@@ -169,7 +170,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 7000
 
@@ -184,7 +185,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": 7000
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens("openai/gpt-5.6_thinking") == 7000
 
@@ -205,7 +206,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         # Strip provider prefixes then _thinking suffix to get base key
         tmp = model
         while tmp.startswith(("openai/", "azure/")):
@@ -221,7 +222,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         with pytest.raises(Exception):
             get_max_tokens("gpt-4o_thinking")
 
@@ -233,7 +234,7 @@ class TestGetMaxTokens:
             "config": type("Config", (), {"custom_model_max_tokens": 0, "max_model_tokens": 32000})(),
             "get": lambda self, key, default=None: default,
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
         model = "openai/gpt-5.9_thinking"
         lookups = []
 
@@ -318,7 +319,7 @@ class TestGetMaxTokens:
             })(),
             "get": lambda self, key, default=None: setting_values.get(key, default),
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         lookups = []
 
         def mock_get_model_info(m):
@@ -348,7 +349,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == expected
 
@@ -361,7 +362,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         model = "custom-model"
         expected = 5000
@@ -381,7 +382,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         expected = _expected_max_tokens(model)
 
@@ -395,7 +396,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         model = "custom-model"
 
@@ -410,7 +411,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         model = "gpt-3.5-turbo"  # this model setting is 160000
         expected = 10000
@@ -450,7 +451,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": 0,
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         assert get_max_tokens(model) == 1048576
 
     def test_bedrock_mantle_grok_4_3_model_max_tokens(self, monkeypatch):
@@ -461,7 +462,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens("bedrock_mantle/xai.grok-4.3") == 1000000
 
@@ -481,7 +482,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 500000
 
@@ -507,7 +508,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1000000
 
@@ -533,7 +534,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1000000
 
@@ -556,7 +557,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1000000
 
@@ -579,7 +580,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 200000
 
@@ -605,7 +606,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1000000
 
@@ -628,7 +629,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1000000
 
@@ -654,7 +655,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 200000
 
@@ -672,7 +673,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         # 1M per LiteLLM (issue #3196): zai/glm-5.2 was understated at 200000.
         assert get_max_tokens(model) == 1000000
@@ -691,7 +692,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         # 1M per LiteLLM (issue #3196): moonshot/kimi-k3 was understated at 262144.
         assert get_max_tokens(model) == 1048576
@@ -710,7 +711,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1000000
 
@@ -730,7 +731,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1048576
 
@@ -748,7 +749,7 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == 1048576
 
@@ -762,7 +763,7 @@ class TestGetMaxTokens:
                 'max_model_tokens': 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         def fail_if_called(*args, **kwargs):
             raise AssertionError("litellm.get_model_info should not be called")
@@ -780,7 +781,7 @@ class TestGetMaxTokens:
                 'max_model_tokens': 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         def fail_if_called(*args, **kwargs):
             raise AssertionError("litellm.get_model_info should not be called")
@@ -797,7 +798,7 @@ class TestGetMaxTokens:
                 'max_model_tokens': 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_model_info",
                             lambda model: {"max_input_tokens": 65536})
 
@@ -811,7 +812,7 @@ class TestGetMaxTokens:
                 'max_model_tokens': 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_model_info", lambda model: {
             "max_input_tokens": 32000,
             "max_tokens": 99999,
@@ -827,7 +828,7 @@ class TestGetMaxTokens:
                 'max_model_tokens': 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         def raise_for_unknown(model):
             raise Exception("This model isn't mapped yet")
@@ -845,7 +846,7 @@ class TestGetMaxTokens:
                 'max_model_tokens': 8000
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_model_info",
                             lambda model: {"max_input_tokens": 65536})
 
@@ -869,7 +870,7 @@ class TestGetMaxTokens:
                 "max_model_tokens": 0,
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         assert get_max_tokens(model) == expected_max_input_tokens
 
@@ -1091,8 +1092,8 @@ class TestGetMaxTokens:
             })()
         })()
 
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
-        monkeypatch.setattr(utils, "MAX_TOKENS", {})  # simulate deletion of the entry
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "MAX_TOKENS", {})  # simulate deletion of the entry
 
         assert get_max_tokens(model) == 32000
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
@@ -1157,7 +1158,7 @@ class TestNoLiteLLMDuplicates:
                 "max_model_tokens": 0
             })()
         })()
-        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         litellm_max = int(litellm.get_model_info(model)["max_input_tokens"])
         assert get_max_tokens(model) >= litellm_max
