@@ -42,11 +42,11 @@ _ALLOWLIST = {
         "lambda_handler",
     ): "AWS Lambda entry point, named in docker/Dockerfile.lambda",
     (
-        "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+        "pr_agent/algo/ai_handlers/cloud_auth.py",
         "get_aws_security_credentials",
     ): "google.auth.aws.AwsSecurityCredentialsSupplier interface method, called by google-auth",
     (
-        "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+        "pr_agent/algo/ai_handlers/cloud_auth.py",
         "get_aws_region",
     ): "google.auth.aws.AwsSecurityCredentialsSupplier interface method, called by google-auth",
 }
