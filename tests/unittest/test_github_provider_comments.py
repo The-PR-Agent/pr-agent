@@ -11,18 +11,18 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from github import GithubException
+from requests.exceptions import RequestException
 
 from pr_agent.git_providers import github_provider as gh_module
 from pr_agent.git_providers.github_provider import GithubProvider
 
 
-class _FakeGithubException(Exception):
-    """Mimics github.GithubException enough for the provider's ``e.status`` check."""
+class _FakeGithubException(GithubException):
+    """A real GithubException with a shorter constructor for the provider's ``e.status`` check."""
 
     def __init__(self, status, data=None):
-        super().__init__(f"GithubException status={status}")
-        self.status = status
-        self.data = data or {}
+        super().__init__(status, data or {}, {})
 
 
 class _FakePR:
@@ -430,7 +430,7 @@ def test_publish_code_suggestions_returns_false_on_publish_error():
     _stub_validation_passthrough(provider)
 
     def boom(comments, disable_fallback=False):
-        raise RuntimeError("nope")
+        raise RequestException("nope")
 
     provider.publish_inline_comments = boom
 
@@ -842,9 +842,9 @@ class TestResolveCommentThread:
 
         class _BrokenRequester:
             def requestJsonAndCheck(self, *a, **kw):
-                raise RuntimeError("network error")
+                raise RequestException("network error")
             def requestJson(self, *a, **kw):
-                raise RuntimeError("network error")
+                raise RequestException("network error")
 
         p.pr = SimpleNamespace(_requester=_BrokenRequester())
         p.github_client = SimpleNamespace(_Github__requester=_BrokenRequester())
