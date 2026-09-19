@@ -380,7 +380,7 @@ _PROFILE_ARN = (
 
 @pytest.fixture
 def _restore_model_cost():
-    """register_model mutates litellm's global model cost map; drop what a test added."""
+    """Drop model-cost entries a test registered, since register_model mutates a litellm global."""
     before = set(litellm.model_cost)
     try:
         yield
@@ -389,9 +389,11 @@ def _restore_model_cost():
             litellm.model_cost.pop(key, None)
 
 
-def _handler_with_override(monkeypatch, override):
+def _handler_with_override(monkeypatch, override, enabled=True):
     monkeypatch.setattr(
-        litellm_handler, "get_settings", lambda: _settings(adaptive_override=override)
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(enabled=enabled, adaptive_override=override),
     )
     return LiteLLMAIHandler()
 
@@ -418,7 +420,7 @@ def test_override_does_not_capture_unlisted_models(monkeypatch, _restore_model_c
 
 
 def test_override_is_additive_and_keeps_built_in_detection(monkeypatch, _restore_model_cost):
-    """The extended-thinking override replaces its list; this one must not."""
+    """Keep the built-in detection working: unlike the extended-thinking override, this one adds."""
     handler = _handler_with_override(monkeypatch, [_PROFILE_ARN])
     assert handler._model_uses_adaptive_thinking("anthropic/claude-opus-4-8") is True
 
@@ -499,3 +501,28 @@ def test_registration_leaves_unlisted_models_alone(monkeypatch, _restore_model_c
     _handler_with_override(monkeypatch, [_PROFILE_ARN])
 
     assert unlisted not in litellm.model_cost
+
+
+def test_disabled_feature_registers_nothing_with_litellm(monkeypatch, _restore_model_cost):
+    """Leave litellm's global model map untouched while adaptive thinking is off.
+
+    Nothing sends the adaptive payload in that state, so there is nothing for litellm to
+    downgrade and no reason to mutate a process-wide map on behalf of every other consumer.
+    """
+    handler = _handler_with_override(monkeypatch, [_PROFILE_ARN], enabled=False)
+
+    assert handler.claude_adaptive_thinking_models_override == [_PROFILE_ARN]
+    assert _PROFILE_ARN not in litellm.model_cost
+
+
+def test_disabled_feature_still_keeps_the_id_out_of_extended_thinking(monkeypatch):
+    """Suppress extended thinking for a declared adaptive-only id even with adaptive off.
+
+    An adaptive-only model rejects budget_tokens, so the override has to be read regardless of
+    enable_claude_adaptive_thinking; only the litellm registration is gated on it.
+    """
+    handler = _handler_with_override(monkeypatch, [_PROFILE_ARN], enabled=False)
+    handler.claude_extended_thinking_models = [_PROFILE_ARN]
+    handler._claude_thinking_controls["enable_claude_extended_thinking"] = True
+
+    assert handler._claude_thinking_mode(_PROFILE_ARN) == "unsupported_extended"

@@ -2228,12 +2228,16 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         # Model ids to additionally treat as adaptive-only, for ids the built-in pattern cannot
         # recognise (see _model_uses_adaptive_thinking). Additive rather than replacing, so a named
-        # model elsewhere in the same fallback chain keeps its own detection.
+        # model elsewhere in the same fallback chain keeps its own detection. Read whether or not
+        # adaptive thinking is on, because these ids must also be kept out of the extended-thinking
+        # path; only the litellm registration below is gated, since nothing sends the adaptive
+        # payload for litellm to downgrade while the feature is off.
         self.claude_adaptive_thinking_models_override = self._validated_model_name_list(
             get_settings().config.get("claude_adaptive_thinking_models_override", []),
             "claude_adaptive_thinking_models_override",
         )
-        self._register_adaptive_thinking_models(self.claude_adaptive_thinking_models_override)
+        if self._claude_thinking_controls["enable_claude_adaptive_thinking"]:
+            self._register_adaptive_thinking_models(self.claude_adaptive_thinking_models_override)
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
