@@ -1418,24 +1418,26 @@ def test_shared_should_process_pr_logic_explicit_empty_overrides_payload():
 
 
 def test_bitbucket_server_should_process_pr_logic_fails_open_on_filter_exception(monkeypatch):
-    """Verify that a filtering error fails open and does not continue into folder filtering."""
+    """Verify a malformed filter regex fails open without reaching the folder filter."""
     settings = get_settings()
+    original_title = settings.get("CONFIG.IGNORE_PR_TITLE", [])
     original_folders = settings.config.get("allow_only_specific_folders", [])
+    settings.set("CONFIG.IGNORE_PR_TITLE", ["[unclosed"])
     settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", ["allowed_dir"])
 
-    # Simulate an error inside the shared filtering logic (e.g. malformed regex)
-    def broken_filter(*args, **kwargs):
-        raise re.error("bad regex")
+    class _RejectingProvider:
+        def __init__(self, pr_url=None):
+            pass
 
-    import re
+        def get_files(self):
+            return ["docs/readme.md"]
 
-    from pr_agent.servers import bitbucket_server_webhook
-
-    monkeypatch.setattr(bitbucket_server_webhook, "shared_should_process_pr_logic", broken_filter)
+    monkeypatch.setattr(
+        "pr_agent.git_providers.bitbucket_server_provider.BitbucketServerProvider", _RejectingProvider
+    )
 
     try:
-        payload = _bitbucket_server_payload(title="Test PR")
-        # Verify it returns True (fail-open) and does not call BitbucketServerProvider
-        assert bitbucket_server_webhook.should_process_pr_logic(payload) is True
+        assert bitbucket_server_webhook.should_process_pr_logic(_bitbucket_server_payload(title="Test PR")) is True
     finally:
+        settings.set("CONFIG.IGNORE_PR_TITLE", original_title)
         settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", original_folders)
