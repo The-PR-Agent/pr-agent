@@ -681,7 +681,13 @@ class PRReviewer:
             value = getattr(last_commit, attribute, None)
             if isinstance(value, str):
                 return value
-        return ""
+
+        # Azure DevOps exposes the pull-request head as ``pr.last_merge_commit``
+        # rather than through the GitHub-shaped ``last_commit_id`` attribute.
+        pull_request = getattr(self.git_provider, "pr", None)
+        head_commit = getattr(pull_request, "last_merge_commit", None)
+        value = getattr(head_commit, "commit_id", None)
+        return value if isinstance(value, str) else ""
 
     def _review_run_id(self) -> str:
         try:
