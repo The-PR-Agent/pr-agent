@@ -1,6 +1,5 @@
 import copy
 import os
-import re
 from typing import Any, Dict
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -14,6 +13,7 @@ from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import get_pr_commands, push_trigger_slot, verify_signature
+from pr_agent.servers.utils import should_process_pr_logic as shared_should_process_pr_logic
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 # Setup logging and router
@@ -157,60 +157,18 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
 def should_process_pr_logic(body) -> bool:
     try:
         pull_request = body.get("pull_request", {})
-        title = pull_request.get("title", "")
-        pr_labels = pull_request.get("labels", [])
-        source_branch = pull_request.get("head", {}).get("ref", "")
-        target_branch = pull_request.get("base", {}).get("ref", "")
-        sender = body.get("sender", {}).get("login")
-        repo_full_name = body.get("repository", {}).get("full_name", "")
-
-        # logic to ignore PRs from specific repositories
-        ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
-        if ignore_repos and repo_full_name:
-            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
-                get_logger().info(f"Ignoring PR from repository '{repo_full_name}' due to 'config.ignore_repositories' setting")
-                return False
-
-        # logic to ignore PRs from specific users
-        ignore_pr_users = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
-        if ignore_pr_users and sender:
-            if any(re.search(regex, sender) for regex in ignore_pr_users):
-                get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
-                return False
-
-        # logic to ignore PRs with specific titles
-        if title:
-            ignore_pr_title_re = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
-            if not isinstance(ignore_pr_title_re, list):
-                ignore_pr_title_re = [ignore_pr_title_re]
-            if ignore_pr_title_re and any(re.search(regex, title) for regex in ignore_pr_title_re):
-                get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
-                return False
-
-        # logic to ignore PRs with specific labels or source branches or target branches.
-        ignore_pr_labels = get_settings().get("CONFIG.IGNORE_PR_LABELS", [])
-        if pr_labels and ignore_pr_labels:
-            labels = [label['name'] for label in pr_labels]
-            if any(label in ignore_pr_labels for label in labels):
-                labels_str = ", ".join(labels)
-                get_logger().info(f"Ignoring PR with labels '{labels_str}' due to config.ignore_pr_labels settings")
-                return False
-
-        # logic to ignore PRs with specific source or target branches
-        ignore_pr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
-        ignore_pr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
-        if pull_request and (ignore_pr_source_branches or ignore_pr_target_branches):
-            if any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
-                get_logger().info(
-                    f"Ignoring PR with source branch '{source_branch}' due to config.ignore_pr_source_branches settings")
-                return False
-            if any(re.search(regex, target_branch) for regex in ignore_pr_target_branches):
-                get_logger().info(
-                    f"Ignoring PR with target branch '{target_branch}' due to config.ignore_pr_target_branches settings")
-                return False
+        pr_labels = pull_request.get("labels", []) or []
+        return shared_should_process_pr_logic(
+            title=pull_request.get("title", ""),
+            labels=[label["name"] for label in pr_labels],
+            source_branch=pull_request.get("head", {}).get("ref", ""),
+            target_branch=pull_request.get("base", {}).get("ref", ""),
+            sender=body.get("sender", {}).get("login") or "",
+            repo_full_name=body.get("repository", {}).get("full_name", ""),
+        )
     except Exception as e:
         get_logger().error(f"Failed 'should_process_pr_logic': {e}")
-    return True
+        return True
 
 # FastAPI app setup
 middleware = [Middleware(RawContextMiddleware)]
