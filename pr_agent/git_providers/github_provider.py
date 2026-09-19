@@ -85,6 +85,7 @@ class GithubProvider(GitProvider):
         self.incremental = IncrementalPR(False)
         self._resolved_config_branch: str | None = None
         self._check_run_ids: dict = {}
+        self._check_runs_in_progress: set = set()
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
@@ -621,38 +622,73 @@ class GithubProvider(GitProvider):
             raise RuntimeError("GitHub identity cannot be verified")
         return login.casefold() == agent_login.casefold()
 
+    @staticmethod
+    def _check_run_name(name: str) -> str:
+        return f"PR Agent - {name.capitalize()}"
+
     def _publish_check_run(self, text: str, name: str) -> bool:
-        if not getattr(self, 'last_commit_id', None):
-            get_logger().error("Cannot publish check run without a commit SHA")
-            return False
-        conclusion = "neutral"
-        check_run_name = f"PR Agent - {name.capitalize()}"
+        check_run_name = self._check_run_name(name)
         summary = text.split("\n\n")[0] if "\n\n" in text else text[:200]
         summary = summary.strip(" #")
         # GitHub Checks API limits: text 65535 chars, summary 65535 chars
         max_text = 65535
         if len(text) > max_text:
             text = text[:max_text]
-        create_body = {
-            "name": check_run_name,
-            "head_sha": self.last_commit_id.sha,
+        body = {
             "status": "completed",
-            "conclusion": conclusion,
+            "conclusion": "neutral",
             "output": {
                 "title": check_run_name,
                 "summary": summary[:300],
                 "text": text,
             },
         }
-        update_body = {
+        if self._upsert_check_run(name, body):
+            self._check_runs_in_progress.discard(name)
+            return True
+        return False
+
+    def start_check_run(self, name: str, summary: str) -> bool:
+        """Open the tool's check run as in_progress before it has any output to publish.
+
+        Automatic commands publish no progress comment, so this is the first sign that the
+        pull request was picked up. `_publish_check_run` completes the same run in place.
+        """
+        body = {
+            "status": "in_progress",
+            "output": {"title": self._check_run_name(name), "summary": summary[:300]},
+        }
+        if self._upsert_check_run(name, body):
+            self._check_runs_in_progress.add(name)
+            return True
+        return False
+
+    def finish_check_run(self, name: str, conclusion: str, summary: str) -> bool:
+        """Complete a check run opened by `start_check_run` that no tool completed.
+
+        A no-op when the tool already published its output to the run, so its conclusion
+        and text are kept. Otherwise the run would stay in_progress on the commit forever.
+        """
+        if name not in self._check_runs_in_progress:
+            return False
+        body = {
             "status": "completed",
             "conclusion": conclusion,
-            "output": {
-                "title": check_run_name,
-                "summary": summary[:300],
-                "text": text,
-            },
+            "output": {"title": self._check_run_name(name), "summary": summary[:300]},
         }
+        if self._upsert_check_run(name, body):
+            self._check_runs_in_progress.discard(name)
+            return True
+        return False
+
+    def _upsert_check_run(self, name: str, body: dict) -> bool:
+        """Update the `PR Agent - {Name}` check run on the head commit, creating it if absent."""
+        if not getattr(self, 'last_commit_id', None):
+            get_logger().error("Cannot publish check run without a commit SHA")
+            return False
+        check_run_name = self._check_run_name(name)
+        create_body = {"name": check_run_name, "head_sha": self.last_commit_id.sha, **body}
+        update_body = body
         existing_id = self._check_run_ids.get(name)
         if not existing_id:
             existing_id = self._find_existing_check_run(check_run_name, self.last_commit_id.sha)
@@ -676,7 +712,7 @@ class GithubProvider(GitProvider):
             self._check_run_ids[name] = data["id"]
             return True
         except Exception:
-            get_logger().warning("Failed to create check run, falling back to comment")
+            get_logger().warning("Failed to create check run")
             return False
 
     def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> Optional[int]:
@@ -1514,24 +1550,6 @@ class GithubProvider(GitProvider):
 
     def get_workspace_name(self):
         return self.repo.split('/')[0]
-
-    # GitHub truncates a commit-status description at 140 characters.
-    MAX_STATUS_DESCRIPTION = 140
-
-    def publish_run_status(self, state: str, description: str) -> bool:
-        if not getattr(self, "last_commit_id", None):
-            get_logger().warning("Cannot publish a run status without a commit SHA")
-            return False
-        try:
-            self._get_repo().get_commit(self.last_commit_id.sha).create_status(
-                state=state,
-                description=description[:self.MAX_STATUS_DESCRIPTION],
-                context=get_settings().get("config.run_status_context", "pr-agent"),
-            )
-            return True
-        except Exception as e:
-            get_logger().warning(f"Failed to publish the {state} run status: {e}")
-            return False
 
     # The reaction API accepts only this closed set; anything else is rejected with 422.
     SUPPORTED_REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")

@@ -1968,25 +1968,6 @@ class GitLabProvider(GitProvider):
     def get_workspace_name(self):
         return self.id_project.split('/')[0]
 
-    # GitLab reports a commit status as a pipeline entry; "failure" is spelled "failed".
-    _RUN_STATUS_STATES = {"pending": "pending", "success": "success", "failure": "failed"}
-
-    def publish_run_status(self, state: str, description: str) -> bool:
-        sha = getattr(self.mr, "sha", None) if getattr(self, "mr", None) else None
-        if not sha:
-            get_logger().warning("Cannot publish a run status without a commit SHA")
-            return False
-        try:
-            self.gl.projects.get(self.id_project).commits.get(sha).statuses.create({
-                "state": self._RUN_STATUS_STATES.get(state, state),
-                "description": description,
-                "name": get_settings().get("config.run_status_context", "pr-agent"),
-            })
-            return True
-        except Exception as e:
-            get_logger().warning(f"Failed to publish the {state} run status: {e}")
-            return False
-
     def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
         try:
             if not self.id_mr:

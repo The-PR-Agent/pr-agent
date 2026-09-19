@@ -179,9 +179,52 @@ async def handle_new_pr_opened(body: Dict[str, Any],
             get_logger().info(f"User {sender=} is not eligible to process PR {api_url=}")
 
 
-def publish_run_status() -> bool:
-    """Whether the operator asked for a commit status while automatic commands run."""
-    return bool(get_settings().get("config.publish_run_status", False))
+# The check run each automatic command publishes its output to when `github.publish_as_check_run`
+# is on, keyed by command and valued by the `name` the tool passes to `_publish_check_run`.
+_AUTO_COMMAND_CHECK_RUNS = {"describe": "describe", "review": "review", "improve": "suggestions"}
+
+
+def _check_run_provider(api_url: str):
+    """The provider whose check runs the automatic commands complete, or None when they publish none."""
+    if not get_settings().get("github.publish_as_check_run", False):
+        return None
+    try:
+        provider = get_git_provider_with_context(pr_url=api_url)
+    except Exception as e:
+        get_logger().warning(f"Cannot open check runs for {api_url=}: {e}")
+        return None
+    return provider if callable(getattr(provider, "start_check_run", None)) else None
+
+
+def _auto_command_check_run(command) -> tuple[str, str | None]:
+    """The command's leading token and the check run its tool publishes to, if any."""
+    tokens = command if isinstance(command, list) else str(command).split()
+    action = tokens[0] if tokens else ""
+    return action, _AUTO_COMMAND_CHECK_RUNS.get(action.lstrip("/").lower())
+
+
+def _start_auto_command_check_run(provider, command) -> str | None:
+    """Open the command's check run as in_progress: the first sign the pull request was picked up."""
+    action, name = _auto_command_check_run(command)
+    if provider is None or name is None:
+        return None
+    try:
+        provider.start_check_run(name, f"PR-Agent is running {action}")
+    except Exception as e:
+        get_logger().warning(f"Failed to open the {name} check run: {e}")
+    return name
+
+
+def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool) -> None:
+    """Complete the command's check run when its tool did not, so it cannot stay in_progress."""
+    if provider is None or name is None:
+        return
+    action, _ = _auto_command_check_run(command)
+    summary = f"PR-Agent ran {action}" if succeeded else f"PR-Agent could not finish {action}"
+    try:
+        provider.finish_check_run(name, "success" if succeeded else "failure", summary)
+    except Exception as e:
+        get_logger().warning(f"Failed to complete the {name} check run: {e}")
 
 
 def _normalise_setting_list(value):
@@ -549,33 +592,31 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         get_logger().info(f"No {commands_conf} configured, skipping auto commands")
         return
     get_settings().set("config.is_auto_command", True)
-    provider = get_git_provider_with_context(pr_url=api_url) if publish_run_status() else None
-    if provider is not None:
-        # The first thing the author sees: the pull request was picked up, before the model answered.
-        provider.publish_run_status("pending", f"PR-Agent is running {len(commands)} command(s)")
+    provider = _check_run_provider(api_url)
     succeeded = True
     for command in commands:
+        check_run = None
+        command_succeeded = True
         try:
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            check_run = _start_auto_command_check_run(provider, new_command)
             # Install a fresh collector so `command_failed()` below cannot read a verdict left
             # behind by the previous command; the tool replaces it with its own on entry.
             init_run_details()
             if await agent.handle_request(api_url, new_command) is False:
-                succeeded = False
+                command_succeeded = False
             elif command_failed():
                 # `propagate_tool_errors` is false by default, so a tool that failed internally
                 # still returns normally. Reporting that as success would put a green tick on a
                 # pull request that never got its review.
                 get_logger().warning(f"Command '{command}' reported success but recorded a failure")
-                succeeded = False
+                command_succeeded = False
         except Exception as e:
-            succeeded = False
+            command_succeeded = False
             get_logger().error(f"Failed to perform command {command}: {e}")
-    if provider is not None:
-        provider.publish_run_status(
-            "success" if succeeded else "failure",
-            "PR-Agent finished" if succeeded else "PR-Agent could not finish every command")
+        _finish_auto_command_check_run(provider, check_run, command, command_succeeded)
+        succeeded = succeeded and command_succeeded
     return succeeded
 
 

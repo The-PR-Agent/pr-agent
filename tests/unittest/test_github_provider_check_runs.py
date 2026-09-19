@@ -32,6 +32,7 @@ def _make_provider(last_commit_sha="deadbeef", requester=None):
     p.pr = SimpleNamespace(_requester=requester or _FakeRequester())
     p.last_commit_id = SimpleNamespace(sha=last_commit_sha) if last_commit_sha else None
     p._check_run_ids = {}
+    p._check_runs_in_progress = set()
     return p
 
 

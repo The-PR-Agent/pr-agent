@@ -76,10 +76,6 @@ ignore_pr_target_branches = [] # a list of regular expressions of target branche
 ignore_pr_source_branches = [] # a list of regular expressions of source branches to ignore from PR agent when an PR is created
 ignore_pr_labels = [] # labels to ignore from PR agent when an PR is created
 ignore_pr_authors = [] # authors to ignore from PR agent when an PR is created
-# Mark the PR head commit as soon as an automatic command starts, so the author sees that
-# PR-Agent picked the pull request up before any output exists. Off by default.
-publish_run_status = false
-run_status_context = "pr-agent" # the status name shown on the commit
 # Reactions added to the comment that triggered a command. Names are provider-specific:
 # GitHub accepts only +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab and Gitea
 # take any award-emoji name. An empty value disables that reaction. When an outcome reaction

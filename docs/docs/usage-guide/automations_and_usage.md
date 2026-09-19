@@ -244,7 +244,7 @@ env:
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
 
-`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML.
+`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML. On the GitHub App, each automatic command opens its check run as in progress before the tool runs, so the author sees that PR-Agent picked the pull request up before any output exists; the run is completed with the tool's output, or marked failed if the command did not finish.
 
 Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` [configuration file](./configuration_options.md#global-configuration-file) in the root of your repo
 
