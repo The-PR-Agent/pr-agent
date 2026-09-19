@@ -398,3 +398,7 @@ def should_process_pr_logic(
             raise
         return True
     return True
+
+
+# Re-export should_process_pr_logic for direct server imports
+shared_should_process_pr_logic = should_process_pr_logic

@@ -28,9 +28,7 @@ from pr_agent.secret_providers import get_secret_provider, validate_secret_provi
 from pr_agent.servers.utils import (
     get_pr_commands,
     push_trigger_slot,
-)
-from pr_agent.servers.utils import (
-    should_process_pr_logic as _should_process_pr_logic,
+    shared_should_process_pr_logic,
 )
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -244,7 +242,7 @@ def is_bot_user(data) -> bool:
 
 
 def should_process_pr_logic(data) -> bool:
-    return _should_process_pr_logic(data, provider="bitbucket_app")
+    return shared_should_process_pr_logic(data, provider="bitbucket_app")
 
 
 @router.post("/webhook")

@@ -1378,11 +1378,11 @@ def test_bitbucket_server_should_process_pr_logic_fails_open_on_filter_exception
 
     from pr_agent.servers import bitbucket_server_webhook
 
-    monkeypatch.setattr(bitbucket_server_webhook, "_should_process_pr_logic", broken_filter)
+    monkeypatch.setattr(bitbucket_server_webhook, "shared_should_process_pr_logic", broken_filter)
 
     try:
         payload = _bitbucket_server_payload(title="Test PR")
-        # Ensure it returns True (fail-open) and does not call BitbucketServerProvider
+        # Verify it returns True (fail-open) and does not call BitbucketServerProvider
         assert bitbucket_server_webhook.should_process_pr_logic(payload) is True
     finally:
         settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", original_folders)

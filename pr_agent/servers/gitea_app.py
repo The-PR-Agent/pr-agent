@@ -15,10 +15,8 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import (
     get_pr_commands,
     push_trigger_slot,
+    shared_should_process_pr_logic,
     verify_signature,
-)
-from pr_agent.servers.utils import (
-    should_process_pr_logic as _should_process_pr_logic,
 )
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
@@ -161,7 +159,7 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
             get_logger().error(f"Failed to perform command {command}: {e}")
 
 def should_process_pr_logic(body) -> bool:
-    return _should_process_pr_logic(body, provider="gitea")
+    return shared_should_process_pr_logic(body, provider="gitea")
 
 # FastAPI app setup
 middleware = [Middleware(RawContextMiddleware)]

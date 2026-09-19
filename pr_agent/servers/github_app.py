@@ -23,10 +23,8 @@ from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     get_pr_commands,
     push_trigger_slot,
+    shared_should_process_pr_logic,
     verify_signature,
-)
-from pr_agent.servers.utils import (
-    should_process_pr_logic as _should_process_pr_logic,
 )
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
@@ -390,7 +388,7 @@ def is_bot_user(sender, sender_type):
 
 
 def should_process_pr_logic(body) -> bool:
-    return _should_process_pr_logic(body, provider="github")
+    return shared_should_process_pr_logic(body, provider="github")
 
 
 async def _dispatch_request(body: Dict[str, Any], event: str, action: str):

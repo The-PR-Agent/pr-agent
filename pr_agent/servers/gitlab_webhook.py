@@ -24,9 +24,7 @@ from pr_agent.secret_providers import get_secret_provider, validate_secret_provi
 from pr_agent.servers.utils import (
     get_pr_commands,
     push_trigger_slot,
-)
-from pr_agent.servers.utils import (
-    should_process_pr_logic as _should_process_pr_logic,
+    shared_should_process_pr_logic,
 )
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
@@ -247,7 +245,7 @@ async def is_bot_assigned_as_reviewer(data) -> bool:
     return False
 
 def should_process_pr_logic(data) -> bool:
-    return _should_process_pr_logic(data, provider="gitlab")
+    return shared_should_process_pr_logic(data, provider="gitlab")
 
 
 def authenticate_gitlab_webhook(request: Request, log_context: dict):

@@ -23,10 +23,8 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import (
     get_pr_commands,
     push_trigger_slot,
+    shared_should_process_pr_logic,
     verify_signature,
-)
-from pr_agent.servers.utils import (
-    should_process_pr_logic as _should_process_pr_logic,
 )
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -50,7 +48,7 @@ def handle_request(
 
 def should_process_pr_logic(data) -> bool:
     try:
-        if not _should_process_pr_logic(data, provider="bitbucket_server", raise_on_error=True):
+        if not shared_should_process_pr_logic(data, provider="bitbucket_server", raise_on_error=True):
             return False
     except Exception:
         # Preserve fail-open fallback without continuing into folder filtering on error
