@@ -2,7 +2,6 @@ import ast
 import copy
 import json
 import os
-import re
 from typing import List
 
 import uvicorn
@@ -22,6 +21,7 @@ from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import get_pr_commands, push_trigger_slot, verify_signature
+from pr_agent.servers.utils import should_process_pr_logic as shared_should_process_pr_logic
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -45,60 +45,27 @@ def handle_request(
 def should_process_pr_logic(data) -> bool:
     try:
         pr_data = data.get("pullRequest", {})
-        title = pr_data.get("title", "")
 
         from_ref = pr_data.get("fromRef", {})
-        source_branch = from_ref.get("displayId", "") if from_ref else ""
-
         to_ref = pr_data.get("toRef", {})
-        target_branch = to_ref.get("displayId", "") if to_ref else ""
 
         author = pr_data.get("author", {})
         user = author.get("user", {}) if author else {}
-        sender = user.get("name", "") if user else ""
 
         repository = to_ref.get("repository", {}) if to_ref else {}
         project = repository.get("project", {}) if repository else {}
         project_key = project.get("key", "") if project else ""
         repo_slug = repository.get("slug", "") if repository else ""
-
-        repo_full_name = f"{project_key}/{repo_slug}" if project_key and repo_slug else ""
         pr_id = pr_data.get("id", None)
 
-        # To ignore PRs from specific repositories
-        ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
-        if repo_full_name and ignore_repos:
-            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
-                get_logger().info(f"Ignoring PR from repository '{repo_full_name}' due to 'config.ignore_repositories' setting")
-                return False
-
-        # To ignore PRs from specific users
-        ignore_pr_users = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
-        if ignore_pr_users and sender:
-            if any(re.search(regex, sender) for regex in ignore_pr_users):
-                get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
-                return False
-
-        # To ignore PRs with specific titles
-        if title:
-            ignore_pr_title_re = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
-            if not isinstance(ignore_pr_title_re, list):
-                ignore_pr_title_re = [ignore_pr_title_re]
-            if ignore_pr_title_re and any(re.search(regex, title) for regex in ignore_pr_title_re):
-                get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
-                return False
-
-        ignore_pr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
-        ignore_pr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
-        if (ignore_pr_source_branches or ignore_pr_target_branches):
-            if any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
-                get_logger().info(
-                    f"Ignoring PR with source branch '{source_branch}' due to config.ignore_pr_source_branches settings")
-                return False
-            if any(re.search(regex, target_branch) for regex in ignore_pr_target_branches):
-                get_logger().info(
-                    f"Ignoring PR with target branch '{target_branch}' due to config.ignore_pr_target_branches settings")
-                return False
+        if not shared_should_process_pr_logic(
+            title=pr_data.get("title", ""),
+            source_branch=from_ref.get("displayId", "") if from_ref else "",
+            target_branch=to_ref.get("displayId", "") if to_ref else "",
+            sender=user.get("name", "") if user else "",
+            repo_full_name=f"{project_key}/{repo_slug}" if project_key and repo_slug else "",
+        ):
+            return False
 
         # Allow_only_specific_folders
         allowed_folders = get_settings().config.get("allow_only_specific_folders", [])

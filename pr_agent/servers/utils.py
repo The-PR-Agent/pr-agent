@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import hmac
+import re
 import secrets
 import time
 from collections import defaultdict
@@ -43,6 +44,71 @@ def get_pr_commands(provider: str) -> Sequence[str]:
     if configured is not _MISSING:
         return configured
     return list(_DEFAULT_PR_COMMANDS_BY_PROVIDER[provider])
+
+
+def should_process_pr_logic(
+    *,
+    title: str = "",
+    labels: Sequence[str] = (),
+    source_branch: str = "",
+    target_branch: str = "",
+    sender: str = "",
+    repo_full_name: str = "",
+    entity: str = "PR",
+) -> bool:
+    """Decide whether a pull request should be processed, from provider-independent fields.
+
+    Every webhook server asks the same question, so the rules live here and only the payload
+    extraction stays provider specific. On an unexpected failure the pull request is processed:
+    otherwise a single malformed setting would filter out everything.
+    """
+    try:
+        ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
+        if repo_full_name and ignore_repos:
+            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
+                get_logger().info(
+                    f"Ignoring {entity} from repository '{repo_full_name}' "
+                    f"due to 'config.ignore_repositories' setting")
+                return False
+
+        ignore_pr_authors = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
+        if sender and ignore_pr_authors:
+            if any(re.search(regex, sender) for regex in ignore_pr_authors):
+                get_logger().info(f"Ignoring {entity} from user '{sender}' due to 'config.ignore_pr_authors' setting")
+                return False
+
+        if title:
+            ignore_pr_title = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
+            if not isinstance(ignore_pr_title, list):
+                ignore_pr_title = [ignore_pr_title]
+            if any(re.search(regex, title) for regex in ignore_pr_title):
+                get_logger().info(f"Ignoring {entity} with title '{title}' due to config.ignore_pr_title setting")
+                return False
+
+        ignore_pr_labels = get_settings().get("CONFIG.IGNORE_PR_LABELS", [])
+        if labels and ignore_pr_labels:
+            if any(label in ignore_pr_labels for label in labels):
+                labels_str = ", ".join(labels)
+                get_logger().info(
+                    f"Ignoring {entity} with labels '{labels_str}' due to config.ignore_pr_labels settings")
+                return False
+
+        ignore_pr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
+        if ignore_pr_source_branches and any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
+            get_logger().info(
+                f"Ignoring {entity} with source branch '{source_branch}' "
+                f"due to config.ignore_pr_source_branches settings")
+            return False
+
+        ignore_pr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
+        if ignore_pr_target_branches and any(re.search(regex, target_branch) for regex in ignore_pr_target_branches):
+            get_logger().info(
+                f"Ignoring {entity} with target branch '{target_branch}' "
+                f"due to config.ignore_pr_target_branches settings")
+            return False
+    except Exception as e:
+        get_logger().error(f"Failed 'should_process_pr_logic': {e}")
+    return True
 
 
 def verify_signature(payload_body, secret_token, signature_header):
