@@ -20,6 +20,11 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-latest
     steps:
-      - uses: release-drafter/release-drafter@67e173cadb2fbd3de94f4a861e0c48c913b462ae  # v6.4.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - if: github.event_name == 'push'
+        uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9  # v7.7.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - if: github.event_name == 'pull_request_target'
+        uses: release-drafter/release-drafter/autolabeler@34d80673e067bdc0c24568d3af899c216adcfaa9  # v7.7.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

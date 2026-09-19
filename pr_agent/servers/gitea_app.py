@@ -14,6 +14,7 @@ from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import get_pr_commands, push_trigger_slot, verify_signature
+from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 # Setup logging and router
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -92,6 +93,10 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
     if not api_url:
         return
 
+    apply_repo_settings(api_url)
+    if not should_process_pr_logic(body):
+        return {}
+
     # Handle PR based on action
     if action in ["opened", "reopened"]:
         # commands = get_settings().get("gitea.pr_commands", [])
@@ -129,12 +134,9 @@ async def handle_comment_event(body: Dict[str, Any], event: str, action: str, ag
     await agent.handle_request(pr_url, comment_body)
 
 async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict, api_url: str):
-    apply_repo_settings(api_url)
     if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
-    if not should_process_pr_logic(body): # Here we already updated the configuration with the repo settings
-        return {}
     commands = (
         get_pr_commands("gitea")
         if commands_conf == "pr_commands"
@@ -212,6 +214,8 @@ def should_process_pr_logic(body) -> bool:
 
 # FastAPI app setup
 middleware = [Middleware(RawContextMiddleware)]
+if prometheus_metrics_enabled():
+    attach_metrics_endpoint(router)
 app = FastAPI(middleware=middleware)
 app.include_router(router)
 

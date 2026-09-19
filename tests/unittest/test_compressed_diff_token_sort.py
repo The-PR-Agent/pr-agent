@@ -22,8 +22,14 @@ def test_token_counts_are_filled_in_before_sorting():
     small, large = _file("small.py", 1), _file("large.py", 40)
     assert small.tokens == -1 and large.tokens == -1
 
-    pr_generate_compressed_diff([{"language": "Python", "files": [small, large]}],
-                                FakeTokenHandler(), "gpt-4", False, False)
+    pr_generate_compressed_diff(
+        [{"language": "Python", "files": [small, large]}],
+        FakeTokenHandler(),
+        10_000,
+        10_000,
+        False,
+        False,
+    )
 
     assert small.tokens > 0
     assert large.tokens > small.tokens
@@ -34,7 +40,13 @@ def test_files_are_ordered_largest_first():
     small, large = _file("small.py", 1), _file("large.py", 40)
 
     _, _, _, _, file_dict, _ = pr_generate_compressed_diff(
-        [{"language": "Python", "files": [small, large]}], FakeTokenHandler(), "gpt-4", False, False)
+        [{"language": "Python", "files": [small, large]}],
+        FakeTokenHandler(),
+        10_000,
+        10_000,
+        False,
+        False,
+    )
 
     assert list(file_dict) == ["large.py", "small.py"]
 
@@ -44,7 +56,13 @@ def test_precomputed_token_counts_are_left_alone():
     f = _file("a.py", 5)
     f.tokens = 12345
 
-    pr_generate_compressed_diff([{"language": "Python", "files": [f]}],
-                                FakeTokenHandler(), "gpt-4", False, False)
+    pr_generate_compressed_diff(
+        [{"language": "Python", "files": [f]}],
+        FakeTokenHandler(),
+        10_000,
+        10_000,
+        False,
+        False,
+    )
 
     assert f.tokens == 12345

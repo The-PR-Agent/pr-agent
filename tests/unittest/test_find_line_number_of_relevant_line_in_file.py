@@ -90,3 +90,54 @@ class TestFindLineNumberOfRelevantLineInFile:
 
         assert position == 1
         assert absolute_position == 1
+
+    def test_combined_diff_header_does_not_crash(self):
+        """Skip a combined/merge hunk header (@@@) instead of crashing on its None regex match."""
+        diff_files = [
+            FilePatchInfo(base_file="file1", head_file="file1",
+                          patch="@@@ -1,2 -1,2 +1,4 @@@\n- a\n +b\n  c\n +d", filename="file1")
+        ]
+
+        position, absolute_position = find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "c")
+
+        assert position == -1
+        assert absolute_position == -1
+
+    def test_combined_diff_header_absolute_position_does_not_crash(self):
+        diff_files = [
+            FilePatchInfo(base_file="file1", head_file="file1",
+                          patch="@@@ -1,2 -1,2 +1,4 @@@\n- a\n +b\n  c\n +d", filename="file1")
+        ]
+
+        position, absolute_position = find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "not_found", absolute_position=3)
+
+        assert position == -1
+
+    def test_combined_diff_header_plus_line_does_not_crash(self):
+        diff_files = [
+            FilePatchInfo(base_file="file1", head_file="file1",
+                          patch="@@@ -1,2 -1,2 +1,4 @@@\n- a\n +b\n  c\n +d", filename="file1")
+        ]
+
+        position, absolute_position = find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "+b")
+
+        assert position == -1
+        assert absolute_position == -1
+
+    def test_a_valid_hunk_after_a_combined_header_is_still_found(self):
+        """Keep anchoring from a valid hunk rendered after a skipped combined header."""
+        combined = "@@@ -1,2 -1,2 +1,4 @@@\n- a\n +b\n  c\n +d"
+        valid_hunk = "@@ -3,1 +5,1 @@\n ctx\n-old\n+new"
+        diff_files = [
+            FilePatchInfo(base_file="file1", head_file="file1",
+                          patch=combined + "\n" + valid_hunk, filename="file1")
+        ]
+
+        position, absolute_position = find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "new")
+
+        assert position == 8
+        assert absolute_position == 6

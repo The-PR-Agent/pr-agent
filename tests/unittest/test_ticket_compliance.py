@@ -6,6 +6,8 @@ Tests cover:
 - Authenticated task fetching and provider integration
 - Edge cases (mixed content, no tickets, duplicates, API failures)
 """
+import asyncio
+
 import pytest
 
 from pr_agent.config_loader import get_settings
@@ -361,6 +363,41 @@ class TestFindAsanaTickets:
         )
 
     @pytest.mark.asyncio
+    async def test_fallback_asana_tickets_count_against_jira_budget(self, monkeypatch):
+        """The fallback path shares MAX_TICKETS between Asana and Jira results,
+        matching the provider-specific paths that pass their existing tickets in."""
+        jira_keys = ["jira.jira_site", "jira.jira_api_email", "jira.jira_api_token"]
+        snapshot = _settings_helpers.snapshot_settings(jira_keys)
+        try:
+            get_settings().set("jira.jira_site", "example")
+            get_settings().set("jira.jira_api_email", "user@example.com")
+            get_settings().set("jira.jira_api_token", "test-token")
+
+            class _FakeJira:
+                def issue(self, key):
+                    return {"fields": {"summary": f"Ticket {key}", "description": "body",
+                                       "labels": []}}
+
+            monkeypatch.setattr(tpc, "Jira", lambda **kwargs: _FakeJira())
+            provider = _GenericProvider(
+                "Related Asana tasks: "
+                "https://app.asana.com/0/99/111111111111 "
+                "https://app.asana.com/0/99/222222222222 "
+                "https://app.asana.com/0/99/333333333333 "
+                "Also PROJ-1 PROJ-2 PROJ-3 PROJ-4 PROJ-5"
+            )
+
+            tickets = await tpc.extract_tickets(provider)
+
+            assert len(tickets) == tpc.MAX_TICKETS
+            assert [t["ticket_id"] for t in tickets[:3]] == [
+                "111111111111", "222222222222", "333333333333"
+            ]
+            assert [t["ticket_id"] for t in tickets[3:]] == ["PROJ-1", "PROJ-2"]
+        finally:
+            _settings_helpers.restore_settings(snapshot)
+
+    @pytest.mark.asyncio
     async def test_extract_tickets_adds_asana_without_truncating_azure(self):
         """Azure work items remain intact while Asana additions keep their own cap."""
         provider = _make_azure_provider(
@@ -503,6 +540,152 @@ class TestFindAsanaTickets:
 
         assert tickets == []
         assert attempted_urls == ticket_urls[:3]
+
+    @pytest.mark.asyncio
+    async def test_asana_ticket_fetches_run_concurrently_and_preserve_input_order(self, monkeypatch):
+        active_fetches = 0
+        max_active_fetches = 0
+        all_started = asyncio.Event()
+
+        async def _coordinated_fetch(_session, ticket_url, _max_body_characters):
+            nonlocal active_fetches, max_active_fetches
+            active_fetches += 1
+            max_active_fetches = max(max_active_fetches, active_fetches)
+            if active_fetches == 3:
+                all_started.set()
+            try:
+                await asyncio.wait_for(all_started.wait(), timeout=0.1)
+                task_gid = tpc._get_asana_task_gid(ticket_url)
+                return {
+                    "ticket_id": task_gid,
+                    "ticket_url": ticket_url,
+                    "title": f"Asana task {task_gid}",
+                    "body": "",
+                    "labels": "",
+                }
+            finally:
+                active_fetches -= 1
+
+        monkeypatch.setattr(tpc, "_fetch_asana_ticket_content", _coordinated_fetch)
+        ticket_urls = [
+            f"https://app.asana.com/0/99/{task_gid}"
+            for task_gid in (111111111111, 222222222222, 333333333333)
+        ]
+
+        tickets = await tpc._fetch_asana_ticket_contents(ticket_urls, 3, 10000)
+
+        assert max_active_fetches == 3
+        assert [ticket["ticket_url"] for ticket in tickets] == ticket_urls
+
+    @pytest.mark.asyncio
+    async def test_asana_ticket_fetches_keep_successes_ordered_after_partial_failure(self, monkeypatch):
+        async def _partially_failing_fetch(_session, ticket_url, _max_body_characters):
+            task_gid = tpc._get_asana_task_gid(ticket_url)
+            await asyncio.sleep({"111111111111": 0.02, "222222222222": 0, "333333333333": 0.01}[task_gid])
+            if task_gid == "222222222222":
+                raise RuntimeError("task unavailable")
+            return {
+                "ticket_id": task_gid,
+                "ticket_url": ticket_url,
+                "title": f"Asana task {task_gid}",
+                "body": "",
+                "labels": "",
+            }
+
+        monkeypatch.setattr(tpc, "_fetch_asana_ticket_content", _partially_failing_fetch)
+        ticket_urls = [
+            f"https://app.asana.com/0/99/{task_gid}"
+            for task_gid in (111111111111, 222222222222, 333333333333)
+        ]
+
+        tickets = await tpc._fetch_asana_ticket_contents(ticket_urls, 3, 10000)
+
+        assert [ticket["ticket_id"] for ticket in tickets] == ["111111111111", "333333333333"]
+
+    @pytest.mark.asyncio
+    async def test_asana_ticket_timeout_does_not_cancel_other_fetches(self, monkeypatch):
+        async def _timeout_one_fetch(_session, ticket_url, _max_body_characters):
+            task_gid = tpc._get_asana_task_gid(ticket_url)
+            if task_gid == "222222222222":
+                raise TimeoutError("task timed out")
+            return {
+                "ticket_id": task_gid,
+                "ticket_url": ticket_url,
+                "title": f"Asana task {task_gid}",
+                "body": "",
+                "labels": "",
+            }
+
+        monkeypatch.setattr(tpc, "_fetch_asana_ticket_content", _timeout_one_fetch)
+        ticket_urls = [
+            f"https://app.asana.com/0/99/{task_gid}"
+            for task_gid in (111111111111, 222222222222, 333333333333)
+        ]
+
+        tickets = await tpc._fetch_asana_ticket_contents(ticket_urls, 3, 10000)
+
+        assert [ticket["ticket_id"] for ticket in tickets] == ["111111111111", "333333333333"]
+
+    @pytest.mark.asyncio
+    async def test_asana_ticket_batch_cancellation_cleans_up_in_flight_fetches(self, monkeypatch):
+        active_fetches = 0
+        all_started = asyncio.Event()
+
+        async def _blocking_fetch(_session, _ticket_url, _max_body_characters):
+            nonlocal active_fetches
+            active_fetches += 1
+            if active_fetches == 3:
+                all_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                active_fetches -= 1
+
+        monkeypatch.setattr(tpc, "_fetch_asana_ticket_content", _blocking_fetch)
+        ticket_urls = [
+            f"https://app.asana.com/0/99/{task_gid}"
+            for task_gid in (111111111111, 222222222222, 333333333333)
+        ]
+        batch = asyncio.create_task(tpc._fetch_asana_ticket_contents(ticket_urls, 3, 10000))
+        await asyncio.wait_for(all_started.wait(), timeout=0.1)
+
+        batch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await batch
+
+        assert active_fetches == 0
+
+    @pytest.mark.asyncio
+    async def test_asana_ticket_child_abort_cancels_and_drains_siblings(self, monkeypatch):
+        class FetchAborted(BaseException):
+            pass
+
+        active_fetches = 0
+        all_started = asyncio.Event()
+
+        async def _aborting_fetch(_session, ticket_url, _max_body_characters):
+            nonlocal active_fetches
+            active_fetches += 1
+            if active_fetches == 3:
+                all_started.set()
+            try:
+                await asyncio.wait_for(all_started.wait(), timeout=0.1)
+                if tpc._get_asana_task_gid(ticket_url) == "111111111111":
+                    raise FetchAborted("child fetch aborted")
+                await asyncio.Event().wait()
+            finally:
+                active_fetches -= 1
+
+        monkeypatch.setattr(tpc, "_fetch_asana_ticket_content", _aborting_fetch)
+        ticket_urls = [
+            f"https://app.asana.com/0/99/{task_gid}"
+            for task_gid in (111111111111, 222222222222, 333333333333)
+        ]
+
+        with pytest.raises(FetchAborted, match="child fetch aborted"):
+            await tpc._fetch_asana_ticket_contents(ticket_urls, 3, 10000)
+
+        assert active_fetches == 0
 
     @pytest.mark.asyncio
     async def test_invalid_asana_url_does_not_abort_valid_batch_entry(self, monkeypatch):

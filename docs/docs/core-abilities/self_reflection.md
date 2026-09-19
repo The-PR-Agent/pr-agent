@@ -38,8 +38,8 @@ This results in a more refined and valuable set of suggestions for the user, sav
 
 ## Example Results
 
-![self_reflection](https://codium.ai/images/pr_agent/self_reflection1.png){width=768}
-![self_reflection](https://codium.ai/images/pr_agent/self_reflection2.png){width=768}
+![self_reflection](../assets/self_reflection1.png){width=768}
+![self_reflection](../assets/self_reflection2.png){width=768}
 
 ## Appendix - Relevant Configuration Options
 

@@ -1,7 +1,7 @@
 import git
 import pytest
 
-from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -67,6 +67,22 @@ def test_get_languages_preserves_case_sensitive_extensions(tmp_path):
     provider.repo = repo
 
     assert provider.get_languages() == {"C": 50.0, "C++": 50.0}
+
+
+def test_get_files_returns_new_path_for_renamed_file(tmp_path):
+    repo = _make_repo(tmp_path, ["old.py"])
+    target_branch_name = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    (tmp_path / "old.py").rename(tmp_path / "new.py")
+    repo.index.remove(["old.py"])
+    repo.index.add(["new.py"])
+    repo.index.commit("rename old.py to new.py")
+
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+    provider.target_branch_name = target_branch_name
+
+    assert provider.get_files() == ["new.py"]
 
 
 def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
@@ -188,6 +204,44 @@ def test_publish_code_suggestions_artifact_includes_partial_coverage(tmp_path):
     content = improve_path.read_text()
     assert "No code suggestions found in the successfully analyzed chunks." in content
     assert "1 of 2 analysis chunks failed" in content
+
+
+@pytest.mark.asyncio
+async def test_mixed_suggestions_stay_in_improve_artifact(tmp_path):
+    improve_path = tmp_path / "improve.md"
+    review_path = tmp_path / "review.md"
+    provider = object.__new__(LocalGitProvider)
+    provider.improve_path = improve_path
+    provider.review_path = review_path
+    provider.diff_files = [FilePatchInfo(
+        base_file="old()\n",
+        head_file="old()\n",
+        patch="",
+        filename="app.py",
+    )]
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = provider
+    tool.progress_response = None
+
+    suggestion = {
+        "label": "maintainability",
+        "relevant_file": "app.py",
+        "suggestion_content": "Use the helper.",
+        "existing_code": "old()",
+        "improved_code": "new()",
+        "score": 8,
+    }
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        {**suggestion, "relevant_lines_start": 1, "relevant_lines_end": 1},
+        {**suggestion, "suggestion_content": "Keep this advice.",
+         "relevant_lines_start": 40, "relevant_lines_end": 40},
+    ]})
+
+    content = improve_path.read_text(encoding="utf-8")
+    assert content.index("Use the helper.") < content.index("Keep this advice.")
+    assert content.count("```suggestion") == 1
+    assert "because the anchored range is outside the file" in content
+    assert not review_path.exists()
 
 
 def test_publish_code_suggestions_uses_custom_heading_without_identity(tmp_path):

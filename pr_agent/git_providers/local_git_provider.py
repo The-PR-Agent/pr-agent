@@ -74,6 +74,10 @@ class LocalGitProvider(GitProvider):
         return True
 
     def get_diff_files(self) -> list[FilePatchInfo]:
+        cached_diff_files = getattr(self, "diff_files", None)
+        if cached_diff_files is not None:
+            return cached_diff_files
+
         diffs = self.repo.head.commit.diff(
             self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),
             create_patch=True,
@@ -122,8 +126,9 @@ class LocalGitProvider(GitProvider):
             self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),
             R=True
         )
-        # Get the list of changed files
-        diff_files = [item.a_path for item in diff_index]
+        # Use the current path for renames and modifications; deleted files
+        # have no new-side path and therefore fall back to their old path.
+        diff_files = [item.b_path or item.a_path for item in diff_index]
         return diff_files
 
     def publish_description(self, pr_title: str, pr_body: str):

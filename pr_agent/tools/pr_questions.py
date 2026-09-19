@@ -1,12 +1,16 @@
 import copy
 from functools import partial
 
-from jinja2 import Environment, StrictUndefined
-
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, decode_user_text_args, format_pr_questions_header
 from pr_agent.config_loader import get_settings
@@ -61,27 +65,37 @@ class PRQuestions:
         relevant_configs = {'pr_questions': dict(get_settings().pr_questions),
                             'config': dict(get_settings().config)}
         get_logger().debug("Relevant configs", artifacts=relevant_configs)
+        temporary_comment_published = False
         if get_settings().config.publish_output:
             self.git_provider.publish_comment("Preparing answer...", is_temporary=True)
+            temporary_comment_published = True
 
-        # identify image
-        img_path = self.identify_image_in_comment()
-        if img_path:
-            get_logger().debug("Image path identified", artifact=img_path)
+        try:
+            # identify image
+            img_path = self.identify_image_in_comment()
+            if img_path:
+                get_logger().debug("Image path identified", artifact=img_path)
 
-        await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+            await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
 
-        pr_comment = self._prepare_pr_answer()
-        get_logger().debug("PR output", artifact=pr_comment)
+            pr_comment = self._prepare_pr_answer()
+            get_logger().debug("PR output", artifact=pr_comment)
 
-        if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
-            pr_comment += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
-            pr_comment += HelpMessage.get_ask_usage_guide()
-            pr_comment += "\n</details>\n"
+            if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_questions.enable_help_text:
+                pr_comment += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
+                pr_comment += HelpMessage.get_ask_usage_guide()
+                pr_comment += "\n</details>\n"
 
-        if get_settings().config.publish_output:
-            self._publish_answer(pr_comment)
-            self.git_provider.remove_initial_comment()
+            if get_settings().config.publish_output:
+                self._publish_answer(pr_comment)
+        finally:
+            if temporary_comment_published:
+                try:
+                    self.git_provider.remove_initial_comment()
+                except Exception as cleanup_error:
+                    get_logger().warning(
+                        f"Failed to remove the temporary question comment: {cleanup_error}"
+                    )
         return ""
 
     def _publish_answer(self, answer: str):
@@ -128,20 +142,83 @@ class PRQuestions:
         return img_path
 
     async def _prepare_prediction(self, model: str):
-        self.patches_diff = get_pr_diff(self.git_provider, self.token_handler, model)
-        if self.patches_diff:
-            get_logger().debug("PR diff", artifact=self.patches_diff)
-            self.prediction = await self._get_prediction(model)
-        else:
-            get_logger().error("Error getting PR diff")
-            self.prediction = ""
+        variables = copy.deepcopy(self.vars)
+        raw_history = variables.get("conversation_history", "")
+        variables["conversation_history"] = ""
+        image_path = variables.get("img_path")
+        if not isinstance(image_path, str) or not image_path.strip():
+            image_path = None
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        history_budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_questions_prompt.system,
+            get_settings().pr_questions_prompt.user,
+            ai_handler=self.ai_handler,
+            image_path=image_path,
+            output_token_reserve=output_token_reserve,
+        )
+        fitted_history = history_budget.fit_prompt_variable(
+            variables,
+            "conversation_history",
+            raw_history,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+            additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            image_path=image_path,
+            keep="suffix",
+        )
+        variables["conversation_history"] = fitted_history.optional_text
+
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_questions_prompt.system,
+            get_settings().pr_questions_prompt.user,
+            ai_handler=self.ai_handler,
+            image_path=image_path,
+            output_token_reserve=output_token_reserve,
+        )
+        budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
+        patches_diff = get_pr_diff(
+            self.git_provider,
+            budget.token_handler,
+            model,
+            output_token_reserve=output_token_reserve,
+        )
+        if not patches_diff:
+            raise ValueError(f"No PR diff fits the /ask request for {model}")
+
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+            image_path=image_path,
+        )
+        if fitted.optional_text != patches_diff:
+            raise ValueError(
+                f"The complete packed question diff does not fit the token limit for {model}"
+            )
+        self.patches_diff = fitted.optional_text
+        self._attempt_system_prompt = fitted.system_prompt
+        self._attempt_user_prompt = fitted.user_prompt
+        self._attempt_variables = variables
+        get_logger().debug("PR diff", artifact=self.patches_diff)
+        self.prediction = await self._get_prediction(model)
 
     async def _get_prediction(self, model: str):
-        variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-        environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(get_settings().pr_questions_prompt.system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_questions_prompt.user).render(variables)
+        system_prompt = self._attempt_system_prompt
+        user_prompt = self._attempt_user_prompt
+        variables = self._attempt_variables
         if 'img_path' in variables:
             img_path = self.vars['img_path']
             response, finish_reason = await (self.ai_handler.chat_completion

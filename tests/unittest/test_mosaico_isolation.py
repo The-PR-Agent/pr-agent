@@ -46,6 +46,7 @@ class _FakeRequestContext:
         self.message = _make_message(text)
         self.task_id = f"task-{text}"
         self.context_id = f"ctx-{text}"
+        self.current_task = None
 
     def get_user_input(self, delimiter: str = "\n") -> str:
         return self._text

@@ -1,16 +1,22 @@
 from base64 import b64decode
 
-from pr_agent.config_security import REPO_HOST_ONLY_KEYS_BY_SECTION, REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
+from pr_agent.config_security import (
+    CLI_HOST_ONLY_KEYS_BY_SECTION,
+    REPO_HOST_ONLY_KEYS_BY_SECTION,
+    REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
+)
 
 
 class CliArgs:
     @staticmethod
     def _host_only_setting_arg(arg: str) -> str | None:
         """Return a protected setting token when a CLI arg targets a host-only key."""
-        setting_name = arg.removeprefix('--').split('=', 1)[0].replace('__', '.')
+        setting_name = arg.lstrip('-').split('=', 1)[0].strip().replace('__', '.')
         section, separator, key = setting_name.partition('.')
         if not separator:
-            if section in REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION or section in REPO_HOST_ONLY_KEYS_BY_SECTION:
+            if (section in REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION
+                    or section in REPO_HOST_ONLY_KEYS_BY_SECTION
+                    or section in CLI_HOST_ONLY_KEYS_BY_SECTION):
                 return f'.{section}'
             return None
 
@@ -19,6 +25,9 @@ class CliArgs:
             return f'.{section}.{key}'
         host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
         if key.split('.', 1)[0] in host_only_keys:
+            return f'.{section}.{key}'
+        cli_host_only_keys = CLI_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
+        if key.split('.', 1)[0] in cli_host_only_keys:
             return f'.{section}.{key}'
         return None
 

@@ -122,12 +122,14 @@ def main():
     get_settings().set("github.user_token", user_token)
 
     # Run the command. Feedback will appear in GitHub PR comments
-    cli.run_command(pr_url, command)
+    return cli.run_command(pr_url, command)
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
 ```
+
+With `config.propagate_tool_errors` enabled, forwarding the return value through `SystemExit` makes this script exit with status 1 after a propagated tool error. The default remains status 0.
 
 ## Run from source
 

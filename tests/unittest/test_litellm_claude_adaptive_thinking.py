@@ -43,10 +43,18 @@ def _restore_litellm_globals():
                 os.environ[name] = value
 
 
-def _settings(reasoning_effort="medium", enabled=False, extended_enabled=False):
+def _settings(
+    reasoning_effort="medium",
+    enabled=False,
+    extended_enabled=False,
+    extended_budget_tokens=2048,
+    extended_max_output_tokens=4096,
+):
     flags = {
         "enable_claude_adaptive_thinking": enabled,
         "enable_claude_extended_thinking": extended_enabled,
+        "extended_thinking_budget_tokens": extended_budget_tokens,
+        "extended_thinking_max_output_tokens": extended_max_output_tokens,
     }
     config = SimpleNamespace(
         reasoning_effort=reasoning_effort,
@@ -56,10 +64,17 @@ def _settings(reasoning_effort="medium", enabled=False, extended_enabled=False):
         verbosity_level=0,
         get=lambda key, default=None: flags.get(key, default),
     )
+    # Bedrock requests now resolve credentials per request rather than from the
+    # process environment, so a bedrock model needs them supplied here.
+    aws = {
+        "aws.AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+        "aws.AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "aws.AWS_REGION_NAME": "us-east-1",
+    }
     return SimpleNamespace(
         config=config,
         litellm=SimpleNamespace(get=lambda key, default=None: default),
-        get=lambda key, default=None: default,
+        get=lambda key, default=None: aws.get(key, default),
     )
 
 
@@ -73,6 +88,9 @@ def _response():
 
 async def _run_completion(monkeypatch, model, reasoning_effort="medium", enabled=False,
                           extended_enabled=False, extended_override=None):
+    # An ambient selector would be refused before the request credentials are read.
+    for variable in ("AWS_PROFILE_NAME", "AWS_ROLE_NAME"):
+        monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -124,6 +142,69 @@ async def test_enabled_adaptive_thinking_sends_anthropic_payload(monkeypatch):
     assert kwargs["output_config"] == {"effort": "high"}
     assert "temperature" not in kwargs
     assert "reasoning_effort" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_adaptive_thinking_effort_is_isolated_from_later_settings(monkeypatch):
+    active_settings = _settings(reasoning_effort="low", enabled=True)
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+    handler = LiteLLMAIHandler()
+    active_settings = _settings(reasoning_effort="high", enabled=True)
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        await handler.chat_completion(model="anthropic/claude-opus-4-8", system="sys", user="usr")
+
+    assert completion.call_args.kwargs["output_config"] == {"effort": "low"}
+
+
+@pytest.mark.asyncio
+async def test_adaptive_thinking_enablement_is_isolated_from_later_settings(monkeypatch):
+    active_settings = _settings(reasoning_effort="low", enabled=False)
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+    handler = LiteLLMAIHandler()
+    active_settings = _settings(reasoning_effort="high", enabled=True)
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        await handler.chat_completion(model="anthropic/claude-opus-4-8", system="sys", user="usr")
+
+    assert "thinking" not in completion.call_args.kwargs
+    assert "output_config" not in completion.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_extended_thinking_limits_are_isolated_from_later_settings(monkeypatch):
+    model = "anthropic/claude-opus-4-6"
+    active_settings = _settings(
+        extended_enabled=True,
+        extended_budget_tokens=1024,
+        extended_max_output_tokens=2048,
+    )
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+    handler = LiteLLMAIHandler()
+    handler.claude_extended_thinking_models = [model]
+    active_settings = _settings(
+        extended_enabled=True,
+        extended_budget_tokens=4096,
+        extended_max_output_tokens=8192,
+    )
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        await handler.chat_completion(model=model, system="sys", user="usr")
+
+    assert completion.call_args.kwargs["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+    assert completion.call_args.kwargs["max_tokens"] == 2048
 
 
 @pytest.mark.asyncio
@@ -207,3 +288,78 @@ async def test_non_adaptive_model_in_extended_override_still_gets_extended_think
 
     assert kwargs["thinking"]["type"] == "enabled"
     assert "budget_tokens" in kwargs["thinking"]
+
+
+@pytest.mark.asyncio
+async def test_opaque_arn_with_adaptive_enabled_warns_and_skips_payload(monkeypatch):
+    """An opaque application inference profile ARN carries no model name, so the adaptive
+    payload must be skipped and a warning logged instead of failing silently (see #3216)."""
+    logger = MagicMock()
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.get_logger",
+               return_value=logger):
+        kwargs = await _run_completion(
+            monkeypatch,
+            "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:application-inference-profile/abc123def456",
+            enabled=True,
+        )
+
+    assert "thinking" not in kwargs
+    assert "output_config" not in kwargs
+    logger.warning.assert_called_once()
+    assert "abc123def456" in logger.warning.call_args.args[0]
+    assert "litellm.model_id" in logger.warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_family_embedding_arn_still_gets_adaptive_payload(monkeypatch):
+    """An ARN that embeds the model family normalises to a matching id, so adaptive thinking
+    applies; the miss is specific to opaque suffixes (see #3216)."""
+    kwargs = await _run_completion(
+        monkeypatch,
+        "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:inference-profile/us.anthropic.claude-sonnet-5",
+        enabled=True,
+    )
+
+    assert kwargs["thinking"] == {"type": "adaptive"}
+    assert kwargs["output_config"] == {"effort": "medium"}
+
+
+@pytest.mark.asyncio
+async def test_extended_enabled_with_no_matching_model_warns(monkeypatch):
+    """Extended thinking enabled with an empty override list leaves no matching model, so the
+    warning fires even though the adaptive model gate is not involved (see #3216)."""
+    logger = MagicMock()
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.get_logger",
+               return_value=logger):
+        kwargs = await _run_completion(
+            monkeypatch,
+            "anthropic/claude-opus-4-6",
+            enabled=False,
+            extended_enabled=True,
+            extended_override=[],
+        )
+
+    assert "thinking" not in kwargs
+    logger.warning.assert_called_once()
+    assert "opus-4-6" in logger.warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_non_arn_model_warns_without_bedrock_advice(monkeypatch):
+    """The Bedrock remedy must stay gated to Bedrock ids: a plain provider id that reaches the
+    warning branch only gets the generic message, never the litellm.model_id ARN advice."""
+    logger = MagicMock()
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.get_logger",
+               return_value=logger):
+        kwargs = await _run_completion(
+            monkeypatch,
+            "openai/gpt-4o",
+            enabled=True,
+        )
+
+    assert "thinking" not in kwargs
+    logger.warning.assert_called_once()
+    message = logger.warning.call_args.args[0]
+    assert "gpt-4o" in message
+    assert "litellm.model_id" not in message
+    assert "arn" not in message

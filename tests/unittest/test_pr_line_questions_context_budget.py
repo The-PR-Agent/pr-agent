@@ -6,6 +6,8 @@ import pytest
 from litellm import token_counter
 
 import pr_agent.tools.pr_line_questions as plq
+from pr_agent.algo.token_budget import MESSAGE_FRAMING_TOKEN_ALLOWANCE, REPLY_FRAMING_TOKEN_ALLOWANCE
+from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -203,9 +205,9 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
 
     counter_calls = []
 
-    def model_aware_counter(*, model, messages):
-        counter_calls.append(model)
-        return sum(len(message["content"]) for message in messages)
+    def model_aware_count(self, text, force_accurate=False):
+        counter_calls.append(self.model)
+        return len(text)
 
     try:
         settings.set("config.model", "gpt-4o")
@@ -222,19 +224,18 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
         settings.set("side", "RIGHT")
         settings.set("file_name", "src/example.py")
         settings.set("comment_id", 100)
-        monkeypatch.setattr(plq, "token_counter", model_aware_counter, raising=False)
+        monkeypatch.setattr(TokenHandler, "count_tokens", model_aware_count)
 
         await question.run()
 
         request = next(item for item in ai_handler.requests if item["model"] == "claude-2")
         assert "claude-2" in counter_calls
-        assert model_aware_counter(
-            model="claude-2",
-            messages=[
-                {"role": "system", "content": request["system"]},
-                {"role": "user", "content": request["user"]},
-            ],
-        ) <= 2900
+        assert (
+            len(request["system"] + request["user"])
+            + 2 * MESSAGE_FRAMING_TOKEN_ALLOWANCE
+            + REPLY_FRAMING_TOKEN_ALLOWANCE
+            <= 2900
+        )
         assert "reply 199" in request["user"]
         assert provider.replies == [(100, "answer")]
     finally:

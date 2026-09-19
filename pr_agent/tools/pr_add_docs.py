@@ -3,12 +3,15 @@ import textwrap
 from functools import partial
 from typing import Dict
 
-from jinja2 import Environment, StrictUndefined
-
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -53,10 +56,12 @@ class PRAddDocs:
                                           get_settings().pr_add_docs_prompt.user)
 
     async def run(self):
+        temporary_comment_published = False
         try:
             get_logger().info('Generating code Docs for PR...')
             if get_settings().config.publish_output:
                 self.git_provider.publish_comment("Generating Documentation...", is_temporary=True)
+                temporary_comment_published = True
 
             get_logger().info('Preparing PR documentation...')
             await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
@@ -68,29 +73,68 @@ class PRAddDocs:
             if get_settings().config.publish_output:
                 get_logger().info('Pushing PR documentation...')
                 self.git_provider.remove_initial_comment()
+                temporary_comment_published = False
                 get_logger().info('Pushing inline code documentation...')
                 self.push_inline_docs(data)
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
+        finally:
+            if temporary_comment_published:
+                try:
+                    self.git_provider.remove_initial_comment()
+                except Exception as cleanup_error:
+                    get_logger().warning(
+                        f"Failed to remove the temporary documentation comment: {cleanup_error}"
+                    )
 
     async def _prepare_prediction(self, model: str):
         get_logger().info('Getting PR diff...')
 
-        self.patches_diff = get_pr_diff(self.git_provider,
-                                        self.token_handler,
-                                        model,
-                                        add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False)
+        variables = copy.deepcopy(self.vars)
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_add_docs_prompt.system,
+            get_settings().pr_add_docs_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
+        )
+        patches_diff = get_pr_diff(
+            self.git_provider,
+            budget.token_handler,
+            model,
+            add_line_numbers_to_hunks=True,
+            disable_extra_lines=False,
+            output_token_reserve=output_token_reserve,
+        )
+        if not patches_diff:
+            raise ValueError("No PR diff fits the /add_docs request")
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+        if fitted.optional_text != patches_diff:
+            raise ValueError(
+                f"The complete packed documentation diff does not fit the token limit for {model}"
+            )
+        self.patches_diff = fitted.optional_text
+        self._attempt_system_prompt = fitted.system_prompt
+        self._attempt_user_prompt = fitted.user_prompt
 
         get_logger().info('Getting AI prediction...')
         self.prediction = await self._get_prediction(model)
 
     async def _get_prediction(self, model: str):
-        variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-        environment = Environment(undefined=StrictUndefined)
-        system_prompt = environment.from_string(get_settings().pr_add_docs_prompt.system).render(variables)
-        user_prompt = environment.from_string(get_settings().pr_add_docs_prompt.user).render(variables)
+        system_prompt = self._attempt_system_prompt
+        user_prompt = self._attempt_user_prompt
         if get_verbosity_level() >= 2:
             get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             get_logger().info(f"\nUser prompt:\n{user_prompt}")
@@ -104,6 +148,10 @@ class PRAddDocs:
         data = load_yaml(docs)
         if isinstance(data, list):
             data = {'Code Documentation': data}
+        if not isinstance(data, dict) or not isinstance(data.get('Code Documentation'), list):
+            get_logger().warning("The model did not return a Code Documentation list",
+                                 artifact={'prediction': docs})
+            return {'Code Documentation': []}
         return data
 
     def push_inline_docs(self, data):

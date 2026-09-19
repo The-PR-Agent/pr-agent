@@ -1189,10 +1189,15 @@ def test_gitea_persistent_wrapper_preserves_identity_and_result():
     published = object()
 
     class RecordingGiteaProvider:
+        # Gitea no longer overrides this: the base implementation persists.
         publish_persistent_comment = GiteaProvider.publish_persistent_comment
+        supports_comment_editing = GitProvider.supports_comment_editing
 
         def __init__(self):
             self.calls = []
+
+        def edit_comment(self, comment, body):
+            return True
 
         def publish_persistent_comment_full(
             self, pr_comment, initial_header, update_header=True, name="review",

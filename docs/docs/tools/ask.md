@@ -9,9 +9,9 @@ It can be invoked manually by commenting on any PR:
 
 ## Example usage
 
-![Ask Comment](https://codium.ai/images/pr_agent/ask_comment.png){width=512}
+![Ask Comment](../assets/ask_comment.png){width=512}
 
-![Ask](https://codium.ai/images/pr_agent/ask.png){width=512}
+![Ask](../assets/ask.png){width=512}
 
 ## Ask lines
 
@@ -21,7 +21,7 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 - To select multiple lines, click on the '+' sign of the first line and then hold and drag to select the rest of the lines.
 - write `/ask "..."` in the comment box and press `Add single comment` button.
 
-![Ask Line](https://codium.ai/images/pr_agent/Ask_line.png){width=512}
+![Ask Line](../assets/Ask_line.png){width=512}
 
 Note that the tool does not have "memory" of previous questions, and answers each question independently.
 
@@ -44,20 +44,20 @@ To get a direct link to an image, we recommend using the following scheme:
 
 1\. First, post a comment that contains **only** the image:
 
-![Ask image1](https://codium.ai/images/pr_agent/ask_images1.png){width=512}
+![Ask image1](../assets/ask_images1.png){width=512}
 
 2\. Quote reply to that comment:
 
-![Ask image2](https://codium.ai/images/pr_agent/ask_images2.png){width=512}
+![Ask image2](../assets/ask_images2.png){width=512}
 
 3\. In the screen opened, type the question below the image:
 
-![Ask image3](https://codium.ai/images/pr_agent/ask_images3.png){width=512}
-![Ask image4](https://codium.ai/images/pr_agent/ask_images4.png){width=512}
+![Ask image3](../assets/ask_images3.png){width=512}
+![Ask image4](../assets/ask_images4.png){width=512}
 
 4\. Post the comment, and receive the answer:
 
-![Ask image5](https://codium.ai/images/pr_agent/ask_images5.png){width=512}
+![Ask image5](../assets/ask_images5.png){width=512}
 
 See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_video.mov)
 

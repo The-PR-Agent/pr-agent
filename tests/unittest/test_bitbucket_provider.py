@@ -25,12 +25,12 @@ def _added_file(filename="src/example.py", lines=("a = 1", "b = 2", "c = 3")):
 
 class TestBitbucketProvider:
     @staticmethod
-    def _code_suggestion(line: int):
+    def _code_suggestion(line: int, end_line: int = None):
         return {
             "body": "**Suggestion:** fix it",
             "relevant_file": "src/example.py",
             "relevant_lines_start": line,
-            "relevant_lines_end": line,
+            "relevant_lines_end": line if end_line is None else end_line,
         }
 
     @staticmethod
@@ -281,6 +281,80 @@ not a valid hunk
             "Bitbucket failed to get diff for file src/example.py"
         )
 
+    def test_get_diff_files_keeps_diff_header_literals_inside_hunks(self):
+        raw_diff = """diff --git a/src/parser.py b/src/parser.py
+index 1111111..2222222 100644
+--- a/src/parser.py
++++ b/src/parser.py
+@@ -1,2 +1,2 @@
+ diff --git context literal
+-diff --git removed literal
++diff --git added literal
+"""
+
+        diff_file = self._get_single_diff_file(
+            raw_diff,
+            "modified",
+            1,
+            1,
+            "src/parser.py",
+        )
+
+        assert diff_file.patch == (
+            "@@ -1,2 +1,2 @@\n"
+            " diff --git context literal\n"
+            "-diff --git removed literal\n"
+            "+diff --git added literal\n"
+        )
+
+    def test_get_diff_files_splits_crlf_headers_after_preamble_in_diffstat_order(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.diff_files = None
+        provider.pr = MagicMock()
+
+        first = MagicMock()
+        first.new.path = "src/first.py"
+        first.old.path = "src/first.py"
+        first.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+
+        second = MagicMock()
+        second.new.path = "src/second.py"
+        second.old.path = "src/second.py"
+        second.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+
+        diffstats = [first, second]
+        provider.pr.diffstat.return_value = diffstats
+        provider.pr.diff.return_value = (
+            "Bitbucket generated diff\r\n"
+            "\r\n"
+            "diff --git a/src/first.py b/src/first.py\r\n"
+            "index 1111111..2222222 100644\r\n"
+            "--- a/src/first.py\r\n"
+            "+++ b/src/first.py\r\n"
+            "@@ -1 +1 @@\r\n"
+            "-old first\r\n"
+            "+new first\r\n"
+            "diff --git a/src/second.py b/src/second.py\r\n"
+            "index 3333333..4444444 100644\r\n"
+            "--- a/src/second.py\r\n"
+            "+++ b/src/second.py\r\n"
+            "@@ -1 +1 @@\r\n"
+            "-old second\r\n"
+            "+new second\r\n"
+        )
+
+        settings = MagicMock()
+        settings.get.return_value = True
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
+        ):
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["src/first.py", "src/second.py"]
+        assert diff_files[0].patch.startswith("@@ -1 +1 @@\r\n-old first")
+        assert diff_files[1].patch.startswith("@@ -1 +1 @@\r\n-old second")
+
     def test_get_repo_file_content_reads_from_target_branch(self):
         # Repo-context files must be read from the PR destination (target) branch,
         # matching the other providers.
@@ -350,6 +424,7 @@ not a valid hunk
     def test_persistent_review_update_does_not_duplicate_when_status_message_fails(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.pr = MagicMock()
+        provider.max_comment_length = 32768
         provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/c/abc")
         provider.get_comment_url = MagicMock(return_value="https://bitbucket.org/n/1")
 
@@ -365,14 +440,13 @@ not a valid hunk
 
         provider.publish_comment = MagicMock(side_effect=publish_comment)
 
-        with patch("pr_agent.git_providers.bitbucket_provider.get_logger") as mock_get_logger:
+        with patch("pr_agent.git_providers.git_provider.get_logger") as mock_get_logger:
             provider.publish_persistent_comment(f"{header}\n\nnew review",
                                                 initial_header=header,
                                                 update_header=True,
                                                 final_update_message=True)
 
-        existing.put.assert_called_once()
-        existing._update_data.assert_called_once()
+        existing.update.assert_called_once()
         provider.publish_comment.assert_called_once()
         assert "updated to latest commit" in provider.publish_comment.call_args.args[0]
         mock_get_logger.return_value.opt.assert_called_once_with(exception=True)
@@ -382,6 +456,7 @@ not a valid hunk
     def test_persistent_review_update_falls_back_when_edit_fails(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.pr = MagicMock()
+        provider.max_comment_length = 32768
         provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/c/abc")
         provider.get_comment_url = MagicMock(return_value="https://bitbucket.org/n/1")
 
@@ -389,7 +464,7 @@ not a valid hunk
         new_review = f"{header}\n\nnew review"
         existing = MagicMock()
         existing.raw = f"{header}\n\nprevious review"
-        existing.put.side_effect = Exception("edit failed")
+        existing.update.side_effect = Exception("edit failed")
         provider.pr.comments.return_value = [existing]
         provider.publish_comment = MagicMock()
 
@@ -398,16 +473,20 @@ not a valid hunk
                                             update_header=True,
                                             final_update_message=True)
 
-        existing.put.assert_called_once()
-        existing._update_data.assert_not_called()
+        existing.update.assert_called_once()
         provider.publish_comment.assert_called_once_with(new_review)
 
     def _make_persistent_provider(self, comments):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.pr = MagicMock()
         provider.pr.comments.return_value = comments
-        provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/commit/abc")
-        provider.get_comment_url = MagicMock(return_value="https://bitbucket.org/comment/1")
+        provider.max_comment_length = 32768
+        provider.get_latest_commit_url = MagicMock(
+            return_value="https://bitbucket.org/commit/abc"
+        )
+        provider.get_comment_url = MagicMock(
+            return_value="https://bitbucket.org/comment/1"
+        )
         provider.publish_comment = MagicMock()
         return provider
 
@@ -425,10 +504,10 @@ not a valid hunk
             legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
         )
 
-        legacy.put.assert_called_once()
-        updated_body = legacy.put.call_args.kwargs["data"]["content"]["raw"]
+        legacy.update.assert_called_once()
+        updated_body = legacy.update.call_args.kwargs["content"]["raw"]
         assert updated_body.startswith("## Guideline Compliance Check 🔍\n\n")
-        assert PRReviewIdentity.REGULAR.value in updated_body
+        assert "[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent" in updated_body
         provider.publish_comment.assert_not_called()
 
     def test_persistent_review_prefers_marked_comment_over_legacy_comment(self):
@@ -450,8 +529,8 @@ not a valid hunk
             legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
         )
 
-        marked.put.assert_called_once()
-        legacy.put.assert_not_called()
+        marked.update.assert_called_once()
+        legacy.update.assert_not_called()
 
     def test_persistent_review_does_not_match_quoted_identity(self):
         unrelated = MagicMock()
@@ -474,9 +553,11 @@ not a valid hunk
 
         unrelated.put.assert_not_called()
         provider.publish_comment.assert_called_once()
-        assert PRReviewIdentity.REGULAR.value in provider.publish_comment.call_args.args[0]
+        assert "[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent" in (
+            provider.publish_comment.call_args.args[0]
+        )
 
-    def test_nonreview_persistent_comment_keeps_existing_bitbucket_matching(self):
+    def test_nonreview_persistent_comment_requires_header_at_start(self):
         existing = MagicMock()
         existing.raw = "Configuration prefix\n## PR-Agent Configuration\nbody"
         provider = self._make_persistent_provider([existing])
@@ -488,8 +569,10 @@ not a valid hunk
             final_update_message=False,
         )
 
-        existing.put.assert_called_once()
-        provider.publish_comment.assert_not_called()
+        existing.update.assert_not_called()
+        provider.publish_comment.assert_called_once_with(
+            "## PR-Agent Configuration\nnew body"
+        )
 
     def test_publish_inline_comment_maps_payload_correctly(self):
         provider = self._provider_for_code_suggestions()
@@ -629,6 +712,134 @@ not a valid hunk
         assert result is True
         request.assert_not_called()
 
+    def test_publish_code_suggestions_anchors_a_multi_line_suggestion_to_the_whole_range(self):
+        provider = self._provider_for_code_suggestions()
+        response = self._inline_comment_response(201)
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
+            result = provider.publish_code_suggestions([self._code_suggestion(10, 16)])
+
+        assert result is True
+        request.assert_called_once_with(
+            "POST",
+            provider.bitbucket_comment_api_url,
+            data='{"content": {"raw": "**Suggestion:** fix it"}, '
+                 '"inline": {"start_to": 10, "to": 16, "path": "src/example.py"}}',
+            headers=provider.headers,
+        )
+
+    def test_publish_code_suggestions_keeps_a_single_line_suggestion_on_one_line(self):
+        provider = self._provider_for_code_suggestions()
+        response = self._inline_comment_response(201)
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
+            result = provider.publish_code_suggestions([self._code_suggestion(2)])
+
+        assert result is True
+        request.assert_called_once_with(
+            "POST",
+            provider.bitbucket_comment_api_url,
+            data='{"content": {"raw": "**Suggestion:** fix it"}, "inline": {"to": 2, "path": "src/example.py"}}',
+            headers=provider.headers,
+        )
+
+    @pytest.mark.parametrize("end", [{"line": 7}, {"line": 6}, {"line": None}, {}],
+                             ids=["end equal", "end below", "end null", "end absent"])
+    def test_publish_inline_comments_stays_single_line_without_a_real_range(self, end):
+        # Only a genuine span may become 'start_to'; everything else stays a single-line comment.
+        provider = self._provider_for_code_suggestions()
+        response = self._inline_comment_response(201)
+        comment = {"body": "watch out", "path": "src/example.py", "start_line": 7, **end}
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
+            result = provider.publish_inline_comments([comment])
+
+        assert result is True
+        request.assert_called_once_with(
+            "POST",
+            provider.bitbucket_comment_api_url,
+            data='{"content": {"raw": "watch out"}, "inline": {"to": 7, "path": "src/example.py"}}',
+            headers=provider.headers,
+        )
+
+    def test_publish_inline_comments_truncates_a_multi_line_body(self):
+        provider = self._provider_for_code_suggestions()
+        provider.max_comment_length = 10
+        response = self._inline_comment_response(201)
+        comment = {"body": "x" * 50, "path": "src/example.py", "start_line": 3, "line": 5}
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
+            result = provider.publish_inline_comments([comment])
+
+        assert result is True
+        request.assert_called_once_with(
+            "POST",
+            provider.bitbucket_comment_api_url,
+            data='{"content": {"raw": "xxxxxxx..."}, '
+                 '"inline": {"start_to": 3, "to": 5, "path": "src/example.py"}}',
+            headers=provider.headers,
+        )
+
+    def test_get_issue_comments_normalizes_cloud_comments(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+
+        comment = MagicMock()
+        comment.raw = "## PR Review\n\nreview body"
+        provider.pr.comments.return_value = [comment]
+
+        comments = provider.get_issue_comments()
+
+        assert len(comments) == 1
+        assert comments[0].body == "## PR Review\n\nreview body"
+        assert comments[0]._cloud_comment is comment
+
+    def test_persistent_review_update_links_status_to_existing_cloud_comment(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.pr = MagicMock()
+        provider.max_comment_length = 32_768
+        provider.get_latest_commit_url = MagicMock(return_value="https://bitbucket.org/acme/repo/commits/head")
+        provider.publish_comment = MagicMock(return_value={"id": 8})
+
+        header = "## PR Review"
+        identity = PRReviewIdentity.REGULAR.value
+        comment_url = "https://bitbucket.org/acme/repo/pull-requests/1#comment-7"
+        existing = MagicMock()
+        existing.raw = f"{header}\n\n{identity}\n\nprevious review"
+        existing.data = {"links": {"html": {"href": comment_url}}}
+        provider.pr.comments.return_value = [existing]
+
+        provider.publish_persistent_comment(
+            f"{header}\n\n{identity}\n\nupdated review",
+            initial_header=header,
+            final_update_message=True,
+            identity_marker=identity,
+        )
+
+        provider.publish_comment.assert_called_once_with(
+            f"**[Persistent review]({comment_url})** updated to latest commit "
+            "https://bitbucket.org/acme/repo/commits/head"
+        )
+
+
+    def test_get_languages_returns_empty_map_when_repo_has_no_language(self):
+        # Bitbucket Cloud reports "language": null for repos it cannot classify;
+        # get_languages() must not emit a {None: 0} key or sort_files_by_main_languages()
+        # crashes on None.lower() (issue #3340).
+        repo = MagicMock()
+        repo.get_data.side_effect = lambda key: None
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.repo = repo
+
+        assert provider.get_languages() == {}
+
+    def test_get_languages_includes_detected_language(self):
+        repo = MagicMock()
+        repo.get_data.side_effect = lambda key: "Python"
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.repo = repo
+
+        assert provider.get_languages() == {"Python": 0}
 
 class TestBitbucketServerProvider:
     @staticmethod
@@ -688,6 +899,80 @@ class TestBitbucketServerProvider:
         assert workspace_slug == "~username"
         assert repo_slug == "my-repo"
         assert pr_number == 1
+
+    @pytest.mark.parametrize(
+        ("pr_url", "server_url"),
+        [
+            (
+                "https://git.example.com/projects/PROJ/repos/repo/pull-requests/7",
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/users/alice/repos/repo/pull-requests/7",
+                "https://git.example.com",
+            ),
+            (
+                "https://git.example.com/bitbucket/projects/PROJ/repos/repo/pull-requests/7",
+                "https://git.example.com/bitbucket",
+            ),
+            (
+                "https://git.example.com/bitbucket/users/alice/repos/repo/pull-requests/7",
+                "https://git.example.com/bitbucket",
+            ),
+            (
+                "http://git.example.com:7990/apps/bitbucket/projects/PROJ/repos/repo/pull-requests/7",
+                "http://git.example.com:7990/apps/bitbucket",
+            ),
+            (
+                "http://git.example.com:7990/apps/bitbucket/users/alice/repos/repo/pull-requests/7/?tab=overview#comment-1",
+                "http://git.example.com:7990/apps/bitbucket",
+            ),
+        ],
+    )
+    def test_parse_bitbucket_server_url(self, pr_url, server_url):
+        assert BitbucketServerProvider._parse_bitbucket_server(pr_url) == server_url
+
+    @pytest.mark.parametrize(
+        ("pr_url", "server_url", "workspace_slug"),
+        [
+            (
+                "https://git.example.com/projects/PROJ/repos/repo/pull-requests/7",
+                "https://git.example.com",
+                "PROJ",
+            ),
+            (
+                "https://git.example.com/users/alice/repos/repo/pull-requests/7",
+                "https://git.example.com",
+                "~alice",
+            ),
+            (
+                "https://git.example.com/bitbucket/projects/PROJ/repos/repo/pull-requests/7",
+                "https://git.example.com/bitbucket",
+                "PROJ",
+            ),
+            (
+                "https://git.example.com/bitbucket/users/alice/repos/repo/pull-requests/7",
+                "https://git.example.com/bitbucket",
+                "~alice",
+            ),
+        ],
+    )
+    def test_constructor_uses_pr_context_path_for_api_client(self, pr_url, server_url, workspace_slug):
+        bitbucket_client = MagicMock(Bitbucket)
+        bitbucket_client.get.return_value = {"version": "8.16"}
+        bitbucket_client.get_pull_request.return_value = {}
+
+        with patch(
+            "pr_agent.git_providers.bitbucket_server_provider.Bitbucket",
+            return_value=bitbucket_client,
+        ) as bitbucket_class:
+            provider = BitbucketServerProvider(pr_url)
+
+        assert provider.bitbucket_server_url == server_url
+        assert provider.workspace_slug == workspace_slug
+        assert bitbucket_class.call_args.kwargs["url"] == server_url
+        bitbucket_client.get.assert_called_once_with("rest/api/1.0/application-properties")
+        bitbucket_client.get_pull_request.assert_called_once_with(workspace_slug, "repo", pull_request_id=7)
 
     def test_get_issue_comments_normalizes_top_level_comments_from_all_activities(self):
         provider = self._persistent_provider()
@@ -994,6 +1279,24 @@ class TestBitbucketServerProvider:
         assert content == "repo context"
         provider.get_file.assert_called_once_with("AGENTS.md", "base-sha")
 
+    def test_remove_comment_deletes_comment_with_id_and_version(self):
+        provider = self._persistent_provider()
+        comment = SimpleNamespace(id=7, version=3)
+
+        assert provider.remove_comment(comment) is True
+
+        provider.bitbucket_client.delete_pull_request_comment.assert_called_once_with(
+            "AAA", "my-repo", 1, 7, 3
+        )
+
+    def test_remove_comment_rejects_missing_version(self):
+        provider = self._persistent_provider()
+        comment = {"id": 7}
+
+        assert provider.remove_comment(comment) is False
+
+        provider.bitbucket_client.delete_pull_request_comment.assert_not_called()
+
     def test_get_repo_file_content_from_default_branch(self):
         provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
         provider.workspace_slug = "AAA"
@@ -1034,6 +1337,24 @@ class TestBitbucketServerProvider:
 
         with pytest.raises(HTTPError, match="500 Internal Server Error"):
             provider.get_repo_file_content("AGENTS.md")
+
+    def test_get_languages_returns_language_names(self):
+        # get_languages() must key on language NAMES (e.g. "Python"), not raw
+        # extensions ("py"): sort_files_by_main_languages() maps names back to
+        # extensions, so extension keys would drop every file into "Other".
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.get_files = MagicMock(return_value=["a.py", "b.py", "c.py", "d.js", "weird.zzz"])
+
+        languages = provider.get_languages()
+
+        # 3 Python + 1 JavaScript known; .zzz is unknown and excluded from the total.
+        assert languages == {"Python": 75.0, "JavaScript": 25.0}
+
+    def test_get_languages_returns_empty_map_when_nothing_matches(self):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.get_files = MagicMock(return_value=["weird.zzz", ""])
+
+        assert provider.get_languages() == {}
 
     def _make_provider_for_repo_settings(self, get_content_side_effect):
         # Bypass __init__ (which performs live API calls) and only wire up the

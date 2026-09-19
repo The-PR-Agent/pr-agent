@@ -558,6 +558,12 @@ If you encounter rate limiting:
   ```
   See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
 
+**Error: "PR-Agent command was not run" for incomplete GitHub files**
+- **Cause**: GitHub limits pull-request changed-file responses to 3,000 files. A mismatch can also occur when GitHub
+  returns inconsistent file-count metadata.
+- **Solution**: If the pull request changes more than 3,000 files, split it into smaller pull requests and run the
+  command again. Otherwise, retry the command.
+
 **Error: "Invalid JSON format"**
 
 - **Solution**: Check that arrays are properly formatted as JSON strings:
@@ -616,7 +622,7 @@ For more detailed configuration options, see:
     ...
     ```
 
-    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/repository/docker/pragent/pr-agent/tags). Resolve the digest for the version you are pinning with `docker buildx imagetools inspect pragent/pr-agent:0.41.0-github_action --format '{{.Manifest.Digest}}'`, then use it in place of the tag:
+    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/r/pragent/pr-agent/tags). Resolve the digest for the version you are pinning with `docker buildx imagetools inspect pragent/pr-agent:0.41.0-github_action --format '{{.Manifest.Digest}}'`, then use it in place of the tag:
     ```yaml
     ...
         steps:
@@ -845,6 +851,7 @@ Example IAM permissions to that user to allow access to CodeCommit:
                 "codecommit:List*",
                 "codecommit:PostComment*",
                 "codecommit:PutCommentReaction",
+                "codecommit:UpdateComment",
                 "codecommit:UpdatePullRequestDescription",
                 "codecommit:UpdatePullRequestTitle"
             ],

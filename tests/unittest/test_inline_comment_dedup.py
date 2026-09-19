@@ -69,11 +69,53 @@ def test_code_fingerprint_whitespace_insensitive():
     assert fp1 == fp2 and len(fp1) == 12
 
 
+def test_extract_suggestion_code_reads_rendered_diff_blocks():
+    body = ("**Suggestion:** use a set [best practice]\n\n\n"
+            "```diff\n-values = []\n+values = set()\n```")
+    assert d.extract_suggestion_code(body) == "values = set()"
+
+
+def test_extract_suggestion_code_diff_keeps_context_and_drops_removed_lines():
+    body = ("```diff\n"
+            "-def old(a, b):\n"
+            " def shared(x):\n"
+            "+def shared(x, y):\n"
+            "```")
+    assert d.extract_suggestion_code(body) == "def shared(x):\ndef shared(x, y):"
+
+
+def test_extract_suggestion_code_returns_none_for_empty_diff_block():
+    assert d.extract_suggestion_code("prose\n```diff\n```") is None
+
+
 def test_build_markers():
     assert d.build_markers("aaaaaaaaaaaa", None) == "<!-- pr-agent-dedup: aaaaaaaaaaaa -->"
     out = d.build_markers("aaaaaaaaaaaa", "bbbbbbbbbbbb")
     assert "<!-- pr-agent-dedup: aaaaaaaaaaaa -->" in out
     assert "<!-- pr-agent-dedup-code: bbbbbbbbbbbb -->" in out
+
+
+def test_build_markers_uses_bitbucket_hidden_form():
+    provider = MagicMock()
+    provider.supports_html_comment_markers.return_value = False
+
+    out = d.build_markers("aaaaaaaaaaaa", "bbbbbbbbbbbb", provider)
+
+    assert "<!-- pr-agent-dedup:" not in out
+    assert "[pr-agent-dedup: aaaaaaaaaaaa]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert "[pr-agent-dedup-code: bbbbbbbbbbbb]: https://github.com/The-PR-Agent/pr-agent" in out
+
+
+def test_key_issue_markers_use_bitbucket_hidden_form():
+    provider = MagicMock()
+    provider.supports_html_comment_markers.return_value = False
+
+    out = d.key_issue_body_with_markers("finding", "aaaaaaaaaaaa", "bbbbbbbbbbbb", git_provider=provider)
+
+    assert "<!--" not in out
+    assert "[pr-agent-dedup: aaaaaaaaaaaa]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert "[pr-agent-key-issue-location: bbbbbbbbbbbb]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert d.marker_fingerprints(out) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
 
 
 def test_inline_comment_line_prefers_line():
@@ -131,6 +173,14 @@ def test_iter_unsupported_provider_raises():
         pass
 
 
+def test_iter_provider_with_persistent_comment_capability():
+    class Provider:
+        def get_persistent_comment_bodies(self):
+            return ["existing Bitbucket finding"]
+
+    assert list(d.iter_existing_inline_comment_bodies(Provider())) == ["existing Bitbucket finding"]
+
+
 def _azure_provider(existing_threads=None):
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     provider.azure_devops_client = MagicMock()
@@ -141,7 +191,7 @@ def _azure_provider(existing_threads=None):
     return provider
 
 
-def test_inline_publication_verification_is_limited_to_azure_devops():
+def test_inline_publication_verification_supports_providers_with_comment_capability():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
     assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
     assert d.can_verify_inline_comment_publication(_gl_provider([])) is False

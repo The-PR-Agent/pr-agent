@@ -8,6 +8,7 @@ and — importantly — that the *shipped* defaults in
 configuration when run through the real validation logic.
 """
 
+import os
 import tomllib
 from pathlib import Path
 
@@ -143,6 +144,36 @@ def test_otlp_timeout_defaults_and_reads_setting(monkeypatch):
     assert get_otel_config().otlp_timeout == 10
 
 
+def test_prometheus_settings_provision_state_dir(monkeypatch, tmp_path):
+    state_dir = tmp_path / "prometheus-state"
+    _use_settings(monkeypatch, {
+        **VALID_ENABLED_SETTINGS,
+        "OTEL.EXPORTER_TYPE": "prometheus",
+        "OTEL.PROMETHEUS_MULTIPROC_DIR": str(state_dir),
+    })
+
+    config = get_otel_config()
+
+    assert config.is_enabled is True
+    assert config.exporter_type == ExporterType.PROMETHEUS
+    assert config.prometheus_multiproc_dir == str(state_dir)
+    assert os.environ["PROMETHEUS_MULTIPROC_DIR"] == str(state_dir)
+    assert state_dir.is_dir(), "the multiprocess state dir must be created eagerly"
+
+
+def test_prometheus_without_endpoint_is_not_fail_closed(monkeypatch):
+    """Prometheus is a local scrape endpoint the operator explicitly selected,
+    so it must not require an OTLP endpoint like the 'otlp' exporter does."""
+    _use_settings(monkeypatch, {**VALID_ENABLED_SETTINGS, "OTEL.EXPORTER_TYPE": "prometheus"})
+
+    with capture_loguru(level="WARNING") as captured:
+        config = get_otel_config()
+
+    assert config.is_enabled is True
+    assert config.exporter_type == ExporterType.PROMETHEUS
+    assert captured == [], "prometheus must not emit a fail-closed warning"
+
+
 def test_otlp_protocol_defaults_to_http_and_reads_setting(monkeypatch):
     _use_settings(monkeypatch, dict(VALID_ENABLED_SETTINGS))
     assert get_otel_config().otlp_protocol == "http"
@@ -230,6 +261,7 @@ def test_shipped_configuration_toml_otel_section_values():
     assert configuration["environment"] == "development"
     assert configuration["otlp_timeout"] == 3
     assert configuration["otlp_protocol"] == "http", "the default transport must not need an extra"
+    assert configuration["prometheus_multiproc_dir"] == "/tmp/pr-agent-prometheus"
     assert configuration["include_pr_url"] is False, "PR URLs must be opt-in (privacy)"
     assert configuration["include_error_details"] is False, "error details must be opt-in (privacy)"
 

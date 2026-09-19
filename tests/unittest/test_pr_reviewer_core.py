@@ -9,10 +9,12 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_fingerprint,
 )
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity, convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment
+
+_VALID_PREDICTION = "review:\n  summary: prediction"
 
 
 def _make_reviewer(git_provider=None):
@@ -87,7 +89,7 @@ def test_review_failure_comment_treats_quoted_false_as_disabled():
 @pytest.mark.asyncio
 async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_result():
     reviewer = _make_prediction_reviewer()
-    reviewer._get_prediction = AsyncMock(return_value="prediction")
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
     with patch(
         "pr_agent.tools.pr_reviewer.get_pr_diff",
@@ -105,34 +107,58 @@ async def test_prepare_prediction_requests_remaining_files_and_preserves_tuple_r
     )
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["src/one.py", "docs/two.md"]
-    assert reviewer.prediction == "prediction"
+    assert reviewer.prediction == _VALID_PREDICTION
 
 
 @pytest.mark.asyncio
 async def test_prepare_prediction_accepts_full_diff_string_when_token_budget_is_sufficient():
     reviewer = _make_prediction_reviewer()
-    reviewer._get_prediction = AsyncMock(return_value="prediction")
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
     with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"):
         await reviewer._prepare_prediction("model")
 
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == []
-    assert reviewer.prediction == "prediction"
+    assert reviewer.prediction == _VALID_PREDICTION
 
 
 @pytest.mark.asyncio
 async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple_result():
     reviewer = _make_prediction_reviewer()
     reviewer.incremental = SimpleNamespace(is_incremental=True)
-    reviewer._get_prediction = AsyncMock(return_value="prediction")
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
 
     with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["skipped.py"])):
         await reviewer._prepare_prediction("model")
 
     assert reviewer.patches_diff == "diff"
     assert reviewer.remaining_files_list == ["skipped.py"]
-    assert reviewer.prediction == "prediction"
+    assert reviewer.prediction == _VALID_PREDICTION
+
+
+@pytest.mark.asyncio
+async def test_final_review_fit_rejects_untracked_diff_clipping():
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"diff": ""}
+    reviewer.ai_handler = SimpleNamespace(chat_completion=AsyncMock())
+
+    class ClippingBudget:
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return SimpleNamespace(
+                optional_text=optional_text[:-1],
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    with patch(
+        "pr_agent.tools.pr_reviewer.AttemptTokenBudget.for_attempt",
+        return_value=ClippingBudget(),
+    ):
+        with pytest.raises(ValueError, match="complete packed review diff"):
+            await reviewer._get_prediction("fallback-model", "complete-diff")
+
+    reviewer.ai_handler.chat_completion.assert_not_awaited()
 
 
 def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
@@ -209,6 +235,71 @@ def test_prepare_pr_review_leaves_original_content_unchanged_without_remaining_f
 
     assert review == "original review"
     assert "Review coverage" not in review
+
+
+def test_prepare_pr_review_warns_on_invalid_model_output_without_changing_markdown():
+    reviewer = _make_prediction_reviewer()
+    reviewer.prediction = "review:\n  key_issues_to_review: wrong"
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": "wrong"}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+        patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert review == "original review"
+    get_logger.return_value.warning.assert_called_once()
+    warning = get_logger.return_value.warning.call_args.kwargs
+    assert warning["artifact"] == {"field": "review.key_issues_to_review", "value": "wrong"}
+
+
+def test_prepare_pr_review_does_not_warn_for_valid_model_output():
+    reviewer = _make_prediction_reviewer()
+    reviewer.prediction = "review:\n  key_issues_to_review: []"
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": []}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+        patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
+    ):
+        review = reviewer._prepare_pr_review()
+
+    assert review == "original review"
+    get_logger.return_value.warning.assert_not_called()
+
+
+def test_review_schema_requires_enabled_prompt_fields_only():
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_tests": True}
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is False
+
+    warning = get_logger.return_value.warning.call_args.kwargs
+    assert warning["artifact"] == {"field": "review.relevant_tests", "value": None}
+
+    reviewer.vars = {"require_tests": False}
+    get_logger.return_value.warning.reset_mock()
+    assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is True
+    get_logger.return_value.warning.assert_not_called()
+
+
+def test_review_schema_reports_none_for_missing_fields():
+    reviewer = _make_prediction_reviewer()
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({"review": {}}) is False
+
+    warning = get_logger.return_value.warning.call_args.kwargs
+    assert warning["artifact"]["field"] == "review.key_issues_to_review"
+    assert warning["artifact"]["value"] is None
 
 
 def test_prepare_pr_review_limits_coverage_footer_to_50_files():
@@ -1075,7 +1166,8 @@ def test_can_run_incremental_review_skips_auto_mode_without_new_commit():
     assert reviewer._can_run_incremental_review() is False
 
 
-def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
+@pytest.fixture
+def review_label_settings():
     settings = get_settings()
     original = {
         "publish_output": settings.config.publish_output,
@@ -1089,67 +1181,134 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels():
     settings.pr_reviewer.require_security_review = True
     settings.pr_reviewer.enable_review_labels_effort = True
     settings.pr_reviewer.enable_review_labels_security = True
+    yield
+    settings.config.publish_output = original["publish_output"]
+    settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]
+    settings.pr_reviewer.require_security_review = original["require_security_review"]
+    settings.pr_reviewer.enable_review_labels_effort = original["enable_review_labels_effort"]
+    settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
+
+
+def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(review_label_settings):
     git_provider = MagicMock()
     git_provider.get_pr_labels.return_value = ["Review effort 1/5", "Possible security concern", "keep-me"]
     reviewer = _make_reviewer(git_provider)
     data = {
         "review": {
             "estimated_effort_to_review_[1-5]": "3, moderate",
-            "security_concerns": "yes",
+            "security_concerns": "SQL injection: the order id is concatenated into the query\n",
         }
     }
 
+    reviewer.set_review_labels(data)
+
+    git_provider.publish_labels.assert_called_once_with([
+        "Review effort 3/5",
+        "Possible security concern",
+        "keep-me",
+    ])
+
+
+@pytest.mark.parametrize(
+    "security_concerns, expect_label",
+    [
+        ("SQL injection: the order id is concatenated into the query\n", True),
+        ("Sensitive information exposure: the API key is written to the log\n", True),
+        ("No\n", False),
+        ("no", False),
+        ("  No  \n", False),
+        ("", False),
+        (None, False),
+        # A punctuated negative is not a recognised "no", so it labels and renders as a concern.
+        ("No.", True),
+    ],
+)
+def test_set_review_labels_security_label_matches_the_rendered_review_body(
+    review_label_settings, security_concerns, expect_label
+):
+    git_provider = MagicMock()
+    git_provider.get_pr_labels.return_value = []
+    reviewer = _make_reviewer(git_provider)
+    data = {"review": {"estimated_effort_to_review_[1-5]": "2", "security_concerns": security_concerns}}
+
+    reviewer.set_review_labels(data)
+
+    published = git_provider.publish_labels.call_args[0][0]
+    assert ("Possible security concern" in published) is expect_label
+
+    body = convert_to_markdown_v2(data)
+    assert ("<strong>Security concerns</strong>" in body) is expect_label
+
+
+@pytest.mark.parametrize("missing_value", [None, ""])
+def test_set_review_labels_keeps_existing_security_label_when_verdict_is_missing(
+    review_label_settings, missing_value
+):
+    # A truncated model response leaves security_concerns missing (None), which
+    # is not a valid negative verdict, so an already published security alert
+    # label must be preserved instead of being filtered out. An empty string is
+    # a recognised negative and does clear the stale label, matching the body.
+    git_provider = MagicMock()
+    git_provider.get_pr_labels.return_value = ["Possible security concern", "keep-me"]
+    reviewer = _make_reviewer(git_provider)
+    data = {"review": {"estimated_effort_to_review_[1-5]": "2", "security_concerns": missing_value}}
+
+    reviewer.set_review_labels(data)
+
+    published = git_provider.publish_labels.call_args[0][0]
+    if missing_value is None:
+        assert "Possible security concern" in published
+    else:
+        assert "Possible security concern" not in published
+    assert "keep-me" in published
+
+
+def test_set_review_labels_does_not_label_security_free_localized_review(review_label_settings):
+    # With a non-English response language the model is told to keep the exact
+    # English 'No' sentinel, so a security-free review must not get the label.
+    settings = get_settings()
+    original_language = settings.config.response_language
+    settings.config.response_language = "de-DE"
     try:
+        git_provider = MagicMock()
+        git_provider.get_pr_labels.return_value = []
+        reviewer = _make_reviewer(git_provider)
+        data = {"review": {"estimated_effort_to_review_[1-5]": "2", "security_concerns": "No"}}
+
         reviewer.set_review_labels(data)
 
-        git_provider.publish_labels.assert_called_once_with([
-            "Review effort 3/5",
-            "Possible security concern",
-            "keep-me",
-        ])
+        published = git_provider.publish_labels.call_args[0][0]
+        assert "Possible security concern" not in published
     finally:
-        settings.config.publish_output = original["publish_output"]
-        settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]
-        settings.pr_reviewer.require_security_review = original["require_security_review"]
-        settings.pr_reviewer.enable_review_labels_effort = original["enable_review_labels_effort"]
-        settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
+        settings.config.response_language = original_language
 
 
-def test_set_review_labels_skips_providers_without_label_support():
-    settings = get_settings()
-    original = {
-        "publish_output": settings.config.publish_output,
-        "require_estimate_effort_to_review": settings.pr_reviewer.require_estimate_effort_to_review,
-        "require_security_review": settings.pr_reviewer.require_security_review,
-        "enable_review_labels_effort": settings.pr_reviewer.enable_review_labels_effort,
-        "enable_review_labels_security": settings.pr_reviewer.enable_review_labels_security,
-    }
-    settings.config.publish_output = True
-    settings.pr_reviewer.require_estimate_effort_to_review = True
-    settings.pr_reviewer.require_security_review = True
-    settings.pr_reviewer.enable_review_labels_effort = True
-    settings.pr_reviewer.enable_review_labels_security = True
+def test_security_concerns_field_prompt_preserves_no_sentinel_for_localized_responses():
+    # The prompt must keep the exact English 'No' sentinel even when the
+    # response language instructs the model to localize its answer, otherwise
+    # localized negatives are treated as security concerns by the label and the
+    # rendered body.
+    prompt = get_settings().pr_review_prompt.system
+    security_field = prompt.split("security_concerns: str = Field(description=")[1].split("\n")[0]
+    assert "Answer 'No'" in security_field
+    assert "do not translate it into another language" in security_field
+
+
+def test_set_review_labels_skips_providers_without_label_support(review_label_settings):
     git_provider = MagicMock()
     git_provider.is_supported.return_value = False
     reviewer = _make_reviewer(git_provider)
     data = {
         "review": {
             "estimated_effort_to_review_[1-5]": "3, moderate",
-            "security_concerns": "yes",
+            "security_concerns": "SQL injection: the order id is concatenated into the query\n",
         }
     }
 
-    try:
-        reviewer.set_review_labels(data)
+    reviewer.set_review_labels(data)
 
-        git_provider.get_pr_labels.assert_not_called()
-        git_provider.publish_labels.assert_not_called()
-    finally:
-        settings.config.publish_output = original["publish_output"]
-        settings.pr_reviewer.require_estimate_effort_to_review = original["require_estimate_effort_to_review"]
-        settings.pr_reviewer.require_security_review = original["require_security_review"]
-        settings.pr_reviewer.enable_review_labels_effort = original["enable_review_labels_effort"]
-        settings.pr_reviewer.enable_review_labels_security = original["enable_review_labels_security"]
+    git_provider.get_pr_labels.assert_not_called()
+    git_provider.publish_labels.assert_not_called()
 
 
 def test_get_user_answers_collects_question_and_answer_from_issue_comments():

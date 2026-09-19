@@ -36,6 +36,35 @@ def _suggestion(**overrides):
     return base
 
 
+# A hunk whose new-file side covers lines 1-6 of the file.
+DEFAULT_PATCH = (
+    "@@ -1,5 +1,6 @@\n"
+    " def f():\n"
+    "-    return old()\n"
+    "+    return new()\n"
+    "     extra\n"
+    "     more\n"
+    "     lines\n"
+    "+    added line\n"
+)
+
+
+def _diff_file(filename="app.py", patch=DEFAULT_PATCH):
+    return FilePatchInfo(
+        base_file="def f():\n    return old()\n    extra\n    more\n    lines\n",
+        head_file="def f():\n    return new()\n    extra\n    more\n    lines\n    added line\n",
+        patch=patch,
+        filename=filename,
+    )
+
+
+def _provider_with_diff_files(*filenames):
+    git_provider = MagicMock()
+    git_provider.diff_files = [_diff_file(filename) for filename in filenames]
+    git_provider.get_line_link.return_value = ""
+    return git_provider
+
+
 # ---------------------------------------------------------------------------
 # _truncate_if_needed
 # ---------------------------------------------------------------------------
@@ -74,6 +103,110 @@ def test_truncate_if_needed_noop_when_under_limit_or_disabled():
         assert "[truncated]" not in out["improved_code"]
     finally:
         restore_settings(snapshot)
+
+
+@pytest.mark.parametrize(
+    "suggestion_kwargs",
+    [
+        {"relevant_lines_start": None, "relevant_lines_end": 5},
+        {"relevant_lines_start": -1, "relevant_lines_end": -1},
+        {"relevant_lines_start": 0, "relevant_lines_end": 0},
+        {"relevant_lines_start": -3, "relevant_lines_end": 1},
+        {"relevant_lines_start": 5, "relevant_lines_end": 2},
+        {"relevant_lines_start": "10", "relevant_lines_end": "bad"},
+        {"relevant_lines_start": float("inf"), "relevant_lines_end": 5},
+        {"relevant_lines_start": float("-inf"), "relevant_lines_end": 5},
+        {"relevant_lines_start": 2, "relevant_lines_end": float("inf")},
+        {"relevant_lines_start": float("nan"), "relevant_lines_end": 5},
+        {"relevant_lines_start": 2, "relevant_lines_end": float("nan")},
+        {"relevant_lines_start": 1.5, "relevant_lines_end": 5},
+        {"relevant_lines_start": 2, "relevant_lines_end": 3.5},
+        {"relevant_lines_start": True, "relevant_lines_end": True},
+    ],
+)
+def test_is_suggestion_line_range_valid_rejects_unanchorable_ranges(suggestion_kwargs):
+    tool = _make_tool()
+    bad = _suggestion(**suggestion_kwargs)
+
+    assert tool._is_suggestion_line_range_valid(bad) is False
+
+
+def test_is_suggestion_line_range_valid_normalizes_valid_range():
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    good = _suggestion(relevant_lines_start="2", relevant_lines_end="4")
+
+    assert tool._is_suggestion_line_range_valid(good) is True
+    assert good["relevant_lines_start"] == 2
+    assert good["relevant_lines_end"] == 4
+
+
+def test_is_suggestion_line_range_valid_rejects_missing_keys():
+    tool = _make_tool()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is False
+
+
+def test_is_suggestion_line_range_valid_rejects_file_not_in_diff():
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    suggestion = _suggestion(relevant_file="other.py")
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is False
+
+
+def test_is_suggestion_line_range_valid_rejects_range_outside_diff():
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    suggestion = _suggestion(relevant_lines_start=100, relevant_lines_end=100)
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is False
+
+
+def test_is_suggestion_line_range_valid_follows_the_head_file_when_available():
+    # Extended context outside the raw hunk is anchorable within the head file.
+    diff_file = _diff_file()
+    git_provider = MagicMock()
+    git_provider.diff_files = [diff_file]
+    tool = _make_tool(git_provider)
+    suggestion = _suggestion(relevant_lines_start=5, relevant_lines_end=9)
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is False
+
+    diff_file.head_file += "    trailing\n    context\n    lines\n"
+
+    assert tool._is_suggestion_line_range_valid(suggestion) is True
+
+
+@pytest.mark.parametrize("head_file", ["", "context\n" * 9])
+def test_is_suggestion_line_range_valid_uses_hunk_without_complete_head_file(head_file):
+    diff_file = _diff_file()
+    diff_file.head_file = head_file
+    diff_file.head_file_is_complete = False
+    git_provider = MagicMock()
+    git_provider.diff_files = [diff_file]
+    tool = _make_tool(git_provider)
+
+    assert tool._is_suggestion_line_range_valid(
+        _suggestion(relevant_lines_start=2, relevant_lines_end=6)) is True
+    assert tool._is_suggestion_line_range_valid(
+        _suggestion(relevant_lines_start=5, relevant_lines_end=9)) is False
+
+
+def test_get_patch_range_lines_rejects_oversized_span_without_enumerating_it():
+    # A parseable but absurdly large span must be rejected by length comparison
+    # before any range(start, end) enumeration would iterate over it.
+    patch = DEFAULT_PATCH
+
+    assert PRCodeSuggestions._get_patch_range_lines(patch, 1, 1_000_000_000) is None
+    assert PRCodeSuggestions._get_patch_range_lines(patch, 2, 6) == [
+        "    return new()",
+        "    extra",
+        "    more",
+        "    lines",
+        "    added line",
+    ]
+    assert PRCodeSuggestions._get_patch_range_lines(patch, 2, 2) == ["    return new()"]
 
 
 def test_prepare_pr_code_suggestions_applies_truncation_inline():
@@ -307,7 +440,7 @@ def test_generate_summarized_suggestions_empty_returns_placeholder():
 
 
 def test_generate_summarized_suggestions_renders_table_and_sorts_by_score():
-    git_provider = MagicMock()
+    git_provider = _provider_with_diff_files("app.py", "auth.py")
     git_provider.get_line_link.return_value = "https://example.test/app.py#L2"
     tool = _make_tool(git_provider)
     settings = get_settings()
@@ -343,8 +476,7 @@ def test_generate_summarized_suggestions_renders_table_and_sorts_by_score():
 
 
 def test_generate_summarized_suggestions_uses_score_string_when_new_mechanism_enabled():
-    git_provider = MagicMock()
-    git_provider.get_line_link.return_value = ""
+    git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
     settings = get_settings()
     snapshot = snapshot_settings(["pr_code_suggestions.new_score_mechanism"])
@@ -362,8 +494,7 @@ def test_generate_summarized_suggestions_uses_score_string_when_new_mechanism_en
 
 
 def test_generate_summarized_suggestions_escapes_angle_bracket_strings_in_summary():
-    git_provider = MagicMock()
-    git_provider.get_line_link.return_value = ""
+    git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
     suggestion = _suggestion(one_sentence_summary="Replace '<old_name>' with new_name")
     out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
@@ -375,13 +506,142 @@ def test_generate_summarized_suggestions_escapes_angle_bracket_strings_in_summar
 
 
 def test_generate_summarized_suggestions_includes_score_why_block_when_present():
-    git_provider = MagicMock()
-    git_provider.get_line_link.return_value = ""
+    git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
     suggestion = _suggestion(score_why="Catches a real bug.")
     out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
     assert "Suggestion importance[1-10]: 7" in out
     assert "Why: Catches a real bug." in out
+
+
+def test_generate_summarized_suggestions_skips_anchorless_but_keeps_rest():
+    """A suggestion without resolved line anchors is skipped instead of failing the whole table."""
+    git_provider = _provider_with_diff_files("app.py")
+    tool = _make_tool(git_provider)
+    anchored = _suggestion(one_sentence_summary="Keep me")
+    anchorless = _suggestion(one_sentence_summary="Drop me", relevant_file="other.py")
+    anchorless.pop("relevant_lines_start")
+    anchorless.pop("relevant_lines_end")
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [anchorless, anchored]})
+
+    assert "<table>" in out
+    assert "Keep me" in out
+    assert "Drop me" not in out
+
+
+def test_generate_summarized_suggestions_skips_positive_range_outside_diff():
+    """A positive, ordered range outside the file's diff hunks is dropped per-suggestion."""
+    git_provider = _provider_with_diff_files("app.py")
+    tool = _make_tool(git_provider)
+    in_diff = _suggestion(one_sentence_summary="In diff")
+    out_diff = _suggestion(
+        one_sentence_summary="Hallucinated range",
+        relevant_lines_start=100,
+        relevant_lines_end=100,
+    )
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [in_diff, out_diff]})
+
+    assert "<table>" in out
+    assert "In diff" in out
+    assert "Hallucinated range" not in out
+
+
+def test_generate_summarized_suggestions_all_anchorless_returns_placeholder():
+    """When no suggestion has resolvable anchors, publish a truthful message instead of an empty table."""
+    git_provider = MagicMock()
+    git_provider.get_line_link.return_value = ""
+    tool = _make_tool(git_provider)
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+
+    assert "No suggestions found to improve this PR." in out
+    assert "<table>" not in out
+
+
+@pytest.mark.parametrize(
+    "start,end",
+    [
+        (-1, -1),  # unresolved -1 sentinel written by self-reflection
+        (0, 0),
+        (-3, 1),
+        (5, 2),  # reversed range
+    ],
+)
+def test_generate_summarized_suggestions_skips_invalid_line_ranges(start, end):
+    """Unresolved sentinels, non-positive lines and reversed ranges are omitted per-suggestion."""
+    git_provider = _provider_with_diff_files("app.py")
+    tool = _make_tool(git_provider)
+    bad = _suggestion(one_sentence_summary="Bad range", relevant_lines_start=start, relevant_lines_end=end)
+    good = _suggestion(one_sentence_summary="Good range")
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [bad, good]})
+
+    assert "<table>" in out
+    assert "Good range" in out
+    assert "Bad range" not in out
+
+
+@pytest.mark.parametrize("start,end", [(-1, -1), (0, 0), (5, 2)])
+def test_generate_summarized_suggestions_all_invalid_ranges_returns_placeholder(start, end):
+    git_provider = MagicMock()
+    git_provider.get_line_link.return_value = ""
+    tool = _make_tool(git_provider)
+    bad = _suggestion(relevant_lines_start=start, relevant_lines_end=end)
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [bad]})
+
+    assert "No suggestions found to improve this PR." in out
+    assert "<table>" not in out
+
+
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_mismatched_count_does_not_crash():
+    """Feedback covering a different suggestion count than generated leaves anchors unresolved."""
+    tool = _make_tool()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+    data = {"code_suggestions": [suggestion, _suggestion(one_sentence_summary="Second")]}
+
+    await tool.analyze_self_reflection_response(
+        data, "code_suggestions:\n- suggestion_score: 8\n  why: fast\n"
+    )
+
+    assert "relevant_lines_start" not in data["code_suggestions"][0]
+    assert data["code_suggestions"][1]["relevant_lines_start"] == 2
+
+
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_null_feedback_does_not_crash():
+    """A non-null response with `code_suggestions: null` must not abort suggestions."""
+    tool = _make_tool()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+    data = {"code_suggestions": [suggestion]}
+
+    await tool.analyze_self_reflection_response(data, "code_suggestions: null")
+
+    assert "relevant_lines_start" not in data["code_suggestions"][0]
+
+
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_non_mapping_feedback_does_not_crash():
+    """A top-level list (not a mapping) from reflection must not abort suggestions."""
+    tool = _make_tool()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_start")
+    suggestion.pop("relevant_lines_end")
+    data = {"code_suggestions": [suggestion]}
+
+    await tool.analyze_self_reflection_response(data, "- one\n- two")
+
+    assert "relevant_lines_start" not in data["code_suggestions"][0]
 
 
 # ---------------------------------------------------------------------------

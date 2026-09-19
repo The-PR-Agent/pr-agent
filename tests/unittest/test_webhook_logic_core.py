@@ -642,15 +642,15 @@ async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, even
         module, "get_fork_safe_secret_provider", lambda: secret_provider
     )
     object_attributes = {
-        "action": "update" if event == "draft_ready" else event,
+        "action": "update" if event.startswith("draft_ready") else event,
         "draft": draft,
         "url": "https://gitlab.com/org/repo/-/merge_requests/1",
     }
-    if event == "update":
+    if event in ("update", "draft_ready_push"):
         object_attributes["oldrev"] = "previous-revision"
     data = _gitlab_payload(**object_attributes)
     data["object_kind"] = "merge_request"
-    if event == "draft_ready":
+    if event.startswith("draft_ready"):
         data["changes"] = {"draft": {"previous": True, "current": False}}
     try:
         response = await _post_gitlab_webhook(module.app, data)
@@ -682,6 +682,30 @@ async def test_gitlab_push_uses_shared_dedupe_slot(gitlab_webhook_module, monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("feedback_on_draft_pr", [True, False])
+async def test_gitlab_draft_ready_with_new_commits(gitlab_webhook_module, monkeypatch, feedback_on_draft_pr):
+    # One update clears the draft flag and carries commits. With draft feedback already on,
+    # the review has been running all along and only the push half is new, so it takes the
+    # push path through the dedupe slot instead of returning at the guard.
+    slots = []
+
+    @asynccontextmanager
+    async def record_slot(key, **kwargs):
+        slots.append((key, kwargs))
+        yield True
+
+    monkeypatch.setattr(gitlab_webhook_module, "push_trigger_slot", record_slot)
+    commands, _ = await _run_gitlab_pr_commands(
+        gitlab_webhook_module, monkeypatch, draft=False,
+        repo_setting=feedback_on_draft_pr, event="draft_ready_push",
+    )
+
+    assert commands == [["/review"]]
+    expected_slots = [("https://gitlab.com/org/repo/-/merge_requests/1", {"allow_backlog": True, "ttl": 300})]
+    assert slots == (expected_slots if feedback_on_draft_pr else [])
+
+
+@pytest.mark.asyncio
 async def test_gitea_push_uses_shared_dedupe_slot(monkeypatch):
     settings = get_settings()
     original_gitea = copy.deepcopy(settings.get("GITEA"))
@@ -698,6 +722,8 @@ async def test_gitea_push_uses_shared_dedupe_slot(monkeypatch):
     async def perform_commands(*args):
         performed.append(args)
 
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", lambda _body: True)
     monkeypatch.setattr(gitea_app, "push_trigger_slot", reject_duplicate)
     monkeypatch.setattr(gitea_app, "_perform_commands_gitea", perform_commands)
     api_url = "https://gitea.example.com/org/repo/pulls/1"
@@ -710,6 +736,169 @@ async def test_gitea_push_uses_shared_dedupe_slot(monkeypatch):
 
     assert performed == []
     assert slots == [(api_url, {"allow_backlog": True, "ttl": 300})]
+
+
+@pytest.mark.asyncio
+async def test_gitea_push_applies_repo_settings_before_effective_gate(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", False)
+    settings.set("GITEA.PUSH_COMMANDS", [])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.HANDLE_PUSH_TRIGGER", True)
+        get_settings().set("GITEA.PUSH_COMMANDS", ["/review"])
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    class Agent:
+        async def handle_request(self, _url, command):
+            calls.append(command)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    monkeypatch.setattr(gitea_app, "prepare_command", lambda command: command)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+    body = {
+        "pull_request": {"url": api_url},
+        "repository": {"full_name": "org/repo"},
+    }
+
+    try:
+        await gitea_app.handle_pr_event(body, "pull_request", "synchronized", Agent())
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert calls == ["settings", "filter", "slot", "/review"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repo_trigger", "repo_commands"),
+    [
+        (False, ["/review"]),
+        (True, []),
+    ],
+)
+async def test_gitea_effective_push_config_skips_before_reserving_slot(
+    monkeypatch, repo_trigger, repo_commands
+):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/host-review"])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.HANDLE_PUSH_TRIGGER", repo_trigger)
+        get_settings().set("GITEA.PUSH_COMMANDS", list(repo_commands))
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert calls == ["settings", "filter"]
+
+
+@pytest.mark.asyncio
+async def test_gitea_repo_filter_rejects_push_before_reserving_slot(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/review"])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return False
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert calls == ["settings", "filter"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["opened", "reopened"])
+async def test_gitea_pr_event_applies_repo_settings_once_before_dispatch(monkeypatch, action):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.PR_COMMANDS", ["/review"])
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    class Agent:
+        async def handle_request(self, _url, command):
+            calls.append(command)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "prepare_command", lambda command: command)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", action, Agent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert calls == ["settings", "filter", "/review"]
 
 
 @pytest.mark.asyncio
@@ -974,3 +1163,84 @@ def test_gitlab_is_bot_user_skips_non_string_entries(gitlab_webhook_module):
         ) is False
     finally:
         settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
+
+
+async def _run_gitlab_update(module, monkeypatch, *, oldrev, draft_ready, handle_push_trigger):
+    """Post one merge-request `update` and report which commands ran.
+
+    Distinct `pr_commands` and `push_commands` so the two paths can be told
+    apart: the shared helper above configures `/review` for both.
+    """
+    settings = get_settings()
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITLAB.PR_COMMANDS", ["/review"])
+    settings.set("GITLAB.PUSH_COMMANDS", ["/describe"])
+    settings.set("GITLAB.HANDLE_PUSH_TRIGGER", handle_push_trigger)
+    settings.set("GITLAB.FEEDBACK_ON_DRAFT_PR", False)
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(module, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(module, "PRAgent", lambda: agent)
+    monkeypatch.setattr(
+        module,
+        "get_fork_safe_secret_provider",
+        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token"}'),
+    )
+
+    object_attributes = {
+        "action": "update",
+        "draft": False,
+        "url": "https://gitlab.com/org/repo/-/merge_requests/1",
+    }
+    if oldrev:
+        object_attributes["oldrev"] = "previous-revision"
+    data = _gitlab_payload(**object_attributes)
+    data["object_kind"] = "merge_request"
+    if draft_ready:
+        data["changes"] = {"draft": {"previous": True, "current": False}}
+    try:
+        response = await _post_gitlab_webhook(module.app, data)
+    finally:
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert response.status_code == 200
+    return agent.commands
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handle_push_trigger", [False, True])
+async def test_gitlab_update_that_is_both_a_push_and_draft_ready_still_reviews(
+    gitlab_webhook_module, monkeypatch, handle_push_trigger
+):
+    """Marking an MR ready and pushing in one action must not run nothing.
+
+    Both `update` branches match this payload. The push branch was tested
+    first, so with `handle_push_trigger` false, the common workflow -- push the
+    last commit and clear the draft flag together -- returned having run no
+    command at all, silently. Draft-to-ready is the more significant of the two
+    transitions, so it wins in either setting rather than only when the push
+    branch declines.
+    """
+    commands = await _run_gitlab_update(
+        gitlab_webhook_module,
+        monkeypatch,
+        oldrev=True,
+        draft_ready=True,
+        handle_push_trigger=handle_push_trigger,
+    )
+    assert commands == [["/review"]]
+
+
+@pytest.mark.asyncio
+async def test_gitlab_push_only_update_still_takes_the_push_branch(
+    gitlab_webhook_module, monkeypatch
+):
+    """The reordering must not steal a plain push from `push_commands`."""
+    commands = await _run_gitlab_update(
+        gitlab_webhook_module,
+        monkeypatch,
+        oldrev=True,
+        draft_ready=False,
+        handle_push_trigger=True,
+    )
+    assert commands == [["/describe"]]

@@ -68,6 +68,27 @@ FORBIDDEN_ARGS = [
     "--pr_reviewer.publish_error_details=true",
     "--pr_reviewer__publish_error_details=true",
     '--pr_reviewer={"publish_error_details": true}',
+    # repo_context_max_sibling_files is host-only: letting a comment raise it would defeat the
+    # sibling-fetch safety bound and allow unbounded cross-repository API calls.
+    "--config.repo_context_max_sibling_files=1000",
+    "--config__repo_context_max_sibling_files=1000",
+    '--config={"repo_context_max_sibling_files": 1000}',
+    # repo_context_files selects which files become model instructions, so comment arguments
+    # must not be able to point the bot at arbitrary sibling repo content.
+    '--config.repo_context_files=[{"repo_id": "group/A/idea", "file_path": "AGENTS.md"}]',
+    "--config__repo_context_files=[\"AGENTS.md\"]",
+    '--config={"repo_context_files": ["AGENTS.md"]}',
+    # repo_context_sibling_repos is the host-only allowlist of sibling repositories whose
+    # files may be selected; neither repo settings nor comment arguments can change it.
+    "--config.repo_context_sibling_repos=[]",
+    "--config__repo_context_sibling_repos=[]",
+    '--config={"repo_context_sibling_repos": []}',
+    # description_issue_regex is compiled and run with finditer over the whole pull-request
+    # description. An ambiguous pattern backtracks exponentially, so a commenter who can choose
+    # it can burn a worker on a short body; it stays an operator choice.
+    "--config.description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
+    "--config__description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
+    '--config={"description_issue_regex": "(?:[A-Za-z ]+)+X(d+)"}',
 ]
 
 
