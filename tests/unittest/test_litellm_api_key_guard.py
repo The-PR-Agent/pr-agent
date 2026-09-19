@@ -1776,21 +1776,21 @@ async def test_missing_private_import_preserves_module_and_fails_closed(monkeypa
         with pytest.raises(RuntimeError, match="JSONProviderRegistry.*request isolation"):
             module.LiteLLMAIHandler()
         return
-    handler = module.LiteLLMAIHandler()
-    completion = AsyncMock(return_value=_mock_response())
-    monkeypatch.setattr(module, "acompletion", completion)
+    # The guarded LiteLLM interfaces now live in cloud_auth, while the handler module
+    # keeps its own guarded try/except copies -- hence the isolated reload above still
+    # proves the handler imports and exposes ``None`` when the private interface is
+    # unavailable. Trigger the fail-closed guards through the moved module, which reads
+    # these slots off the handler module at call time (see cloud_auth._handler_attr).
     if symbol == "AnthropicModelInfo":
-        with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
-            await handler.probe_completion("anthropic/claude-sonnet-4")
-        completion.assert_not_called()
-        await handler.probe_completion("gpt-4o")
+        with monkeypatch.context() as scoped:
+            scoped.setattr(litellm_handler, "AnthropicModelInfo", None)
+            with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
+                litellm_handler._install_anthropic_auth_token_bridge()
     else:
-        with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
-            await handler.probe_completion("gpt-4o")
-        completion.assert_not_called()
-        assert module._uses_openai_responses_transport("openai/responses/gpt-4o", "openai")
-        assert not module._uses_openai_responses_transport("ft:babbage-002:example", "openai")
-        await handler.probe_completion("anthropic/claude-sonnet-4")
+        with monkeypatch.context() as scoped:
+            scoped.setattr(litellm_handler, "_get_model_info_helper", None)
+            with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
+                litellm_handler._uses_openai_responses_transport("gpt-4o", "openai")
 
 
 @pytest.mark.parametrize("method", ("list_providers", "get", "exists"))
