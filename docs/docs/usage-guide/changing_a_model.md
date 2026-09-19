@@ -406,34 +406,28 @@ The `litellm.model_id` parameter applies only to classic `bedrock/` calls made t
 
 Claude Sonnet 5 on Bedrock is invoked through an inference profile rather than a direct
 foundation-model id. When that profile is an application inference profile, its ARN is an
-opaque value that carries no model name. Thinking configuration in PR-Agent is gated on
-recognizing the model, so the opaque ARN can never match: `enable_claude_adaptive_thinking`
-requires a recognized Claude 5 model name in the id, and `enable_claude_extended_thinking`
-requires exact membership in `claude_extended_thinking_models`. PR-Agent logs a warning in
-that case, so the unconfigured state is no longer silent.
+opaque value that carries no model name. Add that ARN to
+`claude_adaptive_thinking_models_override` so PR-Agent and LiteLLM both treat it as an
+adaptive-thinking model:
 
-Address the model by name and pass the profile ARN through `litellm.model_id`, which is what
-the invocation actually uses:
+Use the ARN as the model id and repeat that exact value in the override:
 
 ```toml
 [config] # in configuration.toml
-model = "bedrock/converse/eu.anthropic.claude-sonnet-5"
-fallback_models = ["bedrock/converse/eu.anthropic.claude-sonnet-5"]
-enable_claude_adaptive_thinking = true # requires a recognizable claude 5 model name in `model`
-
-[litellm]
-model_id = "arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>"
+model = "bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>"
+enable_claude_adaptive_thinking = true
+claude_adaptive_thinking_models_override = [
+    "bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>"
+]
 ```
 
-Cost attribution is preserved through the application inference profile, and because `model`
-is the named id, the adaptive-thinking payload is applied and kept intact.
+The override is additive, so named Claude models in the same fallback chain continue to use
+built-in detection. PR-Agent also registers each override with LiteLLM, preventing LiteLLM from
+converting the adaptive payload to the legacy `budget_tokens` shape that Bedrock rejects.
 
-Two caveats. First, ARNs only fail the detection when the suffix is opaque: an ARN that
-embeds the model family, for example `...:inference-profile/us.anthropic.claude-sonnet-5`,
-normalises to a string the adaptive regex does match. The miss is specific to application
-inference profiles with an opaque hex suffix. Second, `litellm.model_id` is a single global
-value applied to every model whose id contains `bedrock/`, so this configuration cannot point
-different models at different profiles within one fallback chain without per-call handling.
+ARNs only need the override when the suffix is opaque. An ARN that embeds the model family,
+for example `...:inference-profile/us.anthropic.claude-sonnet-5`, normalises to a string the
+adaptive regex already matches.
 
 #### Using a Custom VPC Endpoint (PrivateLink)
 
