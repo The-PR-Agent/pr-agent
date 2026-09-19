@@ -54,7 +54,8 @@ Specific guidelines for generating code suggestions:
 - Only give suggestions that address critical problems and bugs in the PR code. If no relevant suggestions are applicable, return an empty list.
 - DO NOT suggest the following:
     - change packages version
-    - suggest standalone or unrelated missing imports or declarations
+    - add standalone or unrelated missing imports
+    - declare undefined variable, or remove unused variable
     - use more specific exception types
 {%- endif %}
 - If the suggested `improved_code` introduces a dependency, include the import needed to make that suggestion valid. Do not suggest unrelated or standalone missing imports.
