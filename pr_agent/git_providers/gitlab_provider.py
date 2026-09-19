@@ -12,6 +12,12 @@ from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError,
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
+from ..algo.comment_identity import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    comment_matches_any_identity,
+    get_pr_review_comment_identifiers,
+)
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.inline_comment_dedup import (
@@ -23,14 +29,7 @@ from ..algo.inline_comment_dedup import (
     marker_fingerprints,
 )
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (
-    PRCodeSuggestionsHeader,
-    PRCodeSuggestionsIdentity,
-    clip_tokens,
-    comment_matches_any_identity,
-    get_pr_review_comment_identifiers,
-    load_large_diff,
-)
+from ..algo.utils import clip_tokens, load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (

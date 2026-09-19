@@ -3,13 +3,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
 from pr_agent.algo.inline_comment_dedup import (
     body_with_markers,
     get_inline_comment_store,
     key_issue_fingerprint,
 )
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity, convert_to_markdown_v2
+from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment

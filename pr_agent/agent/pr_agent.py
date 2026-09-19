@@ -11,7 +11,8 @@ from starlette_context import context, request_cycle_context
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
-from pr_agent.algo.utils import add_comment_identity, comment_matches_identity, update_settings_from_args
+from pr_agent.algo.comment_identity import add_comment_identity, comment_matches_identity
+from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError

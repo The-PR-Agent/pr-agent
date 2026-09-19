@@ -19,9 +19,9 @@ from unittest.mock import MagicMock
 import pytest
 from github import Auth, GithubException
 
+from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity, add_pr_review_identity
 from pr_agent.algo.review_finding_state import append_review_state, reconcile_review_findings
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity, add_pr_review_identity
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
