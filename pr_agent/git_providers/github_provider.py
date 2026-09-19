@@ -12,8 +12,11 @@ from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
 from github.Issue import Issue
+from jwt.exceptions import PyJWTError
+from requests.exceptions import RequestException
 from retry.api import retry_call
 from starlette_context import context
+from starlette_context.errors import ContextDoesNotExistError
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
@@ -68,7 +71,7 @@ class GithubProvider(GitProvider):
         self.repo_obj = None
         try:
             self.installation_id = context.get("installation_id", None)
-        except Exception:
+        except ContextDoesNotExistError:
             self.installation_id = None
         self.max_comment_chars = 65000
         self.base_url = get_settings().get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/") # "https://api.github.com"
@@ -112,7 +115,7 @@ class GithubProvider(GitProvider):
                 return None
             # else: Valid repo handle:
             return repo_obj.get_issue(issue_number)
-        except Exception:
+        except (GithubException, RequestException):
             get_logger().exception(f"Failed to get an issue object for issue: {issue_url}, belonging to owner/repo: {repo_name}")
             return None
 
@@ -164,7 +167,7 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"url is neither an issues url nor a PR url nor a valid git url: {given_url}. Returning empty result.")
                 return ""
             return repo_path
-        except Exception:
+        except ValueError:
             get_logger().exception(f"unable to parse url: {given_url}. Returning empty result.")
             return ""
 
@@ -334,7 +337,7 @@ class GithubProvider(GitProvider):
         else:
             try:
                 return len(self.git_files)
-            except Exception:
+            except TypeError:
                 return -1
 
     def get_diff_files(self) -> list[FilePatchInfo]:
@@ -357,7 +360,8 @@ class GithubProvider(GitProvider):
                 diff_files = context.get("diff_files", None)
                 if diff_files:
                     return diff_files
-            except Exception:
+            except ContextDoesNotExistError:
+                # Skip the per-request cache outside a request cycle; fall through and compute the files.
                 pass
 
             if self.diff_files:
@@ -373,7 +377,8 @@ class GithubProvider(GitProvider):
                     get_logger().info("Filtered out [ignore] files for pull request:", extra=
                     {"files": names_original,
                      "filtered_files": names_new})
-                except Exception:
+                except AttributeError:
+                    # Keep logging best-effort: a diff entry without a filename must not stop diff collection.
                     pass
 
             diff_files = []
@@ -389,7 +394,7 @@ class GithubProvider(GitProvider):
             try:
                 compare = repo.compare(pr.base.sha, pr.head.sha) # communication with GitHub
                 merge_base_commit = compare.merge_base_commit
-            except Exception as e:
+            except (GithubException, RequestException) as e:
                 get_logger().error(f"Failed to get merge base commit: {e}")
                 merge_base_commit = pr.base
             if merge_base_commit.sha != pr.base.sha:
@@ -471,7 +476,8 @@ class GithubProvider(GitProvider):
             self.diff_files = diff_files
             try:
                 context["diff_files"] = diff_files
-            except Exception:
+            except ContextDoesNotExistError:
+                # Skip caching outside a request cycle; the value is already on self.
                 pass
 
             return diff_files
@@ -561,7 +567,9 @@ class GithubProvider(GitProvider):
                 # behaviour this change exists to remove.
                 self._app_login = f"{slug}[bot]"
                 return self._app_login
-        except Exception as e:
+        except (GithubException, RequestException, PyJWTError, AttributeError, KeyError) as e:
+            # Keep PyJWTError: a malformed configured private key fails while signing the app JWT,
+            # not at the API call, and must leave the login unresolved rather than end the run.
             get_logger().warning(f"Could not resolve the GitHub App login: {e}")
         return ""
 
@@ -583,7 +591,7 @@ class GithubProvider(GitProvider):
         """
         try:
             login = self.get_user_id()
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().warning(f"Could not resolve the GitHub user login: {e}")
             login = ""
         if isinstance(login, str) and login.strip():
@@ -700,8 +708,8 @@ class GithubProvider(GitProvider):
                 )
                 self._check_run_ids[name] = existing_id
                 return True
-            except Exception:
-                get_logger().warning(f"Failed to update check run {existing_id}, creating new one")
+            except (GithubException, RequestException) as e:
+                get_logger().warning(f"Failed to update check run {existing_id}, creating new one, error: {e}")
         try:
             headers, data = self.pr._requester.requestJsonAndCheck(
                 "POST",
@@ -710,8 +718,8 @@ class GithubProvider(GitProvider):
             )
             self._check_run_ids[name] = data["id"]
             return True
-        except Exception:
-            get_logger().warning("Failed to create check run")
+        except (GithubException, RequestException, KeyError) as e:
+            get_logger().warning(f"Failed to create check run, error: {e}")
             return False
 
     def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> Optional[int]:
@@ -726,8 +734,8 @@ class GithubProvider(GitProvider):
                     if run.get("name") == check_run_name:
                         return run["id"]
                 url = _next_page_url(headers)
-        except Exception:
-            get_logger().warning("Failed to look up existing check runs")
+        except (GithubException, RequestException, KeyError) as e:
+            get_logger().warning(f"Failed to look up existing check runs, error: {e}")
         return None
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
@@ -839,7 +847,7 @@ class GithubProvider(GitProvider):
                     store.add(body_fp)
                     store.add(code_fp)
             return True
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().info("Initially failed to publish inline comments as committable")
 
             if (getattr(e, "status", None) == 422 and not disable_fallback):
@@ -884,7 +892,7 @@ class GithubProvider(GitProvider):
 
             return thread_comments
 
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().exception("Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
             return []
 
@@ -1004,7 +1012,7 @@ class GithubProvider(GitProvider):
                 return False
             get_logger().info(f"Resolved review thread {thread_id}")
             return True
-        except Exception as e:
+        except (GithubException, RequestException, ValueError, KeyError, TypeError, AttributeError) as e:
             get_logger().exception(f"Failed to resolve comment thread: {e}")
             return False
 
@@ -1031,8 +1039,10 @@ class GithubProvider(GitProvider):
                     if self.publish_inline_comments([comment], disable_fallback=True):
                         published_count += 1
                         get_logger().info(f"Published invalid comment as a single line comment: {comment}")
-                except Exception:
-                    get_logger().error(f"Failed to publish invalid comment as a single line comment: {comment}")
+                except (GithubException, RequestException) as e:
+                    get_logger().error(
+                        f"Failed to publish invalid comment as a single line comment: {comment}, error: {e}"
+                    )
 
             dropped_count = len(invalid_comments) - len(fixed_comments_as_one_liner)
             if dropped_count > 0:
@@ -1062,14 +1072,15 @@ class GithubProvider(GitProvider):
                 "POST", f"{self.pr.url}/reviews", input=input)
             pending_review_id = data["id"]
             is_verified = True
-        except Exception as err:
+        except (GithubException, RequestException, KeyError) as err:
             is_verified = False
             pending_review_id = None
             e = err
         if pending_review_id is not None:
             try:
                 self.pr._requester.requestJsonAndCheck("DELETE", f"{self.pr.url}/reviews/{pending_review_id}")
-            except Exception:
+            except (GithubException, RequestException):
+                # Best-effort cleanup of the pending review; GitHub drops it on its own if this fails.
                 pass
         return is_verified, e
 
@@ -1107,7 +1118,7 @@ class GithubProvider(GitProvider):
                     del fixed_comment["start_side"]
                 if fixed_comment != comment:
                     fixed_comments.append(fixed_comment)
-            except Exception as e:
+            except (KeyError, TypeError) as e:
                 get_logger().error(f"Failed to fix inline comment, error: {e}")
         return fixed_comments
 
@@ -1161,7 +1172,7 @@ class GithubProvider(GitProvider):
 
         try:
             return bool(self.publish_inline_comments(post_parameters_list))
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().error(f"Failed to publish code suggestion, error: {e}")
             return False
 
@@ -1178,7 +1189,7 @@ class GithubProvider(GitProvider):
             else:
                 get_logger().exception("Failed to edit github comment", artifact={"error": e})
             return False
-        except Exception as e:
+        except RequestException as e:
             get_logger().exception("Failed to edit github comment", artifact={"error": e})
             return False
 
@@ -1190,7 +1201,7 @@ class GithubProvider(GitProvider):
                 "POST", f"{self.base_url}/repos/{self.repo}/pulls/{self.pr_num}/comments/{comment_id}/replies",
                 input={"body": body}
             )
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to reply comment, error: {e}")
 
     def remove_initial_comment(self):
@@ -1198,13 +1209,13 @@ class GithubProvider(GitProvider):
             for comment in getattr(self.pr, 'comments_list', []):
                 if comment.is_temporary:
                     self.remove_comment(comment)
-        except Exception as e:
+        except (AttributeError, TypeError) as e:
             get_logger().exception(f"Failed to remove initial comment, error: {e}")
 
     def remove_comment(self, comment):
         try:
             comment.delete()
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
     def get_title(self):
@@ -1232,7 +1243,7 @@ class GithubProvider(GitProvider):
         if not self.github_user_id:
             try:
                 self.github_user_id = self.github_client.get_user().raw_data['login']
-            except Exception:
+            except (GithubException, RequestException, KeyError):
                 self.github_user_id = ""
                 # logging.exception(f"Failed to get user id, error: {e}")
         return self.github_user_id
@@ -1289,7 +1300,7 @@ class GithubProvider(GitProvider):
                 get_logger().debug("No local .pr_agent.toml found; using existing settings")
             else:
                 get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
-        except Exception as e:
+        except (RequestException, AttributeError) as e:
             get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
 
         return settings_files if settings_files else ""
@@ -1516,7 +1527,7 @@ class GithubProvider(GitProvider):
             return None
         try:
             return repo_obj.get_branch(repo_obj.default_branch).commit.sha
-        except Exception as e:
+        except (GithubException, RequestException, AttributeError) as e:
             get_logger().debug(f"Could not resolve the default branch revision for repo context: {e}")
             return None
 
@@ -1535,7 +1546,7 @@ class GithubProvider(GitProvider):
                 input={"content": reaction}
             )
             return data_patch.get("id", None)
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
             return None
 
@@ -1547,7 +1558,7 @@ class GithubProvider(GitProvider):
                 f"{self.base_url}/repos/{self.repo}/issues/comments/{issue_comment_id}/reactions/{reaction_id}"
             )
             return True
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to remove eyes reaction, error: {e}")
             return False
 
@@ -1679,7 +1690,7 @@ class GithubProvider(GitProvider):
             if propagate_errors:
                 raise
             file_content_str = ""
-        except Exception:
+        except (RequestException, UnicodeDecodeError):
             if propagate_errors:
                 raise
             file_content_str = ""
@@ -1691,7 +1702,7 @@ class GithubProvider(GitProvider):
         try:
             file_obj = self._get_repo().get_contents(file_path, ref=branch)
             sha1=file_obj.sha
-        except Exception:
+        except (GithubException, RequestException):
             sha1=""
         self.repo_obj.update_file(
             path=file_path,
@@ -1716,7 +1727,7 @@ class GithubProvider(GitProvider):
             headers, data = self.pr._requester.requestJsonAndCheck(
                 "PUT", f"{self.pr.issue_url}/labels", input=post_parameters
             )
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
 
     def get_pr_labels(self, update=False):
@@ -1729,7 +1740,7 @@ class GithubProvider(GitProvider):
                     "GET", f"{self.pr.issue_url}/labels")
                 return [label['name'] for label in labels]
 
-        except Exception as e:
+        except (GithubException, RequestException, KeyError, TypeError) as e:
             get_logger().exception(f"Failed to get labels, error: {e}")
             return []
 
@@ -1745,7 +1756,7 @@ class GithubProvider(GitProvider):
             commit_list = self.pr.get_commits()
             commit_messages = [commit.commit.message for commit in commit_list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
-        except Exception:
+        except (GithubException, RequestException, AttributeError):
             commit_messages_str = ""
         if max_tokens:
             commit_messages_str = clip_tokens(commit_messages_str, max_tokens)
@@ -1795,7 +1806,7 @@ class GithubProvider(GitProvider):
         try:
             pr_id = f"{self.repo}/{self.pr_num}"
             return pr_id
-        except:
+        except AttributeError:
             return ""
 
     def fetch_sub_issues(self, issue_url):
@@ -1878,7 +1889,9 @@ class GithubProvider(GitProvider):
                 if "url" in sub_issue:
                     sub_issues.add(sub_issue["url"])
 
-        except Exception as e:
+        except (GithubException, RequestException, ValueError, AttributeError, KeyError, TypeError) as e:
+            # Cover json.JSONDecodeError through ValueError, and a payload that parses but is not a
+            # mapping through AttributeError, since the .get() chains above would walk into it.
             get_logger().exception(f"Failed to fetch sub-issues. Error: {e}")
 
         return sub_issues
@@ -1889,7 +1902,7 @@ class GithubProvider(GitProvider):
             if res.state == "APPROVED":
                 return True
             return False
-        except Exception as e:
+        except (GithubException, RequestException, AttributeError) as e:
             get_logger().exception(f"Failed to auto-approve, error: {e}")
             return False
 
@@ -1977,7 +1990,7 @@ class GithubProvider(GitProvider):
                             else:
                                 get_logger().error(f"Comment is not inside a valid hunk, "
                                                    f"start_line={suggestion['relevant_lines_start']}, end_line={suggestion['relevant_lines_end']}, file={file.filename}")
-            except Exception as e:
+            except (KeyError, TypeError, IndexError) as e:
                 get_logger().error(f"Failed to process patch for committable comment, error: {e}")
         return code_suggestions_copy
 

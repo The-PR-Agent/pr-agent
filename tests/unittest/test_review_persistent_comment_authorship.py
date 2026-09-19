@@ -18,6 +18,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from github import Auth, GithubException
+from jwt.exceptions import InvalidKeyError
+from requests.exceptions import RequestException
 
 from pr_agent.algo.review_finding_state import append_review_state, reconcile_review_findings
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -373,7 +375,7 @@ def test_a_transient_app_login_failure_is_retried(monkeypatch):
         attempts.append(1)
         auths.append(kwargs["auth"])
         if len(attempts) == 1:
-            raise RuntimeError("connection reset")
+            raise RequestException("connection reset")
         return SimpleNamespace(get_app=lambda: SimpleNamespace(slug="pr-agent"))
 
     monkeypatch.setattr("pr_agent.git_providers.github_provider.GithubIntegration", integration)
@@ -415,7 +417,7 @@ def test_an_app_that_never_resolves_stays_unproven(monkeypatch):
     monkeypatch.setattr(get_settings(), "github", SimpleNamespace(
         app_id="1", private_key="key", deployment_type="app"), raising=False)
     monkeypatch.setattr("pr_agent.git_providers.github_provider.GithubIntegration",
-                        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("no private key")))
+                        lambda **kwargs: (_ for _ in ()).throw(InvalidKeyError("no private key")))
 
     assert provider._agent_login() == ""
     with pytest.raises(RuntimeError):
