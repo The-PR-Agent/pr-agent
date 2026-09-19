@@ -48,9 +48,12 @@ Additional aspects:
 class TestConvertToMarkdown:
     # Tests that the function works correctly with a simple dictionary input
     def test_simple_dictionary_input(self):
-        input_data = {'review': {
-            'estimated_effort_to_review_[1-5]': '1, because the changes are minimal and straightforward, focusing on a single functionality addition.\n',
-            'relevant_tests': 'No\n', 'possible_issues': 'No\n', 'security_concerns': 'No\n'}}
+        input_data = {"review": {
+            "estimated_effort_to_review_[1-5]": (
+                "1, because the changes are minimal and straightforward, "
+                "focusing on a single functionality addition.\n"
+            ),
+            "relevant_tests": "No\n", "possible_issues": "No\n", "security_concerns": "No\n"}}
 
         expected_output = textwrap.dedent(f"""\
             {PRReviewHeader.REGULAR.value} 🔍
@@ -69,9 +72,12 @@ class TestConvertToMarkdown:
         assert convert_to_markdown_v2(input_data).strip() == expected_output.strip()
 
     def test_simple_dictionary_input_without_gfm_supported(self):
-        input_data = {'review': {
-            'estimated_effort_to_review_[1-5]': '1, because the changes are minimal and straightforward, focusing on a single functionality addition.\n',
-            'relevant_tests': 'No\n', 'possible_issues': 'No\n', 'security_concerns': 'No\n'}}
+        input_data = {"review": {
+            "estimated_effort_to_review_[1-5]": (
+                "1, because the changes are minimal and straightforward, "
+                "focusing on a single functionality addition.\n"
+            ),
+            "relevant_tests": "No\n", "possible_issues": "No\n", "security_concerns": "No\n"}}
 
         expected_output = textwrap.dedent("""\
             ## PR Reviewer Guide 🔍
@@ -261,13 +267,17 @@ class TestConvertToMarkdown:
             }
         }
 
+        contribution_row = (
+            "<tr><td>⏳&nbsp;<strong>Contribution time estimate</strong> "
+            "(best, average, worst case): 1h | 2h | 30 minutes</td></tr>"
+        )
         expected_output = textwrap.dedent(f"""
             {PRReviewHeader.REGULAR.value} 🔍
 
             Here are some key observations to aid the review process:
 
             <table>
-            <tr><td>⏳&nbsp;<strong>Contribution time estimate</strong> (best, average, worst case): 1h | 2h | 30 minutes</td></tr>
+            {contribution_row}
             </table>
         """)
         assert convert_to_markdown_v2(input_data).strip() == expected_output.strip()
@@ -362,7 +372,10 @@ class TestConvertToMarkdown:
 
 class TestBR:
     def test_br1(self):
-        file_change_description = '- Imported `FilePatchInfo` and `EDIT_TYPE` from `pr_agent.algo.types` instead of `pr_agent.git_providers.git_provider`.'
+        file_change_description = (
+            "- Imported `FilePatchInfo` and `EDIT_TYPE` from `pr_agent.algo.types` "
+            "instead of `pr_agent.git_providers.git_provider`."
+        )
         file_change_description_br = insert_br_after_x_chars(file_change_description)
         expected_output = ('<ul><li>Imported <code>FilePatchInfo</code> and <code>EDIT_TYPE</code> from '
                            '<code>pr_agent.algo.types</code> instead <br>of '
@@ -384,11 +397,16 @@ class TestBR:
         # print(file_change_description_br)
 
     def test_br3(self):
-        file_change_description = 'Created a new class `ColorPaletteResourcesCollection` which extends `AvaloniaDictionary<ThemeVariant, ColorPaletteResources>` and implements aaa'
+        file_change_description = (
+            "Created a new class `ColorPaletteResourcesCollection` which extends "
+            "`AvaloniaDictionary<ThemeVariant, ColorPaletteResources>` and implements aaa"
+        )
         file_change_description_br = insert_br_after_x_chars(file_change_description)
-        assert file_change_description_br == ('Created a new class <code>ColorPaletteResourcesCollection</code> which '
-                                              'extends <br><code>AvaloniaDictionary<ThemeVariant, ColorPaletteResources>'
-                                              '</code> and implements <br>aaa')
+        assert file_change_description_br == (
+            "Created a new class <code>ColorPaletteResourcesCollection</code> which "
+            "extends <br><code>AvaloniaDictionary<ThemeVariant, ColorPaletteResources>"
+            "</code> and implements <br>aaa"
+        )
         # print("-----")
         # print(file_change_description_br)
 

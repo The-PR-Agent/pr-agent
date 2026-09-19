@@ -814,7 +814,9 @@ async def test_native_azure_oidc_bridge_responses(monkeypatch, native_azure_oidc
     monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", True)
     provider = MagicMock(side_effect=AssertionError("OIDC must not create an additional credential provider"))
     monkeypatch.setattr(azure_common, "get_azure_ad_token_provider", provider)
-    assert await state.invoke(handler, guard_key=guard_key, model="azure/responses/gpt-4o") == "Bearer exchanged-token-1"
+    assert await state.invoke(
+        handler, guard_key=guard_key, model="azure/responses/gpt-4o"
+    ) == "Bearer exchanged-token-1"
     assert len(state.exchanged) == 1
     url, data = state.exchanged[0]
     assert url == "https://owned-authority.example/owned-tenant/oauth2/v2.0/token"
@@ -1012,7 +1014,9 @@ async def test_native_azure_ad_sdk_companion(
 @pytest.mark.parametrize("guard_key", (False, True))
 @pytest.mark.parametrize("entrypoint", ("chat", "probe"))
 @pytest.mark.asyncio
-async def test_native_azure_ad_sdk_rejects_implicit_refresh(monkeypatch, native_azure_oidc, transport, guard_key, entrypoint):
+async def test_native_azure_ad_sdk_rejects_implicit_refresh(
+    monkeypatch, native_azure_oidc, transport, guard_key, entrypoint
+):
     import azure.identity
 
     state = native_azure_oidc
@@ -1226,7 +1230,9 @@ async def test_tokenless_azure_nested_contexts(monkeypatch, native_azure_oidc, t
 @pytest.mark.parametrize("host", ("https://owned.example", "https://owned.services.ai.azure.com"))
 @pytest.mark.parametrize("headers", ({}, {"api-key": "gateway-key"}, {"Authorization": "Basic explicit"}))
 @pytest.mark.asyncio
-async def test_native_raw_azure_companion_snapshot(monkeypatch, native_azure_oidc, native_companion_auth, host, headers):
+async def test_native_raw_azure_companion_snapshot(
+    monkeypatch, native_azure_oidc, native_companion_auth, host, headers
+):
     import azure.identity
 
     state = native_azure_oidc
@@ -1356,7 +1362,9 @@ async def test_ordinary_azure_sdk_context_does_not_select_oidc(monkeypatch, nati
 
     litellm_handler._install_azure_oidc_bridge()
     monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", False)
-    monkeypatch.setattr(azure_common, "get_secret_str", lambda name: "outside-token" if name == "AZURE_AD_TOKEN" else None)
+    monkeypatch.setattr(
+        azure_common, "get_secret_str", lambda name: "outside-token" if name == "AZURE_AD_TOKEN" else None
+    )
     context = litellm_handler._azure_oidc_request.set({
         "selector": None, "dispatch_token": "owned-token", "generated_guard": True,
     })
@@ -4319,7 +4327,9 @@ async def test_vertex_impersonated_adc_retains_snapshot_through_load_and_refresh
     (None, {"GOOGLE_CLOUD_PROJECT": "", "GCLOUD_PROJECT": "legacy"}, None),
 ))
 @pytest.mark.asyncio
-async def test_vertex_project_snapshot_preserves_explicit_project_precedence(monkeypatch, setting, environment, expected):
+async def test_vertex_project_snapshot_preserves_explicit_project_precedence(
+    monkeypatch, setting, environment, expected
+):
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings({"VERTEXAI.VERTEX_PROJECT": setting}))
     for variable, value in environment.items():
         monkeypatch.setenv(variable, value)
@@ -5572,7 +5582,9 @@ async def test_vertex_wif_failure_does_not_cache_or_fallback(monkeypatch, failur
 
     info = _external_vertex_adc("123", "identity_pool", None)
     credentials = MagicMock()
-    credentials.get_project_id.return_value = None if failure == "missing" else 123 if failure == "wrong_type" else "project"
+    credentials.get_project_id.return_value = (
+        None if failure == "missing" else 123 if failure == "wrong_type" else "project"
+    )
     if failure == "discovery":
         credentials.get_project_id.side_effect = RuntimeError("discovery failed")
     vertex = VertexBase()
@@ -5585,7 +5597,9 @@ async def test_vertex_wif_failure_does_not_cache_or_fallback(monkeypatch, failur
     async def completion(**kwargs):
         return await vertex.get_access_token_async(kwargs["vertex_credentials"], None)
 
-    expected = {"missing": ValueError, "wrong_type": TypeError, "discovery": RuntimeError, "refresh": RuntimeError}[failure]
+    expected = {
+        "missing": ValueError, "wrong_type": TypeError, "discovery": RuntimeError, "refresh": RuntimeError,
+    }[failure]
     with pytest.raises(expected):
         await LiteLLMAIHandler()._acompletion(
             _completion=completion, model="vertex_ai/gemini-2.5-pro", vertex_credentials=json.dumps(info),
@@ -7954,7 +7968,9 @@ async def test_mantle_http_auth(monkeypatch, auth, entrypoint):
      "us-west-2", "https://mantle.example/v1"),
 ))
 @pytest.mark.asyncio
-async def test_native_mantle_region(monkeypatch, auth, entrypoint, selection, environment, expected_region, expected_base):
+async def test_native_mantle_region(
+    monkeypatch, auth, entrypoint, selection, environment, expected_region, expected_base
+):
     for name in ("AWS_REGION_NAME", "AWS_REGION", "AWS_DEFAULT_REGION", "DEFAULT_REGION", "BEDROCK_MANTLE_REGION"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AWS_USE_IMDS", "false")

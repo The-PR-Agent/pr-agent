@@ -1,7 +1,12 @@
 FILE_PATH: str = "pr_agent/cli_pip.py"
 
-PR_HEADER_START_WITH = '### **User description**\nupdate cli_pip.py\n\n\n___\n\n### **PR Type**'
-REVIEW_START_WITH = '## PR Reviewer Guide 🔍\n\n<!-- pr-agent:review:full -->\n\n<table>\n<tr><td>⏱️&nbsp;<strong>Estimated effort to review</strong>:'
+PR_HEADER_START_WITH = (
+    "### **User description**\nupdate cli_pip.py\n\n\n___\n\n### **PR Type**"
+)
+REVIEW_START_WITH = (
+    "## PR Reviewer Guide 🔍\n\n<!-- pr-agent:review:full -->\n\n"
+    "<table>\n<tr><td>⏱️&nbsp;<strong>Estimated effort to review</strong>:"
+)
 IMPROVE_START_WITH_REGEX_PATTERN = (
     r"^## PR Code Suggestions ✨\n\n"
     r"<!-- pr-agent:improve:summary -->\n\n"
@@ -21,7 +26,8 @@ def main():
     user_token = "..."  # GitHub user token
     openai_key = "ghs_afsdfasdfsdf"  # Example OpenAI key
     pr_url = "..."  # PR URL, for example 'https://github.com/Codium-ai/pr-agent/pull/809'
-    command = "/improve"  # Command to run (e.g. '/review', '/describe', 'improve', '/ask="What is the purpose of this PR?"')
+    command = "/improve"  # Command to run (e.g. '/review', '/describe', 'improve',
+    '/ask="What is the purpose of this PR?"')
 
     # Setting the configurations
     get_settings().set("CONFIG.git_provider", provider)

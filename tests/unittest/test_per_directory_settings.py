@@ -1071,7 +1071,10 @@ class TestGithubProviderPerDirectory:
 
         assert resolved_ref == "main"
         assert paths == ["svc/.pr_agent.toml"]
-        assert repo_obj.get_git_tree.call_args_list == [call("missing-branch", recursive=True), call("main", recursive=True)]
+        assert repo_obj.get_git_tree.call_args_list == [
+            call("missing-branch", recursive=True),
+            call("main", recursive=True),
+        ]
 
     def test_get_repo_settings_tree_surfaces_unexpected_errors(self):
         repo_obj = MagicMock()

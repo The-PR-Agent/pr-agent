@@ -51,7 +51,9 @@ class TestPRUpdateChangelog:
             mock_settings.return_value.pr_update_changelog_prompt.user = "User prompt"
             mock_settings.return_value.config.temperature = 0.2
 
-            tool = PRUpdateChangelog("https://gitlab.com/test/repo/-/merge_requests/1", ai_handler=lambda: mock_ai_handler)
+            tool = PRUpdateChangelog(
+                "https://gitlab.com/test/repo/-/merge_requests/1", ai_handler=lambda: mock_ai_handler
+            )
             return tool
 
     def test_get_changelog_file_with_existing_content(self, changelog_tool, mock_git_provider):
