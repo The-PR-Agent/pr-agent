@@ -123,27 +123,27 @@ _ALLOWLIST = {
         "pr_description",
         "pr_diagram_direction_threshold",
     ): "description_settings.pr_diagram_direction_threshold in pr_agent/tools/pr_description.py",
-    # [push_outputs] read as cfg = get_settings().get('push_outputs', {}) or {}
+    # [push_outputs] read as cfg = get_settings().get("push_outputs", {}) or {}
     (
         "push_outputs",
         "enable",
-    ): "cfg.get('enable', False) in pr_agent/algo/utils.py",
+    ): "cfg.get(\"enable\", False) in pr_agent/algo/run_output.py",
     (
         "push_outputs",
         "channels",
-    ): "cfg.get('channels', []) in pr_agent/algo/utils.py",
+    ): "cfg.get(\"channels\", []) in pr_agent/algo/run_output.py",
     (
         "push_outputs",
         "file_path",
-    ): "cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl') in pr_agent/algo/utils.py",
+    ): "cfg.get(\"file_path\") in pr_agent/algo/run_output.py",
     (
         "push_outputs",
         "webhook_url",
-    ): "_push_outputs_sink_url(cfg, 'webhook_url') in pr_agent/algo/utils.py",
+    ): "_push_outputs_sink_url(cfg, \"webhook_url\") in pr_agent/algo/run_output.py",
     (
         "push_outputs",
         "slack_webhook_url",
-    ): "_push_outputs_sink_url(cfg, 'slack_webhook_url') in pr_agent/algo/utils.py",
+    ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/run_output.py",
 }
 
 
