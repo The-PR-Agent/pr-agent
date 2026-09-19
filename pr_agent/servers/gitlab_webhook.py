@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import json
 import os
-import re
 from datetime import datetime
 
 import uvicorn
@@ -22,7 +21,13 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
-from pr_agent.servers.utils import get_pr_commands, push_trigger_slot
+from pr_agent.servers.utils import (
+    get_pr_commands,
+    push_trigger_slot,
+)
+from pr_agent.servers.utils import (
+    should_process_pr_logic as _should_process_pr_logic,
+)
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -242,62 +247,7 @@ async def is_bot_assigned_as_reviewer(data) -> bool:
     return False
 
 def should_process_pr_logic(data) -> bool:
-    try:
-        if not data.get('object_attributes', {}):
-            return False
-        title = data['object_attributes'].get('title') or ''
-        sender = data.get("user", {}).get("username", "")
-        repo_full_name = data.get('project', {}).get('path_with_namespace', "")
-
-        # logic to ignore PRs from specific repositories
-        ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
-        if ignore_repos and repo_full_name:
-            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
-                get_logger().info(f"Ignoring MR from repository '{repo_full_name}' due to 'config.ignore_repositories' setting")
-                return False
-
-        # logic to ignore PRs from specific users
-        ignore_pr_users = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
-        if ignore_pr_users and sender:
-            if any(re.search(regex, sender) for regex in ignore_pr_users):
-                get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' settings")
-                return False
-
-        # logic to ignore MRs for titles, labels and source, target branches.
-        ignore_mr_title = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
-        ignore_mr_labels = get_settings().get("CONFIG.IGNORE_PR_LABELS", [])
-        ignore_mr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
-        ignore_mr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
-
-        #
-        if ignore_mr_source_branches:
-            source_branch = data['object_attributes'].get('source_branch') or ''
-            if any(re.search(regex, source_branch) for regex in ignore_mr_source_branches):
-                get_logger().info(
-                    f"Ignoring MR with source branch '{source_branch}' due to gitlab.ignore_mr_source_branches settings")
-                return False
-
-        if ignore_mr_target_branches:
-            target_branch = data['object_attributes'].get('target_branch') or ''
-            if any(re.search(regex, target_branch) for regex in ignore_mr_target_branches):
-                get_logger().info(
-                    f"Ignoring MR with target branch '{target_branch}' due to gitlab.ignore_mr_target_branches settings")
-                return False
-
-        if ignore_mr_labels:
-            labels = [label['title'] for label in data['object_attributes'].get('labels') or []]
-            if any(label in ignore_mr_labels for label in labels):
-                labels_str = ", ".join(labels)
-                get_logger().info(f"Ignoring MR with labels '{labels_str}' due to gitlab.ignore_mr_labels settings")
-                return False
-
-        if ignore_mr_title:
-            if any(re.search(regex, title) for regex in ignore_mr_title):
-                get_logger().info(f"Ignoring MR with title '{title}' due to gitlab.ignore_mr_title settings")
-                return False
-    except Exception as e:
-        get_logger().error(f"Failed 'should_process_pr_logic': {e}")
-    return True
+    return _should_process_pr_logic(data, provider="gitlab")
 
 
 def authenticate_gitlab_webhook(request: Request, log_context: dict):

@@ -1244,3 +1244,121 @@ async def test_gitlab_push_only_update_still_takes_the_push_branch(
         handle_push_trigger=True,
     )
     assert commands == [["/describe"]]
+
+
+def test_shared_should_process_pr_logic_rules():
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original = {
+        "ignore_repositories": settings.get("CONFIG.IGNORE_REPOSITORIES", []),
+        "ignore_pr_authors": settings.get("CONFIG.IGNORE_PR_AUTHORS", []),
+        "ignore_pr_title": settings.get("CONFIG.IGNORE_PR_TITLE", []),
+        "ignore_pr_labels": settings.get("CONFIG.IGNORE_PR_LABELS", []),
+        "ignore_pr_source_branches": settings.get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []),
+        "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
+    }
+    try:
+        # Default with no ignore rules: returns True
+        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
+        settings.set("CONFIG.IGNORE_PR_TITLE", [])
+        settings.set("CONFIG.IGNORE_PR_LABELS", [])
+        settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
+        settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
+
+        assert should_process_pr_logic(
+            title="feat: add feature",
+            sender="alice",
+            repo_full_name="org/repo",
+            labels=["enhancement"],
+            source_branch="feat/add-feature",
+            target_branch="main",
+        ) is True
+
+        # Repo ignore
+        settings.set("CONFIG.IGNORE_REPOSITORIES", ["^org/ignored-.*$"])
+        assert should_process_pr_logic(repo_full_name="org/ignored-repo") is False
+        assert should_process_pr_logic(repo_full_name="org/allowed-repo") is True
+        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+
+        # Author ignore
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^bot-.*$", "renovate"])
+        assert should_process_pr_logic(sender="bot-service") is False
+        assert should_process_pr_logic(sender="renovate") is False
+        assert should_process_pr_logic(sender="alice") is True
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
+
+        # Title ignore - string vs list
+        settings.set("CONFIG.IGNORE_PR_TITLE", "^WIP:")  # as single string
+        assert should_process_pr_logic(title="WIP: something") is False
+        assert should_process_pr_logic(title="feat: done") is True
+        settings.set("CONFIG.IGNORE_PR_TITLE", ["^WIP:", "^Draft:"])  # as list
+        assert should_process_pr_logic(title="Draft: something") is False
+        assert should_process_pr_logic(title="feat: done") is True
+        settings.set("CONFIG.IGNORE_PR_TITLE", [])
+
+        # Label ignore
+        settings.set("CONFIG.IGNORE_PR_LABELS", ["skip-review", "do-not-merge"])
+        assert should_process_pr_logic(labels=["skip-review", "bug"]) is False
+        assert should_process_pr_logic(labels=["bug"]) is True
+        settings.set("CONFIG.IGNORE_PR_LABELS", [])
+
+        # Branch ignore
+        settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^release/.*$"])
+        settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^production$"])
+        assert should_process_pr_logic(source_branch="release/1.0", target_branch="main") is False
+        assert should_process_pr_logic(source_branch="feature/test", target_branch="production") is False
+        assert should_process_pr_logic(source_branch="feature/test", target_branch="main") is True
+    finally:
+        for k, v in original.items():
+            settings.set(f"CONFIG.{k.upper()}", v)
+
+
+def test_shared_should_process_pr_logic_payload_parsing():
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original_repos = settings.get("CONFIG.IGNORE_REPOSITORIES", [])
+    settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
+    try:
+        # GitHub payload
+        gh_payload = {
+            "pull_request": {"title": "GH PR", "head": {"ref": "feat"}, "base": {"ref": "main"}},
+            "repository": {"full_name": "ignore-org/repo"},
+            "sender": {"login": "gh-user"},
+        }
+        assert should_process_pr_logic(gh_payload) is False
+
+        # GitLab payload
+        gl_payload = {
+            "object_attributes": {"title": "GL MR", "source_branch": "feat", "target_branch": "main"},
+            "project": {"path_with_namespace": "ignore-org/repo"},
+            "user": {"username": "gl-user"},
+        }
+        assert should_process_pr_logic(gl_payload) is False
+
+        # GitLab non-MR payload (missing object_attributes) should return False
+        assert should_process_pr_logic({}, provider="gitlab") is False
+
+        # Bitbucket Cloud payload
+        bb_cloud_payload = {
+            "data": {
+                "pullrequest": {
+                    "title": "BB PR",
+                    "destination": {"repository": {"full_name": "ignore-org/repo"}},
+                }
+            }
+        }
+        assert should_process_pr_logic(bb_cloud_payload) is False
+
+        # Bitbucket Server payload
+        bb_server_payload = {
+            "pullRequest": {
+                "title": "BBS PR",
+                "toRef": {"repository": {"project": {"key": "ignore-org"}, "slug": "repo"}},
+            }
+        }
+        assert should_process_pr_logic(bb_server_payload) is False
+    finally:
+        settings.set("CONFIG.IGNORE_REPOSITORIES", original_repos)
