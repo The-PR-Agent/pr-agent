@@ -303,12 +303,12 @@ def should_process_pr_logic(
     data: dict | None = None,
     *,
     provider: str | None = None,
-    title: str = "",
-    sender: str = "",
-    repo_full_name: str = "",
+    title: str | None = None,
+    sender: str | None = None,
+    repo_full_name: str | None = None,
     labels: Sequence[str] | None = None,
-    source_branch: str = "",
-    target_branch: str = "",
+    source_branch: str | None = None,
+    target_branch: str | None = None,
     raise_on_error: bool = False,
 ) -> bool:
     """Determine whether a pull/merge request should be processed based on configuration.
@@ -335,15 +335,25 @@ def should_process_pr_logic(
             if extracted is None:
                 return False
             ext_title, ext_sender, ext_repo, ext_labels, ext_source, ext_target = extracted
-            title = title or ext_title
-            sender = sender or ext_sender
-            repo_full_name = repo_full_name or ext_repo
+            if title is None:
+                title = ext_title
+            if sender is None:
+                sender = ext_sender
+            if repo_full_name is None:
+                repo_full_name = ext_repo
             if labels is None:
                 labels = ext_labels
-            source_branch = source_branch or ext_source
-            target_branch = target_branch or ext_target
+            if source_branch is None:
+                source_branch = ext_source
+            if target_branch is None:
+                target_branch = ext_target
 
+        title = title or ""
+        sender = sender or ""
+        repo_full_name = repo_full_name or ""
         labels = labels or []
+        source_branch = source_branch or ""
+        target_branch = target_branch or ""
 
         # Ignore PRs from specific repositories
         ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])

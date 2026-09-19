@@ -1364,6 +1364,59 @@ def test_shared_should_process_pr_logic_payload_parsing():
         settings.set("CONFIG.IGNORE_REPOSITORIES", original_repos)
 
 
+def test_shared_should_process_pr_logic_explicit_empty_overrides_payload():
+    """Verify that explicitly passing empty metadata overrides nonempty payload values."""
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original = {
+        "ignore_repositories": settings.get("CONFIG.IGNORE_REPOSITORIES", []),
+        "ignore_pr_authors": settings.get("CONFIG.IGNORE_PR_AUTHORS", []),
+        "ignore_pr_title": settings.get("CONFIG.IGNORE_PR_TITLE", []),
+        "ignore_pr_labels": settings.get("CONFIG.IGNORE_PR_LABELS", []),
+        "ignore_pr_source_branches": settings.get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []),
+        "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
+    }
+    settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
+    settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^ignore-bot$"])
+    settings.set("CONFIG.IGNORE_PR_TITLE", ["\\[WIP\\].*"])
+    settings.set("CONFIG.IGNORE_PR_LABELS", ["do-not-merge"])
+    settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^ignore-source$"])
+    settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^ignore-target$"])
+
+    try:
+        # Construct a payload that matches all ignore criteria
+        payload = {
+            "pull_request": {
+                "title": "[WIP] Feature",
+                "head": {"ref": "ignore-source"},
+                "base": {"ref": "ignore-target"},
+                "labels": [{"name": "do-not-merge"}],
+            },
+            "repository": {"full_name": "ignore-org/repo"},
+            "sender": {"login": "ignore-bot"},
+        }
+        # Verify the raw payload is rejected by ignore filters
+        assert should_process_pr_logic(payload) is False
+
+        # Verify overriding ignored fields with empty values permits processing
+        assert (
+            should_process_pr_logic(
+                payload,
+                repo_full_name="",
+                sender="",
+                title="",
+                labels=[],
+                source_branch="",
+                target_branch="",
+            )
+            is True
+        )
+    finally:
+        for k, v in original.items():
+            settings.set(f"CONFIG.{k.upper()}", v)
+
+
 def test_bitbucket_server_should_process_pr_logic_fails_open_on_filter_exception(monkeypatch):
     """Verify that a filtering error fails open and does not continue into folder filtering."""
     settings = get_settings()
