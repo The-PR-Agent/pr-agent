@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from contextvars import ContextVar
 from functools import lru_cache, wraps
 from types import FunctionType, SimpleNamespace
@@ -46,26 +47,21 @@ except ImportError:
 _handler_module = None
 
 
-def _bind_handler_module(module):
-    """Record the host ``litellm_ai_handler`` module for call-time slot reads.
-
-    The handler registers itself here once on import so guarded interface checks can
-    observe the attrs that unit tests replace on the handler module rather than this
-    module's import-time snapshot, without this module importing the handler back and
-    forming an import cycle. Only the first (process-wide) module is bound; the
-    fail-closed tests re-exec the handler body under a different module name and must
-    not move the reference.
-    """
-    global _handler_module
-    if module is not None and _handler_module is None:
-        _handler_module = module
-
-
 def _handler_attr(name, default=None):
-    """Read an interface slot off the bound ``litellm_ai_handler`` module at call time."""
-    if _handler_module is None:
+    """Resolve an interface slot from the live ``litellm_ai_handler`` module at call time.
+
+    Read the module registered under its canonical import name so guarded interface
+    checks observe the attrs that tests replace on the handler module, without importing
+    the handler back and forming an import cycle. ``_handler_module`` re-routes the
+    lookup at an isolated re-exec of the handler so fail-closed tests can prove its
+    guards fire.
+    """
+    handler_module = _handler_module
+    if handler_module is None:
+        handler_module = sys.modules.get("pr_agent.algo.ai_handlers.litellm_ai_handler")
+    if handler_module is None:
         return default
-    return getattr(_handler_module, name, default)
+    return getattr(handler_module, name, default)
 
 
 def _resolve_provider_registry():

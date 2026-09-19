@@ -1776,21 +1776,19 @@ async def test_missing_private_import_preserves_module_and_fails_closed(monkeypa
         with pytest.raises(RuntimeError, match="JSONProviderRegistry.*request isolation"):
             module.LiteLLMAIHandler()
         return
-    # The guarded LiteLLM interfaces now live in cloud_auth, while the handler module
-    # keeps its own guarded try/except copies; hence the isolated reload above still
-    # proves the handler imports and exposes ``None`` when the private interface is
-    # unavailable. Trigger the fail-closed guards through the moved module, which reads
-    # these slots off the handler module at call time (see cloud_auth._handler_attr).
-    if symbol == "AnthropicModelInfo":
-        with monkeypatch.context() as scoped:
-            scoped.setattr(litellm_handler, "AnthropicModelInfo", None)
+    # The guarded interfaces moved to cloud_auth, which resolves the handler's slot
+    # values at call time; point those lookups at the isolated module to prove its
+    # fail-closed guards fire on the missing private interface.
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(cloud_auth, "_handler_module", module)
+        if symbol == "AnthropicModelInfo":
             with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
-                litellm_handler._install_anthropic_auth_token_bridge()
-    else:
-        with monkeypatch.context() as scoped:
-            scoped.setattr(litellm_handler, "_get_model_info_helper", None)
+                module._install_anthropic_auth_token_bridge()
+        else:
             with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
-                litellm_handler._uses_openai_responses_transport("gpt-4o", "openai")
+                module._uses_openai_responses_transport("gpt-4o", "openai")
 
 
 @pytest.mark.parametrize("method", ("list_providers", "get", "exists"))
