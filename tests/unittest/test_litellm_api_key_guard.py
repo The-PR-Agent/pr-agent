@@ -1845,6 +1845,16 @@ def test_moved_provider_tables_remain_exposed_on_handler():
         assert getattr(litellm_handler, name) is getattr(cloud_auth, name)
 
 
+def test_moved_text_completion_transport_helper_remains_exposed_on_handler():
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    helper = litellm_handler._uses_openai_text_completion_transport
+    assert helper is cloud_auth._uses_openai_text_completion_transport
+    assert helper("gpt-3.5-turbo-instruct", "text-completion-openai")
+    assert helper("ft:babbage-002:example", "openai")
+    assert not helper("gpt-4o", "openai")
+
+
 @pytest.mark.parametrize("provider", ("aleph_alpha", "anyscale"))
 @pytest.mark.parametrize("initial_key", (None, "handler-key"))
 @pytest.mark.asyncio

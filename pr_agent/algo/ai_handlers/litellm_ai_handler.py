@@ -115,6 +115,7 @@ from pr_agent.algo.ai_handlers.cloud_auth import (
     _sign_bedrock_mantle_request,  # noqa: F401  (module attribute asserted by tests)
     _snapshot_cloud_sdk_project,
     _uses_openai_responses_transport,
+    _uses_openai_text_completion_transport,  # noqa: F401  (module attribute asserted by tests)
     _uses_provider_api_key,
     _vertex_aws_credentials_from_snapshot,  # noqa: F401  (module attribute asserted by tests)
     _vertex_project_from_environment,
