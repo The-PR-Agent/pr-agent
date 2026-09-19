@@ -212,6 +212,37 @@ class TestPRUpdateChangelog:
         assert "Safe generated entry" in fallback_calls[0].args[0]
         provider.remove_initial_comment.assert_called_once_with()
 
+    @pytest.mark.asyncio
+    async def test_strict_read_error_skips_configuration_rendering(self, mock_ai_handler):
+        provider = self._make_push_provider()
+        read_error = RuntimeError("read unavailable")
+        provider.get_pr_file_content.side_effect = read_error
+
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
+             patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"), \
+             patch("pr_agent.tools.pr_update_changelog.show_relevant_configurations",
+                   side_effect=TypeError("invalid skip_keys")) as render_config, \
+             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
+            self._configure_settings(mock_settings)
+            mock_settings.return_value.get.return_value = {"output_relevant_configurations": True}
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+            tool.prediction = "## v1.1.0\n- Safe generated entry"
+
+            with pytest.raises(RuntimeError) as exc_info:
+                await tool.run()
+
+        assert exc_info.value is read_error
+        render_config.assert_not_called()
+        provider.create_or_update_pr_file.assert_not_called()
+        fallback_calls = [
+            call for call in provider.publish_comment.call_args_list
+            if "not pushed" in call.args[0]
+        ]
+        assert len(fallback_calls) == 1
+        assert "Safe generated entry" in fallback_calls[0].args[0]
+        provider.remove_initial_comment.assert_called_once_with()
+
     def test_strict_read_setup_failure_attempts_fallback_and_reraises_original(self):
         provider = self._make_push_provider()
         read_error = RuntimeError("read unavailable")

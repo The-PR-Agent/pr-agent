@@ -138,15 +138,15 @@ class PRUpdateChangelog:
 
             new_file_content, answer = self._prepare_changelog_update()
 
+            if changelog_read_error is not None:
+                self._publish_changelog_read_error_fallback(answer)
+                raise changelog_read_error
+
             # Output the relevant configurations if enabled
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
                 answer += show_relevant_configurations(relevant_section='pr_update_changelog')
 
             get_logger().debug("PR output", artifact=answer)
-
-            if changelog_read_error is not None:
-                self._publish_changelog_read_error_fallback(answer)
-                raise changelog_read_error
 
             if get_settings().config.publish_output:
                 if self.commit_changelog:
