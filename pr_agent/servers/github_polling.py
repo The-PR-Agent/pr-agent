@@ -254,10 +254,17 @@ async def _start_queued_processes(task_queue, max_allowed_parallel_tasks, active
         for _ in range(overflow):
             task_queue.pop()
 
+    waiting_logged = False
     try:
         while task_queue:
             _reap_finished_processes(active_processes)
             if len(active_processes) >= max_allowed_parallel_tasks:
+                if not waiting_logged:
+                    get_logger().info(
+                        f"Polling dispatch waiting for capacity: {len(active_processes)} workers active, "
+                        f"{len(task_queue)} tasks queued"
+                    )
+                    waiting_logged = True
                 await asyncio.sleep(POLLING_CAPACITY_CHECK_INTERVAL)
                 continue
             func, args = task_queue[0]
