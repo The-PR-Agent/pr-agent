@@ -2223,7 +2223,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         override = self._validated_model_name_list("claude_extended_thinking_models_override")
         self.claude_extended_thinking_models = override or CLAUDE_EXTENDED_THINKING_MODELS
 
-        # Model ids to additionally treat as adaptive-only. This supports opaque Bedrock application
+        # Treat configured model ids as additional adaptive-only models. Add opaque Bedrock application
         # inference profile ARNs while preserving built-in detection for named models.
         self.claude_adaptive_thinking_models_override = self._validated_model_name_list(
             "claude_adaptive_thinking_models_override"
