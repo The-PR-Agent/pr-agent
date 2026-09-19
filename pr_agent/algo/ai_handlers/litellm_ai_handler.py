@@ -4178,7 +4178,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
                         # false for gpt-5 and gpt-5.1, so those are clamped to 'high' instead.
                         # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        lookup_model = model_base.removesuffix('_thinking')
+                        lookup_model = model
+                        while lookup_model.startswith(("openai/", "azure/")):
+                            lookup_model = lookup_model.removeprefix("openai/").removeprefix("azure/")
+                        lookup_model = lookup_model.removesuffix("_thinking")
                         try:
                             supports_xhigh = litellm.get_model_info(lookup_model).get(
                                 "supports_xhigh_reasoning_effort"
