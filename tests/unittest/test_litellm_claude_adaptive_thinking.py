@@ -320,7 +320,7 @@ async def test_opaque_arn_with_adaptive_enabled_warns_and_skips_payload(monkeypa
     assert "output_config" not in kwargs
     logger.warning.assert_called_once()
     assert "abc123def456" in logger.warning.call_args.args[0]
-    assert "litellm.model_id" in logger.warning.call_args.args[0]
+    assert "claude_adaptive_thinking_models_override" in logger.warning.call_args.args[0]
 
 
 _PROFILE_ARN = (

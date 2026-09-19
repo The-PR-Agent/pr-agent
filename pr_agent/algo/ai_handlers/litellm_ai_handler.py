@@ -4285,8 +4285,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                     )
                     if "arn:aws:bedrock:" in model:
                         message += (
-                            " For a Bedrock inference profile, address the model by name and pass "
-                            "the ARN with litellm.model_id."
+                            " For a Bedrock inference profile, add the ARN to "
+                            "config.claude_adaptive_thinking_models_override."
                         )
                     get_logger().warning(message)
 
