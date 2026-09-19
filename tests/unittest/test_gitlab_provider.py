@@ -3,8 +3,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from gitlab import Gitlab
-from gitlab.exceptions import GitlabGetError
+from gitlab.exceptions import GitlabAuthenticationError, GitlabError, GitlabGetError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
+from requests.exceptions import RequestException
 
 from pr_agent.algo.utils import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
@@ -128,7 +129,7 @@ class TestGitLabProvider:
         mock_project.files.get.assert_called_once_with("CHANGELOG.md", "main")
 
     def test_get_pr_file_content_other_exception(self, gitlab_provider, mock_project):
-        mock_project.files.get.side_effect = Exception("Network error")
+        mock_project.files.get.side_effect = RequestException("Network error")
 
         content = gitlab_provider.get_pr_file_content("CHANGELOG.md", "main")
 
@@ -450,7 +451,7 @@ class TestGitLabProvider:
 
     def test_project_by_path_requires_exact_match(self, gitlab_provider):
         gitlab_provider.gl.projects.get.reset_mock()
-        gitlab_provider.gl.projects.get.side_effect = Exception("not found")
+        gitlab_provider.gl.projects.get.side_effect = GitlabGetError("not found")
         fake = MagicMock()
         fake.id = "mismatched-project-id"
         fake.path_with_namespace = "other/group/repo"
@@ -664,7 +665,7 @@ class TestGitLabProvider:
 
     def test_publish_comment_as_thread_falls_back_to_note_on_error(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.create.side_effect = Exception("gitlab api error")
+        gitlab_provider.mr.discussions.create.side_effect = GitlabError("gitlab api error")
         result = gitlab_provider.publish_comment("the review", as_thread=True)
 
         # Thread creation failed, so publishing must not raise and must fall back to a plain note.
@@ -672,7 +673,7 @@ class TestGitLabProvider:
         assert result is gitlab_provider.mr.notes.create.return_value
 
     @pytest.mark.parametrize("break_response", [
-        lambda mr: setattr(mr.notes.get, 'side_effect', Exception("gitlab api error")),
+        lambda mr: setattr(mr.notes.get, 'side_effect', GitlabError("gitlab api error")),
         lambda mr: setattr(mr.discussions.create.return_value, 'attributes', {'notes': []}),
         lambda mr: setattr(mr.discussions.create.return_value, 'attributes', {}),
     ])
@@ -974,7 +975,7 @@ class TestGitLabProvider:
     def test_unresolve_comment_thread_soft_fails(self, gitlab_provider):
         # A GitLab API error while reopening must not raise.
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+        gitlab_provider.mr.discussions.list.side_effect = GitlabError("gitlab api error")
 
         gitlab_provider.unresolve_comment_thread(MagicMock(id=1))  # must not raise
 
@@ -1011,7 +1012,7 @@ class TestGitLabProvider:
     def test_resolve_comment_thread_soft_fails(self, gitlab_provider):
         # A GitLab API error while resolving must not raise.
         gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+        gitlab_provider.mr.discussions.list.side_effect = GitlabError("gitlab api error")
 
         assert gitlab_provider.resolve_comment_thread(1) is False
 
@@ -1114,7 +1115,7 @@ class TestGitLabProvider:
 
     def test_resolve_outdated_inline_threads_continues_past_a_failing_thread(self, gitlab_provider):
         failing = _thread([_thread_note()], discussion_id='failing')
-        failing.save.side_effect = Exception("gitlab api error")
+        failing.save.side_effect = GitlabError("gitlab api error")
         outdated = _thread([_thread_note()], discussion_id='outdated')
         self._prepare_outdated_cleanup(gitlab_provider, [failing, outdated])
 
@@ -1124,7 +1125,7 @@ class TestGitLabProvider:
 
     def test_resolve_outdated_inline_threads_soft_fails(self, gitlab_provider):
         self._prepare_outdated_cleanup(gitlab_provider, [])
-        gitlab_provider.mr.discussions.list.side_effect = Exception("gitlab api error")
+        gitlab_provider.mr.discussions.list.side_effect = GitlabError("gitlab api error")
 
         self._run_outdated_cleanup(gitlab_provider)
 
@@ -1249,7 +1250,7 @@ class TestGitLabProvider:
         # save() clears pending attributes itself, but only when it succeeds. If they
         # survive a failure, the next save() on this MR — publish_description() runs
         # one moments later — resends the label diff.
-        gitlab_provider.mr = self._real_mr(["bug"], update_error=RuntimeError("network blip"))
+        gitlab_provider.mr = self._real_mr(["bug"], update_error=RequestException("network blip"))
 
         gitlab_provider.publish_labels(["review effort 3/5"])
 
@@ -1276,7 +1277,7 @@ class TestGitLabProvider:
         # because publish_labels diffs against that same snapshot, so a failed refresh
         # narrows what the update touches instead of clobbering labels.
         gitlab_provider.mr = MagicMock(labels=["cached"])
-        gitlab_provider._get_merge_request = MagicMock(side_effect=RuntimeError("boom"))
+        gitlab_provider._get_merge_request = MagicMock(side_effect=GitlabError("boom"))
 
         assert gitlab_provider.get_pr_labels(update=True) == ["cached"]
 
@@ -1810,7 +1811,7 @@ class TestGitLabIncrementalReview:
     def test_anchor_author_check_fails_open_when_user_unresolvable(self, gitlab_provider, mock_project):
         # Job-token auth can't resolve the current user; anchoring must stay prefix-only
         # rather than breaking incremental runs.
-        gitlab_provider.gl.auth.side_effect = Exception("401 insufficient scope")
+        gitlab_provider.gl.auth.side_effect = GitlabAuthenticationError("401 insufficient scope")
         gitlab_provider.mr.notes.list.return_value = [
             self._make_note(8, "## PR Code Suggestions ✨\ntable", "2026-05-15T10:00:00Z",
                             author={"id": 999}),
