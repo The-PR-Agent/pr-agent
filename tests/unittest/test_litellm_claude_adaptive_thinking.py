@@ -327,6 +327,10 @@ _PROFILE_ARN = (
     "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
     "application-inference-profile/abc123def456"
 )
+_UNLISTED_PROFILE_ARN = (
+    "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
+    "application-inference-profile/unlisted789"
+)
 
 
 def test_opaque_model_override_registers_adaptive_support(monkeypatch):
@@ -363,9 +367,11 @@ def test_registered_opaque_model_keeps_adaptive_payload(monkeypatch):
     before = config.map_openai_params(params.copy(), {}, _PROFILE_ARN, False)
     LiteLLMAIHandler()
     after = config.map_openai_params(params.copy(), {}, _PROFILE_ARN, False)
+    unlisted = config.map_openai_params(params.copy(), {}, _UNLISTED_PROFILE_ARN, False)
 
     assert before["thinking"] == {"type": "enabled", "budget_tokens": 2048}
     assert after["thinking"] == {"type": "adaptive"}
+    assert unlisted["thinking"] == {"type": "enabled", "budget_tokens": 2048}
 
 
 @pytest.mark.parametrize("bad_override", ["not-a-list", [""], ["ok", 5], [None]])
