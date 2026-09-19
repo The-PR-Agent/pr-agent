@@ -710,7 +710,10 @@ def _install_azure_oidc_bridge():
 
 
 def _is_openai_compatible_request_provider(provider: str) -> bool:
-    return provider in getattr(litellm, "openai_compatible_providers", ()) or _resolve_provider_registry().exists(provider)
+    return (
+        provider in getattr(litellm, "openai_compatible_providers", ())
+        or _resolve_provider_registry().exists(provider)
+    )
 
 
 def _uses_openai_text_completion_transport(model: str | None, provider: str | None) -> bool:
