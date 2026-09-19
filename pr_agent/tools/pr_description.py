@@ -18,6 +18,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_command_failure
+from pr_agent.algo.run_output import push_outputs, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
@@ -26,10 +27,7 @@ from pr_agent.algo.utils import (
     PRDescriptionHeader,
     get_user_labels,
     load_yaml,
-    push_outputs,
     set_custom_labels,
-    show_relevant_configurations,
-    show_run_details,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
