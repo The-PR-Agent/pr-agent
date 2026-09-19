@@ -2228,14 +2228,17 @@ class LiteLLMAIHandler(BaseAiHandler):
         self.claude_adaptive_thinking_models_override = self._validated_model_name_list(
             "claude_adaptive_thinking_models_override"
         )
-        if self.claude_adaptive_thinking_models_override:
+        bedrock_overrides = [
+            model for model in self.claude_adaptive_thinking_models_override if model.startswith("bedrock/")
+        ]
+        if bedrock_overrides:
             litellm.register_model({
                 model: {
                     "litellm_provider": "bedrock",
                     "mode": "chat",
                     "supports_adaptive_thinking": True,
                 }
-                for model in self.claude_adaptive_thinking_models_override
+                for model in bedrock_overrides
             })
 
         # Models that require streaming

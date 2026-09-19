@@ -374,6 +374,22 @@ def test_registered_opaque_model_keeps_adaptive_payload(monkeypatch):
     assert unlisted["thinking"] == {"type": "enabled", "budget_tokens": 2048}
 
 
+def test_named_override_keeps_litellm_model_info(monkeypatch):
+    named = "anthropic/claude-sonnet-4-6"
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(adaptive_override=[named, _PROFILE_ARN]),
+    )
+    provider_before = litellm.get_model_info(named)["litellm_provider"]
+
+    handler = LiteLLMAIHandler()
+
+    assert litellm.get_model_info(named)["litellm_provider"] == provider_before
+    assert handler._model_uses_adaptive_thinking(named) is True
+    assert _PROFILE_ARN in litellm.model_cost
+
+
 @pytest.mark.parametrize("bad_override", ["not-a-list", [""], ["ok", 5], [None]])
 def test_malformed_adaptive_override_falls_back_to_builtin_detection(monkeypatch, bad_override):
     monkeypatch.setattr(
