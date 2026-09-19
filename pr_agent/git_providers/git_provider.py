@@ -685,6 +685,9 @@ class GitProvider(ABC):
         """Return whether HTML comment identity markers render invisibly."""
         return True
 
+    def should_reply_to_trigger_comment(self) -> bool:
+        return False
+
     def supports_review_comment_identity(self) -> bool:
         return False
 

@@ -334,6 +334,8 @@ feedback_on_draft_pr = false
 publish_review_as_thread = false
 # Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
 publish_improve_as_thread = false
+# Reply to the triggering GitLab note's discussion for /review and /improve output.
+reply_to_trigger_comment = false
 # When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft
 # note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of
 # posting each as its own live discussion - and its own notification - as soon as it's created.

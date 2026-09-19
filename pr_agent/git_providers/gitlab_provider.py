@@ -1089,6 +1089,9 @@ class GitLabProvider(GitProvider):
     def should_publish_improve_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
 
+    def should_reply_to_trigger_comment(self) -> bool:
+        return bool(get_settings().get("GITLAB.REPLY_TO_TRIGGER_COMMENT", False))
+
     def supports_review_comment_identity(self) -> bool:
         return True
 
@@ -1122,6 +1125,16 @@ class GitLabProvider(GitProvider):
             get_logger().debug(f"Skipping publish_comment for temporary comment: {mr_comment}")
             return None
         mr_comment = self.limit_output_characters(mr_comment, self.max_comment_chars)
+        # Reply to the triggering GitLab discussion only when explicitly enabled and available.
+        if (not is_temporary and self.should_reply_to_trigger_comment()
+                and (comment_id := get_settings().get("comment_id", ""))):
+            try:
+                discussion = self.mr.discussions.get(comment_id)
+                discussion.notes.create({'body': mr_comment})
+                return None
+            except Exception as e:
+                get_logger().warning(f"Failed to reply to trigger discussion, falling back to a note: {e}")
+
         # When as_thread is set (only the review's final comment requests this), post it as a resolvable
         # thread (discussion) instead of a plain note. Temporary progress comments are never threaded.
         if as_thread and not is_temporary:
