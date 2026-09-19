@@ -241,8 +241,8 @@ To use [Google AI Studio](https://aistudio.google.com/) models, set the relevant
 
 ```toml
 [config] # in configuration.toml
-model="gemini/gemini-1.5-flash"
-fallback_models=["gemini/gemini-1.5-flash"]
+model="gemini/gemini-3.8-flash"
+fallback_models=["gemini/gemini-3.8-flash"]
 
 [google_ai_studio] # in .secrets.toml
 gemini_api_key = "..."
@@ -256,8 +256,8 @@ To use Anthropic models, set the relevant models in the configuration section of
 
 ```toml
 [config]
-model="anthropic/claude-3-opus-20240229"
-fallback_models=["anthropic/claude-3-opus-20240229"]
+model="anthropic/claude-opus-5"
+fallback_models=["anthropic/claude-opus-5"]
 ```
 
 And also set the api key in the .secrets.toml file:
@@ -602,7 +602,7 @@ To use model from Openrouter, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model="openrouter/anthropic/claude-3.7-sonnet"
+model="openrouter/anthropic/claude-sonnet-5"
 fallback_models=["openrouter/deepseek/deepseek-chat"]
 custom_model_max_tokens=20000
 

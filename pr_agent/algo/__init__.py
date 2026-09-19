@@ -99,18 +99,6 @@ _CLAUDE_MODEL_FAMILIES = [
         "bedrock_regions": ("us", "au", "eu", "jp", "global"),
         "extended_thinking": True,
     },
-    {
-        "model_id": "claude-3-7-sonnet-20250219",
-        "max_tokens": 200000,
-        "vertex": "claude-3-7-sonnet@20250219",
-        "bedrock_name": "claude-3-7-sonnet-20250219-v1:0",
-        "bedrock_regions": ("us", "apac"),
-        # Only bare + anthropic/ get extended thinking for 3.7
-        "extended_thinking": [
-            "anthropic/claude-3-7-sonnet-20250219",
-            "claude-3-7-sonnet-20250219",
-        ],
-    },
     # claude-fable-5-1 is a 1M-context model with the same registry shape
     # as Opus 5 / Sonnet 5 above; placed here next to its predecessor.
     {
@@ -285,21 +273,14 @@ MAX_TOKENS = {
     'text-embedding-ada-002': 8000,
     'gpt-3.5-turbo': 16000,
     'gpt-3.5-turbo-0125': 16000,
-    'gpt-3.5-turbo-0613': 4000,
     'gpt-3.5-turbo-1106': 16000,
     'gpt-3.5-turbo-16k': 16000,
-    'gpt-3.5-turbo-16k-0613': 16000,
     'gpt-4': 8000,
     'gpt-4-0613': 8000,
-    'gpt-4-32k': 32000,
-    'gpt-4.5-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-4.5-preview-2025-02-27': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'gpt-5.1-chat-latest': 200000,
     'gpt-5.2': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.2-2025-12-11': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.2-codex': 400000,  # 400K, but may be limited by config.max_model_tokens
     'gpt-5.3-codex': 400000,  # 400K, but may be limited by config.max_model_tokens
-    'gpt-5.3-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
     'gpt-5.4': 272000,  # 272K safe default without opt-in 1M context parameters
     'gpt-5.4-2026-03-05': 272000,  # 272K safe default without opt-in 1M context parameters
     'gpt-5.4-mini': 400000,  # 400K, but may be limited by config.max_model_tokens
@@ -313,8 +294,6 @@ MAX_TOKENS = {
     'gpt-6-astra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'o1-mini': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-mini-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'o1-preview': 128000,  # 128K, but may be limited by config.max_model_tokens
-    'o1-preview-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-2024-12-17': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o1': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o3-mini': 204800,  # 200K, but may be limited by config.max_model_tokens
@@ -333,7 +312,6 @@ MAX_TOKENS = {
     'vertex_ai/codechat-bison': 6144,
     'vertex_ai/codechat-bison-32k': 32000,
     # -- Vertex AI Claude --------------------------------------------------
-    'vertex_ai/claude-3-haiku@20240307': 100000,
     'vertex_ai/claude-3-5-haiku@20241022': 100000,
     'vertex_ai/claude-3-sonnet@20240229': 100000,
     'vertex_ai/claude-3-opus@20240229': 100000,
@@ -341,25 +319,13 @@ MAX_TOKENS = {
     'vertex_ai/claude-3-5-sonnet-v2@20241022': 100000,
     'vertex_ai/claude-sonnet-4@20250514': 200000,
     # -- Vertex AI non-Claude / Gemini -------------------------------------
-    'vertex_ai/gemini-1.5-pro': 1048576,
-    'vertex_ai/gemini-2.5-pro-preview-03-25': 1048576,
-    'vertex_ai/gemini-2.5-pro-preview-05-06': 1048576,
-    'vertex_ai/gemini-2.5-pro-preview-06-05': 1048576,
-    'vertex_ai/gemini-1.5-flash': 1048576,
     'vertex_ai/gemini-2.5-flash-preview-04-17': 1048576,
-    'vertex_ai/gemini-2.5-flash-preview-05-20': 1048576,
     'vertex_ai/gemini-3.1-flash': 1048576,
     'vertex_ai/gemini-3.1-pro': 1048576,
     'vertex_ai/gemini-3.5-pro': 1048576,
     'vertex_ai/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
     'vertex_ai/gemma2': 8200,
-    'gemini/gemini-1.5-pro': 1048576,
-    'gemini/gemini-1.5-flash': 1048576,
     'gemini/gemini-2.5-flash-preview-04-17': 1048576,
-    'gemini/gemini-2.5-flash-preview-05-20': 1048576,
-    'gemini/gemini-2.5-pro-preview-03-25': 1048576,
-    'gemini/gemini-2.5-pro-preview-05-06': 1048576,
-    'gemini/gemini-2.5-pro-preview-06-05': 1048576,
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
@@ -378,7 +344,6 @@ MAX_TOKENS = {
     # -- Bedrock Claude ----------------------------------------------------
     'bedrock/anthropic.claude-v2': 100000,
     'bedrock/anthropic.claude-3-sonnet-20240229-v1:0': 100000,
-    'bedrock/anthropic.claude-3-haiku-20240307-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0': 100000,
     'bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0': 100000,
@@ -441,7 +406,6 @@ USER_MESSAGE_ONLY_MODELS = [
     "deepseek/deepseek-reasoner",
     "o1-mini",
     "o1-mini-2024-09-12",
-    "o1-preview"
 ]
 
 NO_SUPPORT_TEMPERATURE_MODELS = [
@@ -452,7 +416,6 @@ NO_SUPPORT_TEMPERATURE_MODELS = [
     "o1-2024-12-17",
     "o3-mini",
     "o3-mini-2025-01-31",
-    "o1-preview",
     "o3",
     "o3-2025-04-16",
     "o4-mini",

@@ -278,8 +278,8 @@ For detailed step-by-step examples of configuring different models (Gemini, Clau
 **Common Model Configuration Patterns:**
 
 - **OpenAI**: Set `config.model: "<openai-model>"` and `OPENAI_KEY`
-- **Gemini**: Set `config.model: "gemini/gemini-1.5-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
-- **Claude**: Set `config.model: "anthropic/claude-3-opus-20240229"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
+- **Gemini**: Set `config.model: "gemini/gemini-3.8-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
+- **Claude**: Set `config.model: "anthropic/claude-opus-5"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
 - **Azure OpenAI**: Set `OPENAI.API_TYPE: "azure"`, `OPENAI.API_BASE`, and `OPENAI.DEPLOYMENT_ID`
 - **Local Models**: Set `config.model: "ollama/model-name"` and `OLLAMA.API_BASE`
 
