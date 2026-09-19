@@ -5,7 +5,9 @@ from pr_agent import cli
 
 
 def test_set_parser_supports_config_branch_flag():
-    args = cli.set_parser().parse_args(["--pr_url=https://github.com/a/b/pull/1", "--config-branch", "feature", "review"])
+    args = cli.set_parser().parse_args(
+        ["--pr_url=https://github.com/a/b/pull/1", "--config-branch", "feature", "review"]
+    )
     assert args.config_branch == "feature"
 
 

@@ -189,7 +189,16 @@ class TestBitbucketProvider:
         assert pr_number == 321
 
     @pytest.mark.parametrize(
-        ("status", "lines_added", "lines_removed", "filename", "old_filename", "raw_diff", "expected_patch", "edit_type"),
+        (
+            "status",
+            "lines_added",
+            "lines_removed",
+            "filename",
+            "old_filename",
+            "raw_diff",
+            "expected_patch",
+            "edit_type",
+        ),
         [
             (
                 "modified",
@@ -1758,7 +1767,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nmultiple\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n-multiple\n+readme\n+without\n+some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n-multiple\n+readme\n+without\n"
+                    "+some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )
@@ -1780,7 +1792,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nsome\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n"
+                    " to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )
@@ -1802,7 +1817,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nsome\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n"
+                    " to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )

@@ -813,7 +813,9 @@ async def test_invalid_history_updates_persistent_comment_without_fallback(monke
     reviewer._review_state_result = None
     reviewer._review_state_blocked = True
     provider.get_issue_comments.return_value = [
-        SimpleNamespace(body=f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n<!-- pr-agent-review-state:v1\nbad\n-->")
+        SimpleNamespace(
+            body=f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n<!-- pr-agent-review-state:v1\nbad\n-->"
+        )
     ]
     reviewer._load_review_finding_state()
 

@@ -1291,7 +1291,9 @@ async def test_static_mode_rejects_late_aws_request_endpoint_environment(
 
 @pytest.mark.parametrize("environment_variable", ("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE"))
 @pytest.mark.asyncio
-async def test_imds_mode_rejects_changed_credential_chain_file(monkeypatch, aws_session, tmp_path, environment_variable):
+async def test_imds_mode_rejects_changed_credential_chain_file(
+    monkeypatch, aws_session, tmp_path, environment_variable
+):
     credential_chain_file = tmp_path / environment_variable.lower()
     credential_chain_file.write_text("request-a", encoding="utf-8")
     monkeypatch.setenv("AWS_USE_IMDS", "true")
