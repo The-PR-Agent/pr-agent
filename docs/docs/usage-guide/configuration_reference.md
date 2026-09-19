@@ -160,6 +160,7 @@ to-do list.
 | `inline_key_issues` | false |  |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
+| `verify_findings` | false | Second-pass verification of 'key_issues_to_review': each finding is checked against the diff once more and dropped when the diff positively refutes it. Fail-open: on any verification error the original findings are kept. |
 | `final_update_message` | true |  |
 **review labels**
 

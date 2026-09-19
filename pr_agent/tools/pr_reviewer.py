@@ -5,6 +5,7 @@ import re
 from functools import partial
 from typing import List, Optional, Tuple
 
+import yaml
 from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
@@ -319,12 +320,14 @@ class PRReviewer:
                 await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR,
                                                  git_provider=self.git_provider)
             except Exception as error:
-                if not self._merge_cached_review_chunks():
+                if not await self._merge_cached_review_chunks():
                     raise
                 partial_review_error = error
                 get_logger().warning("Fallback models exhausted; publishing successful review chunks")
             if not self.prediction:
                 return None
+
+            await self._verify_key_issues()
 
             pr_review = self._prepare_pr_review()
             get_logger().debug("PR output", artifact=pr_review)
@@ -905,7 +908,7 @@ class PRReviewer:
                 raise chunk_errors[0]
             raise ValueError("No valid review output was produced for one or more chunks")
 
-        return self._merge_cached_review_chunks()
+        return await self._merge_cached_review_chunks()
 
     def _resize_pending_review_chunks(self, model: str) -> None:
         """Split oversized pending chunks at file boundaries while preserving result order."""
@@ -983,11 +986,13 @@ class PRReviewer:
             output_token_reserve=getattr(self.ai_handler, "get_output_token_reserve", None),
         )
 
-    def _merge_cached_review_chunks(self) -> bool:
+    async def _merge_cached_review_chunks(self) -> bool:
         """Merge successful chunks in order, retaining incomplete coverage after exhausted retries."""
         chunk_results = getattr(self, "_chunked_results", {})
         if not chunk_results:
             return False
+        if get_settings().pr_reviewer.get("verify_findings", False):
+            await self._verify_chunked_key_issues()
 
         # Keep raw text for logging only; use the merged verdict from self.prediction_data.
         indices = sorted(chunk_results)
@@ -1042,6 +1047,135 @@ class PRReviewer:
         )
 
         return response
+
+    async def _verify_issue_list(self, issues: list, diff: str, model: str) -> list:
+        """Check key issues against the diff that produced them in a second pass.
+
+        Returns the issues the model did not explicitly refute: only a verdict
+        with an exact in-range integer 'issue' id and 'supported: false' drops a
+        finding; missing, out-of-order or malformed verdicts keep it.
+        """
+        prompts = get_settings().pr_verify_findings_prompt
+        variables = {
+            "diff": "",
+            "issues_yaml": yaml.safe_dump(issues, sort_keys=False),
+            "issue_count": len(issues),
+        }
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            getattr(self.git_provider, "pr", None),
+            variables,
+            prompts.system,
+            prompts.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=getattr(self.ai_handler, "get_output_token_reserve", None),
+        )
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        )
+        if fitted.optional_text != diff:
+            raise ValueError(
+                f"The findings verification diff does not fit the token limit for {model}")
+        response, _ = await self.ai_handler.chat_completion(
+            model=model,
+            temperature=0,
+            system=fitted.system_prompt,
+            user=fitted.user_prompt,
+        )
+        verdicts = load_yaml(response.strip())
+        if not isinstance(verdicts, dict) or not isinstance(verdicts.get("verdicts"), list):
+            get_logger().warning("Findings verification returned no verdicts; keeping original findings")
+            return issues
+        refuted = set()
+        seen_verdicts = {}
+        for v in verdicts["verdicts"]:
+            # Exact int required: int() coercion would let values like 1.9 or
+            # true refute issue 1.
+            if (isinstance(v, dict) and isinstance(v.get("supported"), bool)
+                    and type(v.get("issue")) is int and 1 <= v["issue"] <= len(issues)):
+                seen_verdicts.setdefault(v["issue"], []).append(v["supported"])
+        for issue_id, supports in seen_verdicts.items():
+            # A single unambiguous false refutes; repeats or contradictions are
+            # contract violations, so the finding stays.
+            if supports == [False]:
+                refuted.add(issue_id)
+        kept = [issue for i, issue in enumerate(issues, start=1) if i not in refuted]
+        if len(kept) < len(issues):
+            get_logger().info(
+                f"Findings verification dropped {len(issues) - len(kept)} of {len(issues)} key issues")
+        return kept
+
+    async def _verify_with_fallback(self, issues: list, diff: str) -> list:
+        """Verify through the fallback chain without relabelling the model that wrote the review."""
+        details = get_run_details()
+        recorded = (details.model_used, details.fallback_used) if details is not None else None
+        try:
+            return await retry_with_fallback_models(
+                partial(self._verify_issue_list, issues, diff),
+                model_type=ModelType.REGULAR,
+                git_provider=self.git_provider)
+        finally:
+            if details is not None:
+                details.model_used, details.fallback_used = recorded
+
+    async def _verify_chunked_key_issues(self) -> None:
+        """Verify every chunk's findings against the diff that produced them.
+
+        Merged findings verified against only the prepared diff would be
+        refuted wholesale, since later chunks carry code the prepared diff
+        lacks. Each chunk result is filtered in place before merging.
+        """
+        chunk_results = getattr(self, "_chunked_results", {})
+        chunks = getattr(self, "_chunked_patches_diff_list", None) or []
+        for index, result in list(chunk_results.items()):
+            try:
+                data = result[1]
+                issues = data.get("review", {}).get("key_issues_to_review")
+                if not isinstance(issues, list) or not issues or index >= len(chunks):
+                    continue
+                # Verification follows the same fallback chain as the review: a
+                # verdict call against an unavailable primary must not skip the gate.
+                kept = await self._verify_with_fallback(issues, chunks[index])
+                if len(kept) < len(issues):
+                    data["review"]["key_issues_to_review"] = kept
+            except Exception as e:
+                get_logger().warning(
+                    f"Chunk {index + 1} findings verification failed; keeping its findings",
+                    artifact={"error": e})
+
+    async def _verify_key_issues(self) -> None:
+        """Drop key issues the diff positively refutes, in an optional second pass.
+
+        Each 'key_issues_to_review' finding is checked against the diff in one
+        extra model call; unsupported findings are removed before publishing.
+        Fail-open by contract: parsing or model errors keep the original
+        findings — verification may only remove issues, never corrupt the review.
+        """
+        if not get_settings().pr_reviewer.get("verify_findings", False):
+            return
+        if self.prediction_data is not None:
+            return  # chunked findings were already verified against their own chunk diffs
+        try:
+            data = self._load_review_yaml(self.prediction)
+            issues = data.get("review", {}).get("key_issues_to_review")
+            if not isinstance(issues, list) or not issues:
+                return
+            kept = await self._verify_with_fallback(issues, self.patches_diff)
+            if len(kept) == len(issues):
+                get_logger().info("Findings verification kept all key issues")
+                return
+            data["review"]["key_issues_to_review"] = kept
+            # Validate before freezing the filtered data as the review snapshot;
+            # _prepare_pr_review skips schema validation when prediction_data is set.
+            self._validate_review_schema(data)
+            self.prediction_data = data
+        except Exception as e:
+            get_logger().warning("Findings verification failed; keeping original findings",
+                                 artifact={"error": e})
 
     @staticmethod
     def _load_review_yaml(prediction: str) -> dict:
