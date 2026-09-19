@@ -49,6 +49,7 @@ def _settings(
     extended_enabled=False,
     extended_budget_tokens=2048,
     extended_max_output_tokens=4096,
+    adaptive_override=None,
 ):
     flags = {
         "enable_claude_adaptive_thinking": enabled,
@@ -56,6 +57,8 @@ def _settings(
         "extended_thinking_budget_tokens": extended_budget_tokens,
         "extended_thinking_max_output_tokens": extended_max_output_tokens,
     }
+    if adaptive_override is not None:
+        flags["claude_adaptive_thinking_models_override"] = adaptive_override
     config = SimpleNamespace(
         reasoning_effort=reasoning_effort,
         ai_timeout=120,
@@ -87,14 +90,16 @@ def _response():
 
 
 async def _run_completion(monkeypatch, model, reasoning_effort="medium", enabled=False,
-                          extended_enabled=False, extended_override=None):
+                          extended_enabled=False, extended_override=None,
+                          adaptive_override=None):
     # An ambient selector would be refused before the request credentials are read.
     for variable in ("AWS_PROFILE_NAME", "AWS_ROLE_NAME"):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: _settings(reasoning_effort, enabled, extended_enabled),
+        lambda: _settings(reasoning_effort, enabled, extended_enabled,
+                          adaptive_override=adaptive_override),
     )
     with patch(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
@@ -363,3 +368,161 @@ async def test_non_arn_model_warns_without_bedrock_advice(monkeypatch):
     assert "gpt-4o" in message
     assert "litellm.model_id" not in message
     assert "arn" not in message
+
+
+# A Bedrock application-inference-profile ARN carries no model name, so the built-in pattern
+# cannot classify it. Synthetic account id and profile id on purpose.
+_PROFILE_ARN = (
+    "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
+    "application-inference-profile/abc123def456"
+)
+
+
+@pytest.fixture
+def _restore_model_cost():
+    """Drop model-cost entries a test registered, since register_model mutates a litellm global."""
+    before = set(litellm.model_cost)
+    try:
+        yield
+    finally:
+        for key in set(litellm.model_cost) - before:
+            litellm.model_cost.pop(key, None)
+
+
+def _handler_with_override(monkeypatch, override, enabled=True):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(enabled=enabled, adaptive_override=override),
+    )
+    return LiteLLMAIHandler()
+
+
+def test_opaque_model_id_is_not_detected_without_the_override(monkeypatch):
+    handler = _handler_with_override(monkeypatch, None)
+    assert LiteLLMAIHandler._is_claude_adaptive_thinking_model(_PROFILE_ARN) is False
+    assert handler._model_uses_adaptive_thinking(_PROFILE_ARN) is False
+
+
+def test_override_declares_an_opaque_model_id_adaptive(monkeypatch, _restore_model_cost):
+    handler = _handler_with_override(monkeypatch, [_PROFILE_ARN])
+    assert handler._model_uses_adaptive_thinking(_PROFILE_ARN) is True
+
+
+def test_override_tolerates_surrounding_whitespace(monkeypatch, _restore_model_cost):
+    handler = _handler_with_override(monkeypatch, [f"  {_PROFILE_ARN}  "])
+    assert handler._model_uses_adaptive_thinking(_PROFILE_ARN) is True
+
+
+def test_override_does_not_capture_unlisted_models(monkeypatch, _restore_model_cost):
+    handler = _handler_with_override(monkeypatch, [_PROFILE_ARN])
+    assert handler._model_uses_adaptive_thinking("anthropic/claude-opus-4-6") is False
+
+
+def test_override_is_additive_and_keeps_built_in_detection(monkeypatch, _restore_model_cost):
+    """Keep the built-in detection working: unlike the extended-thinking override, this one adds."""
+    handler = _handler_with_override(monkeypatch, [_PROFILE_ARN])
+    assert handler._model_uses_adaptive_thinking("anthropic/claude-opus-4-8") is True
+
+
+@pytest.mark.parametrize("bad_override", ["not-a-list", [""], ["ok", 5], [None]])
+def test_malformed_override_falls_back_to_built_in_detection(monkeypatch, bad_override):
+    handler = _handler_with_override(monkeypatch, bad_override)
+    assert handler.claude_adaptive_thinking_models_override == []
+    assert handler._model_uses_adaptive_thinking(_PROFILE_ARN) is False
+    assert handler._model_uses_adaptive_thinking("anthropic/claude-opus-4-8") is True
+
+
+@pytest.mark.asyncio
+async def test_overridden_opaque_model_receives_adaptive_payload(monkeypatch, _restore_model_cost):
+    kwargs = await _run_completion(
+        monkeypatch,
+        _PROFILE_ARN,
+        reasoning_effort="high",
+        enabled=True,
+        adaptive_override=[_PROFILE_ARN],
+    )
+
+    assert kwargs["thinking"] == {"type": "adaptive"}
+    assert kwargs["output_config"] == {"effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_overridden_model_sends_no_thinking_payload_while_feature_is_off(
+    monkeypatch, _restore_model_cost
+):
+    kwargs = await _run_completion(
+        monkeypatch,
+        _PROFILE_ARN,
+        enabled=False,
+        adaptive_override=[_PROFILE_ARN],
+    )
+
+    assert "thinking" not in kwargs
+    assert "output_config" not in kwargs
+
+
+# The gate above only decides what we send. litellm re-checks capability and, for an id it does
+# not recognise, rewrites {"type": "adaptive"} into the legacy budget_tokens shape that Bedrock
+# rejects with a 400. These two assert the registration half closes that gap.
+def test_litellm_downgrades_the_adaptive_payload_for_an_unregistered_id():
+    from litellm.llms.bedrock.chat.converse_transformation import AmazonConverseConfig
+
+    mapped = AmazonConverseConfig().map_openai_params(
+        non_default_params={"thinking": {"type": "adaptive"}},
+        optional_params={},
+        model=_PROFILE_ARN,
+        drop_params=False,
+    )
+
+    assert mapped["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
+
+def test_handler_registration_keeps_the_adaptive_payload_intact(monkeypatch, _restore_model_cost):
+    from litellm.llms.bedrock.chat.converse_transformation import AmazonConverseConfig
+
+    _handler_with_override(monkeypatch, [_PROFILE_ARN])
+
+    mapped = AmazonConverseConfig().map_openai_params(
+        non_default_params={"thinking": {"type": "adaptive"}},
+        optional_params={},
+        model=_PROFILE_ARN,
+        drop_params=False,
+    )
+
+    assert mapped["thinking"] == {"type": "adaptive"}
+
+
+def test_registration_leaves_unlisted_models_alone(monkeypatch, _restore_model_cost):
+    unlisted = (
+        "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
+        "application-inference-profile/999zzz888yyy"
+    )
+    _handler_with_override(monkeypatch, [_PROFILE_ARN])
+
+    assert unlisted not in litellm.model_cost
+
+
+def test_disabled_feature_registers_nothing_with_litellm(monkeypatch, _restore_model_cost):
+    """Leave litellm's global model map untouched while adaptive thinking is off.
+
+    Nothing sends the adaptive payload in that state, so there is nothing for litellm to
+    downgrade and no reason to mutate a process-wide map on behalf of every other consumer.
+    """
+    handler = _handler_with_override(monkeypatch, [_PROFILE_ARN], enabled=False)
+
+    assert handler.claude_adaptive_thinking_models_override == [_PROFILE_ARN]
+    assert _PROFILE_ARN not in litellm.model_cost
+
+
+def test_disabled_feature_still_keeps_the_id_out_of_extended_thinking(monkeypatch):
+    """Suppress extended thinking for a declared adaptive-only id even with adaptive off.
+
+    An adaptive-only model rejects budget_tokens, so the override has to be read regardless of
+    enable_claude_adaptive_thinking; only the litellm registration is gated on it.
+    """
+    handler = _handler_with_override(monkeypatch, [_PROFILE_ARN], enabled=False)
+    handler.claude_extended_thinking_models = [_PROFILE_ARN]
+    handler._claude_thinking_controls["enable_claude_extended_thinking"] = True
+
+    assert handler._claude_thinking_mode(_PROFILE_ARN) == "unsupported_extended"

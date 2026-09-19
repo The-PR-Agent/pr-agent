@@ -407,13 +407,30 @@ The `litellm.model_id` parameter applies only to classic `bedrock/` calls made t
 Claude Sonnet 5 on Bedrock is invoked through an inference profile rather than a direct
 foundation-model id. When that profile is an application inference profile, its ARN is an
 opaque value that carries no model name. Thinking configuration in PR-Agent is gated on
-recognizing the model, so the opaque ARN can never match: `enable_claude_adaptive_thinking`
-requires a recognized Claude 5 model name in the id, and `enable_claude_extended_thinking`
-requires exact membership in `claude_extended_thinking_models`. PR-Agent logs a warning in
-that case, so the unconfigured state is no longer silent.
+recognizing the model, so the opaque ARN does not match on its own:
+`enable_claude_adaptive_thinking` requires a recognized Claude 5 model name in the id, and
+`enable_claude_extended_thinking` requires exact membership in
+`claude_extended_thinking_models`. PR-Agent logs a warning in that case, so the unconfigured
+state is no longer silent.
 
-Address the model by name and pass the profile ARN through `litellm.model_id`, which is what
-the invocation actually uses:
+There are two ways to resolve it. Either declare the ARN adaptive-only:
+
+```toml
+[config] # in configuration.toml
+model = "bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>"
+enable_claude_adaptive_thinking = true
+claude_adaptive_thinking_models_override = [
+    "bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>",
+]
+```
+
+Entries here are added to the built-in detection rather than replacing it, so named models
+elsewhere in the same fallback chain keep their own. Each listed id is also registered with
+litellm as adaptive-capable, which matters because litellm re-checks the capability itself and
+otherwise rewrites the adaptive payload into the legacy `budget_tokens` shape that Bedrock
+rejects with a 400.
+
+Or address the model by name and pass the profile ARN through `litellm.model_id`:
 
 ```toml
 [config] # in configuration.toml
@@ -428,12 +445,14 @@ model_id = "arn:aws:bedrock:eu-central-1:<account-id>:application-inference-prof
 Cost attribution is preserved through the application inference profile, and because `model`
 is the named id, the adaptive-thinking payload is applied and kept intact.
 
-Two caveats. First, ARNs only fail the detection when the suffix is opaque: an ARN that
-embeds the model family, for example `...:inference-profile/us.anthropic.claude-sonnet-5`,
-normalises to a string the adaptive regex does match. The miss is specific to application
-inference profiles with an opaque hex suffix. Second, `litellm.model_id` is a single global
-value applied to every model whose id contains `bedrock/`, so this configuration cannot point
-different models at different profiles within one fallback chain without per-call handling.
+Two caveats on the `litellm.model_id` route. First, ARNs only fail the detection when the
+suffix is opaque: an ARN that embeds the model family, for example
+`...:inference-profile/us.anthropic.claude-sonnet-5`, normalises to a string the adaptive
+regex does match. The miss is specific to application inference profiles with an opaque hex
+suffix. Second, `litellm.model_id` is a single global value applied to every model whose id
+contains `bedrock/`, so this configuration cannot point different models at different profiles
+within one fallback chain without per-call handling. The override above has neither
+limitation, since it names each id explicitly.
 
 #### Using a Custom VPC Endpoint (PrivateLink)
 

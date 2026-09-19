@@ -121,6 +121,15 @@ enable_claude_adaptive_thinking = false
 # When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
 # in pr_agent/algo/__init__.py). Leave empty to use the defaults.
 claude_extended_thinking_models_override = []
+# Optional: additionally treat these model ids as adaptive-only Claude models. Unlike the
+# extended-thinking override above, entries here are ADDED to the built-in pattern rather than
+# replacing it, so an id that carries no recognisable model name (for example a Bedrock
+# application-inference-profile ARN) can opt in without disabling detection for named models in
+# the same fallback chain. Listed ids are always kept out of the extended-thinking path, since an
+# adaptive-only model rejects budget_tokens. When enable_claude_adaptive_thinking is true they are
+# additionally registered with litellm as adaptive-capable, so it does not rewrite the adaptive
+# payload into the budget_tokens shape Bedrock rejects.
+claude_adaptive_thinking_models_override = []
 # Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived
 # issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour.
 # Note: Branch-name extraction is GitHub-only for now; other providers planned for later.
