@@ -31,6 +31,8 @@ class RunDetails:
     # took over. Stays None when no prediction succeeded, which the renderer reads as
     # "nothing worth showing".
     model_used: Optional[str] = None
+    # Retain every model contributing to a merged review; keep scalar output for other tools.
+    models_used: list[str] = field(default_factory=list)
     # Sticky: once a fallback has won, a later success on the primary model must not
     # clear this, or the comment would hide that a fallback ran at all.
     fallback_used: bool = False

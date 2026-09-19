@@ -688,9 +688,18 @@ class TestExtractTicketLinksFromPRDescription:
         assert out == []
 
     def test_hash_only_rejects_long_numbers(self):
-        desc = "Fixes #12345 (5 digits, looks like a code, not an issue)"
+        # The bound now matches BRANCH_ISSUE_PATTERN, which accepts up to six digits, so a
+        # number is only rejected once it is too long to be an issue in any repository.
+        desc = "Fixes #1234567 (7 digits, looks like a code, not an issue)"
         out = extract_ticket_links_from_pr_description(desc, "foo/bar")
         assert out == []
+
+    def test_hash_only_accepts_a_six_digit_issue(self):
+        # 123456-fix as a branch name already resolves; the same number in the description
+        # must resolve too.
+        desc = "Fixes #123456"
+        out = extract_ticket_links_from_pr_description(desc, "foo/bar")
+        assert out == ["https://github.com/foo/bar/issues/123456"]
 
     def test_results_capped_at_three(self):
         desc = " ".join(f"foo/bar#{i}" for i in range(1, 8))

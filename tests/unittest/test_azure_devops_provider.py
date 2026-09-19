@@ -3,16 +3,159 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from azure.devops.exceptions import AzureDevOpsServiceError
 
 from pr_agent.algo.inline_comment_dedup import code_fingerprint
-from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import PRCodeSuggestionsIdentity
 from pr_agent.git_providers.azuredevops_provider import (
     AzureDevopsProvider,
     Comment,
     CommentThread,
 )
+from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.log import get_logger
+
+
+def test_get_pr_branch_preserves_slashes_in_source_branch():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "org"
+    provider.pr_num = 1
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_pull_request_by_id.return_value = SimpleNamespace(
+        source_ref_name="refs/heads/feature/release/v2"
+    )
+
+    assert provider.get_pr_branch() == "feature/release/v2"
+
+
+def test_publish_description_propagates_update_failure():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "my-project"
+    provider.repo_slug = "my-repo"
+    provider.pr_num = 1
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.update_pull_request.side_effect = RuntimeError("permission denied")
+
+    with pytest.raises(RuntimeError, match="permission denied"):
+        provider.publish_description("AI title", "Updated description")
+
+
+def test_azure_supports_thread_resolution():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+
+    assert provider.supports_thread_resolution() is True
+
+
+def test_azure_resolve_comment_thread_closes_thread():
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.set_thread_status = MagicMock(return_value=True)
+
+    assert provider.resolve_comment_thread(42) is True
+    provider.set_thread_status.assert_called_once_with(42, "closed")
+
+
+def _language_provider(items):
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.workspace_slug = "proj"
+    provider.repo_slug = "repo"
+    provider.pr = SimpleNamespace(
+        last_merge_target_commit=SimpleNamespace(commit_id="base-sha"),
+        last_merge_commit=SimpleNamespace(commit_id="head-sha"),
+    )
+    provider.azure_devops_client = MagicMock()
+    provider.azure_devops_client.get_items.return_value = items
+    return provider
+
+
+def test_get_languages_returns_language_names():
+    # get_languages() must key on language NAMES (e.g. "Python"), not raw
+    # extensions ("py"): sort_files_by_main_languages() maps names back to
+    # extensions, so extension keys would drop every file into "Other".
+    provider = _language_provider([
+        SimpleNamespace(git_object_type="blob", path="a.py"),
+        SimpleNamespace(git_object_type="blob", path="b.py"),
+        SimpleNamespace(git_object_type="blob", path="c.py"),
+        SimpleNamespace(git_object_type="blob", path="d.js"),
+        SimpleNamespace(git_object_type="blob", path="weird.zzz"),
+    ])
+
+    languages = provider.get_languages()
+
+    # 3 Python + 1 JavaScript known; .zzz is unknown and excluded from the total.
+    assert languages == {"Python": 75.0, "JavaScript": 25.0}
+
+
+def test_get_languages_queries_target_commit_inventory():
+    provider = _language_provider(
+        [SimpleNamespace(git_object_type="blob", path="a.py")]
+    )
+
+    provider.get_languages()
+
+    call_kwargs = provider.azure_devops_client.get_items.call_args.kwargs
+    assert call_kwargs["version_descriptor"].version == "base-sha"
+    assert call_kwargs["version_descriptor"].version_type == "commit"
+
+
+def test_get_languages_returns_empty_map_when_target_commit_missing():
+    provider = _language_provider(
+        [SimpleNamespace(git_object_type="blob", path="a.py")]
+    )
+    provider.pr = SimpleNamespace(last_merge_target_commit=None)
+
+    assert provider.get_languages() == {}
+    provider.azure_devops_client.get_items.assert_not_called()
+
+
+def test_get_languages_returns_empty_map_when_target_commit_id_missing():
+    provider = _language_provider(
+        [SimpleNamespace(git_object_type="blob", path="a.py")]
+    )
+    provider.pr = SimpleNamespace(last_merge_target_commit=SimpleNamespace(commit_id=None))
+
+    assert provider.get_languages() == {}
+    provider.azure_devops_client.get_items.assert_not_called()
+
+
+def test_get_languages_returns_empty_map_when_nothing_matches():
+    provider = _language_provider([
+        SimpleNamespace(git_object_type="blob", path="weird.zzz"),
+        SimpleNamespace(git_object_type="blob", path=""),
+    ])
+
+    assert provider.get_languages() == {}
+
+
+def test_get_languages_maps_full_paths_and_multipart_extensions():
+    # The matcher must classify by the basename and honor multipart extensions.
+    provider = _language_provider([
+        SimpleNamespace(git_object_type="blob", path="src/foo.py"),
+        SimpleNamespace(git_object_type="blob", path="lib/bar.py"),
+        SimpleNamespace(git_object_type="blob", path="doc/README.md"),
+        SimpleNamespace(git_object_type="blob", path="notes.txt"),
+        SimpleNamespace(git_object_type="blob", path="tpl/file.test.ts"),
+    ])
+
+    languages = provider.get_languages()
+
+    assert languages == {"Python": 40.0, "Markdown": 20.0, "Text": 20.0, "TypeScript": 20.0}
+
+
+def test_get_languages_ignores_non_blob_items_and_other_languages():
+    # Percentages come from the repository blob inventory, not the PR change set:
+    # non-blob entries (e.g. folders) must be skipped, and off-language files
+    # must not skew the ranking.
+    provider = _language_provider([
+        SimpleNamespace(git_object_type="Folder", path="src"),
+        SimpleNamespace(git_object_type="blob", path="src/app.py"),
+        SimpleNamespace(git_object_type="blob", path="src/main.py"),
+        SimpleNamespace(git_object_type="blob", path="render.bin"),
+    ])
+
+    languages = provider.get_languages()
+
+    assert languages == {"Python": 100.0}
 
 
 class TestAzureDevopsProviderRepoContext:
@@ -77,58 +220,17 @@ class TestAzureDevopsProviderRepoContext:
 
 class TestAzureDevopsProviderFiles:
     @staticmethod
-    def _provider():
-        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
-        provider.repo_slug = "my-repo"
-        provider.workspace_slug = "my-project"
-        provider.pr_num = 1
-        provider.azure_devops_client = MagicMock()
-        provider.azure_devops_client.get_pull_request_commits.return_value = [SimpleNamespace(commit_id="m1")]
-        return provider
+    def _change(path="/src/app.py", change_type="edit", git_object_type="blob", **metadata):
+        return SimpleNamespace(
+            additional_properties={
+                "item": {"path": path, "gitObjectType": git_object_type},
+                "changeType": change_type,
+                **metadata,
+            }
+        )
 
-    def test_get_files_full_skips_commits_without_changes(self):
-        provider = self._provider()
-        provider.azure_devops_client.get_pull_request_commits.return_value = [
-            SimpleNamespace(commit_id="m1"),
-            SimpleNamespace(commit_id="m2"),
-        ]
-        provider.azure_devops_client.get_changes.side_effect = [
-            SimpleNamespace(changes=None),
-            SimpleNamespace(changes=[{"item": {"path": "/src/app.py"}}]),
-        ]
-
-        assert provider._get_files_full() == ["/src/app.py"]
-
-    def test_get_files_full_skips_changes_without_paths(self):
-        provider = self._provider()
-        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
-            {},
-            {"item": None},
-            {"item": {"path": ""}},
-            {"item": {"path": "/src/app.py"}},
-        ])
-
-        assert provider._get_files_full() == ["/src/app.py"]
-
-    def test_get_files_full_supports_sdk_change_objects(self):
-        provider = self._provider()
-        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
-            SimpleNamespace(item=SimpleNamespace(path="/src/sdk.py")),
-        ])
-
-        assert provider._get_files_full() == ["/src/sdk.py"]
-
-    def test_get_files_full_skips_tree_entries(self):
-        provider = self._provider()
-        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(changes=[
-            {"item": {"path": "/src", "gitObjectType": "tree"}},
-            {"item": {"path": "/src/app.py", "gitObjectType": "blob"}},
-        ])
-
-        assert provider._get_files_full() == ["/src/app.py"]
-
-    @staticmethod
-    def _provider_with_pull_request_diff(*get_item_results):
+    @classmethod
+    def _provider(cls, pages=None):
         provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
         provider.repo_slug = "my-repo"
         provider.workspace_slug = "my-project"
@@ -138,22 +240,182 @@ class TestAzureDevopsProviderFiles:
             last_merge_commit=SimpleNamespace(commit_id="head-sha"),
         )
         provider.azure_devops_client = MagicMock()
-        client = provider.azure_devops_client
-        client.get_pull_request_iterations.return_value = [SimpleNamespace(id=1)]
-        client.get_pull_request_iteration_changes.return_value = SimpleNamespace(
-            change_entries=[
-                SimpleNamespace(
-                    additional_properties={
-                        "item": {"path": "/src/app.py"},
-                        "changeType": "edit",
-                    }
-                )
-            ]
+        provider.azure_devops_client.get_pull_request_iterations.return_value = [SimpleNamespace(id=7)]
+        if pages is not None:
+            provider.azure_devops_client.get_pull_request_iteration_changes.side_effect = pages
+        provider.azure_devops_client.get_item.side_effect = lambda **kwargs: SimpleNamespace(
+            content=f"content for {kwargs['path']}\n"
         )
-        client.get_item.side_effect = get_item_results
         provider.diff_files = None
+        provider._diff_path_map = None
+        provider._pr_iteration_changes_cache = None
         provider.incremental = None
         provider.unreviewed_files_map = {}
+        return provider
+
+    def test_complete_iteration_collection_is_shared_by_file_consumers(self):
+        entries = [self._change(f"/src/file_{index:03}.py") for index in range(101)]
+        provider = self._provider([
+            SimpleNamespace(change_entries=entries[:100], next_skip=100, next_top=1),
+            SimpleNamespace(change_entries=entries[100:], next_skip=0, next_top=0),
+        ])
+
+        assert provider.get_files() == [entry.additional_properties["item"]["path"] for entry in entries]
+        assert [file.filename for file in provider.get_diff_files()] == provider.get_files()
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_count == 2
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_args_list[0].kwargs == {
+            "repository_id": "my-repo",
+            "pull_request_id": 1,
+            "iteration_id": 7,
+            "project": "my-project",
+            "top": 2000,
+            "skip": 0,
+            "compare_to": 0,
+        }
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_args_list[1].kwargs["top"] == 1
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_args_list[1].kwargs["skip"] == 100
+
+    def test_collection_follows_continuation_beyond_max_page_size(self):
+        entries = [self._change(f"/src/file_{index:04}.py") for index in range(2007)]
+        provider = self._provider([
+            SimpleNamespace(change_entries=entries[:2000], next_skip=2000, next_top=7),
+            SimpleNamespace(change_entries=entries[2000:], next_skip=0, next_top=0),
+        ])
+
+        assert provider._get_pr_iteration_changes() == entries
+        calls = provider.azure_devops_client.get_pull_request_iteration_changes.call_args_list
+        assert [(call.kwargs["skip"], call.kwargs["top"]) for call in calls] == [(0, 2000), (2000, 7)]
+
+    def test_collection_handles_terminal_empty_page_and_no_iterations(self):
+        provider = self._provider([
+            SimpleNamespace(change_entries=[], next_skip=0, next_top=0),
+        ])
+
+        assert provider._get_pr_iteration_changes() == []
+        assert provider.get_files() == []
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_count == 1
+
+        provider = self._provider()
+        provider.azure_devops_client.get_pull_request_iterations.return_value = []
+
+        assert provider._get_pr_iteration_changes() == []
+        provider.azure_devops_client.get_pull_request_iteration_changes.assert_not_called()
+
+    def test_collection_rejects_non_advancing_continuation(self):
+        provider = self._provider([
+            SimpleNamespace(change_entries=[self._change("/first.py")], next_skip=100, next_top=100),
+            SimpleNamespace(change_entries=[self._change("/second.py")], next_skip=100, next_top=100),
+        ])
+
+        with pytest.raises(RuntimeError, match="continuation"):
+            provider._get_pr_iteration_changes()
+
+        assert provider._pr_iteration_changes_cache is None
+
+    @pytest.mark.parametrize("next_skip,next_top", [(0, 1), (1, 0), ("1", 1), (True, 1)])
+    def test_collection_rejects_malformed_continuation(self, next_skip, next_top):
+        provider = self._provider([
+            SimpleNamespace(
+                change_entries=[self._change("/first.py")],
+                next_skip=next_skip,
+                next_top=next_top,
+            ),
+        ])
+
+        with pytest.raises(RuntimeError, match="continuation"):
+            provider._get_pr_iteration_changes()
+
+        assert provider._pr_iteration_changes_cache is None
+
+    def test_later_page_failure_does_not_cache_partial_collection(self):
+        entries = [self._change(f"/src/file_{index:03}.py") for index in range(101)]
+        provider = self._provider()
+        provider.azure_devops_client.get_pull_request_iteration_changes.side_effect = [
+            SimpleNamespace(change_entries=entries[:100], next_skip=100, next_top=1),
+            RuntimeError("page failed"),
+            SimpleNamespace(change_entries=entries[:100], next_skip=100, next_top=1),
+            SimpleNamespace(change_entries=entries[100:], next_skip=0, next_top=0),
+        ]
+
+        with pytest.raises(RuntimeError, match="page failed"):
+            provider._get_pr_iteration_changes()
+        assert provider._pr_iteration_changes_cache is None
+
+        assert provider._get_pr_iteration_changes() == entries
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_count == 4
+
+    def test_get_files_uses_current_iteration_and_skips_non_file_entries(self):
+        provider = self._provider([
+            SimpleNamespace(
+                change_entries=[
+                    self._change("/src", git_object_type="tree"),
+                    self._change(""),
+                    self._change("/src/current.py"),
+                ],
+                next_skip=0,
+                next_top=0,
+            ),
+        ])
+        provider.azure_devops_client.get_pull_request_commits.return_value = [SimpleNamespace(commit_id="old")]
+        provider.azure_devops_client.get_changes.return_value = SimpleNamespace(
+            changes=[
+                {"item": {"path": "/src/reverted.py"}},
+                {"item": {"path": "/src/current.py"}},
+            ]
+        )
+
+        assert provider.get_files() == ["/src/current.py"]
+        provider.azure_devops_client.get_pull_request_commits.assert_not_called()
+        provider.azure_devops_client.get_changes.assert_not_called()
+
+    @classmethod
+    def _provider_with_change(cls, change, *get_item_results, incremental=None):
+        provider = cls._provider([
+            SimpleNamespace(change_entries=[change], next_skip=0, next_top=0),
+        ])
+        provider.azure_devops_client.get_item.side_effect = get_item_results
+        provider.incremental = incremental
+        return provider
+
+    @staticmethod
+    def _provider_with_pull_request_diff(*get_item_results):
+        change = TestAzureDevopsProviderFiles._change()
+        return TestAzureDevopsProviderFiles._provider_with_change(change, *get_item_results)
+
+    @staticmethod
+    def _status_error(status_code):
+        error = Exception(f"Operation returned a {status_code} status code.")
+        error.status_code = status_code
+        return error
+
+    @staticmethod
+    def _azure_item_not_found_error():
+        wrapped_error = SimpleNamespace(
+            inner_exception=None,
+            message="The specified item does not exist at the specified version.",
+            exception_id=None,
+            type_name="Microsoft.TeamFoundation.Git.Server.GitItemNotFoundException",
+            type_key="GitItemNotFoundException",
+            error_code=0,
+            event_id=0,
+            custom_properties=None,
+        )
+        return AzureDevOpsServiceError(wrapped_error)
+
+    @classmethod
+    def _provider_with_incremental_rename(cls, *get_item_results):
+        incremental = IncrementalPR(True)
+        incremental.last_seen_commit = SimpleNamespace(sha="last-seen-sha")
+        provider = cls._provider_with_change(
+            cls._change(
+                path="/new/name.py",
+                change_type="rename",
+                originalPath="/old/name.py",
+            ),
+            *get_item_results,
+            incremental=incremental,
+        )
+        provider.unreviewed_files_map = {"/new/name.py": "/new/name.py"}
         return provider
 
     def test_get_diff_files_keeps_file_when_new_content_fetch_fails(self):
@@ -193,6 +455,342 @@ class TestAzureDevopsProviderFiles:
         assert diff_files[0].head_file == "new content\n"
         assert diff_files[0].base_file == ""
         assert any("/src/app.py" in message and "base-sha" in message for message in captured)
+
+    def test_pure_rename_uses_old_path_and_preserves_identity(self):
+        change = self._change(
+            path="/new/name.py",
+            change_type="rename",
+            originalPath="/old/name.py",
+        )
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="same content\n"),
+            SimpleNamespace(content="same content\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.filename == "/new/name.py"
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
+        assert diff_file.base_file == diff_file.head_file == "same content\n"
+        assert diff_file.patch == ""
+        assert diff_file.num_plus_lines == 0
+        assert diff_file.num_minus_lines == 0
+        calls = provider.azure_devops_client.get_item.call_args_list
+        assert calls[0].kwargs["path"] == "/new/name.py"
+        assert calls[0].kwargs["version_descriptor"].version == "head-sha"
+        assert calls[1].kwargs["path"] == "/old/name.py"
+        assert calls[1].kwargs["version_descriptor"].version == "base-sha"
+
+    def test_rename_on_later_page_preserves_old_path_and_base_content(self):
+        provider = self._provider([
+            SimpleNamespace(
+                change_entries=[self._change("/src/first.py")],
+                next_skip=1,
+                next_top=1,
+            ),
+            SimpleNamespace(
+                change_entries=[
+                    self._change(
+                        path="/new/name.py",
+                        change_type="rename",
+                        originalPath="/old/name.py",
+                    )
+                ],
+                next_skip=0,
+                next_top=0,
+            ),
+        ])
+
+        diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["/src/first.py", "/new/name.py"]
+        assert diff_files[1].old_filename == "/old/name.py"
+        assert diff_files[1].head_file == "content for /new/name.py\n"
+        assert diff_files[1].base_file == "content for /old/name.py\n"
+        assert provider.azure_devops_client.get_pull_request_iteration_changes.call_count == 2
+
+    def test_rename_with_edit_only_reports_the_actual_change_and_keeps_head_anchor(self):
+        change = self._change(
+            path="/new/name.py",
+            change_type="edit, rename",
+            originalPath="/old/name.py",
+        )
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="value = 2\n"),
+            SimpleNamespace(content="value = 1\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+        inline_comment = provider.create_inline_comment("body", "/new/name.py", "value = 2")
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.num_plus_lines == 1
+        assert diff_file.num_minus_lines == 1
+        assert "+value = 2" in diff_file.patch
+        assert "-value = 1" in diff_file.patch
+        assert inline_comment["path"] == "/new/name.py"
+        assert inline_comment["subject_type"] == "LINE"
+
+    @pytest.mark.parametrize(
+        ("change", "expected_old_path"),
+        [
+            (
+                SimpleNamespace(
+                    original_path="/attribute/original.py",
+                    source_server_item="/attribute/source.py",
+                    additional_properties={
+                        "item": {"path": "/new/name.py"},
+                        "changeType": "rename",
+                        "originalPath": "/mapping/original.py",
+                        "sourceServerItem": "/mapping/source.py",
+                    },
+                ),
+                "/attribute/original.py",
+            ),
+            (
+                SimpleNamespace(
+                    original_path="",
+                    source_server_item="/attribute/source.py",
+                    additional_properties={
+                        "item": {"path": "/new/name.py"},
+                        "changeType": "rename",
+                        "originalPath": "/mapping/original.py",
+                    },
+                ),
+                "/mapping/original.py",
+            ),
+            (
+                SimpleNamespace(
+                    additional_properties={
+                        "item": {"path": "/new/name.py"},
+                        "changeType": "rename",
+                        "sourceServerItem": "/mapping/source.py",
+                    },
+                ),
+                "/mapping/source.py",
+            ),
+            (
+                SimpleNamespace(
+                    item=SimpleNamespace(path="/new/name.py"),
+                    change_type="rename",
+                    source_server_item="/attribute/source.py",
+                    additional_properties={},
+                ),
+                "/attribute/source.py",
+            ),
+        ],
+    )
+    def test_rename_old_path_metadata_precedence(self, change, expected_old_path):
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="new\n"),
+            SimpleNamespace(content="old\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.old_filename == expected_old_path
+        assert provider.azure_devops_client.get_item.call_args_list[1].kwargs["path"] == expected_old_path
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {},
+            {"originalPath": {"path": "/old/name.py"}, "sourceServerItem": 17},
+            {"originalPath": "   ", "sourceServerItem": []},
+        ],
+    )
+    def test_rename_with_missing_or_malformed_old_path_keeps_empty_base_fallback(self, metadata):
+        change = self._change(path="/new/name.py", change_type="rename", **metadata)
+        provider = self._provider_with_change(change, SimpleNamespace(content="new\n"))
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_file = provider.get_diff_files()[0]
+        finally:
+            get_logger().remove(sink_id)
+
+        assert diff_file.old_filename is None
+        assert diff_file.base_file == ""
+        assert provider.azure_devops_client.get_item.call_count == 1
+        assert any("/new/name.py" in message and "no usable old path" in message for message in captured)
+
+    def test_incremental_rename_reads_old_path_at_last_seen_commit(self):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="new\n"),
+            SimpleNamespace(content="old\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.old_filename == "/old/name.py"
+        old_content_call = provider.azure_devops_client.get_item.call_args_list[1]
+        assert old_content_call.kwargs["path"] == "/old/name.py"
+        assert old_content_call.kwargs["version_descriptor"].version == "last-seen-sha"
+        assert provider.unreviewed_files_map["/new/name.py"] == diff_file.patch
+
+    def test_incremental_rename_retries_current_path_when_old_path_is_missing_at_checkpoint(self):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="value = 3\n"),
+            self._azure_item_not_found_error(),
+            SimpleNamespace(content="value = 2\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
+        assert diff_file.base_file == "value = 2\n"
+        assert diff_file.head_file == "value = 3\n"
+        assert "-value = 2" in diff_file.patch
+        assert "+value = 3" in diff_file.patch
+        assert provider.unreviewed_files_map["/new/name.py"] == diff_file.patch
+        calls = provider.azure_devops_client.get_item.call_args_list
+        assert [call.kwargs["path"] for call in calls] == [
+            "/new/name.py",
+            "/old/name.py",
+            "/new/name.py",
+        ]
+        assert [call.kwargs["version_descriptor"].version for call in calls] == [
+            "head-sha",
+            "last-seen-sha",
+            "last-seen-sha",
+        ]
+
+    @pytest.mark.parametrize("retry_status_code", [404, 500])
+    def test_incremental_rename_uses_empty_base_when_both_checkpoint_paths_fail(self, retry_status_code):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="new\n"),
+            self._status_error(404),
+            self._status_error(retry_status_code),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_file = provider.get_diff_files()[0]
+        finally:
+            get_logger().remove(sink_id)
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
+        assert diff_file.base_file == ""
+        assert [call.kwargs["path"] for call in provider.azure_devops_client.get_item.call_args_list] == [
+            "/new/name.py",
+            "/old/name.py",
+            "/new/name.py",
+        ]
+        assert any(
+            "/new/name.py" in message and "last-seen-sha" in message and "retry" in message
+            for message in captured
+        )
+
+    def test_incremental_rename_does_not_retry_after_successful_empty_old_path_read(self):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="new\n"),
+            SimpleNamespace(content=""),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.base_file == ""
+        assert [call.kwargs["path"] for call in provider.azure_devops_client.get_item.call_args_list] == [
+            "/new/name.py",
+            "/old/name.py",
+        ]
+
+    def test_incremental_rename_does_not_retry_current_path_after_non_404_failure(self):
+        provider = self._provider_with_incremental_rename(
+            SimpleNamespace(content="new\n"),
+            self._status_error(500),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_file = provider.get_diff_files()[0]
+        finally:
+            get_logger().remove(sink_id)
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
+        assert diff_file.base_file == ""
+        assert [call.kwargs["path"] for call in provider.azure_devops_client.get_item.call_args_list] == [
+            "/new/name.py",
+            "/old/name.py",
+        ]
+        assert any(
+            "/old/name.py" in message and "last-seen-sha" in message and "500" in message
+            for message in captured
+        )
+
+    def test_failed_rename_old_content_read_keeps_identity_and_logs_the_failure(self):
+        change = self._change(
+            path="/new/name.py",
+            change_type="rename",
+            originalPath="/old/name.py",
+        )
+        provider = self._provider_with_change(
+            change,
+            SimpleNamespace(content="new\n"),
+            Exception("base fetch failed"),
+        )
+
+        captured = []
+        sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+        try:
+            diff_file = provider.get_diff_files()[0]
+        finally:
+            get_logger().remove(sink_id)
+
+        assert diff_file.old_filename == "/old/name.py"
+        assert diff_file.base_file == ""
+        assert any("/old/name.py" in message and "base-sha" in message for message in captured)
+
+    @pytest.mark.parametrize(
+        ("change_type", "get_item_results", "expected_type", "expected_base", "expected_paths"),
+        [
+            (
+                "add",
+                (SimpleNamespace(content="new\n"),),
+                EDIT_TYPE.ADDED,
+                "",
+                ["/src/app.py"],
+            ),
+            (
+                "edit",
+                (SimpleNamespace(content="new\n"), SimpleNamespace(content="old\n")),
+                EDIT_TYPE.MODIFIED,
+                "old\n",
+                ["/src/app.py", "/src/app.py"],
+            ),
+            (
+                "delete",
+                (Exception("head missing"), SimpleNamespace(content="old\n")),
+                EDIT_TYPE.DELETED,
+                "old\n",
+                ["/src/app.py", "/src/app.py"],
+            ),
+        ],
+    )
+    def test_non_rename_change_handling_is_unchanged(
+        self, change_type, get_item_results, expected_type, expected_base, expected_paths
+    ):
+        provider = self._provider_with_change(
+            self._change(change_type=change_type),
+            *get_item_results,
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.edit_type == expected_type
+        assert diff_file.old_filename is None
+        assert diff_file.base_file == expected_base
+        assert [call.kwargs["path"] for call in provider.azure_devops_client.get_item.call_args_list] == expected_paths
 
 
 def _provider_with_diff(*filenames):
@@ -395,6 +993,10 @@ class TestAzureDevopsProviderSuggestionAnchoring:
             "relevant_file": "/src/app.py",
             "relevant_lines_start": 1,
             "relevant_lines_end": 1,
+            "original_suggestion": {
+                "existing_code": "value = 2",
+                "improved_code": "value = 1",
+            },
         }
 
         with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
@@ -717,6 +1319,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         provider.pr_commits = ["stale"]
         provider.previous_review = "stale"
         provider.unreviewed_files_map = {"stale.cs": "stale.cs"}
+        provider._pr_iteration_changes_cache = ["stale"]
         provider.temp_comments = ["stale"]
         provider._parse_pr_url = MagicMock(return_value=("project", "repo", 2))
         provider._get_pr = MagicMock(return_value=MagicMock())
@@ -728,6 +1331,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         assert provider.pr_commits is None
         assert provider.previous_review is None
         assert provider.unreviewed_files_map == {}
+        assert provider._pr_iteration_changes_cache is None
         assert provider.temp_comments == []
 
     def test_unmatched_suggestion_path_does_not_break_markdown(self):
@@ -1604,3 +2208,248 @@ def test_azure_raw_comment_order_uses_updates_and_thread_id_ties():
         assert [comment["body"] for comment in comments] == [
             "edited-newest", "tied-newer-thread", "tied-older-thread",
         ]
+
+
+class TestAzureDevopsGlobalSettings:
+    @pytest.fixture(autouse=True)
+    def _clear_global_settings_cache(self):
+        # The org global-settings cache is process-level; clear it between tests.
+        from pr_agent.git_providers import git_provider as _gp
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+        yield
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+    def _make_provider(self):
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.azure_devops_client = MagicMock()
+        return provider
+
+    @staticmethod
+    def _set_org_settings(ms, org):
+        ms.return_value.config.use_global_settings_file = True
+        ms.return_value.azure_devops.get.return_value = org
+
+    def test_get_owning_namespace_returns_configured_org(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, "myorg")
+            assert provider.get_owning_namespace() == "myorg"
+
+    def test_get_owning_namespace_parses_org_from_collection_url(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, "https://dev.azure.com/myorg")
+            assert provider.get_owning_namespace() == "myorg"
+
+    def test_get_owning_namespace_none_when_org_unset(self):
+        provider = self._make_provider()
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as ms:
+            self._set_org_settings(ms, None)
+            assert provider.get_owning_namespace() is None
+
+    def test_fetch_global_repo_settings_reads_pr_agent_settings_from_pr_project(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.return_value = [b"[pr_reviewer]"]
+        result = provider._fetch_global_repo_settings("myorg")
+
+        assert result == b"[pr_reviewer]"
+        provider.azure_devops_client.get_item_content.assert_called_once_with(
+            repository_id="pr-agent-settings",
+            project="my-project",
+            download=False,
+            include_content_metadata=False,
+            include_content=True,
+            path=".pr_agent.toml",
+        )
+
+    def test_fetch_global_repo_settings_404_returns_empty_and_propagates_other_errors(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = Exception(
+            "Operation returned a 404 status code."
+        )
+        assert provider._fetch_global_repo_settings("myorg") == ""
+
+    def test_get_repo_settings_merges_global_then_local(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = [
+            [b"[pr_reviewer]\nextra_instructions = \"global\"\n"],
+            [b"[pr_reviewer]\nextra_instructions = \"local\"\n"],
+        ]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms, \
+             patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
+            az.return_value.azure_devops.get.return_value = "myorg"
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [
+            ("global", b"[pr_reviewer]\nextra_instructions = \"global\"\n"),
+            ("local", b"[pr_reviewer]\nextra_instructions = \"local\"\n"),
+        ]
+
+    def test_get_repo_settings_only_local_when_global_disabled(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.side_effect = [
+            [b"[pr_reviewer]\ntemperature = 0.2\n"],
+        ]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            result = provider.get_repo_settings()
+
+        assert result == [("local", b"[pr_reviewer]\ntemperature = 0.2\n")]
+
+    def test_global_settings_result_is_cached(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_item_content.return_value = [b"[pr_reviewer]\nnum_max_findings = 5\n"]
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms, \
+             patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
+            az.return_value.azure_devops.get.return_value = "myorg"
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
+
+        assert provider.azure_devops_client.get_item_content.call_count == 1
+
+
+class TestAzureDevopsProviderSuggestionFence:
+    """Regression tests for #2110: Azure DevOps has no committable suggestion blocks, so the
+    ```suggestion fence /improve emits was published verbatim and rendered as a raw block.
+    """
+
+    @staticmethod
+    def _committable_suggestion(relevant_file="/src/app.py"):
+        suggestion = _suggestion(relevant_file)
+        suggestion["body"] = "**Suggestion:** use a set [best practice]\n```suggestion\nvalues = set()\n```"
+        suggestion["original_suggestion"] = {
+            "existing_code": "values = []",
+            "improved_code": "values = set()",
+        }
+        return suggestion
+
+    def test_suggestion_fence_is_published_as_a_diff_block(self):
+        provider = _provider_with_diff("/src/app.py")
+
+        provider.publish_code_suggestions([self._committable_suggestion()])
+
+        body = _created_threads(provider)[-1].comments[0].content
+        assert "```suggestion" not in body
+        assert "```diff" in body
+        assert "-values = []" in body
+        assert "+values = set()" in body
+        assert body.startswith("**Suggestion:** use a set [best practice]")
+
+    def test_body_is_left_alone_when_there_is_no_original_suggestion(self):
+        provider = _provider_with_diff("/src/app.py")
+
+        provider.publish_code_suggestions([_suggestion("/src/app.py")])
+
+        assert _created_threads(provider)[-1].comments[0].content == "```suggestion\nfixed\n```"
+
+    def test_pr_level_fallback_also_carries_the_diff_block(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.publish_comment = MagicMock()
+
+        provider.publish_code_suggestions([self._committable_suggestion("/src/removed.py")])
+
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
+        assert "```suggestion" not in published
+
+    def test_unusable_original_suggestion_keeps_the_suggestion(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        del suggestion["original_suggestion"]["improved_code"]
+
+        provider.publish_code_suggestions([suggestion])
+
+        assert "```suggestion" in _created_threads(provider)[-1].comments[0].content
+
+    def test_backslashes_in_proposed_code_are_preserved(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        suggestion["original_suggestion"] = {
+            "existing_code": "print(1)",
+            "improved_code": "print(\t\\1\\d)",
+        }
+
+        provider.publish_code_suggestions([suggestion])
+
+        body = _created_threads(provider)[-1].comments[0].content
+        assert "```diff" in body
+        assert "+print(\t\\1\\d)" in body
+
+    def test_invalid_range_still_falls_back_to_pr_comment(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider.publish_comment = MagicMock()
+        suggestion = self._committable_suggestion()
+        suggestion["relevant_lines_start"] = 200
+        suggestion["relevant_lines_end"] = 202
+
+        provider.publish_code_suggestions([suggestion])
+
+        published = provider.publish_comment.call_args[0][0]
+        assert "```diff" in published
+        assert "```suggestion" not in published
+
+    def test_rendered_thread_still_feeds_the_next_run(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        suggestion["relevant_lines_start"] = suggestion["relevant_lines_end"] = 2
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
+            settings.return_value.get.side_effect = lambda key, default=None: (
+                True if key == "config.persistent_inline_comments" else default
+            )
+            settings.return_value.azure_devops.get.return_value = "active"
+            provider.publish_code_suggestions([suggestion])
+            stored = SimpleNamespace(
+                id=17,
+                status="active",
+                thread_context=SimpleNamespace(
+                    file_path="/src/app.py",
+                    right_file_start=SimpleNamespace(line=2),
+                    right_file_end=SimpleNamespace(line=2),
+                ),
+                comments=[
+                    _created_threads(provider)[0].comments[0],
+                    SimpleNamespace(content="Not doing this.", author=SimpleNamespace(display_name="Alex")),
+                ],
+            )
+            provider.azure_devops_client.get_threads.return_value = [stored]
+            provider.pr = SimpleNamespace(last_merge_commit=SimpleNamespace(commit_id="head"))
+            provider.azure_devops_client.get_item.return_value = SimpleNamespace(content="before\nvalues = set()\nafter")
+            assert "Not doing this." in provider.get_code_suggestion_thread_context()
+            assert provider.reconcile_code_suggestion_threads() == 1
+
+    def test_rendered_thread_without_markers_is_not_reposted(self):
+        """A thread published before persistent_inline_comments was enabled carries no
+        dedup marker, but the fingerprint bootstrap must still recognize its rendered
+        diff block so the suggestion is not re-posted once the feature is switched on.
+        """
+        suggestion = self._committable_suggestion()
+        first_run = _provider_with_diff("/src/app.py")
+        first_run.publish_code_suggestions([suggestion])
+        stored = SimpleNamespace(
+            thread_context=SimpleNamespace(
+                file_path="/src/app.py",
+                right_file_start=SimpleNamespace(line=10),
+                right_file_end=SimpleNamespace(line=12),
+            ),
+            comments=[_created_threads(first_run)[0].comments[0]],
+        )
+        provider = _provider_with_diff("/src/app.py")
+        provider.azure_devops_client.get_threads.return_value = [stored]
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
+            settings.return_value.get.side_effect = lambda key, default=None: (
+                True if key == "config.persistent_inline_comments" else default
+            )
+            settings.return_value.azure_devops.get.return_value = "active"
+            provider.publish_code_suggestions([suggestion])
+        provider.azure_devops_client.create_thread.assert_not_called()
+
+    def test_no_op_suggestion_keeps_its_fence(self):
+        provider = _provider_with_diff("/src/app.py")
+        suggestion = self._committable_suggestion()
+        suggestion["original_suggestion"]["improved_code"] = "values = []   "
+        provider.publish_code_suggestions([suggestion])
+        assert "```suggestion" in _created_threads(provider)[-1].comments[0].content

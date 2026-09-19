@@ -1,6 +1,5 @@
 """Embed with the openai>=1.0 client that requirements.txt pins."""
 import inspect
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -102,7 +101,7 @@ def test_the_client_is_reused_across_calls(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_pinecone_query_import_is_available_in_run(monkeypatch):
+async def test_pinecone_query_branch_runs(monkeypatch):
     queried = []
 
     class FakeIndex:
@@ -110,7 +109,6 @@ async def test_pinecone_query_import_is_available_in_run(monkeypatch):
             queried.append(kwargs)
             return SimpleNamespace(to_dict=lambda: {"matches": []})
 
-    monkeypatch.setitem(sys.modules, "pinecone", SimpleNamespace(Index=lambda **kwargs: FakeIndex()))
     monkeypatch.setattr(psi, "_embed", lambda texts: [[0.5]])
     monkeypatch.setattr(
         psi,
@@ -127,6 +125,7 @@ async def test_pinecone_query_import_is_available_in_run(monkeypatch):
     tool.issue_url = "https://github.com/example/repo/issues/1"
     tool.index_name = "issues"
     tool.repo_name_for_index = "example-repo"
+    tool.pc = SimpleNamespace(Index=lambda name: FakeIndex())
     tool.git_provider = SimpleNamespace(
         _parse_issue_url=lambda url: ("example/repo", 1),
         repo_obj=SimpleNamespace(get_issue=lambda number: issue),
@@ -134,3 +133,4 @@ async def test_pinecone_query_import_is_available_in_run(monkeypatch):
 
     assert await tool.run() is None
     assert queried, "run() never entered the pinecone branch"
+    assert queried[0]["vector"] == [0.5]

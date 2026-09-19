@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import difflib
-import hashlib
 import html
 import json
 import os
@@ -10,8 +9,6 @@ import re
 import string
 import sys
 import textwrap
-import time
-import traceback
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
@@ -23,14 +20,17 @@ import html2text
 import requests
 import yaml
 from pydantic import BaseModel
-from starlette_context import context
 
 from pr_agent.algo import MAX_TOKENS
-from pr_agent.algo.git_patch_processing import extract_hunk_headers, extract_hunk_lines_from_patch
+from pr_agent.algo.git_patch_processing import (
+    extract_hunk_headers,
+    extract_hunk_lines_from_patch,
+    to_hunk_only_patch,
+)
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
+from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
@@ -156,13 +156,30 @@ def format_pr_questions_header(*, escape_markdown: bool = True) -> str:
     return f"### **{heading}** ❓"
 
 
+def hidden_marker_forms(identity: str) -> tuple[str, ...]:
+    """Return both stored forms of a known comment identity."""
+    for marker in _ALL_COMMENT_IDENTITIES:
+        reference = f"[{marker[5:-4]}]: https://github.com/The-PR-Agent/pr-agent"
+        if identity in (marker, reference):
+            return marker, reference
+    return (identity,)
+
+
+def render_hidden_marker(identity: str, git_provider=None) -> str:
+    """Use a link reference on providers that escape HTML comments."""
+    forms = hidden_marker_forms(identity)
+    supports_html = getattr(git_provider, "supports_html_comment_markers", lambda: True)
+    return forms[-1] if supports_html() is False else forms[0]
+
+
 def comment_matches_identity(body: str, identity: str) -> bool:
     """Match hidden markers only as exact lines near the top; legacy headers as prefixes."""
     if not isinstance(body, str) or not isinstance(identity, str) or not identity:
         return False
-    if identity.startswith("<!--"):
+    forms = hidden_marker_forms(identity)
+    if identity.startswith("<!--") or len(forms) > 1:
         return any(
-            line.strip() == identity
+            line.strip() in forms
             for line in body.splitlines()[:_REVIEW_IDENTITY_HEADER_LINES]
         )
     return body.startswith(identity)
@@ -176,7 +193,7 @@ def comment_carries_other_identity(body: str, identity_marker: str | None) -> bo
     """Return whether the comment carries a different hidden identity."""
     return comment_matches_any_identity(
         body,
-        [identity for identity in _ALL_COMMENT_IDENTITIES if identity != identity_marker],
+        [identity for identity in _ALL_COMMENT_IDENTITIES if identity not in hidden_marker_forms(identity_marker)],
     )
 
 
@@ -190,18 +207,19 @@ def get_pr_review_comment_identifiers(*, full: bool, incremental: bool) -> tuple
     return tuple(identifiers)
 
 
-def add_comment_identity(pr_comment: str, identity_marker: str | None) -> str:
+def add_comment_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
     """Insert a hidden identity after the visible heading without changing rendered output."""
     if not pr_comment or not identity_marker or comment_matches_identity(pr_comment, identity_marker):
         return pr_comment
+    identity_marker = render_hidden_marker(identity_marker, git_provider)
     heading, separator, remainder = pr_comment.partition("\n\n")
     if not separator:
         return f"{pr_comment.rstrip()}\n\n{identity_marker}"
     return f"{heading}\n\n{identity_marker}\n\n{remainder}"
 
 
-def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
-    return add_comment_identity(pr_comment, identity_marker)
+def add_pr_review_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
+    return add_comment_identity(pr_comment, identity_marker, git_provider)
 
 
 class ReasoningEffort(str, Enum):
@@ -217,14 +235,6 @@ class ReasoningEffort(str, Enum):
 class PRDescriptionHeader(str, Enum):
     DIAGRAM_WALKTHROUGH = "Diagram Walkthrough"
     FILE_WALKTHROUGH = "File Walkthrough"
-
-
-def get_setting(key: str) -> Any:
-    try:
-        key = key.upper()
-        return context.get("settings", global_settings).get(key, global_settings.get(key, None))
-    except Exception:
-        return global_settings.get(key, None)
 
 
 def as_review_text(value) -> str:
@@ -269,18 +279,6 @@ def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str
     except Exception as e:
         get_logger().exception(f"Failed to emphasize header: {e}")
         return text
-
-
-def unique_strings(input_list: List[str]) -> List[str]:
-    if not input_list or not isinstance(input_list, list):
-        return input_list
-    seen = set()
-    unique_list = []
-    for item in input_list:
-        if item not in seen:
-            unique_list.append(item)
-            seen.add(item)
-    return unique_list
 
 
 def _expand_minute_suffix(text: str) -> str:
@@ -498,9 +496,14 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>Recommended focus areas for review</strong><br><br>\n\n"
                 else:
                     markdown_text += f"### {emoji} Recommended focus areas for review\n\n#### \n"
-                for i, issue in enumerate(issues):
+                for issue in issues:
                     try:
                         if not issue or not isinstance(issue, dict):
+                            continue
+                        if any(
+                            field in issue and not isinstance(issue[field], str)
+                            for field in ('relevant_file', 'issue_header', 'issue_content')
+                        ):
                             continue
                         relevant_file = issue.get('relevant_file', '').strip()
                         issue_header = issue.get('issue_header', '').strip()
@@ -701,7 +704,7 @@ def process_can_be_split(emoji, value):
             markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
         else:
             markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
-            for i, split in enumerate(value):
+            for split in value:
                 title = split.get('title', '')
                 relevant_files = split.get('relevant_files', [])
                 markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
@@ -911,7 +914,7 @@ def convert_str_to_datetime(date_str):
 def load_large_diff(filename, new_file_content_str: str, original_file_content_str: str, show_warning: bool = True) -> str:
     """
     Generate a patch for a modified file by comparing the original content of the file with the new content provided as
-    input.
+    input. The returned patch starts at its first hunk and excludes unified-diff file metadata.
     """
     if not original_file_content_str and not new_file_content_str:
         return ""
@@ -923,9 +926,8 @@ def load_large_diff(filename, new_file_content_str: str, original_file_content_s
                                     new_file_content_str.splitlines(keepends=True))
         if get_verbosity_level() >= 2 and show_warning:
             get_logger().info(f"File was modified, but no patch was found. Manually creating patch: {filename}.")
-        patch = ''.join(diff)
-        return patch
-    except Exception as e:
+        return to_hunk_only_patch(''.join(diff))
+    except Exception:
         get_logger().exception(f"Failed to generate patch for file: {filename}")
         return ""
 
@@ -1004,7 +1006,57 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
     return sanitized
 
 
-def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", last_key="") -> dict:
+def _looks_like_more_answer(tail: str) -> bool:
+    """Whether the text after the fence is more of the answer rather than a sign-off.
+
+    Two signals, because each alone has a blind spot: a tail that parses as a mapping or a
+    list is structured, but one that continues into prose does not parse at all and is
+    only recognisable from the shape of its first line.
+    """
+    first_line = next((line for line in tail.split('\n') if line.strip()), '')
+    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*:(\s|$)', first_line):
+        return True
+    try:
+        return isinstance(yaml.safe_load(tail), (dict, list))
+    except Exception:
+        return False
+
+
+def drop_sign_off_after_wrapper_fence(text: str) -> str:
+    """Drop a closing remark the model added after the wrapper's closing fence.
+
+    The prompts ask for YAML "and nothing else", but the model sometimes signs off
+    anyway. That either leaves the document unparseable or, for a single block
+    scalar, parses the fence and the remark into the value.
+
+    No existing fallback recovers it. The one that extracts a fenced block needs
+    both fences, but most prompts end with an open fence for the model to continue
+    from, so the reply carries only the closing one.
+    """
+    lines = text.split('\n')
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].rstrip() != '```':
+            continue
+        tail = '\n'.join(lines[i + 1:])
+        if not tail.strip():
+            return text
+        if _looks_like_more_answer(tail):
+            # Dropping it would publish a partial answer, where the parse failure it
+            # replaces at least triggers a retry.
+            return text
+        candidate = '\n'.join(lines[:i])
+        try:
+            if isinstance(yaml.safe_load(candidate), dict):
+                return candidate
+        except Exception:
+            pass
+        return text
+    return text
+
+
+def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_key="", last_key="") -> dict:
+    if keys_fix_yaml is None:
+        keys_fix_yaml = []
     response_text_original = copy.deepcopy(response_text)
     response_text = response_text.strip('\n')
     # strip the fence label only when it is a complete info string, so a key such as
@@ -1012,7 +1064,10 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
     unfenced = re.sub(r'^```[ \t]*(?:(?i:yaml|yml))?[ \t]*(?=\r?\n)', '', response_text)
     if unfenced == response_text:
         unfenced = response_text.removeprefix('yaml')
-    response_text = unfenced.rstrip().removesuffix('```')
+    response_text = unfenced.rstrip()
+    response_text = drop_sign_off_after_wrapper_fence(response_text)
+    if response_text.split('\n')[-1] == '```':
+        response_text = response_text.removesuffix('```')
     response_text = sanitize_yaml_control_chars(response_text)
     response_text_original_sanitized = sanitize_yaml_control_chars(response_text_original, log=False)
     try:
@@ -1041,10 +1096,12 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] = [], first_key="", l
 
 
 def try_fix_yaml(response_text: str,
-                 keys_fix_yaml: List[str] = [],
+                 keys_fix_yaml: List[str] | None = None,
                  first_key="",
                  last_key="",
                  response_text_original="") -> dict:
+    if keys_fix_yaml is None:
+        keys_fix_yaml = []
     response_text_lines = response_text.split('\n')
 
     keys_yaml = ['relevant line:', 'suggestion content:', 'relevant file:', 'existing code:',
@@ -1082,6 +1139,26 @@ def try_fix_yaml(response_text: str,
     for i in range(0, len(response_text_lines_copy)):
         initial_space = len(response_text_lines_copy[i]) - len(response_text_lines_copy[i].lstrip())
         if initial_space == 2 and '|2' not in response_text_lines_copy[i] and '}' in response_text_lines_copy[i]:
+            if response_text_lines_copy[i].strip() == '}':
+                # Only move a standalone brace into the block scalar when it closes an earlier opening brace.
+                block_scalar_lines = []
+                should_indent = False
+                for previous_line in reversed(response_text_lines_copy[:i]):
+                    if not previous_line.strip():
+                        block_scalar_lines.append(previous_line)
+                        continue
+                    previous_space = len(previous_line) - len(previous_line.lstrip())
+                    if previous_space < initial_space:
+                        break
+                    if previous_space == initial_space:
+                        if re.search(r':\s*\|[0-9+-]*\s*$', previous_line):
+                            block_scalar = '\n'.join(reversed(block_scalar_lines))
+                            should_indent = '{' in block_scalar or '}' in block_scalar
+                        break
+                    block_scalar_lines.append(previous_line)
+                if not should_indent:
+                    response_text_lines_copy[i] = ''
+                    continue
             response_text_lines_copy[i] = '    ' + response_text_lines_copy[i].lstrip()
     try:
         data = yaml.safe_load('\n'.join(response_text_lines_copy))
@@ -1327,38 +1404,81 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
-def get_max_tokens(model):
+def get_max_tokens(model, ignore_max_model_tokens=False):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
     (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
     (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
-    (3) else, fall back to litellm.get_model_info(model)["max_input_tokens"].
-    (4) else, raise an error.
+    (3) else if it is a GPT-5.x _thinking alias registered under its base name, use that value.
+    (4) else, query LiteLLM for provider-qualified and bare alias bases before the original model.
+    (5) else, raise an error.
 
     For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
+    Pass ignore_max_model_tokens=True to keep the unreduced value, for sites that deliberately use the
+    raw model context size rather than the conservative clamp.
     """
     settings = get_settings()
     custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
+    # Resolve GPT-6 Astra aliases before diff token accounting, just as the handler does.
+    # Preserve explicit custom limits for provider aliases that were not in the registry.
+    model_base = model
+    while model_base.startswith(('openai/', 'azure/')):
+        model_base = model_base.removeprefix('openai/').removeprefix('azure/')
+    if custom_max_tokens <= 0 and model_base.removesuffix('_thinking') == 'gpt-6-astra':
+        model = 'gpt-6-astra'
+    # Normalize GPT-5.x _thinking aliases before token-limit lookup to match
+    # LiteLLMAIHandler request normalization.
+    model_for_max_tokens = model
+    litellm_lookup_models = (model,)
+    if isinstance(model, str):
+        tmp = model
+        while tmp.startswith(("openai/", "azure/")):
+            tmp = tmp.removeprefix("openai/").removeprefix("azure/")
+        if tmp.startswith("gpt-5") and "_thinking" in tmp:
+            model_for_max_tokens = tmp.replace("_thinking", "")
+            settings_get = getattr(settings, "get", None)
+            azure_mode = callable(settings_get) and (
+                settings_get("OPENAI.API_TYPE", None) == "azure"
+                or bool(settings_get("AZURE_AD.CLIENT_ID", None))
+            )
+            if azure_mode or model.startswith("azure/"):
+                provider_prefix = "azure/"
+            else:
+                provider_prefix = "openai/"
+            provider_model = provider_prefix + model_for_max_tokens
+            litellm_lookup_models = tuple(dict.fromkeys((provider_model, model_for_max_tokens, model)))
     if model in MAX_TOKENS:
         max_tokens_model = MAX_TOKENS[model]
     elif custom_max_tokens > 0:
         max_tokens_model = custom_max_tokens
+    elif model_for_max_tokens in MAX_TOKENS:
+        max_tokens_model = MAX_TOKENS[model_for_max_tokens]
     else:
         # Fallback: ask LiteLLM for the model's metadata before giving up.
         max_tokens_model = 0
         import litellm
-        try:
-            model_info = litellm.get_model_info(model)
-        except Exception:
-            get_logger().debug(f"litellm.get_model_info could not resolve model '{model}'")
-            model_info = None
-        if model_info:
-            litellm_max = model_info.get("max_input_tokens")
-            if litellm_max and int(litellm_max) > 0:
-                max_tokens_model = int(litellm_max)
-                get_logger().debug(f"Resolved max_input_tokens for '{model}' from litellm: {max_tokens_model}")
+        # Try provider-qualified and bare bases before the raw alias.
+        for lookup_model in litellm_lookup_models:
+            try:
+                model_info = litellm.get_model_info(lookup_model)
+            except Exception:
+                get_logger().debug(f"litellm.get_model_info could not resolve model '{lookup_model}'")
+                model_info = None
+            if model_info:
+                litellm_max = model_info.get("max_input_tokens")
+                try:
+                    parsed_max_tokens = int(litellm_max)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if parsed_max_tokens > 0:
+                    max_tokens_model = parsed_max_tokens
+                    get_logger().debug(
+                        f"Resolved max_input_tokens for '{model}' from litellm "
+                        f"(lookup '{lookup_model}'): {max_tokens_model}"
+                    )
+                    break
 
         if max_tokens_model <= 0:
             get_logger().error(
@@ -1371,7 +1491,7 @@ def get_max_tokens(model):
             )
 
     max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
-    if max_model_tokens > 0:
+    if max_model_tokens > 0 and not ignore_max_model_tokens:
         max_tokens_model = min(max_model_tokens, max_tokens_model)
     return max_tokens_model
 
@@ -1513,12 +1633,24 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
             delta = 0
             start1, size1, start2, size2 = 0, 0, 0, 0
             if absolute_position != -1: # matching absolute to relative
+                skip_hunk = False
                 for i, line in enumerate(patch_lines):
                     # new hunk
                     if line.startswith('@@'):
                         delta = 0
                         match = re_hunk_header.match(line)
-                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                        if match:
+                            skip_hunk = False
+                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                        else:
+                            # combined/merge hunk headers (e.g. '@@@ ... @@@') cannot be anchored,
+                            # so skip the whole hunk instead of crashing
+                            get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                 "unified hunk header", artifact={"line": line})
+                            skip_hunk = True
+                            continue
+                    elif skip_hunk:
+                        continue
                     elif not line.startswith('-'):
                         delta += 1
 
@@ -1543,11 +1675,21 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                 def scan_patch_lines(is_match):
                     scan_delta = 0
                     scan_start2 = 0
+                    skip_hunk = False
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
                             scan_delta = 0
                             header_match = re_hunk_header.match(line)
-                            *_, scan_start2 = extract_hunk_headers(header_match)
+                            if header_match:
+                                skip_hunk = False
+                                *_, scan_start2 = extract_hunk_headers(header_match)
+                            else:
+                                skip_hunk = True
+                                get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                     "unified hunk header", artifact={"line": line})
+                                continue
+                        elif skip_hunk:
+                            continue
                         elif not line.startswith('-'):
                             scan_delta += 1
 
@@ -1563,11 +1705,21 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
 
                 if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
+                    skip_hunk = False
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
                             delta = 0
                             match = re_hunk_header.match(line)
-                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                            if match:
+                                skip_hunk = False
+                                section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                            else:
+                                get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                     "unified hunk header", artifact={"line": line})
+                                skip_hunk = True
+                                continue
+                        elif skip_hunk:
+                            continue
                         elif not line.startswith('-'):
                             delta += 1
 
@@ -1578,64 +1730,6 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                             absolute_position = start2 + delta - 1
                             break
     return position, absolute_position
-
-def get_rate_limit_status(github_token) -> dict:
-    GITHUB_API_URL = get_settings(use_context=False).get("GITHUB.BASE_URL", "https://api.github.com").rstrip("/")  # "https://api.github.com"
-    # GITHUB_API_URL = "https://api.github.com"
-    RATE_LIMIT_URL = f"{GITHUB_API_URL}/rate_limit"
-    HEADERS = {
-        "Accept": "application/vnd.github.v3+json",
-        "Authorization": f"token {github_token}"
-    }
-
-    response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
-    try:
-        rate_limit_info = response.json()
-        if rate_limit_info.get('message') == 'Rate limiting is not enabled.':  # for github enterprise
-            return {'resources': {}}
-        response.raise_for_status()  # Check for HTTP errors
-    except:  # retry
-        time.sleep(0.1)
-        response = requests.get(RATE_LIMIT_URL, headers=HEADERS)
-        return response.json()
-    return rate_limit_info
-
-
-def validate_rate_limit_github(github_token, installation_id=None, threshold=0.1) -> bool:
-    try:
-        rate_limit_status = get_rate_limit_status(github_token)
-        if installation_id:
-            get_logger().debug(f"installation_id: {installation_id}, Rate limit status: {rate_limit_status['rate']}")
-    # validate that the rate limit is not exceeded
-        # validate that the rate limit is not exceeded
-        for key, value in rate_limit_status['resources'].items():
-            if value['remaining'] < value['limit'] * threshold:
-                get_logger().error(f"key: {key}, value: {value}")
-                return False
-        return True
-    except Exception as e:
-        get_logger().error(f"Error in rate limit {e}",
-                           artifact={"traceback": traceback.format_exc()})
-        return True
-
-
-def validate_and_await_rate_limit(github_token):
-    try:
-        rate_limit_status = get_rate_limit_status(github_token)
-        # validate that the rate limit is not exceeded
-        for key, value in rate_limit_status['resources'].items():
-            if value['remaining'] < value['limit'] // 80:
-                get_logger().error(f"key: {key}, value: {value}")
-                sleep_time_sec = value['reset'] - datetime.now().timestamp()
-                sleep_time_hour = sleep_time_sec / 3600.0
-                get_logger().error(f"Rate limit exceeded. Sleeping for {sleep_time_hour} hours")
-                if sleep_time_sec > 0:
-                    time.sleep(sleep_time_sec + 1)
-                rate_limit_status = get_rate_limit_status(github_token)
-        return rate_limit_status
-    except:
-        get_logger().error("Error in rate limit")
-        return None
 
 
 def github_action_output(output_data: dict, key_name: str):
@@ -1697,29 +1791,46 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
             record["markdown"] = markdown
 
         if "stdout" in channels:
-            print(json.dumps(record, ensure_ascii=False))
+            try:
+                print(json.dumps(record, ensure_ascii=False))
+            except Exception as e:
+                get_logger().warning(f"push_outputs: stdout failed: {type(e).__name__}")
 
         if "file" in channels:
-            file_path = cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl')
-            folder = os.path.dirname(file_path)
-            if folder:
-                os.makedirs(folder, exist_ok=True)
-            with open(file_path, 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            try:
+                file_path = cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl')
+                folder = os.path.dirname(file_path)
+                if folder:
+                    os.makedirs(folder, exist_ok=True)
+                with open(file_path, 'a', encoding='utf-8') as fh:
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: file failed: {type(e).__name__}")
 
         # Local channels first, network last, so a failed POST can't lose a file write.
         # allow_redirects=False: never follow a redirect from a configured sink to another host.
         if "webhook" in channels:
-            webhook_url = _push_outputs_sink_url(cfg, 'webhook_url')
-            if webhook_url:
-                requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
+            try:
+                webhook_url = _push_outputs_sink_url(cfg, 'webhook_url')
+                if webhook_url:
+                    response = requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
+                    if not 200 <= response.status_code < 300:
+                        get_logger().warning(f"push_outputs: webhook failed with status {response.status_code}")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: webhook failed: {type(e).__name__}")
 
         # Slack Incoming Webhooks accept {"text": ...} directly, no relay service needed.
         if "slack" in channels:
-            slack_webhook_url = _push_outputs_sink_url(cfg, 'slack_webhook_url')
-            if slack_webhook_url:
-                text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
-                requests.post(slack_webhook_url, json={"text": text}, timeout=5, allow_redirects=False)
+            try:
+                slack_webhook_url = _push_outputs_sink_url(cfg, 'slack_webhook_url')
+                if slack_webhook_url:
+                    text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
+                    response = requests.post(slack_webhook_url, json={"text": text}, timeout=5,
+                                             allow_redirects=False)
+                    if not 200 <= response.status_code < 300:
+                        get_logger().warning(f"push_outputs: slack failed with status {response.status_code}")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: slack failed: {type(e).__name__}")
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
@@ -1790,7 +1901,10 @@ def show_run_details(gfm_supported: bool) -> str:
         return ""
 
     title = "⚙️ Agent run details"
-    lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
+    if len(details.models_used) > 1:
+        lines = [f"- Models: {', '.join(details.models_used)}{' (includes fallback)' if details.fallback_used else ''}"]
+    else:
+        lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
     if details.has_token_usage:
         # A counter still at zero after a successful call means the provider never
         # reported that component, so drop it instead of claiming it was zero.
@@ -1831,25 +1945,6 @@ def is_value_no(value):
     if value_str == 'no' or value_str == 'none' or value_str == 'false':
         return True
     return False
-
-
-def set_pr_string(repo_name, pr_number):
-    return f"{repo_name}#{pr_number}"
-
-
-def string_to_uniform_number(s: str) -> float:
-    """
-    Convert a string to a uniform number in the range [0, 1].
-    The uniform distribution is achieved by the nature of the SHA-256 hash function, which produces a uniformly distributed hash value over its output space.
-    """
-    # Generate a hash of the string
-    hash_object = hashlib.sha256(s.encode())
-    # Convert the hash to an integer
-    hash_int = int(hash_object.hexdigest(), 16)
-    # Normalize the integer to the range [0, 1]
-    max_hash_int = 2 ** 256 - 1
-    uniform_number = float(hash_int) / max_hash_int
-    return uniform_number
 
 
 def process_description(description_full: str) -> Tuple[str, List]:

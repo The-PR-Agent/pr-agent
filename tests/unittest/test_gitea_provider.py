@@ -1,3 +1,4 @@
+import copy
 import json
 from io import BytesIO
 from types import SimpleNamespace
@@ -5,7 +6,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from giteapy.rest import ApiException
+from starlette_context import context, request_cycle_context
 
+from pr_agent.config_loader import global_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 
@@ -57,6 +60,21 @@ def test_gitea_edit_comment_returns_false_on_failure():
     provider.logger = MagicMock()
 
     assert provider.edit_comment({"id": 42}, "updated body") is False
+
+
+def test_gitea_publish_description_raises_when_update_returns_no_response():
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.repo_api.edit_pull_request.return_value = None
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.pr_number = 1
+    provider.issue_number = None
+    provider.enabled_pr = True
+    provider.logger = MagicMock()
+
+    with pytest.raises(RuntimeError, match="Failed to publish PR description"):
+        provider.publish_description("AI title", "Updated description")
 
 
 def test_gitea_get_issue_comments_returns_empty_list_when_no_comments():
@@ -363,10 +381,11 @@ class TestGiteaProvider:
         assert args[0] == '/repos/owner/repo/pulls/123.diff'
         assert kwargs.get('auth_settings') == ['AuthorizationHeaderToken']
     def test_get_repo_settings_returns_bytes(self):
-        """Regression for #2347: get_repo_settings must return bytes so that
-        utils.apply_repo_settings can os.write() it and later .decode() it. The
-        Gitea raw-file API yields str (unlike GitHub/GitLab/Bitbucket, which hand
-        back bytes), so the provider must encode before returning."""
+        """Regression for #2347: the local settings content returned by get_repo_settings
+        must be bytes so that utils.apply_repo_settings can os.write() it and later
+        .decode() it. The Gitea raw-file API yields str (unlike GitHub/GitLab/Bitbucket,
+        which hand back bytes), so the provider must encode before returning. Global
+        settings are disabled to isolate the local path."""
         from pr_agent.git_providers.gitea_provider import GiteaProvider
 
         toml = '[pr_reviewer]\nnum_code_suggestions = 4\n'
@@ -379,23 +398,26 @@ class TestGiteaProvider:
         provider.repo_api = MagicMock()
         provider.repo_api.get_file_content.return_value = toml  # API decodes to str
 
-        result = provider.get_repo_settings()
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            result = provider.get_repo_settings()
 
-        assert isinstance(result, bytes)
-        assert result == toml.encode('utf-8')
+        assert result == [("local", toml.encode('utf-8'))]
         # The bytes must survive the exact operations utils.py performs on them.
-        assert result.decode() == toml
+        assert result[0][1].decode() == toml
 
-    def test_get_repo_settings_empty_bytes_when_unset_or_missing(self):
-        """No settings path configured, or empty/absent file: return empty
-        bytes, so every code path honours the -> bytes contract (not just the
-        success path) and a caller can never receive a str."""
+    def test_get_repo_settings_empty_when_unset_or_missing(self):
+        """No settings path configured, or empty/absent file: return empty (falsy),
+        so apply_repo_settings skips the local file. Global settings are disabled
+        to isolate the local path."""
         from pr_agent.git_providers.gitea_provider import GiteaProvider
 
         unset = GiteaProvider.__new__(GiteaProvider)
         unset.logger = MagicMock()
         unset.repo_settings = None
-        assert unset.get_repo_settings() == b""
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert unset.get_repo_settings() == ""
 
         empty = GiteaProvider.__new__(GiteaProvider)
         empty.logger = MagicMock()
@@ -405,7 +427,9 @@ class TestGiteaProvider:
         empty.repo_settings = '.pr_agent.toml'
         empty.repo_api = MagicMock()
         empty.repo_api.get_file_content.return_value = ''
-        assert empty.get_repo_settings() == b""
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert empty.get_repo_settings() == ""
 
     def test_get_repo_file_content_loads_from_base_sha(self):
         provider = GiteaProvider.__new__(GiteaProvider)
@@ -515,6 +539,101 @@ class TestGiteaProvider:
 
         assert content == ""
         provider.repo_api.get_file_content.assert_not_called()
+
+
+class TestGiteaGlobalSettings:
+    @pytest.fixture(autouse=True)
+    def _clear_global_settings_cache(self):
+        # The owner global-settings cache is process-level; clear it between tests.
+        from pr_agent.git_providers import git_provider as _gp
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+        yield
+        _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+    def _make_provider(self, repo_settings=".pr_agent.toml"):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.logger = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.sha = "head-sha"
+        provider.repo_settings = repo_settings
+        provider.repo_api = MagicMock()
+        return provider
+
+    def test_get_owning_namespace_returns_owner(self):
+        provider = self._make_provider()
+        assert provider.get_owning_namespace() == "owner"
+
+    def test_get_repo_settings_merges_global_then_local(self):
+        global_toml = "[pr_reviewer]\nextra_instructions = \"global\"\n"
+        local_toml = "[pr_reviewer]\nextra_instructions = \"local\"\n"
+        provider = self._make_provider()
+        provider.repo_api.repo_get.return_value = SimpleNamespace(default_branch="main")
+
+        def get_file_content(**kwargs):
+            if kwargs["commit_sha"] == "main":
+                return global_toml
+            return local_toml
+
+        provider.repo_api.get_file_content.side_effect = get_file_content
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [("global", global_toml.encode('utf-8')), ("local", local_toml.encode('utf-8'))]
+
+    def test_get_repo_settings_skips_global_when_settings_repo_missing(self):
+        local_toml = "[pr_reviewer]\ntemperature = 0.2\n"
+        provider = self._make_provider()
+        provider.repo_api.repo_get.side_effect = ApiException(status=404)
+        provider.repo_api.get_file_content.return_value = local_toml
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [("local", local_toml.encode('utf-8'))]
+
+    def test_get_repo_settings_skips_global_when_no_default_branch(self):
+        provider = self._make_provider()
+        provider.repo_api.repo_get.return_value = SimpleNamespace(default_branch="")
+        provider.repo_api.get_file_content.return_value = "[pr_reviewer]\ntemperature = 0.2\n"
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == [("local", b"[pr_reviewer]\ntemperature = 0.2\n")]
+
+    def test_get_repo_settings_empty_when_global_missing_and_local_unset(self):
+        provider = self._make_provider(repo_settings=None)
+        provider.repo_api.repo_get.side_effect = ApiException(status=404)
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            result = provider.get_repo_settings()
+
+        assert result == ""
+
+    def test_global_settings_result_is_cached(self):
+        provider = self._make_provider()
+        provider.repo_api.repo_get.return_value = SimpleNamespace(default_branch="main")
+        provider.repo_api.get_file_content.return_value = "[pr_reviewer]\nnum_max_findings = 5\n"
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
+            assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
+
+        assert provider.repo_api.repo_get.call_count == 1
+
+    def test_fetch_global_repo_settings_propagates_non_404_errors(self):
+        provider = self._make_provider()
+        provider.repo_api.repo_get.side_effect = ApiException(status=500)
+
+        with pytest.raises(ApiException):
+            provider._fetch_global_repo_settings("owner")
 
 
 class TestGiteaProviderPRCommits:
@@ -1070,10 +1189,15 @@ def test_gitea_persistent_wrapper_preserves_identity_and_result():
     published = object()
 
     class RecordingGiteaProvider:
+        # Gitea no longer overrides this: the base implementation persists.
         publish_persistent_comment = GiteaProvider.publish_persistent_comment
+        supports_comment_editing = GitProvider.supports_comment_editing
 
         def __init__(self):
             self.calls = []
+
+        def edit_comment(self, comment, body):
+            return True
 
         def publish_persistent_comment_full(
             self, pr_comment, initial_header, update_header=True, name="review",
@@ -1246,3 +1370,94 @@ class TestBaseUrlHtmlIsResolvedOnFirstUse:
         provider.base_url_html = "https://assigned.example.com"
 
         assert provider.base_url_html == "https://assigned.example.com"
+
+
+class TestGiteaRepoIgnoreRules:
+    """Regression for #2620: repository-level [ignore] rules from .pr_agent.toml
+    are merged into settings AFTER GiteaProvider is constructed (so the eager
+    filter in __init__ could never see them). The filter now runs inside
+    get_diff_files(), at diff time, when the merged repo settings are in effect.
+    """
+
+    GITEA_SETTINGS = {
+        "GITEA.URL": "https://gitea.example.com",
+        "GITEA.PERSONAL_ACCESS_TOKEN": "test-token",
+        "GITEA.REPO_SETTING": None,
+        "GITEA.SKIP_SSL_VERIFICATION": False,
+        "GITEA.SSL_CA_CERT": None,
+    }
+
+    FILES = [
+        {"filename": "generated/client.py", "additions": 10, "deletions": 0, "status": "added"},
+        {"filename": "api/schema.d.ts", "additions": 5, "deletions": 0, "status": "modified"},
+        {"filename": "src/application.py", "additions": 3, "deletions": 1, "status": "modified"},
+    ]
+
+    def _build_provider(self, mock_repo_api_cls, mock_get_settings, mock_api_client_cls):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: self.GITEA_SETTINGS.get(k, d)
+        mock_get_settings.return_value = settings
+
+        repo_api = mock_repo_api_cls.return_value
+        pr = SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha"),
+            base=SimpleNamespace(sha="base-sha", ref="main"),
+        )
+        repo_api.get_pull_request.return_value = pr
+        repo_api.get_change_file_pull_request.return_value = self.FILES
+        repo_api.get_file_content.return_value = "file content"
+        repo_api.get_pull_request_diff.return_value = (
+            "diff --git a/generated/client.py b/generated/client.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+            "diff --git a/api/schema.d.ts b/api/schema.d.ts\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+            "diff --git a/src/application.py b/src/application.py\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+        )
+        repo_api.get_pr_commits.return_value = [{"sha": "head-sha"}]
+
+        from pr_agent.git_providers.gitea_provider import GiteaProvider
+
+        return GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_repo_ignore_globs_exclude_files_at_diff_time(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        """Construct the provider with NO ignore rules (as happens before
+        apply_repo_settings merges the repo .pr_agent.toml), then merge the
+        repo's [ignore] rules into the request settings and confirm
+        get_diff_files() drops the matching files."""
+        provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            context["settings"].ignore.glob = ["generated/**", "api/schema.d.ts"]
+            context["settings"].ignore.regex = []
+
+            diff_files = provider.get_diff_files()
+            names = [f.filename for f in diff_files]
+
+            assert "src/application.py" in names
+            assert "generated/client.py" not in names, \
+                "repo-level glob 'generated/**' must exclude generated/client.py"
+            assert "api/schema.d.ts" not in names, \
+                "repo-level glob 'api/schema.d.ts' must exclude api/schema.d.ts"
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_no_ignore_rules_keeps_all_files(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            context["settings"].ignore.glob = []
+            context["settings"].ignore.regex = []
+
+            names = [f.filename for f in provider.get_diff_files()]
+            assert sorted(names) == ["api/schema.d.ts", "generated/client.py", "src/application.py"]

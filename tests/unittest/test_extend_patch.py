@@ -183,8 +183,6 @@ class TestLoadLargeDiff:
                                 old content 2""")
 
         patch_expected="""\
---- 
-+++ 
 @@ -1,3 +1,3 @@
 -
                                  old content 1
@@ -198,7 +196,7 @@ class TestLoadLargeDiff:
         assert load_large_diff("test.py", "", "") == ""
         assert load_large_diff("test.py", None, None) == ""
         assert (load_large_diff("test.py", "content\n", "") ==
-                '--- \n+++ \n@@ -1 +1 @@\n-\n+content\n')
+                '@@ -1 +1 @@\n-\n+content\n')
 
 class TestOmittedHunkCount:
     def test_omitted_count_is_parsed_as_one(self):

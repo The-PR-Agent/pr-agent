@@ -22,7 +22,8 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
-from pr_agent.servers.utils import get_pr_commands
+from pr_agent.servers.utils import get_pr_commands, push_trigger_slot
+from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -55,6 +56,14 @@ async def handle_request(api_url: str, body: str, log_context: dict, sender_id: 
     log_context["event"] = "pull_request" if body == "/review" else "comment"
     log_context["api_url"] = api_url
     log_context["app_name"] = get_settings().get("CONFIG.APP_NAME", "Unknown")
+
+    # Comment commands can pass arbitrary arguments, so sibling-repo context is authorized
+    # against the commenter (the command actor) instead of the MR author. Fail closed when no
+    # trustworthy account can be recorded (e.g. the "unknown" fallback for missing sender data).
+    if isinstance(sender_id, int) and sender_id:
+        provider = get_git_provider_with_context(pr_url=api_url)
+        if hasattr(provider, "set_command_actor"):
+            provider.set_command_actor(sender_id)
 
     with get_logger().contextualize(**log_context):
         await PRAgent().handle_request(api_url, body, notify)
@@ -90,7 +99,7 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
 
 def is_bot_user(data) -> bool:
     try:
-        # logic to ignore bot users (unlike Github, no direct flag for bot users in gitlab)
+        # logic to ignore bot users (unlike GitHub, no direct flag for bot users in gitlab)
         sender_name = data.get("user", {}).get("name", "unknown").lower()
         # Indicators are sourced from config.bot_user_indicators in configuration.toml so the
         # default list has a single source of truth and can be reused by other providers in
@@ -362,6 +371,26 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 apply_repo_settings(url)
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
+            # for draft to ready triggered merge requests, before the push case: one update can be both
+            elif object_attributes.get('action') == 'update' and is_draft_ready(data):
+                url = object_attributes.get('url')
+                get_logger().info(f"Draft MR is ready: {url}")
+
+                apply_repo_settings(url)
+                if get_settings().get("gitlab.feedback_on_draft_pr", False):
+                    # the draft was already getting feedback, so only the push half of this update is new
+                    if (object_attributes.get('oldrev')
+                            and get_settings().get("gitlab.push_commands", {})
+                            and get_settings().get("gitlab.handle_push_trigger", False)):
+                        get_logger().debug(f'A push event has been received: {url}')
+                        async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
+                            if proceed:
+                                await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
+                    else:
+                        get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {url}")
+                    return
+                await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+
             # for push event triggered merge requests
             elif object_attributes.get('action') == 'update' and object_attributes.get('oldrev'):
                 url = object_attributes.get('url')
@@ -376,18 +405,9 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                     return
 
                 get_logger().debug(f'A push event has been received: {url}')
-                await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
-
-            # for draft to ready triggered merge requests
-            elif object_attributes.get('action') == 'update' and is_draft_ready(data):
-                url = object_attributes.get('url')
-                get_logger().info(f"Draft MR is ready: {url}")
-
-                apply_repo_settings(url)
-                if get_settings().get("gitlab.feedback_on_draft_pr", False):
-                    get_logger().info(f"Skipping draft-ready commands because draft feedback is enabled: {url}")
-                    return
-                await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+                async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
+                    if proceed:
+                        await _perform_commands_gitlab("push_commands", PRAgent(), url, log_context, data)
 
             # for reviewer assignment triggered merge requests
             elif object_attributes.get('action') == 'update' and not object_attributes.get('oldrev'):
@@ -450,18 +470,28 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 def handle_ask_line(body, data):
     try:
         line_range_ = data['object_attributes']['position']['line_range']
-        # if line_range_['start']['type'] == 'new':
-        start_line = line_range_['start']['new_line']
-        end_line = line_range_['end']['new_line']
-        # else:
-        #     start_line = line_range_['start']['old_line']
-        #     end_line = line_range_['end']['old_line']
-        question = body.replace('/ask', '').strip()
+        if line_range_['start'].get('type', 'new') == 'old':
+            start_line = line_range_['start']['old_line']
+            end_line = line_range_['end']['old_line']
+            side = 'LEFT'
+        else:
+            start_line = line_range_['start']['new_line']
+            end_line = line_range_['end']['new_line']
+            side = 'RIGHT'
+        question = body.strip().removeprefix('/ask').strip()
         path = data['object_attributes']['position']['new_path']
-        side = 'RIGHT'  # if line_range_['start']['type'] == 'new' else 'LEFT'
         comment_id = data['object_attributes']["discussion_id"]
         get_logger().info("Handling line ")
-        body = f"/ask_line --line_start={start_line} --line_end={end_line} --side={side} --file_name={path} --comment_id={comment_id} {question}"
+        body = [
+            "/ask_line",
+            f"--line_start={start_line}",
+            f"--line_end={end_line}",
+            f"--side={side}",
+            f"--file_name={path}",
+            f"--comment_id={comment_id}",
+        ]
+        if question:
+            body.append(question)
     except Exception as e:
         get_logger().error(f"Failed to handle ask line comment: {e}")
     return body
@@ -476,6 +506,8 @@ if not gitlab_url:
     raise ValueError("GITLAB.URL is not set")
 get_settings().config.git_provider = "gitlab"
 middleware = [Middleware(RawContextMiddleware)]
+if prometheus_metrics_enabled():
+    attach_metrics_endpoint(router)
 app = FastAPI(middleware=middleware)
 app.include_router(router)
 

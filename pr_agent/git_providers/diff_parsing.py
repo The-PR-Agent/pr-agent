@@ -1,8 +1,14 @@
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
+from pr_agent.algo.git_patch_processing import to_hunk_only_patch as _to_hunk_only_patch
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.log import get_logger
+
+
+def to_hunk_only_patch(patch_str: str) -> str:
+    """Keep the existing provider-layer import path for callers."""
+    return _to_hunk_only_patch(patch_str)
 
 
 def _strip_prefix(path: str | None) -> str | None:
@@ -11,21 +17,6 @@ def _strip_prefix(path: str | None) -> str | None:
     if path.startswith(("a/", "b/")):
         return path[2:]
     return path
-
-
-def to_hunk_only_patch(patch_str: str) -> str:
-    """Drop file-header lines ('diff --git', 'index', '---', '+++') that precede
-    the first '@@' hunk header.
-
-    Platform providers (GitHub, GitLab, ...) store hunk-only patches, and the
-    shared hunk/line-number converter treats any '+'/'-' line as content. Left
-    in, the '---'/'+++' headers would be emitted as a bogus leading hunk with
-    invalid line numbers. Returns "" when there is no hunk (e.g. rename-only)."""
-    lines = patch_str.splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if line.startswith("@@"):
-            return "".join(lines[i:])
-    return ""
 
 
 def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:

@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Hashable, List, Optional
 
-from pr_agent.algo.utils import is_value_no
+from pr_agent.algo.utils import as_review_text, is_value_no
 from pr_agent.log import get_logger
 
 MAX_EFFORT = 5
@@ -126,12 +126,31 @@ def _worst_of(order: tuple) -> Callable[[List[Any]], Any]:
     return merge
 
 
+def _reported_text(value: Any) -> str:
+    """Flatten one chunk's answer to text, or "" when that chunk reported nothing.
+
+    The field is declared as a string, but a model listing several findings answers with a
+    list or a mapping, which the review renderer already accepts.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        entries = [entry for entry in (_reported_text(item) for item in value) if entry]
+        if not entries:
+            return ""
+        if len(entries) == 1:
+            return entries[0]
+        return "\n".join(f"- {entry}" for entry in entries)
+    text = as_review_text(value)
+    return "" if is_value_no(text) else text
+
+
 def _merge_findings_text(values: List[Any]) -> Any:
     """Union the chunks that reported something; 'No' only when every chunk said no."""
     reported, seen = [], set()
     for value in values:
-        text = str(value if value is not None else "").strip()
-        if is_value_no(text):
+        text = _reported_text(value)
+        if not text:
             continue
         fingerprint = _normalize_text(text)
         if fingerprint in seen:
@@ -139,7 +158,10 @@ def _merge_findings_text(values: List[Any]) -> Any:
         seen.add(fingerprint)
         reported.append(text)
     if not reported:
-        return _first_non_empty(values)
+        # Every chunk reported nothing. Return the canonical "No" rather than one chunk's raw
+        # value: a chunk answering ["No"] would otherwise reach the renderer as a list, which
+        # is_value_no does not recognise, and the review would show a concern reading "- No".
+        return "No"
     return "\n\n".join(reported)
 
 

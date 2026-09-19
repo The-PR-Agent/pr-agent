@@ -9,9 +9,21 @@ There are several ways to use PR-Agent:
 - [Azure DevOps integration](./azure.md)
 - [Gitea integration](./gitea.md)
 
+## GitHub polling HTTP requests
+
+When GitHub polling needs to look back through PR comments, it reuses the polling
+HTTP session rather than blocking the event loop with a synchronous request.
+`github.polling_request_timeout` sets the total timeout for this fallback request
+(default: 10 seconds; positive values are capped at 60). Invalid values use the
+default with a warning. Set it in the host configuration or through
+`GITHUB__POLLING_REQUEST_TIMEOUT`; repository settings do not control this limit.
+This does not change the other polling requests or the sequential notification
+scan. The fallback now follows the existing aiohttp session's proxy and TLS
+behavior, not Requests-specific environment settings.
+
 ## Sizing a self-hosted webhook server
 
-The GitHub, GitLab and Gitea webhook servers (the `github_app`, `gitlab_webhook` and `gitea_app` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket, Azure DevOps, GitHub polling, and the Lambda variants — run a single process and are unaffected by this section.
+The GitHub, GitLab and Gitea webhook servers (the `github_app`, `gitlab_webhook` and `gitea_app` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket, Azure DevOps, GitHub polling, and the Lambda variants — do not use this gunicorn worker configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -27,6 +39,24 @@ If the container is OOMKilled during startup, lower the worker count:
 ```bash
 GUNICORN_WORKERS=2
 ```
+
+## GitHub polling workers
+
+GitHub polling uses one polling process and a separate child process for each
+accepted comment. At most 10 of these child workers may be active across all
+polling iterations. If an earlier batch still fills the limit, accepted work
+waits for a free slot without blocking the event loop. This can delay the next
+notification poll under sustained load.
+
+The existing per-batch limit is unchanged: only the first 10 queued comments in
+a batch are accepted; excess work is logged and dropped. Waiting work is held in
+memory only. Notification acknowledgement is unchanged, so shutdown or startup
+failures do not guarantee redelivery. Dispatch interruptions log the remaining
+count. A worker startup failure stops polling rather than risking further
+dispatch with an untracked child; inspect the failure before restarting.
+Completed children are joined without waiting and closed each iteration;
+live children are not terminated on cancellation. This is not a durable queue,
+a model-call deadline, or a host-wide memory limit.
 
 !!! note "Docker Hub namespace migration"
     Releases **`0.34.2` and later** are published under [`pragent/pr-agent`](https://hub.docker.com/r/pragent/pr-agent). Older releases (up to and including `v0.31`) remain at the legacy [`codiumai/pr-agent`](https://hub.docker.com/r/codiumai/pr-agent) namespace as a frozen archive — no new images are pushed there. The examples on this site reference the new namespace; if you are pinning to a release before `0.34.2`, swap `pragent/pr-agent` for `codiumai/pr-agent` in your `image:` / `docker pull` / `uses: docker://` references.

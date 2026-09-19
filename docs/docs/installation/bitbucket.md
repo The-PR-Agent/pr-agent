@@ -28,6 +28,12 @@ For basic auth, you can generate a base64 encoded token from your username:passw
 
 Note that comments on a PR are not supported in Bitbucket Pipeline.
 
+### Persistent comments on Bitbucket Cloud
+
+Review and code-suggestion identity markers use invisible Markdown link references on Bitbucket Cloud.
+Existing comments with older HTML identity markers are still recognized and updated in place.
+No configuration change is required.
+
 ## Bitbucket Server and Data Center
 
 Login into your on-prem instance of Bitbucket with your service account username and password.

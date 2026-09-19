@@ -1,2 +1,3 @@
 recursive-include pr_agent *.toml
+recursive-include docs/docs *.md
 recursive-exclude pr_agent *.secrets.toml
