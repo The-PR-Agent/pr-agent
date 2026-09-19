@@ -23,10 +23,10 @@ from ..algo.inline_comment_dedup import (
     marker_fingerprints,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.token_budget import clip_tokens
 from ..algo.utils import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
-    clip_tokens,
     comment_matches_any_identity,
     get_pr_review_comment_identifiers,
     load_large_diff,

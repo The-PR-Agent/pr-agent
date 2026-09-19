@@ -7,7 +7,7 @@ from litellm.litellm_core_utils.get_model_cost_map import GetModelCostMap
 from litellm.utils import get_optional_params
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.utils as utils
+from pr_agent.algo import token_budget
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 
@@ -110,7 +110,7 @@ class TestLiteLLMReasoningEffort:
         settings.openai = type("OpenAISettings", (), {"api_type": "azure", "key": "test-key"})()
         setting_values = {"OPENAI.API_TYPE": "azure"} if azure_mode else {}
         monkeypatch.setattr(settings, "get", lambda key, default=None: setting_values.get(key, default))
-        monkeypatch.setattr(utils, "get_settings", lambda: settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
         for name in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
                      "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
@@ -119,10 +119,10 @@ class TestLiteLLMReasoningEffort:
             monkeypatch.setattr(litellm, name, None)
         monkeypatch.setattr(litellm_handler.openai, "api_key", None)
 
-        expected_limit = utils.MAX_TOKENS[base]
+        expected_limit = token_budget.MAX_TOKENS[base]
         if metadata_fallback:
             # Force the real lookup through LiteLLM without depending on future model IDs.
-            monkeypatch.delitem(utils.MAX_TOKENS, base)
+            monkeypatch.delitem(token_budget.MAX_TOKENS, base)
         lookups = []
 
         def get_model_info(lookup_model):
@@ -132,7 +132,7 @@ class TestLiteLLMReasoningEffort:
             raise ValueError("Unexpected model name")
 
         monkeypatch.setattr(litellm, "get_model_info", get_model_info)
-        token_limit = utils.get_max_tokens(model)
+        token_limit = token_budget.get_max_tokens(model)
         assert token_limit == expected_limit
         assert lookups == ([request_model] if metadata_fallback else [])
 

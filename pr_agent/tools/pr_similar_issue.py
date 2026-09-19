@@ -6,8 +6,8 @@ import openai
 from pydantic import BaseModel, Field
 
 from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo.token_budget import get_max_tokens
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger

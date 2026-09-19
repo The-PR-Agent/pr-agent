@@ -25,10 +25,10 @@ from ..algo.inline_comment_dedup import (
     has_marker,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
     Range,
-    clip_tokens,
     comment_matches_any_identity,
     find_line_number_of_relevant_line_in_file,
     get_pr_review_comment_identifiers,
