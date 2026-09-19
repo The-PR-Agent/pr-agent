@@ -1084,8 +1084,8 @@ class TestLiteLLMReasoningEffortGemini:
 
     @pytest.mark.asyncio
     async def test_claude_models_excluded_from_reasoning_effort_path(self, monkeypatch, mock_logger):
-        """Claude models must not receive reasoning_effort even though litellm metadata
-        marks claude-sonnet-4-5 / claude-haiku-4-5 as reasoning-capable; pr-agent routes
+        """Keep reasoning_effort off Claude models even though litellm metadata marks
+        claude-sonnet-4-5 / claude-haiku-4-5 as reasoning-capable; pr-agent routes
         Claude reasoning only through the dedicated extended/adaptive thinking settings.
         """
         fake_settings = create_mock_settings("high")
@@ -1104,6 +1104,29 @@ class TestLiteLLMReasoningEffortGemini:
 
                 call_kwargs = mock_completion.call_args[1]
                 assert "reasoning_effort" not in call_kwargs, f"reasoning_effort leaked for {model}"
+
+    @pytest.mark.asyncio
+    async def test_metadata_only_model_gets_reasoning_effort(self, monkeypatch, mock_logger):
+        """Forward reasoning_effort to a model only litellm's bundled metadata flags.
+        o1 was never in the removed SUPPORT_REASONING_EFFORT_MODELS list and is not
+        pinned by the autouse fixture, so this goes red if the metadata probe stops
+        being consulted.
+        """
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+        for model in ("o1", "openai/o1"):
+            with patch(
+                'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+                new_callable=AsyncMock,
+            ) as mock_completion:
+                mock_completion.return_value = create_mock_acompletion_response()
+
+                handler = LiteLLMAIHandler()
+                await handler.chat_completion(model=model, system="test system", user="test user")
+
+                call_kwargs = mock_completion.call_args[1]
+                assert call_kwargs.get("reasoning_effort") == "low", f"reasoning_effort dropped for {model}"
 
 
 class TestLiteLLMReasoningEffortGrok:

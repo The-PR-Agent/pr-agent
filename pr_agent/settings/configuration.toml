@@ -99,11 +99,10 @@ enable_ai_metadata = false # will enable adding ai metadata
 add_user_to_requests = false # send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user")
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
 # Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is
-# otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so
-# add an ID here only when litellm
-# does not know the model (custom OpenAI-compatible endpoints). Model IDs match exactly or
-# through any provider prefix (e.g. "deepseek-v4-flash-0731" matches
-# "openai/deepseek-v4-flash-0731"). LiteLLM whitelists
+# otherwise decided by litellm's bundled model metadata (and the maintained Grok registry),
+# so add an ID here only when litellm does not know the model (custom OpenAI-compatible
+# endpoints). Model IDs match exactly or through any provider prefix
+# (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists
 # reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not
 # recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by
 # providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom
