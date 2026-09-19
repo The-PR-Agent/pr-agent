@@ -43,20 +43,39 @@ try:
 except ImportError:
     BedrockMantleAuthMixin = None
 
+_handler_module = None
+
+
+def _bind_handler_module(module):
+    """Record the host ``litellm_ai_handler`` module for call-time slot reads.
+
+    The handler registers itself here once on import so guarded interface checks can
+    observe the attrs that unit tests replace on the handler module rather than this
+    module's import-time snapshot, without this module importing the handler back and
+    forming an import cycle. Only the first (process-wide) module is bound; the
+    fail-closed tests re-exec the handler body under a different module name and must
+    not move the reference.
+    """
+    global _handler_module
+    if module is not None and _handler_module is None:
+        _handler_module = module
+
 
 def _handler_attr(name, default=None):
-    """Resolve a LiteLLM interface slot through ``litellm_ai_handler`` at call time.
-
-    The handler re-exports everything this module defines, and its own module keeps
-    the guarded try/except copies of the interface objects. Unit tests assert the
-    fail-closed behaviour by replacing the *handler's* attribute, so live queries
-    must observe that replacement rather than this module's import-time snapshot.
-    """
-    try:
-        import pr_agent.algo.ai_handlers.litellm_ai_handler as handler_module
-    except ImportError:
+    """Read an interface slot off the bound ``litellm_ai_handler`` module at call time."""
+    if _handler_module is None:
         return default
-    return getattr(handler_module, name, default)
+    return getattr(_handler_module, name, default)
+
+
+def _resolve_provider_registry():
+    """Return ``JSONProviderRegistry``, preferring the handler module's replaceable binding.
+
+    The handler keeps its own guarded registry import and tests replace that module
+    attribute to simulate custom provider registries, so request-path lookups must read
+    the live binding rather than this module's import-time copy.
+    """
+    return _handler_attr("JSONProviderRegistry", JSONProviderRegistry)
 
 
 DUMMY_LITELLM_API_KEY = "dummy_key"  # request-local guard against LiteLLM's process-wide key fallbacks
@@ -695,7 +714,7 @@ def _install_azure_oidc_bridge():
 
 
 def _is_openai_compatible_request_provider(provider: str) -> bool:
-    return provider in getattr(litellm, "openai_compatible_providers", ()) or JSONProviderRegistry.exists(provider)
+    return provider in getattr(litellm, "openai_compatible_providers", ()) or _resolve_provider_registry().exists(provider)
 
 
 def _uses_openai_text_completion_transport(model: str | None, provider: str | None) -> bool:
@@ -730,7 +749,7 @@ def _uses_openai_responses_transport(model: str | None, provider: str | None) ->
 
 def _uses_provider_api_key(provider: str) -> bool:
     """Return whether PR-Agent should forward or guard this provider's native API key."""
-    return provider in PROVIDER_API_KEY_ENV_VARS or JSONProviderRegistry.exists(provider)
+    return provider in PROVIDER_API_KEY_ENV_VARS or _resolve_provider_registry().exists(provider)
 
 
 _SDK_HEADER_MARKER = "x-pr-agent-sdk-header-snapshot"
@@ -1030,7 +1049,7 @@ def _guard_request_routing_globals(provider: str | None, params: dict) -> dict:
                 raise ValueError(f"Refusing process-wide LiteLLM {parameter} fallback for provider {provider}")
     routing_environment_variables = dict(PROVIDER_ROUTING_ENV_VARS.get(provider, {}))
     api_base_environment_variables = list(PROVIDER_API_BASE_ENV_VARS.get(provider, ()))
-    provider_config = JSONProviderRegistry.get(provider)
+    provider_config = _resolve_provider_registry().get(provider)
     api_base_env = getattr(provider_config, "api_base_env", None)
     if api_base_env:
         api_base_environment_variables.append(api_base_env)
@@ -1066,7 +1085,7 @@ def _has_live_provider_api_key_environment(provider: str) -> bool:
     """Return whether a provider key is currently available in the environment."""
     environment_variables = PROVIDER_API_KEY_ENV_VARS.get(provider, ())
     if not environment_variables:
-        provider_config = JSONProviderRegistry.get(provider)
+        provider_config = _resolve_provider_registry().get(provider)
         api_key_env = getattr(provider_config, "api_key_env", None)
         environment_variables = (api_key_env,) if api_key_env else ()
     return any(os.environ.get(environment_variable) for environment_variable in environment_variables)
@@ -1353,6 +1372,7 @@ def _snapshot_cloud_sdk_project(directory):
                 with open(legacy_path, encoding="utf-8") as legacy:
                     legacy_contents = legacy.read()
             except FileNotFoundError:
+                # No legacy properties file: fall back to the default named config below.
                 pass
         deprecated = (
             "# This properties file has been superseded by named configurations.\n"

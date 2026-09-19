@@ -1836,6 +1836,17 @@ def test_provider_environment_tables_cover_known_or_legacy_transports():
         assert set(table) <= known_providers | legacy_transports
 
 
+def test_moved_provider_tables_remain_exposed_on_handler():
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    for name in (
+        "OPENAI_COMPATIBLE_REQUEST_PROVIDERS",
+        "OPENAI_RAW_HTTP_REQUEST_PROVIDERS",
+        "MANAGED_AUTH_REQUEST_PROVIDERS",
+    ):
+        assert getattr(litellm_handler, name) is getattr(cloud_auth, name)
+
+
 @pytest.mark.parametrize("provider", ("aleph_alpha", "anyscale"))
 @pytest.mark.parametrize("initial_key", (None, "handler-key"))
 @pytest.mark.asyncio
@@ -2691,6 +2702,7 @@ def test_keyless_registry_provider_does_not_read_a_missing_environment_name(monk
 
     assert handler._provider_environment_api_keys == {}
     assert litellm_handler._has_live_provider_api_key_environment("keyless") is False
+    registry.get.assert_called_with("keyless")
 
 
 @pytest.mark.asyncio

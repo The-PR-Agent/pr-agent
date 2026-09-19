@@ -8,6 +8,7 @@ import os
 import re
 import shutil  # noqa: F401  (module attribute asserted by tests)
 import stat
+import sys
 import threading
 
 import httpx
@@ -38,6 +39,7 @@ except ImportError:
     BedrockMantleAuthMixin = None
     MANTLE_HOST_RE = None
 
+import pr_agent.algo.ai_handlers.cloud_auth as _cloud_auth
 from pr_agent.algo import (
     CLAUDE_EXTENDED_THINKING_MODELS,
     GROK_REASONING_EFFORT_LEVELS,
@@ -63,6 +65,7 @@ from pr_agent.algo.ai_handlers.cloud_auth import (
     LITELLM_GLOBAL_FIRST_API_BASE_PROVIDERS,  # noqa: F401  (module attribute asserted by tests)
     MANAGED_AUTH_REQUEST_PROVIDERS,
     OPENAI_COMPATIBLE_REQUEST_PROVIDERS,
+    OPENAI_RAW_HTTP_REQUEST_PROVIDERS,  # noqa: F401  (module attribute asserted by tests)
     PROVIDER_API_BASE_ENV_VARS,
     PROVIDER_API_KEY_ENV_VARS,
     PROVIDER_API_KEY_GLOBALS,  # noqa: F401  (module attribute asserted by tests)
@@ -122,6 +125,8 @@ from pr_agent.algo.ai_handlers.cloud_auth import (
     _vertex_request_credentials,
     _vertex_request_default_adc,
 )
+
+_cloud_auth._bind_handler_module(sys.modules.get(__name__))
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     _get_azure_ad_credential,
     _get_azure_ad_token,
