@@ -9,6 +9,14 @@ from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import (
+    PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
+    get_pr_review_comment_identifiers,
+    hidden_marker_forms,
+    render_hidden_marker,
+)
 from pr_agent.algo.inline_comment_dedup import (
     InlineCommentStore,
     can_verify_inline_comment_publication,
@@ -41,17 +49,11 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
-    PRReviewHeader,
-    PRReviewIdentity,
-    add_pr_review_identity,
     convert_to_markdown_v2,
-    get_pr_review_comment_identifiers,
     github_action_output,
-    hidden_marker_forms,
     is_value_no,
     load_yaml,
     push_outputs,
-    render_hidden_marker,
     show_relevant_configurations,
     show_run_details,
 )

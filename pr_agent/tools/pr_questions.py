@@ -3,6 +3,7 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import format_pr_questions_header
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
@@ -12,7 +13,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType, decode_user_text_args, format_pr_questions_header
+from pr_agent.algo.utils import ModelType, decode_user_text_args
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language

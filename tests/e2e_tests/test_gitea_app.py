@@ -16,6 +16,37 @@ log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
 logger = get_logger()
 
+def _missing_gitea_tool_results(repo_api_url, pr_number, headers):
+    """Check the description and the comments for the default tools' final output."""
+    response = requests.get(
+        f"{repo_api_url}/pulls/{pr_number}",
+        headers=headers,
+        timeout=30,
+    )
+    response.raise_for_status()
+    description_lines = (response.json().get("body") or "").splitlines()
+    missing = {"/describe", "/review", "/improve"}
+    if all(header in description_lines for header in ("### **PR Type**", "### **Description**")):
+        missing.remove("/describe")
+
+    comment_markers = {
+        "/review": {"<!-- pr-agent:review:full -->"},
+        "/improve": {"<!-- pr-agent:improve:summary -->", "<!-- pr-agent:improve:no-suggestions -->"},
+    }
+    response = requests.get(
+        f"{repo_api_url}/issues/{pr_number}/comments",
+        headers=headers,
+        timeout=30,
+    )
+    response.raise_for_status()
+    for comment in response.json():
+        lines = set((comment.get("body") or "").splitlines())
+        for command, markers in comment_markers.items():
+            if lines.intersection(markers):
+                missing.discard(command)
+    return sorted(missing)
+
+
 def test_e2e_run_gitea_app():
     repo_name = 'pr-agent-tests'
     owner = 'codiumai'
@@ -66,29 +97,24 @@ def test_e2e_run_gitea_app():
         import base64
         file_content_encoded = base64.b64encode(NEW_FILE_CONTENT.encode()).decode()
 
-        try:
-            response = requests.get(
-                f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/contents/{FILE_PATH}?ref={new_branch}",
-                headers=headers
-            )
+        response = requests.get(
+            f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/contents/{FILE_PATH}?ref={new_branch}",
+            headers=headers
+        )
+        file_data = {
+            "message": "Update cli_pip.py",
+            "content": file_content_encoded,
+            "branch": new_branch
+        }
+        if response.status_code == 404:
+            file_data["message"] = "Add cli_pip.py"
+            write_file = requests.post
+        else:
             response.raise_for_status()
-            existing_file = response.json()
-            file_sha = existing_file.get('sha')
+            file_data["sha"] = response.json()["sha"]
+            write_file = requests.put
 
-            file_data = {
-                'message': 'Update cli_pip.py',
-                'content': file_content_encoded,
-                'sha': file_sha,
-                'branch': new_branch
-            }
-        except:
-            file_data = {
-                'message': 'Add cli_pip.py',
-                'content': file_content_encoded,
-                'branch': new_branch
-            }
-
-        response = requests.put(
+        response = write_file(
             f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/contents/{FILE_PATH}",
             headers=headers,
             json=file_data
@@ -111,32 +137,19 @@ def test_e2e_run_gitea_app():
         pr = response.json()
         pr_number = pr['number']
 
+        missing_tools = ["/describe", "/review", "/improve"]
         for i in range(NUM_MINUTES):
             logger.info("Waiting for the PR to get all the tool results...")
             time.sleep(60)
 
-            response = requests.get(
-                f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/issues/{pr_number}/comments",
-                headers=headers
+            missing_tools = _missing_gitea_tool_results(
+                f"{gitea_url}/api/v1/repos/{owner}/{repo_name}", pr_number, headers
             )
-            response.raise_for_status()
-            comments = response.json()
-
-            if len(comments) >= 5:
-                valid_review = False
-                for comment in comments:
-                    if comment['body'].startswith('## PR Reviewer Guide 🔍'):
-                        valid_review = True
-                        break
-                if valid_review:
-                    break
-                else:
-                    logger.error("REVIEW feedback is invalid")
-                    raise Exception("REVIEW feedback is invalid")
-            else:
-                logger.info(f"Waiting for the PR to get all the tool results. {i + 1} minute(s) passed")
+            if not missing_tools:
+                break
+            logger.info(f"Still waiting for {', '.join(missing_tools)} after {i + 1} minute(s)")
         else:
-            raise AssertionError(f"After {NUM_MINUTES} minutes, the PR did not get all the tool results")
+            raise AssertionError(f"After {NUM_MINUTES} minutes, missing tool results: {', '.join(missing_tools)}")
 
         logger.info(f"Cleaning up: closing PR and deleting branch {new_branch}")
 

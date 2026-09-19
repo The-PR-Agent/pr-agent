@@ -2220,25 +2220,31 @@ class LiteLLMAIHandler(BaseAiHandler):
         ]
 
         # Models that support extended thinking (config override replaces the built-in list when non-empty)
-        override = get_settings().config.get("claude_extended_thinking_models_override", []) or []
-        if override and not isinstance(override, list):
-            get_logger().warning(
-                "Invalid claude_extended_thinking_models_override in config; expected a list of model names. "
-                "Falling back to the built-in Claude extended-thinking model list."
-            )
-            override = []
-        elif override and not all(isinstance(model, str) and model.strip() for model in override):
-            get_logger().warning(
-                "Invalid claude_extended_thinking_models_override in config; "
-                "expected a list of model name strings. "
-                "Falling back to the built-in Claude extended-thinking model list."
-            )
-            override = []
-        # Store stripped names so exact-match checks against the model succeed even when the config
-        # entries contain surrounding whitespace (validation above already used model.strip()).
-        self.claude_extended_thinking_models = (
-            [model.strip() for model in override] if override else CLAUDE_EXTENDED_THINKING_MODELS
+        override = self._validated_model_name_list("claude_extended_thinking_models_override")
+        self.claude_extended_thinking_models = override or CLAUDE_EXTENDED_THINKING_MODELS
+
+        # Treat configured model ids as additional adaptive-only models. Add opaque Bedrock application
+        # inference profile ARNs while preserving built-in detection for named models.
+        self.claude_adaptive_thinking_models_override = self._validated_model_name_list(
+            "claude_adaptive_thinking_models_override"
         )
+        bedrock_overrides = [
+            model
+            for model in self.claude_adaptive_thinking_models_override
+            if model.startswith("bedrock/") or re.match(r"^arn:[^:]+:bedrock:", model)
+        ]
+        if (
+            bedrock_overrides
+            and self._claude_thinking_controls["enable_claude_adaptive_thinking"]
+        ):
+            litellm.register_model({
+                model: {
+                    "litellm_provider": "bedrock",
+                    "mode": "chat",
+                    "supports_adaptive_thinking": True,
+                }
+                for model in bedrock_overrides
+            })
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
@@ -3451,24 +3457,27 @@ class LiteLLMAIHandler(BaseAiHandler):
         GROK_REASONING_EFFORT_LEVELS registry, so they do not depend on map versions)
         and bare o3/o4/Gemini ids resolve directly. To mirror the old
         ``endswith("/<id>")`` membership, probe every suffix of the id (after
-        stripping a routing suffix such as ``:nitro`` and the leading ``openrouter/``
-        segment, whose provider-prefixed slugs can carry metadata for models this
-        handler never routed there) plus the ``xai/``-prefixed bare name. Claude
-        models are excluded by the caller via _is_claude_family_model: litellm maps
-        their reasoning_effort to a thinking token budget.
+        stripping the leading ``openrouter/`` segment, whose provider-prefixed slugs
+        can carry metadata for models this handler never routed there) plus the
+        ``xai/``-prefixed bare name. Routing suffixes such as ``:nitro`` are stripped
+        by the OpenRouter caller before this gate runs; for every other provider the
+        full tagged id is kept, so a local ``ollama/o3:latest`` only resolves when its
+        exact spelling is registered and does not fall through to the bare ``o3``
+        entry. Claude models are excluded by the caller via _is_claude_family_model:
+        litellm maps their reasoning_effort to a thinking token budget.
 
         The bundled cost map is consulted directly rather than via
         ``litellm.supports_reasoning``: that public helper resolves the model through
         ``get_llm_provider`` on every call, and provider resolution must stay out of
         this gate because the api key guard snapshots the resolved provider and its
-        key. The map is also what #3475 pins through ``LITELLM_LOCAL_MODEL_COST_MAP``,
-        so the reads are deterministic for the model ids this gate handles.
+        key. The map is also what #3475 pins through ``LITELLM_LOCAL_MODEL_COST_MAP``
+        (now in every Dockerfile stage), so the reads are deterministic for the model
+        ids this gate handles.
         """
         probe = model
         if probe.startswith("openrouter/"):
             probe = probe.removeprefix("openrouter/")
-        base = probe.rsplit(":", 1)[0]
-        segments = base.split("/")
+        segments = probe.split("/")
         candidates = []
         for i in range(len(segments)):
             candidates.append("/".join(segments[i:]))
@@ -3680,7 +3689,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     def _claude_thinking_mode(self, model: str) -> str | None:
         """Return the thinking mode selected by request construction for this model."""
-        adaptive_model = self._is_claude_adaptive_thinking_model(model)
+        adaptive_model = self._model_uses_adaptive_thinking(model)
         if adaptive_model and self._claude_thinking_controls["enable_claude_adaptive_thinking"]:
             return "adaptive"
         if (
@@ -3854,6 +3863,22 @@ class LiteLLMAIHandler(BaseAiHandler):
         return kwargs
 
     @staticmethod
+    def _validated_model_name_list(setting_name: str) -> list[str]:
+        """Return a stripped config list of model names, or an empty list when malformed."""
+        value = get_settings().config.get(setting_name, []) or []
+        if not value:
+            return []
+        if not isinstance(value, list) or not all(
+            isinstance(model, str) and model.strip() for model in value
+        ):
+            get_logger().warning(
+                f"Invalid {setting_name} in config; expected a list of model name strings. "
+                "Ignoring it and using the built-in Claude thinking model detection."
+            )
+            return []
+        return [model.strip() for model in value]
+
+    @staticmethod
     def _is_claude_adaptive_thinking_model(model: str) -> bool:
         """Return whether a Claude model requires the adaptive thinking API."""
         normalized_model = model.lower().replace("_", "-").replace(".", "-")
@@ -3861,6 +3886,13 @@ class LiteLLMAIHandler(BaseAiHandler):
             r"claude-(?:opus-4-(?:7|8)|(?:opus|sonnet|fable)-5)(?:[^0-9]|$)",
             normalized_model,
         ) is not None
+
+    def _model_uses_adaptive_thinking(self, model: str) -> bool:
+        """Return whether a model should receive the adaptive-thinking payload."""
+        return (
+            isinstance(model, str)
+            and model.strip() in self.claude_adaptive_thinking_models_override
+        ) or self._is_claude_adaptive_thinking_model(model)
 
     def _configure_claude_adaptive_thinking(self, model: str, kwargs: dict) -> dict:
         """Configure thinking for Claude models that reject token budgets."""
@@ -4144,13 +4176,34 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # 'max' is this project's own alias for "the most reasoning available",
                         # already translated on the Grok and OpenRouter paths. GPT-5.2 and later
                         # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
-                        # false for gpt-5 and gpt-5.1, so those stay unsupported either way.
+                        # false for gpt-5 and gpt-5.1, so those are clamped to 'high' instead.
                         # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        get_logger().info(
-                            "GPT-5 models name their top reasoning level 'xhigh'; "
-                            "using 'xhigh' for reasoning_effort='max'"
-                        )
-                        effort = ReasoningEffort.XHIGH.value
+                        lookup_model = model
+                        while lookup_model.startswith(("openai/", "azure/")):
+                            lookup_model = lookup_model.removeprefix("openai/").removeprefix("azure/")
+                        lookup_model = lookup_model.removesuffix("_thinking")
+                        try:
+                            supports_xhigh = litellm.get_model_info(lookup_model).get(
+                                "supports_xhigh_reasoning_effort"
+                            )
+                        except Exception:
+                            # An unknown model is not evidence that 'xhigh' is unsupported; keep it.
+                            get_logger().debug(
+                                f"litellm.get_model_info could not resolve model '{lookup_model}'"
+                            )
+                            supports_xhigh = None
+                        if supports_xhigh is False:
+                            effort = ReasoningEffort.HIGH.value
+                            get_logger().info(
+                                f"{lookup_model} does not support reasoning_effort='xhigh'; "
+                                "using 'high' for reasoning_effort='max'"
+                            )
+                        else:
+                            effort = ReasoningEffort.XHIGH.value
+                            get_logger().info(
+                                "GPT-5 models name their top reasoning level 'xhigh'; "
+                                "using 'xhigh' for reasoning_effort='max'"
+                            )
 
                     if openrouter_model:
                         openrouter_reasoning_effort = effort
@@ -4264,8 +4317,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                     )
                     if "arn:aws:bedrock:" in model:
                         message += (
-                            " For a Bedrock inference profile, address the model by name and pass "
-                            "the ARN with litellm.model_id."
+                            " For a Bedrock inference profile, add the ARN to "
+                            "config.claude_adaptive_thinking_models_override."
                         )
                     get_logger().warning(message)
 

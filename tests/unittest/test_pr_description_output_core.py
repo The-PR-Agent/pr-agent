@@ -25,8 +25,9 @@ import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined, select_autoescape
 
+from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import PRDescriptionHeader, process_description
+from pr_agent.algo.utils import process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import PRDescription
 

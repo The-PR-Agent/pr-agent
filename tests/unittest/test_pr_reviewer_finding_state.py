@@ -4,19 +4,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.comment_identity import (
+    PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
+    comment_matches_identity,
+    get_pr_review_comment_identifiers,
+)
 from pr_agent.algo.review_finding_state import (
     _render_resolved_section,
     normalize_finding,
     parse_review_state,
     reconcile_review_findings,
     serialize_review_state,
-)
-from pr_agent.algo.utils import (
-    PRReviewHeader,
-    PRReviewIdentity,
-    add_pr_review_identity,
-    comment_matches_identity,
-    get_pr_review_comment_identifiers,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider

@@ -258,28 +258,43 @@ class TestLiteLLMReasoningEffort:
             mock_logger.info.assert_any_call("Using reasoning_effort='xhigh' for GPT-5 model")
 
     @pytest.mark.asyncio
-    async def test_gpt5_reasoning_effort_max_is_mapped_to_xhigh(self, monkeypatch, mock_logger):
-        """GPT-5 rejects 'max'; the handler must send its top level 'xhigh' instead."""
+    @pytest.mark.parametrize(
+        ("model", "model_info", "expected_effort"),
+        [
+            ("azure/openai/gpt-5.2_thinking", {"supports_xhigh_reasoning_effort": True}, "xhigh"),
+            ("openai/azure/gpt-5.1-codex", {"supports_xhigh_reasoning_effort": False}, "high"),
+            ("gpt-5.2", {}, "xhigh"),
+            ("gpt-5.2", LookupError("unavailable"), "xhigh"),
+        ],
+    )
+    async def test_gpt5_reasoning_effort_max_uses_xhigh_metadata(
+        self, monkeypatch, mock_logger, model, model_info, expected_effort,
+    ):
+        """Clamp max according to LiteLLM's xhigh metadata without losing the fallback."""
         fake_settings = create_mock_settings("max")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        lookups = []
 
+        def get_model_info(lookup_model):
+            lookups.append(lookup_model)
+            if isinstance(model_info, Exception):
+                raise model_info
+            return model_info
+
+        monkeypatch.setattr(litellm, "get_model_info", get_model_info)
         with patch(
-            'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion',
+            "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
             new_callable=AsyncMock,
         ) as mock_completion:
             mock_completion.return_value = create_mock_acompletion_response()
 
             handler = LiteLLMAIHandler()
-            await handler.chat_completion(
-                model="gpt-5.6",
-                system="test system",
-                user="test user"
-            )
+            await handler.chat_completion(model=model, system="test system", user="test user")
 
-            call_kwargs = mock_completion.call_args[1]
-            assert call_kwargs["reasoning_effort"] == "xhigh"
-            assert "reasoning_effort" in call_kwargs["allowed_openai_params"]
-            mock_logger.info.assert_any_call("Using reasoning_effort='xhigh' for GPT-5 model")
+        call_kwargs = mock_completion.call_args[1]
+        assert call_kwargs["reasoning_effort"] == expected_effort
+        assert "reasoning_effort" in call_kwargs["allowed_openai_params"]
+        assert lookups == ["gpt-5.2" if "gpt-5.2" in model else "gpt-5.1-codex"]
 
     @pytest.mark.asyncio
     async def test_gpt5_valid_reasoning_effort_minimal(self, monkeypatch, mock_logger):
@@ -1008,12 +1023,13 @@ class TestLiteLLMReasoningEffortGPT6:
 
 
 class TestLiteLLMReasoningEffortGemini:
-    """Gemini 2.5 reasoning_effort handling via litellm's bundled metadata.
+    """Gemini 2.5/3.x reasoning_effort handling via litellm's bundled metadata.
 
-    Gemini 2.5 exposes a thinking budget that LiteLLM maps from reasoning_effort. The
-    support probe in chat_completion matches bare and provider-prefixed ids such as
-    "vertex_ai/gemini-2.5-pro". OpenRouter models use extra_body.reasoning instead and
-    are covered by test_litellm_openrouter_controls.py.
+    Gemini 2.5 and 3.x expose a thinking budget that LiteLLM maps from
+    reasoning_effort. The support probe in chat_completion matches bare and
+    provider-prefixed ids such as "vertex_ai/gemini-2.5-pro" and
+    "gemini/gemini-3.5-flash". OpenRouter models use extra_body.reasoning instead
+    and are covered by test_litellm_openrouter_controls.py.
     """
 
     def _isolate_env(self, monkeypatch):
@@ -1024,7 +1040,7 @@ class TestLiteLLMReasoningEffortGemini:
 
     @pytest.mark.asyncio
     async def test_gemini_prefixed_forms_get_reasoning_effort(self, monkeypatch, mock_logger):
-        """Bare and provider-prefixed Gemini 2.5 ids all receive the configured reasoning_effort."""
+        """Bare and provider-prefixed Gemini 2.5/3.x ids all receive the configured reasoning_effort."""
         fake_settings = create_mock_settings("low")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         self._isolate_env(monkeypatch)
@@ -1034,6 +1050,11 @@ class TestLiteLLMReasoningEffortGemini:
             "gemini-2.5-flash",
             "gemini/gemini-2.5-pro",
             "vertex_ai/gemini-2.5-pro",
+            "gemini-3.7-flash",
+            "gemini/gemini-3.5-flash",
+            "gemini/gemini-3.5-flash-lite",
+            "vertex_ai/gemini-3.5-flash",
+            "gemini/gemini-3.8-flash",
         ]
 
         for model in gemini_models:
@@ -1050,12 +1071,25 @@ class TestLiteLLMReasoningEffortGemini:
 
     @pytest.mark.asyncio
     async def test_non_listed_gemini_gets_no_reasoning_effort(self, monkeypatch, mock_logger):
-        """A Gemini model not in the support list (e.g. 1.5) must not receive reasoning_effort."""
+        """A Gemini id the bundled cost map does not flag as reasoning-capable must not receive reasoning_effort.
+
+        Locks in the deliberate 3.x exclusions: gemini-3.1-flash and gemini-3.5-pro
+        are absent from litellm's bundled cost map, and gemini-3.1-pro resolves
+        only under the deepinfra/google/ prefix, so the metadata probe's suffix
+        lookup never flags their native spellings. Do not re-add them without
+        checking the bundled registry first.
+        """
         fake_settings = create_mock_settings("low")
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
         self._isolate_env(monkeypatch)
 
-        for model in ("openrouter/google/gemini-1.5-pro", "gemini-1.5-flash"):
+        for model in (
+            "openrouter/google/gemini-1.5-pro",
+            "gemini-1.5-flash",
+            "gemini/gemini-3.1-flash",
+            "gemini/gemini-3.1-pro",
+            "gemini-3.5-pro",
+        ):
             with patch('pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion', new_callable=AsyncMock) as mock_completion:
                 mock_completion.return_value = create_mock_acompletion_response()
 
@@ -1127,6 +1161,77 @@ class TestLiteLLMReasoningEffortGemini:
 
                 call_kwargs = mock_completion.call_args[1]
                 assert call_kwargs.get("reasoning_effort") == "low", f"reasoning_effort dropped for {model}"
+
+
+class TestLiteLLMReasoningEffortTaggedModels:
+    """Reasoning support is probed on the exact model id, so a ``:tag`` a local
+    provider attaches (ollama/replicate Bedrock) must not fall through to the
+    bare metadata entry. The OpenRouter caller strips its own routing suffix
+    before this gate, so only non-OpenRouter tagged ids are exercised here.
+    """
+
+    def _isolate_env(self, monkeypatch):
+        # LiteLLMAIHandler.__init__ branches on these; clear them for a deterministic handler.
+        for name in ("AWS_USE_IMDS", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+                     "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+
+    @pytest.mark.asyncio
+    async def test_tagged_ollama_id_does_not_fall_through_to_bare_entry(self, monkeypatch, mock_logger):
+        """ollama/o3:latest must not receive reasoning_effort just because the bare o3
+        entry is reasoning-capable; the tagged spelling is not what litellm registers.
+        """
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(
+                model="ollama/o3:latest", system="system", user="user",
+            )
+
+        kwargs = completion.call_args.kwargs
+        assert "reasoning_effort" not in kwargs
+        assert "allowed_openai_params" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", [
+        "ollama/deepseek-r1:8b",
+        "gpt-oss:20b",
+        "replicate/deepseek-ai/deepseek-r1:2025-01-12",
+    ])
+    async def test_tagged_non_reasoning_spellings_receive_no_effort(self, monkeypatch, mock_logger, model):
+        """Tagged ids litellm does not register as reasoning-capable stay off the path."""
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(model=model, system="system", user="user")
+
+        kwargs = completion.call_args.kwargs
+        assert "reasoning_effort" not in kwargs, f"unexpected reasoning_effort for {model}"
+
+    @pytest.mark.asyncio
+    async def test_exact_tagged_spelling_still_enables_reasoning(self, monkeypatch, mock_logger):
+        """A tagged id registered with its exact spelling still resolves to reasoning_effort."""
+        monkeypatch.setitem(
+            litellm.model_cost, "ollama/qwen3:8b", {"supports_reasoning": True}
+        )
+        fake_settings = create_mock_settings("low")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(
+                model="ollama/qwen3:8b", system="system", user="user",
+            )
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["reasoning_effort"] == "low"
 
 
 class TestLiteLLMReasoningEffortGrok:

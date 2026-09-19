@@ -15,16 +15,23 @@ permissions:
 
 jobs:
   update_release_draft:
+    if: github.event_name == 'push'
     permissions:
       contents: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9  # v7.7.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  auto_label:
+    if: github.event_name == 'pull_request_target'
+    permissions:
+      contents: read
       pull-requests: write
     runs-on: ubuntu-latest
     steps:
-      - if: github.event_name == 'push'
-        uses: release-drafter/release-drafter@34d80673e067bdc0c24568d3af899c216adcfaa9  # v7.7.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - if: github.event_name == 'pull_request_target'
-        uses: release-drafter/release-drafter/autolabeler@34d80673e067bdc0c24568d3af899c216adcfaa9  # v7.7.0
+      - uses: release-drafter/release-drafter/autolabeler@34d80673e067bdc0c24568d3af899c216adcfaa9  # v7.7.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

@@ -183,10 +183,13 @@ def _key_is_read(section: str, key: str, sources: str) -> bool:
         sources,
     ):
         return True
-    # 5. helper indirection for the [config] section: _read_bool_setting("key")
-    #    and get_reaction_setting("key") both read get_settings().config.get(key).
+    # 5. Detect helpers that read a [config] key through a variable name.
     if section == "config":
-        for helper in ("_read_bool_setting", "get_reaction_setting"):
+        for helper in (
+            "_read_bool_setting",
+            "get_reaction_setting",
+            "_validated_model_name_list",
+        ):
             if re.search(
                 r"\b" + re.escape(helper) + r"\s*\(\s*['\"]" + key_name + r"['\"]",
                 sources,

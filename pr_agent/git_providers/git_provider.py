@@ -9,16 +9,15 @@ from collections.abc import Iterable
 from typing import Optional, Tuple
 from urllib.parse import urlsplit
 
-from pr_agent.algo.language_handler import numeric_languages
-from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import (
-    Range,
+from pr_agent.algo.comment_identity import (
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
-    process_description,
     render_hidden_marker,
 )
+from pr_agent.algo.language_handler import numeric_languages
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
