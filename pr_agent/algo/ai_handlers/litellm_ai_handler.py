@@ -133,7 +133,8 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     get_repetition_penalty,
 )
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
-from pr_agent.algo.utils import ReasoningEffort, get_version
+from pr_agent.algo.run_output import get_version
+from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
