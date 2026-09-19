@@ -77,7 +77,7 @@ async def render_description_help(provider, monkeypatch) -> str:
     description.data = None
     description.file_label_dict = None
     description._prepare_data = MagicMock()
-    description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", "", []))
+    description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", ""))
 
     monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
@@ -105,6 +105,8 @@ async def test_description_help_rendering_follows_html_list_capability(
     assert provider.html_lists_queries == 1
     assert expected in body
     assert unexpected not in body
+    assert "https://docs.pr-agent.ai/usage-guide/" in body
+    assert "qodo-merge-docs.qodo.ai" not in body
     if not html_lists:
         assert PLAIN_BREAK_MARKER in body
 

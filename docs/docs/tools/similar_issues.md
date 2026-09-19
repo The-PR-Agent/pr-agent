@@ -1,5 +1,7 @@
 ## Overview
 
+> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. Its backends are not equally exercised: the lancedb flow has no tests of its own, and no backend is tested against its real driver.
+
 The similar issue tool retrieves the most similar issues to the current issue.
 It can be invoked manually by commenting on any PR:
 
@@ -50,6 +52,12 @@ gcp-starter pod tier is no longer supported.
 created. An existing index is opened by name and is never recreated, so moving an
 existing deployment to the new configuration does not lose the stored vectors.
 
+!!! note "Backend coverage is uneven"
+
+    No backend is exercised against its real driver: the `similar-issue` dependency group is
+    not installed in CI, so the pinecone tests run against a faked module and the qdrant tests
+    never construct a client. The lancedb flow has no tests of its own at all.
+
 !!! note "Default vector database"
 
     `vectordb` defaults to `lancedb`, which works with no external credentials. To use
@@ -75,7 +83,7 @@ vectordb = "qdrant"
 
 You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdrant.io/).
 
-Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`.
+Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`, derived by appending a `-v2` suffix to the shared index name (`codium-ai-pr-agent-issues`). The suffix is an implementation detail of the Qdrant backend only; pinecone and lancedb use the unsuffixed name.
 
 !!! note "Upgrading an index created before the point-id fix"
 

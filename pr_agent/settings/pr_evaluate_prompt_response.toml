@@ -44,9 +44,9 @@ After that, rank each response. Criterions to rank each response:
 - Don't necessarily rank higher a response that is longer. A shorter response might be better if it is more concise, and still addresses the task better.
 
 
-The output must be a YAML object equivalent to type $PRRankRespones, according to the following Pydantic definitions:
+The output must be a YAML object equivalent to type $PRRankResponses, according to the following Pydantic definitions:
 =====
-class PRRankRespones(BaseModel):
+class PRRankResponses(BaseModel):
     which_response_was_better: Literal[0, 1, 2] = Field(description="A number indicating which response was better. 0 means both responses are equally good.")
     why: str = Field(description="In a short and concise manner, explain why the chosen response is better than the other. Be specific and give examples if relevant.")
     score_response1: int = Field(description="A score between 1 and 10, indicating the quality of the response1, based on the criterions mentioned in the prompt.")
@@ -56,8 +56,8 @@ class PRRankRespones(BaseModel):
 
 Example output:
 ```yaml
-which_response_was_better: "X"
-why: "Response X is better because it is more practical, and addresses the task requirements better since ..."
+which_response_was_better: 1
+why: "Response 1 is better because it is more practical, and addresses the task requirements better since ..."
 score_response1: ...
 score_response2: ...
 ```

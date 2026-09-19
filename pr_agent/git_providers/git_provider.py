@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import shutil
@@ -6,17 +7,32 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Optional, Tuple
+from urllib.parse import urlsplit
 
-from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import (
-    Range,
+from pr_agent.algo.comment_identity import (
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
-    process_description,
+    render_hidden_marker,
 )
+from pr_agent.algo.language_handler import numeric_languages
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+
+def get_config_branch() -> str:
+    """Return the branch to read the repo `.pr_agent.toml` from, or "" for the provider default branch.
+
+    Prefer CONFIG.CONFIG_BRANCH (set by the CLI `--config-branch` flag) over the
+    PR_AGENT_CONFIG_BRANCH environment variable and ignore whitespace-only values.
+    """
+    settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
+    settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
+    env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+    return settings_branch or env_branch
+
 
 MAX_FILES_ALLOWED_FULL = 50
 
@@ -45,6 +61,21 @@ def redact_credentials(text) -> str:
         return ""
     redacted = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), str(text))
     return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + "<redacted>", redacted)
+
+
+def _clone_authorization_header(repo_url: str) -> str | None:
+    """Build the Authorization header git should send for a token-bearing clone URL.
+
+    Replicates what a plain `git clone https://user[:password]@host/...` would have sent
+    via curl so the credential can ride in the environment instead of the `git` or
+    `git-remote-http` command lines. Returns None when `repo_url` carries no userinfo.
+    """
+    parsed = urlsplit(repo_url)
+    if parsed.username is None:
+        return None
+    credentials = f"{parsed.username}:" if parsed.password is None else f"{parsed.username}:{parsed.password}"
+    encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
+    return f"Authorization: Basic {encoded}"
 
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
@@ -232,6 +263,18 @@ class GitProvider(ABC):
         but not GitHub-flavored markdown override this."""
         return False
 
+    def supports_issue_url_tickets(self) -> bool:
+        """Tickets are linked as issue URLs in the PR description or branch name."""
+        return False
+
+    def supports_issue_reference_tickets(self) -> bool:
+        """Tickets are linked as project-scoped issue references (e.g. group/project#12)."""
+        return False
+
+    def supports_linked_work_item_tickets(self) -> bool:
+        """Tickets come from work items the platform links to the PR itself."""
+        return False
+
     #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")
@@ -277,11 +320,26 @@ class GitProvider(ABC):
             )
             ssl_env = os.environ.copy()
 
+        # Keep the credential out of every git argv: clone the redacted URL and resend the
+        # token as an http.extraHeader through the GIT_CONFIG_* environment. Git applies
+        # that config to the subprocesses it spawns (including git-remote-http) without
+        # putting the credential on any command line.
+        clean_repo_url = redact_credentials(repo_url)
+        authorization_header = _clone_authorization_header(repo_url)
+        if clean_repo_url != repo_url and authorization_header is not None:
+            inherited_count = int(ssl_env.get("GIT_CONFIG_COUNT", "0"))
+            ssl_env = {
+                **ssl_env,
+                f"GIT_CONFIG_KEY_{inherited_count}": "http.extraHeader",
+                f"GIT_CONFIG_VALUE_{inherited_count}": authorization_header,
+                "GIT_CONFIG_COUNT": str(inherited_count + 1),
+            }
+
         subprocess.run([
             "git", "clone",
             "--filter=blob:none",
             "--depth", "1",
-            repo_url, dest_folder
+            clean_repo_url, dest_folder
         ], env=ssl_env, check=True,  # check=True will raise an exception if the command fails
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=operation_timeout_in_seconds)
 
@@ -295,12 +353,22 @@ class GitProvider(ABC):
         if not clone_url:
             get_logger().error("Clone failed: Unable to obtain url to clone.")
             return returned_obj
+        destination_existed = os.path.exists(dest_folder)
+        preexisting_git_dir = os.path.isdir(os.path.join(dest_folder, ".git"))
         try:
             if remove_dest_folder and os.path.exists(dest_folder) and os.path.isdir(dest_folder):
                 shutil.rmtree(dest_folder)
+                destination_existed = False
+                preexisting_git_dir = False
             self._clone_inner(clone_url, dest_folder, operation_timeout_in_seconds)
             returned_obj = GitProvider.ScopedClonedRepo(dest_folder)
         except Exception as e:
+            # Remove Git metadata created by a failed clone; preserve caller-owned files when remove_dest_folder=False.
+            git_dir = os.path.join(dest_folder, ".git")
+            if os.path.isdir(git_dir) and not preexisting_git_dir:
+                shutil.rmtree(git_dir, ignore_errors=True)
+            if not destination_existed and os.path.isdir(dest_folder):
+                shutil.rmtree(dest_folder, ignore_errors=True)
             get_logger().error("Clone failed: Could not clone url.",
                 artifact={"error": redact_credentials(e), "url": redact_credentials(clone_url),
                           "dest_folder": dest_folder})
@@ -309,6 +377,17 @@ class GitProvider(ABC):
     @abstractmethod
     def get_files(self) -> list:
         pass
+
+    def get_pr_file_paths(self) -> list:
+        """Return every repository-relative path the PR/MR touches, independent of
+        incremental review state, preserving rename metadata.
+
+        The default delegates to get_files(). Providers whose get_files() shrinks
+        to the unreviewed subset while an incremental review is active must
+        override this with a complete file-set listing, so per-directory settings
+        discovery does not depend on how much of the PR the review has covered.
+        """
+        return self.get_files()
 
     @abstractmethod
     def get_diff_files(self) -> list[FilePatchInfo]:
@@ -350,12 +429,6 @@ class GitProvider(ABC):
         pass
 
     def edit_comment(self, comment, body: str):
-        pass
-
-    def edit_comment_from_comment_id(self, comment_id: int, body: str):
-        pass
-
-    def get_comment_body_from_comment_id(self, comment_id: int) -> str:
         pass
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
@@ -460,6 +533,21 @@ class GitProvider(ABC):
     def get_repo_settings(self):
         pass
 
+    def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
+        """Recursively list every `.pr_agent.toml` path at `ref` ("" = the repository
+        default branch) as `(paths, resolved_ref)`. Providers without per-directory
+        settings support return `([], "")` so the feature degrades to root-only
+        behavior. Implemented by GitHub and GitLab."""
+        return [], ""
+
+    def get_repo_settings_contents(self, paths: list[str], ref: str) -> dict[str, bytes]:
+        """Fetch the raw content of per-directory repo settings files at `ref`.
+
+        Only the entries whose content was fetched successfully are returned; a
+        missing file is skipped with a warning rather than failing the request.
+        Defaults to no per-directory support."""
+        return {}
+
     def get_owning_namespace(self) -> Optional[str]:
         """Return the org/group/workspace that owns this repository, or None when
         the provider has no organisation-level home for global settings.
@@ -507,8 +595,50 @@ class GitProvider(ABC):
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
 
-    def get_workspace_name(self):
+    def get_sibling_repo_file_content(self, repo_id: str, file_path: str, from_default_branch: bool = False):
+        """Fetch a single file from a sibling repository in the same namespace/owner.
+
+        Used by repo context when a repo_context_files entry is a
+        sibling dict ``{"repo_id": ..., "file_path": ...}``. Only providers that can resolve
+        the sibling through their own authenticated API (GitHub, GitLab) override this; both
+        require host allowlisting, check the resolved owner/group, and read from the
+        sibling's default branch. The default returns "" so unsupported providers degrade
+        gracefully without reaching an unrelated repository or host.
+        """
         return ""
+
+    def is_sibling_repo_allowed(self, repo_id: str, *, case_sensitive: bool = True) -> bool:
+        """Require explicit host approval before resolving a sibling repository."""
+        allowed = get_settings().config.get("repo_context_sibling_repos", [])
+        if not isinstance(allowed, list):
+            return False
+        normalize = (lambda value: value) if case_sensitive else str.casefold
+        return normalize(repo_id) in {
+            normalize(value.strip().strip("/")) for value in allowed if isinstance(value, str) and value.strip()
+        }
+
+    def set_command_actor(self, actor) -> None:
+        """Record the authenticated user who triggered the current command.
+
+        Comment commands can pass arbitrary arguments, so sibling-repo context must be
+        authorized against the actor who issued the command rather than the PR/MR author:
+        a commenter may not have the read access the author has. Providers that resolve
+        siblings through their own authenticated API use this identity (when set) instead
+        of the PR/MR author. When no trustworthy actor is available the providers fail
+        closed for non-public siblings.
+        """
+        self._command_actor = actor
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        """Return the ref (commit SHA or branch name) that repo-context files are read from.
+
+        The repo-context cache key (pr_agent/algo/repo_context.py) includes this ref so a
+        rebase or a push to the base branch invalidates cached file content instead of serving
+        it from a commit that has since moved. Providers that override get_repo_file_content
+        should return the same ref they fetch from; the default None covers providers with no
+        repo-context support at all.
+        """
+        return None
 
     def get_pr_id(self):
         return ""
@@ -541,6 +671,10 @@ class GitProvider(ABC):
     def should_publish_improve_as_thread(self) -> bool:
         return False
 
+    def supports_html_comment_markers(self) -> bool:
+        """Return whether HTML comment identity markers render invisibly."""
+        return True
+
     def supports_review_comment_identity(self) -> bool:
         return False
 
@@ -565,6 +699,16 @@ class GitProvider(ABC):
     def resolve_outdated_inline_threads(self):  # noqa: B027 - intentional no-op
         pass
 
+    def supports_comment_editing(self) -> bool:
+        """Whether this provider can actually edit an existing comment.
+
+        The base ``edit_comment`` is a no-op that returns ``None``, which
+        ``publish_persistent_comment_full`` cannot distinguish from a successful
+        edit. A provider that has not implemented it therefore cannot persist,
+        and must create a new comment instead of silently discarding the body.
+        """
+        return type(self).edit_comment is not GitProvider.edit_comment
+
     def publish_persistent_comment(self, pr_comment: str,
                                    initial_header: str,
                                    update_header: bool = True,
@@ -573,7 +717,18 @@ class GitProvider(ABC):
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
                                    legacy_initial_header: str | None = None):
-        return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
+        if not self.supports_comment_editing():
+            return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
+        return self.publish_persistent_comment_full(
+            pr_comment,
+            initial_header,
+            update_header,
+            name,
+            final_update_message,
+            as_thread=as_thread,
+            identity_marker=identity_marker,
+            legacy_initial_header=legacy_initial_header,
+        )
 
     @staticmethod
     def _get_comment_body(comment) -> str:
@@ -619,7 +774,7 @@ class GitProvider(ABC):
                                    require_agent_authorship: bool = False,
                                    fallback_on_error: bool = True):
         try:
-            pr_comment = add_pr_review_identity(pr_comment, identity_marker)
+            pr_comment = add_pr_review_identity(pr_comment, identity_marker, self)
             identifiers = (
                 [identity_marker, legacy_initial_header]
                 if identity_marker
@@ -640,7 +795,7 @@ class GitProvider(ABC):
                 comment_url = self.get_comment_url(comment)
                 if update_header:
                     update_message = f"#### ({name.capitalize()} updated until commit {latest_commit_url})\n"
-                    update_anchor = identity_marker or initial_header
+                    update_anchor = render_hidden_marker(identity_marker, self) if identity_marker else initial_header
                     updated_anchor = f"{update_anchor}\n\n{update_message}"
                     pr_comment_updated = pr_comment.replace(update_anchor, updated_anchor, 1)
                 else:
@@ -713,9 +868,6 @@ class GitProvider(ABC):
 
     @abstractmethod
     def get_pr_labels(self, update=False):
-        pass
-
-    def get_repo_labels(self):
         pass
 
     def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
@@ -794,11 +946,18 @@ class GitProvider(ABC):
     def get_num_of_files(self):
         try:
             return len(self.get_diff_files())
-        except Exception as e:
+        except Exception:
             return -1
 
     def limit_output_characters(self, output: str, max_chars: int):
-        return output[:max_chars] + '...' if len(output) > max_chars else output
+        """Truncate output to max_chars, including the truncation suffix."""
+        if len(output) <= max_chars:
+            return output
+        if max_chars <= 0:
+            return ""
+        suffix = "..."
+        suffix = suffix[:max_chars]
+        return output[:max_chars - len(suffix)] + suffix
 
 
 def get_main_pr_language(languages, files) -> str:
@@ -814,6 +973,9 @@ def get_main_pr_language(languages, files) -> str:
         return main_language_str
 
     try:
+        languages = numeric_languages(languages)
+        if not languages:
+            return main_language_str
         top_language = max(languages, key=languages.get).lower()
 
         # validate that the specific commit uses the main language

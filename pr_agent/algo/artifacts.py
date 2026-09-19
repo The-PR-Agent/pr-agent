@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import dynaconf
+
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -149,7 +151,7 @@ def inject_artifact_context() -> None:
         separator = "\n======\n\n"
         for key in get_settings():
             setting = get_settings().get(key)
-            if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+            if isinstance(setting, dynaconf.DataDict):
                 if key.lower() in target_tools and hasattr(setting, 'extra_instructions'):
                     extra_instructions = str(setting.extra_instructions or "")
                     if artifact_text not in extra_instructions:

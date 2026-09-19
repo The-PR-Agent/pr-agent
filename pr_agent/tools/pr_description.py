@@ -7,10 +7,10 @@ from graphlib import TopologicalSorter
 from typing import List, Tuple
 
 import yaml
-from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     get_pr_diff,
@@ -18,14 +18,12 @@ from pr_agent.algo.pr_processing import (
     retry_with_fallback_models,
 )
 from pr_agent.algo.repo_context import build_repo_context
-from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.run_details import init_run_details, record_command_failure
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
-    PRDescriptionHeader,
-    clip_tokens,
-    get_max_tokens,
     get_user_labels,
     load_yaml,
     push_outputs,
@@ -90,6 +88,7 @@ class PRDescription:
             "custom_labels_class": "",  # will be filled if necessary in 'set_custom_labels' function
             "enable_semantic_files_types": get_settings().pr_description.enable_semantic_files_types,
             "related_tickets": "",
+            "related_tickets_omitted": 0,
             "include_file_summary_changes": len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD,
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
@@ -138,19 +137,17 @@ class PRDescription:
             if get_settings().pr_description.enable_semantic_files_types:
                 self.file_label_dict = self._prepare_file_labels()
 
-            pr_labels, pr_file_changes = [], []
+            pr_labels = []
             if get_settings().pr_description.publish_labels:
                 pr_labels = self._prepare_labels()
             else:
                 get_logger().debug("Publishing labels disabled")
 
             if get_settings().pr_description.use_description_markers:
-                pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer_with_markers()
+                pr_title, pr_body = self._prepare_pr_answer_with_markers()
             else:
-                pr_title, pr_body, changes_walkthrough, pr_file_changes = self._prepare_pr_answer()
-                if not self.git_provider.is_supported(
-                        "publish_file_comments") or not get_settings().pr_description.inline_file_summary:
-                    pr_body += "\n\n" + changes_walkthrough + "___\n\n"
+                pr_title, pr_body, changes_walkthrough = self._prepare_pr_answer()
+                pr_body += "\n\n" + changes_walkthrough + "___\n\n"
             pr_body += self._get_description_coverage_footer()
             get_logger().debug("PR output", artifact={"title": pr_title, "body": pr_body})
 
@@ -163,12 +160,12 @@ class PRDescription:
                 if self.git_provider.supports_inline_help_footer():
                     pr_body += ('\n\n___\n\n> <details> <summary>  Need help?</summary><li>Type <code>/help how to ...</code> '
                                 'in the comments thread for any questions about PR-Agent usage.</li><li>Check out the '
-                                '<a href="https://qodo-merge-docs.qodo.ai/usage-guide/">documentation</a> '
+                                '<a href="https://docs.pr-agent.ai/usage-guide/">documentation</a> '
                                 'for more information.</li></details>')
                 else:  # bullets separated by <br>, for providers whose footer cannot inline a list
                     pr_body += ("\n\n___\n\n<details><summary>Need help?</summary>- Type <code>/help how to ...</code> in the comments "
                                 "thread for any questions about PR-Agent usage.<br>- Check out the "
-                                "<a href='https://qodo-merge-docs.qodo.ai/usage-guide/'>documentation</a> for more information.</details>")
+                                "<a href='https://docs.pr-agent.ai/usage-guide/'>documentation</a> for more information.</details>")
             # elif get_settings().pr_description.enable_help_comment:
             #     pr_body += '\n\n___\n\n> 💡 **PR-Agent usage**: Comment `/help "your question"` on any pull request to receive relevant information'
 
@@ -242,6 +239,8 @@ class PRDescription:
         except Exception as e:
             get_logger().error(f"Error generating PR description {self.pr_id}: {e}",
                                artifact={"traceback": traceback.format_exc()})
+            # The status of the whole run must not read as success just because the error stopped here.
+            record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         finally:
@@ -270,16 +269,36 @@ class PRDescription:
             return None
 
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
+        ai_handler = getattr(self, "ai_handler", None)
+        output_token_reserve = getattr(
+            ai_handler, "get_output_token_reserve", None
+        )
+        self._description_prompt_handlers = {}
         if raw_prompt_vars is not None:
+            attempt_raw_vars = copy.deepcopy(raw_prompt_vars)
+            set_custom_labels(attempt_raw_vars, self.git_provider)
             self.vars, self.token_handler = fit_related_tickets_to_prompt_budget(
                 self.git_provider.pr,
-                raw_prompt_vars,
+                attempt_raw_vars,
                 get_settings().pr_description_prompt.system,
                 get_settings().pr_description_prompt.user,
                 model,
+                ai_handler=ai_handler,
+                output_token_reserve=output_token_reserve,
             )
+            self._description_prompt_handlers["pr_description_prompt"] = self.token_handler
         large_pr_handling = get_settings().pr_description.get("enable_large_pr_handling", True) and "pr_description_only_files_prompts" in get_settings()
-        output = get_pr_diff(self.git_provider, self.token_handler, model, large_pr_handling=large_pr_handling, return_remaining_files=True)
+        output_token_reserve_kwargs = (
+            {"output_token_reserve": output_token_reserve} if callable(output_token_reserve) else {}
+        )
+        output = get_pr_diff(
+            self.git_provider,
+            self.token_handler,
+            model,
+            large_pr_handling=large_pr_handling,
+            return_remaining_files=True,
+            **output_token_reserve_kwargs,
+        )
         if isinstance(output, tuple):
             patches_diff, remaining_files_list = output
         else:
@@ -291,7 +310,11 @@ class PRDescription:
             if patches_diff:
                 # generate the prediction
                 get_logger().debug("PR diff", artifact=self.patches_diff)
-                self.prediction = await self._get_prediction(model, patches_diff, prompt="pr_description_prompt")
+                self.prediction = await self._get_prediction(
+                    model,
+                    patches_diff,
+                    prompt="pr_description_prompt",
+                )
 
                 # extend the prediction with additional files not shown
                 if get_settings().pr_description.enable_semantic_files_types:
@@ -299,20 +322,31 @@ class PRDescription:
             else:
                 get_logger().error(f"Error getting PR diff {self.pr_id}",
                                    artifact={"traceback": traceback.format_exc()})
-                self.prediction = None
+                raise ValueError(
+                    f"No PR diff fits the /describe request for {model}"
+                )
         else:
             # get the diff in multiple patches, with the token handler only for the files prompt
             get_logger().debug('large_pr_handling for describe')
             self.vars, token_handler_only_files_prompt = fit_related_tickets_to_prompt_budget(
                 self.git_provider.pr,
-                raw_prompt_vars if raw_prompt_vars is not None else self.vars,
+                attempt_raw_vars if raw_prompt_vars is not None else self.vars,
                 get_settings().pr_description_only_files_prompts.system,
                 get_settings().pr_description_only_files_prompts.user,
                 model,
+                ai_handler=ai_handler,
+                output_token_reserve=output_token_reserve,
+            )
+            self._description_prompt_handlers["pr_description_only_files_prompts"] = (
+                token_handler_only_files_prompt
             )
             (patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict,
              files_in_patches_list) = get_pr_diff_multiple_patchs(
-                self.git_provider, token_handler_only_files_prompt, model)
+                self.git_provider,
+                token_handler_only_files_prompt,
+                model,
+                **output_token_reserve_kwargs,
+            )
 
             # get the files prediction for each patch
             chunk_pairs = list(zip(patches_compressed_list, files_in_patches_list, strict=True))
@@ -326,7 +360,10 @@ class PRDescription:
                     get_logger().debug(f"PR diff number {i + 1} for describe files")
                     try:
                         results[i] = await self._get_prediction(
-                            model, patches_diff, prompt="pr_description_only_files_prompts")
+                            model,
+                            patches_diff,
+                            prompt="pr_description_only_files_prompts",
+                        )
                     except Exception as e:
                         results[i] = e
             else:  # async calls
@@ -337,7 +374,12 @@ class PRDescription:
                         patches_diff = "\n".join(patches)
                         get_logger().debug(f"PR diff number {i + 1} for describe files")
                         task = asyncio.create_task(
-                            self._get_prediction(model, patches_diff, prompt="pr_description_only_files_prompts"))
+                            self._get_prediction(
+                                model,
+                                patches_diff,
+                                prompt="pr_description_only_files_prompts",
+                            )
+                        )
                         tasks.append(task)
                         task_indices.append(i)
                 # Wait for all tasks to complete
@@ -400,10 +442,16 @@ class PRDescription:
             # generate files_walkthrough string, with proper token handling
             self.vars, token_handler_only_description_prompt = fit_related_tickets_to_prompt_budget(
                 self.git_provider.pr,
-                raw_prompt_vars if raw_prompt_vars is not None else self.vars,
+                attempt_raw_vars if raw_prompt_vars is not None else self.vars,
                 get_settings().pr_description_only_description_prompts.system,
                 get_settings().pr_description_only_description_prompts.user,
-                model)
+                model,
+                ai_handler=ai_handler,
+                output_token_reserve=output_token_reserve,
+            )
+            self._description_prompt_handlers["pr_description_only_description_prompts"] = (
+                token_handler_only_description_prompt
+            )
             files_walkthrough = "\n".join(file_description_str_list)
             files_walkthrough_prompt = copy.deepcopy(files_walkthrough)
             MAX_EXTRA_FILES_TO_PROMPT = 50
@@ -423,16 +471,6 @@ class PRDescription:
                         get_logger().debug(f"Too many deleted files, clipping to {MAX_EXTRA_FILES_TO_PROMPT}")
                         files_walkthrough_prompt += f"\n... and {len(deleted_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
                         break
-            tokens_files_walkthrough = len(
-                token_handler_only_description_prompt.encoder.encode(files_walkthrough_prompt))
-            total_tokens = token_handler_only_description_prompt.prompt_tokens + tokens_files_walkthrough
-            max_tokens_model = get_max_tokens(model)
-            if total_tokens > max_tokens_model - OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD:
-                # clip files_walkthrough to git the tokens within the limit
-                files_walkthrough_prompt = clip_tokens(files_walkthrough_prompt,
-                                                       max_tokens_model - OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD - token_handler_only_description_prompt.prompt_tokens,
-                                                       num_input_tokens=tokens_files_walkthrough)
-
             # PR header inference
             get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,
@@ -543,16 +581,48 @@ class PRDescription:
             return original_prediction
 
 
-    async def _get_prediction(self, model: str, patches_diff: str, prompt="pr_description_prompt") -> str:
+    async def _get_prediction(
+        self,
+        model: str,
+        patches_diff: str,
+        prompt="pr_description_prompt",
+    ) -> str:
         variables = copy.deepcopy(self.vars)
-        variables["diff"] = patches_diff  # update diff
-
-        environment = Environment(undefined=StrictUndefined)
-        set_custom_labels(variables, self.git_provider)
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        token_handler = getattr(self, "_description_prompt_handlers", {}).get(prompt)
+        if token_handler is None:
+            variables["diff"] = ""
+            budget = AttemptTokenBudget.for_prompt_attempt(
+                model,
+                getattr(self.git_provider, "pr", None),
+                variables,
+                get_settings().get(prompt, {}).get("system", ""),
+                get_settings().get(prompt, {}).get("user", ""),
+                ai_handler=self.ai_handler,
+                output_token_reserve=output_token_reserve,
+            )
+        else:
+            budget = AttemptTokenBudget.for_attempt(
+                model,
+                token_handler,
+                output_token_reserve=output_token_reserve,
+            )
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+        if prompt != "pr_description_only_description_prompts" and fitted.optional_text != patches_diff:
+            raise ValueError(
+                f"The complete packed description diff does not fit the token limit for {model}"
+            )
+        variables["diff"] = fitted.optional_text
+        system_prompt = fitted.system_prompt
+        user_prompt = fitted.user_prompt
         self.variables = variables
-
-        system_prompt = environment.from_string(get_settings().get(prompt, {}).get("system", "")).render(self.variables)
-        user_prompt = environment.from_string(get_settings().get(prompt, {}).get("user", "")).render(self.variables)
 
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model,
@@ -620,7 +690,7 @@ class PRDescription:
             get_logger().error(f"Error converting labels to original case {self.pr_id}: {e}")
         return pr_labels
 
-    def _prepare_pr_answer_with_markers(self) -> Tuple[str, str, str, List[dict]]:
+    def _prepare_pr_answer_with_markers(self) -> Tuple[str, str]:
         get_logger().info(f"Using description marker replacements {self.pr_id}")
 
         # Remove the 'PR Title' key from the dictionary
@@ -661,11 +731,9 @@ class PRDescription:
 
         ai_walkthrough = self.data.get('pr_files')
         walkthrough_gfm = ""
-        pr_file_changes = []
         if ai_walkthrough and not re.search(r'<!--\s*pr_agent:walkthrough\s*-->', body):
             try:
-                walkthrough_gfm, pr_file_changes = self.process_pr_files_prediction(walkthrough_gfm,
-                                                                                    self.file_label_dict)
+                walkthrough_gfm = self.process_pr_files_prediction(walkthrough_gfm, self.file_label_dict)
                 body = body.replace('pr_agent:walkthrough', walkthrough_gfm)
             except Exception as e:
                 get_logger().error(f"Failing to process walkthrough {self.pr_id}: {e}")
@@ -676,9 +744,9 @@ class PRDescription:
         if ai_diagram:
             body = re.sub(r'<!--\s*pr_agent:diagram\s*-->|pr_agent:diagram', ai_diagram, body)
 
-        return title, body, walkthrough_gfm, pr_file_changes
+        return title, body
 
-    def _prepare_pr_answer(self) -> Tuple[str, str, str, List[dict]]:
+    def _prepare_pr_answer(self) -> Tuple[str, str, str]:
         """
         Prepare the PR description based on the AI prediction data.
 
@@ -708,7 +776,6 @@ class PRDescription:
         # Iterate over the remaining dictionary items and append the key and value to 'pr_body' in a markdown format,
         # except for the items containing the word 'walkthrough'
         pr_body, changes_walkthrough = "", ""
-        pr_file_changes = []
         for idx, (key, value) in enumerate(self.data.items()):
             if key == 'changes_diagram':
                 pr_body += f"### {PRDescriptionHeader.DIAGRAM_WALKTHROUGH.value}\n\n"
@@ -733,7 +800,7 @@ class PRDescription:
                 if self.git_provider.is_supported("gfm_markdown"):
                     pr_body += "</details>\n"
             elif 'pr_files' in key.lower() and get_settings().pr_description.enable_semantic_files_types: # 'File Walkthrough' section
-                changes_walkthrough_table, pr_file_changes = self.process_pr_files_prediction(changes_walkthrough, value)
+                changes_walkthrough_table = self.process_pr_files_prediction(changes_walkthrough, value)
                 if get_settings().pr_description.get('file_table_collapsible_open_by_default', False):
                     initial_status = " open"
                 else:
@@ -754,7 +821,7 @@ class PRDescription:
             if idx < len(self.data) - 1:
                 pr_body += "\n\n___\n\n"
 
-        return title, pr_body, changes_walkthrough, pr_file_changes,
+        return title, pr_body, changes_walkthrough
 
     def _prepare_file_labels(self):
         file_label_dict = {}
@@ -785,13 +852,12 @@ class PRDescription:
                 if label not in file_label_dict:
                     file_label_dict[label] = []
                 file_label_dict[label].append((filename, changes_title, changes_summary))
-            except Exception as e:
+            except Exception:
                 get_logger().exception(f"Error preparing file label dict {self.pr_id}")
                 pass
         return file_label_dict
 
     def process_pr_files_prediction(self, pr_body, value):
-        pr_comments = []
         # logic for using collapsible file list
         use_collapsible_file_list = get_settings().pr_description.collapsible_file_list
         num_files = 0
@@ -802,7 +868,7 @@ class PRDescription:
             use_collapsible_file_list = num_files > self.COLLAPSIBLE_FILE_LIST_THRESHOLD
 
         if not self.git_provider.is_supported("gfm_markdown"):
-            return pr_body, pr_comments
+            return pr_body
         try:
             pr_body += "<table>"
             header = "Relevant files"
@@ -868,7 +934,7 @@ class PRDescription:
         except Exception as e:
             get_logger().error(f"Error processing pr files to markdown {self.pr_id}: {str(e)}")
             pass
-        return pr_body, pr_comments
+        return pr_body
 
     def add_file_data(self, delta_nbsp, diff_plus_minus, file_change_description_br, filename, filename_publish, link,
                       pr_body) -> str:

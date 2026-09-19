@@ -722,6 +722,8 @@ async def test_gitea_push_uses_shared_dedupe_slot(monkeypatch):
     async def perform_commands(*args):
         performed.append(args)
 
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", lambda _body: True)
     monkeypatch.setattr(gitea_app, "push_trigger_slot", reject_duplicate)
     monkeypatch.setattr(gitea_app, "_perform_commands_gitea", perform_commands)
     api_url = "https://gitea.example.com/org/repo/pulls/1"
@@ -734,6 +736,169 @@ async def test_gitea_push_uses_shared_dedupe_slot(monkeypatch):
 
     assert performed == []
     assert slots == [(api_url, {"allow_backlog": True, "ttl": 300})]
+
+
+@pytest.mark.asyncio
+async def test_gitea_push_applies_repo_settings_before_effective_gate(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", False)
+    settings.set("GITEA.PUSH_COMMANDS", [])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.HANDLE_PUSH_TRIGGER", True)
+        get_settings().set("GITEA.PUSH_COMMANDS", ["/review"])
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    class Agent:
+        async def handle_request(self, _url, command):
+            calls.append(command)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    monkeypatch.setattr(gitea_app, "prepare_command", lambda command: command)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+    body = {
+        "pull_request": {"url": api_url},
+        "repository": {"full_name": "org/repo"},
+    }
+
+    try:
+        await gitea_app.handle_pr_event(body, "pull_request", "synchronized", Agent())
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert calls == ["settings", "filter", "slot", "/review"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repo_trigger", "repo_commands"),
+    [
+        (False, ["/review"]),
+        (True, []),
+    ],
+)
+async def test_gitea_effective_push_config_skips_before_reserving_slot(
+    monkeypatch, repo_trigger, repo_commands
+):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/host-review"])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.HANDLE_PUSH_TRIGGER", repo_trigger)
+        get_settings().set("GITEA.PUSH_COMMANDS", list(repo_commands))
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert calls == ["settings", "filter"]
+
+
+@pytest.mark.asyncio
+async def test_gitea_repo_filter_rejects_push_before_reserving_slot(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/review"])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return False
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert calls == ["settings", "filter"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["opened", "reopened"])
+async def test_gitea_pr_event_applies_repo_settings_once_before_dispatch(monkeypatch, action):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.PR_COMMANDS", ["/review"])
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    class Agent:
+        async def handle_request(self, _url, command):
+            calls.append(command)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "prepare_command", lambda command: command)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", action, Agent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert calls == ["settings", "filter", "/review"]
 
 
 @pytest.mark.asyncio
@@ -1079,3 +1244,200 @@ async def test_gitlab_push_only_update_still_takes_the_push_branch(
         handle_push_trigger=True,
     )
     assert commands == [["/describe"]]
+
+
+def test_shared_should_process_pr_logic_rules():
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original = {
+        "ignore_repositories": settings.get("CONFIG.IGNORE_REPOSITORIES", []),
+        "ignore_pr_authors": settings.get("CONFIG.IGNORE_PR_AUTHORS", []),
+        "ignore_pr_title": settings.get("CONFIG.IGNORE_PR_TITLE", []),
+        "ignore_pr_labels": settings.get("CONFIG.IGNORE_PR_LABELS", []),
+        "ignore_pr_source_branches": settings.get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []),
+        "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
+    }
+    try:
+        # Verify the default permits processing
+        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
+        settings.set("CONFIG.IGNORE_PR_TITLE", [])
+        settings.set("CONFIG.IGNORE_PR_LABELS", [])
+        settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
+        settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
+
+        assert should_process_pr_logic(
+            title="feat: add feature",
+            sender="alice",
+            repo_full_name="org/repo",
+            labels=["enhancement"],
+            source_branch="feat/add-feature",
+            target_branch="main",
+        ) is True
+
+        # Verify repository ignore rules
+        settings.set("CONFIG.IGNORE_REPOSITORIES", ["^org/ignored-.*$"])
+        assert should_process_pr_logic(repo_full_name="org/ignored-repo") is False
+        assert should_process_pr_logic(repo_full_name="org/allowed-repo") is True
+        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+
+        # Verify author ignore rules
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^bot-.*$", "renovate"])
+        assert should_process_pr_logic(sender="bot-service") is False
+        assert should_process_pr_logic(sender="renovate") is False
+        assert should_process_pr_logic(sender="alice") is True
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
+
+        # Verify title ignore rules for both string and list formats
+        settings.set("CONFIG.IGNORE_PR_TITLE", "^WIP:")  # as single string
+        assert should_process_pr_logic(title="WIP: something") is False
+        assert should_process_pr_logic(title="feat: done") is True
+        settings.set("CONFIG.IGNORE_PR_TITLE", ["^WIP:", "^Draft:"])  # as list
+        assert should_process_pr_logic(title="Draft: something") is False
+        assert should_process_pr_logic(title="feat: done") is True
+        settings.set("CONFIG.IGNORE_PR_TITLE", [])
+
+        # Verify label ignore rules
+        settings.set("CONFIG.IGNORE_PR_LABELS", ["skip-review", "do-not-merge"])
+        assert should_process_pr_logic(labels=["skip-review", "bug"]) is False
+        assert should_process_pr_logic(labels=["bug"]) is True
+        settings.set("CONFIG.IGNORE_PR_LABELS", [])
+
+        # Verify source and target branch ignore rules
+        settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^release/.*$"])
+        settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^production$"])
+        assert should_process_pr_logic(source_branch="release/1.0", target_branch="main") is False
+        assert should_process_pr_logic(source_branch="feature/test", target_branch="production") is False
+        assert should_process_pr_logic(source_branch="feature/test", target_branch="main") is True
+    finally:
+        for k, v in original.items():
+            settings.set(f"CONFIG.{k.upper()}", v)
+
+
+def test_shared_should_process_pr_logic_payload_parsing():
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original_repos = settings.get("CONFIG.IGNORE_REPOSITORIES", [])
+    settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
+    try:
+        # Verify GitHub payload parsing
+        gh_payload = {
+            "pull_request": {"title": "GH PR", "head": {"ref": "feat"}, "base": {"ref": "main"}},
+            "repository": {"full_name": "ignore-org/repo"},
+            "sender": {"login": "gh-user"},
+        }
+        assert should_process_pr_logic(gh_payload) is False
+
+        # Verify GitLab payload parsing
+        gl_payload = {
+            "object_attributes": {"title": "GL MR", "source_branch": "feat", "target_branch": "main"},
+            "project": {"path_with_namespace": "ignore-org/repo"},
+            "user": {"username": "gl-user"},
+        }
+        assert should_process_pr_logic(gl_payload) is False
+
+        # Verify a GitLab non-merge payload is rejected
+        assert should_process_pr_logic({}, provider="gitlab") is False
+
+        # Verify Bitbucket Cloud payload parsing
+        bb_cloud_payload = {
+            "data": {
+                "pullrequest": {
+                    "title": "BB PR",
+                    "destination": {"repository": {"full_name": "ignore-org/repo"}},
+                }
+            }
+        }
+        assert should_process_pr_logic(bb_cloud_payload) is False
+
+        # Verify Bitbucket Server payload parsing
+        bb_server_payload = {
+            "pullRequest": {
+                "title": "BBS PR",
+                "toRef": {"repository": {"project": {"key": "ignore-org"}, "slug": "repo"}},
+            }
+        }
+        assert should_process_pr_logic(bb_server_payload) is False
+    finally:
+        settings.set("CONFIG.IGNORE_REPOSITORIES", original_repos)
+
+
+def test_shared_should_process_pr_logic_explicit_empty_overrides_payload():
+    """Verify that explicitly passing empty metadata overrides nonempty payload values."""
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original = {
+        "ignore_repositories": settings.get("CONFIG.IGNORE_REPOSITORIES", []),
+        "ignore_pr_authors": settings.get("CONFIG.IGNORE_PR_AUTHORS", []),
+        "ignore_pr_title": settings.get("CONFIG.IGNORE_PR_TITLE", []),
+        "ignore_pr_labels": settings.get("CONFIG.IGNORE_PR_LABELS", []),
+        "ignore_pr_source_branches": settings.get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []),
+        "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
+    }
+    settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
+    settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^ignore-bot$"])
+    settings.set("CONFIG.IGNORE_PR_TITLE", ["\\[WIP\\].*"])
+    settings.set("CONFIG.IGNORE_PR_LABELS", ["do-not-merge"])
+    settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^ignore-source$"])
+    settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^ignore-target$"])
+
+    try:
+        # Construct a payload that matches all ignore criteria
+        payload = {
+            "pull_request": {
+                "title": "[WIP] Feature",
+                "head": {"ref": "ignore-source"},
+                "base": {"ref": "ignore-target"},
+                "labels": [{"name": "do-not-merge"}],
+            },
+            "repository": {"full_name": "ignore-org/repo"},
+            "sender": {"login": "ignore-bot"},
+        }
+        # Verify the raw payload is rejected by ignore filters
+        assert should_process_pr_logic(payload) is False
+
+        # Verify overriding ignored fields with empty values permits processing
+        assert (
+            should_process_pr_logic(
+                payload,
+                repo_full_name="",
+                sender="",
+                title="",
+                labels=[],
+                source_branch="",
+                target_branch="",
+            )
+            is True
+        )
+    finally:
+        for k, v in original.items():
+            settings.set(f"CONFIG.{k.upper()}", v)
+
+
+def test_bitbucket_server_should_process_pr_logic_fails_open_on_filter_exception(monkeypatch):
+    """Verify a malformed filter regex fails open without reaching the folder filter."""
+    settings = get_settings()
+    original_title = settings.get("CONFIG.IGNORE_PR_TITLE", [])
+    original_folders = settings.config.get("allow_only_specific_folders", [])
+    settings.set("CONFIG.IGNORE_PR_TITLE", ["[unclosed"])
+    settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", ["allowed_dir"])
+
+    class _RejectingProvider:
+        def __init__(self, pr_url=None):
+            pass
+
+        def get_files(self):
+            return ["docs/readme.md"]
+
+    monkeypatch.setattr(
+        "pr_agent.git_providers.bitbucket_server_provider.BitbucketServerProvider", _RejectingProvider
+    )
+
+    try:
+        assert bitbucket_server_webhook.should_process_pr_logic(_bitbucket_server_payload(title="Test PR")) is True
+    finally:
+        settings.set("CONFIG.IGNORE_PR_TITLE", original_title)
+        settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", original_folders)

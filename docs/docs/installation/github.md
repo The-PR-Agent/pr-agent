@@ -558,6 +558,12 @@ If you encounter rate limiting:
   ```
   See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
 
+**Error: "PR-Agent command was not run" for incomplete GitHub files**
+- **Cause**: GitHub limits pull-request changed-file responses to 3,000 files. A mismatch can also occur when GitHub
+  returns inconsistent file-count metadata.
+- **Solution**: If the pull request changes more than 3,000 files, split it into smaller pull requests and run the
+  command again. Otherwise, retry the command.
+
 **Error: "Invalid JSON format"**
 
 - **Solution**: Check that arrays are properly formatted as JSON strings:

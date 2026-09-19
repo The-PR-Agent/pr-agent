@@ -1,3 +1,4 @@
+import copy
 import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -5,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import litellm
 import openai
 import pytest
+from litellm.llms.bedrock.chat.converse_transformation import AmazonConverseConfig
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -28,6 +30,7 @@ def _restore_litellm_globals():
     AWS_USE_IMDS is set, os.environ; snapshot and restore both, and drop
     AWS_USE_IMDS so the AWS credential path never runs in these tests."""
     saved = (litellm.api_key, getattr(litellm, "openai_key", None), openai.api_key)
+    saved_model_cost = copy.deepcopy(litellm.model_cost)
     saved_env = {name: os.environ.get(name) for name in _HANDLER_ENV_VARS}
     os.environ.pop("AWS_USE_IMDS", None)
     try:
@@ -36,6 +39,8 @@ def _restore_litellm_globals():
         litellm.api_key = saved[0]
         litellm.openai_key = saved[1]
         openai.api_key = saved[2]
+        litellm.model_cost.clear()
+        litellm.model_cost.update(saved_model_cost)
         for name, value in saved_env.items():
             if value is None:
                 os.environ.pop(name, None)
@@ -43,11 +48,23 @@ def _restore_litellm_globals():
                 os.environ[name] = value
 
 
-def _settings(reasoning_effort="medium", enabled=False, extended_enabled=False):
+def _settings(
+    reasoning_effort="medium",
+    enabled=False,
+    extended_enabled=False,
+    extended_budget_tokens=2048,
+    extended_max_output_tokens=4096,
+    adaptive_override=None,
+    custom_llm_provider="",
+):
     flags = {
         "enable_claude_adaptive_thinking": enabled,
         "enable_claude_extended_thinking": extended_enabled,
+        "extended_thinking_budget_tokens": extended_budget_tokens,
+        "extended_thinking_max_output_tokens": extended_max_output_tokens,
     }
+    if adaptive_override is not None:
+        flags["claude_adaptive_thinking_models_override"] = adaptive_override
     config = SimpleNamespace(
         reasoning_effort=reasoning_effort,
         ai_timeout=120,
@@ -56,10 +73,20 @@ def _settings(reasoning_effort="medium", enabled=False, extended_enabled=False):
         verbosity_level=0,
         get=lambda key, default=None: flags.get(key, default),
     )
+    # Bedrock requests now resolve credentials per request rather than from the
+    # process environment, so a bedrock model needs them supplied here.
+    aws = {
+        "aws.AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+        "aws.AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "aws.AWS_REGION_NAME": "us-east-1",
+    }
     return SimpleNamespace(
         config=config,
-        litellm=SimpleNamespace(get=lambda key, default=None: default),
-        get=lambda key, default=None: default,
+        litellm=SimpleNamespace(
+            custom_llm_provider=custom_llm_provider,
+            get=lambda key, default=None: default,
+        ),
+        get=lambda key, default=None: aws.get(key, default),
     )
 
 
@@ -72,11 +99,19 @@ def _response():
 
 
 async def _run_completion(monkeypatch, model, reasoning_effort="medium", enabled=False,
-                          extended_enabled=False, extended_override=None):
+                          extended_enabled=False, extended_override=None, adaptive_override=None):
+    # An ambient selector would be refused before the request credentials are read.
+    for variable in ("AWS_PROFILE_NAME", "AWS_ROLE_NAME"):
+        monkeypatch.delenv(variable, raising=False)
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: _settings(reasoning_effort, enabled, extended_enabled),
+        lambda: _settings(
+            reasoning_effort,
+            enabled,
+            extended_enabled,
+            adaptive_override=adaptive_override,
+        ),
     )
     with patch(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
@@ -124,6 +159,69 @@ async def test_enabled_adaptive_thinking_sends_anthropic_payload(monkeypatch):
     assert kwargs["output_config"] == {"effort": "high"}
     assert "temperature" not in kwargs
     assert "reasoning_effort" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_adaptive_thinking_effort_is_isolated_from_later_settings(monkeypatch):
+    active_settings = _settings(reasoning_effort="low", enabled=True)
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+    handler = LiteLLMAIHandler()
+    active_settings = _settings(reasoning_effort="high", enabled=True)
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        await handler.chat_completion(model="anthropic/claude-opus-4-8", system="sys", user="usr")
+
+    assert completion.call_args.kwargs["output_config"] == {"effort": "low"}
+
+
+@pytest.mark.asyncio
+async def test_adaptive_thinking_enablement_is_isolated_from_later_settings(monkeypatch):
+    active_settings = _settings(reasoning_effort="low", enabled=False)
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+    handler = LiteLLMAIHandler()
+    active_settings = _settings(reasoning_effort="high", enabled=True)
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        await handler.chat_completion(model="anthropic/claude-opus-4-8", system="sys", user="usr")
+
+    assert "thinking" not in completion.call_args.kwargs
+    assert "output_config" not in completion.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_extended_thinking_limits_are_isolated_from_later_settings(monkeypatch):
+    model = "anthropic/claude-opus-4-6"
+    active_settings = _settings(
+        extended_enabled=True,
+        extended_budget_tokens=1024,
+        extended_max_output_tokens=2048,
+    )
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
+    handler = LiteLLMAIHandler()
+    handler.claude_extended_thinking_models = [model]
+    active_settings = _settings(
+        extended_enabled=True,
+        extended_budget_tokens=4096,
+        extended_max_output_tokens=8192,
+    )
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        await handler.chat_completion(model=model, system="sys", user="usr")
+
+    assert completion.call_args.kwargs["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+    assert completion.call_args.kwargs["max_tokens"] == 2048
 
 
 @pytest.mark.asyncio
@@ -226,7 +324,173 @@ async def test_opaque_arn_with_adaptive_enabled_warns_and_skips_payload(monkeypa
     assert "output_config" not in kwargs
     logger.warning.assert_called_once()
     assert "abc123def456" in logger.warning.call_args.args[0]
-    assert "litellm.model_id" in logger.warning.call_args.args[0]
+    assert "claude_adaptive_thinking_models_override" in logger.warning.call_args.args[0]
+
+
+_PROFILE_ARN = (
+    "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
+    "application-inference-profile/abc123def456"
+)
+_RAW_PROFILE_ARN = (
+    "arn:aws:bedrock:eu-central-1:000000000000:"
+    "application-inference-profile/abc123def456"
+)
+_UNLISTED_PROFILE_ARN = (
+    "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
+    "application-inference-profile/unlisted789"
+)
+
+
+def test_opaque_model_override_registers_adaptive_support(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(enabled=True, adaptive_override=[f"  {_PROFILE_ARN}  "]),
+    )
+    register_model = MagicMock()
+    monkeypatch.setattr(litellm, "register_model", register_model)
+
+    handler = LiteLLMAIHandler()
+
+    assert handler.claude_adaptive_thinking_models_override == [_PROFILE_ARN]
+    assert handler._model_uses_adaptive_thinking(_PROFILE_ARN) is True
+    register_model.assert_called_once_with({
+        _PROFILE_ARN: {
+            "litellm_provider": "bedrock",
+            "mode": "chat",
+            "supports_adaptive_thinking": True,
+        }
+    })
+
+
+def test_registered_opaque_model_keeps_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(enabled=True, adaptive_override=[_PROFILE_ARN]),
+    )
+    config = AmazonConverseConfig()
+    params = {"thinking": {"type": "adaptive"}}
+
+    before = config.map_openai_params(params.copy(), {}, _PROFILE_ARN, False)
+    LiteLLMAIHandler()
+    after = config.map_openai_params(params.copy(), {}, _PROFILE_ARN, False)
+    unlisted = config.map_openai_params(params.copy(), {}, _UNLISTED_PROFILE_ARN, False)
+
+    assert before["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+    assert after["thinking"] == {"type": "adaptive"}
+    assert unlisted["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
+
+def test_registered_raw_bedrock_arn_keeps_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(enabled=True, adaptive_override=[_RAW_PROFILE_ARN]),
+    )
+    config = AmazonConverseConfig()
+    params = {"thinking": {"type": "adaptive"}}
+
+    before = config.map_openai_params(params.copy(), {}, _RAW_PROFILE_ARN, False)
+    LiteLLMAIHandler()
+    after = config.map_openai_params(params.copy(), {}, _RAW_PROFILE_ARN, False)
+
+    assert before["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+    assert after["thinking"] == {"type": "adaptive"}
+
+
+@pytest.mark.asyncio
+async def test_raw_bedrock_arn_with_custom_provider_receives_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(
+            enabled=True,
+            adaptive_override=[_RAW_PROFILE_ARN],
+            custom_llm_provider="bedrock",
+        ),
+    )
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        handler = LiteLLMAIHandler()
+        await handler.chat_completion(model=_RAW_PROFILE_ARN, system="sys", user="usr")
+
+    kwargs = completion.call_args.kwargs
+    assert kwargs["model"] == _RAW_PROFILE_ARN
+    assert kwargs["custom_llm_provider"] == "bedrock"
+    assert kwargs["thinking"] == {"type": "adaptive"}
+
+
+def test_named_override_keeps_litellm_model_info(monkeypatch):
+    named = "anthropic/claude-sonnet-4-6"
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(enabled=True, adaptive_override=[named, _PROFILE_ARN]),
+    )
+    provider_before = litellm.get_model_info(named)["litellm_provider"]
+
+    handler = LiteLLMAIHandler()
+
+    assert litellm.get_model_info(named)["litellm_provider"] == provider_before
+    assert handler._model_uses_adaptive_thinking(named) is True
+    assert _PROFILE_ARN in litellm.model_cost
+
+
+def test_disabled_adaptive_thinking_does_not_register_override(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(
+            enabled=False,
+            extended_enabled=True,
+            adaptive_override=[_PROFILE_ARN],
+        ),
+    )
+    register_model = MagicMock()
+    monkeypatch.setattr(litellm, "register_model", register_model)
+
+    handler = LiteLLMAIHandler()
+    handler.claude_extended_thinking_models = [_PROFILE_ARN]
+
+    register_model.assert_not_called()
+    assert handler._claude_thinking_mode(_PROFILE_ARN) == "unsupported_extended"
+
+
+@pytest.mark.parametrize("bad_override", ["not-a-list", [""], ["ok", 5], [None]])
+def test_malformed_adaptive_override_falls_back_to_builtin_detection(monkeypatch, bad_override):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(adaptive_override=bad_override),
+    )
+    monkeypatch.setattr(litellm, "register_model", MagicMock())
+
+    handler = LiteLLMAIHandler()
+
+    assert handler.claude_adaptive_thinking_models_override == []
+    assert handler._model_uses_adaptive_thinking(_PROFILE_ARN) is False
+    assert handler._model_uses_adaptive_thinking("anthropic/claude-opus-4-8") is True
+
+
+@pytest.mark.asyncio
+async def test_overridden_opaque_model_receives_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(litellm, "register_model", MagicMock())
+
+    kwargs = await _run_completion(
+        monkeypatch,
+        _PROFILE_ARN,
+        reasoning_effort="high",
+        enabled=True,
+        adaptive_override=[_PROFILE_ARN],
+    )
+
+    assert kwargs["thinking"] == {"type": "adaptive"}
+    assert kwargs["output_config"] == {"effort": "high"}
+    assert "temperature" not in kwargs
 
 
 @pytest.mark.asyncio

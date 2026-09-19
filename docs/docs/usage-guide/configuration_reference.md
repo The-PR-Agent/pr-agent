@@ -45,6 +45,9 @@ to-do list.
 | --- | --- | --- |
 | `use_repo_settings_file` | true |  |
 | `use_global_settings_file` | true |  |
+| `enable_per_directory_settings` | false | when true, merge per-directory .pr_agent.toml files found by walking up from the PR's changed files (monorepo support). Adds bounded recursive tree discovery per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Nearest (deepest) directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path; when more files match than the per_directory_settings_max_files cap, shallower files are applied first and a partially capped depth keeps its later-path (winning) siblings; any overlap is logged as a warning. |
+| `per_directory_settings_max_files` | 20 | hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning) |
+| `per_directory_settings_max_tree_pages` | 10 | maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap. |
 | `extra_config_url` | "" | optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url. |
 | `disable_auto_feedback` | false |  |
 | `enable_auto_approval` | false | when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out |
@@ -53,9 +56,11 @@ to-do list.
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
 | `response_language` | "en-US" | Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...) |
-| `repo_context_files` | ["AGENTS.md"] | Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable |
+| `repo_context_files` | ["AGENTS.md"] | Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable local context. A structured entry {"repo_id" = ..., "file_path" = ...} selects a sibling default-branch file from the same namespace/owner; repo_id must be in the host-issued repo_context_sibling_repos allowlist below. Reads use the sibling default branch and share repo_context_max_lines; repository settings may select entries, comment arguments cannot override this key |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |
 | `repo_context_max_lines` | 500 | Maximum total rendered lines for repo context, including wrapper tags |
+| `repo_context_sibling_repos` | [] | Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution |
+| `repo_context_max_sibling_files` | 5 | Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository's .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build. |
 **token limits**
 
 | Key | Default | Description |
@@ -66,6 +71,7 @@ to-do list.
 | `custom_model_max_tokens` | -1 | for models not in the default list |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
+| `image_input_token_allowance` | 4096 | reserve tokens per image when provider counting omits or underestimates image cost |
 **patch extension logic**
 
 | Key | Default | Description |
@@ -82,7 +88,7 @@ to-do list.
 | `output_run_cost` | false | if true, collect estimated LiteLLM API cost and include it inside the enabled run details section |
 | `large_patch_policy` | "clip" | "clip", "skip" |
 | `duplicate_prompt_examples` | false |  |
-| `persistent_inline_comments` | false | Persistent inline comments (issue #2037): when true, the GitHub, GitLab, and Azure DevOps providers fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip re-posting suggestions already present on the PR/MR across runs. |
+| `persistent_inline_comments` | false | Enable persistent inline comments (issue #2037) to fingerprint each inline comment and embed a provider-compatible marker, then skip re-posting suggestions already present on the PR/MR across runs. |
 **seed**
 
 | Key | Default | Description |
@@ -110,6 +116,7 @@ to-do list.
 | `enable_ai_metadata` | false | will enable adding ai metadata |
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
+| `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here only when litellm does not know the model (custom OpenAI-compatible endpoints). Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
 **extended thinking for Claude reasoning models**
 
 | Key | Default | Description |
@@ -118,9 +125,11 @@ to-do list.
 | `extended_thinking_budget_tokens` | 2048 |  |
 | `extended_thinking_max_output_tokens` | 4096 |  |
 | `enable_claude_adaptive_thinking` | false | Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled, these models receive thinking={"type": "adaptive"} and an output_config effort. Do not add adaptive-only models to claude_extended_thinking_models_override; when both features are enabled, adaptive thinking takes precedence. |
+| `claude_adaptive_thinking_models_override` | [] | Optional: list model ids to additionally treat as adaptive-only Claude models. Add opaque Bedrock application inference profile ARNs here while keeping built-in detection for named models. When adaptive thinking is enabled, use the exact request model ids so LiteLLM keeps the adaptive payload instead of converting it to the legacy budget_tokens shape. |
 | `claude_extended_thinking_models_override` | [] | Optional: override the built-in list of Claude models that receive the extended-thinking payload. When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS in pr_agent/algo/__init__.py). Leave empty to use the defaults. |
 | `extract_issue_from_branch` | true | Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour. Note: Branch-name extraction is GitHub-only for now; other providers planned for later. |
 | `branch_issue_regex` | "" | Optional: custom regex with exactly one capturing group for the issue number (validated at runtime; falls back to default if missing). If empty, uses default pattern: first 1-6 digits at start of branch or after a slash, followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later. |
+| `description_issue_regex` | "" | Configure a regex replacing bare #N references, with exactly one capturing group for an ASCII issue number. Leave empty for default matching (up to six digits); fall back with a warning on invalid patterns. Set the custom digit limit in the pattern; use only integer-parseable captures. Keep full URLs and owner/repo#N references. Use TOML literal quotes to preserve backslashes, e.g. description_issue_regex = '(?i)(?:fixes\|closes\|resolves)\s+#(\d+)' |
 
 
 ## `[pr_reviewer]` — /review
@@ -180,7 +189,6 @@ to-do list.
 | `publish_labels` | false |  |
 | `add_original_user_description` | true |  |
 | `generate_ai_title` | false |  |
-| `use_bullet_points` | true |  |
 | `extra_instructions` | "" |  |
 | `enable_pr_type` | true |  |
 | `enable_pr_description` | true | adds a section with an AI-generated summary of the PR changes |
@@ -204,7 +212,6 @@ to-do list.
 | `collapsible_file_list` | "adaptive" | true, false, 'adaptive' |
 | `collapsible_file_list_threshold` | 6 |  |
 | `file_table_collapsible_open_by_default` | false |  |
-| `inline_file_summary` | false | false, true, 'table' |
 **markers**
 
 | Key | Default | Description |
@@ -254,12 +261,10 @@ to-do list.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `auto_extended_mode` | true |  |
 | `num_code_suggestions_per_chunk` | 3 |  |
 | `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. |
 | `max_number_of_calls` | 3 |  |
 | `parallel_calls` | true |  |
-| `final_clip_factor` | 0.8 |  |
 | `decouple_hunks` | false |  |
 **self-review checkbox**
 
@@ -271,25 +276,12 @@ to-do list.
 | `fold_suggestions_on_self_review` | true | if true, the code suggestions will be folded after the author clicks on the self-review checkbox |
 
 
-## `[pr_custom_prompt]` — /custom_prompt
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `prompt` | """The code suggestions should focus only on the following: ...""" |  |
-| `suggestions_score_threshold` | 0 |  |
-| `num_code_suggestions_per_chunk` | 3 |  |
-| `self_reflect_on_custom_suggestions` | true |  |
-| `enable_help_text` | false |  |
-
-
 ## `[pr_add_docs]` — /add_docs
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `extra_instructions` | "" |  |
 | `docs_style` | "Sphinx" | "Google Style with Args, Returns, Attributes...etc", "Numpy Style", "Sphinx Style", "PEP257", "reStructuredText" |
-| `file` | "" | in case there are several components with the same name, you can specify the relevant file |
-| `class_name` | "" | in case there are several methods with the same name in the same file, you can specify the relevant class name |
 
 
 ## `[pr_update_changelog]` — /update_changelog
@@ -300,44 +292,6 @@ to-do list.
 | `extra_instructions` | "" |  |
 | `add_pr_link` | true |  |
 | `skip_ci_on_push` | true |  |
-
-
-## `[pr_analyze]` — /analyze
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `enable_help_text` | true |  |
-
-
-## `[pr_test]` — /test
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `extra_instructions` | "" |  |
-| `testing_framework` | "" | specify the testing framework you want to use |
-| `num_tests` | 3 | number of tests to generate. max 5. |
-| `avoid_mocks` | true | if true, the generated tests will prefer to use real objects instead of mocks |
-| `file` | "" | in case there are several components with the same name, you can specify the relevant file |
-| `class_name` | "" | in case there are several methods with the same name in the same file, you can specify the relevant class name |
-| `enable_help_text` | false |  |
-
-
-## `[pr_improve_component]` — /improve_component
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `num_code_suggestions` | 4 |  |
-| `extra_instructions` | "" |  |
-| `file` | "" | in case there are several components with the same name, you can specify the relevant file |
-| `class_name` | "" | in case there are several methods with the same name in the same file, you can specify the relevant class name |
-
-
-## `[pr_help]` — /help
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `force_local_db` | false |  |
-| `num_retrieved_snippets` | 5 |  |
 
 
 ## `[pr_config]` — /config
@@ -367,9 +321,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `api_retries` | 0 | max retries per request with backoff; 0 = no retries (1.59 behaviour) |
 | `polling_request_timeout` | 10 | total seconds for comment-history fallback; positive values capped at 60 |
 | `base_url` | "https://api.github.com" |  |
-| `publish_inline_comments_fallback_with_verification` | true |  |
 | `try_fix_invalid_inline_comments` | true |  |
-| `app_name` | "pr-agent" |  |
 | `ignore_bot_pr` | true |  |
 | `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
 
@@ -382,8 +334,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `bot_user` | "github-actions[bot]" | these toggles allows running the github app from custom deployments |
-| `override_deployment_type` | true |  |
+| `override_deployment_type` | true | these toggles allows running the github app from custom deployments |
 **settings for "pull_request" event**
 
 | Key | Default | Description |
@@ -393,10 +344,10 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `review_states` | ["changes_requested"] | A submitted GitHub review can optionally trigger these commands. The empty default preserves current behavior. |
 | `review_author_types` | ["User"] |  |
 | `review_commands` | [] |  |
+| `webhook_delivery_deduplication` | false | Opt in to in-memory deduplication by X-GitHub-Delivery within each worker process. Active work stays protected; completed IDs expire after the deployment's push_trigger_pending_tasks_ttl (read at startup, 300 seconds by default). Failed or cancelled work can retry immediately. Repeated deliveries do not extend the TTL. Manual redeliveries are also suppressed during this window. State is cleared on restart and is not shared across workers or replicas. |
 | `handle_push_trigger` | false | settings for "pull_request" event with "synchronize" action - used to detect and handle push triggers for new commits |
 | `push_trigger_ignore_bot_commits` | true |  |
 | `push_trigger_ignore_merge_commits` | true |  |
-| `push_trigger_wait_for_initial_review` | true |  |
 | `push_trigger_pending_tasks_backlog` | true |  |
 | `push_trigger_pending_tasks_ttl` | 300 |  |
 | `push_commands` | ["/describe", "/review"] |  |
@@ -413,6 +364,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
 | `publish_code_suggestions_as_review` | false | When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
+| `auto_resolve_fixed_inline_threads` | false | Resolve the bot's own inline threads whose flagged line was modified after the comment was posted - i.e. the diff between the comment's head sha and the current head sha removes/replaces that line. Unlike resolve_outdated_inline_threads this is content-based: threads on lines nobody touched (or merely shifted by unrelated insertions) stay open. |
 | `handle_push_trigger` | false |  |
 | `push_commands` | ["/describe", "/review"] |  |
 | `handle_reviewer_assignment` | false | Auto-trigger commands when the bot is assigned as a reviewer on an MR |
@@ -455,6 +407,14 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `url` | "" | URL to the BitBucket Server instance |
 
 
+## `[jira]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `jira_requirements_field` | "" | Custom field id holding acceptance criteria / requirements, mapped to the ticket "requirements" section. Instance-specific (e.g. "customfield_10127"); empty disables it. |
+| `project_keys` | [] | Optional allowlist of Jira project keys, e.g. ["PROJ", "OPS"]. When non-empty, key-shaped text with another prefix ("SHA-256", "UTF-8", "ISO-8601") is dropped before any lookup, so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys; a supplied list with no valid entry disables the lookup rather than widening it. Empty (default) looks up every key found. |
+
+
 ## `[litellm]`
 
 | Key | Default | Description |
@@ -478,7 +438,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `provider_only` | [] | restrict routing to these upstream providers only, a hard allowlist (e.g. ["z-ai"]); empty = OpenRouter default routing |
 | `provider_order` | [] | preferred provider order; ignored when provider_only is set; empty = unset |
 | `allow_fallbacks` | true | when provider_order is set, allow routing beyond the listed providers |
-| `reasoning_effort` | "" | Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for models in SUPPORT_REASONING_EFFORT_MODELS. Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max". OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility. Model-specific support varies; mandatory reasoning models reject "none". |
+| `reasoning_effort` | "" | Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for reasoning-capable models (probed against litellm's bundled reasoning metadata or the Grok registry, or listed in additional_reasoning_effort_models). Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max". OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility. Model-specific support varies; mandatory reasoning models reject "none". |
 | `reasoning_max_tokens` | 0 | A positive value overrides global effort and non-none OpenRouter-specific efforts. Explicit openrouter.reasoning_effort = "none" keeps reasoning disabled, except on Grok 4.5/4.6: there "none" is clamped to the lowest supported effort first, so a positive budget wins over it. Some providers require max_tokens to be greater than the reasoning budget. |
 | `max_tokens` | 0 | hard cap on completion tokens for the request; 0 = unset |
 
@@ -496,11 +456,12 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `is_enabled` | false | disabled by default; set to true to enable telemetry |
-| `exporter_type` | "console" | "console", "otlp", or "none" |
+| `exporter_type` | "console" | "console", "otlp", "prometheus", or "none" |
 | `service_name` | "pr-agent" |  |
 | `environment` | "development" | "development", "staging", "production", etc. |
 | `otlp_timeout` | 3 | seconds; hard deadline per OTLP export call (incl. retries). Bounds CLI-exit/request stalls when the collector is unreachable; batches slower than this are dropped. |
 | `otlp_protocol` | "http" | "http" (default; exporter ships with pr-agent) or "grpc" (requires the otel-grpc extra: pip install pr-agent[otel-grpc]) |
+| `prometheus_multiproc_dir` | "/tmp/pr-agent-prometheus" | shared dir for the prometheus exporter's per-worker state files; required when exporter_type = "prometheus" (multiprocess gunicorn deployments); created 0700 and must stay owned by the run user (symlink or foreign-owner paths are refused) |
 | `include_pr_url` | false | set to true to attach PR URLs to spans (may expose private repo names) |
 | `include_error_details` | false | set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content) |
 
@@ -513,18 +474,6 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `force_update_dataset` | false |  |
 | `max_issues_to_scan` | 500 |  |
 | `vectordb` | "lancedb" | options: "pinecone", "lancedb", "qdrant" |
-
-
-## `[pr_find_similar_component]`
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `class_name` | "" |  |
-| `file` | "" |  |
-| `search_from_org` | false |  |
-| `allow_fallback_less_words` | true |  |
-| `number_of_keywords` | 5 |  |
-| `number_of_results` | 5 |  |
 
 
 ## `[pinecone]`
@@ -555,27 +504,6 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `max_skills_tokens` | 8000 | token budget for the combined skills_context block |
 
 
-## `[best_practices]`
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `content` | "" |  |
-| `organization_name` | "" |  |
-| `max_lines_allowed` | 800 |  |
-| `enable_global_best_practices` | false |  |
-
-
-## `[auto_best_practices]`
-
-| Key | Default | Description |
-| --- | --- | --- |
-| `enable_auto_best_practices` | true | public - general flag to disable all auto best practices usage |
-| `utilize_auto_best_practices` | true | public - disable usage of auto best practices in the 'improve' tool |
-| `extra_instructions` | "" | public - extra instructions to the auto best practices generation prompt |
-| `content` | "" |  |
-| `max_patterns` | 5 | max number of patterns to be detected |
-
-
 ## `[artifacts]`
 
 | Key | Default | Description |
@@ -586,6 +514,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `artifact_label` | "" | Label shown to the AI — defaults to the filename when empty. |
 | `target_tools` | ["pr_reviewer", "pr_description", "pr_code_suggestions"] | Which tools receive artifact context. |
 | `max_artifact_size` | 50000 | Max artifact size in characters (content is truncated if exceeded) |
+
+
+## `[mosaico]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `health_timeout_seconds` | 10 | finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work |
 
 
 ## `[asana]`

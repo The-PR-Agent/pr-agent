@@ -1,10 +1,10 @@
 import difflib
 import re
-import shlex
 import subprocess
+from collections import Counter
 from types import SimpleNamespace
 from typing import Optional, Tuple
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote, quote_plus, urlparse
 
 from atlassian.bitbucket import Bitbucket
 from packaging.version import parse as parse_version
@@ -12,7 +12,7 @@ from requests.exceptions import HTTPError
 
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
-from ..algo.language_handler import is_valid_file
+from ..algo.language_handler import build_language_file_matcher, is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
 from ..config_loader import get_settings, get_verbosity_level
@@ -71,7 +71,7 @@ class BitbucketServerProvider(GitProvider):
         try:
             parsed_url = urlparse(self.pr_url)
             return f"{parsed_url.scheme}://{parsed_url.netloc}/scm/{self.workspace_slug.lower()}/{self.repo_slug.lower()}.git"
-        except Exception as e:
+        except Exception:
             get_logger().exception(f"url is not a valid merge requests url: {self.pr_url}")
             return ""
 
@@ -99,7 +99,7 @@ class BitbucketServerProvider(GitProvider):
             get_logger().error(f"workspace_name or project_name not found in context, either git url: {repo_git_url} or uninitialized workspace/project.")
             return ("", "")
         prefix = f"{self.bitbucket_server_url}/projects/{workspace_name}/repos/{project_name}/browse"
-        suffix = f"?at=refs%2Fheads%2F{desired_branch}"
+        suffix = f"?at=refs%2Fheads%2F{quote(desired_branch, safe='')}"
         return (prefix, suffix)
 
     def get_repo_settings(self):
@@ -138,12 +138,14 @@ class BitbucketServerProvider(GitProvider):
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         # Read from the PR target ref (the branch being merged into), matching the other providers,
         # or from the repository default branch when from_default_branch is requested.
+        ref = self.get_repo_context_ref(from_default_branch)
+        return self.get_file(file_path, ref)
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
         if from_default_branch:
             default_branch_dict = self.bitbucket_client.get_default_branch(self.workspace_slug, self.repo_slug)
-            ref = default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
-        else:
-            ref = self.pr.toRef['latestCommit']
-        return self.get_file(file_path, ref)
+            return default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
+        return self.pr.toRef['latestCommit']
 
     def get_pr_id(self):
         return self.pr_num
@@ -214,11 +216,8 @@ class BitbucketServerProvider(GitProvider):
                 get_logger().error(f"Failed to publish code suggestion, error: {e}")
             return False
 
-    def publish_file_comments(self, file_comments: list) -> bool:
-        pass
-
     def is_supported(self, capability: str) -> bool:
-        if capability in ['get_labels', 'gfm_markdown', 'publish_file_comments']:
+        if capability in ['get_labels', 'gfm_markdown']:
             return False
         return True
 
@@ -357,25 +356,6 @@ class BitbucketServerProvider(GitProvider):
             )
         return None
 
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   as_thread: bool = False,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            as_thread,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
-
     def supports_review_comment_identity(self) -> bool:
         return True
 
@@ -430,7 +410,26 @@ class BitbucketServerProvider(GitProvider):
             get_logger().exception(f"Failed to remove temp comments, error: {e}")
 
     def remove_comment(self, comment):
-        pass
+        comment_id = comment.get("id") if isinstance(comment, dict) else getattr(comment, "id", None)
+        comment_version = comment.get("version") if isinstance(comment, dict) else getattr(comment, "version", None)
+        if not isinstance(comment_id, int) or not isinstance(comment_version, int):
+            get_logger().warning(
+                f"Failed to remove Bitbucket Server comment: invalid id or version for {comment!r}"
+            )
+            return False
+
+        try:
+            self.bitbucket_client.delete_pull_request_comment(
+                self.workspace_slug,
+                self.repo_slug,
+                self.pr_num,
+                comment_id,
+                comment_version,
+            )
+            return True
+        except Exception as e:
+            get_logger().exception(f"Failed to remove comment, error: {e}")
+            return False
 
     # function to create_inline_comment
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
@@ -487,37 +486,6 @@ class BitbucketServerProvider(GitProvider):
             link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
         return link
 
-    def generate_link_to_relevant_line_number(self, suggestion) -> str:
-        try:
-            relevant_file = suggestion['relevant_file'].strip('`').strip("'").rstrip()
-            relevant_line_str = suggestion['relevant_line'].rstrip()
-            if not relevant_line_str:
-                return ""
-
-            diff_files = self.get_diff_files()
-            position, absolute_position = find_line_number_of_relevant_line_in_file \
-                (diff_files, relevant_file, relevant_line_str)
-
-            if absolute_position != -1:
-                if self.pr:
-                    link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={absolute_position}"
-                    return link
-                else:
-                    if get_verbosity_level() >= 2:
-                        get_logger().info(f"Failed adding line link to '{relevant_file}' since PR not set")
-            else:
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"Failed adding line link to '{relevant_file}' since position not found")
-
-            if absolute_position != -1 and self.pr_url:
-                link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={absolute_position}"
-                return link
-        except Exception as e:
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Failed adding line link to '{relevant_file}', error: {e}")
-
-        return ""
-
     def publish_inline_comments(self, comments: list[dict]) -> bool:
         publishable_count = 0
         published_count = 0
@@ -545,13 +513,23 @@ class BitbucketServerProvider(GitProvider):
         return self.pr.title
 
     def get_languages(self):
-        return {"yaml": 0}  # devops LOL
+        # Return {language name: percentage}, like the other providers.
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
+        lang_count = Counter()
+        for filename in self.get_files():
+            if not filename:
+                continue
+            language = get_language(filename)
+            if language:
+                lang_count[language] += 1
+
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
-
-    def get_pr_owner_id(self) -> str | None:
-        return self.workspace_slug
 
     def get_owning_namespace(self) -> str | None:
         return self.workspace_slug
@@ -750,10 +728,15 @@ class BitbucketServerProvider(GitProvider):
             #Shouldn't happen since this is checked in _prepare_clone, therefore - throwing an exception.
             raise RuntimeError("Bearer token is required!")
 
-        cli_args = shlex.split(f"git clone -c http.extraHeader='Authorization: Bearer {bearer_token}' "
-                               f"--filter=blob:none --depth 1 {repo_url} {dest_folder}")
-
-        ssl_env = get_git_ssl_env()
-
-        subprocess.run(cli_args, env=ssl_env, check=True,  # check=True will raise an exception if the command fails
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=operation_timeout_in_seconds)
+        # Pass the header through the Git process environment (Git >= 2.31), so it never
+        # reaches argv or the checkout's .git/config.
+        ssl_env = {
+            **get_git_ssl_env(),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.extraHeader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {bearer_token}",
+        }
+        cli_args = ["git", "clone", "--filter=blob:none", "--depth", "1", repo_url, dest_folder]
+        subprocess.run(cli_args, env=ssl_env, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=operation_timeout_in_seconds)

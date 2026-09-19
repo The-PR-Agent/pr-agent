@@ -410,21 +410,12 @@ code_suggestions:
     return a - b;
   }
 '''
-        expected_code_block = '''\
-int sum(int a, int b) {
-  return a + b;
-}
-
-int sub(int a, int b) {
-  return a - b;
-}
-'''
         expected_output = {'code_suggestions': [{'relevant_file': 'a.c\n', 'existing_code': '  int sum(int a, int b) {\n    return a + b;\n  }\n\n  int sub(int a, int b) {\n    return a - b;\n  }\n'}]}
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='existing_code') == expected_output
 
     def test_diff_markers_removed_within_list_item(self):
         """
-            Ensures diff-style '-' markers nested inside list items are normalised so the YAML parses
+            Ensures diff-style '-' markers nested inside list items are normalized so the YAML parses
             into the expected structure.
         """
         review_text = '''\

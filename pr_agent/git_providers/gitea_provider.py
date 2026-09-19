@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import giteapy
 from giteapy.rest import ApiException
@@ -311,9 +311,6 @@ class GiteaProvider(GitProvider):
             return f"{self.base_url_html}/{self.owner}/{self.repo}/pulls/{self.pr_number}"
         return self.pr_url
 
-    def get_issue_url(self) -> str:
-        return self.issue_url
-
     def get_latest_commit_url(self) -> str:
         return self.last_commit.html_url if self.last_commit else ""
 
@@ -321,24 +318,6 @@ class GiteaProvider(GitProvider):
         if isinstance(comment, dict):
             return comment.get("html_url") or comment.get("url") or ""
         return getattr(comment, "html_url", "") or getattr(comment, "url", "")
-
-    def publish_persistent_comment(self, pr_comment: str,
-                                   initial_header: str,
-                                   update_header: bool = True,
-                                   name='review',
-                                   final_update_message=True,
-                                   identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
-        # Keep the legacy updater path until Gitea normalizes its dictionary-shaped comment payloads.
-        return self.publish_persistent_comment_full(
-            pr_comment,
-            initial_header,
-            update_header,
-            name,
-            final_update_message,
-            identity_marker=identity_marker,
-            legacy_initial_header=legacy_initial_header,
-        )
 
     def publish_comment(self, comment: str,is_temporary: bool = False) -> None:
         """Publish a comment to the pull request"""
@@ -652,7 +631,7 @@ class GiteaProvider(GitProvider):
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}"
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{relevant_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -953,6 +932,12 @@ class GiteaProvider(GitProvider):
                 return ""
             raise
 
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        if from_default_branch:
+            return self.repo_api.repo_get(self.owner, self.repo).default_branch
+        # Only trust the PR target (base) ref — never the PR head (self.sha).
+        return self.base_sha or self.base_ref
+
 class RepoApi(giteapy.RepositoryApi):
     def __init__(self, client: giteapy.ApiClient):
         self.repository = giteapy.RepositoryApi(client)
@@ -1201,19 +1186,6 @@ class RepoApi(giteapy.RepositoryApi):
         return self.repository.repo_get_all_commits(
             owner=owner,
             repo=repo
-        )
-
-    def add_reviewer(self, owner: str, repo: str, pr_number: int, reviewers: List[str]):
-        body = {
-            "reviewers": reviewers
-        }
-        return self.api_client.call_api(
-            '/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers',
-            'POST',
-            path_params={'owner': owner, 'repo': repo, 'pr_number': pr_number},
-            body=body,
-            response_type='Repository',
-            auth_settings=['AuthorizationHeaderToken']
         )
 
     def add_reaction_comment(self, owner: str, repo: str, comment_id: int, reaction: str):

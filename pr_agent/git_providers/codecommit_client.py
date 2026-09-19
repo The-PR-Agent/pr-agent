@@ -45,6 +45,7 @@ class CodeCommitPullRequestResponse:
             self.source_branch = json.get("sourceReference", "")
             self.destination_commit = json.get("destinationCommit", "")
             self.destination_branch = json.get("destinationReference", "")
+            self.merge_base = json.get("mergeBase", "")
 
 
 class CodeCommitClient:

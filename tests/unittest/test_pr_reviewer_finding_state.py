@@ -4,26 +4,30 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_agent.algo.review_finding_state import (
-    parse_review_state,
-    reconcile_review_findings,
-    serialize_review_state,
-)
-from pr_agent.algo.utils import (
+from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
     add_pr_review_identity,
     comment_matches_identity,
     get_pr_review_comment_identifiers,
 )
+from pr_agent.algo.review_finding_state import (
+    _render_resolved_section,
+    normalize_finding,
+    parse_review_state,
+    reconcile_review_findings,
+    serialize_review_state,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
+from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
+from pr_agent.git_providers.local_git_provider import LocalGitProvider
 from pr_agent.tools.pr_reviewer import PRReviewer
 
 
@@ -57,6 +61,54 @@ def _settings(monkeypatch):
     monkeypatch.setattr(settings.pr_reviewer, "inline_key_issues", False)
     monkeypatch.setattr(settings.pr_reviewer, "publish_output_no_suggestions", False)
     return settings
+
+
+def test_normalize_finding_preserves_markdown_while_fingerprint_ignores_rewrapping():
+    body = "The loop never ends:\n```text\nwhile attempts < 3:\n    attempts += 1\n```"
+    rewrapped = "The loop never ends: ```text while attempts < 3: attempts += 1 ```"
+
+    normalized = normalize_finding(_finding(body))
+    rewrapped_normalized = normalize_finding(_finding(rewrapped))
+
+    assert normalized["body"] == body
+    assert normalized["finding_id"] == rewrapped_normalized["finding_id"]
+
+
+def test_resolved_section_preserves_finding_markdown_structure():
+    issue = {
+        "relevant_file": "src/app.py",
+        "issue_header": "Possible Bug",
+        "issue_content": "The loop never ends:\n```suggestion\nwhile attempts < 3:\n    attempts += 1\n```",
+        "start_line": 3,
+        "end_line": 4,
+    }
+    finding = PRReviewer._review_finding_from_issue(issue)
+    active = reconcile_review_findings(
+        None,
+        [finding],
+        allow_resolution=False,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    resolved = reconcile_review_findings(
+        active,
+        [],
+        allow_resolution=True,
+        head_sha="head-2",
+        timestamp="2026-01-01T00:01:00Z",
+    ).state
+
+    rendered = _render_resolved_section(resolved)
+
+    assert (
+        "### src/app.py:3-4\n\n"
+        "**Possible Issue**\n\n"
+        "The loop never ends:\n"
+        "```text\n"
+        "while attempts < 3:\n"
+        "    attempts += 1\n"
+        "```"
+    ) in rendered
 
 
 
@@ -1049,18 +1101,24 @@ async def test_review_publish_uses_shared_full_signature_for_authorship(monkeypa
         GiteaProvider,
         BitbucketProvider,
         BitbucketServerProvider,
+        CodeCommitProvider,
     ],
-    ids=["github", "gitlab", "azure", "gitea", "bitbucket", "bitbucket-server"],
+    ids=["github", "gitlab", "azure", "gitea", "bitbucket", "bitbucket-server", "codecommit"],
 )
-def test_legacy_persistent_publish_overrides_accept_shared_arguments(provider_class):
+def test_persistent_publish_signatures_accept_shared_arguments(provider_class):
     parameters = inspect.signature(
         provider_class.publish_persistent_comment
     ).parameters
 
+    assert "as_thread" in parameters
     assert "identity_marker" in parameters
     assert "legacy_initial_header" in parameters
     assert "require_agent_authorship" not in parameters
     assert "fallback_on_error" not in parameters
+
+
+def test_providers_without_override_inherit_persistent_comment_implementation():
+    assert LocalGitProvider.publish_persistent_comment is GitProvider.publish_persistent_comment
 
 
 def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):

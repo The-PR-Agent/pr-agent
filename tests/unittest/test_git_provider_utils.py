@@ -112,6 +112,8 @@ def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     assert comment["final_update_message"] is False
     assert "PR-Agent failed to apply 'local' repo settings" in comment["body"]
     assert "Invalid value" in comment["body"]
+    assert "https://docs.pr-agent.ai/usage-guide/configuration_options/" in comment["body"]
+    assert "qodo-merge-docs.qodo.ai" not in comment["body"]
     assert "```toml\n[config]\nmodel =\n```" in comment["body"]
     assert "<details><summary>Configuration content:</summary>" in comment["body"]
 

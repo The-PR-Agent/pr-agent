@@ -12,6 +12,17 @@ from pr_agent.algo import (
 from pr_agent.algo.utils import MAX_TOKENS, get_max_tokens
 
 
+def _expected_max_tokens(model: str) -> int:
+    """Resolve a model's expected max tokens the same way get_max_tokens() does:
+    prefer the static MAX_TOKENS registry, else fall back to LiteLLM (issue #3196).
+    Used so tests keep working for models that were intentionally removed from
+    MAX_TOKENS because LiteLLM's fallback already resolves them correctly.
+    """
+    if model in MAX_TOKENS:
+        return MAX_TOKENS[model]
+    return int(litellm.get_model_info(model)["max_input_tokens"])
+
+
 class TestGetMaxTokens:
 
     # Test if the file is in MAX_TOKENS
@@ -143,7 +154,7 @@ class TestGetMaxTokens:
             })()
         })()
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
-        expected = MAX_TOKENS[model.removesuffix("_thinking")]
+        expected = _expected_max_tokens(model.removesuffix("_thinking"))
         assert get_max_tokens(model) == expected
 
     @pytest.mark.parametrize("model", [
@@ -200,7 +211,7 @@ class TestGetMaxTokens:
         while tmp.startswith(("openai/", "azure/")):
             tmp = tmp.removeprefix("openai/").removeprefix("azure/")
         base = tmp.removesuffix("_thinking")
-        expected = MAX_TOKENS[base]
+        expected = _expected_max_tokens(base)
         assert get_max_tokens(model) == expected
 
     def test_non_gpt5_thinking_model_max_tokens_not_stripped(self, monkeypatch):
@@ -372,7 +383,7 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        expected = MAX_TOKENS[model]
+        expected = _expected_max_tokens(model)
 
         assert get_max_tokens(model) == expected
 
@@ -417,6 +428,8 @@ class TestGetMaxTokens:
         "vertex_ai/gemini-3.1-flash",
         "gemini/gemini-3.1-pro",
         "vertex_ai/gemini-3.1-pro",
+        "gemini/gemini-3.1-flash-lite",
+        "vertex_ai/gemini-3.1-flash-lite",
         "gemini/gemini-3.1-flash-lite-preview",
         "vertex_ai/gemini-3.1-flash-lite-preview",
         "gemini/gemini-3.5-flash",
@@ -663,7 +676,8 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        # 1M per LiteLLM (issue #3196): zai/glm-5.2 was understated at 200000.
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -681,7 +695,8 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 262144
+        # 1M per LiteLLM (issue #3196): moonshot/kimi-k3 was understated at 262144.
+        assert get_max_tokens(model) == 1048576
 
     @pytest.mark.parametrize(
         "model",
@@ -1058,3 +1073,120 @@ class TestGetMaxTokens:
         claude_thinking = {m for m in CLAUDE_EXTENDED_THINKING_MODELS if "claude" in m}
         claude_no_temp = {m for m in NO_SUPPORT_TEMPERATURE_MODELS if "claude" in m}
         assert claude_thinking.isdisjoint(claude_no_temp)
+
+    @pytest.mark.parametrize(
+        "model, expected",
+        [
+            ("gpt-4o", 128000),
+            ("gpt-4.1", 1047576),
+        ],
+    )
+    def test_ignore_max_model_tokens_returns_unreduced_litellm_value(self, monkeypatch, model, expected):
+        """Sites that bypass the max_model_tokens clamp (pr_help_message, pr_help_docs,
+        pr_code_suggestions) must still get the raw model context even after the exact
+        LiteLLM duplicates left the registry: the value now resolves from LiteLLM, while
+        the default path keeps clamping to config.max_model_tokens."""
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 32000
+            })()
+        })()
+
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(utils, "MAX_TOKENS", {})  # simulate deletion of the entry
+
+        assert get_max_tokens(model) == 32000
+        assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
+
+
+class TestNoLiteLLMDuplicates:
+
+    # Models pinned in MAX_TOKENS because LiteLLM's bundled backup cost map (used
+    # when the import-time fetch fails, and under LITELLM_LOCAL_MODEL_COST_MAP=true)
+    # does not carry them, so the get_max_tokens() fallback cannot resolve them.
+    # They are exempt from the no-duplicates guard by design.
+    LITELLM_BUNDLED_MAP_UNKNOWN = {
+        "gemini/gemini-3.8-flash",
+        "vertex_ai/gemini-3.8-flash",
+        "openrouter/x-ai/grok-4.5",
+        "openrouter/x-ai/grok-4.6",
+        "xai/grok-build-latest",
+        "zai/glm-5.2",
+    }
+
+    # The models issue #3196 found pinned more than 10% below LiteLLM's reported
+    # context window. zai/glm-5.2 is covered by test_zai_glm_5_2_model_max_tokens
+    # (kept pinned, absent from the bundled cost map); gpt-5.4 / gpt-5.4-2026-03-05
+    # are excluded because their 272000 pin is a documented safe default.
+    AUDITED_UNDERSTATED_MODELS = [
+        "mistral/mistral-medium-latest",
+        "mistral/mistral-small-latest",
+        "mistral/codestral-latest",
+        "mistral/open-mixtral-8x22b",
+        "mistral/mistral-large-latest",
+        "mistral/open-mistral-7b",
+        "mistral/open-mixtral-8x7b",
+        "codestral/codestral-latest",
+        "codestral/codestral-2405",
+        "watsonx/mistralai/mistral-large",
+        "moonshot/kimi-k3",
+        "deepseek/deepseek-reasoner",
+        "deepinfra/deepseek-ai/DeepSeek-R1",
+        "gpt-5",
+        "gpt-5-2025-08-07",
+        "gpt-5-nano",
+        "gpt-5-mini",
+        "gpt-5.1",
+        "gpt-5.1-2025-11-13",
+        "gpt-5.1-codex",
+        "gpt-5.1-codex-mini",
+        "ollama/llama3",
+    ]
+
+    @pytest.mark.parametrize("model", AUDITED_UNDERSTATED_MODELS)
+    def test_previously_understated_models_now_resolve_correctly(self, monkeypatch, model):
+        """Regression guard for issue #3196.
+
+        A static MAX_TOKENS entry takes precedence over the LiteLLM fallback, so a
+        pin below LiteLLM's max_input_tokens silently shrinks the usable context.
+        Compare against LiteLLM live rather than a copied number, so a LiteLLM
+        upgrade that raises a window does not fail this test.
+        """
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0
+            })()
+        })()
+        monkeypatch.setattr(utils, "get_settings", lambda: fake_settings)
+
+        litellm_max = int(litellm.get_model_info(model)["max_input_tokens"])
+        assert get_max_tokens(model) >= litellm_max
+
+    def test_static_max_tokens_has_no_exact_litellm_duplicates(self):
+        """Hardcoded MAX_TOKENS entries must not just mirror LiteLLM.
+
+        get_max_tokens() already falls back to litellm.get_model_info(), so a
+        static entry that reports the identical value is dead duplication.
+        Generator-expanded Claude families are excluded: they also drive the
+        no-temperature / extended-thinking registries, and their 1M-context
+        handling is a separate, deliberate judgement (issue #3196). Entries in
+        LITELLM_BUNDLED_MAP_UNKNOWN are pinned because the bundled cost map does
+        not carry them, so the fallback could not resolve them.
+        """
+        generated = set(_generate_claude_registries()[0])
+        static = {
+            k: v
+            for k, v in MAX_TOKENS.items()
+            if k not in generated and k not in self.LITELLM_BUNDLED_MAP_UNKNOWN
+        }
+        dups = []
+        for model, ours in static.items():
+            try:
+                theirs = int(litellm.get_model_info(model).get("max_input_tokens"))
+            except Exception:
+                continue
+            if theirs == ours:
+                dups.append((model, ours))
+        assert not dups, f"MAX_TOKENS entries that exactly duplicate LiteLLM: {sorted(dups)}"

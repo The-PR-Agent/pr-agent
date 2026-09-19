@@ -1,12 +1,12 @@
 from datetime import datetime
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from gitlab import Gitlab
 from gitlab.exceptions import GitlabGetError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 
-from pr_agent.algo.utils import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
@@ -85,6 +85,17 @@ class TestGitLabProvider:
             provider = GitLabProvider("https://gitlab.com/test/repo/-/merge_requests/1")
             provider.gl = mock_gitlab_client
             provider.id_project = "test/repo"
+
+            def _current_mr_metadata(*_args, **_kwargs):
+                diff_refs = getattr(provider.mr, "diff_refs", None)
+                changes = mock_gitlab_client.http_list.return_value
+                return {
+                    "sha": "current-mr",
+                    "diff_refs": dict(diff_refs) if isinstance(diff_refs, dict) else {},
+                    "changes_count": str(len(changes)) if isinstance(changes, list) else None,
+                }
+
+            mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
 
     def test_get_pr_file_content_success(self, gitlab_provider, mock_project):
@@ -122,6 +133,34 @@ class TestGitLabProvider:
         content = gitlab_provider.get_pr_file_content("CHANGELOG.md", "main")
 
         assert content == ""
+
+    def test_get_pr_file_content_strict_missing_file_is_empty(self, gitlab_provider, mock_project):
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
+
+        content = gitlab_provider.get_pr_file_content("CHANGELOG.md", "main", propagate_errors=True)
+
+        assert content == ""
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            GitlabGetError("500 Server Error", response_code=500, response_body=b"upstream failure"),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+            RuntimeError("transport failed"),
+        ],
+    )
+    def test_get_pr_file_content_strict_reraises_original_error(self, gitlab_provider, mock_project, error):
+        mock_file = MagicMock(ProjectFile)
+        if isinstance(error, UnicodeDecodeError):
+            mock_file.decode.side_effect = error
+            mock_project.files.get.return_value = mock_file
+        else:
+            mock_project.files.get.side_effect = error
+
+        with pytest.raises(type(error)) as exc_info:
+            gitlab_provider.get_pr_file_content("CHANGELOG.md", "main", propagate_errors=True)
+
+        assert exc_info.value is error
 
     def test_get_repo_file_content_loads_from_mr_target_branch(self, gitlab_provider, mock_gitlab_client, mock_project):
         mock_project.default_branch = "main"
@@ -278,6 +317,137 @@ class TestGitLabProvider:
             "libs/b": "git@gitlab.com:b.git",
         }
 
+    @staticmethod
+    def _gitmodules_file(url, path="libs/a"):
+        file_obj = MagicMock(ProjectFile)
+        file_obj.decode.return_value = f"[submodule \"{path}\"]\n    path = {path}\n    url = {url}\n"
+        return file_obj
+
+    @staticmethod
+    def _mr(diff_refs=None, source_project_id=1):
+        mr = MagicMock()
+        mr.source_branch = "feature"
+        mr.target_branch = "main"
+        mr.diff_refs = diff_refs
+        mr.source_project_id = source_project_id
+        return mr
+
+    def test_get_gitmodules_map_reads_mr_head_sha(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(diff_refs={"head_sha": "h1", "base_sha": "b1"}, source_project_id=99)
+        mock_project.id = 1
+        # The source branch moved on since the MR diff was fetched; its content must not be used.
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "h1": self._gitmodules_file("../new/a.git"),
+            "feature": self._gitmodules_file("../newer/a.git"),
+            "b1": self._gitmodules_file("../old/a.git"),
+            "main": self._gitmodules_file("../old/a.git"),
+        }[ref]
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        assert gitlab_provider._get_gitmodules_map() == {"libs/a": "../new/a.git"}
+        mock_project.files.get.assert_called_once_with(file_path=".gitmodules", ref="h1")
+        # The fork project is not looked up when the head commit could be read from the target project.
+        assert all(call.args[0] != 99 for call in gitlab_provider.gl.projects.get.call_args_list)
+
+    def test_get_gitmodules_map_uses_provided_snapshot_refs(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(
+            diff_refs={"head_sha": "cached-head", "base_sha": "cached-base"}, source_project_id=99
+        )
+        mock_project.id = 1
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "snapshot-head": self._gitmodules_file("../snapshot/a.git"),
+            "cached-head": self._gitmodules_file("../cached/a.git"),
+        }[ref]
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        result = gitlab_provider._get_gitmodules_map(
+            {"head_sha": "snapshot-head", "base_sha": "snapshot-base"}
+        )
+
+        assert result == {"libs/a": "../snapshot/a.git"}
+        mock_project.files.get.assert_called_once_with(file_path=".gitmodules", ref="snapshot-head")
+
+    def test_get_gitmodules_map_falls_back_to_source_branch_without_diff_refs(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(diff_refs=None, source_project_id=mock_project.id)
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "feature": self._gitmodules_file("../new/a.git"),
+            "main": self._gitmodules_file("../old/a.git"),
+        }[ref]
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        assert gitlab_provider._get_gitmodules_map() == {"libs/a": "../new/a.git"}
+
+    @pytest.mark.parametrize("available_ref,expected", [
+        ("b1", "../base/a.git"),
+        ("main", "../old/a.git"),
+    ])
+    def test_get_gitmodules_map_falls_back_to_base_sha_then_target_branch(self, gitlab_provider, mock_project,
+                                                                          available_ref, expected):
+        gitlab_provider.mr = self._mr(diff_refs={"head_sha": "h1", "base_sha": "b1"}, source_project_id=mock_project.id)
+        files = {"b1": "../base/a.git", "main": "../old/a.git"}
+
+        def _files_get(file_path, ref):
+            if ref == available_ref:
+                return self._gitmodules_file(files[ref])
+            raise GitlabGetError("404 File Not Found")
+
+        mock_project.files.get.side_effect = _files_get
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        assert gitlab_provider._get_gitmodules_map() == {"libs/a": expected}
+
+    def test_get_gitmodules_map_reads_fork_source_project(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(diff_refs=None, source_project_id=99)
+        mock_project.id = 1
+        fork = MagicMock()
+        fork.id = 99
+        fork.files.get.return_value = self._gitmodules_file("../fork/a.git")
+        mock_project.files.get.return_value = self._gitmodules_file("../old/a.git")
+        gitlab_provider.gl.projects.get.side_effect = lambda pid, **kw: fork if str(pid) == "99" else mock_project
+
+        assert gitlab_provider._get_gitmodules_map() == {"libs/a": "../fork/a.git"}
+        fork.files.get.assert_called_once_with(file_path=".gitmodules", ref="feature")
+        mock_project.files.get.assert_not_called()
+
+    def test_get_gitmodules_map_failed_fork_lookup_skips_source_read(self, gitlab_provider, mock_project):
+        gitlab_provider.mr = self._mr(diff_refs=None, source_project_id=99)
+        mock_project.id = 1
+        # The target project happens to have a branch named like the fork's source branch.
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "feature": self._gitmodules_file("../unrelated/a.git"),
+            "main": self._gitmodules_file("../old/a.git"),
+        }[ref]
+
+        def _projects_get(pid, **kw):
+            if str(pid) == "99":
+                raise GitlabGetError("404 Project Not Found")
+            return mock_project
+
+        gitlab_provider.gl.projects.get.side_effect = _projects_get
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
+            assert gitlab_provider._get_gitmodules_map() == {"libs/a": "../old/a.git"}
+
+        mock_project.files.get.assert_called_once_with(file_path=".gitmodules", ref="main")
+        assert "99" in mock_logger.return_value.warning.call_args.args[0]
+
+    def test_expand_submodule_changes_uses_mr_head_url(self, gitlab_provider, mock_project):
+        gitlab_provider.id_project = "group/repo"
+        gitlab_provider.mr = self._mr(diff_refs={"head_sha": "h1", "base_sha": "b1"}, source_project_id=mock_project.id)
+        mock_project.files.get.side_effect = lambda file_path, ref: {
+            "h1": self._gitmodules_file("../new/a.git", path="src/lib_a"),
+            "main": self._gitmodules_file("../old/a.git", path="src/lib_a"),
+        }[ref]
+        gitlab_provider.gl.projects.get.return_value = mock_project
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_compare_submodule", return_value=[]) as m_cmp:
+            gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+
+        m_cmp.assert_called_once_with("group/new/a", "aaa1111", "bbb2222")
+
     def test_project_by_path_requires_exact_match(self, gitlab_provider):
         gitlab_provider.gl.projects.get.reset_mock()
         gitlab_provider.gl.projects.get.side_effect = Exception("not found")
@@ -294,6 +464,87 @@ class TestGitLabProvider:
         assert list_kwargs["search"] == "repo"
         assert list_kwargs["membership"] is True
         assert all(call.args[0] != fake.id for call in gitlab_provider.gl.projects.get.call_args_list)
+
+    @pytest.mark.parametrize("url,base,expected", [
+        ("https://gitlab.com/group/repo.git", None, "group/repo"),
+        ("git@gitlab.com:group/sub/repo.git", None, "group/sub/repo"),
+        ("ssh://git@gitlab.com/group/repo.git", None, "group/repo"),
+        # Relative URLs resolve against the superproject path.
+        ("../../../../libs/lib_a.git", "group/subgroup/nested/repo", "libs/lib_a"),
+        ("../../libs/lib_a.git", "group/subgroup/nested/repo", "group/subgroup/libs/lib_a"),
+        ("../lib_b.git", "group/sub/repo", "group/sub/lib_b"),
+        ("./nested/lib_c.git", "group/repo", "group/repo/nested/lib_c"),
+        # Query/fragment are dropped for relative URLs just like for absolute ones.
+        ("../lib_b.git?ref=main", "group/repo", "group/lib_b"),
+        ("https://gitlab.com/group/repo.git#main", None, "group/repo"),
+        # Relative URL without a superproject to resolve against.
+        ("../lib_b.git", None, None),
+        # Relative URL that climbs past the instance root.
+        ("../../../lib_b.git", "group/repo", None),
+    ])
+    def test_url_to_project_path(self, gitlab_provider, url, base, expected):
+        assert gitlab_provider._url_to_project_path(url, base) == expected
+
+    def test_superproject_path_prefers_id_project_path(self, gitlab_provider):
+        gitlab_provider.id_project = "group/sub/repo"
+        gitlab_provider.gl.projects.get.reset_mock()
+
+        assert gitlab_provider._superproject_path() == "group/sub/repo"
+        gitlab_provider.gl.projects.get.assert_not_called()
+
+    def test_superproject_path_resolves_numeric_project_id(self, gitlab_provider, mock_project):
+        gitlab_provider.id_project = "42"
+        mock_project.path_with_namespace = "group/sub/repo"
+        gitlab_provider.gl.projects.get.return_value = mock_project
+
+        assert gitlab_provider._superproject_path() == "group/sub/repo"
+
+    def test_superproject_path_logs_lookup_failure(self, gitlab_provider):
+        gitlab_provider.id_project = "42"
+        gitlab_provider.gl.projects.get.side_effect = GitlabGetError("401 Unauthorized")
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
+            assert gitlab_provider._superproject_path() is None
+
+        warning = mock_logger.return_value.warning
+        warning.assert_called_once()
+        assert "42" in warning.call_args.args[0]
+        assert "401 Unauthorized" in warning.call_args.args[0]
+
+    def _submodule_bump(self, path="src/lib_a"):
+        return {"new_path": path, "old_path": path,
+                "diff": "-Subproject commit aaa1111\n+Subproject commit bbb2222\n",
+                "new_file": False, "deleted_file": False, "renamed_file": False}
+
+    def test_expand_submodule_changes_resolves_relative_url(self, gitlab_provider):
+        gitlab_provider.id_project = "group/subgroup/nested/repo"
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        sub_diffs = [{"old_path": "src/a.c", "new_path": "src/a.c", "diff": "@@ -1 +1 @@\n-x\n+y\n"}]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map",
+                          return_value={"src/lib_a": "../../../../libs/lib_a.git"}), \
+             patch.object(gitlab_provider, "_compare_submodule", return_value=sub_diffs) as m_cmp:
+            out = gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+
+        m_cmp.assert_called_once_with("libs/lib_a", "aaa1111", "bbb2222")
+        assert [c["new_path"] for c in out] == ["src/lib_a", "src/lib_a/src/a.c"]
+
+    def test_expand_submodule_changes_skips_unresolvable_relative_url(self, gitlab_provider):
+        gitlab_provider.id_project = "group/repo"
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        changes = [self._submodule_bump()]
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map",
+                          return_value={"src/lib_a": "../../../libs/lib_a.git"}), \
+             patch.object(gitlab_provider, "_compare_submodule") as m_cmp:
+            out = gitlab_provider._expand_submodule_changes(changes)
+
+        m_cmp.assert_not_called()
+        assert out == changes
 
     def test_compare_submodule_cached(self, gitlab_provider):
         proj = MagicMock()
@@ -1215,6 +1466,16 @@ class TestGitLabIncrementalReview:
             provider.mr = MagicMock()
             provider.mr.web_url = "https://gitlab.com/test/repo/-/merge_requests/1"
             provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head", "start_sha": "base"}
+
+            def _current_mr_metadata(*_args, **_kwargs):
+                changes = mock_gitlab_client.http_list.return_value
+                return {
+                    "sha": "current-mr",
+                    "diff_refs": dict(provider.mr.diff_refs),
+                    "changes_count": str(len(changes)) if isinstance(changes, list) else None,
+                }
+
+            mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
 
     @staticmethod
@@ -1268,11 +1529,9 @@ class TestGitLabIncrementalReview:
                  "new_file": True, "deleted_file": False, "renamed_file": False},
             ]
         }
-        # mr.changes() is intersected with repository_compare to exclude files brought in
-        # via a merge from the target branch. Here both files are part of the MR.
-        gitlab_provider.mr.changes.return_value = {
-            "changes": [{"new_path": "a.py"}, {"new_path": "b.py"}]
-        }
+        # Intersect MR diffs with repository_compare to exclude files merged from the target branch.
+        # Include both fixture files in the MR's own changes.
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}, {"new_path": "b.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
@@ -1317,92 +1576,15 @@ class TestGitLabIncrementalReview:
         gitlab_provider.unreviewed_files_map = {"a.py": {"new_path": "a.py"}}
 
         assert gitlab_provider.get_files() == ["a.py"]
+        gitlab_provider.gl.http_list.assert_not_called()
         gitlab_provider.mr.changes.assert_not_called()
 
-    def test_get_files_falls_back_to_mr_changes_when_not_incremental(self, gitlab_provider):
+    def test_get_files_fetches_mr_diffs_when_not_incremental(self, gitlab_provider):
         gitlab_provider.incremental = IncrementalPR(False)
         gitlab_provider.git_files = None
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "x.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "x.py"}]
 
         assert gitlab_provider.get_files() == ["x.py"]
-
-    def test_get_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
-        gitlab_provider.git_files = None
-        gitlab_provider.mr.changes.side_effect = [
-            {"changes": [{"new_path": "visible.py"}], "overflow": True},
-            {
-                "changes": [
-                    {"new_path": "visible.py"},
-                    {"new_path": "hidden.py"},
-                ],
-                "overflow": False,
-            },
-        ]
-
-        assert gitlab_provider.get_files() == ["visible.py", "hidden.py"]
-        assert gitlab_provider.mr.changes.call_args_list == [
-            call(),
-            call(access_raw_diffs=True),
-        ]
-
-    def test_get_diff_files_retries_raw_diffs_when_changes_overflow(self, gitlab_provider):
-        change = {
-            "old_path": "visible.py",
-            "new_path": "visible.py",
-            "diff": "@@ -1 +1 @@\n-old\n+new\n",
-            "new_file": False,
-            "deleted_file": False,
-            "renamed_file": False,
-        }
-        hidden_change = {**change, "old_path": "hidden.py", "new_path": "hidden.py"}
-        gitlab_provider.mr.changes.side_effect = [
-            {"changes": [change], "overflow": True},
-            {"changes": [change, hidden_change], "overflow": False},
-        ]
-        gitlab_provider.get_pr_file_content = MagicMock(return_value="")
-
-        diff_files = gitlab_provider.get_diff_files()
-
-        assert [file.filename for file in diff_files] == ["visible.py", "hidden.py"]
-        assert gitlab_provider.mr.changes.call_args_list == [
-            call(),
-            call(access_raw_diffs=True),
-        ]
-
-    def test_incremental_scope_retries_raw_diffs_when_changes_overflow(
-        self, gitlab_provider, mock_project
-    ):
-        gitlab_provider.mr.notes.list.return_value = [
-            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
-        ]
-        gitlab_provider.mr.commits.return_value = [
-            self._make_commit("c1", "2024-05-01T11:00:00Z"),
-            self._make_commit("c0", "2024-05-01T09:00:00Z"),
-        ]
-        mock_project.repository_compare.return_value = {
-            "diffs": [
-                {"new_path": "visible.py"},
-                {"new_path": "hidden.py"},
-            ]
-        }
-        gitlab_provider.mr.changes.side_effect = [
-            {"changes": [{"new_path": "visible.py"}], "overflow": True},
-            {
-                "changes": [
-                    {"new_path": "visible.py"},
-                    {"new_path": "hidden.py"},
-                ],
-                "overflow": False,
-            },
-        ]
-
-        gitlab_provider.get_incremental_commits(IncrementalPR(True))
-
-        assert set(gitlab_provider.unreviewed_files_map) == {"visible.py", "hidden.py"}
-        assert gitlab_provider.mr.changes.call_args_list == [
-            call(),
-            call(access_raw_diffs=True),
-        ]
 
     def test_get_previous_review_returns_most_recent_match(self, gitlab_provider):
         # GitLab returns notes in created_at-DESC order. The helper relies on that order
@@ -1439,9 +1621,9 @@ class TestGitLabIncrementalReview:
     def test_master_merge_files_are_excluded_from_incremental_scope(self, gitlab_provider, mock_project):
         # Reproduction of the MR !1115 bug: user ran `git merge master` on the feature branch,
         # which brought CI/config changes into the branch via a merge commit. Those files are
-        # NOT part of mr.changes() (the MR's actual contribution against its merge-base), but
+        # NOT part of the MR diffs (the MR's actual contribution against its merge-base), but
         # repository_compare(last_seen, head) walks through the merge and surfaces them.
-        # The fix intersects with mr.changes() to drop these "phantom" files.
+        # Intersect with the MR diffs to drop these "phantom" files.
         gitlab_provider.mr.notes.list.return_value = [
             self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
         ]
@@ -1460,11 +1642,9 @@ class TestGitLabIncrementalReview:
                  "new_file": False, "deleted_file": False, "renamed_file": False},
             ]
         }
-        # mr.changes() returns only the MR's actual contribution; .gitlab-ci.yml is absent
+        # Include only the MR's actual contribution in its diffs; exclude .gitlab-ci.yml
         # because the change to it lives in the target branch already.
-        gitlab_provider.mr.changes.return_value = {
-            "changes": [{"new_path": "src/feature.js"}]
-        }
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "src/feature.js"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
@@ -1564,7 +1744,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1588,7 +1768,7 @@ class TestGitLabIncrementalReview:
         obj_diff = SimpleNamespace(new_path="a.py", old_path="a.py", diff="@@ ... @@",
                                    new_file=False, deleted_file=False, renamed_file=False)
         mock_project.repository_compare.return_value = SimpleNamespace(diffs=[obj_diff])
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
@@ -1618,7 +1798,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1643,7 +1823,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1683,6 +1863,26 @@ class TestGitLabIncrementalReview:
 
         assert gitlab_provider.diff_files is None
 
+    def test_get_incremental_commits_reloads_commits_for_each_public_setup(self, gitlab_provider, mock_project):
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        gitlab_provider.mr.commits.return_value = [
+            self._make_commit("c1", "2024-05-01T11:00:00Z"),
+            self._make_commit("c0", "2024-05-01T09:00:00Z"),
+        ]
+        mock_project.repository_compare.return_value = {
+            "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
+                       "new_file": False, "deleted_file": False, "renamed_file": False}],
+        }
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert gitlab_provider.mr.commits.call_count == 2
+        assert mock_project.repository_compare.call_count == 2
+
     def test_incremental_suggestions_anchor_advances_with_in_place_edits(self, gitlab_provider, mock_project):
         # Default /improve config (persistent_comment=true, commitable_code_suggestions=false)
         # EDITS the "## PR Code Suggestions ✨" summary note in place on every run, so its
@@ -1703,7 +1903,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1738,7 +1938,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1773,7 +1973,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1833,7 +2033,7 @@ class TestGitLabIncrementalReview:
             "diffs": [{"new_path": "a.py", "old_path": "a.py", "diff": "@@ ... @@",
                        "new_file": False, "deleted_file": False, "renamed_file": False}],
         }
-        gitlab_provider.mr.changes.return_value = {"changes": [{"new_path": "a.py"}]}
+        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}]
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True), kind="suggestions")
 
@@ -1929,7 +2129,6 @@ class TestGitLabCapabilities:
     @pytest.mark.parametrize("capability", [
         "create_inline_comment",
         "publish_inline_comments",
-        "publish_file_comments",
     ])
     def test_unimplemented_capabilities_stay_unsupported(self, capability):
         assert self._provider().is_supported(capability) is False
@@ -1949,7 +2148,16 @@ class TestGitLabRelevantDiff:
         provider = GitLabProvider.__new__(GitLabProvider)
         provider.mr = MagicMock()
         provider.mr.diffs.list.return_value = list(self.VERSIONS)
-        provider.mr.changes.return_value = {"changes": changes}
+        provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head", "start_sha": "base"}
+        provider.gl = MagicMock()
+        provider.gl.http_list.return_value = changes
+        provider.gl.http_get.side_effect = lambda *_args, **_kwargs: {
+            "sha": "current-mr",
+            "diff_refs": dict(provider.mr.diff_refs),
+            "changes_count": str(len(changes)),
+        }
+        provider.id_project = "group/repo"
+        provider.id_mr = 1
         provider.last_diff = "latest-at-construction"
         return provider
 

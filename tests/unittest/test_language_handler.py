@@ -64,6 +64,28 @@ class TestSortFilesByMainLanguages:
         expected_output = [{'language': 'Other', 'files': files}]
         assert sort_files_by_main_languages(languages, files) == expected_output
 
+    # PyGithub 2.x adds a "url" string to the languages dict; it must not take part in the ranking
+    def test_non_numeric_language_entries_are_ignored(self):
+        languages = {'Python': 10, 'Java': 5, 'url': 'https://api.github.com/repos/o/r/languages'}
+        files = [
+            type('', (object,), {'filename': 'file1.py'})(),
+            type('', (object,), {'filename': 'file2.java'})()
+        ]
+        expected_output = [
+            {'language': 'Python', 'files': [files[0]]},
+            {'language': 'Java', 'files': [files[1]]},
+            {'language': 'Other', 'files': []}
+        ]
+        assert sort_files_by_main_languages(languages, files) == expected_output
+
+    def test_main_pr_language_ignores_non_numeric_entries(self):
+        from pr_agent.git_providers.git_provider import get_main_pr_language
+
+        languages = {'Python': 10, 'Java': 5, 'url': 'https://api.github.com/repos/o/r/languages'}
+        files = [type('', (object,), {'filename': 'file1.py'})()]
+        assert get_main_pr_language(languages, files) == 'python'
+        assert get_main_pr_language({'url': 'https://api.github.com/repos/o/r/languages'}, files) == ''
+
     # Tests that function handles empty files list
     def test_edge_case_empty_files(self):
         languages = {'Python': 10, 'Java': 5}

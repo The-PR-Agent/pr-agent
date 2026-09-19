@@ -101,6 +101,9 @@ Ticket Description:
 =====
 {% endfor %}
 {%- endif %}
+{%- if related_tickets_omitted is defined and related_tickets_omitted %}
+Context notice: {{ related_tickets_omitted }} additional related ticket(s) were omitted to fit the model context.
+{%- endif %}
 
 PR Info:
 

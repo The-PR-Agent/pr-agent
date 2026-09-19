@@ -6,14 +6,13 @@ import html
 import json
 import os
 import re
-import string
 import sys
 import textwrap
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Iterable, List, Tuple, TypedDict
+from typing import Any, List, Tuple, TypedDict
 from urllib.parse import quote, unquote, urlparse
 
 import html2text
@@ -21,6 +20,7 @@ import requests
 import yaml
 from pydantic import BaseModel
 
+import pr_agent.algo.comment_identity as _ci
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.algo.git_patch_processing import (
     extract_hunk_headers,
@@ -78,132 +78,6 @@ class TodoItem(TypedDict):
     content: str
 
 
-class PRReviewHeader(str, Enum):
-    REGULAR = "## PR Reviewer Guide"
-    INCREMENTAL = "## Incremental PR Reviewer Guide"
-
-
-class PRReviewIdentity(str, Enum):
-    REGULAR = "<!-- pr-agent:review:full -->"
-    INCREMENTAL = "<!-- pr-agent:review:incremental -->"
-
-
-class PRCodeSuggestionsHeader(str, Enum):
-    SUMMARY = "## PR Code Suggestions ✨"
-
-
-class PRCodeSuggestionsIdentity(str, Enum):
-    SUMMARY = "<!-- pr-agent:improve:summary -->"
-    NO_SUGGESTIONS = "<!-- pr-agent:improve:no-suggestions -->"
-    UNANCHORED = "<!-- pr-agent:improve:unanchored -->"
-
-
-_ALL_COMMENT_IDENTITIES = (
-    PRReviewIdentity.REGULAR.value,
-    PRReviewIdentity.INCREMENTAL.value,
-    PRCodeSuggestionsIdentity.SUMMARY.value,
-    PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
-    PRCodeSuggestionsIdentity.UNANCHORED.value,
-)
-_REVIEW_IDENTITY_HEADER_LINES = 5
-_MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(
-    {character: f"\\{character}" for character in string.punctuation}
-)
-
-
-def _get_configured_heading(setting_name: str, default_heading: str) -> str:
-    configured_heading = get_settings().get(setting_name)
-    if (
-        not isinstance(configured_heading, str)
-        or not configured_heading.strip()
-        or configured_heading.splitlines() != [configured_heading]
-    ):
-        get_logger().warning(
-            f"Invalid {setting_name}; using the default heading"
-        )
-        configured_heading = default_heading
-    return configured_heading.strip()
-
-
-def format_pr_review_header(incremental: bool = False) -> str:
-    """Return the visible review heading while keeping identity out of presentation."""
-    default_heading = PRReviewHeader.REGULAR.value.removeprefix("## ")
-    heading = _get_configured_heading("pr_reviewer.review_heading", default_heading)
-    incremental_prefix = "Incremental " if incremental else ""
-    return f"## {incremental_prefix}{heading} 🔍"
-
-
-def format_pr_code_suggestions_header(markdown_level: int = 2) -> str:
-    """Return the visible suggestions heading while keeping identity out of presentation."""
-    default_heading = (
-        PRCodeSuggestionsHeader.SUMMARY.value
-        .removeprefix("## ")
-        .removesuffix(" ✨")
-    )
-    heading = _get_configured_heading(
-        "pr_code_suggestions.suggestions_heading",
-        default_heading,
-    )
-    markdown_prefix = "#" * markdown_level
-    return f"{markdown_prefix} {heading} ✨"
-
-
-def format_pr_questions_header(*, escape_markdown: bool = True) -> str:
-    """Return the visible heading for top-level /ask answers."""
-    heading = _get_configured_heading("pr_questions.ask_heading", "Ask")
-    if escape_markdown:
-        heading = heading.translate(_MARKDOWN_PUNCTUATION_ESCAPE_TABLE)
-    return f"### **{heading}** ❓"
-
-
-def comment_matches_identity(body: str, identity: str) -> bool:
-    """Match hidden markers only as exact lines near the top; legacy headers as prefixes."""
-    if not isinstance(body, str) or not isinstance(identity, str) or not identity:
-        return False
-    if identity.startswith("<!--"):
-        return any(
-            line.strip() == identity
-            for line in body.splitlines()[:_REVIEW_IDENTITY_HEADER_LINES]
-        )
-    return body.startswith(identity)
-
-
-def comment_matches_any_identity(body: str, identities: Iterable[str]) -> bool:
-    return any(comment_matches_identity(body, identity) for identity in identities)
-
-
-def comment_carries_other_identity(body: str, identity_marker: str | None) -> bool:
-    """Return whether the comment carries a different hidden identity."""
-    return comment_matches_any_identity(
-        body,
-        [identity for identity in _ALL_COMMENT_IDENTITIES if identity != identity_marker],
-    )
-
-
-def get_pr_review_comment_identifiers(*, full: bool, incremental: bool) -> tuple[str, ...]:
-    """Return stable markers followed by legacy visible prefixes for migration."""
-    identifiers = []
-    if full:
-        identifiers.extend((PRReviewIdentity.REGULAR.value, PRReviewHeader.REGULAR.value))
-    if incremental:
-        identifiers.extend((PRReviewIdentity.INCREMENTAL.value, PRReviewHeader.INCREMENTAL.value))
-    return tuple(identifiers)
-
-
-def add_comment_identity(pr_comment: str, identity_marker: str | None) -> str:
-    """Insert a hidden identity after the visible heading without changing rendered output."""
-    if not pr_comment or not identity_marker or comment_matches_identity(pr_comment, identity_marker):
-        return pr_comment
-    heading, separator, remainder = pr_comment.partition("\n\n")
-    if not separator:
-        return f"{pr_comment.rstrip()}\n\n{identity_marker}"
-    return f"{heading}\n\n{identity_marker}\n\n{remainder}"
-
-
-def add_pr_review_identity(pr_comment: str, identity_marker: str | None) -> str:
-    return add_comment_identity(pr_comment, identity_marker)
-
-
 class ReasoningEffort(str, Enum):
     MAX = "max"
     XHIGH = "xhigh"
@@ -212,55 +86,6 @@ class ReasoningEffort(str, Enum):
     LOW = "low"
     MINIMAL = "minimal"
     NONE = "none"
-
-
-class PRDescriptionHeader(str, Enum):
-    DIAGRAM_WALKTHROUGH = "Diagram Walkthrough"
-    FILE_WALKTHROUGH = "File Walkthrough"
-
-
-def as_review_text(value) -> str:
-    """Flatten a review field the model returned as a list or mapping into readable text.
-
-    The prompt asks for a single string, but a model enumerating several findings commonly
-    answers with a list or a mapping. Rendering those is preferable to losing the review.
-    """
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, dict):
-        value = [f"{key}: {item}" for key, item in value.items()]
-    if isinstance(value, (list, tuple, set)):
-        entries = [as_review_text(item) for item in value]
-        return "\n".join(f"- {entry}" for entry in entries if entry)
-    return str(value).strip()
-
-
-def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str:
-    try:
-        # Finding the position of the first occurrence of ": "
-        colon_position = text.find(": ")
-
-        # Splitting the string and wrapping the first part in <strong> tags
-        if colon_position != -1:
-            # Everything before the colon (inclusive) is wrapped in <strong> tags
-            if only_markdown:
-                if reference_link:
-                    transformed_string = f"[**{text[:colon_position + 1]}**]({reference_link})\n" + text[colon_position + 1:]
-                else:
-                    transformed_string = f"**{text[:colon_position + 1]}**\n" + text[colon_position + 1:]
-            else:
-                if reference_link:
-                    transformed_string = f"<strong><a href='{reference_link}'>{text[:colon_position + 1]}</a></strong><br>" + text[colon_position + 1:]
-                else:
-                    transformed_string = "<strong>" + text[:colon_position + 1] + "</strong>" +'<br>' + text[colon_position + 1:]
-        else:
-            # If there's no ": ", return the original string
-            transformed_string = text
-
-        return transformed_string
-    except Exception as e:
-        get_logger().exception(f"Failed to emphasize header: {e}")
-        return text
 
 
 def _expand_minute_suffix(text: str) -> str:
@@ -306,7 +131,7 @@ def convert_to_markdown_v2(output_data: dict,
         "Review priority files": "📂",
     }
     markdown_text = ""
-    markdown_text += f"{format_pr_review_header(incremental=bool(incremental_review))}\n\n"
+    markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review))}\n\n"
     if incremental_review:
         markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
@@ -388,7 +213,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>No security concerns identified</strong>"
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>Security concerns</strong><br><br>\n\n"
-                    value = emphasize_header(value.strip()) if isinstance(value, str) else as_review_text(value)
+                    value = _ci.emphasize_header(value.strip()) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}"
                 markdown_text += "</td></tr>\n"
             else:
@@ -396,7 +221,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f'### {emoji} No security concerns identified\n\n'
                 else:
                     markdown_text += f"### {emoji} Security concerns\n\n"
-                    value = emphasize_header(value.strip(), only_markdown=True) if isinstance(value, str) else as_review_text(value)
+                    value = _ci.emphasize_header(value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}\n\n"
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
@@ -481,6 +306,11 @@ def convert_to_markdown_v2(output_data: dict,
                 for issue in issues:
                     try:
                         if not issue or not isinstance(issue, dict):
+                            continue
+                        if any(
+                            field in issue and not isinstance(issue[field], str)
+                            for field in ('relevant_file', 'issue_header', 'issue_content')
+                        ):
                             continue
                         relevant_file = issue.get('relevant_file', '').strip()
                         issue_header = issue.get('issue_header', '').strip()
@@ -904,7 +734,7 @@ def load_large_diff(filename, new_file_content_str: str, original_file_content_s
         if get_verbosity_level() >= 2 and show_warning:
             get_logger().info(f"File was modified, but no patch was found. Manually creating patch: {filename}.")
         return to_hunk_only_patch(''.join(diff))
-    except Exception as e:
+    except Exception:
         get_logger().exception(f"Failed to generate patch for file: {filename}")
         return ""
 
@@ -1381,7 +1211,7 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
-def get_max_tokens(model):
+def get_max_tokens(model, ignore_max_model_tokens=False):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
@@ -1393,6 +1223,8 @@ def get_max_tokens(model):
 
     For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
     This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
+    Pass ignore_max_model_tokens=True to keep the unreduced value, for sites that deliberately use the
+    raw model context size rather than the conservative clamp.
     """
     settings = get_settings()
     custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
@@ -1466,7 +1298,7 @@ def get_max_tokens(model):
             )
 
     max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
-    if max_model_tokens > 0:
+    if max_model_tokens > 0 and not ignore_max_model_tokens:
         max_tokens_model = min(max_model_tokens, max_tokens_model)
     return max_tokens_model
 
@@ -1608,12 +1440,24 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
             delta = 0
             start1, size1, start2, size2 = 0, 0, 0, 0
             if absolute_position != -1: # matching absolute to relative
+                skip_hunk = False
                 for i, line in enumerate(patch_lines):
                     # new hunk
                     if line.startswith('@@'):
                         delta = 0
                         match = re_hunk_header.match(line)
-                        section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                        if match:
+                            skip_hunk = False
+                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                        else:
+                            # combined/merge hunk headers (e.g. '@@@ ... @@@') cannot be anchored,
+                            # so skip the whole hunk instead of crashing
+                            get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                 "unified hunk header", artifact={"line": line})
+                            skip_hunk = True
+                            continue
+                    elif skip_hunk:
+                        continue
                     elif not line.startswith('-'):
                         delta += 1
 
@@ -1638,11 +1482,21 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                 def scan_patch_lines(is_match):
                     scan_delta = 0
                     scan_start2 = 0
+                    skip_hunk = False
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
                             scan_delta = 0
                             header_match = re_hunk_header.match(line)
-                            *_, scan_start2 = extract_hunk_headers(header_match)
+                            if header_match:
+                                skip_hunk = False
+                                *_, scan_start2 = extract_hunk_headers(header_match)
+                            else:
+                                skip_hunk = True
+                                get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                     "unified hunk header", artifact={"line": line})
+                                continue
+                        elif skip_hunk:
+                            continue
                         elif not line.startswith('-'):
                             scan_delta += 1
 
@@ -1658,11 +1512,21 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
 
                 if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()
+                    skip_hunk = False
                     for i, line in enumerate(patch_lines):
                         if line.startswith('@@'):
                             delta = 0
                             match = re_hunk_header.match(line)
-                            section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                            if match:
+                                skip_hunk = False
+                                section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
+                            else:
+                                get_logger().warning("Skipping a line that starts with '@@' but is not a "
+                                                     "unified hunk header", artifact={"line": line})
+                                skip_hunk = True
+                                continue
+                        elif skip_hunk:
+                            continue
                         elif not line.startswith('-'):
                             delta += 1
 
@@ -1734,29 +1598,46 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
             record["markdown"] = markdown
 
         if "stdout" in channels:
-            print(json.dumps(record, ensure_ascii=False))
+            try:
+                print(json.dumps(record, ensure_ascii=False))
+            except Exception as e:
+                get_logger().warning(f"push_outputs: stdout failed: {type(e).__name__}")
 
         if "file" in channels:
-            file_path = cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl')
-            folder = os.path.dirname(file_path)
-            if folder:
-                os.makedirs(folder, exist_ok=True)
-            with open(file_path, 'a', encoding='utf-8') as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            try:
+                file_path = cfg.get('file_path', 'pr-agent-outputs/reviews.jsonl')
+                folder = os.path.dirname(file_path)
+                if folder:
+                    os.makedirs(folder, exist_ok=True)
+                with open(file_path, 'a', encoding='utf-8') as fh:
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: file failed: {type(e).__name__}")
 
         # Local channels first, network last, so a failed POST can't lose a file write.
         # allow_redirects=False: never follow a redirect from a configured sink to another host.
         if "webhook" in channels:
-            webhook_url = _push_outputs_sink_url(cfg, 'webhook_url')
-            if webhook_url:
-                requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
+            try:
+                webhook_url = _push_outputs_sink_url(cfg, 'webhook_url')
+                if webhook_url:
+                    response = requests.post(webhook_url, json=record, timeout=5, allow_redirects=False)
+                    if not 200 <= response.status_code < 300:
+                        get_logger().warning(f"push_outputs: webhook failed with status {response.status_code}")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: webhook failed: {type(e).__name__}")
 
         # Slack Incoming Webhooks accept {"text": ...} directly, no relay service needed.
         if "slack" in channels:
-            slack_webhook_url = _push_outputs_sink_url(cfg, 'slack_webhook_url')
-            if slack_webhook_url:
-                text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
-                requests.post(slack_webhook_url, json={"text": text}, timeout=5, allow_redirects=False)
+            try:
+                slack_webhook_url = _push_outputs_sink_url(cfg, 'slack_webhook_url')
+                if slack_webhook_url:
+                    text = markdown if markdown is not None else json.dumps(payload or {}, ensure_ascii=False)
+                    response = requests.post(slack_webhook_url, json={"text": text}, timeout=5,
+                                             allow_redirects=False)
+                    if not 200 <= response.status_code < 300:
+                        get_logger().warning(f"push_outputs: slack failed with status {response.status_code}")
+            except Exception as e:
+                get_logger().warning(f"push_outputs: slack failed: {type(e).__name__}")
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
@@ -1827,7 +1708,10 @@ def show_run_details(gfm_supported: bool) -> str:
         return ""
 
     title = "⚙️ Agent run details"
-    lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
+    if len(details.models_used) > 1:
+        lines = [f"- Models: {', '.join(details.models_used)}{' (includes fallback)' if details.fallback_used else ''}"]
+    else:
+        lines = [f"- Model: {details.model_used}{' (fallback)' if details.fallback_used else ''}"]
     if details.has_token_usage:
         # A counter still at zero after a successful call means the provider never
         # reported that component, so drop it instead of claiming it was zero.
@@ -1874,20 +1758,20 @@ def process_description(description_full: str) -> Tuple[str, List]:
     if not description_full:
         return "", []
 
-    # description_split = description_full.split(PRDescriptionHeader.FILE_WALKTHROUGH.value)
-    if PRDescriptionHeader.FILE_WALKTHROUGH.value in description_full:
+    # description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value)
+    if _ci.PRDescriptionHeader.FILE_WALKTHROUGH.value in description_full:
         try:
             # FILE_WALKTHROUGH are presented in a collapsible section in the description
-            regex_pattern = r'<details.*?>\s*<summary>\s*<h3>\s*' + re.escape(PRDescriptionHeader.FILE_WALKTHROUGH.value) + r'\s*</h3>\s*</summary>'
+            regex_pattern = r'<details.*?>\s*<summary>\s*<h3>\s*' + re.escape(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value) + r'\s*</h3>\s*</summary>'
             description_split = re.split(regex_pattern, description_full, maxsplit=1, flags=re.DOTALL)
 
             # If the regex pattern is not found, fallback to the previous method
             if len(description_split) == 1:
                 get_logger().debug("Could not find regex pattern for file walkthrough, falling back to simple split")
-                description_split = description_full.split(PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
+                description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
         except Exception as e:
             get_logger().warning(f"Failed to split description using regex, falling back to simple split: {e}")
-            description_split = description_full.split(PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
+            description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
 
         if len(description_split) < 2:
             get_logger().error("Failed to split description into base and changes walkthrough", artifact={'description': description_full})

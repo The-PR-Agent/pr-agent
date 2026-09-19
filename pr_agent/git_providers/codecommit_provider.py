@@ -7,15 +7,16 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
 
-from ..algo.utils import (
+from ..algo.comment_identity import (
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
-    load_large_diff,
 )
+from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider
@@ -52,6 +53,7 @@ class CodeCommitFile:
         repository_name: Optional[str] = None,
         source_commit: Optional[str] = None,
         destination_commit: Optional[str] = None,
+        comparison_base_commit: Optional[str] = None,
     ):
         self.a_path = a_path
         self.a_blob_id = a_blob_id
@@ -62,12 +64,22 @@ class CodeCommitFile:
         self.repository_name = repository_name
         self.source_commit = source_commit
         self.destination_commit = destination_commit
+        self.comparison_base_commit = comparison_base_commit
 
 
 class CodeCommitProvider(GitProvider):
     """
     This class implements the GitProvider interface for AWS CodeCommit repositories.
     """
+
+    # PostCommentForPullRequest / UpdateComment reject a body above 10,240
+    # characters and raise instead of degrading (#3272). Every outgoing body
+    # goes through _prepare_comment_body, which caps it AFTER the newline
+    # doubling and after any persistent-comment header has been added, so the
+    # cap is measured on what CodeCommit actually receives. Class-level, like
+    # the other providers' max_comment_length, minus the truncation marker
+    # limit_output_characters appends.
+    max_comment_length = 10240 - len("...")
 
     def __init__(self, pr_url: Optional[str] = None, incremental: Optional[bool] = False):
         self.codecommit_client = CodeCommitClient()
@@ -107,7 +119,7 @@ class CodeCommitProvider(GitProvider):
         self.git_files = []
         for target in self._get_target_contexts():
             differences = self.codecommit_client.get_differences(
-                target["repository_name"], target["destination_commit"], target["source_commit"]
+                target["repository_name"], target["comparison_base_commit"], target["source_commit"]
             )
             for item in differences:
                 self.git_files.append(
@@ -120,6 +132,7 @@ class CodeCommitProvider(GitProvider):
                         repository_name=target["repository_name"],
                         source_commit=target["source_commit"],
                         destination_commit=target["destination_commit"],
+                        comparison_base_commit=target["comparison_base_commit"],
                     )
                 )
         return self.git_files
@@ -149,11 +162,12 @@ class CodeCommitProvider(GitProvider):
             repository_name = diff_item.repository_name or self.repo_name
             destination_commit = diff_item.destination_commit or self.pr.destination_commit
             source_commit = diff_item.source_commit or self.pr.source_commit
+            comparison_base_commit = diff_item.comparison_base_commit or destination_commit
             try:
                 if diff_item.a_blob_id:
                     patch_filename = diff_item.a_path
                     original_file_content_str = self.codecommit_client.get_file(
-                        repository_name, diff_item.a_path, destination_commit)
+                        repository_name, diff_item.a_path, comparison_base_commit)
                     if isinstance(original_file_content_str, (bytes, bytearray)):
                         original_file_content_str = original_file_content_str.decode("utf-8")
                 else:
@@ -534,6 +548,7 @@ class CodeCommitProvider(GitProvider):
                 "repository_name": self.repo_name,
                 "source_commit": self.pr.source_commit,
                 "destination_commit": self.pr.destination_commit,
+                "comparison_base_commit": self.pr.destination_commit,
             }]
 
         return [
@@ -541,6 +556,7 @@ class CodeCommitProvider(GitProvider):
                 "repository_name": getattr(target, "repository_name", "") or self.repo_name,
                 "source_commit": target.source_commit,
                 "destination_commit": target.destination_commit,
+                "comparison_base_commit": getattr(target, "merge_base", "") or target.destination_commit,
             }
             for target in targets
         ]
@@ -677,10 +693,20 @@ class CodeCommitProvider(GitProvider):
         updated_anchor = f"{identity_marker}\n\n{update_message}"
         return pr_comment.replace(identity_marker, updated_anchor, 1)
 
-    @staticmethod
-    def _prepare_comment_body(pr_comment: str) -> str:
+    def _prepare_comment_body(self, pr_comment: str) -> str:
         pr_comment = CodeCommitProvider._remove_markdown_html(pr_comment)
-        return CodeCommitProvider._add_additional_newlines(pr_comment)
+        body, marker = split_review_state_marker(pr_comment)
+        body = CodeCommitProvider._add_additional_newlines(body)
+        if not marker:
+            return self.limit_output_characters(body, self.max_comment_length)
+        # The persistent review state is a hidden marker at the end of the body.
+        # The reviewer sizes it before the newline doubling above, so the doubled
+        # body can overrun the cap; truncate only the human text and keep the
+        # marker whole, otherwise the next run cannot parse the state.
+        budget = self.max_comment_length - len(marker) - 2
+        if budget <= 0:
+            return marker[: self.max_comment_length]
+        return f"{self.limit_output_characters(body, budget)}\n\n{marker}"
 
     @staticmethod
     def _extract_issue_comments(comment_data: dict):

@@ -1,9 +1,13 @@
 import asyncio
 import json
 import os
-from typing import Union
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Optional, Union
 
-from pr_agent.agent.pr_agent import PRAgent
+import dynaconf
+
+from pr_agent.agent.pr_agent import PRAgent, publish_incomplete_github_files_comment
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -12,12 +16,21 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.servers.github_app import handle_line_comments, matches_review_state
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
+
+
+@dataclass
+class _ActionStatus:
+    failed: bool = False
+
+
+_action_status: ContextVar[Optional[_ActionStatus]] = ContextVar("pr_agent_action_status", default=None)
 
 
 def is_true(value: Union[str, bool]) -> bool:
@@ -54,6 +67,22 @@ def get_list_setting_or_env(key, fallback=None):
         return list(value)
     return [value]
 
+
+async def _handle_request(url, body, notify=None):
+    result = await PRAgent().handle_request(url, body, notify=notify)
+    if result is False:
+        status = _action_status.get()
+        if status is not None:
+            status.failed = True
+
+
+async def _run_auto_tool(tool_class, pr_url):
+    """Run a direct auto tool while preserving GitHub Action failure semantics."""
+    try:
+        await tool_class(pr_url).run()
+    except IncompletePullRequestFilesError:
+        publish_incomplete_github_files_comment(pr_url)
+        raise
 
 async def _run_review_commands(event_payload):
     action = event_payload.get("action")
@@ -124,7 +153,7 @@ async def _run_review_commands(event_payload):
     get_settings().pr_description.final_update_message = False
     get_logger().info(f"Running review commands: {review_commands}")
     for command in review_commands:
-        await PRAgent().handle_request(pr_url, command)
+        await _handle_request(pr_url, command)
 
 
 async def run_action():
@@ -185,12 +214,16 @@ async def run_action():
         if response_language.lower() != 'en-us':
             get_logger().info(f'User has set the response language to: {response_language}')
 
-            lang_instruction_text = f"Your response MUST be written in the language corresponding to locale code: '{response_language}'. This is crucial."
+            lang_instruction_text = (
+                f"Your response MUST be written in the language corresponding to locale code: "
+                f"'{response_language}'. This is crucial. Keep schema control values "
+                f"(such as 'No', 'Yes', 'None', 'false') in their original English form "
+                f"and do not translate them.")
             separator_text = "\n======\n\nIn addition, "
 
             for key in get_settings():
                 setting = get_settings().get(key)
-                if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+                if isinstance(setting, dynaconf.DataDict):
                     if key.lower() in ['pr_description', 'pr_code_suggestions', 'pr_reviewer']:
                         if hasattr(setting, 'extra_instructions'):
                             extra_instructions = setting.extra_instructions
@@ -257,7 +290,7 @@ async def run_action():
                 get_settings().pr_description.final_update_message = False
                 get_logger().info(f"Running push commands: {push_commands}")
                 for command in push_commands:
-                    await PRAgent().handle_request(pr_url, command)
+                    await _handle_request(pr_url, command)
                 return
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("url")
@@ -280,17 +313,17 @@ async def run_action():
 
                 # invoke by default all three tools
                 if auto_describe is None or is_true(auto_describe):
-                    await PRDescription(pr_url).run()
+                    await _run_auto_tool(PRDescription, pr_url)
                 if auto_review is None or is_true(auto_review):
-                    await PRReviewer(pr_url).run()
+                    await _run_auto_tool(PRReviewer, pr_url)
                 if auto_improve is None or is_true(auto_improve):
-                    await PRCodeSuggestions(pr_url).run()
+                    await _run_auto_tool(PRCodeSuggestions, pr_url)
         else:
             get_logger().info(f"Skipping action: {action}")
 
     # Handle submitted pull request review event
     elif GITHUB_EVENT_NAME == "pull_request_review":
-        await _run_review_commands(event_payload)
+        return await _run_review_commands(event_payload)
 
     # Handle issue comment event
     elif GITHUB_EVENT_NAME == "issue_comment" or GITHUB_EVENT_NAME == "pull_request_review_comment":
@@ -328,8 +361,8 @@ async def run_action():
 
                 if url:
                     # handle_line_comments returns an argv list for /ask line
-                    # comments to bypass shell-style tokenisation; otherwise it
-                    # returns the raw comment string. Only normalise when the
+                    # comments to bypass shell-style tokenization; otherwise it
+                    # returns the raw comment string. Only normalize when the
                     # payload is a string, otherwise the argv list would be
                     # passed through .strip().lower() and raise AttributeError.
                     if isinstance(comment_body, str):
@@ -340,13 +373,15 @@ async def run_action():
                     provider = get_git_provider()(pr_url=url)
                     if is_pr:
                         _inject_artifact_context()
-                        await PRAgent().handle_request(
-                            url, body, notify=lambda: provider.add_eyes_reaction(
+                        await _handle_request(
+                            url,
+                            body,
+                            notify=lambda: provider.add_eyes_reaction(
                                 comment_id, disable_eyes=disable_eyes
-                            )
+                            ),
                         )
                     else:
-                        await PRAgent().handle_request(url, body)
+                        await _handle_request(url, body)
 
     # Handle workflow_run event (triggered after another workflow completes, e.g. after a terraform plan)
     elif GITHUB_EVENT_NAME == "workflow_run":
@@ -395,11 +430,11 @@ async def run_action():
         )
 
         if auto_describe is None or is_true(auto_describe):
-            await PRDescription(pr_url).run()
+            await _run_auto_tool(PRDescription, pr_url)
         if auto_review is None or is_true(auto_review):
-            await PRReviewer(pr_url).run()
+            await _run_auto_tool(PRReviewer, pr_url)
         if auto_improve is None or is_true(auto_improve):
-            await PRCodeSuggestions(pr_url).run()
+            await _run_auto_tool(PRCodeSuggestions, pr_url)
 
 
 def _inject_ci_conclusion(conclusion):
@@ -430,7 +465,7 @@ def _inject_ci_conclusion(conclusion):
     target_tools = {str(t).lower() for t in target_tools}
     for key in get_settings():
         setting = get_settings().get(key)
-        if str(type(setting)) == "<class 'dynaconf.utils.boxing.DynaBox'>":
+        if isinstance(setting, dynaconf.DataDict):
             if key.lower() in target_tools:
                 if hasattr(setting, "extra_instructions"):
                     extra_instructions = str(setting.extra_instructions or "")
@@ -448,14 +483,30 @@ async def _run_action_and_drain():
     Wrapping here rather than at the end of run_action() covers its many early
     returns too, and keeps run_action() itself free of teardown concerns.
     """
+    status = _ActionStatus()
+    token = _action_status.set(status)
+
     try:
-        return await run_action()
+        await run_action()
     finally:
-        if litellm_callbacks_registered():
-            await drain_litellm_callbacks(
-                get_settings().litellm.get("callback_timeout_seconds", DEFAULT_CALLBACK_TIMEOUT_SECONDS)
-            )
+        try:
+            if litellm_callbacks_registered():
+                await drain_litellm_callbacks(
+                    get_settings().litellm.get(
+                        "callback_timeout_seconds",
+                        DEFAULT_CALLBACK_TIMEOUT_SECONDS,
+                    )
+                )
+        finally:
+            _action_status.reset(token)
+
+    if status.failed:
+        raise SystemExit(1)
+
+
+def main():
+    asyncio.run(_run_action_and_drain())
 
 
 if __name__ == '__main__':
-    asyncio.run(_run_action_and_drain())
+    main()

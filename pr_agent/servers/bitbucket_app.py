@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import os
-import re
 import time
 
 import jwt
@@ -26,7 +25,11 @@ from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
-from pr_agent.servers.utils import get_pr_commands, push_trigger_slot
+from pr_agent.servers.utils import (
+    get_pr_commands,
+    push_trigger_slot,
+    shared_should_process_pr_logic,
+)
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
@@ -196,6 +199,9 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
         if commands_conf == "pr_commands"
         else get_settings().get(f"bitbucket_app.{commands_conf}", {})
     )
+    if not commands:
+        get_logger().info(f"No {commands_conf} configured, skipping auto commands")
+        return
     get_settings().set("config.is_auto_command", True)
     if commands_conf == "push_commands":
         is_valid_push = await _validate_time_from_last_commit_to_pr_update(data)
@@ -236,51 +242,7 @@ def is_bot_user(data) -> bool:
 
 
 def should_process_pr_logic(data) -> bool:
-    try:
-        pr_data = data.get("data", {}).get("pullrequest", {})
-        title = pr_data.get("title", "")
-        source_branch = pr_data.get("source", {}).get("branch", {}).get("name", "")
-        target_branch = pr_data.get("destination", {}).get("branch", {}).get("name", "")
-        sender = _get_username(data)
-        repo_full_name = pr_data.get("destination", {}).get("repository", {}).get("full_name", "")
-
-        # logic to ignore PRs from specific repositories
-        ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
-        if repo_full_name and ignore_repos:
-            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
-                get_logger().info(f"Ignoring PR from repository '{repo_full_name}' due to 'config.ignore_repositories' setting")
-                return False
-
-        # logic to ignore PRs from specific users
-        ignore_pr_users = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
-        if ignore_pr_users and sender:
-            if any(re.search(regex, sender) for regex in ignore_pr_users):
-                get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
-                return False
-
-        # logic to ignore PRs with specific titles
-        if title:
-            ignore_pr_title_re = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
-            if not isinstance(ignore_pr_title_re, list):
-                ignore_pr_title_re = [ignore_pr_title_re]
-            if ignore_pr_title_re and any(re.search(regex, title) for regex in ignore_pr_title_re):
-                get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
-                return False
-
-        ignore_pr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
-        ignore_pr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
-        if (ignore_pr_source_branches or ignore_pr_target_branches):
-            if any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
-                get_logger().info(
-                    f"Ignoring PR with source branch '{source_branch}' due to config.ignore_pr_source_branches settings")
-                return False
-            if any(re.search(regex, target_branch) for regex in ignore_pr_target_branches):
-                get_logger().info(
-                    f"Ignoring PR with target branch '{target_branch}' due to config.ignore_pr_target_branches settings")
-                return False
-    except Exception as e:
-        get_logger().error(f"Failed 'should_process_pr_logic': {e}")
-    return True
+    return shared_should_process_pr_logic(data, provider="bitbucket_app")
 
 
 @router.post("/webhook")
@@ -381,8 +343,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                     with get_logger().contextualize(**log_context):
                         if get_identity_provider().verify_eligibility("bitbucket",
                                                         sender_id, pr_url) is not Eligibility.NOT_ELIGIBLE:
-                            if get_pr_commands("bitbucket_app"):
-                                await _perform_commands_bitbucket("pr_commands", agent, pr_url, log_context, data)
+                            await _perform_commands_bitbucket("pr_commands", agent, pr_url, log_context, data)
             elif event == "pullrequest:updated": # PR updated, might be from a push (we will validate this later)
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
                 log_context["api_url"] = pr_url
@@ -391,9 +352,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                     with get_logger().contextualize(**log_context):
                         if get_identity_provider().verify_eligibility("bitbucket",
                                                         sender_id, pr_url) is not Eligibility.NOT_ELIGIBLE:
-
-                            if get_settings().get("bitbucket_app.push_commands"):
-                                await _perform_commands_bitbucket("push_commands", agent, pr_url, log_context, data)
+                            await _perform_commands_bitbucket("push_commands", agent, pr_url, log_context, data)
             elif event == "pullrequest:comment_created":
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
                 log_context["api_url"] = pr_url
