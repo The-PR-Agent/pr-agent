@@ -117,6 +117,11 @@ extended_thinking_max_output_tokens = 4096
 # Do not add adaptive-only models to claude_extended_thinking_models_override;
 # when both features are enabled, adaptive thinking takes precedence.
 enable_claude_adaptive_thinking = false
+# Optional: list model ids to additionally treat as adaptive-only Claude models. Add opaque Bedrock
+# application inference profile ARNs here while keeping built-in detection for named models.
+# When adaptive thinking is enabled, use the exact request model ids so LiteLLM keeps the adaptive
+# payload instead of converting it to the legacy budget_tokens shape.
+claude_adaptive_thinking_models_override = []
 # Optional: override the built-in list of Claude models that receive the extended-thinking payload.
 # When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS
 # in pr_agent/algo/__init__.py). Leave empty to use the defaults.
