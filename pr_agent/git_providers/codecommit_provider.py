@@ -11,12 +11,12 @@ from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
 
-from ..algo.utils import (
+from ..algo.comment_identity import (
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
-    load_large_diff,
 )
+from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider
