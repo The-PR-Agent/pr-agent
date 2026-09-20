@@ -84,48 +84,17 @@ def _make_tool(monkeypatch, fake_db):
     return tool
 
 
-def test_ingest_appends_rows_when_table_exists(monkeypatch):
-    """Add new rows to an existing table instead of dropping them."""
-    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+def _fake_table():
     fake_table = SimpleNamespace()
     fake_table.add_calls = []
+    fake_table.delete_calls = []
     fake_table.add = lambda df: fake_table.add_calls.append(len(df))
-    fake_db.table = fake_table
-
-    tool = _make_tool(monkeypatch, fake_db)
-
-    tool._update_table_with_issues(
-        [_fake_issue()],
-        "utkarsh-demo",
-        ingest=True,
-    )
-
-    assert fake_table.add_calls == [2]
+    fake_table.delete = lambda where: fake_table.delete_calls.append(where)
+    return fake_table
 
 
-def test_ingest_fetches_table_when_table_handle_unset(monkeypatch):
-    """A missing table handle is fetched from the db before appending rows."""
-    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
-    fake_table = SimpleNamespace()
-    fake_table.add_calls = []
-    fake_table.add = lambda df: fake_table.add_calls.append(len(df))
-    fake_db.table = fake_table
-
-    tool = _make_tool(monkeypatch, fake_db)
-    tool.table = None
-
-    tool._update_table_with_issues(
-        [_fake_issue()],
-        "utkarsh-demo",
-        ingest=True,
-    )
-
-    assert fake_table.add_calls == [2]
-    assert tool.table is fake_table
-
-
-def test_full_rebuild_overwrites_instead_of_appending(monkeypatch):
-    """A full ingestion run rebuilds the table so stale rows do not accumulate."""
+def test_initial_creation_overwrites_the_table(monkeypatch):
+    """A from-scratch run (no existing table) creates the table with overwrite."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.created_with = None
     fake_db.create_table = lambda name, data, mode: fake_db.__setattr__(
@@ -145,12 +114,66 @@ def test_full_rebuild_overwrites_instead_of_appending(monkeypatch):
     assert fake_db.created_with == ("codium-ai-pr-agent-issues", "overwrite")
 
 
+def test_ingest_appends_rows_when_table_exists(monkeypatch):
+    """Add new rows to an existing table instead of dropping them."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table()
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+
+    tool._update_table_with_issues(
+        [_fake_issue()],
+        "utkarsh-demo",
+        ingest=True,
+    )
+
+    assert fake_table.add_calls == [2]
+    assert fake_table.delete_calls == []
+
+
+def test_ingest_fetches_table_when_table_handle_unset(monkeypatch):
+    """A missing table handle is fetched from the db before appending rows."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table()
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+    tool.table = None
+
+    tool._update_table_with_issues(
+        [_fake_issue()],
+        "utkarsh-demo",
+        ingest=True,
+    )
+
+    assert fake_table.add_calls == [2]
+    assert tool.table is fake_table
+
+
+def test_force_refresh_replaces_only_the_current_repo_rows(monkeypatch):
+    """A forced refresh deletes only the current repo rows, then appends refreshed ones."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table()
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+
+    tool._update_table_with_issues(
+        [_fake_issue()],
+        "org/repo-a",
+        ingest=True,
+        force_refresh=True,
+    )
+
+    assert fake_table.delete_calls == ["metadata.repo='org/repo-a'"]
+    assert fake_table.add_calls == [2]
+
+
 def test_ingest_warns_when_table_missing(monkeypatch):
     """Avoid adding rows when the table does not exist."""
     fake_db = FakeDB([])
-    fake_table = SimpleNamespace()
-    fake_table.add_calls = []
-    fake_table.add = lambda df: fake_table.add_calls.append(len(df))
+    fake_table = _fake_table()
     fake_db.table = fake_table
 
     tool = _make_tool(monkeypatch, fake_db)
