@@ -626,11 +626,14 @@ class AttemptTokenBudget:
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
     ) -> FittedPrompt:
         """Fit one prompt variable without mutating retry-shared state."""
+        environment = SandboxedEnvironment(undefined=StrictUndefined)
+        system_template = environment.from_string(self.token_handler.system)
+        user_template = environment.from_string(self.token_handler.user)
 
         def render(candidate: str) -> tuple[str, str]:
             attempt_variables = variables.copy()
             attempt_variables[variable_name] = candidate
-            return self.render_prompt_templates(attempt_variables)
+            return system_template.render(attempt_variables), user_template.render(attempt_variables)
 
         return self.fit_optional_text(
             optional_text,
