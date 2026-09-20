@@ -194,7 +194,7 @@ class PRSimilarIssue:
                     self.table = self.db[index_name]
                     res = self.table.search().limit(len(self.table)).where(f"id='example_issue_{repo_name_for_index}'").to_list()
                     get_logger().info("result: ", res)
-                    if res[0].get("vector"):
+                    if res and res[0].get("vector"):
                         ingest = False
 
             if run_from_scratch or ingest:  # indexing the entire repo
