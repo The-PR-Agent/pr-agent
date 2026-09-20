@@ -10,6 +10,7 @@ never resolve anything. Each provider now resolves its own shape behind
 
 from types import SimpleNamespace
 
+from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
 from pr_agent.git_providers.git_provider import GitProvider
@@ -27,6 +28,10 @@ PROVIDER_SHAPES = (
     ("bitbucket-server", BitbucketServerProvider, "pr", SimpleNamespace(fromRef={"latestCommit": HEAD_SHA})),
     ("github", GithubProvider, "pr", SimpleNamespace(head=SimpleNamespace(sha=HEAD_SHA))),
     ("gitea", GiteaProvider, "last_commit", SimpleNamespace(sha=HEAD_SHA)),
+    # Azure is the provider #3431 was filed against. It records the source
+    # revision on `last_merge_commit`, a different field from every other
+    # provider here, so it has its own row.
+    ("azure", AzureDevopsProvider, "pr", SimpleNamespace(last_merge_commit=SimpleNamespace(commit_id=HEAD_SHA))),
 )
 
 
