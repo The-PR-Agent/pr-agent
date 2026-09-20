@@ -1788,12 +1788,10 @@ class AzureDevopsProvider(GitProvider):
         return self.pr_url + "?discussionId=" + str(comment.thread_id)
 
     def get_pr_head_sha(self) -> str:
-        # The field `reconcile_code_suggestion_threads` already treats as head:
-        # Azure's PR object records the source revision here, and `last_commit_id`
-        # is not always populated. Without this override the base hook returns "",
-        # so an Azure review could not resolve absent findings after a head change.
-        # That is the defect #3431 was filed against, which is why this belongs here
-        # rather than only on the other five providers.
+        # Read the source revision from the same field `reconcile_code_suggestion_threads`
+        # already treats as head. `last_commit_id` is not always populated, so without
+        # this override the base hook returns "" and an Azure review cannot resolve
+        # absent findings after a head change, which is the defect #3431 was filed against.
         head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
         return head if isinstance(head, str) else ""
 
