@@ -374,7 +374,7 @@ class PRSimilarIssue:
             get_logger().info('Done')
 
         elif get_settings().pr_similar_issue.vectordb == "lancedb":
-            res = self.table.search(embeds[0]).where(f"metadata.repo='{self.repo_name_for_index}'", prefilter=True).to_list()
+            res = self.table.search(embeds[0]).distance_type("cosine").limit(5).where(f"metadata.repo='{self.repo_name_for_index}'", prefilter=True).to_list()
 
             for r in res:
                 # skip example issue
@@ -396,7 +396,7 @@ class PRSimilarIssue:
                     relevant_comment_number_list.append(int(r["id"].split('.')[1].split('_')[-1]))
                 else:
                     relevant_comment_number_list.append(-1)
-                score_list.append(str("{:.2f}".format(1-r['_distance'])))
+                score_list.append(str("{:.2f}".format(1 - r['_distance'])))
             get_logger().info('Done')
 
         elif get_settings().pr_similar_issue.vectordb == "qdrant":
@@ -610,7 +610,6 @@ class PRSimilarIssue:
         if not ingest:
             get_logger().info('Creating table from scratch...')
             self.table = self.db.create_table(self.index_name, data=df, mode="overwrite")
-            time.sleep(15)
         else:
             get_logger().info('Ingesting in Table...')
             if self._table_exists_in_db(self.index_name):
@@ -621,7 +620,6 @@ class PRSimilarIssue:
                 self.table.add(df)
             else:
                 get_logger().info(f"Table {self.index_name} doesn't exists!")
-            time.sleep(5)
         get_logger().info('Done')
 
 
