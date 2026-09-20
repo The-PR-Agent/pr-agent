@@ -939,7 +939,7 @@ def update_settings_from_args(args: List[str]) -> List[str]:
     Args:
         args: A list of arguments passed to the function.
         Example args: ['--pr_code_suggestions.extra_instructions="be funny',
-                  '--pr_code_suggestions.num_code_suggestions=3']
+                  '--pr_code_suggestions.num_code_suggestions_per_chunk=3']
 
     Returns:
         None
