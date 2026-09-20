@@ -678,8 +678,8 @@ class PRReviewer:
         return findings
 
     def _review_head_sha(self) -> str:
-        # Providers reach their head commit through different fields, so each one resolves
-        # its own shape behind get_pr_head_sha() rather than the reviewer knowing it.
+        # Resolve the head commit through the provider's own hook, so the reviewer does not
+        # need to know which field each API carries it in.
         get_head_sha = getattr(self.git_provider, "get_pr_head_sha", None)
         if callable(get_head_sha):
             head_sha = get_head_sha()

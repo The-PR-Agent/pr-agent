@@ -48,21 +48,21 @@ def _reviewer(provider):
 
 
 def test_providers_resolve_their_own_head_sha_shape():
-    """Each provider reaches the head through the field its own API exposes."""
+    """Resolve each provider's head through the field its own API exposes."""
     for name, cls, attribute, shape in PROVIDER_SHAPES:
         provider = _provider(cls, attribute, shape)
         assert provider.get_pr_head_sha() == HEAD_SHA, name
 
 
 def test_review_head_sha_reads_the_provider_hook():
-    """The reviewer resolves a head for every provider, not just the GitHub-shaped one."""
+    """Resolve a head for every provider in the matrix, whatever its API shape."""
     for name, cls, attribute, shape in PROVIDER_SHAPES:
         reviewer = _reviewer(_provider(cls, attribute, shape))
         assert reviewer._review_head_sha() == HEAD_SHA, name
 
 
 def test_unresolvable_head_stays_empty_rather_than_guessing():
-    """A provider with no head to report must not invent one.
+    """Refuse to invent a head for a provider that has none to report.
 
     The reconciliation guard only resolves findings when both the previous and the
     current head are non-empty and different, so an empty head safely refuses.
@@ -80,7 +80,7 @@ def test_unresolvable_head_stays_empty_rather_than_guessing():
 
 
 def test_base_contract_defaults_to_empty():
-    """The base method is a no-op, so a new provider opts in explicitly."""
+    """Pin the base method as a no-op so a new provider opts in explicitly."""
     import inspect
 
     source = inspect.getsource(GitProvider.get_pr_head_sha)
@@ -94,11 +94,11 @@ def test_base_contract_defaults_to_empty():
 
 
 def test_head_sha_falls_back_when_the_hook_is_absent():
-    """A provider that does not define the hook still resolves its head."""
+    """Resolve the head for a provider that does not define the hook."""
     for last_commit_id in ("legacy-sha", SimpleNamespace(sha="legacy-sha"), SimpleNamespace(id="legacy-sha")):
         assert _reviewer(SimpleNamespace(last_commit_id=last_commit_id))._review_head_sha() == "legacy-sha"
 
 
 def test_head_sha_is_empty_when_nothing_resolves():
-    """No hook result and no legacy attribute leaves the head empty, not stale."""
+    """Leave the head empty rather than stale when nothing resolves."""
     assert _reviewer(SimpleNamespace(last_commit_id=None))._review_head_sha() == ""
