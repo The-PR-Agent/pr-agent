@@ -1,3 +1,4 @@
+import binascii
 import copy
 import difflib
 import hashlib
@@ -1243,9 +1244,9 @@ class GithubProvider(GitProvider):
         if not self.github_user_id:
             try:
                 self.github_user_id = self.github_client.get_user().raw_data['login']
-            except (GithubException, RequestException, KeyError):
+            except (GithubException, RequestException, KeyError) as e:
+                get_logger().warning(f"Could not resolve the GitHub user id: {e}")
                 self.github_user_id = ""
-                # logging.exception(f"Failed to get user id, error: {e}")
         return self.github_user_id
 
     def get_notifications(self, since: datetime):
@@ -1690,7 +1691,10 @@ class GithubProvider(GitProvider):
             if propagate_errors:
                 raise
             file_content_str = ""
-        except (RequestException, UnicodeDecodeError):
+        except (RequestException, UnicodeDecodeError, binascii.Error):
+            # binascii.Error: PyGithub base64-decodes the payload in `decoded_content`, so a
+            # corrupt body fails here rather than at the request. Letting it escape would reach
+            # the diff-build handler and be re-raised as RateLimitExceeded, retrying the review.
             if propagate_errors:
                 raise
             file_content_str = ""
@@ -1756,7 +1760,8 @@ class GithubProvider(GitProvider):
             commit_list = self.pr.get_commits()
             commit_messages = [commit.commit.message for commit in commit_list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
-        except (GithubException, RequestException, AttributeError):
+        except (GithubException, RequestException, AttributeError) as e:
+            get_logger().warning(f"Failed to get commit messages: {e}")
             commit_messages_str = ""
         if max_tokens:
             commit_messages_str = clip_tokens(commit_messages_str, max_tokens)

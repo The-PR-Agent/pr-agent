@@ -6,6 +6,7 @@ API failure and the run continued with a wrong result. Keep the API or transport
 swallowed the way callers rely on, and let a programming error propagate.
 """
 
+import binascii
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from github import GithubException
 from requests.exceptions import RequestException
 
 from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.log import get_logger
 
 
 class _Requester:
@@ -146,3 +148,72 @@ def test_fetch_sub_issues_falls_back_to_an_empty_set_on_a_bad_graphql_payload(pa
     provider.github_client = SimpleNamespace(_Github__requester=requester)
 
     assert provider.fetch_sub_issues("https://github.com/owner/repo/issues/1") == set()
+
+
+def _provider_with_corrupt_file_content():
+    """Serve a ContentFile whose base64 payload cannot be decoded.
+
+    PyGithub decodes the body inside `decoded_content`, so the failure surfaces at attribute
+    access rather than at the request.
+    """
+    provider = _make_provider()
+
+    class _CorruptContent:
+        @property
+        def decoded_content(self):
+            raise binascii.Error("Invalid base64-encoded string")
+
+    provider._get_repo = lambda: SimpleNamespace(
+        get_contents=lambda path, ref=None: _CorruptContent()
+    )
+    return provider
+
+
+def test_get_pr_file_content_returns_empty_string_on_a_corrupt_payload():
+    """Do not let a corrupt body escape: the diff builder re-raises anything that does as
+    RateLimitExceeded, which retries the review as though GitHub had throttled it."""
+    provider = _provider_with_corrupt_file_content()
+
+    assert provider.get_pr_file_content("a.py", "main") == ""
+
+
+def test_get_pr_file_content_propagates_a_corrupt_payload_when_asked():
+    provider = _provider_with_corrupt_file_content()
+
+    with pytest.raises(binascii.Error):
+        provider.get_pr_file_content("a.py", "main", propagate_errors=True)
+
+
+def _capture_logs(call):
+    """Run `call` with a loguru sink attached and return (result, captured lines)."""
+    captured = []
+    sink_id = get_logger().add(lambda message: captured.append(str(message)), format="{message}")
+    try:
+        result = call()
+    finally:
+        get_logger().remove(sink_id)
+    return result, captured
+
+
+@pytest.mark.parametrize("error", API_ERRORS)
+def test_get_user_id_records_why_the_login_is_unresolved(error):
+    """Carry the reason into the log: an empty login is otherwise indistinguishable from a
+    deployment that has none, and `_resolve_user_login` only ever sees the empty string."""
+    provider = _make_provider()
+    provider.github_client = SimpleNamespace(get_user=lambda: (_ for _ in ()).throw(error))
+
+    login, captured = _capture_logs(provider.get_user_id)
+
+    assert login == ""
+    assert any("Could not resolve the GitHub user id" in line for line in captured)
+
+
+@pytest.mark.parametrize("error", API_ERRORS)
+def test_get_commit_messages_records_why_the_result_is_empty(error):
+    """An empty commit-message string otherwise reads the same as a PR with no commits."""
+    provider = _make_provider(pr_extra={"get_commits": lambda: (_ for _ in ()).throw(error)})
+
+    messages, captured = _capture_logs(provider.get_commit_messages)
+
+    assert messages == ""
+    assert any("Failed to get commit messages" in line for line in captured)
