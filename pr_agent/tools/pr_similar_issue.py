@@ -547,12 +547,7 @@ class PRSimilarIssue:
         get_logger().info('Processing issues...')
 
         corpus = Corpus()
-        example_issue_record = Record(
-            id=f"example_issue_{repo_name_for_index}",
-            text="example_issue",
-            metadata=Metadata(repo=repo_name_for_index)
-        )
-        corpus.append(example_issue_record)
+        sentinel_id = f"example_issue_{repo_name_for_index}"
 
         counter = 0
         for issue in issues_list:
@@ -598,6 +593,28 @@ class PRSimilarIssue:
                                                     level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+        if len(corpus.documents) == 0:
+            if ingest and not force_refresh:
+                get_logger().info('No issues to index, skipping update')
+                return
+            # From-scratch runs and forced refreshes still carry the sentinel row, so the
+            # table keeps a searchable marker and the subsequent query path has an index.
+            corpus.append(Record(id=sentinel_id, text="example_issue",
+                                 metadata=Metadata(repo=repo_name_for_index)))
+        else:
+            # lancedb add() does not de-duplicate rows, so only carry the sentinel row when
+            # the table will not already have one after this write.
+            add_sentinel = not ingest or force_refresh
+            if ingest and self._table_exists_in_db(self.index_name):
+                if self.table is None:
+                    self.table = self.db[self.index_name]
+                if not force_refresh:
+                    add_sentinel = not self.table.search().limit(1).where(f"id='{sentinel_id}'").to_list()
+            if add_sentinel:
+                corpus.append(Record(id=sentinel_id, text="example_issue",
+                                     metadata=Metadata(repo=repo_name_for_index)))
+
         df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
