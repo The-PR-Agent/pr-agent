@@ -1771,7 +1771,7 @@ def _resolve_bedrock_mantle_bearer_token(api_key):
 
 def _sign_bedrock_mantle_request(self, *args, **kwargs):
     """Bridge request-local AWS credentials to LiteLLM's Bedrock Mantle signer."""
-    bedrock_mantle_sign_request = _handler_attr("_bedrock_mantle_sign_request", _bedrock_mantle_sign_request)
+    bedrock_mantle_sign_request = _bedrock_mantle_sign_request
     request_credentials = _bedrock_mantle_request_credentials.get()
     if request_credentials is not None:
         if "request_data" in kwargs:

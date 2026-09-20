@@ -1789,6 +1789,21 @@ async def test_missing_private_import_preserves_module_and_fails_closed(monkeypa
         else:
             with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
                 module._uses_openai_responses_transport("gpt-4o", "openai")
+        handler = module.LiteLLMAIHandler()
+        completion = AsyncMock(return_value=_mock_response())
+        scoped.setattr(module, "acompletion", completion)
+        if symbol == "AnthropicModelInfo":
+            with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
+                await handler.probe_completion("anthropic/claude-sonnet-4")
+            completion.assert_not_called()
+            await handler.probe_completion("gpt-4o")
+        else:
+            with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
+                await handler.probe_completion("gpt-4o")
+            completion.assert_not_called()
+            assert module._uses_openai_responses_transport("openai/responses/gpt-4o", "openai")
+            assert not module._uses_openai_responses_transport("ft:babbage-002:example", "openai")
+            await handler.probe_completion("anthropic/claude-sonnet-4")
 
 
 @pytest.mark.parametrize("method", ("list_providers", "get", "exists"))
