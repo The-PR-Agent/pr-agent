@@ -1080,7 +1080,7 @@ class GithubProvider(GitProvider):
             try:
                 self.pr._requester.requestJsonAndCheck("DELETE", f"{self.pr.url}/reviews/{pending_review_id}")
             except (GithubException, RequestException):
-                # Best-effort cleanup of the pending review; GitHub drops it on its own if this fails.
+                # Attempt best-effort cleanup of the pending review; GitHub drops it on its own if this fails.
                 pass
         return is_verified, e
 
