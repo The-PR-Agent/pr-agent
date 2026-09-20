@@ -14,6 +14,11 @@ class FakeDB:
     def table_names(self):
         return self._table_names
 
+    def __getitem__(self, name):
+        if name not in self._table_names:
+            raise KeyError(name)
+        return self.table
+
 
 class _FakeDataFrame:
     def __init__(self, documents):
@@ -80,7 +85,7 @@ def _make_tool(monkeypatch, fake_db):
 
 
 def test_ingest_appends_rows_when_table_exists(monkeypatch):
-    """With an existing LanceDB table, new rows are added via table.add, not dropped."""
+    """Add new rows to an existing table instead of dropping them."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_table = SimpleNamespace()
     fake_table.add_calls = []
@@ -98,8 +103,29 @@ def test_ingest_appends_rows_when_table_exists(monkeypatch):
     assert fake_table.add_calls == [2]
 
 
+def test_ingest_fetches_table_when_force_update_left_it_unset(monkeypatch):
+    """Force updates reach the ingest branch with self.table still None."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = SimpleNamespace()
+    fake_table.add_calls = []
+    fake_table.add = lambda df: fake_table.add_calls.append(len(df))
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+    tool.table = None
+
+    tool._update_table_with_issues(
+        [_fake_issue()],
+        "utkarsh-demo",
+        ingest=True,
+    )
+
+    assert fake_table.add_calls == [2]
+    assert tool.table is fake_table
+
+
 def test_ingest_warns_when_table_missing(monkeypatch):
-    """Adding into a missing table is not attempted."""
+    """Avoid adding rows when the table does not exist."""
     fake_db = FakeDB([])
     fake_table = SimpleNamespace()
     fake_table.add_calls = []

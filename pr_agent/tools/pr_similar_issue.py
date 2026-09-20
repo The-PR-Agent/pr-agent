@@ -616,6 +616,8 @@ class PRSimilarIssue:
         else:
             get_logger().info('Ingesting in Table...')
             if self.index_name in self.db.table_names():
+                if self.table is None:
+                    self.table = self.db[self.index_name]
                 self.table.add(df)
             else:
                 get_logger().info(f"Table {self.index_name} doesn't exists!")
