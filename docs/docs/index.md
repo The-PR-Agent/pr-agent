@@ -28,11 +28,11 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 |       | [Ask](./tools/ask.md)                                                                 |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Ask on code lines](./tools/ask.md#ask-lines)                                         |   ✅   |   ✅   |           |      ✅       |       |
 |       | [Add Docs](./tools/add_docs.md)                                                       |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
-|       | [Generate Labels](./tools/generate_labels.md)                                         |   ✅   |   ✅   |   ⚠️    |      ✅       |       |
+|       | [Generate Labels](./tools/generate_labels.md)                                         |   ✅   |   ✅   |   💬    |      ✅       |       |
 |       | [Similar Issues](./tools/similar_issues.md)                                           |   ✅   |        |           |              |       |
 |       | [Help](./tools/help.md)                                                               |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Help Docs](./tools/help_docs.md) ⚠️                                                   |        |        |           |              |       |
-|       | [Update CHANGELOG](./tools/update_changelog.md)                                       |   ✅   |   ✅   |    ✅     |      ⚠️       |  ⚠️  |
+|       | [Update CHANGELOG](./tools/update_changelog.md)                                       |   ✅   |   ✅   |    ✅     |      💬       |  💬  |
 |       |                                                                                       |        |        |           |              |       |
 | [USAGE](./usage-guide/index.md) | [CLI](./usage-guide/automations_and_usage.md#local-repo-cli)      |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [App / webhook](./usage-guide/automations_and_usage.md#github-app)                    |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
@@ -44,14 +44,14 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 |       | [Repo context files (`AGENTS.md`)](./usage-guide/additional_configurations.md#bringing-per-repo-context-files-to-pr-agent) |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Compression strategy](./core-abilities/compression_strategy.md)                      |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Dynamic context](./core-abilities/dynamic_context.md)                                |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
-|       | [Fetching ticket context](./core-abilities/fetching_ticket_context.md)                |   ✅   |  ✅   |    ✅     |      ✅       |       |
+|       | [Fetching ticket context](./core-abilities/fetching_ticket_context.md)                |   ✅   |  ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Local and global metadata](./core-abilities/metadata.md)                             |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
-|       | [Multiple models support](./usage-guide/changing_a_model.md)                          |   ✅   |   ✅   |    ✅     |      ✅       |       |
+|       | [Multiple models support](./usage-guide/changing_a_model.md)                          |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Self reflection](./core-abilities/self_reflection.md)                                |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 
 ⚠️ `/help_docs` is temporarily disabled since v0.36.1 pending a fix for a credential-exposure issue ([#2445](https://github.com/The-PR-Agent/pr-agent/issues/2445)); see [Help Docs](./tools/help_docs.md).
 
-Legend: ⚠️ = supported, but with reduced functionality (the tool runs, yet its output is published as a PR comment instead of being applied directly, e.g. Update CHANGELOG posts the changelog as a comment when the provider cannot push files, and Generate Labels posts the labels as a comment when the provider cannot set them). Blank = not supported.
+Legend: ✅ = supported. 💬 = the tool runs, but its output is posted as a PR comment instead of being applied (Update CHANGELOG where the provider cannot push files, Generate Labels where it cannot set labels). Blank = not supported, or not yet verified (Generate Labels on Gitea).
 
 ## Example Results
 

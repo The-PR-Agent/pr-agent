@@ -678,6 +678,14 @@ class PRReviewer:
         return findings
 
     def _review_head_sha(self) -> str:
+        # Resolve the head commit through the provider's own hook, so the reviewer does not
+        # need to know which field each API carries it in.
+        get_head_sha = getattr(self.git_provider, "get_pr_head_sha", None)
+        if callable(get_head_sha):
+            head_sha = get_head_sha()
+            if isinstance(head_sha, str) and head_sha:
+                return head_sha
+
         last_commit = getattr(self.git_provider, "last_commit_id", None)
         if isinstance(last_commit, str):
             return last_commit

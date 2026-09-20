@@ -1098,6 +1098,15 @@ class GitLabProvider(GitProvider):
             get_logger().exception(f"Could not get latest commit URL: {e}")
             return ""
 
+    def get_pr_head_sha(self) -> str:
+        try:
+            diff_refs = getattr(self.mr, "diff_refs", None)
+            head_sha = diff_refs.get("head_sha") if isinstance(diff_refs, dict) else None
+            return head_sha if isinstance(head_sha, str) else ""
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Could not get head SHA: {e}")
+            return ""
+
     def get_comment_url(self, comment):
         return f"{self.mr.web_url}#note_{comment.id}"
 

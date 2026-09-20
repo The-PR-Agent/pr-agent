@@ -315,6 +315,10 @@ class GiteaProvider(GitProvider):
     def get_latest_commit_url(self) -> str:
         return self.last_commit.html_url if self.last_commit else ""
 
+    def get_pr_head_sha(self) -> str:
+        sha = getattr(self.last_commit, "sha", None)
+        return sha if isinstance(sha, str) else ""
+
     def get_comment_url(self, comment) -> str:
         if isinstance(comment, dict):
             return comment.get("html_url") or comment.get("url") or ""

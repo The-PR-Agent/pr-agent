@@ -184,6 +184,19 @@ class PRUpdateChangelog:
                 f"Failed to publish changelog fallback after a read error: {fallback_error}"
             )
 
+    def _publish_changelog_write_error_fallback(self, answer: str):
+        changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
+        changelog_comment += (
+            "\n\n> ⚠️ The repository update could not be confirmed. "
+            "The generated changelog is preserved here for recovery."
+        )
+        try:
+            self.git_provider.publish_comment(changelog_comment)
+        except Exception as fallback_error:
+            get_logger().exception(
+                f"Failed to publish changelog fallback after a write error: {fallback_error}"
+            )
+
     async def _prepare_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
         if get_settings().pr_update_changelog.add_pr_link:
@@ -269,12 +282,16 @@ class PRUpdateChangelog:
             commit_message = "[skip ci] Update CHANGELOG.md"
         else:
             commit_message = "Update CHANGELOG.md"
-        self.git_provider.create_or_update_pr_file(
-            file_path="CHANGELOG.md",
-            branch=self.git_provider.get_pr_branch(),
-            contents=new_file_content,
-            message=commit_message,
-        )
+        try:
+            self.git_provider.create_or_update_pr_file(
+                file_path="CHANGELOG.md",
+                branch=self.git_provider.get_pr_branch(),
+                contents=new_file_content,
+                message=commit_message,
+            )
+        except Exception:
+            self._publish_changelog_write_error_fallback(answer)
+            raise
 
         sleep(5)  # wait for the file to be updated
         try:
