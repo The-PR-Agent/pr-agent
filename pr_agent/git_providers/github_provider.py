@@ -1634,7 +1634,7 @@ class GithubProvider(GitProvider):
             except AttributeError as e:
                 raise ValueError(
                     "GitHub token is required when using user deployment. See: "
-                    "https://github.com/Codium-ai/pr-agent#2-cli-usage-local-development") from e
+                    "https://docs.pr-agent.ai/installation/locally/#run-from-source") from e
             self.auth = Auth.Token(token)
         if self.auth:
             github_config = get_settings().github
