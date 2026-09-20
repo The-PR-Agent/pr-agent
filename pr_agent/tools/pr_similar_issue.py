@@ -200,7 +200,9 @@ class PRSimilarIssue:
                     self.table = self.db[index_name]
                     res = self.table.search().limit(len(self.table)).where(f"id='example_issue_{repo_name_for_index}'").to_list()
                     get_logger().info("result: ", res)
-                    if res[0].get("vector"):
+                    # No sentinel row means this repo is absent from the shared table and
+                    # still needs a full index. Mirrors the pinecone check above.
+                    if res:
                         ingest = False
 
             if run_from_scratch or ingest:  # indexing the entire repo
