@@ -255,6 +255,10 @@ class PRSimilarIssue:
                 api_key = get_settings().qdrant.api_key
                 url = get_settings().qdrant.url
             except Exception:
+                api_key = None
+                url = None
+
+            if not url:
                 if not self.cli_mode:
                     repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
                     issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
