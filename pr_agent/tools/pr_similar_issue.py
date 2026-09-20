@@ -1,3 +1,4 @@
+import hashlib
 import time
 from enum import Enum
 from typing import List
@@ -67,6 +68,11 @@ def _qdrant_collection_name(base_name: str) -> str:
     return f"{base_name}-v2"
 
 
+def _pinecone_namespace(repo_full_name: str) -> str:
+    """Return a collision-resistant Pinecone namespace for a canonical repository name."""
+    return f"repo-{hashlib.sha256(repo_full_name.lower().encode()).hexdigest()}"
+
+
 def _provider_supports_issue_indexing() -> bool:
     """Whether the configured provider can back `/similar_issue`.
 
@@ -98,6 +104,7 @@ class PRSimilarIssue:
         self.token_handler = TokenHandler()
         repo_obj = self.git_provider.repo_obj
         repo_name_for_index = self.repo_name_for_index = repo_obj.full_name.lower().replace('/', '-').replace('_/', '-')
+        self.pinecone_namespace = _pinecone_namespace(repo_obj.full_name)
         index_name = self.index_name = "codium-ai-pr-agent-issues"
 
         if get_settings().pr_similar_issue.vectordb == "pinecone":
@@ -132,7 +139,10 @@ class PRSimilarIssue:
                     upsert = True
                 else:
                     self.pinecone_index = self.pc.Index(name=index_name)
-                    res = self.pinecone_index.fetch(ids=[f"example_issue_{repo_name_for_index}"]).to_dict()
+                    res = self.pinecone_index.fetch(
+                        ids=[f"example_issue_{repo_name_for_index}"],
+                        namespace=self.pinecone_namespace,
+                    ).to_dict()
                     if res["vectors"]:
                         upsert = False
 
@@ -142,7 +152,12 @@ class PRSimilarIssue:
                 get_logger().info('Getting issues...')
                 issues = list(repo_obj.get_issues(state='all'))
                 get_logger().info('Done')
-                self._update_index_with_issues(issues, repo_name_for_index, upsert=upsert)
+                self._update_index_with_issues(
+                    issues,
+                    repo_name_for_index,
+                    pinecone_namespace=self.pinecone_namespace,
+                    upsert=upsert,
+                )
             else:  # update index if needed
                 self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
@@ -154,7 +169,7 @@ class PRSimilarIssue:
                     issue_str, comments, number = self._process_issue(issue)
                     issue_key = f"issue_{number}"
                     id = issue_key + "." + "issue"
-                    res = self.pinecone_index.fetch(ids=[id]).to_dict()
+                    res = self.pinecone_index.fetch(ids=[id], namespace=self.pinecone_namespace).to_dict()
                     is_new_issue = True
                     for vector in res["vectors"].values():
                         if vector['metadata']['repo'] == repo_name_for_index:
@@ -168,7 +183,12 @@ class PRSimilarIssue:
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {counter} new issues...')
-                    self._update_index_with_issues(issues_to_update, repo_name_for_index, upsert=True)
+                    self._update_index_with_issues(
+                        issues_to_update,
+                        repo_name_for_index,
+                        pinecone_namespace=self.pinecone_namespace,
+                        upsert=True,
+                    )
                 else:
                     get_logger().info('No new issues to update')
 
@@ -349,6 +369,7 @@ class PRSimilarIssue:
             res = pinecone_index.query(vector=embeds[0],
                                     top_k=5,
                                     filter={"repo": self.repo_name_for_index},
+                                    namespace=self.pinecone_namespace,
                                     include_metadata=True).to_dict()
 
             for r in res['matches']:
@@ -455,7 +476,7 @@ class PRSimilarIssue:
         issue_str = f"Issue Header: \"{header}\"\n\nIssue Body:\n{body}"
         return issue_str, comments, number
 
-    def _update_index_with_issues(self, issues_list, repo_name_for_index, upsert=False):
+    def _update_index_with_issues(self, issues_list, repo_name_for_index, pinecone_namespace, upsert=False):
         import pandas as pd
 
         get_logger().info('Processing issues...')
@@ -531,7 +552,7 @@ class PRSimilarIssue:
         get_logger().info('Upserting index...')
         self.pinecone_index = self.pc.Index(name=self.index_name)
         self.pinecone_index.upsert(vectors=vectors,
-                                   namespace="",
+                                   namespace=pinecone_namespace,
                                    batch_size=100,
                                    max_concurrency=10)
         time.sleep(5)  # wait for pinecone to finalize upserting before querying
