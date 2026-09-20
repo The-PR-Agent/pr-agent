@@ -188,7 +188,7 @@ def test_ingest_warns_when_table_missing(monkeypatch):
 
 
 def test_ingest_finds_a_table_beyond_the_first_pagination_page(monkeypatch):
-    """list_tables() lists every table, not just the first ten the deprecated call capped at."""
+    """A table past the first ten names is still found."""
     names = [f"table-{i:02d}" for i in range(13)]
     names[10] = "codium-ai-pr-agent-issues"
     fake_db = FakeDB(names)
@@ -204,3 +204,20 @@ def test_ingest_finds_a_table_beyond_the_first_pagination_page(monkeypatch):
     )
 
     assert fake_table.add_calls == [2]
+
+
+def test_init_does_not_rebuild_when_the_table_sorts_past_the_first_ten(monkeypatch):
+    """A table beyond the deprecated pagination cap is recognized, so the index is not rebuilt."""
+    names = [f"table-{i:02d}" for i in range(13)]
+    names[10] = "codium-ai-pr-agent-issues"
+
+    tool = _make_tool(monkeypatch, FakeDB(names))
+
+    assert tool._table_exists_in_db("codium-ai-pr-agent-issues")
+
+
+def test_init_rebuilds_when_the_table_is_absent(monkeypatch):
+    """A genuinely missing table is still treated as needing a full rebuild."""
+    tool = _make_tool(monkeypatch, FakeDB(["table-00"]))
+
+    assert not tool._table_exists_in_db("codium-ai-pr-agent-issues")

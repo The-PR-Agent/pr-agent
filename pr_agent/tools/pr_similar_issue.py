@@ -181,15 +181,9 @@ class PRSimilarIssue:
             self.table = None
 
             run_from_scratch = False
-            if run_from_scratch:  # for debugging
-                if index_name in self.db.list_tables().tables:
-                    get_logger().info('Removing Table...')
-                    self.db.drop_table(index_name)
-                    get_logger().info('Done')
-
             ingest = True
             force_refresh = False
-            if index_name not in self.db.list_tables().tables:
+            if not self._table_exists_in_db(index_name):
                 run_from_scratch = True
                 ingest = False
             else:
@@ -544,6 +538,9 @@ class PRSimilarIssue:
         time.sleep(5)  # wait for pinecone to finalize upserting before querying
         get_logger().info('Done')
 
+    def _table_exists_in_db(self, index_name) -> bool:
+        return index_name in self.db.list_tables().tables
+
     def _update_table_with_issues(self, issues_list, repo_name_for_index, ingest=False,
                                   force_refresh=False):
         import pandas as pd
@@ -618,7 +615,7 @@ class PRSimilarIssue:
             time.sleep(15)
         else:
             get_logger().info('Ingesting in Table...')
-            if self.index_name in self.db.list_tables().tables:
+            if self._table_exists_in_db(self.index_name):
                 if self.table is None:
                     self.table = self.db[self.index_name]
                 if force_refresh:
