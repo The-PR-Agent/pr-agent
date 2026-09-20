@@ -182,14 +182,14 @@ class PRSimilarIssue:
 
             run_from_scratch = False
             if run_from_scratch:  # for debugging
-                if index_name in self.db.table_names():
+                if index_name in self.db.list_tables().tables:
                     get_logger().info('Removing Table...')
                     self.db.drop_table(index_name)
                     get_logger().info('Done')
 
             ingest = True
             force_refresh = False
-            if index_name not in self.db.table_names():
+            if index_name not in self.db.list_tables().tables:
                 run_from_scratch = True
                 ingest = False
             else:
@@ -618,7 +618,7 @@ class PRSimilarIssue:
             time.sleep(15)
         else:
             get_logger().info('Ingesting in Table...')
-            if self.index_name in self.db.table_names():
+            if self.index_name in self.db.list_tables().tables:
                 if self.table is None:
                     self.table = self.db[self.index_name]
                 if force_refresh:

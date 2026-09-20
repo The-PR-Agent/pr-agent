@@ -7,15 +7,15 @@ from pr_agent.tools.pr_similar_issue import PRSimilarIssue
 
 
 class FakeDB:
-    def __init__(self, table_names):
-        self._table_names = table_names
+    def __init__(self, tables):
+        self._tables = tables
         self.table = None
 
-    def table_names(self):
-        return self._table_names
+    def list_tables(self):
+        return SimpleNamespace(tables=self._tables)
 
     def __getitem__(self, name):
-        if name not in self._table_names:
+        if name not in self._tables:
             raise KeyError(name)
         return self.table
 
@@ -185,3 +185,22 @@ def test_ingest_warns_when_table_missing(monkeypatch):
     )
 
     assert fake_table.add_calls == []
+
+
+def test_ingest_finds_a_table_beyond_the_first_pagination_page(monkeypatch):
+    """list_tables() lists every table, not just the first ten the deprecated call capped at."""
+    names = [f"table-{i:02d}" for i in range(13)]
+    names[10] = "codium-ai-pr-agent-issues"
+    fake_db = FakeDB(names)
+    fake_table = _fake_table()
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+
+    tool._update_table_with_issues(
+        [_fake_issue()],
+        "utkarsh-demo",
+        ingest=True,
+    )
+
+    assert fake_table.add_calls == [2]
