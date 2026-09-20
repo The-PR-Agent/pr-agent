@@ -1,7 +1,10 @@
 """The LanceDB ingest path adds new rows to an existing index instead of skipping them."""
 import sys
+import time
 import types
 from types import SimpleNamespace
+
+import pytest
 
 from pr_agent.tools.pr_similar_issue import PRSimilarIssue
 
@@ -94,7 +97,7 @@ def _fake_table():
 
 
 def test_initial_creation_overwrites_the_table(monkeypatch):
-    """A from-scratch run (no existing table) creates the table with overwrite."""
+    """A from-scratch run (no existing table) creates the table with overwrite and does not sleep."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.created_with = None
     fake_db.create_table = lambda name, data, mode: fake_db.__setattr__(
@@ -104,6 +107,10 @@ def test_initial_creation_overwrites_the_table(monkeypatch):
 
     tool = _make_tool(monkeypatch, fake_db)
     tool.table = fake_db.table
+
+    monkeypatch.setattr(
+        time, "sleep", lambda seconds: pytest.fail(f"unexpected sleep({seconds}) after create")
+    )
 
     tool._update_table_with_issues(
         [_fake_issue()],
@@ -115,12 +122,16 @@ def test_initial_creation_overwrites_the_table(monkeypatch):
 
 
 def test_ingest_appends_rows_when_table_exists(monkeypatch):
-    """Add new rows to an existing table instead of dropping them."""
+    """Add new rows to an existing table instead of dropping them, without sleeping."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_table = _fake_table()
     fake_db.table = fake_table
 
     tool = _make_tool(monkeypatch, fake_db)
+
+    monkeypatch.setattr(
+        time, "sleep", lambda seconds: pytest.fail(f"unexpected sleep({seconds}) after add")
+    )
 
     tool._update_table_with_issues(
         [_fake_issue()],

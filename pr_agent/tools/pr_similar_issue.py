@@ -67,6 +67,22 @@ def _qdrant_collection_name(base_name: str) -> str:
     return f"{base_name}-v2"
 
 
+def _lancedb_similar_search(table, query_vector, repo_name_for_index):
+    """Search a lancedb table with the same cosine metric and five-hit limit as the other backends.
+
+    Pinecone and qdrant both return cosine similarity and request five hits; lancedb's default
+    squared-L2 metric would otherwise make ``1 - _distance`` meaningless. Cosine distance keeps the
+    printed score (``1 - _distance``) equal to the cosine similarity reported elsewhere.
+    """
+    return (
+        table.search(query_vector)
+        .distance_type("cosine")
+        .limit(5)
+        .where(f"metadata.repo='{repo_name_for_index}'", prefilter=True)
+        .to_list()
+    )
+
+
 def _provider_supports_issue_indexing() -> bool:
     """Whether the configured provider can back `/similar_issue`.
 
@@ -374,7 +390,7 @@ class PRSimilarIssue:
             get_logger().info('Done')
 
         elif get_settings().pr_similar_issue.vectordb == "lancedb":
-            res = self.table.search(embeds[0]).where(f"metadata.repo='{self.repo_name_for_index}'", prefilter=True).to_list()
+            res = _lancedb_similar_search(self.table, embeds[0], self.repo_name_for_index)
 
             for r in res:
                 # skip example issue
@@ -610,7 +626,6 @@ class PRSimilarIssue:
         if not ingest:
             get_logger().info('Creating table from scratch...')
             self.table = self.db.create_table(self.index_name, data=df, mode="overwrite")
-            time.sleep(15)
         else:
             get_logger().info('Ingesting in Table...')
             if self._table_exists_in_db(self.index_name):
@@ -621,7 +636,6 @@ class PRSimilarIssue:
                 self.table.add(df)
             else:
                 get_logger().info(f"Table {self.index_name} doesn't exists!")
-            time.sleep(5)
         get_logger().info('Done')
 
 
