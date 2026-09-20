@@ -11,6 +11,15 @@ from urllib.parse import quote, unquote, urlparse
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
+from ..algo.comment_identity import (
+    PRCodeSuggestionsIdentity,
+    PRDescriptionHeader,
+    add_comment_identity,
+    comment_matches_any_identity,
+    comment_matches_identity,
+    format_pr_code_suggestions_header,
+    get_pr_review_comment_identifiers,
+)
 from ..algo.file_filter import filter_ignored
 from ..algo.inline_comment_dedup import (
     body_with_markers,
@@ -22,14 +31,7 @@ from ..algo.inline_comment_dedup import (
 )
 from ..algo.language_handler import build_language_file_matcher, is_valid_file
 from ..algo.utils import (
-    PRCodeSuggestionsIdentity,
-    PRDescriptionHeader,
-    add_comment_identity,
-    comment_matches_any_identity,
-    comment_matches_identity,
     find_line_number_of_relevant_line_in_file,
-    format_pr_code_suggestions_header,
-    get_pr_review_comment_identifiers,
     load_large_diff,
 )
 from ..config_loader import get_settings, get_verbosity_level
@@ -1784,6 +1786,14 @@ class AzureDevopsProvider(GitProvider):
 
     def get_comment_url(self, comment) -> str:
         return self.pr_url + "?discussionId=" + str(comment.thread_id)
+
+    def get_pr_head_sha(self) -> str:
+        # Read the source revision from the same field `reconcile_code_suggestion_threads`
+        # already treats as head. `last_commit_id` is not always populated, so without
+        # this override the base hook returns "" and an Azure review cannot resolve
+        # absent findings after a head change, which is the defect #3431 was filed against.
+        head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
+        return head if isinstance(head, str) else ""
 
     def get_latest_commit_url(self) -> str:
         commits = self.azure_devops_client.get_pull_request_commits(self.repo_slug, self.pr_num, self.workspace_slug)

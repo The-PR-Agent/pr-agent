@@ -6,10 +6,11 @@ import pytest
 
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
+from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
 from pr_agent.algo.pr_processing import pr_generate_extended_diff, retry_with_fallback_models
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity, load_large_diff
+from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR

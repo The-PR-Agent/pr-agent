@@ -1784,21 +1784,34 @@ async def test_missing_private_import_preserves_module_and_fails_closed(monkeypa
         with pytest.raises(RuntimeError, match="JSONProviderRegistry.*request isolation"):
             module.LiteLLMAIHandler()
         return
-    handler = module.LiteLLMAIHandler()
-    completion = AsyncMock(return_value=_mock_response())
-    monkeypatch.setattr(module, "acompletion", completion)
-    if symbol == "AnthropicModelInfo":
-        with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
-            await handler.probe_completion("anthropic/claude-sonnet-4")
-        completion.assert_not_called()
-        await handler.probe_completion("gpt-4o")
-    else:
-        with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
+    # The guarded interfaces moved to cloud_auth, which resolves the handler's slot
+    # values at call time; point those lookups at the isolated module to prove its
+    # fail-closed guards fire on the missing private interface.
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(cloud_auth, "_handler_module", module)
+        if symbol == "AnthropicModelInfo":
+            with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
+                module._install_anthropic_auth_token_bridge()
+        else:
+            with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
+                module._uses_openai_responses_transport("gpt-4o", "openai")
+        handler = module.LiteLLMAIHandler()
+        completion = AsyncMock(return_value=_mock_response())
+        scoped.setattr(module, "acompletion", completion)
+        if symbol == "AnthropicModelInfo":
+            with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
+                await handler.probe_completion("anthropic/claude-sonnet-4")
+            completion.assert_not_called()
             await handler.probe_completion("gpt-4o")
-        completion.assert_not_called()
-        assert module._uses_openai_responses_transport("openai/responses/gpt-4o", "openai")
-        assert not module._uses_openai_responses_transport("ft:babbage-002:example", "openai")
-        await handler.probe_completion("anthropic/claude-sonnet-4")
+        else:
+            with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
+                await handler.probe_completion("gpt-4o")
+            completion.assert_not_called()
+            assert module._uses_openai_responses_transport("openai/responses/gpt-4o", "openai")
+            assert not module._uses_openai_responses_transport("ft:babbage-002:example", "openai")
+            await handler.probe_completion("anthropic/claude-sonnet-4")
 
 
 @pytest.mark.parametrize("method", ("list_providers", "get", "exists"))
@@ -1842,6 +1855,27 @@ def test_provider_environment_tables_cover_known_or_legacy_transports():
     known_providers = set(litellm.provider_list) | set(litellm_handler.JSONProviderRegistry.list_providers())
     for table in (litellm_handler.PROVIDER_API_KEY_ENV_VARS, litellm_handler.PROVIDER_API_BASE_ENV_VARS):
         assert set(table) <= known_providers | legacy_transports
+
+
+def test_moved_provider_tables_remain_exposed_on_handler():
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    for name in (
+        "OPENAI_COMPATIBLE_REQUEST_PROVIDERS",
+        "OPENAI_RAW_HTTP_REQUEST_PROVIDERS",
+        "MANAGED_AUTH_REQUEST_PROVIDERS",
+    ):
+        assert getattr(litellm_handler, name) is getattr(cloud_auth, name)
+
+
+def test_moved_text_completion_transport_helper_remains_exposed_on_handler():
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    helper = litellm_handler._uses_openai_text_completion_transport
+    assert helper is cloud_auth._uses_openai_text_completion_transport
+    assert helper("gpt-3.5-turbo-instruct", "text-completion-openai")
+    assert helper("ft:babbage-002:example", "openai")
+    assert not helper("gpt-4o", "openai")
 
 
 @pytest.mark.parametrize("provider", ("aleph_alpha", "anyscale"))
@@ -2699,6 +2733,7 @@ def test_keyless_registry_provider_does_not_read_a_missing_environment_name(monk
 
     assert handler._provider_environment_api_keys == {}
     assert litellm_handler._has_live_provider_api_key_environment("keyless") is False
+    registry.get.assert_called_with("keyless")
 
 
 @pytest.mark.asyncio

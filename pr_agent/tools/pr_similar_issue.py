@@ -6,8 +6,8 @@ import openai
 from pydantic import BaseModel, Field
 
 from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo.token_budget import get_max_tokens
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger
@@ -181,18 +181,14 @@ class PRSimilarIssue:
             self.table = None
 
             run_from_scratch = False
-            if run_from_scratch:  # for debugging
-                if index_name in self.db.table_names():
-                    get_logger().info('Removing Table...')
-                    self.db.drop_table(index_name)
-                    get_logger().info('Done')
-
             ingest = True
-            if index_name not in self.db.table_names():
+            force_refresh = False
+            if not self._table_exists_in_db(index_name):
                 run_from_scratch = True
                 ingest = False
             else:
                 if get_settings().pr_similar_issue.force_update_dataset:
+                    force_refresh = True
                     ingest = True
                 else:
                     self.table = self.db[index_name]
@@ -208,7 +204,7 @@ class PRSimilarIssue:
                 issues = list(repo_obj.get_issues(state='all'))
                 get_logger().info('Done')
 
-                self._update_table_with_issues(issues, repo_name_for_index, ingest=ingest)
+                self._update_table_with_issues(issues, repo_name_for_index, ingest=ingest, force_refresh=force_refresh)
             else:  # update table if needed
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
@@ -501,8 +497,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \
@@ -542,7 +537,11 @@ class PRSimilarIssue:
         time.sleep(5)  # wait for pinecone to finalize upserting before querying
         get_logger().info('Done')
 
-    def _update_table_with_issues(self, issues_list, repo_name_for_index, ingest=False):
+    def _table_exists_in_db(self, index_name) -> bool:
+        return index_name in self.db.list_tables().tables
+
+    def _update_table_with_issues(self, issues_list, repo_name_for_index, ingest=False,
+                                  force_refresh=False):
         import pandas as pd
 
         get_logger().info('Processing issues...')
@@ -585,8 +584,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \
@@ -615,7 +613,11 @@ class PRSimilarIssue:
             time.sleep(15)
         else:
             get_logger().info('Ingesting in Table...')
-            if self.index_name not in self.db.table_names():
+            if self._table_exists_in_db(self.index_name):
+                if self.table is None:
+                    self.table = self.db[self.index_name]
+                if force_refresh:
+                    self.table.delete(f"metadata.repo='{repo_name_for_index}'")
                 self.table.add(df)
             else:
                 get_logger().info(f"Table {self.index_name} doesn't exists!")
@@ -671,8 +673,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \

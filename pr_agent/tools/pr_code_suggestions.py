@@ -11,6 +11,14 @@ from typing import Dict, List, Optional
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    add_comment_identity,
+    comment_matches_identity,
+    format_pr_code_suggestions_header,
+    hidden_marker_forms,
+)
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -26,18 +34,11 @@ from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_command_failure, record_model_used
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
-    PRCodeSuggestionsHeader,
-    PRCodeSuggestionsIdentity,
-    add_comment_identity,
-    clip_tokens,
-    comment_matches_identity,
-    format_pr_code_suggestions_header,
     get_model,
-    hidden_marker_forms,
     load_yaml,
     push_outputs,
     replace_code_tags,

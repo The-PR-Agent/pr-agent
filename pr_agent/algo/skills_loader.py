@@ -45,8 +45,8 @@ import yaml
 from starlette_context import context
 from starlette_context.errors import ContextDoesNotExistError
 
+from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.token_handler import TokenEncoder
-from pr_agent.algo.utils import clip_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 

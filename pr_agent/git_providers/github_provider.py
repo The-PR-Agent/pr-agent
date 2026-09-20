@@ -15,6 +15,10 @@ from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
 
+from ..algo.comment_identity import (
+    comment_matches_any_identity,
+    get_pr_review_comment_identifiers,
+)
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
 from ..algo.inline_comment_dedup import (
@@ -25,13 +29,11 @@ from ..algo.inline_comment_dedup import (
     has_marker,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
     Range,
-    clip_tokens,
-    comment_matches_any_identity,
     find_line_number_of_relevant_line_in_file,
-    get_pr_review_comment_identifiers,
     load_large_diff,
     set_file_languages,
 )
@@ -491,6 +493,11 @@ class GithubProvider(GitProvider):
 
     def get_latest_commit_url(self) -> str:
         return self.last_commit_id.html_url
+
+    def get_pr_head_sha(self) -> str:
+        head = getattr(self.pr, "head", None)
+        head_sha = getattr(head, "sha", None)
+        return head_sha if isinstance(head_sha, str) else ""
 
     def get_comment_url(self, comment) -> str:
         return comment.html_url

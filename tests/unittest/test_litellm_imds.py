@@ -14,6 +14,7 @@ import pytest
 from botocore.exceptions import ClientError, CredentialRetrievalError, ProfileNotFound
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+from pr_agent.algo.ai_handlers import cloud_auth
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 
@@ -565,7 +566,7 @@ def test_bedrock_mantle_signer_bridge_forwards_future_arguments(monkeypatch):
         forwarded["kwargs"] = kwargs
         return "signed"
 
-    monkeypatch.setattr(litellm_handler, "_bedrock_mantle_sign_request", sign_request)
+    monkeypatch.setattr(cloud_auth, "_bedrock_mantle_sign_request", sign_request)
     request_credentials = {
         "aws_access_key_id": "request-key",
         "aws_secret_access_key": "request-secret",
@@ -592,7 +593,7 @@ def test_bedrock_mantle_signer_bridge_forwards_future_arguments(monkeypatch):
 
 def test_bedrock_mantle_signer_bridge_fails_closed_without_optional_params(monkeypatch):
     sign_request = MagicMock()
-    monkeypatch.setattr(litellm_handler, "_bedrock_mantle_sign_request", sign_request)
+    monkeypatch.setattr(cloud_auth, "_bedrock_mantle_sign_request", sign_request)
     token = litellm_handler._bedrock_mantle_request_credentials.set({"aws_access_key_id": "request-key"})
     try:
         with pytest.raises(RuntimeError, match="did not receive optional_params"):
@@ -637,12 +638,12 @@ async def test_health_probe_refreshes_imds_credentials_once(monkeypatch):
     reason="Installed LiteLLM does not provide BedrockMantleAuthMixin",
 )
 def test_bedrock_mantle_signer_bridge_installation_is_idempotent():
-    original_signer = litellm_handler._bedrock_mantle_sign_request
+    original_signer = cloud_auth._bedrock_mantle_sign_request
 
     litellm_handler._install_bedrock_mantle_signer_bridge()
     litellm_handler._install_bedrock_mantle_signer_bridge()
 
-    assert litellm_handler._bedrock_mantle_sign_request is original_signer
+    assert cloud_auth._bedrock_mantle_sign_request is original_signer
 
 
 @pytest.mark.asyncio

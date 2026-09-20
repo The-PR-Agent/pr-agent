@@ -10,6 +10,7 @@ import yaml
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     get_pr_diff,
@@ -23,7 +24,6 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
-    PRDescriptionHeader,
     get_user_labels,
     load_yaml,
     push_outputs,

@@ -5,9 +5,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from azure.devops.exceptions import AzureDevOpsServiceError
 
+from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity
 from pr_agent.algo.inline_comment_dedup import code_fingerprint
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.algo.utils import PRCodeSuggestionsIdentity
 from pr_agent.git_providers.azuredevops_provider import (
     AzureDevopsProvider,
     Comment,
@@ -1114,7 +1114,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         provider = _provider_with_diff("/src/app.py")
 
         with (patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings,
-              patch("pr_agent.algo.utils.get_settings") as heading_settings):
+              patch("pr_agent.algo.comment_identity.get_settings") as heading_settings):
             settings.return_value.get.side_effect = lambda key, default=None: {
                 "config.persistent_inline_comments": True,
             }.get(key, default)

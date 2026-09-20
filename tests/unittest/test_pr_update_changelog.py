@@ -1,7 +1,7 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from requests.exceptions import HTTPError
+from requests.exceptions import HTTPError, Timeout
 
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
@@ -564,10 +564,11 @@ class TestPRUpdateChangelog:
             )
             mock_git_provider.publish_comment.assert_not_called()
 
-    def test_push_changelog_update_stops_success_follow_up_after_write_failure(
-        self, changelog_tool, mock_git_provider
+    @pytest.mark.parametrize("error_type", [HTTPError, Timeout])
+    def test_push_changelog_update_retains_output_and_stops_success_follow_up_after_write_failure(
+        self, changelog_tool, mock_git_provider, error_type
     ):
-        write_error = HTTPError("403 Client Error")
+        write_error = error_type("write failed")
         mock_git_provider.create_or_update_pr_file.side_effect = write_error
         mock_git_provider.get_pr_branch.return_value = "feature-branch"
         mock_git_provider.supports_changelog_update_review.return_value = True
@@ -577,7 +578,7 @@ class TestPRUpdateChangelog:
         ) as sleep:
             mock_settings.return_value.pr_update_changelog.get.return_value = True
 
-            with pytest.raises(HTTPError) as raised:
+            with pytest.raises(error_type) as raised:
                 changelog_tool._push_changelog_update("new content", "answer")
 
         assert raised.value is write_error
@@ -585,7 +586,33 @@ class TestPRUpdateChangelog:
         sleep.assert_not_called()
         mock_git_provider.pr.get_commits.assert_not_called()
         mock_git_provider.pr.create_review.assert_not_called()
-        mock_git_provider.publish_comment.assert_not_called()
+        mock_git_provider.publish_comment.assert_called_once()
+        fallback = mock_git_provider.publish_comment.call_args.args[0]
+        assert "answer" in fallback
+        assert "could not be confirmed" in fallback
+        assert "not pushed" not in fallback
+
+    def test_push_changelog_update_fallback_failure_does_not_mask_write_error(
+        self, changelog_tool, mock_git_provider
+    ):
+        write_error = Timeout("write outcome unknown")
+        fallback_error = RuntimeError("comment unavailable")
+        mock_git_provider.create_or_update_pr_file.side_effect = write_error
+        mock_git_provider.publish_comment.side_effect = fallback_error
+
+        with (
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
+            patch("pr_agent.tools.pr_update_changelog.get_logger") as mock_get_logger,
+            pytest.raises(Timeout) as raised,
+        ):
+            mock_settings.return_value.pr_update_changelog.get.return_value = True
+            changelog_tool._push_changelog_update("new content", "answer")
+
+        assert raised.value is write_error
+        mock_git_provider.publish_comment.assert_called_once()
+        mock_get_logger.return_value.exception.assert_called_once_with(
+            "Failed to publish changelog fallback after a write error: comment unavailable"
+        )
 
     @pytest.mark.asyncio
     async def test_run_preserves_write_failure_after_temporary_comment_cleanup(
@@ -611,9 +638,14 @@ class TestPRUpdateChangelog:
                 await changelog_tool.run()
 
         assert raised.value is write_error
-        mock_git_provider.publish_comment.assert_called_once_with(
-            "Preparing changelog updates...", is_temporary=True
-        )
+        assert mock_git_provider.publish_comment.call_args_list == [
+            call("Preparing changelog updates...", is_temporary=True),
+            call(
+                "**Changelog updates:** 🔄\n\n## v1.1.0\n- New feature"
+                "\n\n> ⚠️ The repository update could not be confirmed. "
+                "The generated changelog is preserved here for recovery."
+            ),
+        ]
         mock_git_provider.remove_initial_comment.assert_called_once_with()
         sleep.assert_not_called()
         mock_git_provider.pr.get_commits.assert_not_called()

@@ -9,16 +9,15 @@ from collections.abc import Iterable
 from typing import Optional, Tuple
 from urllib.parse import urlsplit
 
-from pr_agent.algo.language_handler import numeric_languages
-from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import (
-    Range,
+from pr_agent.algo.comment_identity import (
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
-    process_description,
     render_hidden_marker,
 )
+from pr_agent.algo.language_handler import numeric_languages
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -436,7 +435,7 @@ class GitProvider(ABC):
         pass
 
     def get_pr_description(self, full: bool = True, split_changes_walkthrough=False) -> str | tuple:
-        from pr_agent.algo.utils import clip_tokens
+        from pr_agent.algo.token_budget import clip_tokens
         from pr_agent.config_loader import get_settings
         max_tokens_description = get_settings().get("CONFIG.MAX_DESCRIPTION_TOKENS", None)
         description = self.get_pr_description_full() if full else self.get_user_description()
@@ -936,6 +935,19 @@ class GitProvider(ABC):
         return ""
 
     def get_latest_commit_url(self) -> str:
+        return ""
+
+    def get_pr_head_sha(self) -> str:
+        """Return the commit SHA the pull request currently points at.
+
+        The reviewer records this in the persistent finding marker so a later run can
+        tell whether the head moved. It stays empty when a provider cannot resolve a
+        head, which makes the reconciliation guard refuse to resolve findings rather
+        than resolve them against the wrong revision.
+
+        Returns:
+            str: the head commit SHA, or an empty string when unavailable.
+        """
         return ""
 
     def auto_approve(self) -> bool:

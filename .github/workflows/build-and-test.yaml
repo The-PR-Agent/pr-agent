@@ -106,7 +106,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - id: checkout
@@ -123,7 +123,7 @@ jobs:
         name: Test on Python ${{ matrix.python-version }}
         env:
           PYTHONPATH: .
-          # See docker/Dockerfile's test stage: pin litellm's bundled cost map so
+          # See docker/Dockerfile's base stage: pin litellm's bundled cost map so
           # a remote change to it cannot redden the suite without a version bump.
           LITELLM_LOCAL_MODEL_COST_MAP: "True"
         run: uv run --frozen --python ${{ matrix.python-version }} pytest -v tests/unittest

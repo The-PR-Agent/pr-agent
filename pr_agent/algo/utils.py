@@ -6,14 +6,13 @@ import html
 import json
 import os
 import re
-import string
 import sys
 import textwrap
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Iterable, List, Tuple, TypedDict
+from typing import Any, List, Tuple, TypedDict
 from urllib.parse import quote, unquote, urlparse
 
 import html2text
@@ -21,14 +20,13 @@ import requests
 import yaml
 from pydantic import BaseModel
 
-from pr_agent.algo import MAX_TOKENS
+import pr_agent.algo.comment_identity as _ci
 from pr_agent.algo.git_patch_processing import (
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
     to_hunk_only_patch,
 )
 from pr_agent.algo.run_details import get_run_details
-from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
@@ -78,150 +76,6 @@ class TodoItem(TypedDict):
     content: str
 
 
-class PRReviewHeader(str, Enum):
-    REGULAR = "## PR Reviewer Guide"
-    INCREMENTAL = "## Incremental PR Reviewer Guide"
-
-
-class PRReviewIdentity(str, Enum):
-    REGULAR = "<!-- pr-agent:review:full -->"
-    INCREMENTAL = "<!-- pr-agent:review:incremental -->"
-
-
-class PRCodeSuggestionsHeader(str, Enum):
-    SUMMARY = "## PR Code Suggestions ✨"
-
-
-class PRCodeSuggestionsIdentity(str, Enum):
-    SUMMARY = "<!-- pr-agent:improve:summary -->"
-    NO_SUGGESTIONS = "<!-- pr-agent:improve:no-suggestions -->"
-    UNANCHORED = "<!-- pr-agent:improve:unanchored -->"
-
-
-_ALL_COMMENT_IDENTITIES = (
-    PRReviewIdentity.REGULAR.value,
-    PRReviewIdentity.INCREMENTAL.value,
-    PRCodeSuggestionsIdentity.SUMMARY.value,
-    PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
-    PRCodeSuggestionsIdentity.UNANCHORED.value,
-)
-_REVIEW_IDENTITY_HEADER_LINES = 5
-_MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(
-    {character: f"\\{character}" for character in string.punctuation}
-)
-
-
-def _get_configured_heading(setting_name: str, default_heading: str) -> str:
-    configured_heading = get_settings().get(setting_name)
-    if (
-        not isinstance(configured_heading, str)
-        or not configured_heading.strip()
-        or configured_heading.splitlines() != [configured_heading]
-    ):
-        get_logger().warning(
-            f"Invalid {setting_name}; using the default heading"
-        )
-        configured_heading = default_heading
-    return configured_heading.strip()
-
-
-def format_pr_review_header(incremental: bool = False) -> str:
-    """Return the visible review heading while keeping identity out of presentation."""
-    default_heading = PRReviewHeader.REGULAR.value.removeprefix("## ")
-    heading = _get_configured_heading("pr_reviewer.review_heading", default_heading)
-    incremental_prefix = "Incremental " if incremental else ""
-    return f"## {incremental_prefix}{heading} 🔍"
-
-
-def format_pr_code_suggestions_header(markdown_level: int = 2) -> str:
-    """Return the visible suggestions heading while keeping identity out of presentation."""
-    default_heading = (
-        PRCodeSuggestionsHeader.SUMMARY.value
-        .removeprefix("## ")
-        .removesuffix(" ✨")
-    )
-    heading = _get_configured_heading(
-        "pr_code_suggestions.suggestions_heading",
-        default_heading,
-    )
-    markdown_prefix = "#" * markdown_level
-    return f"{markdown_prefix} {heading} ✨"
-
-
-def format_pr_questions_header(*, escape_markdown: bool = True) -> str:
-    """Return the visible heading for top-level /ask answers."""
-    heading = _get_configured_heading("pr_questions.ask_heading", "Ask")
-    if escape_markdown:
-        heading = heading.translate(_MARKDOWN_PUNCTUATION_ESCAPE_TABLE)
-    return f"### **{heading}** ❓"
-
-
-def hidden_marker_forms(identity: str) -> tuple[str, ...]:
-    """Return both stored forms of a known comment identity."""
-    for marker in _ALL_COMMENT_IDENTITIES:
-        reference = f"[{marker[5:-4]}]: https://github.com/The-PR-Agent/pr-agent"
-        if identity in (marker, reference):
-            return marker, reference
-    return (identity,)
-
-
-def render_hidden_marker(identity: str, git_provider=None) -> str:
-    """Use a link reference on providers that escape HTML comments."""
-    forms = hidden_marker_forms(identity)
-    supports_html = getattr(git_provider, "supports_html_comment_markers", lambda: True)
-    return forms[-1] if supports_html() is False else forms[0]
-
-
-def comment_matches_identity(body: str, identity: str) -> bool:
-    """Match hidden markers only as exact lines near the top; legacy headers as prefixes."""
-    if not isinstance(body, str) or not isinstance(identity, str) or not identity:
-        return False
-    forms = hidden_marker_forms(identity)
-    if identity.startswith("<!--") or len(forms) > 1:
-        return any(
-            line.strip() in forms
-            for line in body.splitlines()[:_REVIEW_IDENTITY_HEADER_LINES]
-        )
-    return body.startswith(identity)
-
-
-def comment_matches_any_identity(body: str, identities: Iterable[str]) -> bool:
-    return any(comment_matches_identity(body, identity) for identity in identities)
-
-
-def comment_carries_other_identity(body: str, identity_marker: str | None) -> bool:
-    """Return whether the comment carries a different hidden identity."""
-    return comment_matches_any_identity(
-        body,
-        [identity for identity in _ALL_COMMENT_IDENTITIES if identity not in hidden_marker_forms(identity_marker)],
-    )
-
-
-def get_pr_review_comment_identifiers(*, full: bool, incremental: bool) -> tuple[str, ...]:
-    """Return stable markers followed by legacy visible prefixes for migration."""
-    identifiers = []
-    if full:
-        identifiers.extend((PRReviewIdentity.REGULAR.value, PRReviewHeader.REGULAR.value))
-    if incremental:
-        identifiers.extend((PRReviewIdentity.INCREMENTAL.value, PRReviewHeader.INCREMENTAL.value))
-    return tuple(identifiers)
-
-
-def add_comment_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
-    """Insert a hidden identity after the visible heading without changing rendered output."""
-    if not pr_comment or not identity_marker or comment_matches_identity(pr_comment, identity_marker):
-        return pr_comment
-    identity_marker = render_hidden_marker(identity_marker, git_provider)
-    heading, separator, remainder = pr_comment.partition("\n\n")
-    if not separator:
-        return f"{pr_comment.rstrip()}\n\n{identity_marker}"
-    return f"{heading}\n\n{identity_marker}\n\n{remainder}"
-
-
-def add_pr_review_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
-    return add_comment_identity(pr_comment, identity_marker, git_provider)
-
-
 class ReasoningEffort(str, Enum):
     MAX = "max"
     XHIGH = "xhigh"
@@ -230,55 +84,6 @@ class ReasoningEffort(str, Enum):
     LOW = "low"
     MINIMAL = "minimal"
     NONE = "none"
-
-
-class PRDescriptionHeader(str, Enum):
-    DIAGRAM_WALKTHROUGH = "Diagram Walkthrough"
-    FILE_WALKTHROUGH = "File Walkthrough"
-
-
-def as_review_text(value) -> str:
-    """Flatten a review field the model returned as a list or mapping into readable text.
-
-    The prompt asks for a single string, but a model enumerating several findings commonly
-    answers with a list or a mapping. Rendering those is preferable to losing the review.
-    """
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, dict):
-        value = [f"{key}: {item}" for key, item in value.items()]
-    if isinstance(value, (list, tuple, set)):
-        entries = [as_review_text(item) for item in value]
-        return "\n".join(f"- {entry}" for entry in entries if entry)
-    return str(value).strip()
-
-
-def emphasize_header(text: str, only_markdown=False, reference_link=None) -> str:
-    try:
-        # Finding the position of the first occurrence of ": "
-        colon_position = text.find(": ")
-
-        # Splitting the string and wrapping the first part in <strong> tags
-        if colon_position != -1:
-            # Everything before the colon (inclusive) is wrapped in <strong> tags
-            if only_markdown:
-                if reference_link:
-                    transformed_string = f"[**{text[:colon_position + 1]}**]({reference_link})\n" + text[colon_position + 1:]
-                else:
-                    transformed_string = f"**{text[:colon_position + 1]}**\n" + text[colon_position + 1:]
-            else:
-                if reference_link:
-                    transformed_string = f"<strong><a href='{reference_link}'>{text[:colon_position + 1]}</a></strong><br>" + text[colon_position + 1:]
-                else:
-                    transformed_string = "<strong>" + text[:colon_position + 1] + "</strong>" +'<br>' + text[colon_position + 1:]
-        else:
-            # If there's no ": ", return the original string
-            transformed_string = text
-
-        return transformed_string
-    except Exception as e:
-        get_logger().exception(f"Failed to emphasize header: {e}")
-        return text
 
 
 def _expand_minute_suffix(text: str) -> str:
@@ -324,7 +129,7 @@ def convert_to_markdown_v2(output_data: dict,
         "Review priority files": "📂",
     }
     markdown_text = ""
-    markdown_text += f"{format_pr_review_header(incremental=bool(incremental_review))}\n\n"
+    markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review))}\n\n"
     if incremental_review:
         markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
@@ -406,7 +211,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f"{emoji}&nbsp;<strong>No security concerns identified</strong>"
                 else:
                     markdown_text += f"{emoji}&nbsp;<strong>Security concerns</strong><br><br>\n\n"
-                    value = emphasize_header(value.strip()) if isinstance(value, str) else as_review_text(value)
+                    value = _ci.emphasize_header(value.strip()) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}"
                 markdown_text += "</td></tr>\n"
             else:
@@ -414,7 +219,7 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f'### {emoji} No security concerns identified\n\n'
                 else:
                     markdown_text += f"### {emoji} Security concerns\n\n"
-                    value = emphasize_header(value.strip(), only_markdown=True) if isinstance(value, str) else as_review_text(value)
+                    value = _ci.emphasize_header(value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}\n\n"
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
@@ -1395,213 +1200,6 @@ def get_user_labels(current_labels: List[str] = None):
     return user_labels
 
 
-def _as_int(value, default: int = 0) -> int:
-    """Coerce a settings value to int, tolerating the quoted numbers TOML allows."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        get_logger().warning(f"Expected a number in configuration, got {value!r}; using {default}")
-        return default
-
-
-def get_max_tokens(model, ignore_max_model_tokens=False):
-    """
-    Get the maximum number of tokens allowed for a model.
-    logic:
-    (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
-    (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
-    (3) else if it is a GPT-5.x _thinking alias registered under its base name, use that value.
-    (4) else, query LiteLLM for provider-qualified and bare alias bases before the original model.
-    (5) else, raise an error.
-
-    For all cases, we further limit the number of tokens to 'config.max_model_tokens' if it is set.
-    This aims to improve the algorithmic quality, as the AI model degrades in performance when the input is too long.
-    Pass ignore_max_model_tokens=True to keep the unreduced value, for sites that deliberately use the
-    raw model context size rather than the conservative clamp.
-    """
-    settings = get_settings()
-    custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
-    # Resolve GPT-6 Astra aliases before diff token accounting, just as the handler does.
-    # Preserve explicit custom limits for provider aliases that were not in the registry.
-    model_base = model
-    while model_base.startswith(('openai/', 'azure/')):
-        model_base = model_base.removeprefix('openai/').removeprefix('azure/')
-    if custom_max_tokens <= 0 and model_base.removesuffix('_thinking') == 'gpt-6-astra':
-        model = 'gpt-6-astra'
-    # Normalize GPT-5.x _thinking aliases before token-limit lookup to match
-    # LiteLLMAIHandler request normalization.
-    model_for_max_tokens = model
-    litellm_lookup_models = (model,)
-    if isinstance(model, str):
-        tmp = model
-        while tmp.startswith(("openai/", "azure/")):
-            tmp = tmp.removeprefix("openai/").removeprefix("azure/")
-        if tmp.startswith("gpt-5") and "_thinking" in tmp:
-            model_for_max_tokens = tmp.replace("_thinking", "")
-            settings_get = getattr(settings, "get", None)
-            azure_mode = callable(settings_get) and (
-                settings_get("OPENAI.API_TYPE", None) == "azure"
-                or bool(settings_get("AZURE_AD.CLIENT_ID", None))
-            )
-            if azure_mode or model.startswith("azure/"):
-                provider_prefix = "azure/"
-            else:
-                provider_prefix = "openai/"
-            provider_model = provider_prefix + model_for_max_tokens
-            litellm_lookup_models = tuple(dict.fromkeys((provider_model, model_for_max_tokens, model)))
-    if model in MAX_TOKENS:
-        max_tokens_model = MAX_TOKENS[model]
-    elif custom_max_tokens > 0:
-        max_tokens_model = custom_max_tokens
-    elif model_for_max_tokens in MAX_TOKENS:
-        max_tokens_model = MAX_TOKENS[model_for_max_tokens]
-    else:
-        # Fallback: ask LiteLLM for the model's metadata before giving up.
-        max_tokens_model = 0
-        import litellm
-        # Try provider-qualified and bare bases before the raw alias.
-        for lookup_model in litellm_lookup_models:
-            try:
-                model_info = litellm.get_model_info(lookup_model)
-            except Exception:
-                get_logger().debug(f"litellm.get_model_info could not resolve model '{lookup_model}'")
-                model_info = None
-            if model_info:
-                litellm_max = model_info.get("max_input_tokens")
-                try:
-                    parsed_max_tokens = int(litellm_max)
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if parsed_max_tokens > 0:
-                    max_tokens_model = parsed_max_tokens
-                    get_logger().debug(
-                        f"Resolved max_input_tokens for '{model}' from litellm "
-                        f"(lookup '{lookup_model}'): {max_tokens_model}"
-                    )
-                    break
-
-        if max_tokens_model <= 0:
-            get_logger().error(
-                f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
-                f" and no custom_model_max_tokens is set"
-            )
-            raise Exception(
-                f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
-                f" or set a positive value for it in config.custom_model_max_tokens"
-            )
-
-    max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
-    if max_model_tokens > 0 and not ignore_max_model_tokens:
-        max_tokens_model = min(max_model_tokens, max_tokens_model)
-    return max_tokens_model
-
-
-def clip_tokens(text: str, max_tokens: int, add_three_dots=True, num_input_tokens=None, delete_last_line=False) -> str:
-    """
-    Clip the number of tokens in a string to a maximum number of tokens.
-
-    This function limits text to a specified token count by calculating the approximate
-    character-to-token ratio and truncating the text accordingly. A safety factor of 0.9
-    (10% reduction) is applied to ensure the result stays within the token limit.
-
-    Args:
-        text (str): The string to clip. If empty or None, returns the input unchanged.
-        max_tokens (int): The maximum number of tokens allowed in the string.
-                         If negative, returns an empty string.
-        add_three_dots (bool, optional): Whether to add "\\n...(truncated)" at the end
-                                       of the clipped text to indicate truncation.
-                                       Defaults to True.
-        num_input_tokens (int, optional): Pre-computed number of tokens in the input text.
-                                        If provided, skips token encoding step for efficiency.
-                                        If None, tokens will be counted using TokenEncoder.
-                                        Defaults to None.
-        delete_last_line (bool, optional): Whether to remove the last line from the
-                                         clipped content before adding truncation indicator.
-                                         Useful for ensuring clean breaks at line boundaries.
-                                         Defaults to False.
-
-    Returns:
-        str: The clipped string. Returns original text if:
-             - Text is empty/None
-             - Token count is within limit
-             - An error occurs during processing
-
-             Returns empty string if max_tokens <= 0.
-
-    Examples:
-        Basic usage:
-        >>> text = "This is a sample text that might be too long"
-        >>> result = clip_tokens(text, max_tokens=10)
-        >>> print(result)
-        This is a sample...
-        (truncated)
-
-        Without truncation indicator:
-        >>> result = clip_tokens(text, max_tokens=10, add_three_dots=False)
-        >>> print(result)
-        This is a sample
-
-        With pre-computed token count:
-        >>> result = clip_tokens(text, max_tokens=5, num_input_tokens=15)
-        >>> print(result)
-        This...
-        (truncated)
-
-        With line deletion:
-        >>> multiline_text = "Line 1\\nLine 2\\nLine 3"
-        >>> result = clip_tokens(multiline_text, max_tokens=3, delete_last_line=True)
-        >>> print(result)
-        Line 1
-        Line 2
-        ...
-        (truncated)
-
-    Notes:
-        The function uses a safety factor of 0.9 (10% reduction) to ensure the
-        result stays within the token limit, as character-to-token ratios can vary.
-        If token encoding fails, the original text is returned with a warning logged.
-    """
-    try:
-        max_tokens = int(max_tokens)
-    except (TypeError, ValueError, OverflowError):
-        get_logger().warning(
-            f"clip_tokens got a non-numeric max_tokens ({max_tokens!r}); returning the text "
-            f"unclipped, which may exceed the model's context window")
-        return text
-
-    if not text:
-        return text
-
-    try:
-        if num_input_tokens is None:
-            encoder = TokenEncoder.get_token_encoder()
-            num_input_tokens = len(encoder.encode(text))
-        if num_input_tokens <= max_tokens:
-            return text
-        if max_tokens < 0:
-            return ""
-
-        # calculate the number of characters to keep
-        num_chars = len(text)
-        chars_per_token = num_chars / num_input_tokens
-        factor = 0.9  # reduce by 10% to be safe
-        num_output_chars = int(factor * chars_per_token * max_tokens)
-
-        # clip the text
-        if num_output_chars > 0:
-            clipped_text = text[:num_output_chars]
-            if delete_last_line:
-                clipped_text = clipped_text.rsplit('\n', 1)[0]
-            if add_three_dots:
-                clipped_text += "\n...(truncated)"
-        else: # if the text is empty
-            clipped_text =  ""
-
-        return clipped_text
-    except Exception as e:
-        get_logger().warning(f"Failed to clip tokens: {e}")
-        return text
-
 def replace_code_tags(text):
     """
     Replace odd instances of ` with <code> and even instances of ` with </code>
@@ -1951,20 +1549,20 @@ def process_description(description_full: str) -> Tuple[str, List]:
     if not description_full:
         return "", []
 
-    # description_split = description_full.split(PRDescriptionHeader.FILE_WALKTHROUGH.value)
-    if PRDescriptionHeader.FILE_WALKTHROUGH.value in description_full:
+    # description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value)
+    if _ci.PRDescriptionHeader.FILE_WALKTHROUGH.value in description_full:
         try:
             # FILE_WALKTHROUGH are presented in a collapsible section in the description
-            regex_pattern = r'<details.*?>\s*<summary>\s*<h3>\s*' + re.escape(PRDescriptionHeader.FILE_WALKTHROUGH.value) + r'\s*</h3>\s*</summary>'
+            regex_pattern = r'<details.*?>\s*<summary>\s*<h3>\s*' + re.escape(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value) + r'\s*</h3>\s*</summary>'
             description_split = re.split(regex_pattern, description_full, maxsplit=1, flags=re.DOTALL)
 
             # If the regex pattern is not found, fallback to the previous method
             if len(description_split) == 1:
                 get_logger().debug("Could not find regex pattern for file walkthrough, falling back to simple split")
-                description_split = description_full.split(PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
+                description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
         except Exception as e:
             get_logger().warning(f"Failed to split description using regex, falling back to simple split: {e}")
-            description_split = description_full.split(PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
+            description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
 
         if len(description_split) < 2:
             get_logger().error("Failed to split description into base and changes walkthrough", artifact={'description': description_full})

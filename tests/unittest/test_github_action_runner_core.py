@@ -525,6 +525,31 @@ async def test_synchronize_event_triggers_push_commands(monkeypatch, tmp_path, r
         ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
     ]
 
+def test_action_exits_nonzero_when_command_fails_and_continues(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/improve"])
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            handled.append((url, body))
+            return body != "/review"
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    with pytest.raises(SystemExit) as exc_info:
+        github_action_runner.main()
+
+    assert exc_info.value.code == 1
+    assert handled == [
+        ("https://api.github.com/repos/org/repo/pulls/1", "/review"),
+        ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
+    ]
 
 @pytest.mark.asyncio
 async def test_synchronize_skips_when_push_trigger_disabled(monkeypatch, tmp_path, restore_github_settings):
@@ -635,6 +660,22 @@ async def test_issue_comment_from_user_is_processed(monkeypatch, tmp_path, resto
 
     assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
 
+@pytest.mark.asyncio
+async def test_issue_comment_on_plain_issue_is_dispatched(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_plain_issue_comment_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [
+        (
+            "https://api.github.com/repos/org/repo/issues/1",
+            "/ask what is this issue about?",
+        )
+    ]
 
 def _write_workflow_run_event(tmp_path, originating_event="pull_request", pull_requests=None, conclusion="success"):
     if pull_requests is None:
@@ -784,6 +825,17 @@ def _write_issue_comment_event_with_body(tmp_path, body):
     }))
     return event_path
 
+def _write_plain_issue_comment_event(tmp_path):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "created",
+        "comment": {"body": "/ask what is this issue about?", "id": 123},
+        "issue": {
+            "url": "https://api.github.com/repos/org/repo/issues/1",
+        },
+        "sender": {"type": "User"},
+    }))
+    return event_path
 
 @pytest.mark.asyncio
 async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(

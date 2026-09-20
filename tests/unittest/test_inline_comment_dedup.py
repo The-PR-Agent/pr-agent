@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+from gitlab import GitlabCreateError
+
 from pr_agent.algo import inline_comment_dedup as d
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -459,7 +461,7 @@ def test_gitlab_skips_when_existing_discussion_has_marker():
 
 def test_gitlab_fallback_note_carries_marker_and_records():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = RuntimeError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
