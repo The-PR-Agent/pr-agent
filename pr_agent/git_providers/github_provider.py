@@ -1691,10 +1691,11 @@ class GithubProvider(GitProvider):
             if propagate_errors:
                 raise
             file_content_str = ""
-        except (RequestException, UnicodeDecodeError, binascii.Error):
+        except (RequestException, UnicodeDecodeError, binascii.Error, AssertionError):
             # binascii.Error: PyGithub base64-decodes the payload in `decoded_content`, so a
             # corrupt body fails here rather than at the request. Letting it escape would reach
             # the diff-build handler and be re-raised as RateLimitExceeded, retrying the review.
+            # AssertionError: the same property asserts on an entry with no content, such as a submodule pointer.
             if propagate_errors:
                 raise
             file_content_str = ""

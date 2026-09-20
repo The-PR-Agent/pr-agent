@@ -184,6 +184,18 @@ def test_get_pr_file_content_propagates_a_corrupt_payload_when_asked():
         provider.get_pr_file_content("a.py", "main", propagate_errors=True)
 
 
+def test_get_pr_file_content_returns_empty_for_a_submodule_entry():
+    """Keep AssertionError expected here: PyGithub asserts on an entry with no base64 content."""
+    from github.ContentFile import ContentFile
+
+    requester = SimpleNamespace(is_not_lazy=False)
+    entry = ContentFile(requester, {}, {"type": "submodule", "path": "vendor/lib", "size": 0}, completed=True)
+    provider = _make_provider()
+    provider._get_repo = lambda: SimpleNamespace(get_contents=lambda path, ref=None: entry)
+
+    assert provider.get_pr_file_content("vendor/lib", "head-sha") == ""
+
+
 def _capture_logs(call):
     """Run `call` with a loguru sink attached and return (result, captured lines)."""
     captured = []
