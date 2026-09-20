@@ -140,3 +140,21 @@ class TestIgnoreFilter:
             f"Expected {[f.filename for f in expected]}, "
             f"but got {[f.filename for f in filtered]}"
         )
+
+    def test_repeated_filtering_does_not_mutate_regex_settings(self, monkeypatch):
+        """Ensure repeated filtering does not append translated glob patterns to shared settings."""
+        configured_regex = ['^docs/']
+        monkeypatch.setattr(global_settings.ignore, 'regex', configured_regex)
+        monkeypatch.setattr(global_settings.ignore, 'glob', ['vendor/**'])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        files = [
+            type('', (object,), {'filename': 'src/app.py'})(),
+            type('', (object,), {'filename': 'vendor/generated.py'})(),
+        ]
+
+        for _ in range(3):
+            filtered = filter_ignored(files)
+            assert filtered == [files[0]]
+
+        assert configured_regex == ['^docs/']
