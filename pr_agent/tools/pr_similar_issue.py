@@ -194,6 +194,8 @@ class PRSimilarIssue:
                     self.table = self.db[index_name]
                     if self._lancedb_repo_already_indexed(repo_name_for_index):
                         ingest = False
+                    else:
+                        force_refresh = True
 
             if run_from_scratch or ingest:  # indexing the entire repo
                 get_logger().info('Indexing the entire repo...')
@@ -539,7 +541,7 @@ class PRSimilarIssue:
         return index_name in self.db.list_tables().tables
 
     def _lancedb_repo_already_indexed(self, repo_name_for_index) -> bool:
-        """Whether the shared lancedb table already holds this repo's sentinel row.
+        """Check whether the shared lancedb table already holds this repo's sentinel row.
 
         One sentinel row per repository is written on the first full ingest, so the row's
         absence on an existing table means this repository has never been indexed and must

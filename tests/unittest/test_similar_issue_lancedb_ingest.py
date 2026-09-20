@@ -130,6 +130,9 @@ class _FakeSearchableTable:
 
     def delete(self, where):
         self.delete_calls.append(where)
+        if where.startswith("metadata.repo="):
+            repo = where[where.index("=") + 1 :].strip("'\"")
+            self.rows = [row for row in self.rows if row["metadata"]["repo"] != repo]
 
 
 def _lancedb_row(record_id, repo):
@@ -341,7 +344,7 @@ def test_ingest_skips_short_comments_and_indexes_long_ones(monkeypatch):
 
 
 def test_second_repository_missing_sentinel_joins_instead_of_crashing(monkeypatch):
-    """A repo never indexed on an existing table is detected without an IndexError and joins it."""
+    """Detect a repo never indexed on an existing table and join it without an IndexError."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
     tool = _make_tool(monkeypatch, fake_db)
@@ -355,7 +358,7 @@ def test_second_repository_missing_sentinel_joins_instead_of_crashing(monkeypatc
 
 
 def test_each_repository_gets_exactly_one_sentinel_row(monkeypatch):
-    """The second repository adds its own sentinel without touching the first repo's rows."""
+    """Add the second repo's sentinel row without touching the first repo's rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
     tool = _make_tool(monkeypatch, fake_db)
@@ -367,3 +370,104 @@ def test_each_repository_gets_exactly_one_sentinel_row(monkeypatch):
     ]
     assert sentinels == ["example_issue_org-repo-a", "example_issue_org-repo-b"]
     assert fake_db.table.delete_calls == []
+
+
+class _LanceSettings:
+    class CONFIG:
+        CLI_MODE = True
+
+    class config:
+        model = "gpt-4o-mini"
+
+    class pr_similar_issue:
+        vectordb = "lancedb"
+        max_issues_to_scan = 10
+        skip_comments = True
+        force_update_dataset = False
+
+    class lancedb:
+        uri = "/tmp/test-lancedb"
+
+
+class _FakeRepo:
+    def __init__(self):
+        self.full_name = "org/repo-b"
+
+    def get_issues(self, state="all"):
+        return [_fake_issue(5), _fake_issue(6)]
+
+
+class _FakeGithubClient:
+    def __init__(self):
+        self._repo = _FakeRepo()
+
+    def get_repo(self, name):
+        return self._repo
+
+
+class _FakeProvider:
+    def __init__(self):
+        self.repo_obj = _FakeRepo()
+        self.github_client = _FakeGithubClient()
+
+    @staticmethod
+    def _parse_issue_url(url):
+        return ("org/repo-b", 5)
+
+
+def _install_fake_lancedb(monkeypatch, fake_db):
+    fake_lancedb = types.ModuleType("lancedb")
+    fake_lancedb.connect = lambda uri: fake_db
+    monkeypatch.setitem(sys.modules, "lancedb", fake_lancedb)
+
+
+def _stub_constructor_dependencies(monkeypatch, fake_db):
+    _install_fake_lancedb(monkeypatch, fake_db)
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: _LanceSettings)
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_similar_issue._provider_supports_issue_indexing",
+        lambda: True,
+    )
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_similar_issue.TokenHandler",
+        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
+    )
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.time.sleep", lambda seconds: None)
+
+
+def test_constructor_second_repo_joins_existing_table(monkeypatch):
+    """Construct the tool for a second repo on an existing table and construct it again."""
+    _install_fake_pandas(monkeypatch)
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
+    _stub_constructor_dependencies(monkeypatch, fake_db)
+
+    tool = PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    assert tool.repo_name_for_index == "org-repo-b"
+    assert fake_db.table.delete_calls == ["metadata.repo='org-repo-b'"]  # no-op first join
+    assert fake_db.table.add_calls == [3]  # sentinel plus two issues
+
+    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    assert fake_db.table.add_calls == [3]  # sentinel is present now, incremental path only
+    sentinels = [
+        row["id"] for row in fake_db.table.rows if row["id"].startswith("example_issue_")
+    ]
+    assert sentinels == ["example_issue_org-repo-a", "example_issue_org-repo-b"]
+
+
+def test_concurrent_first_runs_do_not_duplicate_rows(monkeypatch):
+    """Overlapping first runs for the same repo leave a single set of rows."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
+    tool = _make_tool(monkeypatch, fake_db)
+
+    for _ in range(2):
+        tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True, force_refresh=True)
+
+    ids = [row["id"] for row in fake_db.table.rows]
+    assert ids.count("example_issue_org-repo-b") == 1
+    assert ids.count("issue_5.issue") == 1
