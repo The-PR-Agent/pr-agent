@@ -103,8 +103,8 @@ def test_ingest_appends_rows_when_table_exists(monkeypatch):
     assert fake_table.add_calls == [2]
 
 
-def test_ingest_fetches_table_when_force_update_left_it_unset(monkeypatch):
-    """Force updates reach the ingest branch with self.table still None."""
+def test_ingest_fetches_table_when_table_handle_unset(monkeypatch):
+    """A missing table handle is fetched from the db before appending rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_table = SimpleNamespace()
     fake_table.add_calls = []
@@ -122,6 +122,27 @@ def test_ingest_fetches_table_when_force_update_left_it_unset(monkeypatch):
 
     assert fake_table.add_calls == [2]
     assert tool.table is fake_table
+
+
+def test_full_rebuild_overwrites_instead_of_appending(monkeypatch):
+    """A full ingestion run rebuilds the table so stale rows do not accumulate."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.created_with = None
+    fake_db.create_table = lambda name, data, mode: fake_db.__setattr__(
+        "created_with", (name, mode)
+    )
+    fake_db.table = None
+
+    tool = _make_tool(monkeypatch, fake_db)
+    tool.table = fake_db.table
+
+    tool._update_table_with_issues(
+        [_fake_issue()],
+        "utkarsh-demo",
+        ingest=False,
+    )
+
+    assert fake_db.created_with == ("codium-ai-pr-agent-issues", "overwrite")
 
 
 def test_ingest_warns_when_table_missing(monkeypatch):

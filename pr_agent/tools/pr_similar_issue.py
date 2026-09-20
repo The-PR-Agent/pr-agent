@@ -193,7 +193,8 @@ class PRSimilarIssue:
                 ingest = False
             else:
                 if get_settings().pr_similar_issue.force_update_dataset:
-                    ingest = True
+                    run_from_scratch = True
+                    ingest = False
                 else:
                     self.table = self.db[index_name]
                     res = self.table.search().limit(len(self.table)).where(f"id='example_issue_{repo_name_for_index}'").to_list()
