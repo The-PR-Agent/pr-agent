@@ -27,7 +27,7 @@ def main():
     openai_key = "ghs_afsdfasdfsdf"  # Example OpenAI key
     pr_url = "..."  # PR URL, for example 'https://github.com/Codium-ai/pr-agent/pull/809'
     command = "/improve"  # Command to run (e.g. '/review', '/describe', 'improve',
-    '/ask="What is the purpose of this PR?"')
+    # '/ask="What is the purpose of this PR?"')
 
     # Setting the configurations
     get_settings().set("CONFIG.git_provider", provider)
