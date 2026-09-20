@@ -503,8 +503,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \
@@ -588,8 +587,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \
@@ -678,8 +676,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \
