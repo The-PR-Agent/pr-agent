@@ -255,7 +255,6 @@ class PRSimilarIssue:
                 api_key = get_settings().qdrant.api_key
                 url = get_settings().qdrant.url
             except Exception:
-                api_key = None
                 url = None
 
             if not url:
