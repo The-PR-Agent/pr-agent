@@ -185,25 +185,22 @@ class GiteaProvider(GitProvider):
         )
         self.last_commit_id = self.last_commit
 
-    def __add_file_content(self):
-        for file in self.git_files:
-            file_path = file.get("filename")
-            # Ignore file from default settings
-            if not is_valid_file(file_path):
-                continue
+    def __add_file_content(self, file_path: str):
+        if not is_valid_file(file_path) or file_path in self.file_contents:
+            return
 
-            if file_path and self.sha:
-                try:
-                    content = self.repo_api.get_file_content(
-                        owner=self.owner,
-                        repo=self.repo,
-                        commit_sha=self.sha,
-                        filepath=file_path
-                    )
-                    self.file_contents[file_path] = content
-                except ApiException as e:
-                    self.logger.error(f"Error getting file content for {file_path}: {str(e)}")
-                    self.file_contents[file_path] = ""
+        if file_path and self.sha:
+            try:
+                content = self.repo_api.get_file_content(
+                    owner=self.owner,
+                    repo=self.repo,
+                    commit_sha=self.sha,
+                    filepath=file_path
+                )
+                self.file_contents[file_path] = content
+            except ApiException as e:
+                self.logger.error(f"Error getting file content for {file_path}: {str(e)}")
+                self.file_contents[file_path] = ""
 
     def __add_file_diff(self):
         try:
@@ -562,7 +559,6 @@ class GiteaProvider(GitProvider):
         # those settings exist). This matches the other providers, which filter
         # lazily inside their diff fetch. See #2620.
         self.git_files = filter_ignored(self.git_files, platform="gitea")
-        self.__add_file_content()
 
         invalid_files_names = []
         counter_valid = 0
@@ -590,7 +586,8 @@ class GiteaProvider(GitProvider):
             if avoid_load:
                 head_file = ""
             else:
-                # Get file content from this pr
+                # Get file content from this pr only when the full content is needed.
+                self.__add_file_content(filename)
                 head_file = self.file_contents.get(filename,"")
 
             if self.incremental.is_incremental and self.unreviewed_files_map:
