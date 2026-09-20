@@ -11,6 +11,7 @@ from pr_agent.log import get_logger
 # in performance-critical patch processing functions.
 RE_HUNK_HEADER = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+NO_NEWLINE_AT_EOF_MARKER = r'\ No newline at end of file'
 
 
 def to_hunk_only_patch(patch_str: str) -> str:
@@ -363,7 +364,7 @@ __old hunk__
     header_line = []
     skip_hunk = False
     for line_i, line in enumerate(patch_lines):
-        if 'no newline at end of file' in line.lower():
+        if line == NO_NEWLINE_AT_EOF_MARKER:
             continue
 
         if line.startswith('@@'):
@@ -457,7 +458,7 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
         skip_hunk = False
         selected_lines_num = 0
         for line in patch_lines:
-            if 'no newline at end of file' in line.lower():
+            if line == NO_NEWLINE_AT_EOF_MARKER:
                 continue
 
             if line.startswith('@@'):
