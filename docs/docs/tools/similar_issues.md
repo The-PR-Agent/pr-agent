@@ -1,9 +1,9 @@
 ## Overview
 
-> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. Its backends are not equally exercised: no backend is tested against its real driver.
+> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. No backend is tested against its real driver.
 
 The similar issue tool retrieves the most similar issues to the current issue.
-It is an issue-scoped command: comment `/similar_issue` on the issue, or run it from the CLI with `--issue_url`:
+It is an issue-scoped command: comment `/similar_issue` on the issue (served by the GitHub Action; the GitHub App webhook only dispatches comments on pull requests), or run it from the CLI with `--issue_url`:
 
 ```
 /similar_issue
@@ -23,7 +23,7 @@ To perform retrieval, the `similar_issue` tool indexes the repository's issues i
 
 - The **first run** indexes up to `max_issues_to_scan` issues (default `500`).
 - **Later runs** append newer issues, stopping at the first already-indexed one, so previously-indexed issues are not re-embedded.
-- `force_update_dataset = true` makes the next run re-index the repository from scratch.
+- `force_update_dataset = true` makes every run re-index the whole repository: LanceDB deletes the repository's rows first, Pinecone and Qdrant upsert over the existing rows.
 - `skip_comments = true` skips issue comments and embeds only the issue title and body.
 
 These keys live under the `[pr_similar_issue]` section. Each backend section below describes its own configuration and re-run behaviour.
@@ -74,11 +74,11 @@ existing deployment to the new configuration does not lose the stored vectors.
 
 On re-runs, the first run creates the index and upserts up to `max_issues_to_scan` issues; later runs append newer issues until the first already-indexed one; `force_update_dataset = true` re-indexes the whole repository.
 
-!!! note "Backend coverage is uneven"
+!!! note "No backend is tested against its real driver"
 
-    No backend is exercised against its real driver: the `similar-issue` dependency group is
-    not installed in CI, so the pinecone tests run against a faked module and the qdrant tests
-    never construct a client.
+    The `similar-issue` dependency group is not installed in CI, so the pinecone tests run
+    against a faked module, the qdrant tests never construct a client, and the lancedb tests
+    run against a fake table.
 
 !!! note "Default vector database"
 
@@ -105,7 +105,7 @@ vectordb = "qdrant"
 
 You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdrant.io/).
 
-The `api_key` value is required even when the server does not enforce authentication: the tool reads both `url` and `api_key` and raises when either is absent. A re-index uploads the whole repository in a single request.
+`api_key` must be present even when the server does not enforce authentication (an empty string is accepted): the tool reads both `url` and `api_key` and raises when either is absent. A re-index uploads the whole repository in a single request.
 
 Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`, derived by appending a `-v2` suffix to the shared index name (`codium-ai-pr-agent-issues`). The suffix is an implementation detail of the Qdrant backend only; pinecone and lancedb use the unsuffixed name.
 
