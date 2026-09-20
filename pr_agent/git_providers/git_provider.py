@@ -937,6 +937,19 @@ class GitProvider(ABC):
     def get_latest_commit_url(self) -> str:
         return ""
 
+    def get_pr_head_sha(self) -> str:
+        """Return the commit SHA the pull request currently points at.
+
+        The reviewer records this in the persistent finding marker so a later run can
+        tell whether the head moved. It stays empty when a provider cannot resolve a
+        head, which makes the reconciliation guard refuse to resolve findings rather
+        than resolve them against the wrong revision.
+
+        Returns:
+            str: the head commit SHA, or an empty string when unavailable.
+        """
+        return ""
+
     def auto_approve(self) -> bool:
         return False
 

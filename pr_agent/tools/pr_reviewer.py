@@ -678,6 +678,14 @@ class PRReviewer:
         return findings
 
     def _review_head_sha(self) -> str:
+        # Providers reach their head commit through different fields, so each one resolves
+        # its own shape behind get_pr_head_sha() rather than the reviewer knowing it.
+        get_head_sha = getattr(self.git_provider, "get_pr_head_sha", None)
+        if callable(get_head_sha):
+            head_sha = get_head_sha()
+            if isinstance(head_sha, str) and head_sha:
+                return head_sha
+
         last_commit = getattr(self.git_provider, "last_commit_id", None)
         if isinstance(last_commit, str):
             return last_commit
