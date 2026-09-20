@@ -29,12 +29,12 @@ class _Repo:
 
 
 class _Settings:
-    def __init__(self, cli_mode, url, api_key_secret=True):
+    def __init__(self, cli_mode, url, api_key="secret"):
         self.CONFIG = SimpleNamespace(CLI_MODE=cli_mode)
         self.pr_similar_issue = SimpleNamespace(
             max_issues_to_scan=10, skip_comments=True, force_update_dataset=False, vectordb="qdrant"
         )
-        kwargs = {"api_key": "secret"} if api_key_secret else {}
+        kwargs = {"api_key": api_key}
         if url is not None:
             kwargs["url"] = url
         self.qdrant = SimpleNamespace(**kwargs)
@@ -42,7 +42,7 @@ class _Settings:
 
 def _install_fakes(monkeypatch, settings, repo):
     fake_client_module = types.ModuleType("qdrant_client")
-    fake_client_module.QdrantClient = lambda **kwargs: SimpleNamespace(**kwargs)
+    fake_client_module.QdrantClient = SimpleNamespace
     fake_models = types.ModuleType("qdrant_client.models")
     for name in ("Distance", "FieldCondition", "Filter", "MatchValue", "VectorParams"):
         setattr(fake_models, name, SimpleNamespace)
@@ -78,10 +78,10 @@ def test_blank_qdrant_url_is_treated_as_unset(monkeypatch):
         _build_tool(monkeypatch, _Settings(cli_mode=True, url=""))
 
 
-def test_blank_qdrant_url_raises_even_with_an_api_key(monkeypatch):
-    """The client would force https whenever api_key is not None, so url alone decides."""
+def test_blank_url_and_blank_api_key_raise(monkeypatch):
+    """The secrets template ships both values blank; url alone decides, so this raises too."""
     with pytest.raises(Exception, match=CREDENTIALS_MESSAGE):
-        _build_tool(monkeypatch, _Settings(cli_mode=True, url="", api_key_secret=False))
+        _build_tool(monkeypatch, _Settings(cli_mode=True, url="", api_key=""))
 
 
 def test_missing_qdrant_url_still_raises(monkeypatch):
