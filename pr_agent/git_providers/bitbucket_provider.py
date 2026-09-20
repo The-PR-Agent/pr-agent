@@ -375,6 +375,14 @@ class BitbucketProvider(GitProvider):
     def get_latest_commit_url(self):
         return self.pr.data['source']['commit']['links']['html']['href']
 
+    def get_pr_head_sha(self) -> str:
+        try:
+            head_sha = self.pr.data['source']['commit']['hash']
+            return head_sha if isinstance(head_sha, str) else ""
+        except (KeyError, AttributeError, TypeError) as e:
+            get_logger().warning(f"Failed to get head SHA, error: {e}")
+            return ""
+
     def _get_cloud_comment(self, comment):
         if isinstance(comment, SimpleNamespace):
             return comment._cloud_comment

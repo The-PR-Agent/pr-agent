@@ -221,3 +221,72 @@ def test_init_rebuilds_when_the_table_is_absent(monkeypatch):
     tool = _make_tool(monkeypatch, FakeDB(["table-00"]))
 
     assert not tool._table_exists_in_db("codium-ai-pr-agent-issues")
+def _capturing_table():
+    fake_table = _fake_table()
+    fake_table.added_rows = []
+    fake_table.add = lambda df: fake_table.added_rows.extend(df.to_dict(orient="records"))
+    return fake_table
+
+
+_LONG_COMMENT = "this comment body has more than ten words and so it will be indexed in full"
+
+
+def _fake_issue_with_comments(comments):
+    return SimpleNamespace(
+        number=5,
+        title="a title",
+        body="a body",
+        pull_request=False,
+        user=SimpleNamespace(login="tester"),
+        created_at="2026-01-01T00:00:00Z",
+        get_comments=lambda: comments,
+    )
+
+
+def _tool_with_comments(monkeypatch, fake_db):
+    tool = _make_tool(monkeypatch, fake_db)
+    tool._process_issue = lambda issue: (
+        f"title: {issue.title}\nbody: {issue.body}",
+        list(issue.get_comments()),
+        issue.number,
+    )
+    return tool
+
+
+def test_ingest_skips_null_comment_body_without_crashing(monkeypatch):
+    """A comment with a null body is skipped instead of raising AttributeError."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _capturing_table()
+    fake_db.table = fake_table
+
+    tool = _tool_with_comments(monkeypatch, fake_db)
+    issue = _fake_issue_with_comments([
+        SimpleNamespace(body=_LONG_COMMENT),
+        SimpleNamespace(body=None),
+    ])
+
+    tool._update_table_with_issues([issue], "org/repo", ingest=True)
+
+    texts = [row["text"] for row in fake_table.added_rows]
+    assert _LONG_COMMENT in texts
+    assert len(fake_table.added_rows) == 3  # sentinel + issue + one comment
+
+
+def test_ingest_skips_short_comments_and_indexes_long_ones(monkeypatch):
+    """Word-count guard still skips short bodies while long ones are indexed."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _capturing_table()
+    fake_db.table = fake_table
+
+    tool = _tool_with_comments(monkeypatch, fake_db)
+    issue = _fake_issue_with_comments([
+        SimpleNamespace(body="short"),
+        SimpleNamespace(body=_LONG_COMMENT),
+    ])
+
+    tool._update_table_with_issues([issue], "org/repo", ingest=True)
+
+    texts = [row["text"] for row in fake_table.added_rows]
+    assert "short" not in texts
+    assert _LONG_COMMENT in texts
+    assert len(fake_table.added_rows) == 3  # sentinel + issue + one comment

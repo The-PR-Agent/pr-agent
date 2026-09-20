@@ -494,6 +494,11 @@ class GithubProvider(GitProvider):
     def get_latest_commit_url(self) -> str:
         return self.last_commit_id.html_url
 
+    def get_pr_head_sha(self) -> str:
+        head = getattr(self.pr, "head", None)
+        head_sha = getattr(head, "sha", None)
+        return head_sha if isinstance(head_sha, str) else ""
+
     def get_comment_url(self, comment) -> str:
         return comment.html_url
 

@@ -588,6 +588,14 @@ class BitbucketServerProvider(GitProvider):
             get_logger().warning(f"Failed to get latest commit URL, error: {e}")
             return ""
 
+    def get_pr_head_sha(self) -> str:
+        try:
+            head_sha = self.pr.fromRef['latestCommit']
+            return head_sha if isinstance(head_sha, str) else ""
+        except (KeyError, TypeError) as e:
+            get_logger().warning(f"Failed to get head SHA, error: {e}")
+            return ""
+
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
         return None
 
