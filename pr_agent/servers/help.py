@@ -28,7 +28,7 @@ class HelpMessage:
                   "More feedback can be [added](https://docs.pr-agent.ai/tools/review/#configuration-options) by configuring the tool.\n\n"
                   "The tool can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on any PR.\n")
         output +="""\
-- When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/) related to the review tool (`pr_reviewer` section), use the following template:
+- When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/#pr_reviewer-review) related to the review tool (`pr_reviewer` section), use the following template:
 ```
 /review --pr_reviewer.some_config1=... --pr_reviewer.some_config2=...
 ```
@@ -53,7 +53,7 @@ some_config2=...
         output += "The tool can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
         output += """\
 
-When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/) related to the describe tool (`pr_description` section), use the following template:
+When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/#pr_description-describe) related to the describe tool (`pr_description` section), use the following template:
 ```
 /describe --pr_description.some_config1=... --pr_description.some_config2=...
 ```
@@ -174,7 +174,7 @@ You can ask questions about the entire PR, about specific code lines, or about a
         output += f"{COMMAND_DESCRIPTIONS['improve']} "
         output += "The tool can be triggered [automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) every time a new PR is opened, or can be invoked manually by commenting on a PR.\n"
         output += """\
-- When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/) related to the improve tool (`pr_code_suggestions` section), use the following template:
+- When commenting, to edit [configurations](https://docs.pr-agent.ai/usage-guide/configuration_reference/#pr_code_suggestions-improve) related to the improve tool (`pr_code_suggestions` section), use the following template:
 
 ```
 /improve --pr_code_suggestions.some_config1=... --pr_code_suggestions.some_config2=...
