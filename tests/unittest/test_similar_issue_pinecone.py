@@ -75,6 +75,27 @@ def _stub_embeddings(monkeypatch):
     monkeypatch.setattr(psi.time, "sleep", lambda seconds: None)
 
 
+def test_pinecone_indexes_exactly_max_issues(monkeypatch):
+    saved_vectors = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            saved_vectors.extend(kwargs["vectors"])
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    tool.max_issues_to_scan = 3
+    _stub_embeddings(monkeypatch)
+
+    issues = [_make_issue(number) for number in range(1, 6)]
+    tool._update_index_with_issues(issues, "example-repo", upsert=True)
+
+    issue_ids = [
+        vector[0] for vector in saved_vectors
+        if vector[0].endswith(".issue")
+    ]
+    assert issue_ids == ["issue_1.issue", "issue_2.issue", "issue_3.issue"]
+
+
 def test_pinecone_upsert_passes_batch_size_and_max_concurrency(monkeypatch):
     calls = {}
 
