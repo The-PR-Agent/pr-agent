@@ -84,12 +84,41 @@ def _make_tool(monkeypatch, fake_db):
     return tool
 
 
-def _fake_table():
+class _FakeSearch:
+    def __init__(self, table):
+        self._table = table
+        self._id = None
+
+    def limit(self, _n):
+        return self
+
+    def where(self, sql):
+        self._id = sql.split("'")[1]
+        return self
+
+    def to_list(self):
+        return [row for row in self._table.rows if row["id"] == self._id]
+
+
+def _fake_add(table, df):
+    table.add_calls.append(len(df))
+    table.rows.extend(df.to_dict("records"))
+
+
+def _fake_delete(table, where):
+    table.delete_calls.append(where)
+    repo = where.split("'")[1]
+    table.rows = [row for row in table.rows if row["metadata"].repo != repo]
+
+
+def _fake_table(existing_rows=()):
     fake_table = SimpleNamespace()
+    fake_table.rows = list(existing_rows)
     fake_table.add_calls = []
     fake_table.delete_calls = []
-    fake_table.add = lambda df: fake_table.add_calls.append(len(df))
-    fake_table.delete = lambda where: fake_table.delete_calls.append(where)
+    fake_table.add = lambda df: _fake_add(fake_table, df)
+    fake_table.delete = lambda where: _fake_delete(fake_table, where)
+    fake_table.search = lambda: _FakeSearch(fake_table)
     return fake_table
 
 
@@ -471,3 +500,109 @@ def test_concurrent_first_runs_do_not_duplicate_rows(monkeypatch):
     ids = [row["id"] for row in fake_db.table.rows]
     assert ids.count("example_issue_org-repo-b") == 1
     assert ids.count("issue_5.issue") == 1
+
+
+def test_sentinel_added_once_across_incremental_runs(monkeypatch):
+    """Later incremental runs add only the new issue row, not another sentinel.
+
+    The incremental caller in run() already filters out indexed issues by id, so the method
+    receives only new issues; its own contract is limited to the de-duplication LanceDB cannot
+    do for the sentinel marker.
+    """
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table()
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+
+    tool._update_table_with_issues([_fake_issue()], "utkarsh-demo", ingest=True)
+    tool._update_table_with_issues([_fake_issue(6)], "utkarsh-demo", ingest=True)
+
+    assert fake_table.add_calls == [2, 1]
+    sentinels = [row for row in fake_table.rows if row["id"] == "example_issue_utkarsh-demo"]
+    assert len(sentinels) == 1
+    assert len([row for row in fake_table.rows if row["id"] == "issue_5.issue"]) == 1
+
+
+def test_initial_creation_with_empty_corpus_still_builds_table(monkeypatch):
+    """A from-scratch run on an empty corpus still creates the table (sentinel row only)."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.created_with = None
+    fake_db.create_table = lambda name, data, mode: fake_db.__setattr__(
+        "created_with", (name, mode, data)
+    )
+    fake_db.table = None
+
+    tool = _make_tool(monkeypatch, fake_db)
+    tool.table = fake_db.table
+
+    tool._update_table_with_issues([], "utkarsh-demo", ingest=False)
+
+    name, mode, df = fake_db.created_with
+    assert name == "codium-ai-pr-agent-issues"
+    assert mode == "overwrite"
+    assert [row["id"] for row in df.to_dict("records")] == ["example_issue_utkarsh-demo"]
+
+
+def test_ingest_empty_corpus_skips_update(monkeypatch):
+    """An empty corpus on the ingest path is skipped without touching the table."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table(existing_rows=[
+        {"id": "issue_1.issue", "text": "an old issue",
+         "metadata": SimpleNamespace(repo="org/repo-a")},
+    ])
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+
+    tool._update_table_with_issues([], "org/repo-a", ingest=True)
+
+    assert fake_table.add_calls == []
+    assert fake_table.delete_calls == []
+    assert len(fake_table.rows) == 1
+
+
+def test_force_refresh_keeps_a_single_sentinel(monkeypatch):
+    """A forced refresh deletes the repo rows, then re-adds a single sentinel."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table(existing_rows=[
+        {"id": "example_issue_org/repo-a", "text": "example_issue",
+         "metadata": SimpleNamespace(repo="org/repo-a")},
+    ])
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+
+    tool._update_table_with_issues(
+        [_fake_issue()],
+        "org/repo-a",
+        ingest=True,
+        force_refresh=True,
+    )
+
+    assert fake_table.delete_calls == ["metadata.repo='org/repo-a'"]
+    assert fake_table.add_calls == [2]
+    sentinels = [row for row in fake_table.rows if row["id"] == "example_issue_org/repo-a"]
+    assert len(sentinels) == 1
+
+
+def test_force_refresh_empty_corpus_restores_the_sentinel(monkeypatch):
+    """A forced refresh with no embeddable issues clears stale rows and keeps the sentinel."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table(existing_rows=[
+        {"id": "issue_1.issue", "text": "an old issue",
+         "metadata": SimpleNamespace(repo="org/repo-a")},
+        {"id": "example_issue_org/repo-a", "text": "example_issue",
+         "metadata": SimpleNamespace(repo="org/repo-a")},
+    ])
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+
+    tool._update_table_with_issues([], "org/repo-a", ingest=True, force_refresh=True)
+
+    assert fake_table.delete_calls == ["metadata.repo='org/repo-a'"]
+    assert fake_table.add_calls == [1]
+    sentinels = [row for row in fake_table.rows if row["id"] == "example_issue_org/repo-a"]
+    assert len(sentinels) == 1
+    assert len(fake_table.rows) == 1

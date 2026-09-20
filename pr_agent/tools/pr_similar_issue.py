@@ -316,6 +316,16 @@ class PRSimilarIssue:
                     get_logger().info('No new issues to update')
 
 
+    @staticmethod
+    def _record_similar_hit(relevant_issues_number_list: list, relevant_comment_number_list: list,
+                            score_list: list, issue_number: int, comment_number: int, score: float):
+        """Keep the first, best-scored hit per issue and keep the three lists aligned."""
+        if issue_number in relevant_issues_number_list:
+            return
+        relevant_issues_number_list.append(issue_number)
+        relevant_comment_number_list.append(comment_number)
+        score_list.append(str("{:.2f}".format(score)))
+
     async def run(self):
         if not self.supported:
             message = "The /similar_issue tool is not supported by the configured git provider."
@@ -331,6 +341,7 @@ class PRSimilarIssue:
                         artifact={"error": str(e)},
                     )
             return ""
+
         get_logger().info('Getting issue...')
         repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
         issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
@@ -364,13 +375,9 @@ class PRSimilarIssue:
 
                 if original_issue_number == issue_number:
                     continue
-                if issue_number not in relevant_issues_number_list:
-                    relevant_issues_number_list.append(issue_number)
-                if 'comment' in r["id"]:
-                    relevant_comment_number_list.append(int(r["id"].split('.')[1].split('_')[-1]))
-                else:
-                    relevant_comment_number_list.append(-1)
-                score_list.append(str("{:.2f}".format(r['score'])))
+                comment_number = int(r["id"].split('.')[1].split('_')[-1]) if 'comment' in r["id"] else -1
+                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
+                                         score_list, issue_number, comment_number, r['score'])
             get_logger().info('Done')
 
         elif get_settings().pr_similar_issue.vectordb == "lancedb":
@@ -389,14 +396,9 @@ class PRSimilarIssue:
 
                 if original_issue_number == issue_number:
                     continue
-                if issue_number not in relevant_issues_number_list:
-                    relevant_issues_number_list.append(issue_number)
-
-                if 'comment' in r["id"]:
-                    relevant_comment_number_list.append(int(r["id"].split('.')[1].split('_')[-1]))
-                else:
-                    relevant_comment_number_list.append(-1)
-                score_list.append(str("{:.2f}".format(1-r['_distance'])))
+                comment_number = int(r["id"].split('.')[1].split('_')[-1]) if 'comment' in r["id"] else -1
+                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
+                                         score_list, issue_number, comment_number, 1 - r['_distance'])
             get_logger().info('Done')
 
         elif get_settings().pr_similar_issue.vectordb == "qdrant":
@@ -420,13 +422,9 @@ class PRSimilarIssue:
                     continue
                 if original_issue_number == issue_number:
                     continue
-                if issue_number not in relevant_issues_number_list:
-                    relevant_issues_number_list.append(issue_number)
-                if 'comment' in rid:
-                    relevant_comment_number_list.append(int(rid.split('.')[1].split('_')[-1]))
-                else:
-                    relevant_comment_number_list.append(-1)
-                score_list.append(str("{:.2f}".format(r.score)))
+                comment_number = int(rid.split('.')[1].split('_')[-1]) if 'comment' in rid else -1
+                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
+                                         score_list, issue_number, comment_number, r.score)
             get_logger().info('Done')
 
         get_logger().info('Publishing response...')
@@ -560,12 +558,7 @@ class PRSimilarIssue:
         get_logger().info('Processing issues...')
 
         corpus = Corpus()
-        example_issue_record = Record(
-            id=f"example_issue_{repo_name_for_index}",
-            text="example_issue",
-            metadata=Metadata(repo=repo_name_for_index)
-        )
-        corpus.append(example_issue_record)
+        sentinel_id = f"example_issue_{repo_name_for_index}"
 
         counter = 0
         for issue in issues_list:
@@ -611,6 +604,28 @@ class PRSimilarIssue:
                                                     level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+        if len(corpus.documents) == 0:
+            if ingest and not force_refresh:
+                get_logger().info('No issues to index, skipping update')
+                return
+            # From-scratch runs and forced refreshes still carry the sentinel row, so the
+            # table keeps a searchable marker and the subsequent query path has an index.
+            corpus.append(Record(id=sentinel_id, text="example_issue",
+                                 metadata=Metadata(repo=repo_name_for_index)))
+        else:
+            # lancedb add() does not de-duplicate rows, so only carry the sentinel row when
+            # the table will not already have one after this write.
+            add_sentinel = not ingest or force_refresh
+            if ingest and self._table_exists_in_db(self.index_name):
+                if self.table is None:
+                    self.table = self.db[self.index_name]
+                if not force_refresh:
+                    add_sentinel = not self.table.search().limit(1).where(f"id='{sentinel_id}'").to_list()
+            if add_sentinel:
+                corpus.append(Record(id=sentinel_id, text="example_issue",
+                                     metadata=Metadata(repo=repo_name_for_index)))
+
         df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
