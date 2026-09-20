@@ -25,31 +25,33 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 | [TOOLS](./tools/index.md) | [Describe](./tools/describe.md)                                     |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Review](./tools/review.md)                                                           |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Improve](./tools/improve.md)                                                         |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
-|       | [Ask](./tools/ask.md)                                                                 |   ✅   |   ✅   |    ✅     |      ✅       |       |
-|       | ⮑ [Ask on code lines](./tools/ask.md#ask-lines)                                       |   ✅   |   ✅   |           |              |       |
-|       | [Add Docs](./tools/add_docs.md)                                                       |   ✅   |   ✅   |    ✅     |      ✅       |       |
-|       | [Generate Labels](./tools/generate_labels.md)                                         |   ✅   |   ✅   |    ✅     |      ✅       |       |
+|       | [Ask](./tools/ask.md)                                                                 |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
+|       | ⮑ [Ask on code lines](./tools/ask.md#ask-lines)                                       |   ✅   |   ✅   |           |      ✅       |       |
+|       | [Add Docs](./tools/add_docs.md)                                                       |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
+|       | [Generate Labels](./tools/generate_labels.md)                                         |   ✅   |   ✅   |    ◐     |      ✅       |       |
 |       | [Similar Issues](./tools/similar_issues.md)                                           |   ✅   |        |           |              |       |
-|       | [Help](./tools/help.md)                                                               |   ✅   |   ✅   |    ✅     |      ✅       |       |
+|       | [Help](./tools/help.md)                                                               |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Help Docs](./tools/help_docs.md) ⚠️                                                   |   —    |   —    |    —      |              |       |
-|       | [Update CHANGELOG](./tools/update_changelog.md)                                       |   ✅   |   ✅   |    ✅     |      ✅       |       |
+|       | [Update CHANGELOG](./tools/update_changelog.md)                                       |   ✅   |   ✅   |    ✅     |      ◐       |  ◐   |
 |       |                                                                                       |        |        |           |              |       |
 | [USAGE](./usage-guide/index.md) | [CLI](./usage-guide/automations_and_usage.md#local-repo-cli)      |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [App / webhook](./usage-guide/automations_and_usage.md#github-app)                    |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Tagging bot](https://github.com/the-pr-agent/pr-agent#try-it-now)                       |   ✅   |        |           |              |       |
-|       | [Actions](./installation/github.md#run-as-a-github-action)                            |   ✅   |   ✅   |    ✅     |      ✅       |       |
+|       | [Actions](./installation/github.md#run-as-a-github-action) <br> [GitLab pipeline](./installation/gitlab.md#run-as-a-gitlab-pipeline) <br> [Bitbucket pipeline](./installation/bitbucket.md#run-as-a-bitbucket-pipeline) <br> [Azure DevOps pipeline](./installation/azure.md#azure-devops-pipeline) |   ✅   |   ✅   |    ✅     |      ✅       |       |
 |       |                                                                                       |        |        |           |              |       |
-| [CORE](./core-abilities/index.md) | [Adaptive and token-aware file patch fitting](./core-abilities/compression_strategy.md) |   ✅   |   ✅   |    ✅     |      ✅       |       |
+| [CORE](./core-abilities/index.md) | [Adaptive and token-aware file patch fitting](./core-abilities/compression_strategy.md) |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Agent skills (`SKILL.md`)](./core-abilities/agent_skills.md)                         |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Repo context files (`AGENTS.md`)](./usage-guide/additional_configurations.md#bringing-per-repo-context-files-to-pr-agent) |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
-|       | [Compression strategy](./core-abilities/compression_strategy.md)                      |   ✅   |   ✅   |    ✅     |      ✅       |       |
-|       | [Dynamic context](./core-abilities/dynamic_context.md)                                |   ✅   |   ✅   |    ✅     |      ✅       |       |
-|       | [Fetching ticket context](./core-abilities/fetching_ticket_context.md)                |   ✅   |  ✅   |    ✅     |              |       |
-|       | [Local and global metadata](./core-abilities/metadata.md)                             |   ✅   |   ✅   |    ✅     |      ✅       |       |
+|       | [Compression strategy](./core-abilities/compression_strategy.md)                      |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
+|       | [Dynamic context](./core-abilities/dynamic_context.md)                                |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
+|       | [Fetching ticket context](./core-abilities/fetching_ticket_context.md)                |   ✅   |  ✅   |    ✅     |      ✅       |       |
+|       | [Local and global metadata](./core-abilities/metadata.md)                             |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 |       | [Multiple models support](./usage-guide/changing_a_model.md)                          |   ✅   |   ✅   |    ✅     |      ✅       |       |
-|       | [Self reflection](./core-abilities/self_reflection.md)                                |   ✅   |   ✅   |    ✅     |      ✅       |       |
+|       | [Self reflection](./core-abilities/self_reflection.md)                                |   ✅   |   ✅   |    ✅     |      ✅       |  ✅   |
 
 ⚠️ `/help_docs` is temporarily disabled since v0.36.1 pending a fix for a credential-exposure issue ([#2445](https://github.com/The-PR-Agent/pr-agent/issues/2445)); see [Help Docs](./tools/help_docs.md).
+
+Legend: ✅ = works natively on the provider · ◐ = supported, but with reduced functionality (the tool runs, yet its output is published as a PR comment instead of being applied directly, e.g. Update CHANGELOG posts the changelog as a comment when the provider cannot push files, and Generate Labels posts the labels as a comment when the provider cannot set them) · — = not applicable · blank = not supported.
 
 ## Example Results
 
