@@ -192,9 +192,7 @@ class PRSimilarIssue:
                     ingest = True
                 else:
                     self.table = self.db[index_name]
-                    res = self.table.search().limit(len(self.table)).where(f"id='example_issue_{repo_name_for_index}'").to_list()
-                    get_logger().info("result: ", res)
-                    if res[0].get("vector"):
+                    if self._lancedb_repo_already_indexed(repo_name_for_index):
                         ingest = False
 
             if run_from_scratch or ingest:  # indexing the entire repo
@@ -539,6 +537,19 @@ class PRSimilarIssue:
 
     def _table_exists_in_db(self, index_name) -> bool:
         return index_name in self.db.list_tables().tables
+
+    def _lancedb_repo_already_indexed(self, repo_name_for_index) -> bool:
+        """Whether the shared lancedb table already holds this repo's sentinel row.
+
+        One sentinel row per repository is written on the first full ingest, so the row's
+        absence on an existing table means this repository has never been indexed and must
+        go through the full ingest path to join the table.
+        """
+        res = self.table.search().limit(len(self.table)).where(
+            f"id='example_issue_{repo_name_for_index}'"
+        ).to_list()
+        get_logger().info("result: ", res)
+        return bool(res)
 
     def _update_table_with_issues(self, issues_list, repo_name_for_index, ingest=False,
                                   force_refresh=False):

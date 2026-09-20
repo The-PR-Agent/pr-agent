@@ -93,6 +93,54 @@ def _fake_table():
     return fake_table
 
 
+class _FakeLanceQuery:
+    def __init__(self, table):
+        self._table = table
+        self._id_filter = None
+
+    def limit(self, limit):
+        return self
+
+    def where(self, expr, prefilter=False):
+        if expr.startswith("id="):
+            self._id_filter = expr[expr.index("=") + 1 :].strip("'\"")
+        return self
+
+    def to_list(self):
+        if self._id_filter is None:
+            return list(self._table.rows)
+        return [row for row in self._table.rows if row["id"] == self._id_filter]
+
+
+class _FakeSearchableTable:
+    def __init__(self, rows):
+        self.rows = rows
+        self.add_calls = []
+        self.delete_calls = []
+
+    def __len__(self):
+        return len(self.rows)
+
+    def search(self, query=None):
+        return _FakeLanceQuery(self)
+
+    def add(self, df):
+        self.add_calls.append(len(df))
+        self.rows.extend(df.to_dict())
+
+    def delete(self, where):
+        self.delete_calls.append(where)
+
+
+def _lancedb_row(record_id, repo):
+    return {
+        "id": record_id,
+        "text": "a body",
+        "metadata": {"repo": repo},
+        "vector": [0.0] * 8,
+    }
+
+
 def test_initial_creation_overwrites_the_table(monkeypatch):
     """A from-scratch run (no existing table) creates the table with overwrite."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
@@ -290,3 +338,32 @@ def test_ingest_skips_short_comments_and_indexes_long_ones(monkeypatch):
     assert "short" not in texts
     assert _LONG_COMMENT in texts
     assert len(fake_table.added_rows) == 3  # sentinel + issue + one comment
+
+
+def test_second_repository_missing_sentinel_joins_instead_of_crashing(monkeypatch):
+    """A repo never indexed on an existing table is detected without an IndexError and joins it."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
+    tool = _make_tool(monkeypatch, fake_db)
+
+    assert tool._lancedb_repo_already_indexed("org-repo-a") is True
+    assert tool._lancedb_repo_already_indexed("org-repo-b") is False
+
+    tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
+
+    assert tool._lancedb_repo_already_indexed("org-repo-b") is True
+
+
+def test_each_repository_gets_exactly_one_sentinel_row(monkeypatch):
+    """The second repository adds its own sentinel without touching the first repo's rows."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable([_lancedb_row("example_issue_org-repo-a", "org-repo-a")])
+    tool = _make_tool(monkeypatch, fake_db)
+
+    tool._update_table_with_issues([_fake_issue()], "org-repo-b", ingest=True)
+
+    sentinels = [
+        row["id"] for row in fake_db.table.rows if row["id"].startswith("example_issue_")
+    ]
+    assert sentinels == ["example_issue_org-repo-a", "example_issue_org-repo-b"]
+    assert fake_db.table.delete_calls == []
