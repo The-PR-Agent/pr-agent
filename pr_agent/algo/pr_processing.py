@@ -587,8 +587,9 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
     remaining_files_list_new = []
     files_in_patch_list = []
     separator_tokens = None
+    remaining_files = set(remaining_files_list_prev)
     for filename, data in file_dict.items():
-        if filename not in remaining_files_list_prev:
+        if filename not in remaining_files:
             continue
 
         patch = data['patch']
