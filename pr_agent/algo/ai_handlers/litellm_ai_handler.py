@@ -170,6 +170,13 @@ AZURE_AD_TOKEN_ENV_VARS = ("AZURE_AD_TOKEN", "AZURE_OPENAI_AD_TOKEN")
 AZURE_OIDC_AUTH_ENV_VARS = ("AZURE_CLIENT_SECRET", "AZURE_USERNAME", "AZURE_PASSWORD")
 
 
+def _strip_openai_azure_prefixes(model: str) -> str:
+    """Strip stacked OpenAI/Azure routing prefixes, which Azure mode can prepend to a configured one."""
+    while model.startswith(("openai/", "azure/")):
+        model = model.removeprefix("openai/").removeprefix("azure/")
+    return model
+
+
 def _as_bool(value, default: bool) -> bool:
     """Parse a config value that may arrive as a bool (toml) or a string (env override)."""
     if isinstance(value, bool):
@@ -1254,23 +1261,17 @@ class LiteLLMAIHandler(BaseAiHandler):
     @staticmethod
     def _is_gpt6_astra_model(model: str) -> bool:
         """Recognize native Astra models without changing gateway model IDs."""
-        while model.startswith(("openai/", "azure/")):
-            model = model.removeprefix("openai/").removeprefix("azure/")
-        return model.removesuffix("_thinking") == "gpt-6-astra"
+        return _strip_openai_azure_prefixes(model).removesuffix("_thinking") == "gpt-6-astra"
 
     @staticmethod
     def _is_gpt5_model(model: str) -> bool:
         """Return whether a routed model belongs to the GPT-5 family."""
-        model_base = model.removeprefix("openrouter/")
-        while model_base.startswith(("openai/", "azure/")):
-            model_base = model_base.removeprefix("openai/").removeprefix("azure/")
+        model_base = _strip_openai_azure_prefixes(model.removeprefix("openrouter/"))
         return model_base.startswith("gpt-5")
 
     def _normalize_gpt5_model_for_request(self, model: str, user_model: str, custom_llm_provider: str) -> str:
         """Normalize GPT-5/Astra suffixes and prefixes before request parameters are selected."""
-        model_base = model
-        while model_base.startswith(("openai/", "azure/")):
-            model_base = model_base.removeprefix("openai/").removeprefix("azure/")
+        model_base = _strip_openai_azure_prefixes(model)
         if not model_base.startswith("gpt-5") and model_base.removesuffix("_thinking") != "gpt-6-astra":
             return model
         if custom_llm_provider:
@@ -1608,13 +1609,11 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     def _requires_streaming(self, model: str) -> bool:
         """Return whether this model requires streaming after OpenAI/Azure routing."""
-        def normalize(candidate: str) -> str:
-            while candidate.startswith(("azure/", "openai/")):
-                candidate = candidate.removeprefix("azure/").removeprefix("openai/")
-            return candidate
-
-        normalized_model = normalize(model)
-        return any(normalize(candidate) == normalized_model for candidate in self.streaming_required_models)
+        normalized_model = _strip_openai_azure_prefixes(model)
+        return any(
+            _strip_openai_azure_prefixes(candidate) == normalized_model
+            for candidate in self.streaming_required_models
+        )
 
     def _force_streaming_for_request(self, custom_llm_provider, api_base) -> bool:
         """Return whether an OpenAI-compatible endpoint requires streaming."""
@@ -2424,10 +2423,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
                         # false for gpt-5 and gpt-5.1, so those are clamped to 'high' instead.
                         # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        lookup_model = model
-                        while lookup_model.startswith(("openai/", "azure/")):
-                            lookup_model = lookup_model.removeprefix("openai/").removeprefix("azure/")
-                        lookup_model = lookup_model.removesuffix("_thinking")
+                        lookup_model = _strip_openai_azure_prefixes(model).removesuffix("_thinking")
                         try:
                             supports_xhigh = litellm.get_model_info(lookup_model).get(
                                 "supports_xhigh_reasoning_effort"
