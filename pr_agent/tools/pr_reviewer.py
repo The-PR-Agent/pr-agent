@@ -1553,4 +1553,4 @@ class PRReviewer:
         else:
             get_logger().info("Auto-approval option is disabled")
             self.git_provider.publish_comment("Auto-approval option for PR-Agent is disabled. "
-                                              "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/)")
+                                              "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)")
