@@ -135,8 +135,8 @@ def test_pinecone_upsert_passes_batch_size_and_max_concurrency(monkeypatch):
     assert calls["batch_size"] == 100
     assert calls["max_concurrency"] == 10
     assert [vector[0] for vector in calls["vectors"]] == [
-        "example_issue_example-repo",
         "issue_7.issue",
+        "example_issue_example-repo",
     ]
 
 
@@ -446,6 +446,71 @@ def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):
     assert kwargs["metric"] == "cosine"
     assert kwargs["timeout"] == 120
     assert upserted, "expected the upsert to run after index creation"
+
+
+def test_pinecone_interrupted_ingest_without_sentinel_reingests_full(monkeypatch):
+    """An ingest cut short before the sentinel row was written must be re-run in full.
+
+    The sentinel is the last row written, so an index holding the newest issues without a
+    sentinel row proves the previous run was interrupted. The next run has to re-index the
+    whole repo instead of assuming the first indexed issue closes the scan frontier,
+    otherwise the missing older issues stay out of the index forever.
+    """
+    fetches = []
+    upserted = []
+
+    class FakeIndex:
+        def fetch(self, **kwargs):
+            fetches.append(kwargs["ids"])
+            return SimpleNamespace(to_dict=lambda: {"vectors": {}})
+
+        def upsert(self, **kwargs):
+            upserted.append(kwargs["vectors"])
+
+    class FakePineconeClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+
+        def has_index(self, index_name):
+            return True
+
+        def Index(self, name):
+            return FakeIndex()
+
+    class FakeProvider:
+        @staticmethod
+        def supports_issue_indexing():
+            return True
+
+        def __init__(self):
+            self.github_client = SimpleNamespace(
+                get_repo=lambda repo_name: SimpleNamespace(
+                    full_name="Example/Repo",
+                    get_issues=lambda state: [_make_issue(3), _make_issue(2), _make_issue(1)],
+                )
+            )
+
+        def _parse_issue_url(self, issue_url):
+            return "Example/Repo", 1
+
+    fake_pinecone_module = SimpleNamespace(
+        Pinecone=FakePineconeClient,
+        ServerlessSpec=lambda cloud, region: SimpleNamespace(cloud=cloud, region=region),
+    )
+    monkeypatch.setitem(sys.modules, "pinecone", fake_pinecone_module)
+    monkeypatch.setattr(psi, "get_settings", lambda: SettingsStub)
+    monkeypatch.setattr(psi, "get_git_provider", lambda: FakeProvider)
+    _stub_embeddings(monkeypatch)
+
+    psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+
+    assert fetches == [["example_issue_example-repo"]]
+    assert [vector[0] for vector in upserted[0]] == [
+        "issue_3.issue",
+        "issue_2.issue",
+        "issue_1.issue",
+        "example_issue_example-repo",
+    ]
 
 
 def test_vectordb_defaults_to_lancedb():

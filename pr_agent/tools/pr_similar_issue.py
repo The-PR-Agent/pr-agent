@@ -569,7 +569,6 @@ class PRSimilarIssue:
             text="example_issue",
             metadata=Metadata(repo=repo_name_for_index)
         )
-        corpus.append(example_issue_record)
 
         counter = 0
         for issue in issues_list:
@@ -616,6 +615,11 @@ class PRSimilarIssue:
                                                   level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+        # the sentinel row is written last so its presence only signals a completed ingest:
+        # a run interrupted partway will leave no sentinel and the next run re-indexes instead
+        # of trusting a partial newest-first prefix
+        corpus.append(example_issue_record)
         df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
@@ -777,7 +781,6 @@ class PRSimilarIssue:
             text="example_issue",
             metadata=Metadata(repo=repo_name_for_index)
         )
-        corpus.append(example_issue_record)
 
         counter = 0
         for issue in issues_list:
@@ -824,6 +827,11 @@ class PRSimilarIssue:
                                                   level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+        # the sentinel row is written last so its presence only signals a completed ingest:
+        # a run interrupted partway will leave no sentinel and the next run re-indexes instead
+        # of trusting a partial newest-first prefix
+        corpus.append(example_issue_record)
 
         df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
