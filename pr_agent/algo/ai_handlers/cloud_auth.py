@@ -379,6 +379,15 @@ def _require_litellm_interface(interface, name: str, methods=()):
         )
 
 
+def _rebind_globals(native, native_globals):
+    """Rebind a native function onto captured globals, keeping its own defaults."""
+    bound = FunctionType(
+        native.__code__, native_globals, native.__name__, native.__defaults__, native.__closure__,
+    )
+    bound.__kwdefaults__ = copy.copy(native.__kwdefaults__)
+    return bound
+
+
 _azure_oidc_request = ContextVar("pr_agent_azure_oidc_request", default=None)
 _azure_ad_responses_request = ContextVar("pr_agent_azure_ad_responses_request", default=None)
 _azure_oidc_bridge = None
@@ -433,8 +442,7 @@ def _exchange_azure_oidc_token(selector, environment, native=None):
     # and refresh/TTL behavior. Only the outer exchange's inputs are request-owned.
     native_globals["os"] = SimpleNamespace(getenv=captured_getenv)
     native_globals["azure_ad_cache"] = SimpleNamespace(get_cache=get_cache, set_cache=set_cache)
-    exchange = FunctionType(native.__code__, native_globals, native.__name__, native.__defaults__, native.__closure__)
-    exchange.__kwdefaults__ = copy.copy(native.__kwdefaults__)
+    exchange = _rebind_globals(native, native_globals)
     return exchange(
         selector,
         azure_client_id=environment["AZURE_CLIENT_ID"],
@@ -476,11 +484,7 @@ def _azure_oidc_companion_globals(native_globals, context):
         # Retain native secret-selector resolution, but never use the native
         # authority-free provider cache. Credentials retain authority on refresh.
         globals_view = {**original_entra.__globals__, "_cached_entra_id_token_provider": cached}
-        factory = FunctionType(
-            original_entra.__code__, globals_view, original_entra.__name__,
-            original_entra.__defaults__, original_entra.__closure__,
-        )
-        factory.__kwdefaults__ = copy.copy(original_entra.__kwdefaults__)
+        factory = _rebind_globals(original_entra, globals_view)
         return factory(tenant_id, client_id, client_secret, scope)
 
     def password(client_id, azure_username, azure_password, scope="https://cognitiveservices.azure.com/.default"):
@@ -571,11 +575,7 @@ def _install_azure_oidc_bridge():
         native_globals["os"] = SimpleNamespace(getenv=getenv)
         native_globals["get_secret_str"] = get_secret_str
         native_globals["get_azure_ad_token_from_oidc"] = exchange
-        bound = FunctionType(
-            original_resolver.__code__, native_globals, original_resolver.__name__,
-            original_resolver.__defaults__, original_resolver.__closure__,
-        )
-        bound.__kwdefaults__ = copy.copy(original_resolver.__kwdefaults__)
+        bound = _rebind_globals(original_resolver, native_globals)
         return bound(litellm_params)
 
     @wraps(original_resolver)
@@ -619,11 +619,7 @@ def _install_azure_oidc_bridge():
         ):
             return original_initialize(*args, **kwargs)
         native_globals = _azure_oidc_companion_globals(original_initialize.__globals__, context)
-        factory = FunctionType(
-            original_initialize.__code__, native_globals, original_initialize.__name__,
-            original_initialize.__defaults__, original_initialize.__closure__,
-        )
-        factory.__kwdefaults__ = copy.copy(original_initialize.__kwdefaults__)
+        factory = _rebind_globals(original_initialize, native_globals)
         return factory(*args, **kwargs)
 
     @wraps(original_cache_key)
