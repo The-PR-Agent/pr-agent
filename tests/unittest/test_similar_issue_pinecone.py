@@ -114,12 +114,12 @@ def test_pinecone_namespace_does_not_collapse_repo_separators():
 
 
 def test_pinecone_upsert_passes_batch_size_and_max_concurrency(monkeypatch):
-    calls = {}
+    upsert_calls = []
     pinecone_namespace = psi._pinecone_namespace("Example/Repo")
 
     class FakeIndex:
         def upsert(self, **kwargs):
-            calls.update(kwargs)
+            upsert_calls.append(kwargs)
 
     tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
@@ -131,13 +131,14 @@ def test_pinecone_upsert_passes_batch_size_and_max_concurrency(monkeypatch):
         upsert=True,
     )
 
-    assert calls["namespace"] == pinecone_namespace
-    assert calls["batch_size"] == 100
-    assert calls["max_concurrency"] == 10
-    assert [vector[0] for vector in calls["vectors"]] == [
-        "issue_7.issue",
-        "example_issue_example-repo",
+    assert upsert_calls[0]["namespace"] == pinecone_namespace
+    assert upsert_calls[0]["batch_size"] == 100
+    assert upsert_calls[0]["max_concurrency"] == 10
+    assert [vector[0] for vector in upsert_calls[0]["vectors"]] == ["issue_7.issue"]
+    assert [vector[0] for vector in upsert_calls[1]["vectors"]] == [
+        "example_issue_example-repo"
     ]
+    assert "batch_size" not in upsert_calls[1]
 
 
 def test_pinecone_existing_index_fetches_from_repo_namespace(monkeypatch):
@@ -449,7 +450,7 @@ def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):
 
 
 def test_pinecone_interrupted_ingest_without_sentinel_reingests_full(monkeypatch):
-    """An ingest cut short before the sentinel row was written must be re-run in full.
+    """Re-run the full ingest when an interrupted run left no sentinel.
 
     The sentinel is the last row written, so an index holding the newest issues without a
     sentinel row proves the previous run was interrupted. The next run has to re-index the
@@ -509,8 +510,41 @@ def test_pinecone_interrupted_ingest_without_sentinel_reingests_full(monkeypatch
         "issue_3.issue",
         "issue_2.issue",
         "issue_1.issue",
-        "example_issue_example-repo",
     ]
+    assert [vector[0] for vector in upserted[1]] == ["example_issue_example-repo"]
+
+
+def test_pinecone_failed_issue_batch_skips_sentinel_upsert(monkeypatch):
+    """Write no completion sentinel when the issue-batch upsert fails.
+
+    The sentinel is submitted in a separate call after the batched issue upsert, so an
+    exception from that upsert must abort the run and leave the marker absent.
+    """
+    upsert_calls = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            upsert_calls.append(kwargs)
+            if not kwargs["vectors"][0][0].startswith("example_issue_"):
+                raise RuntimeError("issue batch failed")
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+    assert len(upsert_calls) == 1
+    assert not any(
+        vector[0].startswith("example_issue_")
+        for call in upsert_calls
+        for vector in call["vectors"]
+    )
 
 
 def test_vectordb_defaults_to_lancedb():

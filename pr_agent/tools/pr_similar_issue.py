@@ -633,19 +633,32 @@ class PRSimilarIssue:
             (row["id"], row["values"], row["metadata"])
             for row in df.to_dict(orient="records")
         ]
+        sentinel_vector = next(
+            vector for vector in vectors
+            if vector[0] == f"example_issue_{repo_name_for_index}"
+        )
+        issue_vectors = [vector for vector in vectors if vector[0] != sentinel_vector[0]]
         if not upsert:
             get_logger().info('Creating index from scratch...')
             self.pc.create_index(name=self.index_name, dimension=len(embeds[0]), metric="cosine", spec=self.pc_spec,
                                  timeout=120)
-        get_logger().info('Upserting index...')
         self.pinecone_index = self.pc.Index(name=self.index_name)
-        upsert_response = self.pinecone_index.upsert(vectors=vectors,
-                                                     namespace=pinecone_namespace,
-                                                     batch_size=100,
-                                                     max_concurrency=10)
-        _raise_on_pinecone_upsert_errors(upsert_response)
-        _wait_for_pinecone_upsert_readiness(self.pinecone_index, upsert_response,
-                                            namespace=pinecone_namespace, vector_id=vectors[0][0])
+        if issue_vectors:
+            get_logger().info('Upserting index...')
+            upsert_response = self.pinecone_index.upsert(vectors=issue_vectors,
+                                                         namespace=pinecone_namespace,
+                                                         batch_size=100,
+                                                         max_concurrency=10)
+            _raise_on_pinecone_upsert_errors(upsert_response)
+            _wait_for_pinecone_upsert_readiness(self.pinecone_index, upsert_response,
+                                                namespace=pinecone_namespace,
+                                                vector_id=issue_vectors[0][0])
+        # Write the completion sentinel in a separate call only after the issue batches
+        # succeed, so a failed or interrupted ingest leaves no sentinel and the next run
+        # re-indexes instead of trusting a partial newest-first prefix
+        get_logger().info('Writing completion sentinel...')
+        self.pinecone_index.upsert(vectors=[sentinel_vector],
+                                   namespace=pinecone_namespace)
         get_logger().info('Done')
 
     def _table_exists_in_db(self, index_name) -> bool:
@@ -828,7 +841,7 @@ class PRSimilarIssue:
                             )
                             corpus.append(comment_record)
 
-        # the sentinel row is written last so its presence only signals a completed ingest:
+        # Write the sentinel row last so its presence only signals a completed ingest:
         # a run interrupted partway will leave no sentinel and the next run re-indexes instead
         # of trusting a partial newest-first prefix
         corpus.append(example_issue_record)
