@@ -153,14 +153,12 @@ def _wait_for_pinecone_upsert_readiness(pinecone_index, upsert_response, namespa
 
     deadline = time.monotonic() + PINECONE_UPSERT_READY_TIMEOUT_SECONDS
     while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Pinecone upsert was not query-ready after {PINECONE_UPSERT_READY_TIMEOUT_SECONDS}s")
         fetch_response = pinecone_index.fetch(ids=[vector_id], namespace=namespace)
         if _pinecone_response_is_reconciled(fetch_response, target_lsn):
             return
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(f"Pinecone upsert was not query-ready after {PINECONE_UPSERT_READY_TIMEOUT_SECONDS}s")
-        time.sleep(min(PINECONE_UPSERT_READY_POLL_SECONDS, remaining))
+        time.sleep(PINECONE_UPSERT_READY_POLL_SECONDS)
 
 
 def _provider_supports_issue_indexing() -> bool:

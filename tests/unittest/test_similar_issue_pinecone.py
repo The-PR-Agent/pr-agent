@@ -388,6 +388,35 @@ def test_pinecone_upsert_wait_supports_dict_response_info():
     assert fake_index.fetch_calls == 1
 
 
+def test_pinecone_upsert_wait_checks_deadline_before_fetch(monkeypatch):
+    state = {"t": 0.0}
+    fetched = []
+
+    class FakeIndex:
+        def fetch(self, **kwargs):
+            fetched.append(kwargs)
+            return {"response_info": {"lsn_reconciled": 1}}
+
+    monkeypatch.setattr(psi.time, "monotonic", lambda: state["t"])
+    monkeypatch.setattr(
+        psi.time,
+        "sleep",
+        lambda seconds: state.__setitem__(
+            "t", state["t"] + psi.PINECONE_UPSERT_READY_TIMEOUT_SECONDS + 1
+        ),
+    )
+
+    with pytest.raises(TimeoutError, match="not query-ready"):
+        psi._wait_for_pinecone_upsert_readiness(
+            FakeIndex(),
+            {"response_info": {"lsn_committed": 10}},
+            namespace="ns",
+            vector_id="example_issue_example-repo",
+        )
+
+    assert len(fetched) == 1
+
+
 def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):
     created = []
     upserted = []
