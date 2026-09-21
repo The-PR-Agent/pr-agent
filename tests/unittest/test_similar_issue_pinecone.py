@@ -24,6 +24,14 @@ class SettingsStub:
         region = "us-east-1"
 
 
+class _SmallWindowSettings(SettingsStub):
+    class pr_similar_issue:
+        skip_comments = True
+        max_issues_to_scan = 2
+        vectordb = "pinecone"
+        force_update_dataset = False
+
+
 class _PandasSeries(list):
     @property
     def values(self):
@@ -645,6 +653,92 @@ def test_pinecone_incremental_backfills_an_older_index_gap(monkeypatch):
         if vector[0] != "example_issue_example-repo"
     }
     assert issue_ids == {"issue_4.issue"}
+
+
+def test_pinecone_incremental_backfills_gap_beyond_the_scan_window(monkeypatch):
+    """Repair a missing issue older than the newest max_issues_to_scan issues.
+
+    The index holds the three newest issues, so a bounded window capped at two issues would
+    stop before ever seeing the missing older one and would log "No new issues to update"
+    on every run. The incremental scan now covers the complete history, so the missing
+    issue_2 is reached and re-indexed.
+    """
+    store = {
+        "issue_5.issue": "example-repo",
+        "issue_4.issue": "example-repo",
+        "issue_3.issue": "example-repo",
+        "example_issue_example-repo": "example-repo",
+    }
+    upserted = []
+
+    class FakeIndex:
+        def fetch(self, **kwargs):
+            id = kwargs["ids"][0]
+            return SimpleNamespace(to_dict=lambda: {
+                "vectors": {"id": {"metadata": {"repo": "example-repo"}}}
+                if id in store else {}
+            })
+
+        def upsert(self, **kwargs):
+            upserted.append(kwargs["vectors"])
+            for vector in kwargs["vectors"]:
+                store[vector[0]] = "example-repo"
+
+        def delete(self, **kwargs):
+            for id in kwargs["ids"]:
+                store.pop(id, None)
+
+    class FakePineconeClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+
+        def has_index(self, index_name):
+            return True
+
+        def Index(self, name):
+            return FakeIndex()
+
+    class FakeProvider:
+        @staticmethod
+        def supports_issue_indexing():
+            return True
+
+        def __init__(self):
+            self.github_client = SimpleNamespace(
+                get_repo=lambda repo_name: SimpleNamespace(
+                    full_name="Example/Repo",
+                    get_issues=lambda state: [
+                        _make_issue(5),
+                        _make_issue(4),
+                        _make_issue(3),
+                        _make_issue(2),
+                    ],
+                )
+            )
+
+        def _parse_issue_url(self, issue_url):
+            return "Example/Repo", 1
+
+    fake_pinecone_module = SimpleNamespace(
+        Pinecone=FakePineconeClient,
+        ServerlessSpec=lambda cloud, region: SimpleNamespace(cloud=cloud, region=region),
+    )
+    monkeypatch.setitem(sys.modules, "pinecone", fake_pinecone_module)
+    monkeypatch.setattr(psi, "get_settings", lambda: _SmallWindowSettings)
+    monkeypatch.setattr(psi, "get_git_provider", lambda: FakeProvider)
+    _stub_embeddings(monkeypatch)
+
+    psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+
+    assert "issue_2.issue" in store
+    assert store["example_issue_example-repo"] == "example-repo"
+    issue_ids = {
+        vector[0]
+        for call in upserted
+        for vector in call
+        if vector[0] != "example_issue_example-repo"
+    }
+    assert issue_ids == {"issue_2.issue"}
 
 
 def test_pinecone_failed_incremental_write_triggers_full_reingest(monkeypatch):

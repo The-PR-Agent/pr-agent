@@ -170,6 +170,14 @@ class SettingsStub:
         api_key = "qdrant-key"
 
 
+class _SmallWindowSettings(SettingsStub):
+    class pr_similar_issue:
+        skip_comments = True
+        max_issues_to_scan = 2
+        vectordb = "qdrant"
+        force_update_dataset = False
+
+
 class FakeProvider:
     @staticmethod
     def supports_issue_indexing():
@@ -254,6 +262,35 @@ def test_qdrant_incremental_backfills_an_older_index_gap(monkeypatch):
     assert len(client.upserts) == 1
     assert client.upserts[0][:-1] == ["issue_4.issue"]
     assert "issue_4.issue" in client.ids
+    assert "example_issue_example-repo" in client.ids
+
+
+def test_qdrant_incremental_backfills_gap_beyond_the_scan_window(monkeypatch):
+    """Repair a missing issue older than the newest max_issues_to_scan issues.
+
+    The collection holds the three newest issues, so a bounded window capped at two issues
+    would stop before ever seeing the missing older one and would report no updates on
+    every run. The incremental scan now covers the complete history, so the missing
+    issue_2 is reached and re-indexed.
+    """
+    client = _StatefulQdrantClient(ids={
+        "example_issue_example-repo",
+        "issue_5.issue",
+        "issue_4.issue",
+        "issue_3.issue",
+    })
+    _stub_constructor_dependencies(
+        monkeypatch,
+        client,
+        issues=[_make_issue(5), _make_issue(4), _make_issue(3), _make_issue(2)],
+    )
+    monkeypatch.setattr(psi, "get_settings", lambda: _SmallWindowSettings)
+
+    psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+
+    assert len(client.upserts) == 1
+    assert client.upserts[0][:-1] == ["issue_2.issue"]
+    assert "issue_2.issue" in client.ids
     assert "example_issue_example-repo" in client.ids
 
 
