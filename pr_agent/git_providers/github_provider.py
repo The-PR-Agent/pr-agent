@@ -893,7 +893,7 @@ class GithubProvider(GitProvider):
 
             return thread_comments
 
-        except (GithubException, RequestException) as e:
+        except (GithubException, RequestException, AttributeError) as e:
             get_logger().exception("Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
             return []
 
@@ -1242,11 +1242,18 @@ class GithubProvider(GitProvider):
 
     def get_user_id(self):
         if not self.github_user_id:
+            self.github_user_id = ""
             try:
-                self.github_user_id = self.github_client.get_user().raw_data['login']
-            except (GithubException, RequestException, KeyError) as e:
+                user = self.github_client.get_user()
+            except (GithubException, RequestException) as e:
                 get_logger().warning(f"Could not resolve the GitHub user id: {e}")
-                self.github_user_id = ""
+                return self.github_user_id
+            try:
+                # Read the payload under its own handler: a malformed body is a response-shape
+                # problem, and catching it here keeps a programming error in the call above visible.
+                self.github_user_id = user.raw_data['login']
+            except (KeyError, TypeError, AttributeError) as e:
+                get_logger().warning(f"Could not read the login from the user payload: {e}")
         return self.github_user_id
 
     def get_notifications(self, since: datetime):
@@ -1301,7 +1308,7 @@ class GithubProvider(GitProvider):
                 get_logger().debug("No local .pr_agent.toml found; using existing settings")
             else:
                 get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
-        except (RequestException, AttributeError) as e:
+        except (RequestException, AttributeError, binascii.Error) as e:
             get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
 
         return settings_files if settings_files else ""
@@ -1736,17 +1743,31 @@ class GithubProvider(GitProvider):
             get_logger().warning(f"Failed to publish labels, error: {e}")
 
     def get_pr_labels(self, update=False):
-        try:
-            if not update:
-                labels =self.pr.labels
+        # Fetch and read under separate handlers: the response-shape errors below would otherwise
+        # also swallow the same types raised by the fetch, where they mean a programming error.
+        if not update:
+            try:
+                labels = self.pr.labels
+            except (GithubException, RequestException) as e:
+                get_logger().exception(f"Failed to get labels, error: {e}")
+                return []
+            try:
                 return [label.name for label in labels]
-            else: # obtain the latest labels. Maybe they changed while the AI was running
-                headers, labels = self.pr._requester.requestJsonAndCheck(
-                    "GET", f"{self.pr.issue_url}/labels")
-                return [label['name'] for label in labels]
+            except (TypeError, AttributeError) as e:
+                get_logger().exception(f"Failed to read the labels payload, error: {e}")
+                return []
 
-        except (GithubException, RequestException, KeyError, TypeError) as e:
+        # obtain the latest labels. Maybe they changed while the AI was running
+        try:
+            headers, labels = self.pr._requester.requestJsonAndCheck(
+                "GET", f"{self.pr.issue_url}/labels")
+        except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to get labels, error: {e}")
+            return []
+        try:
+            return [label['name'] for label in labels]
+        except (KeyError, TypeError) as e:
+            get_logger().exception(f"Failed to read the labels payload, error: {e}")
             return []
 
     def get_commit_messages(self) -> str:
@@ -1996,7 +2017,7 @@ class GithubProvider(GitProvider):
                             else:
                                 get_logger().error(f"Comment is not inside a valid hunk, "
                                                    f"start_line={suggestion['relevant_lines_start']}, end_line={suggestion['relevant_lines_end']}, file={file.filename}")
-            except (KeyError, TypeError, IndexError) as e:
+            except (KeyError, TypeError, IndexError, AttributeError) as e:
                 get_logger().error(f"Failed to process patch for committable comment, error: {e}")
         return code_suggestions_copy
 

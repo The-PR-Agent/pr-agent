@@ -229,3 +229,26 @@ def test_get_commit_messages_records_why_the_result_is_empty(error):
 
     assert messages == ""
     assert any("Failed to get commit messages" in line for line in captured)
+
+
+def test_get_user_id_tolerates_a_payload_without_raw_data():
+    """Read the payload under its own handler: a body that is not an object is a shape problem,
+    not the programming error that `get_user` raising the same type would be."""
+    provider = _make_provider()
+    provider.github_client = SimpleNamespace(get_user=lambda: SimpleNamespace(raw_data=None))
+
+    assert provider.get_user_id() == ""
+
+
+def test_get_pr_labels_tolerates_a_payload_of_non_objects():
+    """`label["name"]` on a string raises TypeError; the fetch above still propagates it."""
+    provider = _make_provider(_Requester(response=({}, ["not-an-object"])))
+
+    assert provider.get_pr_labels(update=True) == []
+
+
+def test_get_pr_labels_tolerates_labels_without_a_name():
+    """The cached path reads `label.name`, so an entry without one is a shape problem too."""
+    provider = _make_provider(pr_extra={"labels": [SimpleNamespace()]})
+
+    assert provider.get_pr_labels() == []
