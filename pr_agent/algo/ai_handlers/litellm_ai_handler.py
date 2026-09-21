@@ -2410,18 +2410,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                 is_gpt6_astra = self._is_gpt6_astra_model(model)
                 is_gpt5_model = self._is_gpt5_model(openrouter_model or model)
                 if is_gpt5_model or is_gpt6_astra:
-                    # Use configured reasoning_effort or default to MEDIUM
-                    config_effort = self._default_reasoning_effort
-                    try:
-                        ReasoningEffort(config_effort)
-                        effort = config_effort
-                    except (ValueError, TypeError):
-                        effort = ReasoningEffort.MEDIUM.value
-                        if config_effort is not None:
-                            get_logger().warning(
-                                f"Invalid reasoning_effort '{config_effort}' in config. "
-                                f"Using default '{effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
-                            )
+                    # Use configured reasoning_effort or default to MEDIUM.
+                    # The shared resolver's Grok clamp is inert here:
+                    # no GPT-5/Astra id is registered in GROK_REASONING_EFFORT_LEVELS.
+                    effort = self._resolve_reasoning_effort(model, self._default_reasoning_effort)
 
                     if is_gpt6_astra and effort in (ReasoningEffort.NONE.value, ReasoningEffort.MINIMAL.value):
                         get_logger().info(f"GPT-6 Astra does not support reasoning_effort='{effort}'; using 'low'")
