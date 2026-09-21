@@ -2413,8 +2413,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                 is_gpt5_model = self._is_gpt5_model(openrouter_model or model)
                 if is_gpt5_model or is_gpt6_astra:
                     # Use configured reasoning_effort or default to MEDIUM.
-                    # The shared resolver's Grok clamp is inert here:
-                    # no GPT-5/Astra id is registered in GROK_REASONING_EFFORT_LEVELS.
+                    # Ignore the shared resolver's Grok clamp here
+                    # because no GPT-5/Astra ID is registered in GROK_REASONING_EFFORT_LEVELS.
                     effort = self._resolve_reasoning_effort(model, self._default_reasoning_effort)
 
                     if is_gpt6_astra and effort in (ReasoningEffort.NONE.value, ReasoningEffort.MINIMAL.value):
