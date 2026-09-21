@@ -499,6 +499,40 @@ def test_constructor_second_repo_joins_existing_table(monkeypatch):
     assert sentinels == ["example_issue_org-repo-a", "example_issue_org-repo-b"]
 
 
+def test_constructor_backfills_an_older_index_gap(monkeypatch):
+    """A normal constructor run re-adds an older issue missing below the newest indexed one."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable([
+        _lancedb_row("issue_6.issue", "org-repo-b"),
+        _lancedb_row("example_issue_org-repo-b", "org-repo-b"),
+    ])
+    _install_fake_pandas(monkeypatch)
+    _install_fake_lancedb(monkeypatch, fake_db)
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: _LanceSettings)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_similar_issue._provider_supports_issue_indexing", lambda: True
+    )
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_similar_issue.TokenHandler",
+        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
+    )
+
+    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    ids = [row["id"] for row in fake_db.table.rows]
+    assert "issue_5.issue" in ids
+    assert ids.count("example_issue_org-repo-b") == 1
+    assert fake_db.table.add_calls == [1]
+
+    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    ids = [row["id"] for row in fake_db.table.rows]
+    assert ids.count("issue_5.issue") == 1
+    assert fake_db.table.add_calls == [1]  # gap filled, nothing new to add
+
+
 def test_concurrent_first_runs_do_not_duplicate_rows(monkeypatch):
     """Overlapping first runs for the same repo leave a single set of rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])

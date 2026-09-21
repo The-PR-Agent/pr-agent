@@ -1,7 +1,9 @@
-"""The qdrant ingest path submits the repo sentinel only after all issue points."""
+"""The qdrant ingest path keeps the repo sentinel consistent with every completed write."""
 import sys
 import types
 from types import SimpleNamespace
+
+import pytest
 
 import pr_agent.tools.pr_similar_issue as psi
 
@@ -62,18 +64,59 @@ class _PointStruct:
 class FakeQdrantClient:
     def __init__(self, url=None, api_key=None, **kwargs):
         self.upserts = []
+        self.deletes = []
 
     def collection_exists(self, collection_name=None):
         return True
 
     def count(self, collection_name=None, count_filter=None):
-        return SimpleNamespace(count=0)
+        return SimpleNamespace(count=1)
 
     def create_collection(self, **kwargs):
         pass
 
     def upsert(self, collection_name=None, points=None, **kwargs):
         self.upserts.append((collection_name, points))
+
+    def delete(self, collection_name=None, points_selector=None, **kwargs):
+        sentinel_id = None
+        for condition in getattr(points_selector, "must", ()):
+            if condition["key"] == "id":
+                sentinel_id = condition["match"].value
+        self.deletes.append(sentinel_id)
+
+
+class _StatefulQdrantClient:
+    """Mirrors qdrant behaviour: store indexed ids and honor sentinel filters."""
+
+    def __init__(self, ids=()):
+        self.ids = set(ids)
+        self.upserts = []
+        self.deletes = []
+
+    def collection_exists(self, collection_name=None):
+        return True
+
+    def count(self, collection_name=None, count_filter=None):
+        sentinel_id = None
+        for condition in getattr(count_filter, "must", ()):
+            if condition["key"] == "id":
+                sentinel_id = condition["match"].value
+        return SimpleNamespace(count=1 if sentinel_id in self.ids else 0)
+
+    def upsert(self, collection_name=None, points=None, **kwargs):
+        self.upserts.append([point.payload["id"] for point in points])
+        for point in points:
+            self.ids.add(point.payload["id"])
+
+    def delete(self, collection_name=None, points_selector=None, **kwargs):
+        sentinel_id = None
+        for condition in getattr(points_selector, "must", ()):
+            if condition["key"] == "id":
+                sentinel_id = condition["match"].value
+        if sentinel_id is not None:
+            self.ids.discard(sentinel_id)
+        self.deletes.append(sentinel_id)
 
 
 def _install_fakes(monkeypatch, client):
@@ -132,11 +175,12 @@ class FakeProvider:
     def supports_issue_indexing():
         return True
 
-    def __init__(self):
+    def __init__(self, issues=None):
+        self._issues = list(issues) if issues is not None else [_make_issue(1)]
         self.github_client = SimpleNamespace(
             get_repo=lambda repo_name: SimpleNamespace(
                 full_name="Example/Repo",
-                get_issues=lambda state: [_make_issue(2), _make_issue(1)],
+                get_issues=lambda state: self._issues,
             )
         )
 
@@ -144,10 +188,14 @@ class FakeProvider:
         return "Example/Repo", 1
 
 
-def _stub_constructor_dependencies(monkeypatch, client):
+def _stub_constructor_dependencies(monkeypatch, client, issues):
     _install_fakes(monkeypatch, client)
     monkeypatch.setattr(psi, "get_settings", lambda: SettingsStub)
-    monkeypatch.setattr(psi, "get_git_provider", lambda: FakeProvider)
+
+    def provider_factory():
+        return FakeProvider(issues)
+
+    monkeypatch.setattr(psi, "get_git_provider", lambda: provider_factory)
     monkeypatch.setattr(psi, "_provider_supports_issue_indexing", lambda: True)
     monkeypatch.setattr(
         psi,
@@ -163,6 +211,7 @@ def test_qdrant_sentinel_is_the_final_point_of_a_full_ingest(monkeypatch):
 
     tool._update_qdrant_with_issues([_make_issue(2), _make_issue(1)], "example-repo", ingest=True)
 
+    assert client.deletes == ["example_issue_example-repo"]
     assert len(client.upserts) == 1
     _, points = client.upserts[0]
     ids = [point.payload["id"] for point in points]
@@ -177,13 +226,65 @@ def test_qdrant_collection_without_sentinel_reingests_full(monkeypatch):
     An interrupted full ingest leaves the collection populated but sentinel-free, so the
     constructor has to take the full-ingest path and finish with the sentinel point last.
     """
-    client = FakeQdrantClient()
-    _stub_constructor_dependencies(monkeypatch, client)
+    client = _StatefulQdrantClient(ids={"issue_5.issue"})
+    _stub_constructor_dependencies(
+        monkeypatch, client, issues=[_make_issue(5), _make_issue(4)]
+    )
 
     psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
 
     assert len(client.upserts) == 1
-    _, points = client.upserts[0]
-    ids = [point.payload["id"] for point in points]
-    assert ids[:-1] == ["issue_2.issue", "issue_1.issue"]
-    assert ids[-1] == "example_issue_example-repo"
+    assert client.upserts[0][-1] == "example_issue_example-repo"
+    assert "example_issue_example-repo" in client.ids
+
+
+def test_qdrant_incremental_backfills_an_older_index_gap(monkeypatch):
+    """Keep scanning past indexed issues and backfill an older missing issue.
+
+    With the sentinel and the newest issue already indexed, a deleted older issue must be
+    re-added by a normal incremental run, without a forced refresh.
+    """
+    client = _StatefulQdrantClient(ids={"example_issue_example-repo", "issue_5.issue"})
+    _stub_constructor_dependencies(
+        monkeypatch, client, issues=[_make_issue(5), _make_issue(4)]
+    )
+
+    psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+
+    assert len(client.upserts) == 1
+    assert client.upserts[0][:-1] == ["issue_4.issue"]
+    assert "issue_4.issue" in client.ids
+    assert "example_issue_example-repo" in client.ids
+
+
+def test_qdrant_failed_write_then_full_reingest(monkeypatch):
+    """Re-ingest in full when a failed write revoked the sentinel.
+
+    The sentinel is deleted before writing, so a failed incremental write leaves the
+    collection sentinel-free and the next constructor takes the full-ingest path.
+    """
+    client = _StatefulQdrantClient(ids={"example_issue_example-repo", "issue_5.issue"})
+    _stub_constructor_dependencies(
+        monkeypatch, client, issues=[_make_issue(6), _make_issue(5)]
+    )
+    original_upsert = client.upsert
+
+    def failing_upsert(collection_name=None, points=None, **kwargs):
+        ids = [point.payload["id"] for point in points]
+        if "example_issue_" not in ids[0]:
+            raise RuntimeError("point write failed")
+        original_upsert(collection_name=collection_name, points=points, **kwargs)
+
+    client.upsert = failing_upsert
+
+    with pytest.raises(RuntimeError):
+        psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+
+    assert "example_issue_example-repo" not in client.ids
+
+    client.upsert = original_upsert
+    psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+
+    assert client.upserts[-1][-1] == "example_issue_example-repo"
+    assert "example_issue_example-repo" in client.ids
+    assert {"issue_6.issue", "issue_5.issue"} <= client.ids

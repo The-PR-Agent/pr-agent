@@ -250,22 +250,23 @@ class PRSimilarIssue:
                 self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
+                scanned = 0
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
+                    if scanned >= self.max_issues_to_scan:
+                        get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
+                        break
+                    scanned += 1
                     issue_str, comments, number = self._process_issue(issue)
                     issue_key = f"issue_{number}"
                     id = issue_key + "." + "issue"
+                    # keep scanning past already-indexed issues so deletions or gaps below the
+                    # newest indexed issue are found and backfilled within the scan range
                     res = self.pinecone_index.fetch(ids=[id], namespace=self.pinecone_namespace).to_dict()
-                    is_new_issue = True
-                    for vector in res["vectors"].values():
-                        if vector['metadata']['repo'] == repo_name_for_index:
-                            is_new_issue = False
-                            break
-                    if is_new_issue:
+                    if not any(vector['metadata']['repo'] == repo_name_for_index
+                               for vector in res["vectors"].values()):
                         issues_to_update.append(issue)
-                    else:
-                        break
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -314,22 +315,22 @@ class PRSimilarIssue:
             else:  # update table if needed
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
+                scanned = 0
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
+                    if scanned >= self.max_issues_to_scan:
+                        get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
+                        break
+                    scanned += 1
                     issue_str, comments, number = self._process_issue(issue)
                     issue_key = f"issue_{number}"
                     issue_id = issue_key + "." + "issue"
+                    # keep scanning past already-indexed issues so deletions or gaps below the
+                    # newest indexed issue are found and backfilled within the scan range
                     res = self.table.search().limit(len(self.table)).where(f"id='{issue_id}'").to_list()
-                    is_new_issue = True
-                    for r in res:
-                        if r['metadata']['repo'] == repo_name_for_index:
-                            is_new_issue = False
-                            break
-                    if is_new_issue:
+                    if not any(r['metadata']['repo'] == repo_name_for_index for r in res):
                         issues_to_update.append(issue)
-                    else:
-                        break
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -396,12 +397,19 @@ class PRSimilarIssue:
             else:
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
+                scanned = 0
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
+                    if scanned >= self.max_issues_to_scan:
+                        get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
+                        break
+                    scanned += 1
                     issue_str, comments, number = self._process_issue(issue)
                     issue_key = f"issue_{number}"
                     point_id = issue_key + "." + "issue"
+                    # keep scanning past already-indexed issues so deletions or gaps below the
+                    # newest indexed issue are found and backfilled within the scan range
                     response = self.qdrant.count(
                         collection_name=self.qdrant_collection_name,
                         count_filter=Filter(must=[
@@ -411,8 +419,6 @@ class PRSimilarIssue:
                     )
                     if response.count == 0:
                         issues_to_update.append(issue)
-                    else:
-                        break
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -643,6 +649,11 @@ class PRSimilarIssue:
             self.pc.create_index(name=self.index_name, dimension=len(embeds[0]), metric="cosine", spec=self.pc_spec,
                                  timeout=120)
         self.pinecone_index = self.pc.Index(name=self.index_name)
+        # Revoke the completion sentinel before writing, so a partial write (full or
+        # incremental) can never leave the repository marked complete; the sentinel is
+        # recreated below only after every issue batch succeeded
+        self.pinecone_index.delete(ids=[f"example_issue_{repo_name_for_index}"],
+                                   namespace=pinecone_namespace)
         if issue_vectors:
             get_logger().info('Upserting index...')
             upsert_response = self.pinecone_index.upsert(vectors=issue_vectors,
@@ -783,7 +794,7 @@ class PRSimilarIssue:
             import uuid
 
             import pandas as pd
-            from qdrant_client.models import PointStruct
+            from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
         except Exception:
             raise
 
@@ -873,6 +884,16 @@ class PRSimilarIssue:
                     },
                 )
             )
+        # Revoke the completion sentinel before writing, so a partial write (full or
+        # incremental) can never leave the repository marked complete; the sentinel is
+        # recreated below only after every issue point was upserted
+        self.qdrant.delete(
+            collection_name=self.qdrant_collection_name,
+            points_selector=Filter(must=[
+                FieldCondition(key="metadata.repo", match=MatchValue(value=repo_name_for_index)),
+                FieldCondition(key="id", match=MatchValue(value=f"example_issue_{repo_name_for_index}")),
+            ]),
+        )
         self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=points)
         get_logger().info('Done')
 
