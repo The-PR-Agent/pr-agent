@@ -95,7 +95,7 @@ def _expanded_skill_paths(paths: List[str]) -> Tuple[str, ...]:
 
 
 def _count_tokens(text: str) -> int:
-    return len(TokenEncoder.get_token_encoder().encode(text))
+    return len(TokenEncoder.get_token_encoder().encode(text, disallowed_special=()))
 
 
 def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
