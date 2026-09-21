@@ -422,3 +422,29 @@ def test_an_app_that_never_resolves_stays_unproven(monkeypatch):
     assert provider._agent_login() == ""
     with pytest.raises(RuntimeError):
         provider.is_comment_authored_by_pr_agent(SimpleNamespace(user=SimpleNamespace(login="someone")))
+
+
+@pytest.mark.parametrize(
+    ("private_key", "reason"),
+    [
+        pytest.param("", "private_key must not be empty", id="empty-key"),
+        pytest.param(None, "either private_key or sign_func must be given", id="missing-key"),
+    ],
+)
+def test_an_unusable_app_key_leaves_the_login_unresolved(monkeypatch, private_key, reason):
+    """A blank or missing `github.private_key` must degrade, not end the run.
+
+    `Auth.AppAuth` validates its arguments with bare asserts, so this fails at construction
+    rather than while signing, which is where the JWT errors are raised.
+    """
+    monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
+    provider = GithubProvider(pr_url=None)
+    provider.deployment_type = "app"
+    monkeypatch.setattr(get_settings(), "github", SimpleNamespace(
+        app_id="1", private_key=private_key, deployment_type="app"), raising=False)
+
+    with pytest.raises(AssertionError, match=reason):
+        Auth.AppAuth(app_id="1", private_key=private_key)
+
+    assert provider._resolve_app_login() == ""
+    assert getattr(provider, "_app_login", None) is None

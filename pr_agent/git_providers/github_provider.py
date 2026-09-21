@@ -568,9 +568,11 @@ class GithubProvider(GitProvider):
                 # behaviour this change exists to remove.
                 self._app_login = f"{slug}[bot]"
                 return self._app_login
-        except (GithubException, RequestException, PyJWTError, AttributeError, KeyError) as e:
+        except (GithubException, RequestException, PyJWTError, AssertionError, AttributeError, KeyError) as e:
             # Keep PyJWTError: a malformed configured private key fails while signing the app JWT,
             # not at the API call, and must leave the login unresolved rather than end the run.
+            # AssertionError: Auth.AppAuth validates app_id and private_key with bare asserts, so
+            # an empty or missing setting fails at construction, before any of the above can apply.
             get_logger().warning(f"Could not resolve the GitHub App login: {e}")
         return ""
 
