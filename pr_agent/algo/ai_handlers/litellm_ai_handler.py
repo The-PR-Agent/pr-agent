@@ -1196,6 +1196,21 @@ class LiteLLMAIHandler(BaseAiHandler):
         transport_provider_cache[model] = transport_provider
         return resolved_provider
 
+    def _resolve_configured_request_provider(self, model: str, custom_llm_provider: str) -> str | None:
+        """Resolve the request provider, preferring an explicit custom provider over model inference."""
+        if custom_llm_provider:
+            return PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
+        return self._resolve_request_provider(model)
+
+    @staticmethod
+    def _request_deployment_id(
+        configured_deployment_id: str | None, request_provider: str | None, routed_model: str,
+    ) -> str | None:
+        """Return the Azure deployment ID only for Azure chat requests."""
+        if request_provider == "azure" and not routed_model.startswith("azure_text/"):
+            return configured_deployment_id
+        return None
+
     def _resolve_request_transport_provider(self, model: str) -> str | None:
         """Resolve the unaliased provider LiteLLM uses to select a transport."""
         self._resolve_request_provider(model)
@@ -2011,11 +2026,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         configured_deployment_id = self.deployment_id
         routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
         completion_model = self._normalize_gpt5_model_for_request(routed_model, model, custom_llm_provider)
-        request_provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(routed_model)
-        )
+        request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
         openrouter_model = self._canonical_openrouter_model(completion_model, request_provider)
         return self._resolve_output_token_limit(completion_model, openrouter_model)
 
@@ -2028,11 +2039,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         default_output_tokens = self._coerce_token_value(default_output_tokens)
         custom_llm_provider = self._custom_llm_provider
         routed_model = self._route_model_for_request(model, custom_llm_provider, self.deployment_id)
-        request_provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(routed_model)
-        )
+        request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
         openrouter_model = self._canonical_openrouter_model(
             routed_model, request_provider
         )
@@ -2354,16 +2361,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         user_model = model
         routed_model = self._route_model_for_request(user_model, custom_llm_provider, configured_deployment_id)
         completion_model = self._normalize_gpt5_model_for_request(routed_model, user_model, custom_llm_provider)
-        request_provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(routed_model)
-        )
-        deployment_id = (
-            configured_deployment_id
-            if request_provider == "azure" and not routed_model.startswith("azure_text/")
-            else None
-        )
+        request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
+        deployment_id = self._request_deployment_id(configured_deployment_id, request_provider, routed_model)
         if img_path:
             try:
                 # Finish external image I/O before validating mutable credential fallbacks.
@@ -2744,16 +2743,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         custom_llm_provider = self._custom_llm_provider
         configured_deployment_id = self.deployment_id
         routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
-        request_provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(routed_model)
-        )
-        deployment_id = (
-            configured_deployment_id
-            if request_provider == "azure" and not routed_model.startswith("azure_text/")
-            else None
-        )
+        request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
+        deployment_id = self._request_deployment_id(configured_deployment_id, request_provider, routed_model)
         async with self._snapshot_aws_request_credentials(self._should_use_aws_imds(request_provider)) as (
             aws_request_credentials,
             _,
@@ -2832,11 +2823,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Call LiteLLM with any provider compatibility context scoped to this task."""
         _completion = _completion or acompletion
         custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
-        provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(kwargs.get("model"))
-        )
+        provider = self._resolve_configured_request_provider(kwargs.get("model"), custom_llm_provider)
         transport = (
             custom_llm_provider or self._resolve_request_transport_provider(kwargs.get("model")) or provider
         )
