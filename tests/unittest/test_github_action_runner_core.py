@@ -333,7 +333,9 @@ async def test_review_submission_runs_configured_commands(monkeypatch, tmp_path,
             "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
             "GITHUB_ACTION_CONFIG.REVIEW_STATES": '["changes_requested"]',
             "GITHUB_ACTION_CONFIG.REVIEW_AUTHOR_TYPES": '["User"]',
-            "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS": '["/review"]',
+            "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS": json.dumps([
+                "/review --pr_reviewer.extra_instructions='be concise please'"
+            ]),
             "GITHUB_ACTION_CONFIG.FEEDBACK_ON_DRAFT_PR": False,
         }
         return values.get(key, default)
@@ -342,7 +344,10 @@ async def test_review_submission_runs_configured_commands(monkeypatch, tmp_path,
 
     await github_action_runner.run_action()
 
-    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
+    assert handled == [(
+        "https://api.github.com/repos/org/repo/pulls/1",
+        ["/review", '--pr_reviewer.extra_instructions="be concise please"'],
+    )]
 
 
 @pytest.mark.asyncio
@@ -445,7 +450,7 @@ async def test_action_review_config_falls_back_to_app_and_overrides_it(
         app_review_states=["changes_requested"],
         app_review_commands=["/app-review"],
     )
-    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/app-review")]
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", ["/app-review"])]
 
     handled = await _run_review_action_with_settings(
         monkeypatch,
@@ -457,7 +462,7 @@ async def test_action_review_config_falls_back_to_app_and_overrides_it(
             "review_commands": ["/action-review"],
         },
     )
-    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/action-review")]
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", ["/action-review"])]
 
 
 @pytest.mark.asyncio
@@ -513,7 +518,9 @@ def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_tri
 @pytest.mark.asyncio
 async def test_synchronize_event_triggers_push_commands(monkeypatch, tmp_path, restore_github_settings):
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/describe", "/improve"])
+    _patch_synchronize_deps(monkeypatch, handled, [
+        '/describe --pr_description.extra_instructions="true"', ["/improve", "literal 'text'"]
+    ])
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
@@ -521,9 +528,27 @@ async def test_synchronize_event_triggers_push_commands(monkeypatch, tmp_path, r
     await github_action_runner.run_action()
 
     assert handled == [
-        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
-        ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/describe", '--pr_description.extra_instructions="true"']),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve", "literal 'text'"]),
     ]
+
+
+@pytest.mark.parametrize("command", ['/review --pr_reviewer.extra_instructions="unfinished', "  "])
+def test_invalid_configured_command_fails_action_but_continues(
+    monkeypatch, tmp_path, restore_github_settings, command
+):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, [command, "/review"])
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    with pytest.raises(SystemExit) as error:
+        github_action_runner.main()
+
+    assert error.value.code == 1
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", ["/review"])]
 
 def test_action_exits_nonzero_when_command_fails_and_continues(
     monkeypatch, tmp_path, restore_github_settings
@@ -534,7 +559,7 @@ def test_action_exits_nonzero_when_command_fails_and_continues(
     class FakeAgent:
         async def handle_request(self, url, body, notify=None):
             handled.append((url, body))
-            return body != "/review"
+            return body != ["/review"]
 
     monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
     monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
@@ -547,8 +572,8 @@ def test_action_exits_nonzero_when_command_fails_and_continues(
 
     assert exc_info.value.code == 1
     assert handled == [
-        ("https://api.github.com/repos/org/repo/pulls/1", "/review"),
-        ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/review"]),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve"]),
     ]
 
 @pytest.mark.asyncio
@@ -591,8 +616,8 @@ async def test_synchronize_event_triggers_push_commands_on_pull_request_target(
     await github_action_runner.run_action()
 
     assert handled == [
-        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
-        ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/describe"]),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve"]),
     ]
 
 
@@ -643,7 +668,7 @@ async def test_synchronize_uses_github_action_config_push_commands(monkeypatch, 
     await github_action_runner.run_action()
 
     assert handled == [
-        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/describe"]),
     ]
 
 

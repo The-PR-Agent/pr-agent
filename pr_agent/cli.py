@@ -3,7 +3,7 @@ import asyncio
 import os
 import sys
 
-from pr_agent.agent.pr_agent import PRAgent, commands
+from pr_agent.agent.pr_agent import PRAgent, commands, parse_command
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -138,8 +138,8 @@ def set_parser():
 
 def run_command(pr_url, command):
     # Preparing the command
-    run_command_str = f"--pr_url={pr_url} {command.lstrip('/')}"
-    args = set_parser().parse_args(run_command_str.split())
+    command_args = parse_command(command.lstrip('/'))
+    args = set_parser().parse_args([f"--pr_url={pr_url}", *command_args])
 
     # Run the command. Feedback will appear in GitHub PR comments
     return run(args=args)
