@@ -170,6 +170,15 @@ AZURE_AD_TOKEN_ENV_VARS = ("AZURE_AD_TOKEN", "AZURE_OPENAI_AD_TOKEN")
 AZURE_OIDC_AUTH_ENV_VARS = ("AZURE_CLIENT_SECRET", "AZURE_USERNAME", "AZURE_PASSWORD")
 
 
+def _first_environment_value(environment_variables):
+    """Return the first non-empty value among the environment variables, if any."""
+    for environment_variable in environment_variables:
+        value = os.environ.get(environment_variable)
+        if value:
+            return value
+    return None
+
+
 def _strip_openai_azure_prefixes(model: str) -> str:
     """Strip stacked OpenAI/Azure routing prefixes, which Azure mode can prepend to a configured one."""
     while model.startswith(("openai/", "azure/")):
@@ -566,11 +575,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         for provider, environment_variables in PROVIDER_API_BASE_ENV_VARS.items():
             if provider_params.get(provider, {}).get("api_base"):
                 continue
-            for environment_variable in environment_variables:
-                api_base = os.environ.get(environment_variable)
-                if api_base:
-                    provider_params.setdefault(provider, {})["api_base"] = api_base
-                    break
+            api_base = _first_environment_value(environment_variables)
+            if api_base:
+                provider_params.setdefault(provider, {})["api_base"] = api_base
 
         if "api_base" not in provider_params.get("cloudflare", {}):
             cloudflare_account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
@@ -583,11 +590,9 @@ class LiteLLMAIHandler(BaseAiHandler):
             for parameter, environment_variables in PROVIDER_ROUTING_ENV_VARS[provider].items():
                 if provider_params.get(provider, {}).get(parameter):
                     continue
-                for environment_variable in environment_variables:
-                    value = os.environ.get(environment_variable)
-                    if value:
-                        provider_params.setdefault(provider, {})[parameter] = value
-                        break
+                value = _first_environment_value(environment_variables)
+                if value:
+                    provider_params.setdefault(provider, {})[parameter] = value
 
         aws_region = self._resolve_aws_region(settings)
         if aws_region:
@@ -771,11 +776,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Capture native provider API keys without mixing them with configured credentials."""
         provider_api_keys = {}
         for provider, environment_variables in PROVIDER_API_KEY_ENV_VARS.items():
-            for environment_variable in environment_variables:
-                api_key = os.environ.get(environment_variable)
-                if api_key:
-                    provider_api_keys[provider] = api_key
-                    break
+            api_key = _first_environment_value(environment_variables)
+            if api_key:
+                provider_api_keys[provider] = api_key
         for provider in JSONProviderRegistry.list_providers():
             provider_config = JSONProviderRegistry.get(provider)
             if provider_config is None or provider in provider_api_keys:
