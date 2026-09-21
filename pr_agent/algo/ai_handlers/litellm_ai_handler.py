@@ -887,9 +887,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if self._aws_environment_credentials_incomplete:
             if not self._aws_static_creds:
                 raise ValueError("AWS environment credentials are incomplete")
-            self._aws_active_creds = dict(self._aws_static_creds)
-            self._aws_imds_fell_back = True
-            get_logger().warning(
+            self._activate_static_aws_fallback(
                 "AWS_USE_IMDS: ambient credentials are incomplete; using static credentials"
             )
             return False
@@ -912,9 +910,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             if not self._aws_environment_creds and self._aws_profile_uses_credential_process(session):
                 if not self._aws_static_creds:
                     raise ValueError("AWS credential_process is incompatible with request isolation")
-                self._aws_active_creds = dict(self._aws_static_creds)
-                self._aws_imds_fell_back = True
-                get_logger().warning(
+                self._activate_static_aws_fallback(
                     "AWS_USE_IMDS: credential_process is incompatible with request isolation; "
                     "using static credentials"
                 )
@@ -946,9 +942,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         if not region:
             get_logger().warning("AWS_USE_IMDS: could not determine AWS region; set AWS_REGION_NAME explicitly")
         if not self._aws_imds_mode and self._aws_static_creds:
-            self._aws_active_creds = dict(self._aws_static_creds)
-            self._aws_imds_fell_back = True
-            get_logger().info("AWS_USE_IMDS: IMDS resolution failed; using static credentials")
+            self._activate_static_aws_fallback(
+                "AWS_USE_IMDS: IMDS resolution failed; using static credentials", level="info"
+            )
         return self._aws_imds_mode
 
     def _bind_aws_workload_token_sources(self, session) -> None:
@@ -1048,11 +1044,15 @@ class LiteLLMAIHandler(BaseAiHandler):
         self._aws_active_creds = params
         return True
 
-    def _activate_static_aws_fallback(self):
+    def _activate_static_aws_fallback(
+        self,
+        message: str = "AWS provider call failed with ambient credentials; retrying with static credentials",
+        level: str = "warning",
+    ):
         """Select static request credentials for an AWS provider fallback after IMDS failure."""
         self._aws_active_creds = dict(self._aws_static_creds)
         self._aws_imds_fell_back = True
-        get_logger().warning("AWS provider call failed with ambient credentials; retrying with static credentials")
+        getattr(get_logger(), level)(message)
 
     def _validate_aws_credential_chain_environment(self) -> None:
         """Reject credential-chain selectors changed after this handler was initialized."""
