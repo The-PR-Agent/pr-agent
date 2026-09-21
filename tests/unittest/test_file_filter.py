@@ -35,7 +35,10 @@ class TestIgnoreFilter:
         ]
 
         filtered_files = filter_ignored(files)
-        assert filtered_files == expected, f"Expected {[file.filename for file in expected]}, but got {[file.filename for file in filtered_files]}."
+        assert filtered_files == expected, (
+            f"Expected {[file.filename for file in expected]}, "
+            f"but got {[file.filename for file in filtered_files]}."
+        )
 
     def test_glob_ignores_dict_values(self, monkeypatch):
         """Verify ignore filtering for GitHub incremental dict_values views."""
@@ -68,7 +71,10 @@ class TestIgnoreFilter:
         ]
 
         filtered_files = filter_ignored(files)
-        assert filtered_files == expected, f"Expected {[file.filename for file in expected]}, but got {[file.filename for file in filtered_files]}."
+        assert filtered_files == expected, (
+            f"Expected {[file.filename for file in expected]}, "
+            f"but got {[file.filename for file in filtered_files]}."
+        )
 
     def test_invalid_regex(self, monkeypatch):
         """
@@ -89,7 +95,10 @@ class TestIgnoreFilter:
         ]
 
         filtered_files = filter_ignored(files)
-        assert filtered_files == expected, f"Expected {[file.filename for file in expected]}, but got {[file.filename for file in filtered_files]}."
+        assert filtered_files == expected, (
+            f"Expected {[file.filename for file in expected]}, "
+            f"but got {[file.filename for file in filtered_files]}."
+        )
 
     def test_language_framework_ignores(self, monkeypatch):
         """

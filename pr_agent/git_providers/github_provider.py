@@ -1636,7 +1636,7 @@ class GithubProvider(GitProvider):
             except AttributeError as e:
                 raise ValueError(
                     "GitHub token is required when using user deployment. See: "
-                    "https://github.com/Codium-ai/pr-agent#method-2-run-from-source") from e
+                    "https://docs.pr-agent.ai/installation/locally/#run-from-source") from e
             self.auth = Auth.Token(token)
         if self.auth:
             github_config = get_settings().github
@@ -1710,15 +1710,8 @@ class GithubProvider(GitProvider):
 
     def publish_labels(self, pr_types):
         try:
-            label_color_map = {"Bug fix": "1d76db", "Tests": "e99695", "Bug fix with tests": "c5def5",
-                               "Enhancement": "bfd4f2", "Documentation": "d4c5f9",
-                               "Other": "d1bcf9"}
-            post_parameters = []
-            for p in pr_types:
-                color = label_color_map.get(p, "d1bcf9")  # default to "Other" color
-                post_parameters.append({"name": p, "color": color})
             headers, data = self.pr._requester.requestJsonAndCheck(
-                "PUT", f"{self.pr.issue_url}/labels", input=post_parameters
+                "PUT", f"{self.pr.issue_url}/labels", input=pr_types
             )
         except Exception as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")

@@ -966,7 +966,7 @@ class TestGetMaxTokens:
         Proves:
         - all current shipped families validate successfully.
         - an unknown top-level key (e.g. 'bedrock_region') raises ValueError naming the key and model_id.
-        - an unknown nested extra_aliases key (e.g. 'extended_thinkin') raises ValueError naming the key, alias, and model_id.
+        - an unknown nested extra_aliases key (e.g. 'extended_thinkin') raises ValueError with key, alias, and model_id.
         - global family definitions are not mutated.
         """
         # All current shipped families must pass validation

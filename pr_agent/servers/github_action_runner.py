@@ -7,7 +7,7 @@ from typing import Optional, Union
 
 import dynaconf
 
-from pr_agent.agent.pr_agent import PRAgent, publish_incomplete_github_files_comment
+from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_github_files_comment
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -74,6 +74,20 @@ async def _handle_request(url, body, notify=None):
         status = _action_status.get()
         if status is not None:
             status.failed = True
+
+
+async def _handle_configured_command(url, command):
+    try:
+        command_args = parse_command(command) if isinstance(command, str) else command
+        if not command_args:
+            raise ValueError("Empty configured command")
+    except ValueError:
+        get_logger().error("Failed to parse a configured command; skipping it.")
+        status = _action_status.get()
+        if status is not None:
+            status.failed = True
+        return
+    await _handle_request(url, command_args)
 
 
 async def _run_auto_tool(tool_class, pr_url):
@@ -153,7 +167,7 @@ async def _run_review_commands(event_payload):
     get_settings().pr_description.final_update_message = False
     get_logger().info(f"Running review commands: {review_commands}")
     for command in review_commands:
-        await _handle_request(pr_url, command)
+        await _handle_configured_command(pr_url, command)
 
 
 async def run_action():
@@ -290,7 +304,7 @@ async def run_action():
                 get_settings().pr_description.final_update_message = False
                 get_logger().info(f"Running push commands: {push_commands}")
                 for command in push_commands:
-                    await _handle_request(pr_url, command)
+                    await _handle_configured_command(pr_url, command)
                 return
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("url")

@@ -2417,7 +2417,9 @@ class TestAzureDevopsProviderSuggestionFence:
             )
             provider.azure_devops_client.get_threads.return_value = [stored]
             provider.pr = SimpleNamespace(last_merge_commit=SimpleNamespace(commit_id="head"))
-            provider.azure_devops_client.get_item.return_value = SimpleNamespace(content="before\nvalues = set()\nafter")
+            provider.azure_devops_client.get_item.return_value = SimpleNamespace(
+                content="before\nvalues = set()\nafter"
+            )
             assert "Not doing this." in provider.get_code_suggestion_thread_context()
             assert provider.reconcile_code_suggestion_threads() == 1
 
