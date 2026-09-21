@@ -146,6 +146,29 @@ class TestConvertToMarkdown:
         assert 'Code Smell' not in output
         get_logger.return_value.exception.assert_not_called()
 
+    def test_key_issue_with_non_numeric_lines_keeps_finding_in_summary(self):
+        """A non-integer start_line/end_line must not silently drop the finding.
+
+        The review summary, inline comments, and the persisted finding state used to
+        disagree: inline and state tolerated malformed line fields while the summary
+        dropped the finding. The finding must render in the summary without lines.
+        """
+        input_data = {'review': {'key_issues_to_review': [{
+            'relevant_file': 'src/utils.py',
+            'issue_header': 'Possible security issue',
+            'issue_content': 'Credentials are logged on the error path.',
+            'start_line': '',
+            'end_line': 14,
+        }]}}
+        mock_git_provider = Mock()
+        mock_git_provider.get_line_link.return_value = 'https://github.com/qodo/pr-agent/pull/1/files#diff-hash'
+
+        output = convert_to_markdown_v2(input_data, git_provider=mock_git_provider)
+
+        assert 'Possible security issue' in output
+        assert 'Credentials are logged on the error path.' in output
+        mock_git_provider.get_line_link.assert_not_called()
+
     def test_key_issue_with_omitted_text_keeps_empty_fallback(self):
         input_data = {'review': {'key_issues_to_review': [{
             'relevant_file': 'src/utils.py',
