@@ -2190,21 +2190,26 @@ class LiteLLMAIHandler(BaseAiHandler):
         kwargs.pop("temperature", None)
         return kwargs
 
-    def add_litellm_callbacks(self, kwargs) -> dict:
+    @staticmethod
+    def _capture_log_context(probe_key: str, message: str) -> dict:
+        """Read the command and PR URL of the current request out of the logging context.
+
+        The probe record is matched by identity, so a concurrent request adding
+        its own sink at the same time cannot capture this request's context nor
+        leak its own into it.
+        """
         probe = object()
         captured_extra = []
 
-        def capture_logs(message):
+        def capture_logs(logged_message):
             # Parsing the log message and context
-            record = message.record
-            extra = record.get("extra") or {}
-            if extra.get("litellm_callbacks_probe") is not probe:
+            extra = logged_message.record.get("extra") or {}
+            if extra.get(probe_key) is not probe:
                 return
             log_entry = {}
-            if extra.get("command") is not None:
-                log_entry.update({"command": extra["command"]})
-            if extra.get("pr_url") is not None:
-                log_entry.update({"pr_url": extra["pr_url"]})
+            for key in ("command", "pr_url"):
+                if extra.get(key) is not None:
+                    log_entry[key] = extra[key]
 
             # Append the captured request context.
             captured_extra.append(log_entry)
@@ -2212,12 +2217,16 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Adding the custom sink to Loguru
         handler_id = get_logger().add(capture_logs)
         try:
-            get_logger().debug("Capturing logs for litellm callbacks",
-                               litellm_callbacks_probe=probe)
+            get_logger().debug(message, **{probe_key: probe})
         finally:
             get_logger().remove(handler_id)
 
-        context = captured_extra[0] if len(captured_extra) > 0 else {}
+        return captured_extra[0] if len(captured_extra) > 0 else {}
+
+    def add_litellm_callbacks(self, kwargs) -> dict:
+        context = self._capture_log_context(
+            "litellm_callbacks_probe", "Capturing logs for litellm callbacks",
+        )
 
         command = context.get("command", "unknown")
         pr_url = context.get("pr_url", "unknown")
@@ -2258,31 +2267,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         e.g. {"command":"improve","pr_url":"https://..."}. Returns an empty string when
         no context is available.
         """
-        # The probe record is matched by identity, so a concurrent request adding
-        # its own sink at the same time cannot capture this request's context nor
-        # leak its own into it.
-        probe = object()
-        captured_extra = []
-
-        def capture_logs(message):
-            extra = message.record.get("extra") or {}
-            if extra.get("user_field_probe") is not probe:
-                return
-            log_entry = {}
-            if extra.get("command") is not None:
-                log_entry.update({"command": extra["command"]})
-            if extra.get("pr_url") is not None:
-                log_entry.update({"pr_url": extra["pr_url"]})
-            captured_extra.append(log_entry)
-
-        handler_id = get_logger().add(capture_logs)
-        try:
-            get_logger().debug("Capturing the request context for the user field",
-                               user_field_probe=probe)
-        finally:
-            get_logger().remove(handler_id)
-
-        context = captured_extra[0] if len(captured_extra) > 0 else {}
+        context = self._capture_log_context(
+            "user_field_probe", "Capturing the request context for the user field",
+        )
         if not context:
             return ""
         # Cap the individual values before serialization, so the result stays
