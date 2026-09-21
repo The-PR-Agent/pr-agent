@@ -735,6 +735,24 @@ index 1111111..2222222 100644
         for response in responses:
             response.raise_for_status.assert_called_once_with()
 
+    def test_publish_code_suggestions_preserves_backslashes_in_diff(self):
+        provider = self._provider_for_code_suggestions()
+        provider.publish_inline_comments = MagicMock(return_value=True)
+        suggestion = self._code_suggestion(2)
+        suggestion["body"] = '```suggestion\npattern = r"\\d+"\n```'
+        suggestion["original_suggestion"] = {
+            "existing_code": 'pattern = r"\\w+"',
+            "improved_code": 'pattern = r"\\d+"',
+        }
+
+        result = provider.publish_code_suggestions([suggestion])
+
+        assert result is True
+        post_parameters = provider.publish_inline_comments.call_args.args[0]
+        assert len(post_parameters) == 1
+        assert r"\w+" in post_parameters[0]["body"]
+        assert r"\d+" in post_parameters[0]["body"]
+
     def test_publish_code_suggestions_reports_http_failures(self):
         provider = self._provider_for_code_suggestions()
         responses = [self._inline_comment_response(403), self._inline_comment_response(500)]
@@ -1320,6 +1338,24 @@ class TestBitbucketServerProvider:
 
         assert result is True
         assert provider.bitbucket_client.post.call_count == 2
+
+    def test_publish_code_suggestions_preserves_backslashes_in_diff(self):
+        provider = self._provider_for_code_suggestions()
+        provider.publish_inline_comments = MagicMock(return_value=True)
+        suggestion = self._code_suggestion(2)
+        suggestion["body"] = '```suggestion\npattern = r"\\d+"\n```'
+        suggestion["original_suggestion"] = {
+            "existing_code": 'pattern = r"\\w+"',
+            "improved_code": 'pattern = r"\\d+"',
+        }
+
+        result = provider.publish_code_suggestions([suggestion])
+
+        assert result is True
+        post_parameters = provider.publish_inline_comments.call_args.args[0]
+        assert len(post_parameters) == 1
+        assert r"\w+" in post_parameters[0]["body"]
+        assert r"\d+" in post_parameters[0]["body"]
 
     def test_publish_code_suggestions_reports_failures_and_continues(self):
         provider = self._provider_for_code_suggestions()
