@@ -213,19 +213,18 @@ def _stub_constructor_dependencies(monkeypatch, client, issues):
 
 
 def test_qdrant_sentinel_is_the_final_point_of_a_full_ingest(monkeypatch):
-    """Submit the completion sentinel after every issue point of a full ingest."""
+    """Submit the completion sentinel in a separate call after every issue point."""
     client = FakeQdrantClient()
     tool = _make_tool(monkeypatch, client)
 
     tool._update_qdrant_with_issues([_make_issue(2), _make_issue(1)], "example-repo", ingest=True)
 
     assert client.deletes == ["example_issue_example-repo"]
-    assert len(client.upserts) == 1
-    _, points = client.upserts[0]
-    ids = [point.payload["id"] for point in points]
-    assert ids[:-1] == ["issue_2.issue", "issue_1.issue"]
-    assert ids[-1] == "example_issue_example-repo"
-    assert ids.count("example_issue_example-repo") == 1
+    assert len(client.upserts) == 2
+    _, issue_points = client.upserts[0]
+    assert [point.payload["id"] for point in issue_points] == ["issue_2.issue", "issue_1.issue"]
+    _, sentinel_points = client.upserts[1]
+    assert [point.payload["id"] for point in sentinel_points] == ["example_issue_example-repo"]
 
 
 def test_qdrant_collection_without_sentinel_reingests_full(monkeypatch):
@@ -241,8 +240,9 @@ def test_qdrant_collection_without_sentinel_reingests_full(monkeypatch):
 
     psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
 
-    assert len(client.upserts) == 1
-    assert client.upserts[0][-1] == "example_issue_example-repo"
+    assert len(client.upserts) == 2
+    assert client.upserts[0] == ["issue_5.issue", "issue_4.issue"]
+    assert client.upserts[1] == ["example_issue_example-repo"]
     assert "example_issue_example-repo" in client.ids
 
 
@@ -259,8 +259,9 @@ def test_qdrant_incremental_backfills_an_older_index_gap(monkeypatch):
 
     psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
 
-    assert len(client.upserts) == 1
-    assert client.upserts[0][:-1] == ["issue_4.issue"]
+    assert len(client.upserts) == 2
+    assert client.upserts[0] == ["issue_4.issue"]
+    assert client.upserts[1] == ["example_issue_example-repo"]
     assert "issue_4.issue" in client.ids
     assert "example_issue_example-repo" in client.ids
 
@@ -288,8 +289,9 @@ def test_qdrant_incremental_backfills_gap_beyond_the_scan_window(monkeypatch):
 
     psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
 
-    assert len(client.upserts) == 1
-    assert client.upserts[0][:-1] == ["issue_2.issue"]
+    assert len(client.upserts) == 2
+    assert client.upserts[0] == ["issue_2.issue"]
+    assert client.upserts[1] == ["example_issue_example-repo"]
     assert "issue_2.issue" in client.ids
     assert "example_issue_example-repo" in client.ids
 

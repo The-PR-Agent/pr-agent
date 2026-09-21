@@ -869,6 +869,11 @@ class PRSimilarIssue:
                     },
                 )
             )
+        sentinel_point = next(
+            point for point in points
+            if point.payload["id"] == f"example_issue_{repo_name_for_index}"
+        )
+        issue_points = [point for point in points if point.id != sentinel_point.id]
         # Revoke the completion sentinel before writing, so a partial write (full or
         # incremental) can never leave the repository marked complete; the sentinel is
         # recreated below only after every issue point was upserted
@@ -879,7 +884,13 @@ class PRSimilarIssue:
                 FieldCondition(key="id", match=MatchValue(value=f"example_issue_{repo_name_for_index}")),
             ]),
         )
-        self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=points)
+        if issue_points:
+            self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=issue_points)
+        # Write the completion sentinel in a separate call only after the issue points
+        # succeed, so a failed or interrupted ingest leaves no sentinel and the next run
+        # re-indexes instead of trusting a partial newest-first prefix
+        get_logger().info('Writing completion sentinel...')
+        self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=[sentinel_point])
         get_logger().info('Done')
 
 

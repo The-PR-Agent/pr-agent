@@ -16,7 +16,8 @@ def test_suffix_is_scoped_to_qdrant_only():
     source = inspect.getsource(psi)
     qdrant_only_call_sites = [
         "if not self.qdrant.collection_exists(collection_name=self.qdrant_collection_name):",
-        "self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=points)",
+        "self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=issue_points)",
+        "self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=[sentinel_point])",
     ]
 
     for call_site in qdrant_only_call_sites:
