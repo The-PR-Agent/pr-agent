@@ -1055,7 +1055,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Select static request credentials for an AWS provider fallback after IMDS failure."""
         self._aws_active_creds = dict(self._aws_static_creds)
         self._aws_imds_fell_back = True
-        getattr(get_logger(), level)(message)
+        # opt(depth=1) keeps the fallback's caller as the record source instead of this helper.
+        get_logger().opt(depth=1).log(level.upper(), message)
 
     def _validate_aws_credential_chain_environment(self) -> None:
         """Reject credential-chain selectors changed after this handler was initialized."""
