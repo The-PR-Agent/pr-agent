@@ -170,6 +170,10 @@ PROVIDER_SETTING_PATHS = {
 AZURE_AD_TOKEN_ENV_VARS = ("AZURE_AD_TOKEN", "AZURE_OPENAI_AD_TOKEN")
 AZURE_OIDC_AUTH_ENV_VARS = ("AZURE_CLIENT_SECRET", "AZURE_USERNAME", "AZURE_PASSWORD")
 
+AWS_PROVIDER_CALL_FALLBACK_MESSAGE = (
+    "AWS provider call failed with ambient credentials; retrying with static credentials"
+)
+
 
 def _first_environment_value(environment_variables):
     """Return the first non-empty value among the environment variables, if any."""
@@ -891,7 +895,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         if self._aws_environment_credentials_incomplete:
             if not self._aws_static_creds:
                 raise ValueError("AWS environment credentials are incomplete")
-            self._activate_static_aws_fallback(
+            self._activate_static_aws_fallback()
+            get_logger().warning(
                 "AWS_USE_IMDS: ambient credentials are incomplete; using static credentials"
             )
             return False
@@ -914,7 +919,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             if not self._aws_environment_creds and self._aws_profile_uses_credential_process(session):
                 if not self._aws_static_creds:
                     raise ValueError("AWS credential_process is incompatible with request isolation")
-                self._activate_static_aws_fallback(
+                self._activate_static_aws_fallback()
+                get_logger().warning(
                     "AWS_USE_IMDS: credential_process is incompatible with request isolation; "
                     "using static credentials"
                 )
@@ -946,9 +952,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         if not region:
             get_logger().warning("AWS_USE_IMDS: could not determine AWS region; set AWS_REGION_NAME explicitly")
         if not self._aws_imds_mode and self._aws_static_creds:
-            self._activate_static_aws_fallback(
-                "AWS_USE_IMDS: IMDS resolution failed; using static credentials", level="info"
-            )
+            self._activate_static_aws_fallback()
+            get_logger().info("AWS_USE_IMDS: IMDS resolution failed; using static credentials")
         return self._aws_imds_mode
 
     def _bind_aws_workload_token_sources(self, session) -> None:
@@ -1048,16 +1053,14 @@ class LiteLLMAIHandler(BaseAiHandler):
         self._aws_active_creds = params
         return True
 
-    def _activate_static_aws_fallback(
-        self,
-        message: str = "AWS provider call failed with ambient credentials; retrying with static credentials",
-        level: str = "warning",
-    ):
-        """Select static request credentials for an AWS provider fallback after IMDS failure."""
+    def _activate_static_aws_fallback(self):
+        """Select static request credentials instead of the ambient AWS chain.
+
+        Each caller reports its own reason at its own level: the reasons differ per call
+        site, and reporting from here would name this helper as the record source.
+        """
         self._aws_active_creds = dict(self._aws_static_creds)
         self._aws_imds_fell_back = True
-        # Report the fallback's caller as the record source, not this helper.
-        get_logger().opt(depth=1).log(level.upper(), message)
 
     def _validate_aws_credential_chain_environment(self) -> None:
         """Reject credential-chain selectors changed after this handler was initialized."""
@@ -1150,6 +1153,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 self._validate_aws_credential_chain_environment()
                 if self._aws_imds_mode and not await self._refresh_aws_imds_credentials() and self._aws_static_creds:
                     self._activate_static_aws_fallback()
+                    get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
             can_fallback = self._aws_imds_mode and not self._aws_imds_fell_back and bool(self._aws_static_creds)
             yield dict(self._aws_active_creds), can_fallback
 
@@ -1208,7 +1212,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         transport_provider_cache[model] = transport_provider
         return resolved_provider
 
-    def _resolve_configured_request_provider(self, model: str, custom_llm_provider: str) -> str | None:
+    def _resolve_configured_request_provider(self, model: str | None, custom_llm_provider: str) -> str | None:
         """Resolve the request provider, preferring an explicit custom provider over model inference."""
         if custom_llm_provider:
             return PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
@@ -1216,7 +1220,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @staticmethod
     def _request_deployment_id(
-        configured_deployment_id: str | None, request_provider: str | None, routed_model: str,
+        routed_model: str, request_provider: str | None, configured_deployment_id: str | None,
     ) -> str | None:
         """Return the Azure deployment ID only for Azure chat requests."""
         if request_provider == "azure" and not routed_model.startswith("azure_text/"):
@@ -2358,7 +2362,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         routed_model = self._route_model_for_request(user_model, custom_llm_provider, configured_deployment_id)
         completion_model = self._normalize_gpt5_model_for_request(routed_model, user_model, custom_llm_provider)
         request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
-        deployment_id = self._request_deployment_id(configured_deployment_id, request_provider, routed_model)
+        deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
         if img_path:
             try:
                 # Finish external image I/O before validating mutable credential fallbacks.
@@ -2679,6 +2683,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if aws_can_fallback:
                     if not self._aws_imds_fell_back:
                         self._activate_static_aws_fallback()
+                        get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
                     fallback_credentials = dict(self._aws_active_creds)
                     request_region = kwargs.get("aws_region_name")
                     for key in AWS_REQUEST_CREDENTIAL_KEYS:
@@ -2727,7 +2732,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         configured_deployment_id = self.deployment_id
         routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
         request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
-        deployment_id = self._request_deployment_id(configured_deployment_id, request_provider, routed_model)
+        deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
         async with self._snapshot_aws_request_credentials(self._should_use_aws_imds(request_provider)) as (
             aws_request_credentials,
             _,
