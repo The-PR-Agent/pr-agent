@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import pr_agent.tools.pr_similar_issue as psi
 
 
@@ -222,6 +224,197 @@ def test_pinecone_upsert_path_skips_index_creation(monkeypatch):
     )
 
     assert created == []
+
+
+def test_pinecone_upsert_response_errors_raise_before_sleep(monkeypatch):
+    logged = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return SimpleNamespace(has_errors=True, failed_item_count=100)
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+    monkeypatch.setattr(psi.time, "sleep", lambda seconds: pytest.fail("should not sleep after upsert errors"))
+    monkeypatch.setattr(
+        psi,
+        "get_logger",
+        lambda: SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: logged.append(kwargs.get("artifact")),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="100"):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+    assert logged == [{"failed_item_count": 100, "errors": []}]
+
+
+def test_pinecone_upsert_response_dict_errors_raise(monkeypatch):
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return {"has_errors": True, "failed_item_count": 5}
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="5"):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+
+def test_pinecone_upsert_failed_item_count_raises_without_has_errors(monkeypatch):
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return {"failed_item_count": 3}
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="3"):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+
+def test_pinecone_upsert_logs_batch_error_messages(monkeypatch):
+    logged = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return SimpleNamespace(
+                has_errors=True,
+                failed_item_count=2,
+                errors=[
+                    SimpleNamespace(error_message="namespace does not exist"),
+                    {"error_message": "duplicate id"},
+                ],
+            )
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+    monkeypatch.setattr(
+        psi,
+        "get_logger",
+        lambda: SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: logged.append(kwargs.get("artifact")),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="2"):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+    assert logged == [
+        {
+            "failed_item_count": 2,
+            "errors": ["namespace does not exist", "duplicate id"],
+        },
+    ]
+
+
+def test_pinecone_upsert_waits_until_lsn_is_reconciled(monkeypatch):
+    fetched = []
+    sleeps = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return SimpleNamespace(
+                has_errors=False,
+                response_info=SimpleNamespace(lsn_committed=10),
+            )
+
+        def fetch(self, **kwargs):
+            fetched.append(kwargs)
+            lsn_reconciled = 5 if len(fetched) == 1 else 10
+            return SimpleNamespace(response_info=SimpleNamespace(
+                is_reconciled=lambda target: lsn_reconciled >= target
+            ))
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+    monkeypatch.setattr(psi.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    tool._update_index_with_issues(
+        [_make_issue(7)],
+        "example-repo",
+        pinecone_namespace="ns",
+        upsert=True,
+    )
+
+    assert fetched == [
+        {"ids": ["example_issue_example-repo"], "namespace": "ns"},
+        {"ids": ["example_issue_example-repo"], "namespace": "ns"},
+    ]
+    assert sleeps == [psi.PINECONE_UPSERT_READY_POLL_SECONDS]
+
+
+def test_pinecone_upsert_wait_supports_dict_response_info():
+    class FakeIndex:
+        def __init__(self):
+            self.fetch_calls = 0
+
+        def fetch(self, **kwargs):
+            self.fetch_calls += 1
+            return {"response_info": {"lsn_reconciled": 20}}
+
+    fake_index = FakeIndex()
+
+    psi._wait_for_pinecone_upsert_readiness(
+        fake_index,
+        {"response_info": {"lsn_committed": 20}},
+        namespace="",
+        vector_id="example_issue_example-repo",
+    )
+
+    assert fake_index.fetch_calls == 1
+
+
+def test_pinecone_upsert_wait_checks_deadline_before_fetch(monkeypatch):
+    state = {"t": 0.0}
+    fetched = []
+
+    class FakeIndex:
+        def fetch(self, **kwargs):
+            fetched.append(kwargs)
+            return {"response_info": {"lsn_reconciled": 1}}
+
+    monkeypatch.setattr(psi.time, "monotonic", lambda: state["t"])
+    monkeypatch.setattr(
+        psi.time,
+        "sleep",
+        lambda seconds: state.__setitem__(
+            "t", state["t"] + psi.PINECONE_UPSERT_READY_TIMEOUT_SECONDS + 1
+        ),
+    )
+
+    with pytest.raises(TimeoutError, match="not query-ready"):
+        psi._wait_for_pinecone_upsert_readiness(
+            FakeIndex(),
+            {"response_info": {"lsn_committed": 10}},
+            namespace="ns",
+            vector_id="example_issue_example-repo",
+        )
+
+    assert len(fetched) == 1
 
 
 def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):

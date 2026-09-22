@@ -14,6 +14,8 @@ from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger
 
 MODEL = "text-embedding-ada-002"
+PINECONE_UPSERT_READY_TIMEOUT_SECONDS = 30
+PINECONE_UPSERT_READY_POLL_SECONDS = 0.5
 
 
 _EMBEDDING_CLIENTS = {}
@@ -87,6 +89,76 @@ def _lancedb_similar_search(table, query_vector, repo_name_for_index):
 def _pinecone_namespace(repo_full_name: str) -> str:
     """Return a collision-resistant Pinecone namespace for a canonical repository name."""
     return f"repo-{hashlib.sha256(repo_full_name.lower().encode()).hexdigest()}"
+
+
+def _raise_on_pinecone_upsert_errors(response):
+    """Raise when Pinecone reports asynchronous batch failures in the upsert response."""
+    response_dict = {}
+    if isinstance(response, dict):
+        response_dict = response
+    elif hasattr(response, "to_dict"):
+        response_dict = response.to_dict()
+
+    failed_item_count = getattr(response, "failed_item_count", response_dict.get("failed_item_count"))
+    has_errors = getattr(response, "has_errors", response_dict.get("has_errors", False))
+    if not has_errors and not failed_item_count:
+        return
+
+    errors = getattr(response, "errors", response_dict.get("errors")) or []
+    get_logger().error(
+        "Pinecone upsert failed",
+        artifact={
+            "failed_item_count": failed_item_count,
+            "errors": [_get_value(error, "error_message") for error in errors],
+        },
+    )
+    raise RuntimeError(f"Pinecone upsert failed for {failed_item_count} vectors")
+
+
+def _get_value(source, key, default=None):
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def _pinecone_response_info(response):
+    response_info = _get_value(response, "response_info")
+    if response_info is None and hasattr(response, "to_dict"):
+        response_info = response.to_dict().get("response_info")
+    return response_info
+
+
+def _pinecone_lsn_committed(response):
+    response_info = _pinecone_response_info(response)
+    return _get_value(response_info, "lsn_committed")
+
+
+def _pinecone_response_is_reconciled(response, target_lsn):
+    response_info = _pinecone_response_info(response)
+    if response_info is None:
+        return False
+    if hasattr(response_info, "is_reconciled"):
+        return response_info.is_reconciled(target_lsn)
+    lsn_reconciled = _get_value(response_info, "lsn_reconciled")
+    return lsn_reconciled is not None and lsn_reconciled >= target_lsn
+
+
+def _wait_for_pinecone_upsert_readiness(pinecone_index, upsert_response, namespace, vector_id):
+    target_lsn = _pinecone_lsn_committed(upsert_response)
+    if target_lsn is None:
+        get_logger().warning("Pinecone upsert response did not include an LSN; skipping readiness wait")
+        return
+
+    deadline = time.monotonic() + PINECONE_UPSERT_READY_TIMEOUT_SECONDS
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Pinecone upsert was not query-ready after {PINECONE_UPSERT_READY_TIMEOUT_SECONDS}s")
+        fetch_response = pinecone_index.fetch(ids=[vector_id], namespace=namespace)
+        if _pinecone_response_is_reconciled(fetch_response, target_lsn):
+            return
+        time.sleep(PINECONE_UPSERT_READY_POLL_SECONDS)
 
 
 def _provider_supports_issue_indexing() -> bool:
@@ -563,11 +635,13 @@ class PRSimilarIssue:
                                  timeout=120)
         get_logger().info('Upserting index...')
         self.pinecone_index = self.pc.Index(name=self.index_name)
-        self.pinecone_index.upsert(vectors=vectors,
-                                   namespace=pinecone_namespace,
-                                   batch_size=100,
-                                   max_concurrency=10)
-        time.sleep(5)  # wait for pinecone to finalize upserting before querying
+        upsert_response = self.pinecone_index.upsert(vectors=vectors,
+                                                     namespace=pinecone_namespace,
+                                                     batch_size=100,
+                                                     max_concurrency=10)
+        _raise_on_pinecone_upsert_errors(upsert_response)
+        _wait_for_pinecone_upsert_readiness(self.pinecone_index, upsert_response,
+                                            namespace=pinecone_namespace, vector_id=vectors[0][0])
         get_logger().info('Done')
 
     def _table_exists_in_db(self, index_name) -> bool:
