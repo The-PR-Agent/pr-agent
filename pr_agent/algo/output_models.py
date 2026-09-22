@@ -130,6 +130,12 @@ class PRDescription(BaseModel):
     pr_files: Optional[List[FileDescription]] = Field(default=None, max_length=20)
 
 
+class PRDescriptionAssembled(PRDescription):
+    """Validate the final description after file chunks and uncovered files are joined."""
+
+    pr_files: Optional[List[FileDescription]] = None
+
+
 class PRDescriptionHeaders(BaseModel):
     type: List[PRType] = Field(min_length=1)
     description: Optional[str] = None

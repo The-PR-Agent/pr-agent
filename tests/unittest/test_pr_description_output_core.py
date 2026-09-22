@@ -124,6 +124,51 @@ class TestPrepareData:
 
         mock_get_logger.return_value.warning.assert_not_called()
 
+    @pytest.mark.asyncio
+    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.tools.pr_description.get_settings")
+    async def test_extended_description_can_contain_more_than_twenty_files(
+        self, mock_get_settings, mock_get_logger,
+    ):
+        mock_get_settings.return_value = _settings()
+        obj = _make_instance(yaml.dump({
+            "type": ["Bug fix"],
+            "title": "Describe all changed files",
+            "pr_files": [{"filename": "shown.py", "changes_title": "Shown", "label": "bug fix"}],
+        }))
+        obj.git_provider = MagicMock()
+        obj.git_provider.get_diff_files.return_value = [
+            SimpleNamespace(filename="shown.py"),
+            *(SimpleNamespace(filename=f"remaining_{index}.py") for index in range(20)),
+        ]
+
+        obj.prediction = await obj.extend_uncovered_files(obj.prediction)
+        obj._prepare_data()
+
+        assert len(obj.data["pr_files"]) == 21
+        mock_get_logger.return_value.warning.assert_not_called()
+
+    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_assembled_description_still_checks_files_beyond_twenty(
+        self, mock_get_settings, mock_get_logger,
+    ):
+        mock_get_settings.return_value = _settings()
+        files = [
+            {"filename": f"file_{index}.py", "changes_title": "Change", "label": "bug fix"}
+            for index in range(20)
+        ]
+        files.append({"filename": "invalid.py", "label": "bug fix"})
+        obj = _make_instance(yaml.dump({"type": ["Bug fix"], "title": "Title", "pr_files": files}))
+
+        obj._prepare_data()
+
+        assert len(obj.data["pr_files"]) == 21
+        mock_get_logger.return_value.warning.assert_called_once_with(
+            "Description output failed schema validation",
+            artifact={"field": "pr_files.20.changes_title", "value": None},
+        )
+
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_keys_are_reordered_in_canonical_sequence(self, mock_get_settings):
         mock_get_settings.return_value = _settings()

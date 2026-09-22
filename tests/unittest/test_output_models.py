@@ -21,6 +21,7 @@ from pr_agent.algo.output_models import (
     PRCodeSuggestions,
     PRCodeSuggestionsFeedback,
     PRDescription,
+    PRDescriptionAssembled,
     PRDescriptionHeaders,
     PRFilesWalkthrough,
     PRRankResponses,
@@ -245,6 +246,23 @@ def test_required_label_and_list_constraints_are_enforced():
             "relevant_file": "x", "issue_header": "x", "issue_content": "x",
             "start_line": 1, "end_line": 1, "unexpected": "x",
         }]})
+
+
+def test_assembled_description_validates_all_files_without_changing_prompt_limit():
+    files = [
+        {"filename": f"file_{index}.py", "changes_title": "Change", "label": "bug fix"}
+        for index in range(21)
+    ]
+    data = {"type": ["Bug fix"], "title": "Large PR", "pr_files": files}
+
+    with pytest.raises(ValueError):
+        PRDescription.model_validate(data)
+    assert len(PRDescriptionAssembled.model_validate(data).pr_files) == 21
+
+    files[-1] = {"filename": "invalid.py", "label": "bug fix"}
+    with pytest.raises(ValueError) as error:
+        PRDescriptionAssembled.model_validate(data)
+    assert error.value.errors()[0]["loc"] == ("pr_files", 20, "changes_title")
 
 
 def _split_type_args(value):

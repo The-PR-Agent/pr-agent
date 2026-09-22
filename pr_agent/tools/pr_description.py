@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.comment_identity import PRDescriptionHeader
-from pr_agent.algo.output_models import PRDescription as PRDescriptionOutput
+from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     get_pr_diff,
@@ -667,7 +667,7 @@ class PRDescription:
     @staticmethod
     def _validate_description_schema(data: object) -> bool:
         try:
-            PRDescriptionOutput.model_validate(data)
+            PRDescriptionAssembled.model_validate(data)
         except ValidationError as error:
             first_error = error.errors()[0]
             field_path = ".".join(str(part) for part in first_error.get("loc", ())) or "$"
