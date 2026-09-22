@@ -140,7 +140,7 @@ Example output:
 ```yaml
 type:
 - Bug fix
-- Refactoring
+- Enhancement
 - ...
 {%- if enable_pr_description %}
 description: |

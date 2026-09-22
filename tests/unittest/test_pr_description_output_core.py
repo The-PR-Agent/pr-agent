@@ -692,6 +692,28 @@ class TestDescriptionPromptGating:
         return environment.from_string(template).render(
             {**self.PROMPT_VARS, "enable_pr_description": enable_pr_description})
 
+    @pytest.mark.parametrize("prompt_name", [
+        "pr_description_prompt",
+        "pr_description_only_description_prompts",
+    ])
+    @patch("pr_agent.tools.pr_description.get_logger")
+    def test_duplicate_example_types_match_output_model(self, mock_get_logger, prompt_name):
+        template = getattr(get_settings(), prompt_name).user
+        environment = Environment(
+            autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+        rendered = environment.from_string(template).render(
+            {**self.PROMPT_VARS, "enable_pr_description": True})
+        example = rendered.split("Example output:", 1)[1].split("type:", 1)[1].split("description:", 1)[0]
+        example_types = [
+            line.removeprefix("- ").strip()
+            for line in example.splitlines()
+            if line.startswith("- ") and line.strip() != "- ..."
+        ]
+
+        assert len(example_types) >= 2
+        assert PRDescription._validate_description_schema({"type": example_types, "title": "Example"})
+        mock_get_logger.return_value.warning.assert_not_called()
+
     @pytest.mark.parametrize("part", ["system", "user"])
     def test_description_field_is_dropped_when_disabled(self, part):
         rendered = self._render(part, enable_pr_description=False)
