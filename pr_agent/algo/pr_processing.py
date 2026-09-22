@@ -16,7 +16,7 @@ from pr_agent.algo.git_patch_processing import (
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.run_details import record_model_used
-from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.algo.utils import ModelType, get_model
@@ -33,10 +33,6 @@ ADDED_FILES_ = "Additional added files (insufficient token budget to process):\n
 OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD = 1500
 OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD = 1000
 MAX_EXTRA_LINES = 10
-
-
-class FallbackEligibleError(ValueError):
-    """A model-specific output or fit failure that another model may resolve."""
 
 
 _effective_fallback_chain: ContextVar[tuple[tuple[str, str | None], ...] | None] = ContextVar(

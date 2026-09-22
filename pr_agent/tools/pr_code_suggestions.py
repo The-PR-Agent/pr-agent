@@ -892,7 +892,7 @@ class PRCodeSuggestions:
             preserve_minimum=True,
         )
         if fitted.optional_text != patches_diff_no_line_number:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete suggestion chunk does not fit the token limit for {model}"
             )
         system_prompt, user_prompt = fitted.system_prompt, fitted.user_prompt

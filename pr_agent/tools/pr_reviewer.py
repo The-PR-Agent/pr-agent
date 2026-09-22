@@ -916,7 +916,7 @@ class PRReviewer:
         if len(chunk_results) < len(patches_diff_list):
             if chunk_errors:
                 raise chunk_errors[0]
-            raise ValueError("No valid review output was produced for one or more chunks")
+            raise FallbackEligibleError("No valid review output was produced for one or more chunks")
 
         return self._merge_cached_review_chunks()
 
@@ -1043,7 +1043,7 @@ class PRReviewer:
             preserve_minimum=True,
         )
         if fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed review diff does not fit the token limit for {model}"
             )
 

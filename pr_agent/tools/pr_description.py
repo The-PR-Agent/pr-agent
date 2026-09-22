@@ -400,7 +400,7 @@ class PRDescription:
                 if isinstance(result, BaseException):
                     raise result
                 if not isinstance(result, str):
-                    chunk_errors.append(ValueError(f"Description chunk {i + 1} returned no prediction"))
+                    chunk_errors.append(FallbackEligibleError(f"Description chunk {i + 1} returned no prediction"))
                     failed_files.extend(files_in_patch)
                     get_logger().warning(
                         f"Description chunk {i + 1} returned no prediction; retaining successful chunks",
@@ -426,7 +426,7 @@ class PRDescription:
                     prediction_files = prediction_files.removeprefix('pr_files:').strip()
                     file_description_str_list.append(prediction_files)
                 else:
-                    chunk_errors.append(ValueError(f"Description chunk {i + 1} returned invalid YAML"))
+                    chunk_errors.append(FallbackEligibleError(f"Description chunk {i + 1} returned invalid YAML"))
                     failed_files.extend(files_in_patch)
                     get_logger().warning(
                         f"Failed to parse description chunk {i + 1}; retaining successful chunks",
@@ -436,7 +436,7 @@ class PRDescription:
             self.description_failed_chunk_count = len(chunk_pairs) - len(file_description_str_list)
             self.description_failed_files = list(dict.fromkeys(failed_files))
             if not file_description_str_list:
-                raise chunk_errors[0] if chunk_errors else ValueError("No description chunks were generated")
+                raise chunk_errors[0] if chunk_errors else FallbackEligibleError("No description chunks were generated")
 
             # generate files_walkthrough string, with proper token handling
             self.vars, token_handler_only_description_prompt = fit_related_tickets_to_prompt_budget(
@@ -615,7 +615,7 @@ class PRDescription:
             preserve_minimum=True,
         )
         if prompt != "pr_description_only_description_prompts" and fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed description diff does not fit the token limit for {model}"
             )
         variables["diff"] = fitted.optional_text

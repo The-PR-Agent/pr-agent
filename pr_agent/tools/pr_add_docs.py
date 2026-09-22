@@ -123,7 +123,7 @@ class PRAddDocs:
             preserve_minimum=True,
         )
         if fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed documentation diff does not fit the token limit for {model}"
             )
         self.patches_diff = fitted.optional_text
