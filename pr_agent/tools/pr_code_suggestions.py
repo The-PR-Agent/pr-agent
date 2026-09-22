@@ -1340,6 +1340,12 @@ class PRCodeSuggestions:
                 )
                 try:
                     pr_body = self.generate_summarized_suggestions(data)
+                    if not pr_body:
+                        # The summarizer swallows per-suggestion exceptions and renders an
+                        # empty summary instead of dropping just the malformed entry, so a
+                        # collapsed render must stay a failure and not publish an empty
+                        # comment as if the suggestions had been delivered.
+                        raise RuntimeError("summarized suggestions rendered empty")
                     pr_body += coverage_footer
                     pr_body = add_comment_identity(
                         pr_body,
