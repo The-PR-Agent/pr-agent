@@ -286,6 +286,9 @@ def test_pinecone_upsert_response_errors_raise_before_sleep(monkeypatch):
         def upsert(self, **kwargs):
             return SimpleNamespace(has_errors=True, failed_item_count=100)
 
+        def delete(self, **kwargs):
+            pass
+
     tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
     monkeypatch.setattr(psi.time, "sleep", lambda seconds: pytest.fail("should not sleep after upsert errors"))
@@ -314,6 +317,9 @@ def test_pinecone_upsert_response_dict_errors_raise(monkeypatch):
         def upsert(self, **kwargs):
             return {"has_errors": True, "failed_item_count": 5}
 
+        def delete(self, **kwargs):
+            pass
+
     tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
 
@@ -330,6 +336,9 @@ def test_pinecone_upsert_failed_item_count_raises_without_has_errors(monkeypatch
     class FakeIndex:
         def upsert(self, **kwargs):
             return {"failed_item_count": 3}
+
+        def delete(self, **kwargs):
+            pass
 
     tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
@@ -356,6 +365,9 @@ def test_pinecone_upsert_logs_batch_error_messages(monkeypatch):
                     {"error_message": "duplicate id"},
                 ],
             )
+
+        def delete(self, **kwargs):
+            pass
 
     tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
@@ -395,6 +407,9 @@ def test_pinecone_upsert_waits_until_lsn_is_reconciled(monkeypatch):
                 response_info=SimpleNamespace(lsn_committed=10),
             )
 
+        def delete(self, **kwargs):
+            pass
+
         def fetch(self, **kwargs):
             fetched.append(kwargs)
             lsn_reconciled = 5 if len(fetched) == 1 else 10
@@ -414,8 +429,8 @@ def test_pinecone_upsert_waits_until_lsn_is_reconciled(monkeypatch):
     )
 
     assert fetched == [
-        {"ids": ["example_issue_example-repo"], "namespace": "ns"},
-        {"ids": ["example_issue_example-repo"], "namespace": "ns"},
+        {"ids": ["issue_7.issue"], "namespace": "ns"},
+        {"ids": ["issue_7.issue"], "namespace": "ns"},
     ]
     assert sleeps == [psi.PINECONE_UPSERT_READY_POLL_SECONDS]
 
