@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
@@ -137,14 +138,58 @@ class TokenHandler:
             get_logger().error(f"Error in _get_system_user_tokens: {e}")
             return 0
 
+    def _provider_from_model(self) -> str | None:
+        """Return the litellm provider key for the configured model, when inferable.
+
+        Mirrors how ``litellm.acount_tokens`` itself resolves the provider from
+        the model string: an explicit ``provider/`` prefix wins, then well-known
+        bare model names. Cloud providers such as bedrock or vertex rely on
+        ambient credentials (set up by PR-Agent for its own requests) and do not
+        need a settings key here.
+        """
+        if "/" in self.model:
+            return self.model.split("/", 1)[0].lower()
+        model_lower = self.model.lower()
+        if "claude" in model_lower:
+            return "anthropic"
+        if ModelTypeValidator.is_openai_model(model_lower):
+            return "openai"
+        return None
+
+    def _token_count_api_params(self) -> tuple[str | None, str | None]:
+        """Return the request-local (api_key, api_base) for the configured model.
+
+        Reuses the same provider-to-settings mapping that LiteLLMAIHandler uses for
+        normal requests, so settings-only keys (which litellm cannot see via process
+        environment) reach the provider's token counter.
+        """
+        from pr_agent.algo.ai_handlers.litellm_ai_handler import PROVIDER_SETTING_PATHS
+
+        provider = self._provider_from_model()
+        if provider is None:
+            return None, None
+        settings = get_settings(use_context=False)
+        setting_paths = PROVIDER_SETTING_PATHS.get(provider)
+        api_key = settings.get(setting_paths.get("api_key"), None) if setting_paths else None
+        api_base = settings.get(setting_paths.get("api_base"), None) if setting_paths else None
+        if provider == "openai":
+            api_key = api_key or settings.get("OPENAI.KEY", None)
+            api_base = (
+                api_base
+                or settings.get("OPENAI.API_BASE", None)
+                or os.environ.get("OPENAI_BASE_URL")
+                or os.environ.get("OPENAI_API_BASE")
+            )
+        return api_key, api_base
+
     async def _acount_tokens(self, patch: str) -> int:
         """Count tokens through LiteLLM's provider-native counter.
 
         Uses the configured model (self.model) instead of a hardcoded id, routes
         to the provider-native counter for Anthropic, Bedrock/Vertex Claude,
-        Gemini and OpenAI, and returns 0 when only a local estimate would be
-        produced (tokenizer_type == "local_tokenizer") or on any error; the
-        caller then applies the estimate factor.
+        Gemini, OpenAI and other keyed providers, and returns 0 when only a
+        local estimate would be produced (tokenizer_type == "local_tokenizer")
+        or on any error; the caller then applies the estimate factor.
         """
         if len(patch.encode('utf-8')) > self.CLAUDE_MAX_CONTENT_SIZE:
             get_logger().warning(
@@ -155,6 +200,7 @@ class TokenHandler:
         try:
             import litellm
 
+            api_key, api_base = self._token_count_api_params()
             response = await litellm.acount_tokens(
                 model=self.model,
                 messages=[{
@@ -162,6 +208,8 @@ class TokenHandler:
                     "content": patch
                 }],
                 system="system",
+                api_key=api_key,
+                api_base=api_base,
             )
         except Exception as e:
             get_logger().error(f"Error in LiteLLM token counting: {e}")
@@ -206,9 +254,6 @@ class TokenHandler:
             int: The calculated token count.
         """
         model_name = str(getattr(self, "model", None) or get_settings().config.model).lower()
-
-        if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get('openai.key'):
-            return default_estimate
 
         accurate_count = _await_coroutine(self._acount_tokens(patch))
         if accurate_count > 0:
