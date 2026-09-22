@@ -1378,7 +1378,9 @@ class TestLiteLLMReasoningEffortGrok:
         monkeypatch.setattr(
             litellm,
             "get_supported_openai_params",
-            lambda **kwargs: [] if kwargs["model"].endswith("grok-build-latest") else ["reasoning_effort"],
+            lambda **kwargs: ["temperature"]
+            if kwargs["model"].endswith("grok-build-latest")
+            else ["reasoning_effort", "temperature"],
         )
         call_kwargs = await self._run(monkeypatch, model, global_effort="low")
 
@@ -1426,7 +1428,11 @@ class TestLiteLLMReasoningEffortGrok:
         assert call_kwargs["reasoning_effort"] == "xhigh"
         assert call_kwargs["allowed_openai_params"] == ["reasoning_effort"]
         assert call_kwargs["custom_llm_provider"] == "openai"
-        probe.assert_called_once_with(model="grok-4.6", custom_llm_provider="openai")
+        assert "temperature" not in call_kwargs
+        assert any(
+            call.kwargs == {"model": "grok-4.6", "custom_llm_provider": "openai"}
+            for call in probe.call_args_list
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

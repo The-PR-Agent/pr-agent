@@ -258,8 +258,16 @@ async def test_chat_completion_rejects_seed_for_claude_opus_4_8_default_temperat
         "bedrock/jp.anthropic.claude-opus-4-8",
     ],
 )
-async def test_chat_completion_strips_temperature_for_claude_opus_4_8(monkeypatch, model):
+async def test_chat_completion_keeps_temperature_for_claude_opus_4_8(monkeypatch, model):
+    """Claude families tolerate the deprecated temperature parameter, so by
+    default it is forwarded when litellm's metadata reports it supported.
+    Operators opt out per model via config.no_temperature_models."""
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -267,7 +275,7 @@ async def test_chat_completion_strips_temperature_for_claude_opus_4_8(monkeypatc
 
         await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
-    assert "temperature" not in mock_call.call_args.kwargs
+    assert mock_call.call_args.kwargs["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
@@ -285,8 +293,13 @@ async def test_chat_completion_strips_temperature_for_claude_opus_4_8(monkeypatc
         "bedrock/jp.anthropic.claude-opus-5",
     ],
 )
-async def test_chat_completion_strips_temperature_for_claude_opus_5(monkeypatch, model):
+async def test_chat_completion_keeps_temperature_for_claude_opus_5(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -294,7 +307,7 @@ async def test_chat_completion_strips_temperature_for_claude_opus_5(monkeypatch,
 
         await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
-    assert "temperature" not in mock_call.call_args.kwargs
+    assert mock_call.call_args.kwargs["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
@@ -312,8 +325,13 @@ async def test_chat_completion_strips_temperature_for_claude_opus_5(monkeypatch,
         "bedrock/jp.anthropic.claude-sonnet-5",
     ],
 )
-async def test_chat_completion_strips_temperature_for_claude_sonnet_5(monkeypatch, model):
+async def test_chat_completion_keeps_temperature_for_claude_sonnet_5(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -321,7 +339,7 @@ async def test_chat_completion_strips_temperature_for_claude_sonnet_5(monkeypatc
 
         await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
-    assert "temperature" not in mock_call.call_args.kwargs
+    assert mock_call.call_args.kwargs["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
@@ -336,14 +354,64 @@ async def test_chat_completion_strips_temperature_for_claude_sonnet_5(monkeypatc
         "bedrock/us.anthropic.claude-fable-5-1",
     ],
 )
-async def test_chat_completion_strips_temperature_for_claude_fable_5_1(monkeypatch, model):
+async def test_chat_completion_keeps_temperature_for_claude_fable_5_1(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
         handler = litellm_handler.LiteLLMAIHandler()
 
         await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert mock_call.call_args.kwargs["temperature"] == 0.2
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_strips_temperature_for_config_no_temperature_models(monkeypatch):
+    """Models listed in config.no_temperature_models never receive temperature,
+    even when litellm's metadata reports it supported."""
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"no_temperature_models": ["o1", "o1-2024-12-17"]}),
+    )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="o1", system="sys", user="usr", temperature=0.2)
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr", temperature=0.2)
+
+    assert "temperature" not in mock_call.call_args_list[0].kwargs
+    assert "temperature" in mock_call.call_args_list[1].kwargs
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_strips_temperature_when_probe_reports_unsupported(monkeypatch):
+    """A model whose litellm metadata omits temperature must not receive it."""
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: False),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr", temperature=0.2)
 
     assert "temperature" not in mock_call.call_args.kwargs
 
@@ -355,6 +423,11 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_4_
         "get_settings",
         lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
     )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -364,7 +437,7 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_4_
 
     assert "thinking" not in mock_call.call_args.kwargs
     assert "max_tokens" not in mock_call.call_args.kwargs
-    assert "temperature" not in mock_call.call_args.kwargs
+    assert mock_call.call_args.kwargs["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
@@ -388,6 +461,11 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5(
         "get_settings",
         lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
     )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -397,7 +475,7 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5(
 
     assert "thinking" not in mock_call.call_args.kwargs
     assert "max_tokens" not in mock_call.call_args.kwargs
-    assert "temperature" not in mock_call.call_args.kwargs
+    assert mock_call.call_args.kwargs["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
@@ -406,6 +484,11 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_
         litellm_handler,
         "get_settings",
         lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
+    )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
     )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
@@ -416,7 +499,7 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_
 
     assert "thinking" not in mock_call.call_args.kwargs
     assert "max_tokens" not in mock_call.call_args.kwargs
-    assert "temperature" not in mock_call.call_args.kwargs
+    assert mock_call.call_args.kwargs["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
@@ -437,6 +520,11 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_fable_5
         "get_settings",
         lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
     )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -446,7 +534,7 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_fable_5
 
     assert "thinking" not in mock_call.call_args.kwargs
     assert "max_tokens" not in mock_call.call_args.kwargs
-    assert "temperature" not in mock_call.call_args.kwargs
+    assert mock_call.call_args.kwargs["temperature"] == 0.2
 
 
 @pytest.mark.asyncio
