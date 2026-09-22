@@ -1208,6 +1208,14 @@ def _raw_guard_has_header_only_auth(provider, params, headers):
     return not ((tenant and client and secret) or (username and password and client))
 
 
+def _require_http_auth_signature(original):
+    """Reject a native HTTP validator that no longer exposes the request auth parameters."""
+    signature = inspect.signature(original)
+    if not {"api_key", "headers", "litellm_params"}.issubset(signature.parameters):
+        raise RuntimeError("LiteLLM's native HTTP authentication interface is incompatible")
+    return signature
+
+
 def _install_raw_api_key_guard_override_bridge(provider):
     """Undo generated auth headers without reopening a native key resolver."""
     if provider not in ("azure_ai", "ragflow", "xai"):
@@ -1221,9 +1229,7 @@ def _install_raw_api_key_guard_override_bridge(provider):
     marker = "_pr_agent_original_raw_override_validate_environment"
     if getattr(original, marker, None) is not None:
         return
-    signature = inspect.signature(original)
-    if not {"api_key", "headers", "litellm_params"}.issubset(signature.parameters):
-        raise RuntimeError("LiteLLM's native HTTP authentication interface is incompatible")
+    signature = _require_http_auth_signature(original)
 
     def validate_environment(self, *args, **kwargs):
         if _raw_api_key_guard_provider.get() != provider or type(self) is not config:
@@ -1277,9 +1283,7 @@ def _install_raw_api_key_guard_bridge():
     marker = "_pr_agent_original_raw_validate_environment"
     if getattr(original, marker, None) is not None:
         return
-    signature = inspect.signature(original)
-    if not {"api_key", "headers", "litellm_params"}.issubset(signature.parameters):
-        raise RuntimeError("LiteLLM's native HTTP authentication interface is incompatible")
+    signature = _require_http_auth_signature(original)
 
     def validate_environment(self, *args, **kwargs):
         provider = _raw_api_key_guard_provider.get()
