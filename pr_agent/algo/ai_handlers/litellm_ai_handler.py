@@ -1833,11 +1833,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             return "xhigh" if "xhigh" in grok_levels else "high"
         return "low"
 
-    def _resolve_reasoning_effort(self, model: str, configured_effort) -> str:
-        """Validate and normalize a configured reasoning effort for this model."""
+    @staticmethod
+    def _validate_reasoning_effort(configured_effort) -> str:
+        """Normalize a configured reasoning effort, falling back to MEDIUM for an unknown level."""
         try:
             ReasoningEffort(configured_effort)
-            reasoning_effort = configured_effort
+            return configured_effort
         except (ValueError, TypeError):
             reasoning_effort = ReasoningEffort.MEDIUM.value
             if configured_effort is not None:
@@ -1845,7 +1846,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     f"Invalid reasoning_effort '{configured_effort}' in config. "
                     f"Using default '{reasoning_effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
                 )
+            return reasoning_effort
 
+    def _resolve_reasoning_effort(self, model: str, configured_effort) -> str:
+        """Validate a configured reasoning effort and clamp it to this model's Grok levels."""
+        reasoning_effort = self._validate_reasoning_effort(configured_effort)
         clamped_effort = self._clamp_grok_reasoning_effort(model, reasoning_effort)
         if clamped_effort != reasoning_effort:
             get_logger().info(
@@ -2415,9 +2420,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 is_gpt5_model = self._is_gpt5_model(openrouter_model or model)
                 if is_gpt5_model or is_gpt6_astra:
                     # Use configured reasoning_effort or default to MEDIUM.
-                    # Ignore the shared resolver's Grok clamp here
-                    # because no GPT-5/Astra ID is registered in GROK_REASONING_EFFORT_LEVELS.
-                    effort = self._resolve_reasoning_effort(model, self._default_reasoning_effort)
+                    effort = self._validate_reasoning_effort(self._default_reasoning_effort)
 
                     if is_gpt6_astra and effort in (ReasoningEffort.NONE.value, ReasoningEffort.MINIMAL.value):
                         get_logger().info(f"GPT-6 Astra does not support reasoning_effort='{effort}'; using 'low'")

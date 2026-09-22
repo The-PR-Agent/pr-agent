@@ -297,6 +297,33 @@ class TestLiteLLMReasoningEffort:
         assert lookups == ["gpt-5.2" if "gpt-5.2" in model else "gpt-5.1-codex"]
 
     @pytest.mark.asyncio
+    async def test_gpt5_reasoning_effort_ignores_the_grok_registry(self, monkeypatch, mock_logger):
+        """Keep GPT-5 normalization independent of the Grok effort registry.
+
+        An identifier can satisfy both the GPT-5 prefix match and the Grok suffix match. The
+        direct (non-OpenRouter) request path lets its GPT-5 branch own the normalization, so
+        'max' must still convert to 'xhigh' rather than being clamped to the 'high' ceiling
+        that grok-4.5 registers.
+        """
+        model = "gpt-5.2/grok-4.5"
+        grok_levels = LiteLLMAIHandler._grok_reasoning_levels_for(model)
+        assert LiteLLMAIHandler._is_gpt5_model(model)
+        assert grok_levels and "xhigh" not in grok_levels
+        fake_settings = create_mock_settings("max")
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda lookup_model: {})
+        with patch(
+            "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+            new_callable=AsyncMock,
+        ) as mock_completion:
+            mock_completion.return_value = create_mock_acompletion_response()
+
+            handler = LiteLLMAIHandler()
+            await handler.chat_completion(model=model, system="test system", user="test user")
+
+        assert mock_completion.call_args[1]["reasoning_effort"] == "xhigh"
+
+    @pytest.mark.asyncio
     async def test_gpt5_valid_reasoning_effort_minimal(self, monkeypatch, mock_logger):
         """Test GPT-5 with valid reasoning_effort='minimal' from config."""
         fake_settings = create_mock_settings("minimal")
