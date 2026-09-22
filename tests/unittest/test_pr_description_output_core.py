@@ -82,6 +82,48 @@ def _settings(
 # _prepare_data
 # ---------------------------------------------------------------------------
 class TestPrepareData:
+    @pytest.mark.parametrize(
+        ("prediction", "field", "value"),
+        [
+            ({"type": ["Unknown"], "title": "A title"}, "type.0", "Unknown"),
+            ({"type": ["Bug fix"]}, "title", None),
+            (
+                {"type": ["Bug fix"], "title": "A title", "pr_files": [{"filename": "app.py", "label": "bug fix"}]},
+                "pr_files.0.changes_title",
+                None,
+            ),
+        ],
+    )
+    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_invalid_output_warns_once_without_changing_parsed_data(
+        self, mock_get_settings, mock_get_logger, prediction, field, value,
+    ):
+        mock_get_settings.return_value = _settings()
+        obj = _make_instance(yaml.dump(prediction))
+
+        obj._prepare_data()
+
+        assert obj.data == prediction
+        mock_get_logger.return_value.warning.assert_called_once_with(
+            "Description output failed schema validation",
+            artifact={"field": field, "value": value},
+        )
+
+    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_valid_output_does_not_warn(self, mock_get_settings, mock_get_logger):
+        mock_get_settings.return_value = _settings()
+        obj = _make_instance(yaml.dump({
+            "type": ["Bug fix"],
+            "title": "Fix a runtime failure",
+            "description": "Preserve the original error.",
+        }))
+
+        obj._prepare_data()
+
+        mock_get_logger.return_value.warning.assert_not_called()
+
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_keys_are_reordered_in_canonical_sequence(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
