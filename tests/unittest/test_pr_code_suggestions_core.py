@@ -255,23 +255,46 @@ async def test_convert_to_decoupled_reuses_supplied_attempt_budget():
 
 
 @pytest.mark.asyncio
-async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_merge():
+@pytest.mark.parametrize(
+    "publish_output,committable,gfm,expected_summary",
+    [
+        (True, False, True, "Valid"),
+        (False, True, True, "Valid"),
+        (True, True, True, "Unanchorable"),
+        (True, False, False, "Unanchorable"),
+    ],
+    ids=["table", "unpublished-summary", "committable-inline", "non-gfm"],
+)
+async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_merge(
+    publish_output, committable, gfm, expected_summary
+):
     settings_snapshot = snapshot_settings((
         "pr_code_suggestions.decouple_hunks",
         "pr_code_suggestions.parallel_calls",
         "pr_code_suggestions.max_suggestions_per_file",
+        "pr_code_suggestions.commitable_code_suggestions",
+        "config.publish_output",
     ))
     settings = get_settings()
     settings.pr_code_suggestions.decouple_hunks = True
     settings.pr_code_suggestions.parallel_calls = False
     settings.set("pr_code_suggestions.max_suggestions_per_file", 1)
+    settings.set("pr_code_suggestions.commitable_code_suggestions", committable)
+    settings.set("config.publish_output", publish_output)
     tool = _make_tool()
     tool.token_handler = MagicMock()
+    tool.git_provider.is_supported.return_value = gfm
+    tool.git_provider.diff_files = [
+        FilePatchInfo(base_file="old()\n", head_file="old()\n", patch="", filename="app.py"),
+    ]
 
     async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        valid = patches_diff == "chunk-a"
         return {"code_suggestions": [_valid_suggestion(
-            one_sentence_summary=f"Finding from {patches_diff}",
-            relevant_lines_start=1 if patches_diff == "chunk-a" else 2,
+            one_sentence_summary="Valid" if valid else "Unanchorable",
+            relevant_lines_start=1 if valid else 99,
+            relevant_lines_end=1 if valid else 99,
+            score=3 if valid else 9,
         )]}
 
     try:
@@ -284,22 +307,24 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
     finally:
         restore_settings(settings_snapshot)
 
-    assert data["code_suggestions"] == [_valid_suggestion(
-        one_sentence_summary="Finding from chunk-a",
-        relevant_lines_start=1,
-    )]
+    assert [s["one_sentence_summary"] for s in data["code_suggestions"]] == [expected_summary]
     assert get_pr_multi_diffs.call_args.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
 
 
-def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_files():
+def test_limit_suggestions_per_file_keeps_highest_scores_stable_ties_and_other_files():
     settings_snapshot = snapshot_settings(("pr_code_suggestions.max_suggestions_per_file",))
     settings = get_settings()
     settings.set("pr_code_suggestions.max_suggestions_per_file", 2)
     tool = _make_tool()
+    tool.git_provider.diff_files = [
+        FilePatchInfo(base_file="old()\n", head_file="old()\n", patch="", filename=filename)
+        for filename in ("app.py", "worker.py")
+    ]
     suggestions = [
         _valid_suggestion(one_sentence_summary="Low", score=3),
         _valid_suggestion(one_sentence_summary="High", score=9),
-        _valid_suggestion(one_sentence_summary="Medium", score=6),
+        _valid_suggestion(one_sentence_summary="Tied first", score=9),
+        _valid_suggestion(one_sentence_summary="Tied last", score=9),
         _valid_suggestion(one_sentence_summary="Other file", relevant_file="worker.py", score=1),
     ]
 
@@ -308,7 +333,7 @@ def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_fil
     finally:
         restore_settings(settings_snapshot)
 
-    assert limited == [suggestions[1], suggestions[2], suggestions[3]]
+    assert limited == [suggestions[1], suggestions[2], suggestions[4]]
 
 
 def test_limit_suggestions_per_file_is_inert_at_the_shipped_default():

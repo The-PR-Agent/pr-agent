@@ -332,8 +332,7 @@ class PRCodeSuggestions:
                 self.git_provider.remove_initial_comment()
 
                 # Publish table summarized suggestions
-                if ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
-                        self.git_provider.is_supported("gfm_markdown")):
+                if self._uses_summarized_output():
 
                     # Drop suggestions that can't be anchored in the diff (unresolved
                     # sentinels, zero/negative or reversed line ranges, or positive
@@ -1178,6 +1177,12 @@ class PRCodeSuggestions:
         except (AttributeError, TypeError, ValueError):
             return 0
 
+    def _uses_summarized_output(self) -> bool:
+        return not get_settings().config.publish_output or (
+            not get_settings().pr_code_suggestions.commitable_code_suggestions
+            and self.git_provider.is_supported("gfm_markdown")
+        )
+
     def _limit_suggestions_per_file(self, suggestions: List[Dict]) -> List[Dict]:
         raw_limit = get_settings().get("pr_code_suggestions.max_suggestions_per_file", 0)
         try:
@@ -1189,6 +1194,10 @@ class PRCodeSuggestions:
 
         if max_suggestions_per_file <= 0 or not suggestions:
             return suggestions
+
+        original_count = len(suggestions)
+        if self._uses_summarized_output():
+            suggestions = [s for s in suggestions if self._is_suggestion_line_range_valid(s)]
 
         indexed_suggestions = list(enumerate(suggestions))
         ranked_suggestions = sorted(
@@ -1210,11 +1219,11 @@ class PRCodeSuggestions:
         limited_suggestions = [
             suggestion for index, suggestion in indexed_suggestions if index in kept_indices
         ]
-        dropped_count = len(suggestions) - len(limited_suggestions)
+        dropped_count = original_count - len(limited_suggestions)
         if dropped_count:
             get_logger().info(
                 f"Limited PR code suggestions to {max_suggestions_per_file} per file; "
-                f"removed {dropped_count} lower-scored suggestion(s)")
+                f"removed {dropped_count} ineligible or lower-scored suggestion(s)")
         return limited_suggestions
 
     async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True) -> None:
