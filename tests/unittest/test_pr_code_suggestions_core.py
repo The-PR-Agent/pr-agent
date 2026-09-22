@@ -559,7 +559,7 @@ async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail
     async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
         attempted.append((model, patches_diff))
         if model == "primary-model":
-            raise RuntimeError(f"{patches_diff} failed")
+            raise TimeoutError(f"{patches_diff} failed")
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
 
     try:

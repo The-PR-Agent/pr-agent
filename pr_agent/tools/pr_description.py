@@ -13,6 +13,7 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    FallbackEligibleError,
     get_pr_diff,
     get_pr_diff_multiple_patchs,
     retry_with_fallback_models,
@@ -320,7 +321,7 @@ class PRDescription:
             else:
                 get_logger().error(f"Error getting PR diff {self.pr_id}",
                                    artifact={"traceback": traceback.format_exc()})
-                raise ValueError(
+                raise FallbackEligibleError(
                     f"No PR diff fits the /describe request for {model}"
                 )
         else:

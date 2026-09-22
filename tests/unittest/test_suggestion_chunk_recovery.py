@@ -193,7 +193,7 @@ async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured
 
 
 async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monkeypatch):
-    tool, calls = make_tool(monkeypatch, {("gpt-4o", c): RuntimeError("failure") for c in "abc"})
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", c): TimeoutError("failure") for c in "abc"})
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
     assert [m for m, _, _, _ in calls] == ["gpt-4o"] * 3 + ["gpt-4o-mini"] * 3
@@ -219,7 +219,7 @@ async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeyp
 
 
 async def test_partial_success_on_outer_fallback_only_tries_later_models(configured, monkeypatch):
-    failures = {("gpt-4o", c): RuntimeError("failure") for c in "abc"}
+    failures = {("gpt-4o", c): TimeoutError("failure") for c in "abc"}
     failures[("gpt-4o-mini", "b")] = RuntimeError("secondary failed")
     tool, calls = make_tool(monkeypatch, failures)
     result = await retry_with_fallback_models(tool.prepare_prediction_main)

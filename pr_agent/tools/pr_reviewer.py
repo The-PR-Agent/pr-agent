@@ -29,6 +29,7 @@ from pr_agent.algo.output_models import PRReview
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    FallbackEligibleError,
     PreparedPRDiff,
     add_ai_metadata_to_diff_files,
     get_pr_diff,
@@ -845,7 +846,7 @@ class PRReviewer:
             self.prediction = prediction
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
-            raise ValueError(f"No PR diff fits the /review request for {model}")
+            raise FallbackEligibleError(f"No PR diff fits the /review request for {model}")
 
     async def _prepare_chunked_prediction(self, model: str,
                                           prepared_diff: PreparedPRDiff | None = None) -> bool:
@@ -1111,7 +1112,7 @@ class PRReviewer:
         """Parse one prediction and require the minimum publishable review shape."""
         data = cls._load_review_yaml(prediction)
         if not isinstance(data, dict) or not isinstance(data.get("review"), dict) or not data["review"]:
-            raise ValueError(f"{source} did not contain a non-empty review mapping")
+            raise FallbackEligibleError(f"{source} did not contain a non-empty review mapping")
         return data
 
     def _prepare_pr_review(self) -> str:

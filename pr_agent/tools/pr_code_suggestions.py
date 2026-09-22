@@ -23,6 +23,7 @@ from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_wit
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    FallbackEligibleError,
     _get_all_models,
     add_ai_metadata_to_diff_files,
     get_effective_fallback_chain,
@@ -1921,7 +1922,7 @@ class PRCodeSuggestions:
             self.data = data
         else:
             get_logger().warning("Empty PR diff list")
-            raise ValueError(f"No PR diff fits the /improve request for {model}")
+            raise FallbackEligibleError(f"No PR diff fits the /improve request for {model}")
         return data
 
     async def convert_to_decoupled_with_line_numbers(

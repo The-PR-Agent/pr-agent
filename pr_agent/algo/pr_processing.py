@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import traceback
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Callable, List, Tuple
+
+import openai
 
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
@@ -30,6 +33,11 @@ ADDED_FILES_ = "Additional added files (insufficient token budget to process):\n
 OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD = 1500
 OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD = 1000
 MAX_EXTRA_LINES = 10
+
+
+class FallbackEligibleError(ValueError):
+    """A model-specific output or fit failure that another model may resolve."""
+
 
 _effective_fallback_chain: ContextVar[tuple[tuple[str, str | None], ...] | None] = ContextVar(
     "pr_agent_effective_fallback_chain", default=None
@@ -659,6 +667,7 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
     effective_chain = tuple(zip(all_models, all_deployments[:len(all_models)], strict=True))
     original_deployment_id = get_settings().get("openai.deployment_id", None)
     context_token = _effective_fallback_chain.set(effective_chain)
+    attempt_errors = []
     try:
         # try each (model, deployment_id) pair until one is successful, otherwise raise exception
         for i, (model, deployment_id) in enumerate(effective_chain):
@@ -670,12 +679,18 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
                 get_settings().set("openai.deployment_id", deployment_id)
                 result = await f(model)
             except Exception as e:
+                if not isinstance(e, (openai.APIError, asyncio.TimeoutError, FallbackEligibleError)):
+                    raise
+                attempt_errors.append(f"{model}: {type(e).__name__}: {e}")
                 get_logger().warning(
                     f"Failed to generate prediction with {model}",
                     artifact={"error": e},
                 )
                 if i == len(all_models) - 1:  # If it's the last iteration
-                    raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
+                    raise Exception(
+                        f"Failed to generate prediction with any model of {all_models}. "
+                        f"Attempts: {'; '.join(attempt_errors)}"
+                    ) from e
             else:
                 record_model_used(model, is_fallback=i > 0)
                 return result

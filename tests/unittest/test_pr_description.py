@@ -946,7 +946,7 @@ description: |
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
             calls.append((model, prompt, patches_diff))
             if model == "gpt-4o":
-                raise RuntimeError("primary chunk failed")
+                raise TimeoutError("primary chunk failed")
             if prompt == "pr_description_only_description_prompts":
                 return _header_prediction()
             if "file1" in patches_diff:

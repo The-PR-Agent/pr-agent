@@ -11,7 +11,7 @@ from litellm import token_counter
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.algo.token_budget import get_max_tokens
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.utils import ModelType, load_yaml
@@ -286,11 +286,11 @@ class PRHelpMessage:
 
         empty_prompts = render("")
         if self._count_prompt_tokens(model, *empty_prompts) > prompt_budget:
-            raise ValueError(f"The /help prompt exceeds the token limit for {model} without documentation")
+            raise FallbackEligibleError(f"The /help prompt exceeds the token limit for {model} without documentation")
 
         marker_prompts = render(TRUNCATION_MARKER)
         if self._count_prompt_tokens(model, *marker_prompts) > prompt_budget:
-            raise ValueError(f"The /help prompt exceeds the token limit for {model} with a truncation marker")
+            raise FallbackEligibleError(f"The /help prompt exceeds the token limit for {model} with a truncation marker")
 
         keep_chars = max(len(raw_snippets) - 1, 0)
         while keep_chars > 0:
