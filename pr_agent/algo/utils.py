@@ -309,11 +309,14 @@ def convert_to_markdown_v2(output_data: dict,
                         if issue_header.lower() == 'possible bug':
                             issue_header = 'Possible Issue'  # Make the header less frightening
                         issue_content = issue.get('issue_content', '').strip()
-                        start_line = int(str(issue.get('start_line', 0)).strip())
-                        end_line = int(str(issue.get('end_line', 0)).strip())
-
-                        relevant_lines_str = extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=True)
-                        if git_provider:
+                        try:
+                            start_line = int(str(issue.get('start_line', 0)).strip())
+                            end_line = int(str(issue.get('end_line', 0)).strip())
+                        except (TypeError, ValueError):
+                            start_line, end_line = 0, 0
+                        valid_lines = start_line > 0 and end_line >= start_line
+                        relevant_lines_str = extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=True) if valid_lines else ""
+                        if git_provider and valid_lines:
                             reference_link = git_provider.get_line_link(relevant_file, start_line, end_line)
                         else:
                             reference_link = None

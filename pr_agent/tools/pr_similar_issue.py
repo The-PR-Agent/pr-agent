@@ -879,7 +879,7 @@ class PRSimilarIssue:
         issue_points = [point for point in points if point.id != sentinel_point.id]
         # Revoke the completion sentinel before writing, so a partial write (full or
         # incremental) can never leave the repository marked complete; the sentinel is
-        # recreated below only after every issue point was upserted
+        # recreated below only after every issue point was uploaded
         self.qdrant.delete(
             collection_name=self.qdrant_collection_name,
             points_selector=Filter(must=[
@@ -888,7 +888,12 @@ class PRSimilarIssue:
             ]),
         )
         if issue_points:
-            self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=issue_points)
+            self.qdrant.upload_points(
+                collection_name=self.qdrant_collection_name,
+                points=issue_points,
+                batch_size=100,
+                wait=True,
+            )
         # Write the completion sentinel in a separate call only after the issue points
         # succeed, so a failed or interrupted ingest leaves no sentinel and the next run
         # re-indexes instead of trusting a partial newest-first prefix

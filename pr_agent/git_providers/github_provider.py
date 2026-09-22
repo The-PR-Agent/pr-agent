@@ -1966,7 +1966,7 @@ class GithubProvider(GitProvider):
                                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                                 diff_code = f"\n\n<details><summary>New proposed code:</summary>\n\n```diff\n{patch.rstrip()}\n```"
                                 # replace ```suggestion ... ``` with diff_code, using regex:
-                                body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                                body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
                                 body += "\n\n</details>"
                                 suggestion['body'] = body
                                 get_logger().info(f"Comment was moved to a valid hunk, "

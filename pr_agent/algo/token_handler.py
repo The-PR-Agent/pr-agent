@@ -114,8 +114,8 @@ class TokenHandler:
             environment = Environment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
             user_prompt = environment.from_string(user).render(vars)
-            system_prompt_tokens = len(encoder.encode(system_prompt))
-            user_prompt_tokens = len(encoder.encode(user_prompt))
+            system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
+            user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))
             return system_prompt_tokens + user_prompt_tokens
         except Exception as e:
             get_logger().error(f"Error in _get_system_user_tokens: {e}")

@@ -78,6 +78,9 @@ class FakeQdrantClient:
     def upsert(self, collection_name=None, points=None, **kwargs):
         self.upserts.append((collection_name, points))
 
+    def upload_points(self, collection_name=None, points=None, **kwargs):
+        self.upserts.append((collection_name, points))
+
     def delete(self, collection_name=None, points_selector=None, **kwargs):
         sentinel_id = None
         for condition in getattr(points_selector, "must", ()):
@@ -105,6 +108,11 @@ class _StatefulQdrantClient:
         return SimpleNamespace(count=1 if sentinel_id in self.ids else 0)
 
     def upsert(self, collection_name=None, points=None, **kwargs):
+        self.upserts.append([point.payload["id"] for point in points])
+        for point in points:
+            self.ids.add(point.payload["id"])
+
+    def upload_points(self, collection_name=None, points=None, **kwargs):
         self.upserts.append([point.payload["id"] for point in points])
         for point in points:
             self.ids.add(point.payload["id"])
@@ -335,22 +343,22 @@ def test_qdrant_failed_write_then_full_reingest(monkeypatch):
     _stub_constructor_dependencies(
         monkeypatch, client, issues=[_make_issue(6), _make_issue(5)]
     )
-    original_upsert = client.upsert
+    original_upload_points = client.upload_points
 
-    def failing_upsert(collection_name=None, points=None, **kwargs):
+    def failing_upload_points(collection_name=None, points=None, **kwargs):
         ids = [point.payload["id"] for point in points]
         if "example_issue_" not in ids[0]:
             raise RuntimeError("point write failed")
-        original_upsert(collection_name=collection_name, points=points, **kwargs)
+        original_upload_points(collection_name=collection_name, points=points, **kwargs)
 
-    client.upsert = failing_upsert
+    client.upload_points = failing_upload_points
 
     with pytest.raises(RuntimeError):
         psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
 
     assert "example_issue_example-repo" not in client.ids
 
-    client.upsert = original_upsert
+    client.upload_points = original_upload_points
     psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
 
     assert client.upserts[-1][-1] == "example_issue_example-repo"
