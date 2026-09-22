@@ -253,7 +253,7 @@ class PRSimilarIssue:
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
-                    issue_str, comments, number = self._process_issue(issue)
+                    number = issue.number
                     issue_key = f"issue_{number}"
                     id = issue_key + "." + "issue"
                     # scan the complete history instead of stopping after the newest indexed
@@ -313,7 +313,7 @@ class PRSimilarIssue:
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
-                    issue_str, comments, number = self._process_issue(issue)
+                    number = issue.number
                     issue_key = f"issue_{number}"
                     issue_id = issue_key + "." + "issue"
                     # scan the complete history instead of stopping after the newest indexed
@@ -390,7 +390,7 @@ class PRSimilarIssue:
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
-                    issue_str, comments, number = self._process_issue(issue)
+                    number = issue.number
                     issue_key = f"issue_{number}"
                     point_id = issue_key + "." + "issue"
                     # scan the complete history instead of stopping after the newest indexed

@@ -333,6 +333,42 @@ def test_qdrant_incremental_backfills_gap_beyond_the_scan_window(monkeypatch):
     assert "example_issue_example-repo" in client.ids
 
 
+class _CommentsEnabledSettings(SettingsStub):
+    class pr_similar_issue:
+        skip_comments = False
+        max_issues_to_scan = 100
+        vectordb = "qdrant"
+        force_update_dataset = False
+
+
+def test_qdrant_incremental_scan_skips_comment_fetching(monkeypatch):
+    """Incremental scans only need the issue number, so no comment fetch happens.
+
+    Only the issue number is used to build the lookup id; fetching body and comments
+    per issue across the whole history wastes an API call per issue on every run.
+    """
+    client = _StatefulQdrantClient(ids={"example_issue_example-repo", "issue_5.issue"})
+    comment_fetches = []
+
+    def fetch_comments():
+        comment_fetches.append(1)
+        return []
+
+    issue_5 = _make_issue(5)
+    issue_5.get_comments = fetch_comments
+    _stub_constructor_dependencies(
+        monkeypatch, client, issues=[issue_5, _make_issue(4)]
+    )
+    monkeypatch.setattr(psi, "get_settings", lambda: _CommentsEnabledSettings)
+
+    psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+
+    assert comment_fetches == []
+    assert len(client.upserts) == 2
+    assert client.upserts[0] == ["issue_4.issue"]
+    assert client.upserts[1] == ["example_issue_example-repo"]
+
+
 def test_qdrant_failed_write_then_full_reingest(monkeypatch):
     """Re-ingest in full when a failed write revoked the sentinel.
 
