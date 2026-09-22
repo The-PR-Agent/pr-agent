@@ -94,7 +94,7 @@ def test_run_whitespace_cli_branch_falls_back_to_env_var():
 
 
 def test_run_reconciles_config_branch_when_absent():
-    """Without a flag or env var, the invocation receives a reset branch setting."""
+    """Reset the invocation branch setting when no flag or environment value is present."""
     observed_calls = []
     fake_settings = SimpleNamespace(
         config={},

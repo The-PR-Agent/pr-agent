@@ -325,7 +325,7 @@ def test_cli_parser_flag_takes_precedence_over_env_var(monkeypatch):
 
 
 def test_cli_setting_reconciles_between_runs(settings_sandbox, monkeypatch):
-    """CLI invocations reconcile the setting during dispatch without leaking it."""
+    """Keep each CLI invocation's extra config URL scoped to its own dispatch."""
     from argparse import Namespace
 
     import pr_agent.cli as cli_mod
@@ -344,7 +344,7 @@ def test_cli_setting_reconciles_between_runs(settings_sandbox, monkeypatch):
 
     outer_url_before = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
 
-    # First invocation uses its explicit URL inside its isolated settings scope.
+    # Use the explicit URL only within this invocation's settings scope.
     cli_mod.run(args=Namespace(
         pr_url="https://example.com/pr/1",
         issue_url=None,
@@ -353,7 +353,7 @@ def test_cli_setting_reconciles_between_runs(settings_sandbox, monkeypatch):
         rest=[],
     ))
 
-    # The next invocation omits it and must not inherit that value.
+    # Omit the URL in the next invocation and verify that it is not inherited.
     cli_mod.run(args=Namespace(
         pr_url="https://example.com/pr/1",
         issue_url=None,

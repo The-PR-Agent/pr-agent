@@ -50,8 +50,7 @@ def _cli_settings_scope():
     try:
         yield
     finally:
-        # request_cycle_context does not reset its ContextVar when BaseException
-        # crosses its bare generator body.
+        # Reset the context even when BaseException would skip the bare generator's cleanup.
         cm.__exit__(None, None, None)
 
 
