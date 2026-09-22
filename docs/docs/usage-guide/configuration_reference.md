@@ -262,7 +262,7 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `num_code_suggestions_per_chunk` | 3 |  |
-| `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. Summarized output skips unresolvable line locations before applying a positive cap; inline selection is unchanged. |
+| `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. Skip unresolvable line locations before applying a positive cap to summarized output; leave inline selection unchanged. |
 | `max_number_of_calls` | 3 |  |
 | `parallel_calls` | true |  |
 | `decouple_hunks` | false |  |

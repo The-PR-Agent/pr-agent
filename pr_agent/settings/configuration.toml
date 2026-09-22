@@ -243,7 +243,7 @@ new_score_mechanism_th_medium=7
 # params for '/improve --extended' mode
 num_code_suggestions_per_chunk=3
 # Maximum suggestions retained per file after all chunks are merged; 0 disables the cap.
-# Summarized output skips unresolvable line locations before applying a positive cap; inline selection is unchanged.
+# Skip unresolvable line locations before applying a positive cap to summarized output; leave inline selection unchanged.
 max_suggestions_per_file = 0
 max_number_of_calls = 3
 parallel_calls = true
