@@ -143,6 +143,7 @@ async def test_question_reaches_configured_handler_without_openai_key(
     assert "requires an OpenAI API key" not in tool.git_provider.published[0]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("propagate_tool_errors", [False, True])
 async def test_question_uses_configured_handler_error_path_without_openai_key(
     published_output, non_openai_question_settings, tmp_path, monkeypatch, propagate_tool_errors
