@@ -1054,6 +1054,71 @@ async def test_push_inline_code_suggestions_falls_back_to_individual_publish_cal
     assert "```suggestion\n    return new_worker()" in second_retry[0]["body"]
 
 
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_publishes_summarized_comment_when_all_retries_fail():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.return_value = False
+    tool = _make_tool(git_provider)
+    data = {"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
+            score=8,
+        )
+    ]}
+
+    await tool.push_inline_code_suggestions(data)
+
+    # batch publish plus the individual retry both fail, then the already-computed
+    # suggestions are delivered through the summarized-comment path instead of a
+    # misleading failure comment (issue #3602).
+    assert git_provider.publish_code_suggestions.call_count == 2
+    assert tool._output_published is True
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "Use the shared helper." in body
+    assert "Failed to generate code suggestions" not in body
+
+
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_raises_when_summarized_fallback_publish_fails():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.return_value = False
+    git_provider.publish_comment.side_effect = RuntimeError("network down")
+    tool = _make_tool(git_provider)
+    tool._output_published = False
+
+    with pytest.raises(RuntimeError, match="Failed to publish code suggestions after individual retries"):
+        await tool.push_inline_code_suggestions({"code_suggestions": [
+            _valid_suggestion(
+                relevant_lines_start=2,
+                relevant_lines_end=2,
+                existing_code="return old()",
+                improved_code="return new()",
+                score=8,
+            )
+        ]})
+
+    assert tool._output_published is False
+
+
 @pytest.fixture
 def publish_output_no_suggestions():
     settings = get_settings()
