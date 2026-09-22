@@ -1,8 +1,8 @@
+import asyncio
 import copy
 import re
 from datetime import date
 from functools import partial
-from time import sleep
 from typing import Tuple
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
@@ -13,9 +13,10 @@ from pr_agent.algo.pr_processing import (
     get_pr_diff,
     retry_with_fallback_models,
 )
+from pr_agent.algo.run_output import show_relevant_configurations
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import ModelType, show_relevant_configurations
+from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
@@ -150,7 +151,7 @@ class PRUpdateChangelog:
 
             if get_settings().config.publish_output:
                 if self.commit_changelog:
-                    self._push_changelog_update(new_file_content, answer)
+                    await self._push_changelog_update(new_file_content, answer)
                 else:
                     changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
                     if self.push_skipped_reason:
@@ -182,6 +183,19 @@ class PRUpdateChangelog:
         except Exception as fallback_error:
             get_logger().exception(
                 f"Failed to publish changelog fallback after a read error: {fallback_error}"
+            )
+
+    def _publish_changelog_write_error_fallback(self, answer: str):
+        changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
+        changelog_comment += (
+            "\n\n> ⚠️ The repository update could not be confirmed. "
+            "The generated changelog is preserved here for recovery."
+        )
+        try:
+            self.git_provider.publish_comment(changelog_comment)
+        except Exception as fallback_error:
+            get_logger().exception(
+                f"Failed to publish changelog fallback after a write error: {fallback_error}"
             )
 
     async def _prepare_prediction(self, model: str):
@@ -259,7 +273,7 @@ class PRUpdateChangelog:
 
         return new_file_content, answer
 
-    def _push_changelog_update(self, new_file_content, answer):
+    async def _push_changelog_update(self, new_file_content, answer):
         if not self.git_provider.is_supported("push_code"):
             # Its only caller already gates on self.commit_changelog, which is False
             # whenever this capability is missing; kept local so the guard holds even
@@ -269,24 +283,41 @@ class PRUpdateChangelog:
             commit_message = "[skip ci] Update CHANGELOG.md"
         else:
             commit_message = "Update CHANGELOG.md"
-        self.git_provider.create_or_update_pr_file(
-            file_path="CHANGELOG.md",
-            branch=self.git_provider.get_pr_branch(),
-            contents=new_file_content,
-            message=commit_message,
-        )
+        try:
+            written_commit = self.git_provider.create_or_update_pr_file(
+                file_path="CHANGELOG.md",
+                branch=self.git_provider.get_pr_branch(),
+                contents=new_file_content,
+                message=commit_message,
+            )
+        except Exception:
+            self._publish_changelog_write_error_fallback(answer)
+            raise
 
-        sleep(5)  # wait for the file to be updated
+        try:
+            await asyncio.sleep(5)  # wait for the file to be updated
+        except asyncio.CancelledError:
+            # Preserve the user-visible fallback after a successful write while keeping
+            # cancellation authoritative.
+            try:
+                if self.git_provider.supports_changelog_update_review():
+                    self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")
+            except Exception as feedback_error:
+                get_logger().exception(
+                    f"Failed to publish changelog fallback during cancellation: {feedback_error}"
+                )
+            raise
         try:
             if self.git_provider.supports_changelog_update_review():
-                last_commit_id = list(self.git_provider.pr.get_commits())[-1]
+                if written_commit is None:
+                    raise ValueError("The changelog write did not return a commit for review")
                 d = dict(
                     body="CHANGELOG.md update",
                     path="CHANGELOG.md",
                     line=max(2, len(answer.splitlines())),
                     start_line=1,
                 )
-                self.git_provider.pr.create_review(commit=last_commit_id, event="COMMENT", comments=[d])
+                self.git_provider.pr.create_review(commit=written_commit, event="COMMENT", comments=[d])
         except Exception:
             # we can't create a review for some reason, let's just publish a comment
             self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")

@@ -13,10 +13,10 @@ from pr_agent.algo.git_patch_processing import (
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.run_details import record_model_used
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import ModelType, clip_tokens, get_model
+from pr_agent.algo.utils import ModelType, get_model
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -587,8 +587,9 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
     remaining_files_list_new = []
     files_in_patch_list = []
     separator_tokens = None
+    remaining_files = set(remaining_files_list_prev)
     for filename, data in file_dict.items():
-        if filename not in remaining_files_list_prev:
+        if filename not in remaining_files:
             continue
 
         patch = data['patch']

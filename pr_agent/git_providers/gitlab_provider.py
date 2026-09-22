@@ -8,10 +8,23 @@ from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import gitlab
-from gitlab import GitlabAuthenticationError, GitlabCreateError, GitlabGetError, GitlabUpdateError
+from gitlab import (
+    GitlabAuthenticationError,
+    GitlabCreateError,
+    GitlabError,
+    GitlabGetError,
+    GitlabUpdateError,
+)
+from requests.exceptions import RequestException
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
+from ..algo.comment_identity import (
+    PRCodeSuggestionsHeader,
+    PRCodeSuggestionsIdentity,
+    comment_matches_any_identity,
+    get_pr_review_comment_identifiers,
+)
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.inline_comment_dedup import (
@@ -23,14 +36,8 @@ from ..algo.inline_comment_dedup import (
     marker_fingerprints,
 )
 from ..algo.language_handler import is_valid_file
-from ..algo.utils import (
-    PRCodeSuggestionsHeader,
-    PRCodeSuggestionsIdentity,
-    clip_tokens,
-    comment_matches_any_identity,
-    get_pr_review_comment_identifiers,
-    load_large_diff,
-)
+from ..algo.token_budget import clip_tokens
+from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (
@@ -246,7 +253,7 @@ class GitLabProvider(GitProvider):
                     private_token=gitlab_access_token,
                     ssl_verify=ssl_verify
                 )
-        except Exception as e:
+        except (GitlabError, RequestException, ValueError) as e:
             get_logger().error(f"Failed to create GitLab instance: {e}")
             raise ValueError(f"Unable to authenticate with GitLab: {e}")
         self.max_comment_chars = 65000
@@ -273,7 +280,7 @@ class GitLabProvider(GitProvider):
         """
         try:
             proj = self.gl.projects.get(self.id_project)
-        except Exception:
+        except (GitlabError, RequestException):
             return {}
 
         if diff_refs is None:
@@ -289,7 +296,7 @@ class GitLabProvider(GitProvider):
                 return proj
             try:
                 return self.gl.projects.get(source_project_id)
-            except Exception as e:
+            except (GitlabError, RequestException) as e:
                 get_logger().warning(f"[submodule] cannot fetch source project '{source_project_id}': {e}")
                 return None
 
@@ -300,7 +307,7 @@ class GitLabProvider(GitProvider):
                 return None
             try:
                 f = project.files.get(file_path=".gitmodules", ref=ref)
-            except Exception:
+            except (GitlabError, RequestException):
                 return None
 
             # 1) python-gitlab File.decode() – usually returns BYTES
@@ -310,7 +317,8 @@ class GitLabProvider(GitProvider):
                     return raw.decode("utf-8", "ignore")
                 if isinstance(raw, str):
                     return raw
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
+                # Fall through to the base64 route below; this object simply does not decode that way.
                 pass
 
             # 2) fallback: base64 decode f.content
@@ -318,7 +326,8 @@ class GitLabProvider(GitProvider):
                 c = getattr(f, "content", None)
                 if c:
                     return base64.b64decode(c).decode("utf-8", "ignore")
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
+                # Both decode routes failed, so report no .gitmodules content and let the caller skip it.
                 pass
 
             return None
@@ -344,7 +353,7 @@ class GitLabProvider(GitProvider):
         )
         try:
             parser.read_string(content)
-        except Exception:
+        except configparser.Error:
             return {}
 
         out: dict[str, str] = {}
@@ -368,7 +377,7 @@ class GitLabProvider(GitProvider):
             return id_project
         try:
             return getattr(self.gl.projects.get(self.id_project), "path_with_namespace", None) or None
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(f"[submodule] cannot look up project path for project '{id_project}': {e}")
             return None
 
@@ -394,7 +403,7 @@ class GitLabProvider(GitProvider):
             if path.endswith(".git"):
                 path = path[:-4]
             return path or None
-        except Exception:
+        except (AttributeError, ValueError, IndexError):
             return None
 
     def _project_by_path(self, proj_path: str):
@@ -408,18 +417,22 @@ class GitLabProvider(GitProvider):
         if not proj_path:
             return None
 
+        # Each attempt may legitimately fail, so they are collected and reported together:
+        # on the way out the caller needs to know why all three routes came up empty.
+        failures = []
+
         # 1) Encoded
         try:
             enc = urllib.parse.quote_plus(proj_path)
             return self.gl.projects.get(enc)
-        except Exception:
-            pass
+        except (GitlabError, RequestException) as e:
+            failures.append(f"encoded path: {e}")
 
         # 2) Raw
         try:
             return self.gl.projects.get(proj_path)
-        except Exception:
-            pass
+        except (GitlabError, RequestException) as e:
+            failures.append(f"raw path: {e}")
 
         # 3) Search fallback
         try:
@@ -432,10 +445,13 @@ class GitLabProvider(GitProvider):
                 if pwn.lower() == proj_path.lower():
                     return self.gl.projects.get(p.id)
             if matches:
-                get_logger().warning(f"[submodule] no exact match for {proj_path} (skip)")
-        except Exception:
-            pass
+                failures.append(f"search matched {len(matches)} project(s), none with this exact path")
+            else:
+                failures.append("search returned no projects")
+        except (GitlabError, RequestException) as e:
+            failures.append(f"search: {e}")
 
+        get_logger().warning(f"[submodule] could not resolve project '{proj_path}': " + "; ".join(failures))
         return None
 
     def _compare_submodule(self, proj_path: str, old_sha: str, new_sha: str) -> list[dict]:
@@ -458,7 +474,7 @@ class GitLabProvider(GitProvider):
                 diffs = []
             self._submodule_cache[key] = diffs
             return diffs
-        except Exception as e:
+        except (GitlabError, RequestException, AttributeError, KeyError, TypeError) as e:
             get_logger().warning(f"[submodule] compare failed for {proj_path} {old_sha}..{new_sha}: {e}")
             self._submodule_cache[key] = []
             return []
@@ -471,7 +487,7 @@ class GitLabProvider(GitProvider):
         try:
             if not bool(get_settings().get("GITLAB.EXPAND_SUBMODULE_DIFFS", False)):
                 return changes
-        except Exception:
+        except (AttributeError, KeyError, TypeError):
             return changes
 
         gitmodules = self._get_gitmodules_map(diff_refs)
@@ -601,7 +617,7 @@ class GitLabProvider(GitProvider):
         if not repo_git_url: #Use PR url as context
             try:
                 desired_branch = self.gl.projects.get(self.id_project).default_branch
-            except Exception:
+            except (GitlabError, RequestException, AttributeError):
                 get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. Tried project ID: {self.id_project}")
                 return ("", "")
             # numeric-alias URLs need the "projects/" segment, same as get_line_link
@@ -720,7 +736,7 @@ class GitLabProvider(GitProvider):
         try:
             project = self.gl.projects.get(self.id_project)
             compare_result = project.repository_compare(last_seen_sha, head_sha)
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().error(
                 f"Failed to compare commits {last_seen_sha}..{head_sha} for incremental review: {e}"
             )
@@ -758,7 +774,7 @@ class GitLabProvider(GitProvider):
             }
         except IncompleteGitLabDiffError:
             raise
-        except Exception as e:
+        except (GitlabError, RequestException, KeyError, TypeError) as e:
             get_logger().warning(
                 f"Could not fetch MR diffs to filter incremental scope; "
                 f"merge-from-target changes may leak into the review: {e}"
@@ -842,7 +858,7 @@ class GitLabProvider(GitProvider):
         if not hasattr(self, '_incremental_notes_cache'):
             try:
                 self._incremental_notes_cache = list(self.mr.notes.list(get_all=True))
-            except Exception as e:
+            except (GitlabError, RequestException) as e:
                 get_logger().error(f"Failed to list MR notes for incremental review: {e}")
                 return None
         mr_web_url = getattr(self.mr, 'web_url', None)
@@ -881,7 +897,7 @@ class GitLabProvider(GitProvider):
             try:
                 self.gl.auth()
                 self._own_user_id = getattr(self.gl.user, 'id', None)
-            except Exception as e:
+            except (GitlabError, RequestException) as e:
                 get_logger().warning(
                     f"Could not resolve the authenticated GitLab user; "
                     f"author-based filtering is disabled for this run: {e}"
@@ -898,7 +914,7 @@ class GitLabProvider(GitProvider):
             if propagate_errors and getattr(e, "response_code", None) != 404:
                 raise
             return ''
-        except Exception as e:
+        except (GitlabError, RequestException, ValueError, AttributeError) as e:
             if propagate_errors:
                 raise
             get_logger().warning(f"Error retrieving file {file_path} from branch {branch}: {e}")
@@ -932,7 +948,7 @@ class GitLabProvider(GitProvider):
         except (GitlabCreateError, GitlabUpdateError) as e:
             get_logger().error(f"Permission denied or validation error for file {file_path} in branch {branch}: {e}")
             raise
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().exception(f"Unexpected error creating/updating file {file_path} in branch {branch}: {e}")
             raise
 
@@ -981,7 +997,8 @@ class GitLabProvider(GitProvider):
                     'original_files': names_original,
                     'filtered_files': names_filtered
                 })
-            except Exception:
+            except (KeyError, TypeError):
+                # Keep logging best-effort: a diff entry without a path must not stop diff collection.
                 pass
 
         diff_files = []
@@ -1068,7 +1085,7 @@ class GitLabProvider(GitProvider):
                 self.mr.title = pr_title
             self.mr.description = pr_body
             self.mr.save()
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().exception(f"Could not update merge request {self.id_mr} description: {e}")
             raise
 
@@ -1077,8 +1094,17 @@ class GitLabProvider(GitProvider):
             return self.mr.commits().next().web_url
         except StopIteration: # no commits
             return ""
-        except Exception as e:
+        except (GitlabError, RequestException, AttributeError) as e:
             get_logger().exception(f"Could not get latest commit URL: {e}")
+            return ""
+
+    def get_pr_head_sha(self) -> str:
+        try:
+            diff_refs = getattr(self.mr, "diff_refs", None)
+            head_sha = diff_refs.get("head_sha") if isinstance(diff_refs, dict) else None
+            return head_sha if isinstance(head_sha, str) else ""
+        except (GitlabError, RequestException, AttributeError) as e:
+            get_logger().exception(f"Could not get head SHA: {e}")
             return ""
 
     def get_comment_url(self, comment):
@@ -1128,7 +1154,7 @@ class GitLabProvider(GitProvider):
         if as_thread and not is_temporary:
             try:
                 discussion = self.mr.discussions.create({'body': mr_comment})
-            except Exception as e:
+            except (GitlabError, RequestException) as e:
                 get_logger().warning(f"Failed to publish comment as a thread, falling back to a note: {e}")
             else:
                 # Return the underlying note so callers keep note-level semantics (edit/remove/url by id).
@@ -1136,7 +1162,7 @@ class GitLabProvider(GitProvider):
                 # (it would duplicate the review); return None instead.
                 try:
                     return self.mr.notes.get(discussion.attributes['notes'][0]['id'])
-                except Exception as e:
+                except (GitlabError, RequestException, KeyError, IndexError, TypeError) as e:
                     get_logger().warning(f"Published review thread but failed to fetch its note: {e}")
                     return None
         comment = self.mr.notes.create({'body': mr_comment})
@@ -1162,7 +1188,7 @@ class GitLabProvider(GitProvider):
                     discussion.resolved = False
                     discussion.save()
                 return
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to reopen resolved review thread: {e}")
 
     def resolve_comment_thread(self, comment_id) -> bool:
@@ -1178,7 +1204,7 @@ class GitLabProvider(GitProvider):
                     discussion.save()
                     return True
                 return False
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to resolve comment thread: {e}")
         return False
 
@@ -1198,7 +1224,7 @@ class GitLabProvider(GitProvider):
             return
         try:
             discussions = self.mr.discussions.list(get_all=True)
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return
         resolved = 0
@@ -1214,7 +1240,7 @@ class GitLabProvider(GitProvider):
                 for note in discussion.attributes.get('notes') or []:
                     if isinstance(note, dict):
                         released_fps |= marker_fingerprints(note.get('body'))
-            except Exception as e:
+            except (GitlabError, RequestException) as e:
                 get_logger().warning(f"Failed to resolve outdated inline thread {discussion_id}: {e}")
         if released_fps:
             get_inline_comment_store(self).release(released_fps)
@@ -1231,7 +1257,7 @@ class GitLabProvider(GitProvider):
             # comparison reports lines dropped by a rebase/merge as removed, which
             # would resolve threads whose flagged code still exists at head.
             comparison = project.repository_compare(base_sha, head_sha, straight=True)
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(
                 f"Could not compare {base_sha[:12]}..{head_sha[:12]} for fixed-thread detection: {e}")
             return removed
@@ -1268,7 +1294,7 @@ class GitLabProvider(GitProvider):
             return 0
         try:
             discussions = self.mr.discussions.list(get_all=True)
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return 0
         self._fixed_threads_swept = True
@@ -1305,7 +1331,7 @@ class GitLabProvider(GitProvider):
                 for note in notes:
                     if isinstance(note, dict):
                         released_fps |= marker_fingerprints(note.get('body'))
-            except Exception as e:
+            except (GitlabError, RequestException, KeyError, TypeError) as e:
                 get_logger().warning(f"Failed to resolve fixed inline thread {discussion_id}: {e}")
         if released_fps:
             get_inline_comment_store(self).release(released_fps)
@@ -1400,7 +1426,7 @@ class GitLabProvider(GitProvider):
                 store.add(body_fp)
                 store.add(code_fp)
             return True
-        except Exception:
+        except (GitlabError, RequestException):
             try:
                 # fallback - create a general note on the file in the MR
                 if 'suggestion_orig_location' in original_suggestion:
@@ -1456,7 +1482,7 @@ class GitLabProvider(GitProvider):
                     store.add(code_fp)
                 return True
 
-            except Exception:
+            except (GitlabError, RequestException, KeyError, TypeError):
                 get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
                 return False
 
@@ -1556,6 +1582,8 @@ class GitLabProvider(GitProvider):
                                          source_line_no, target_file, target_line_no, original_suggestion,
                                          as_draft=as_review)
             except Exception as e:
+                # Deliberately broad: suggestions are published one by one, so the loop has to
+                # survive a single bad one - whatever went wrong with it - and still land the rest.
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
 
         if as_review:
@@ -1569,14 +1597,14 @@ class GitLabProvider(GitProvider):
                 # of those still-pending drafts.
                 try:
                     pending = self.mr.draft_notes.list(get_all=True)
-                except Exception as e:
+                except (GitlabError, RequestException) as e:
                     # Draft notes are unusable on this instance/token; send_inline_comment has
                     # already degraded every suggestion to a live comment, so nothing is pending.
                     get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
                     pending = []
                 if pending:
                     self.mr.draft_notes.bulk_publish()
-            except Exception as e:
+            except (GitlabError, RequestException) as e:
                 # Draft notes are only visible to the posting user until published, so a failure here
                 # leaves the suggestions invisible to everyone else. They aren't lost: GitLab keeps
                 # pending drafts on the MR, so a manual publish from the GitLab UI, or the next
@@ -1648,13 +1676,13 @@ class GitLabProvider(GitProvider):
         try:
             for comment in self.temp_comments:
                 self.remove_comment(comment)
-        except Exception as e:
+        except (GitlabError, RequestException, AttributeError) as e:
             get_logger().exception(f"Failed to remove temp comments, error: {e}")
 
     def remove_comment(self, comment):
         try:
             comment.delete()
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
     def get_title(self):
@@ -1678,7 +1706,7 @@ class GitLabProvider(GitProvider):
         if resolved or (project_id.isascii() and project_id.isdigit()):
             try:
                 project_path = self.gl.projects.get(project_id).path_with_namespace
-            except Exception as e:
+            except (GitlabError, RequestException, AttributeError) as e:
                 get_logger().warning(f"Failed to resolve canonical GitLab project path, error: {e}")
                 if resolved:
                     raise
@@ -1729,7 +1757,7 @@ class GitLabProvider(GitProvider):
                 get_logger().debug("No local .pr_agent.toml found; using existing settings")
             else:
                 get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
-        except Exception as e:
+        except (GitlabError, RequestException, AttributeError) as e:
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
         return settings_files if settings_files else ""
 
@@ -1970,7 +1998,7 @@ class GitLabProvider(GitProvider):
                 'name': reaction
             })
             return award_emoji.id
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
             return None
 
@@ -1995,7 +2023,7 @@ class GitLabProvider(GitProvider):
 
             get_logger().warning(f"Reaction '{reaction_id}' not found in comment {issue_comment_id}.")
             return False
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to remove reaction, error: {e}")
             return False
 
@@ -2082,7 +2110,7 @@ class GitLabProvider(GitProvider):
                 # Drop them so an unrelated later save() (publish_description runs
                 # moments later) cannot resend the diff.
                 self._clear_pending_mr_attrs("add_labels", "remove_labels")
-        except Exception as e:
+        except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
 
     def _read_mr_labels(self):
@@ -2117,7 +2145,7 @@ class GitLabProvider(GitProvider):
         if update:
             try:
                 self.mr = self._get_merge_request()
-            except Exception as e:
+            except (GitlabError, RequestException) as e:
                 # Best-effort, like the other providers: fall back to the cached
                 # snapshot. publish_labels diffs against that same snapshot, so a
                 # stale read narrows what gets updated rather than clobbering labels.
@@ -2135,7 +2163,7 @@ class GitLabProvider(GitProvider):
         try:
             commit_messages_list = [commit['message'] for commit in self.mr.commits()._list]
             commit_messages_str = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages_list)])
-        except Exception:
+        except (GitlabError, RequestException, KeyError, TypeError, AttributeError):
             commit_messages_str = ""
         if max_tokens:
             commit_messages_str = clip_tokens(commit_messages_str, max_tokens)
@@ -2145,7 +2173,7 @@ class GitLabProvider(GitProvider):
         try:
             pr_id = self.mr.web_url
             return pr_id
-        except:
+        except AttributeError:
             return ""
 
     def _get_project_web_url(self) -> str:

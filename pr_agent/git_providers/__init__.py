@@ -1,30 +1,105 @@
+from __future__ import annotations
+
+from collections.abc import Iterator, MutableMapping
+from importlib import import_module
+
 from starlette_context import context
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
-from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
-from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
-from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
-from pr_agent.git_providers.gerrit_provider import GerritProvider
 from pr_agent.git_providers.git_provider import GitProvider
-from pr_agent.git_providers.gitea_provider import GiteaProvider
-from pr_agent.git_providers.github_provider import GithubProvider
-from pr_agent.git_providers.gitlab_provider import GitLabProvider
-from pr_agent.git_providers.local_git_provider import LocalGitProvider
-from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 
-_GIT_PROVIDERS = {
-    'github': GithubProvider,
-    'gitlab': GitLabProvider,
-    'bitbucket': BitbucketProvider,
-    'bitbucket_server': BitbucketServerProvider,
-    'azure': AzureDevopsProvider,
-    'codecommit': CodeCommitProvider,
-    'local': LocalGitProvider,
-    'gerrit': GerritProvider,
-    'gitea': GiteaProvider,
-    'plain-diff': PlainDiffGitProvider,
+_BUILTIN_GIT_PROVIDERS: dict[str, tuple[str, str]] = {
+    "github": ("pr_agent.git_providers.github_provider", "GithubProvider"),
+    "gitlab": ("pr_agent.git_providers.gitlab_provider", "GitLabProvider"),
+    "bitbucket": ("pr_agent.git_providers.bitbucket_provider", "BitbucketProvider"),
+    "bitbucket_server": ("pr_agent.git_providers.bitbucket_server_provider", "BitbucketServerProvider"),
+    "azure": ("pr_agent.git_providers.azuredevops_provider", "AzureDevopsProvider"),
+    "codecommit": ("pr_agent.git_providers.codecommit_provider", "CodeCommitProvider"),
+    "local": ("pr_agent.git_providers.local_git_provider", "LocalGitProvider"),
+    "gerrit": ("pr_agent.git_providers.gerrit_provider", "GerritProvider"),
+    "gitea": ("pr_agent.git_providers.gitea_provider", "GiteaProvider"),
+    "plain-diff": ("pr_agent.git_providers.plain_diff_provider", "PlainDiffGitProvider"),
 }
+_PROVIDER_CLASS_NAMES = {class_name: provider_id for provider_id, (_, class_name) in _BUILTIN_GIT_PROVIDERS.items()}
+
+
+class _LazyGitProviderRegistry(MutableMapping[str, type[GitProvider]]):
+    """Mapping-compatible registry that imports built-in providers only when accessed."""
+
+    def __init__(self, builtins: dict[str, tuple[str, str]]):
+        self._builtins = dict(builtins)
+        self._providers: dict[str, type[GitProvider]] = {}
+
+    def _load_builtin(self, provider_id: str) -> type[GitProvider]:
+        module_name, class_name = self._builtins[provider_id]
+        try:
+            module = import_module(module_name)
+        except ModuleNotFoundError as e:
+            missing_module = e.name or "unknown dependency"
+            raise ImportError(
+                f"Git provider {provider_id!r} could not be loaded because module {missing_module!r} is not installed. "
+                "Install the dependencies required by that provider before selecting it."
+            ) from e
+
+        provider_class = getattr(module, class_name)
+        if not (isinstance(provider_class, type) and issubclass(provider_class, GitProvider)):
+            raise TypeError(
+                f"Built-in git provider {provider_id!r} must be a GitProvider subclass, got {provider_class!r}"
+            )
+
+        self._providers[provider_id] = provider_class
+        return provider_class
+
+    def __getitem__(self, provider_id: str) -> type[GitProvider]:
+        if provider_id in self._providers:
+            return self._providers[provider_id]
+        if provider_id in self._builtins:
+            return self._load_builtin(provider_id)
+        raise KeyError(provider_id)
+
+    def __setitem__(self, provider_id: str, provider_class: type[GitProvider]) -> None:
+        self._providers[provider_id] = provider_class
+
+    def __delitem__(self, provider_id: str) -> None:
+        found = False
+        if provider_id in self._providers:
+            del self._providers[provider_id]
+            found = True
+        if provider_id in self._builtins:
+            del self._builtins[provider_id]
+            found = True
+        if not found:
+            raise KeyError(provider_id)
+
+    def __iter__(self) -> Iterator[str]:
+        yield from self._builtins
+        for provider_id in self._providers:
+            if provider_id not in self._builtins:
+                yield provider_id
+
+    def __len__(self) -> int:
+        return len(set(self._builtins) | set(self._providers))
+
+    def __contains__(self, provider_id: object) -> bool:
+        return provider_id in self._providers or provider_id in self._builtins
+
+
+_GIT_PROVIDERS: MutableMapping[str, type[GitProvider]] = _LazyGitProviderRegistry(_BUILTIN_GIT_PROVIDERS)
+
+
+def __getattr__(name: str):
+    """Preserve package-level provider class imports without eagerly importing every provider module."""
+    provider_id = _PROVIDER_CLASS_NAMES.get(name)
+    if provider_id is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    provider_class = _GIT_PROVIDERS[provider_id]
+    globals()[name] = provider_class
+    return provider_class
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_PROVIDER_CLASS_NAMES))
 
 
 def register_git_provider(provider_id: str, provider_class: type[GitProvider]) -> None:

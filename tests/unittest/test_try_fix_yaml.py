@@ -158,7 +158,12 @@ code_suggestions:
 
 We can further improve the code by using the `const` keyword instead of `var` in the `src/index.ts` file.
 '''
-        expected_output = {'code_suggestions': [{'relevant_file': 'src/index.ts\n', 'label': 'best practice\n'}, {'relevant_file': 'src/index2.ts\n', 'label': 'enhancement'}]}
+        expected_output = {
+            "code_suggestions": [
+                {"relevant_file": "src/index.ts\n", "label": "best practice\n"},
+                {"relevant_file": "src/index2.ts\n", "label": "enhancement"},
+            ]
+        }
 
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='label') == expected_output
 
@@ -181,7 +186,12 @@ code_suggestions:
 
 We can further improve the code by using the `const` keyword instead of `var` in the `src/index.ts` file.
 '''
-        expected_output = {'code_suggestions': [{'relevant_file': 'src/index.ts\n', 'label': 'best practice\n'}, {'relevant_file': 'src/index2.ts\n', 'label': 'enhancement'}]}
+        expected_output = {
+            "code_suggestions": [
+                {"relevant_file": "src/index.ts\n", "label": "best practice\n"},
+                {"relevant_file": "src/index2.ts\n", "label": "enhancement"},
+            ]
+        }
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='label') == expected_output
 
 
@@ -200,7 +210,12 @@ code_suggestions:
     enhancement
 }
 '''
-        expected_output = {'code_suggestions': [{'relevant_file': 'src/index.ts\n', 'label': 'best practice\n'}, {'relevant_file': 'src/index2.ts\n', 'label': 'enhancement'}]}
+        expected_output = {
+            "code_suggestions": [
+                {"relevant_file": "src/index.ts\n", "label": "best practice\n"},
+                {"relevant_file": "src/index2.ts\n", "label": "enhancement"},
+            ]
+        }
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='label') == expected_output
 
     def test_tab_indent_yaml(self):
@@ -216,7 +231,12 @@ code_suggestions:
   label: |
     enhancement
 '''
-        expected_output = {'code_suggestions': [{'relevant_file': 'src/index.ts\n', 'label': 'best practice\n'}, {'relevant_file': 'src/index2.ts\n', 'label': 'enhancement\n'}]}
+        expected_output = {
+            "code_suggestions": [
+                {"relevant_file": "src/index.ts\n", "label": "best practice\n"},
+                {"relevant_file": "src/index2.ts\n", "label": "enhancement\n"},
+            ]
+        }
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='label') == expected_output
 
 
@@ -410,7 +430,15 @@ code_suggestions:
     return a - b;
   }
 '''
-        expected_output = {'code_suggestions': [{'relevant_file': 'a.c\n', 'existing_code': '  int sum(int a, int b) {\n    return a + b;\n  }\n\n  int sub(int a, int b) {\n    return a - b;\n  }\n'}]}
+        expected_output = {
+            "code_suggestions": [{
+                "relevant_file": "a.c\n",
+                "existing_code": (
+                    "  int sum(int a, int b) {\n    return a + b;\n  }\n\n"
+                    "  int sub(int a, int b) {\n    return a - b;\n  }\n"
+                ),
+            }]
+        }
         assert try_fix_yaml(review_text, first_key='code_suggestions', last_key='existing_code') == expected_output
 
     def test_diff_markers_removed_within_list_item(self):

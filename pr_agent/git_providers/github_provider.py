@@ -12,6 +12,7 @@ from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
+from github.Commit import Commit
 from github.Issue import Issue
 from jwt.exceptions import PyJWTError
 from requests.exceptions import RequestException
@@ -19,6 +20,10 @@ from retry.api import retry_call
 from starlette_context import context
 from starlette_context.errors import ContextDoesNotExistError
 
+from ..algo.comment_identity import (
+    comment_matches_any_identity,
+    get_pr_review_comment_identifiers,
+)
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
 from ..algo.inline_comment_dedup import (
@@ -29,13 +34,11 @@ from ..algo.inline_comment_dedup import (
     has_marker,
 )
 from ..algo.language_handler import is_valid_file
+from ..algo.token_budget import clip_tokens
 from ..algo.types import EDIT_TYPE
 from ..algo.utils import (
     Range,
-    clip_tokens,
-    comment_matches_any_identity,
     find_line_number_of_relevant_line_in_file,
-    get_pr_review_comment_identifiers,
     load_large_diff,
     set_file_languages,
 )
@@ -46,6 +49,7 @@ from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
     FilePatchInfo,
     GitProvider,
+    IncompletePullRequestFilesError,
     IncrementalPR,
     get_config_branch,
     redact_credentials,
@@ -61,10 +65,6 @@ def _next_page_url(headers: dict) -> str:
         if match:
             return match.group(1)
     return ""
-
-
-class IncompletePullRequestFilesError(RuntimeError):
-    """Represent an incomplete or inconsistent GitHub pull-request file set."""
 
 
 class GithubProvider(GitProvider):
@@ -498,6 +498,11 @@ class GithubProvider(GitProvider):
 
     def get_latest_commit_url(self) -> str:
         return self.last_commit_id.html_url
+
+    def get_pr_head_sha(self) -> str:
+        head = getattr(self.pr, "head", None)
+        head_sha = getattr(head, "sha", None)
+        return head_sha if isinstance(head_sha, str) else ""
 
     def get_comment_url(self, comment) -> str:
         return comment.html_url
@@ -1656,7 +1661,7 @@ class GithubProvider(GitProvider):
             except AttributeError as e:
                 raise ValueError(
                     "GitHub token is required when using user deployment. See: "
-                    "https://github.com/Codium-ai/pr-agent#method-2-run-from-source") from e
+                    "https://docs.pr-agent.ai/installation/locally/#run-from-source") from e
             self.auth = Auth.Token(token)
         if self.auth:
             github_config = get_settings().github
@@ -1715,34 +1720,28 @@ class GithubProvider(GitProvider):
 
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message=""
-    ) -> None:
+    ) -> Commit:
         try:
             file_obj = self._get_repo().get_contents(file_path, ref=branch)
             sha1=file_obj.sha
         except (GithubException, RequestException):
             sha1=""
-        self.repo_obj.update_file(
+        response = self.repo_obj.update_file(
             path=file_path,
             message=message,
             content=contents,
             sha=sha1,
             branch=branch,
         )
+        return response["commit"]
 
     def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
         return self.get_pr_file_content(path or file.filename, sha)
 
     def publish_labels(self, pr_types):
         try:
-            label_color_map = {"Bug fix": "1d76db", "Tests": "e99695", "Bug fix with tests": "c5def5",
-                               "Enhancement": "bfd4f2", "Documentation": "d4c5f9",
-                               "Other": "d1bcf9"}
-            post_parameters = []
-            for p in pr_types:
-                color = label_color_map.get(p, "d1bcf9")  # default to "Other" color
-                post_parameters.append({"name": p, "color": color})
             headers, data = self.pr._requester.requestJsonAndCheck(
-                "PUT", f"{self.pr.issue_url}/labels", input=post_parameters
+                "PUT", f"{self.pr.issue_url}/labels", input=pr_types
             )
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
@@ -2014,7 +2013,7 @@ class GithubProvider(GitProvider):
                                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                                 diff_code = f"\n\n<details><summary>New proposed code:</summary>\n\n```diff\n{patch.rstrip()}\n```"
                                 # replace ```suggestion ... ``` with diff_code, using regex:
-                                body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                                body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
                                 body += "\n\n</details>"
                                 suggestion['body'] = body
                                 get_logger().info(f"Comment was moved to a valid hunk, "

@@ -11,7 +11,11 @@
 # class TestTicketCompliance(unittest.TestCase):
 #
 #     @patch.object(GithubProvider, 'get_user_description', return_value="Fixes #1 and relates to #2")
-#     @patch.object(GithubProvider, '_parse_issue_url', side_effect=lambda url: ("WonOfAKind/KimchiBot", int(url.split('#')[-1])))
+#     @patch.object(
+#         GithubProvider,
+#         "_parse_issue_url",
+#         side_effect=lambda url: ("WonOfAKind/KimchiBot", int(url.split("#")[-1])),
+#     )
 #     @patch.object(GithubProvider, 'repo_obj')
 #     async def test_extract_tickets(self, mock_repo, mock_parse_issue_url, mock_user_desc):
 #         """
@@ -49,7 +53,11 @@
 #         print("\n Test Passed: extract_tickets() successfully retrieved ticket info!")
 #
 #     @patch.object(GithubProvider, 'get_user_description', return_value="Fixes #1 and relates to #2")
-#     @patch.object(GithubProvider, '_parse_issue_url', side_effect=lambda url: ("WonOfAKind/KimchiBot", int(url.split('#')[-1])))
+#     @patch.object(
+#         GithubProvider,
+#         "_parse_issue_url",
+#         side_effect=lambda url: ("WonOfAKind/KimchiBot", int(url.split("#")[-1])),
+#     )
 #     @patch.object(GithubProvider, 'repo_obj')
 #     async def test_extract_and_cache_pr_tickets(self, mock_repo, mock_parse_issue_url, mock_user_desc):
 #         """

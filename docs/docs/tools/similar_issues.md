@@ -1,9 +1,9 @@
 ## Overview
 
-> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. Its backends are not equally exercised: the lancedb flow has no tests of its own, and no backend is tested against its real driver.
+> **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. No backend is tested against its real driver.
 
 The similar issue tool retrieves the most similar issues to the current issue.
-It can be invoked manually by commenting on any PR:
+It is an issue-scoped command: comment `/similar_issue` on the issue (served by the GitHub Action; the GitHub App webhook only dispatches comments on pull requests), or run it from the CLI with `--issue_url`:
 
 ```
 /similar_issue
@@ -17,11 +17,25 @@ It can be invoked manually by commenting on any PR:
 
 ![similar_issue](../assets/similar_issue.png){width=768}
 
-Note that to perform retrieval, the `similar_issue` tool indexes all the repo previous issues (once).
+### Indexing and re-runs
+
+To perform retrieval, the `similar_issue` tool indexes the repository's issues in the configured vector database. On every backend:
+
+- The **first run** indexes up to `max_issues_to_scan` issues (default `500`).
+- **Later runs** append newer issues, stopping at the first already-indexed one, so previously-indexed issues are not re-embedded.
+- `force_update_dataset = true` makes every run re-index the whole repository: LanceDB deletes the repository's rows first, Pinecone and Qdrant upsert over the existing rows.
+- `skip_comments = true` skips issue comments and embeds only the issue title and body.
+
+These keys live under the `[pr_similar_issue]` section. Each backend section below describes its own configuration and re-run behaviour.
 
 ### Selecting a Vector Database
 
-Configure your preferred database by changing the `pr_similar_issue` parameter in `configuration.toml` file.
+Configure your preferred database by setting the `vectordb` parameter under `[pr_similar_issue]` in `configuration.toml`:
+
+```
+[pr_similar_issue]
+vectordb = "lancedb"  # options: "pinecone", "lancedb", "qdrant"
+```
 
 #### Available Options
 
@@ -30,6 +44,12 @@ Choose from the following Vector Databases:
 1. LanceDB
 2. Pinecone
 3. Qdrant
+
+#### LanceDB Configuration
+
+LanceDB is the default backend (`vectordb = "lancedb"`) and needs no external credentials. The index is stored in a local directory given by the `[lancedb] uri` key (default `./lancedb`). A single table (`codium-ai-pr-agent-issues`) is shared by every repository indexed into the same directory; rows are tagged with the repository name in the metadata.
+
+As described in [Indexing and re-runs](#indexing-and-re-runs), the first run creates the table and indexes up to `max_issues_to_scan` issues; later runs append newer issues until the first already-indexed one; `force_update_dataset = true` deletes the repository's rows and re-indexes them.
 
 #### Pinecone Configuration
 
@@ -52,11 +72,13 @@ gcp-starter pod tier is no longer supported.
 created. An existing index is opened by name and is never recreated, so moving an
 existing deployment to the new configuration does not lose the stored vectors.
 
-!!! note "Backend coverage is uneven"
+On re-runs, the first run creates the index and upserts up to `max_issues_to_scan` issues; later runs append newer issues until the first already-indexed one; `force_update_dataset = true` re-indexes the whole repository.
 
-    No backend is exercised against its real driver: the `similar-issue` dependency group is
-    not installed in CI, so the pinecone tests run against a faked module and the qdrant tests
-    never construct a client. The lancedb flow has no tests of its own at all.
+!!! note "No backend is tested against its real driver"
+
+    The `similar-issue` dependency group is not installed in CI, so the pinecone tests run
+    against a faked module, the qdrant tests never construct a client, and the lancedb tests
+    run against a fake table.
 
 !!! note "Default vector database"
 
@@ -83,7 +105,11 @@ vectordb = "qdrant"
 
 You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdrant.io/).
 
+`api_key` must be present even when the server does not enforce authentication (an empty string is accepted): the tool reads both `url` and `api_key` and raises when either is absent. A re-index uploads the whole repository in a single request.
+
 Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`, derived by appending a `-v2` suffix to the shared index name (`codium-ai-pr-agent-issues`). The suffix is an implementation detail of the Qdrant backend only; pinecone and lancedb use the unsuffixed name.
+
+On re-runs, the first run creates the collection and stores up to `max_issues_to_scan` issues; later runs append newer issues until the first already-indexed one; `force_update_dataset = true` re-indexes the whole repository.
 
 !!! note "Upgrading an index created before the point-id fix"
 
@@ -106,7 +132,7 @@ Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`, d
 - To invoke the 'similar issue' tool from **CLI**, run:
 `uv run pr-agent --issue_url=... similar_issue`
 
-- To invoke the 'similar' issue tool via online usage, [comment](https://github.com/the-pr-agent/pr-agent/issues/178#issuecomment-1716934893) on a PR:
+- To invoke the 'similar' issue tool via online usage, [comment](https://github.com/the-pr-agent/pr-agent/issues/178#issuecomment-1716934893) on an issue:
 `/similar_issue`
 
 - You can also enable the 'similar issue' tool to run automatically when a new issue is opened, by adding it to the [pr_commands list in the github_app section](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)

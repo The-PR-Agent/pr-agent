@@ -3,12 +3,25 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import pr_agent.tools.pr_similar_issue as psi
 
 
 class SettingsStub:
+    class CONFIG:
+        CLI_MODE = True
+
     class pr_similar_issue:
         skip_comments = True
+        max_issues_to_scan = 100
+        vectordb = "pinecone"
+        force_update_dataset = False
+
+    class pinecone:
+        api_key = "pinecone-key"
+        cloud = "aws"
+        region = "us-east-1"
 
 
 class _PandasSeries(list):
@@ -75,8 +88,34 @@ def _stub_embeddings(monkeypatch):
     monkeypatch.setattr(psi.time, "sleep", lambda seconds: None)
 
 
+def test_pinecone_indexes_exactly_max_issues(monkeypatch):
+    saved_vectors = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            saved_vectors.extend(kwargs["vectors"])
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    tool.max_issues_to_scan = 3
+    _stub_embeddings(monkeypatch)
+
+    issues = [_make_issue(number) for number in range(1, 6)]
+    tool._update_index_with_issues(issues, "example-repo", pinecone_namespace="ns", upsert=True)
+
+    issue_ids = [
+        vector[0] for vector in saved_vectors
+        if vector[0].endswith(".issue")
+    ]
+    assert issue_ids == ["issue_1.issue", "issue_2.issue", "issue_3.issue"]
+
+
+def test_pinecone_namespace_does_not_collapse_repo_separators():
+    assert psi._pinecone_namespace("foo/bar-baz") != psi._pinecone_namespace("foo-bar/baz")
+
+
 def test_pinecone_upsert_passes_batch_size_and_max_concurrency(monkeypatch):
     calls = {}
+    pinecone_namespace = psi._pinecone_namespace("Example/Repo")
 
     class FakeIndex:
         def upsert(self, **kwargs):
@@ -85,14 +124,81 @@ def test_pinecone_upsert_passes_batch_size_and_max_concurrency(monkeypatch):
     tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
     _stub_embeddings(monkeypatch)
 
-    tool._update_index_with_issues([_make_issue(7)], "example-repo", upsert=True)
+    tool._update_index_with_issues(
+        [_make_issue(7)],
+        "example-repo",
+        pinecone_namespace=pinecone_namespace,
+        upsert=True,
+    )
 
-    assert calls["namespace"] == ""
+    assert calls["namespace"] == pinecone_namespace
     assert calls["batch_size"] == 100
     assert calls["max_concurrency"] == 10
     assert [vector[0] for vector in calls["vectors"]] == [
         "example_issue_example-repo",
         "issue_7.issue",
+    ]
+
+
+def test_pinecone_existing_index_fetches_from_repo_namespace(monkeypatch):
+    fetches = []
+
+    class FakeIndex:
+        def fetch(self, **kwargs):
+            fetches.append(kwargs)
+            return SimpleNamespace(to_dict=lambda: {"vectors": {
+                kwargs["ids"][0]: {"metadata": {"repo": "example-repo"}},
+            }})
+
+    class FakePineconeClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+
+        def has_index(self, index_name):
+            return True
+
+        def Index(self, name):
+            return FakeIndex()
+
+    class FakeProvider:
+        @staticmethod
+        def supports_issue_indexing():
+            return True
+
+        def __init__(self):
+            self.github_client = SimpleNamespace(
+                get_repo=lambda repo_name: SimpleNamespace(
+                    full_name="Example/Repo",
+                    get_issues=lambda state: [_make_issue(7)],
+                )
+            )
+
+        def _parse_issue_url(self, issue_url):
+            return "Example/Repo", 1
+
+    fake_pinecone_module = SimpleNamespace(
+        Pinecone=FakePineconeClient,
+        ServerlessSpec=lambda cloud, region: SimpleNamespace(cloud=cloud, region=region),
+    )
+
+    monkeypatch.setitem(sys.modules, "pinecone", fake_pinecone_module)
+    monkeypatch.setattr(psi, "get_settings", lambda: SettingsStub)
+    monkeypatch.setattr(psi, "get_git_provider", lambda: FakeProvider)
+
+    tool = psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+    pinecone_namespace = psi._pinecone_namespace("Example/Repo")
+
+    assert tool.repo_name_for_index == "example-repo"
+    assert tool.pinecone_namespace == pinecone_namespace
+    assert fetches == [
+        {
+            "ids": ["example_issue_example-repo"],
+            "namespace": pinecone_namespace,
+        },
+        {
+            "ids": ["issue_7.issue"],
+            "namespace": pinecone_namespace,
+        }
     ]
 
 
@@ -110,9 +216,205 @@ def test_pinecone_upsert_path_skips_index_creation(monkeypatch):
     tool = _make_tool(pc)
     _stub_embeddings(monkeypatch)
 
-    tool._update_index_with_issues([_make_issue(7)], "example-repo", upsert=True)
+    tool._update_index_with_issues(
+        [_make_issue(7)],
+        "example-repo",
+        pinecone_namespace=psi._pinecone_namespace("Example/Repo"),
+        upsert=True,
+    )
 
     assert created == []
+
+
+def test_pinecone_upsert_response_errors_raise_before_sleep(monkeypatch):
+    logged = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return SimpleNamespace(has_errors=True, failed_item_count=100)
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+    monkeypatch.setattr(psi.time, "sleep", lambda seconds: pytest.fail("should not sleep after upsert errors"))
+    monkeypatch.setattr(
+        psi,
+        "get_logger",
+        lambda: SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: logged.append(kwargs.get("artifact")),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="100"):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+    assert logged == [{"failed_item_count": 100, "errors": []}]
+
+
+def test_pinecone_upsert_response_dict_errors_raise(monkeypatch):
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return {"has_errors": True, "failed_item_count": 5}
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="5"):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+
+def test_pinecone_upsert_failed_item_count_raises_without_has_errors(monkeypatch):
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return {"failed_item_count": 3}
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="3"):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+
+def test_pinecone_upsert_logs_batch_error_messages(monkeypatch):
+    logged = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return SimpleNamespace(
+                has_errors=True,
+                failed_item_count=2,
+                errors=[
+                    SimpleNamespace(error_message="namespace does not exist"),
+                    {"error_message": "duplicate id"},
+                ],
+            )
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+    monkeypatch.setattr(
+        psi,
+        "get_logger",
+        lambda: SimpleNamespace(
+            info=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: logged.append(kwargs.get("artifact")),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="2"):
+        tool._update_index_with_issues(
+            [_make_issue(7)],
+            "example-repo",
+            pinecone_namespace="ns",
+            upsert=True,
+        )
+
+    assert logged == [
+        {
+            "failed_item_count": 2,
+            "errors": ["namespace does not exist", "duplicate id"],
+        },
+    ]
+
+
+def test_pinecone_upsert_waits_until_lsn_is_reconciled(monkeypatch):
+    fetched = []
+    sleeps = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            return SimpleNamespace(
+                has_errors=False,
+                response_info=SimpleNamespace(lsn_committed=10),
+            )
+
+        def fetch(self, **kwargs):
+            fetched.append(kwargs)
+            lsn_reconciled = 5 if len(fetched) == 1 else 10
+            return SimpleNamespace(response_info=SimpleNamespace(
+                is_reconciled=lambda target: lsn_reconciled >= target
+            ))
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    _stub_embeddings(monkeypatch)
+    monkeypatch.setattr(psi.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    tool._update_index_with_issues(
+        [_make_issue(7)],
+        "example-repo",
+        pinecone_namespace="ns",
+        upsert=True,
+    )
+
+    assert fetched == [
+        {"ids": ["example_issue_example-repo"], "namespace": "ns"},
+        {"ids": ["example_issue_example-repo"], "namespace": "ns"},
+    ]
+    assert sleeps == [psi.PINECONE_UPSERT_READY_POLL_SECONDS]
+
+
+def test_pinecone_upsert_wait_supports_dict_response_info():
+    class FakeIndex:
+        def __init__(self):
+            self.fetch_calls = 0
+
+        def fetch(self, **kwargs):
+            self.fetch_calls += 1
+            return {"response_info": {"lsn_reconciled": 20}}
+
+    fake_index = FakeIndex()
+
+    psi._wait_for_pinecone_upsert_readiness(
+        fake_index,
+        {"response_info": {"lsn_committed": 20}},
+        namespace="",
+        vector_id="example_issue_example-repo",
+    )
+
+    assert fake_index.fetch_calls == 1
+
+
+def test_pinecone_upsert_wait_checks_deadline_before_fetch(monkeypatch):
+    state = {"t": 0.0}
+    fetched = []
+
+    class FakeIndex:
+        def fetch(self, **kwargs):
+            fetched.append(kwargs)
+            return {"response_info": {"lsn_reconciled": 1}}
+
+    monkeypatch.setattr(psi.time, "monotonic", lambda: state["t"])
+    monkeypatch.setattr(
+        psi.time,
+        "sleep",
+        lambda seconds: state.__setitem__(
+            "t", state["t"] + psi.PINECONE_UPSERT_READY_TIMEOUT_SECONDS + 1
+        ),
+    )
+
+    with pytest.raises(TimeoutError, match="not query-ready"):
+        psi._wait_for_pinecone_upsert_readiness(
+            FakeIndex(),
+            {"response_info": {"lsn_committed": 10}},
+            namespace="ns",
+            vector_id="example_issue_example-repo",
+        )
+
+    assert len(fetched) == 1
 
 
 def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):
@@ -130,7 +432,12 @@ def test_pinecone_create_index_path_builds_new_index_then_upserts(monkeypatch):
     tool = _make_tool(pc)
     _stub_embeddings(monkeypatch)
 
-    tool._update_index_with_issues([_make_issue(7)], "example-repo", upsert=False)
+    tool._update_index_with_issues(
+        [_make_issue(7)],
+        "example-repo",
+        pinecone_namespace=psi._pinecone_namespace("Example/Repo"),
+        upsert=False,
+    )
 
     assert len(created) == 1
     kwargs = created[0]

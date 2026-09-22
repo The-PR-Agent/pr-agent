@@ -9,6 +9,14 @@ from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.comment_identity import (
+    PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
+    get_pr_review_comment_identifiers,
+    hidden_marker_forms,
+    render_hidden_marker,
+)
 from pr_agent.algo.inline_comment_dedup import (
     InlineCommentStore,
     can_verify_inline_comment_publication,
@@ -36,24 +44,20 @@ from pr_agent.algo.review_finding_state import (
 )
 from pr_agent.algo.review_merge import merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
+from pr_agent.algo.run_output import (
+    github_action_output,
+    push_outputs,
+    show_relevant_configurations,
+    show_run_details,
+)
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
-    PRReviewHeader,
-    PRReviewIdentity,
-    add_pr_review_identity,
     convert_to_markdown_v2,
-    get_pr_review_comment_identifiers,
-    github_action_output,
-    hidden_marker_forms,
     is_value_no,
     load_yaml,
-    push_outputs,
-    render_hidden_marker,
-    show_relevant_configurations,
-    show_run_details,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -676,6 +680,14 @@ class PRReviewer:
         return findings
 
     def _review_head_sha(self) -> str:
+        # Resolve the head commit through the provider's own hook, so the reviewer does not
+        # need to know which field each API carries it in.
+        get_head_sha = getattr(self.git_provider, "get_pr_head_sha", None)
+        if callable(get_head_sha):
+            head_sha = get_head_sha()
+            if isinstance(head_sha, str) and head_sha:
+                return head_sha
+
         last_commit = getattr(self.git_provider, "last_commit_id", None)
         if isinstance(last_commit, str):
             return last_commit
@@ -1543,4 +1555,4 @@ class PRReviewer:
         else:
             get_logger().info("Auto-approval option is disabled")
             self.git_provider.publish_comment("Auto-approval option for PR-Agent is disabled. "
-                                              "You can enable it via a [configuration file](https://github.com/Codium-ai/pr-agent/blob/main/docs/REVIEW.md#auto-approval-1)")
+                                              "You can enable it via a [configuration file](https://docs.pr-agent.ai/usage-guide/configuration_reference/#config)")

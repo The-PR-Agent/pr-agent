@@ -37,7 +37,7 @@ Verify with `PYTHONPATH=. uv run pytest tests/unittest`.
 Implement a `GitProvider` subclass and register it:
 
 1. Create `pr_agent/git_providers/<name>_provider.py`, extending the interface in `pr_agent/git_providers/git_provider.py` (`gitlab_provider.py` is the reference).
-2. Register the class in `_GIT_PROVIDERS` in `pr_agent/git_providers/__init__.py`. Keys already used: `github`, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, `plain-diff`.
+2. Add the built-in provider to `_BUILTIN_GIT_PROVIDERS` in `pr_agent/git_providers/__init__.py` as a `(module_path, class_name)` pair. Built-ins are imported lazily when selected. Keys already used: `github`, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, `plain-diff`.
 3. Select it via `[config]` → `git_provider="<name>"` in `pr_agent/settings/configuration.toml`.
 4. Add `docs/docs/installation/<name>.md` (see [`gitlab.md`](../installation/gitlab.md)) and register it under `Installation` in both `docs/mkdocs.yml` and `docs/docs/summary.md`.
 5. Select provider-dependent behavior with capability checks like `provider.is_supported("feature")` rather than provider-type checks.

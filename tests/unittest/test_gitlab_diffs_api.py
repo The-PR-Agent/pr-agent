@@ -132,7 +132,9 @@ def test_numeric_project_identifier(provider_factory, project_id):
 
 @pytest.mark.parametrize("flag", ["too_large", "collapsed"])
 def test_pruned_patch_on_later_page_is_reconstructed_from_both_blobs(provider_factory, flag):
-    provider, transport = provider_factory(_pages([_change("visible.py")], [_change("pruned.py", diff="", **{flag: True})]))
+    provider, transport = provider_factory(
+        _pages([_change("visible.py")], [_change("pruned.py", diff="", **{flag: True})])
+    )
 
     files = provider.get_diff_files()
 

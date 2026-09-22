@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-agent"
-version = "0.45.0"
+version = "0.46.0"
 
 authors = [
   { name = "QodoAI", email = "ofir.f@qodo.ai" },
@@ -39,7 +39,7 @@ dependencies = [
   "certifi>=2026.7.22",
   "dynaconf>=3.3.5,<4",
   "fastapi>=0.141.1,<1",
-  "GitPython>=3.1.59,<4",
+  "GitPython>=3.1.62,<4",
   "starlette>=1.6.0,<2",
   "google-cloud-aiplatform==1.154.0",
   # google-cloud-aiplatform==1.154.0 requires storage <4,>=1.32.0 on py<3.13 and <4,>=3.10.0 on py>=3.13.

@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.codecommit_provider import CodeCommitFile, CodeCommitProvider, PullRequestCCMimic
 from pr_agent.tools.pr_reviewer import PRReviewer
 
@@ -209,13 +209,137 @@ class TestCodeCommitProvider:
             call("my_test_repo", "good.py", "source-commit"),
         ]
 
-    def test_get_diff_files_does_not_swallow_client_errors(self):
+    def test_get_diff_files_applies_ignore_rules_before_fetching_content(self):
+        ignored_file = CodeCommitFile(
+            "vendor/generated.py", "before-id", "vendor/generated.py", "after-id", EDIT_TYPE.MODIFIED
+        )
+        valid_file = CodeCommitFile("good.py", "before-id", "good.py", "after-id", EDIT_TYPE.MODIFIED)
+        provider = self._make_diff_provider([ignored_file, valid_file])
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
+        )
+
+        settings = MagicMock()
+        settings.ignore.regex = []
+        settings.ignore.glob = ["vendor/**"]
+        settings.config.get.return_value = []
+
+        with patch("pr_agent.algo.file_filter.get_settings", return_value=settings):
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert provider.codecommit_client.get_file.call_args_list == [
+            call("my_test_repo", "good.py", "destination-commit"),
+            call("my_test_repo", "good.py", "source-commit"),
+        ]
+
+    def test_get_diff_files_does_not_apply_first_target_ignore_rules_to_other_targets(self):
+        first_target = SimpleNamespace(
+            repository_name="repo-one",
+            source_commit="source-1",
+            destination_commit="destination-1",
+        )
+        second_target = SimpleNamespace(
+            repository_name="repo-two",
+            source_commit="source-2",
+            destination_commit="destination-2",
+        )
+        files = [
+            CodeCommitFile(
+                "one.py", "before-1", "one.py", "after-1", EDIT_TYPE.MODIFIED,
+                repository_name="repo-one",
+                source_commit="source-1",
+                destination_commit="destination-1",
+                comparison_base_commit="destination-1",
+            ),
+            CodeCommitFile(
+                "two.py", "before-2", "two.py", "after-2", EDIT_TYPE.MODIFIED,
+                repository_name="repo-two",
+                source_commit="source-2",
+                destination_commit="destination-2",
+                comparison_base_commit="destination-2",
+            ),
+        ]
+        provider = self._make_diff_provider(files)
+        provider.pr.targets = [first_target, second_target]
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo, _path, commit: b"before\n" if commit.startswith("destination-") else b"after\n"
+        )
+
+        with patch(
+            "pr_agent.git_providers.codecommit_provider.filter_ignored",
+            return_value=[],
+        ) as filter_ignored:
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["one.py", "two.py"]
+        filter_ignored.assert_not_called()
+
+    def test_get_diff_files_caches_empty_filtered_result(self):
+        ignored_file = CodeCommitFile(
+            "vendor/generated.py", "before-id", "vendor/generated.py", "after-id", EDIT_TYPE.MODIFIED
+        )
+        provider = self._make_diff_provider([ignored_file])
+
+        with patch(
+            "pr_agent.git_providers.codecommit_provider.filter_ignored",
+            return_value=[],
+        ) as filter_ignored:
+            first_result = provider.get_diff_files()
+            second_result = provider.get_diff_files()
+
+        assert first_result == []
+        assert second_result is first_result
+        filter_ignored.assert_called_once()
+        provider.codecommit_client.get_file.assert_not_called()
+
+    def test_get_diff_files_retries_after_client_error(self):
         file = CodeCommitFile("file.py", "before-id", "file.py", "after-id", EDIT_TYPE.MODIFIED)
         provider = self._make_diff_provider([file])
         provider.codecommit_client.get_file.side_effect = ValueError("AWS request failed")
 
         with pytest.raises(ValueError, match="AWS request failed"):
             provider.get_diff_files()
+
+        assert provider.diff_files is None
+
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["file.py"]
+        assert diff_files[0].base_file == "before\n"
+        assert diff_files[0].head_file == "after\n"
+        assert "-before" in diff_files[0].patch
+        assert "+after" in diff_files[0].patch
+
+    def test_get_repo_settings_ignores_source_branch_config(self):
+        provider = self._make_persistent_provider()
+        source_settings = b"[ignore]\nglob = ['**']\n"
+        destination_settings = b"[ignore]\nglob = ['vendor/**']\n"
+
+        def get_file(_repository, _path, commit, optional=False):
+            assert optional is True
+            if commit == "source-commit-1":
+                return source_settings
+            if commit == "destination-commit-1":
+                return destination_settings
+            raise AssertionError(f"unexpected commit: {commit}")
+
+        provider.codecommit_client.get_file.side_effect = get_file
+
+        settings = provider.get_repo_settings()
+
+        assert settings == destination_settings
+        assert settings != source_settings
+        provider.codecommit_client.get_file.assert_called_once_with(
+            "source-repository",
+            ".pr_agent.toml",
+            "destination-commit-1",
+            optional=True,
+        )
 
     def test_get_files_includes_differences_from_every_pull_request_target(self):
         provider = object.__new__(CodeCommitProvider)
@@ -894,7 +1018,10 @@ class TestCodeCommitProvider:
         assert provider.codecommit_client.update_comment.call_count == 2
         provider.codecommit_client.publish_comment.assert_called_once()
         assert provider.codecommit_client.publish_comment.call_args.kwargs["repo_name"] == "source-repository"
-        assert provider.codecommit_client.publish_comment.call_args.kwargs["destination_commit"] == "destination-commit-2"
+        assert (
+            provider.codecommit_client.publish_comment.call_args.kwargs["destination_commit"]
+            == "destination-commit-2"
+        )
         assert provider.codecommit_client.publish_comment.call_args.kwargs["source_commit"] == "source-commit-2"
 
     def test_unmarked_persistent_comment_remains_create_only(self):
@@ -1039,7 +1166,7 @@ class TestCodeCommitProvider:
         assert not CodeCommitProvider._is_valid_codecommit_hostname("no-such-region.console.aws.amazon.com")
         assert not CodeCommitProvider._is_valid_codecommit_hostname("console.aws.amazon.com")
 
-    # Test that an error is raised when an invalid CodeCommit URL is provided to the set_pr() method of the CodeCommitProvider class.
+    # Error is raised when set_pr() receives an invalid CodeCommit URL.
     # Generated by CodiumAI
     def test_invalid_codecommit_url(self):
         provider = CodeCommitProvider()
@@ -1133,8 +1260,20 @@ class TestCodeCommitProvider:
         expect = "abc\n\ndef\n\n___\n\nghi\n\njkl\n\nmno\n\npqr\n\n"
         assert CodeCommitProvider._add_additional_newlines(input) == expect
         # a test example from a real PR
-        input = "## PR Type:\nEnhancement\n\n___\n## PR Description:\nThis PR introduces a new feature to the script, allowing users to filter servers by name.\n\n___\n## PR Main Files Walkthrough:\n`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n`bar`: The bar script has been updated to list stopped servers.\n"
-        expect = "## PR Type:\n\nEnhancement\n\n___\n\n## PR Description:\n\nThis PR introduces a new feature to the script, allowing users to filter servers by name.\n\n___\n\n## PR Main Files Walkthrough:\n\n`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n\n`bar`: The bar script has been updated to list stopped servers.\n\n"
+        input = (
+            "## PR Type:\nEnhancement\n\n___\n## PR Description:\n"
+            "This PR introduces a new feature to the script, allowing users to filter servers by name.\n\n"
+            "___\n## PR Main Files Walkthrough:\n"
+            "`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n"
+            "`bar`: The bar script has been updated to list stopped servers.\n"
+        )
+        expect = (
+            "## PR Type:\n\nEnhancement\n\n___\n\n## PR Description:\n\n"
+            "This PR introduces a new feature to the script, allowing users to filter servers by name.\n\n"
+            "___\n\n## PR Main Files Walkthrough:\n\n"
+            "`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n\n"
+            "`bar`: The bar script has been updated to list stopped servers.\n\n"
+        )
         assert CodeCommitProvider._add_additional_newlines(input) == expect
 
     def test_remove_markdown_html(self):

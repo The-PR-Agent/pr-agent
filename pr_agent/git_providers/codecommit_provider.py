@@ -6,17 +6,18 @@ from types import SimpleNamespace
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
+from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
 
-from ..algo.utils import (
+from ..algo.comment_identity import (
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
-    load_large_diff,
 )
+from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider
@@ -147,12 +148,19 @@ class CodeCommitProvider(GitProvider):
             or renamed files in the merge request.
         """
         # bring files from CodeCommit only once
-        if self.diff_files:
+        if self.diff_files is not None:
             return self.diff_files
 
-        self.diff_files = []
+        diff_files = []
 
         files = self.get_files()
+        # Repository settings are request-scoped and currently come from one canonical target.
+        # Applying those ignore rules to a multi-target PR could suppress files from unrelated
+        # target repositories, so preserve the pre-existing multi-target behavior until settings
+        # can be scoped per target.
+        if len(self._get_target_contexts()) == 1:
+            files = filter_ignored(files, platform="codecommit")
+
         for diff_item in files:
             # Skip "bad extensions" from language_extensions.toml, lockfiles and minified assets
             if not is_valid_file(diff_item.filename):
@@ -198,8 +206,9 @@ class CodeCommitProvider(GitProvider):
                 if diff_item.a_path == diff_item.b_path
                 else diff_item.a_path,
             )
-            self.diff_files.append(info)
+            diff_files.append(info)
 
+        self.diff_files = diff_files
         return self.diff_files
 
     def publish_description(self, pr_title: str, pr_body: str):
@@ -453,7 +462,7 @@ class CodeCommitProvider(GitProvider):
         settings_filename = ".pr_agent.toml"
         target = self._get_target_contexts()[0]
         return self.codecommit_client.get_file(
-            target["repository_name"], settings_filename, target["source_commit"], optional=True
+            target["repository_name"], settings_filename, target["destination_commit"], optional=True
         )
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:

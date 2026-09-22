@@ -133,16 +133,11 @@ def test_gitea_e2e_does_not_repeat_successful_pr_cleanup(monkeypatch):
     """Do not close an already-closed PR again when normal branch deletion fails."""
     gitea_e2e, http, _ = _setup_gitea_case(monkeypatch)
     file_response = MagicMock()
+    file_response.status_code = 200
     file_response.json.return_value = {"sha": "file-sha"}
-    comments_response = MagicMock()
-    comments_response.json.return_value = [
-        {"body": "## PR Reviewer Guide 🔍"},
-        {"body": "comment 2"},
-        {"body": "comment 3"},
-        {"body": "comment 4"},
-        {"body": "comment 5"},
-    ]
-    http.get.side_effect = [file_response, comments_response]
+    results = MagicMock(return_value=[])
+    monkeypatch.setattr(gitea_e2e, "_missing_gitea_tool_results", results)
+    http.get.side_effect = [file_response]
 
     pr_response = MagicMock()
     pr_response.json.return_value = {"number": 123}
@@ -160,6 +155,9 @@ def test_gitea_e2e_does_not_repeat_successful_pr_cleanup(monkeypatch):
 
     assert caught.value is cleanup_failure
     new_branch = _assert_native_create_contract(http)
+    results.assert_called_once_with(
+        "https://gitea.example.test/api/v1/repos/codiumai/pr-agent-tests", 123, _expected_headers()
+    )
     http.patch.assert_called_once_with(
         "https://gitea.example.test/api/v1/repos/codiumai/pr-agent-tests/pulls/123",
         headers=_expected_headers(),

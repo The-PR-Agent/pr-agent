@@ -11,10 +11,11 @@ from starlette_context import context, request_cycle_context
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.cli_args import CliArgs
-from pr_agent.algo.utils import add_comment_identity, comment_matches_identity, update_settings_from_args
+from pr_agent.algo.comment_identity import add_comment_identity, comment_matches_identity
+from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
-from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
+from pr_agent.git_providers.git_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
@@ -208,15 +209,8 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
     return tokens
 
 
-def prepare_command(command: str) -> list[str]:
-    """Apply command-line settings while preserving quoted argument boundaries.
-
-    Webhook adapters use this before handing configured commands to ``PRAgent``. Parsing
-    with ``str.split(" ")`` breaks values such as ``--section.key=\"words with spaces\"``;
-    the tokenizer keeps the value as one argument and preserves explicit quoting for YAML.
-    Returning the token list avoids serializing it back to a string, which would otherwise
-    be re-parsed by ``PRAgent`` and could alter quoted arguments.
-    """
+def parse_command(command: str) -> list[str]:
+    """Normalize configured command strings to argv without applying settings."""
     tokens = _split_command(command)
     if not tokens:
         return []
@@ -228,6 +222,19 @@ def prepare_command(command: str) -> list[str]:
             key, value = argument.split("=", 1)
             argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
         args.append(argument)
+    return [action] + args
+
+
+def prepare_command(command: str) -> list[str]:
+    """Apply configured command settings while retaining argument boundaries.
+
+    Return argv so ``PRAgent`` does not parse the command again. Quoted setting
+    values retain their string type when passed to the settings loader.
+    """
+    command_args = parse_command(command)
+    if not command_args:
+        return []
+    action, *args = command_args
     kept, rejected = [], []
     for argument in args:
         # Validate the key only. The value is free text - a review instruction may legitimately

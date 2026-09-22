@@ -5,6 +5,10 @@
 FROM public.ecr.aws/lambda/python:3.14 AS base
 COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
 
+# Use the cost map bundled with the litellm pinned in uv.lock so lambda images
+# behave as built rather than fetching today's remote data at import time.
+ENV LITELLM_LOCAL_MODEL_COST_MAP=True
+
 RUN dnf update -y && \
     dnf install -y gcc python3-devel git && \
     dnf clean all

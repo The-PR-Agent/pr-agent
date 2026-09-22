@@ -7,13 +7,13 @@ from requests import Request, Response
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import HTTPError, Timeout
 
-from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.algo.utils import (
+from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
     PRReviewHeader,
     PRReviewIdentity,
 )
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -189,7 +189,16 @@ class TestBitbucketProvider:
         assert pr_number == 321
 
     @pytest.mark.parametrize(
-        ("status", "lines_added", "lines_removed", "filename", "old_filename", "raw_diff", "expected_patch", "edit_type"),
+        (
+            "status",
+            "lines_added",
+            "lines_removed",
+            "filename",
+            "old_filename",
+            "raw_diff",
+            "expected_patch",
+            "edit_type",
+        ),
         [
             (
                 "modified",
@@ -725,6 +734,24 @@ index 1111111..2222222 100644
         assert request.call_count == 2
         for response in responses:
             response.raise_for_status.assert_called_once_with()
+
+    def test_publish_code_suggestions_preserves_backslashes_in_diff(self):
+        provider = self._provider_for_code_suggestions()
+        provider.publish_inline_comments = MagicMock(return_value=True)
+        suggestion = self._code_suggestion(2)
+        suggestion["body"] = '```suggestion\npattern = r"\\d+"\n```'
+        suggestion["original_suggestion"] = {
+            "existing_code": 'pattern = r"\\w+"',
+            "improved_code": 'pattern = r"\\d+"',
+        }
+
+        result = provider.publish_code_suggestions([suggestion])
+
+        assert result is True
+        post_parameters = provider.publish_inline_comments.call_args.args[0]
+        assert len(post_parameters) == 1
+        assert r"\w+" in post_parameters[0]["body"]
+        assert r"\d+" in post_parameters[0]["body"]
 
     def test_publish_code_suggestions_reports_http_failures(self):
         provider = self._provider_for_code_suggestions()
@@ -1312,6 +1339,24 @@ class TestBitbucketServerProvider:
         assert result is True
         assert provider.bitbucket_client.post.call_count == 2
 
+    def test_publish_code_suggestions_preserves_backslashes_in_diff(self):
+        provider = self._provider_for_code_suggestions()
+        provider.publish_inline_comments = MagicMock(return_value=True)
+        suggestion = self._code_suggestion(2)
+        suggestion["body"] = '```suggestion\npattern = r"\\d+"\n```'
+        suggestion["original_suggestion"] = {
+            "existing_code": 'pattern = r"\\w+"',
+            "improved_code": 'pattern = r"\\d+"',
+        }
+
+        result = provider.publish_code_suggestions([suggestion])
+
+        assert result is True
+        post_parameters = provider.publish_inline_comments.call_args.args[0]
+        assert len(post_parameters) == 1
+        assert r"\w+" in post_parameters[0]["body"]
+        assert r"\d+" in post_parameters[0]["body"]
+
     def test_publish_code_suggestions_reports_failures_and_continues(self):
         provider = self._provider_for_code_suggestions()
         provider.bitbucket_client.post.side_effect = [
@@ -1758,7 +1803,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nmultiple\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n-multiple\n+readme\n+without\n+some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n-multiple\n+readme\n+without\n"
+                    "+some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )
@@ -1780,7 +1828,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nsome\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n"
+                    " to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )
@@ -1802,7 +1853,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nsome\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n"
+                    " to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )

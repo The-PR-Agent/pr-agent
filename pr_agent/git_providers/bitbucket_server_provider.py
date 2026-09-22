@@ -168,7 +168,7 @@ class BitbucketServerProvider(GitProvider):
                     patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                     diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                     # replace ```suggestion ... ``` with diff_code, using regex:
-                    body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                    body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
                 except Exception as e:
                     get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                     continue
@@ -586,6 +586,14 @@ class BitbucketServerProvider(GitProvider):
             return f"{self._get_repo_web_url()}/commits/{self.pr.fromRef['latestCommit']}"
         except Exception as e:
             get_logger().warning(f"Failed to get latest commit URL, error: {e}")
+            return ""
+
+    def get_pr_head_sha(self) -> str:
+        try:
+            head_sha = self.pr.fromRef['latestCommit']
+            return head_sha if isinstance(head_sha, str) else ""
+        except (KeyError, TypeError) as e:
+            get_logger().warning(f"Failed to get head SHA, error: {e}")
             return ""
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:

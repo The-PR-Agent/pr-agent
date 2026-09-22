@@ -7,7 +7,7 @@ from typing import Optional, Union
 
 import dynaconf
 
-from pr_agent.agent.pr_agent import PRAgent, publish_incomplete_github_files_comment
+from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_github_files_comment
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -74,6 +74,20 @@ async def _handle_request(url, body, notify=None):
         status = _action_status.get()
         if status is not None:
             status.failed = True
+
+
+async def _handle_configured_command(url, command):
+    try:
+        command_args = parse_command(command) if isinstance(command, str) else command
+        if not command_args:
+            raise ValueError("Empty configured command")
+    except ValueError:
+        get_logger().error("Failed to parse a configured command; skipping it.")
+        status = _action_status.get()
+        if status is not None:
+            status.failed = True
+        return
+    await _handle_request(url, command_args)
 
 
 async def _run_auto_tool(tool_class, pr_url):
@@ -153,7 +167,7 @@ async def _run_review_commands(event_payload):
     get_settings().pr_description.final_update_message = False
     get_logger().info(f"Running review commands: {review_commands}")
     for command in review_commands:
-        await _handle_request(pr_url, command)
+        await _handle_configured_command(pr_url, command)
 
 
 async def run_action():
@@ -290,7 +304,7 @@ async def run_action():
                 get_settings().pr_description.final_update_message = False
                 get_logger().info(f"Running push commands: {push_commands}")
                 for command in push_commands:
-                    await _handle_request(pr_url, command)
+                    await _handle_configured_command(pr_url, command)
                 return
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("url")
@@ -338,6 +352,17 @@ async def run_action():
                 get_logger().info("Skipping comment event from a bot sender to avoid a feedback loop")
                 return
             comment_body = event_payload.get("comment", {}).get("body")
+            # Skip comments that are not commands, mirroring the webhook guard
+            # in github_app.py. Otherwise a plain comment is lexed as an unknown
+            # command, PRAgent.handle_request returns False and the action exits 1.
+            if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
+                if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
+                    comment_body_split = comment_body.split('/ask')
+                    comment_body = '/ask' + comment_body_split[1] + ' \n' + comment_body_split[0].strip().lstrip('>')
+                    get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
+                else:
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if '/ask' in comment_body:

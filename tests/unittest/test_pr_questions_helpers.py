@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import pr_agent.tools.pr_line_questions as plq
-from pr_agent.algo.utils import format_pr_questions_header
+from pr_agent.algo.comment_identity import format_pr_questions_header
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
