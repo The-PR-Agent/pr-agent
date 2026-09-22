@@ -428,7 +428,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
 | `force_streaming_api_base_substrings` | [] |  |
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
-| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching) |
+| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). When set, PR-Agent injects the cache_control blocks itself on the configured messages; it never double-injects with LiteLLM's own toggle `litellm.enable_anthropic_prompt_caching`, which you can still turn on separately via the `LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING=true` env var (off by default). A warning is logged once per process when the config cannot take effect — the model lacks prompt-cache support (`litellm.utils.supports_prompt_caching` is false) or the cached prefix stays below the model's `prompt_cache_min_tokens`. When `config.output_run_details` is enabled, cache read/write token totals appear in the agent run details block. |
 
 
 ## `[openrouter]`

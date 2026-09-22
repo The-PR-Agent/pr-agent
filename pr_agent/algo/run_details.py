@@ -45,6 +45,12 @@ class RunDetails:
     # Counts failed fallback attempts as well, so it reflects what the run really cost,
     # while `model_used` names only the model behind the final answer.
     total_tokens: int = 0
+    # Provider-reported prompt-cache activity summed over every AI call of the run.
+    # Named after litellm's normalized usage fields (Anthropic cache_read_input_tokens /
+    # cache_creation_input_tokens; DeepSeek prompt_cache_hit_tokens maps onto read).
+    # Both stay 0 when the provider does not report cache usage.
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     # Successful LLM invocations, counted even when their token usage is unavailable.
     num_ai_calls: int = 0
     # Accumulate costs only when cost output is enabled and LiteLLM can synchronously
@@ -73,6 +79,10 @@ class RunDetails:
             or self.prompt_tokens > 0
             or self.completion_tokens > 0
         )
+
+    @property
+    def has_cache_usage(self) -> bool:
+        return self.cache_read_tokens > 0 or self.cache_creation_tokens > 0
 
     @property
     def cost_status(self) -> str:
@@ -129,6 +139,28 @@ def _read_token_field(usage, name: str) -> int:
     return value if isinstance(value, int) else 0
 
 
+def _read_cache_token_field(usage, public_name: str, private_name: str) -> int:
+    """Read a cache-token field from a litellm usage object or dict.
+
+    litellm's ``Usage`` keeps these under private attributes (``_cache_read_input_tokens``,
+    ``_cache_creation_input_tokens``), while a raw dict carries the public key.
+    ``prompt_tokens_details.cached_tokens`` is litellm's normalized alias for cache reads.
+    """
+    if isinstance(usage, dict):
+        value = usage.get(public_name)
+        if value is None and public_name == "cache_read_input_tokens":
+            value = usage.get("prompt_tokens_details", {}).get("cached_tokens")
+    else:
+        value = getattr(usage, public_name, None)
+        if value is None:
+            value = getattr(usage, private_name, None)
+        if value is None and public_name == "cache_read_input_tokens":
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details is not None:
+                value = getattr(details, "cached_tokens", None)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def add_token_usage(usage) -> None:
     """Accumulate token counts from a litellm usage object or dict."""
     details = get_run_details()
@@ -142,6 +174,12 @@ def add_token_usage(usage) -> None:
     details.prompt_tokens += prompt_tokens
     details.completion_tokens += completion_tokens
     details.total_tokens += total_tokens
+    details.cache_read_tokens += _read_cache_token_field(
+        usage, "cache_read_input_tokens", "_cache_read_input_tokens"
+    )
+    details.cache_creation_tokens += _read_cache_token_field(
+        usage, "cache_creation_input_tokens", "_cache_creation_input_tokens"
+    )
 
 
 def _as_decimal_cost(cost_usd) -> Optional[Decimal]:

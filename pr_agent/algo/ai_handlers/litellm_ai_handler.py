@@ -142,6 +142,15 @@ MODEL_RETRIES = 2
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
 OPENAI_DEFAULT_API_BASE = "https://api.openai.com/v1"
 
+# Token-count allowances used when estimating the cached prompt prefix for the
+# cache_control_injection_points pre-call warning. Mirrors pr_help_message.py.
+_CACHE_MESSAGE_FRAMING_ALLOWANCE = 16
+_CACHE_REPLY_FRAMING_ALLOWANCE = 16
+# One-time warnings telling the operator when an enabled prompt-cache config cannot take
+# effect, keyed by (model, reason) so the same warning is logged once per process. See
+# _warn_prompt_cache_conditions.
+_ANTHROPIC_CACHE_WARNING_LOG: set[tuple[str, str]] = set()
+
 PROVIDER_SETTING_PATHS = {
     "anthropic": {"api_key": "ANTHROPIC.KEY"},
     "codestral": {"api_key": "CODESTRAL.KEY"},
@@ -245,6 +254,17 @@ def _should_retry_same_model(exc: BaseException) -> bool:
     if isinstance(exc, openai.APITimeoutError):
         return _as_bool(get_settings().config.get("retry_same_model_on_timeout", True), default=True)
     return isinstance(exc, openai.APIError)
+
+
+def _log_anthropic_cache_warning(model: str, reason: str) -> None:
+    """Log one warning per process for a prompt-cache config that cannot take effect."""
+    key = (model, reason)
+    if key in _ANTHROPIC_CACHE_WARNING_LOG:
+        return
+    _ANTHROPIC_CACHE_WARNING_LOG.add(key)
+    get_logger().warning(
+        f"cache_control_injection_points may not take effect for {model}: {reason}"
+    )
 
 
 class LiteLLMAIHandler(BaseAiHandler):
@@ -2321,6 +2341,65 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
         return cache_control_injection_points
 
+    @staticmethod
+    def _warn_prompt_cache_conditions(model: str, system: str, user: str, injection_points) -> None:
+        """Warn once per process when an enabled prompt-cache config cannot take effect.
+
+        LiteLLM skips Anthropic prompt caching silently when the model does not support it or
+        the cached prefix stays below the model's ``prompt_cache_min_tokens``. Both conditions
+        are knowable before the call, so surface them instead of leaving the operator blind.
+        Best effort: a metadata gap or estimate failure skips the check, never fails the call.
+        """
+        try:
+            supports = litellm.utils.supports_prompt_caching(model)
+        except Exception:
+            return
+        if supports is False:
+            _log_anthropic_cache_warning(model, "the model does not support prompt caching")
+            return
+        try:
+            min_tokens = litellm.get_model_info(model).get("prompt_cache_min_tokens")
+        except Exception:
+            return
+        if not isinstance(min_tokens, int) or isinstance(min_tokens, bool) or min_tokens <= 0:
+            return
+        cached_tokens = LiteLLMAIHandler._estimate_cached_prefix_tokens(system, user, injection_points)
+        if 0 < cached_tokens < min_tokens:
+            _log_anthropic_cache_warning(
+                model,
+                f"the cached prefix is only ~{cached_tokens} tokens, below the "
+                f"model's {min_tokens} token minimum",
+            )
+
+    @staticmethod
+    def _estimate_cached_prefix_tokens(system: str, user: str, injection_points) -> int:
+        """Estimate the tokens in the prompt segment the injection points will cache.
+
+        A cache_control breakpoint caches everything from the start of the prompt up to the
+        targeted message, so the estimate counts the targeted messages plus every message
+        before them (system, then user in this handler's call shape). Returns 0 when none of
+        the points targets a supported role or the estimate cannot be produced, which skips
+        the below-minimum check entirely.
+        """
+        targets_user = any(
+            isinstance(point, dict) and point.get("role") == "user" for point in injection_points
+        )
+        if not any(isinstance(point, dict) and point.get("role") in ("system", "user")
+                   for point in injection_points):
+            return 0
+        try:
+            from pr_agent.algo.token_handler import TokenEncoder
+
+            encoder = TokenEncoder.get_token_encoder("anthropic/claude")
+            system_tokens = len(encoder.encode(system or "", disallowed_special=()))
+            user_tokens = len(encoder.encode(user or "", disallowed_special=()))
+        except Exception:
+            system_tokens = len(system or "") // 4
+            user_tokens = len(user or "") // 4
+        cached_tokens = system_tokens + (user_tokens if targets_user else 0)
+        cached_framing = _CACHE_MESSAGE_FRAMING_ALLOWANCE * (2 if targets_user else 1) + _CACHE_REPLY_FRAMING_ALLOWANCE
+        return cached_tokens + cached_framing
+
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         configured_deployment_id = self.deployment_id
         return await self._chat_completion_with_retry(
@@ -2655,6 +2734,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if cache_control_injection_points:
                     if isinstance(model, str) and "claude" in model.lower():
                         kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
+                        self._warn_prompt_cache_conditions(model, system, user, cache_control_injection_points)
                     else:
                         get_logger().debug(
                             f"cache_control_injection_points configured but not applied: {model} is not an "

@@ -445,7 +445,15 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 # Application inference profile ARN for classic `bedrock/` calls through the `bedrock-runtime` APIs.
 # Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
 # model_id = ""
-cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
+# Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}]
+# (https://docs.litellm.ai/docs/tutorials/prompt_caching). When LiteLLM's own toggle
+# litellm.enable_anthropic_prompt_caching (env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING) is off,
+# enabling this setting still injects a cache_control block itself; the toggle would then be
+# redundant, so both paths never double-inject. A warning is logged once per process when the
+# configured points cannot take effect (model without prompt-cache support, or a cached prefix
+# below the model's cache minimum); set LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING=true to also have
+# LiteLLM add ephemeral cache_control blocks.
+cache_control_injection_points = []
 
 [openrouter]
 # OpenRouter provider routing, reasoning control and output cap. These apply only
