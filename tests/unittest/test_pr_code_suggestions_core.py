@@ -1119,6 +1119,36 @@ async def test_push_inline_code_suggestions_raises_when_summarized_fallback_publ
     assert tool._output_published is False
 
 
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_raises_when_summarized_fallback_returns_no_comment():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.return_value = False
+    git_provider.publish_comment.return_value = None
+    tool = _make_tool(git_provider)
+    tool._output_published = False
+
+    with pytest.raises(RuntimeError, match="Failed to publish code suggestions after individual retries"):
+        await tool.push_inline_code_suggestions({"code_suggestions": [
+            _valid_suggestion(
+                relevant_lines_start=2,
+                relevant_lines_end=2,
+                existing_code="return old()",
+                improved_code="return new()",
+                score=8,
+            )
+        ]})
+
+    assert tool._output_published is False
+
+
 @pytest.fixture
 def publish_output_no_suggestions():
     settings = get_settings()

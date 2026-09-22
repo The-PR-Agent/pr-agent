@@ -1346,7 +1346,11 @@ class PRCodeSuggestions:
                         PRCodeSuggestionsIdentity.SUMMARY.value,
                         self.git_provider,
                     )
-                    self.git_provider.publish_comment(pr_body)
+                    response = self.git_provider.publish_comment(pr_body)
+                    if response is None:
+                        # Some providers surface a permanent publication failure by returning
+                        # None instead of raising; do not record the fallback as delivered.
+                        raise RuntimeError("publish_comment returned no comment response")
                     self._output_published = True
                 except Exception as e:
                     get_logger().error(
