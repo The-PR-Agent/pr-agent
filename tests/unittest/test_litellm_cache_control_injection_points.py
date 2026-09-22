@@ -172,6 +172,43 @@ async def test_warns_once_when_model_does_not_support_prompt_caching(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_warns_once_for_non_anthropic_model_even_though_forwarding_is_gated(monkeypatch):
+    # A non-Claude model never gets the kwarg forwarded, but it must no longer be silently
+    # dropped in a debug line: the operator gets one warning naming the model and the reason.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+    monkeypatch.setattr(litellm_handler, "get_settings", _warn_settings())
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == 2
+    assert "cache_control_injection_points" not in mock_call.call_args.kwargs
+    warning_texts = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert len([text for text in warning_texts if "does not route to an Anthropic Claude model" in text]) == 1
+
+
+def test_anthropic_routed_alias_without_metadata_is_silent(monkeypatch):
+    # A provider-aliased Claude deployment (e.g. anthropic/my-deployment) may be absent from
+    # litellm's cost map: best-effort metadata lookups must not emit a false warning.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", MagicMock(side_effect=RuntimeError("no model")))
+
+    handler = litellm_handler.LiteLLMAIHandler()
+    handler._warn_prompt_cache_conditions(
+        "my-claude-gateway", "sys", "usr", [{"location": "message", "role": "system"}], request_provider="anthropic"
+    )
+
+    assert mock_logger.warning.call_count == 0
+
+
+@pytest.mark.asyncio
 async def test_warns_when_cached_prefix_below_model_minimum(monkeypatch):
     mock_logger = MagicMock()
     monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)

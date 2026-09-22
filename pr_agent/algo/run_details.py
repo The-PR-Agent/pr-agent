@@ -144,20 +144,37 @@ def _read_cache_token_field(usage, public_name: str, private_name: str) -> int:
 
     litellm's ``Usage`` keeps these under private attributes (``_cache_read_input_tokens``,
     ``_cache_creation_input_tokens``), while a raw dict carries the public key.
-    ``prompt_tokens_details.cached_tokens`` is litellm's normalized alias for cache reads.
+    ``prompt_tokens_details.cached_tokens`` is litellm's normalized alias for cache reads, and
+    DeepSeek reports cache hits as ``prompt_cache_hit_tokens``. The details sub-object may be
+    None in the raw payload, so the lookup must never assume it is a mapping.
     """
+    read_aliases = ("prompt_tokens_details", "prompt_cache_hit_tokens")
     if isinstance(usage, dict):
         value = usage.get(public_name)
         if value is None and public_name == "cache_read_input_tokens":
-            value = usage.get("prompt_tokens_details", {}).get("cached_tokens")
+            for alias in read_aliases:
+                details = usage.get(alias)
+                if isinstance(details, dict):
+                    value = details.get("cached_tokens")
+                elif isinstance(details, int) and not isinstance(details, bool):
+                    value = details
+                if value is not None:
+                    break
     else:
         value = getattr(usage, public_name, None)
         if value is None:
             value = getattr(usage, private_name, None)
         if value is None and public_name == "cache_read_input_tokens":
-            details = getattr(usage, "prompt_tokens_details", None)
-            if details is not None:
-                value = getattr(details, "cached_tokens", None)
+            for alias in read_aliases:
+                details = getattr(usage, alias, None)
+                if isinstance(details, dict):
+                    value = details.get("cached_tokens")
+                elif isinstance(details, int) and not isinstance(details, bool):
+                    value = details
+                elif details is not None:
+                    value = getattr(details, "cached_tokens", None)
+                if value is not None:
+                    break
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 

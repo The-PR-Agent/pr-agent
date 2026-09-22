@@ -146,6 +146,8 @@ OPENAI_DEFAULT_API_BASE = "https://api.openai.com/v1"
 # cache_control_injection_points pre-call warning. Mirrors pr_help_message.py.
 _CACHE_MESSAGE_FRAMING_ALLOWANCE = 16
 _CACHE_REPLY_FRAMING_ALLOWANCE = 16
+# Providers that serve Anthropic Claude models and honor cache_control injection.
+_ANTHROPIC_CACHE_REQUEST_PROVIDERS = ("anthropic", "bedrock", "bedrock_mantle", "vertex_ai")
 # One-time warnings telling the operator when an enabled prompt-cache config cannot take
 # effect, keyed by (model, reason) so the same warning is logged once per process. See
 # _warn_prompt_cache_conditions.
@@ -2342,7 +2344,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         return cache_control_injection_points
 
     @staticmethod
-    def _warn_prompt_cache_conditions(model: str, system: str, user: str, injection_points) -> None:
+    def _warn_prompt_cache_conditions(
+        model: str, system: str, user: str, injection_points, request_provider: str | None = None
+    ) -> None:
         """Warn once per process when an enabled prompt-cache config cannot take effect.
 
         LiteLLM skips Anthropic prompt caching silently when the model does not support it or
@@ -2350,11 +2354,25 @@ class LiteLLMAIHandler(BaseAiHandler):
         are knowable before the call, so surface them instead of leaving the operator blind.
         Best effort: a metadata gap or estimate failure skips the check, never fails the call.
         """
+        if not isinstance(model, str) or not model:
+            return
+        is_claude_named = "claude" in model.lower()
+        is_anthropic_provider = request_provider in _ANTHROPIC_CACHE_REQUEST_PROVIDERS
+        if not is_claude_named and not is_anthropic_provider:
+            # cache_control_injection_points is an Anthropic-only kwarg; a config pointing at
+            # another provider (or a model identifier that cannot resolve as Anthropic) will
+            # never attach, so warn instead of silently dropping it in a debug line.
+            _log_anthropic_cache_warning(
+                model, "the request does not route to an Anthropic Claude model"
+            )
+            return
         try:
             supports = litellm.utils.supports_prompt_caching(model)
         except Exception:
             return
-        if supports is False:
+        if supports is False and is_claude_named:
+            # Conclusive only for a model identifier we recognize; a provider-aliased model
+            # (e.g. anthropic/my-deployment) may simply be absent from litellm's cost map.
             _log_anthropic_cache_warning(model, "the model does not support prompt caching")
             return
         try:
@@ -2728,17 +2746,18 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Anthropic prompt caching via LiteLLM's cache_control_injection_points. The value
                 # is validated before the try/except (see above) so a malformed config surfaces as
                 # a ValueError instead of being retried. The kwarg is Anthropic-specific (Claude via
-                # the Anthropic API, Bedrock or Vertex), so gate on the model to avoid passing an
-                # unsupported param to other providers when litellm.drop_params is off. setdefault
-                # guards against overwriting a value already merged into kwargs.
+                # the Anthropic API, Bedrock or Vertex), so gate the forwarding on the model to
+                # avoid passing an unsupported param to other providers when litellm.drop_params is
+                # off. The pre-call warning runs for every configured model instead, so an operator
+                # who misconfigures an aliased or non-Anthropic model gets a signal rather than a
+                # silently skipped debug line. setdefault guards against overwriting a value already
+                # merged into kwargs.
                 if cache_control_injection_points:
                     if isinstance(model, str) and "claude" in model.lower():
                         kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
-                        self._warn_prompt_cache_conditions(model, system, user, cache_control_injection_points)
-                    else:
-                        get_logger().debug(
-                            f"cache_control_injection_points configured but not applied: {model} is not an "
-                            "Anthropic (Claude) model")
+                    self._warn_prompt_cache_conditions(
+                        model, system, user, cache_control_injection_points, request_provider=request_provider
+                    )
 
                 # Classic `bedrock/` calls use model_id for Bedrock Runtime inference profiles.
                 # Bedrock Mantle uses Projects, so `bedrock_mantle/` intentionally omits it.

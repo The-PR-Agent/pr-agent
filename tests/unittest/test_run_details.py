@@ -166,6 +166,38 @@ def test_add_token_usage_ignores_bool_like_cache_values():
     assert details.has_cache_usage is False
 
 
+def test_add_token_usage_tolerates_null_prompt_tokens_details():
+    # Raw OpenAI payloads can carry prompt_tokens_details: null; the cache lookup must not
+    # chain attribute access off it after a completion already succeeded.
+    init_run_details()
+
+    add_token_usage({
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "prompt_tokens_details": None,
+    })
+
+    assert get_run_details().cache_read_tokens == 0
+
+
+def test_add_token_usage_reads_deepseek_cache_hits_as_cache_reads():
+    init_run_details()
+
+    add_token_usage({"prompt_tokens": 7, "prompt_cache_hit_tokens": 3})
+
+    assert get_run_details().cache_read_tokens == 3
+
+    class _DeepSeekUsage:
+        prompt_tokens = 7
+        completion_tokens = 1
+        prompt_cache_hit_tokens = 5
+
+    init_run_details()
+    add_token_usage(_DeepSeekUsage())
+
+    assert get_run_details().cache_read_tokens == 5
+
+
 def test_record_ai_call_counts_calls_even_without_usage():
     init_run_details()
 
