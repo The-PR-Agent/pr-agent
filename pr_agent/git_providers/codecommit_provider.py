@@ -1,4 +1,3 @@
-import os
 import re
 from collections import Counter
 from datetime import datetime
@@ -7,7 +6,7 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 from pr_agent.algo.file_filter import filter_ignored
-from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.language_handler import build_language_file_matcher, is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
@@ -401,37 +400,19 @@ class CodeCommitProvider(GitProvider):
             return ""
 
     def get_languages(self):
-        """
-        Returns a dictionary of languages, containing the percentage of each language used in the PR.
+        """Return recognized language percentages for diff prioritization."""
+        language_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(language_map)
+        language_counts = Counter()
+        for file in self.get_files():
+            if not file.filename:
+                continue
+            language = get_language(file.filename)
+            if language:
+                language_counts[language] += 1
 
-        Returns:
-        - dict: A dictionary where each key is a language name and the corresponding value is the percentage of that language in the PR.
-        """
-        commit_files = self.get_files()
-        filenames = [ item.filename for item in commit_files ]
-        extensions = CodeCommitProvider._get_file_extensions(filenames)
-
-        # Calculate the percentage of each file extension in the PR
-        percentages = CodeCommitProvider._get_language_percentages(extensions)
-
-        # The global language_extension_map is a dictionary of languages,
-        # where each dictionary item is a BoxList of extensions.
-        # We want a dictionary of extensions,
-        # where each dictionary item is a language name.
-        # We build that language->extension dictionary here in main_extensions_flat.
-        main_extensions_flat = {}
-        language_extension_map_org = get_settings().language_extension_map_org
-        language_extension_map = {k.lower(): v for k, v in language_extension_map_org.items()}
-        for language, extensions in language_extension_map.items():
-            for ext in extensions:
-                main_extensions_flat[ext] = language
-
-        # Map the file extension/languages to percentages
-        languages = {}
-        for ext, pct in percentages.items():
-            languages[main_extensions_flat.get(ext, "")] = pct
-
-        return languages
+        total = sum(language_counts.values()) or 1
+        return {language: count / total * 100 for language, count in language_counts.items()}
 
     def get_pr_branch(self):
         return self.pr.source_branch
@@ -829,51 +810,3 @@ class CodeCommitProvider(GitProvider):
         elif t == "R":
             edit_type = EDIT_TYPE.RENAMED
         return edit_type
-
-    @staticmethod
-    def _get_file_extensions(filenames):
-        """
-        Return a list of file extensions from a list of filenames.
-        The returned extensions will include the dot "." prefix,
-        to accommodate for the dots in the existing language_extension_map settings.
-        Filenames with no extension will return an empty string for the extension.
-
-        Args:
-        - filenames: a list of filenames
-
-        Returns:
-        - list: A list of file extensions, including the dot "." prefix.
-        """
-        extensions = []
-        for filename in filenames:
-            filename, ext = os.path.splitext(filename)
-            if ext:
-                extensions.append(ext.lower())
-            else:
-                extensions.append("")
-        return extensions
-
-    @staticmethod
-    def _get_language_percentages(extensions):
-        """
-        Return a dictionary containing the programming language name (as the key),
-        and the percentage that language is used (as the value),
-        given a list of file extensions.
-
-        Args:
-        - extensions: a list of file extensions
-
-        Returns:
-        - dict: A dictionary where each key is a language name and the corresponding value is the percentage of that language in the PR.
-        """
-        total_files = len(extensions)
-        if total_files == 0:
-            return {}
-
-        # Identify language by file extension and count
-        lang_count = Counter(extensions)
-        # Convert counts to percentages
-        lang_percentage = {
-            lang: round(count / total_files * 100) for lang, count in lang_count.items()
-        }
-        return lang_percentage
