@@ -1,4 +1,6 @@
+import asyncio
 import re
+from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from threading import Lock
 
@@ -9,14 +11,29 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 
+def _await_coroutine(coro):
+    """Run a coroutine to completion from a synchronous call site.
+
+    ``asyncio.run`` cannot be called from a running event loop, and the accurate
+    token-count path is invoked synchronously from tools that run inside one, so
+    an active loop runs the coroutine on a dedicated worker loop instead.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    worker_loop = asyncio.new_event_loop()
+    try:
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-count") as executor:
+            return executor.submit(worker_loop.run_until_complete, coro).result()
+    finally:
+        worker_loop.close()
+
+
 class ModelTypeValidator:
     @staticmethod
     def is_openai_model(model_name: str) -> bool:
         return 'gpt' in model_name or re.match(r"^o[1-9](-mini|-preview)?$", model_name)
-
-    @staticmethod
-    def is_anthropic_model(model_name: str) -> bool:
-        return 'claude' in model_name
 
 
 class TokenEncoder:
@@ -63,7 +80,6 @@ class TokenHandler:
     """
 
     # Constants
-    CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
 
     def __init__(self, pr=None, vars: dict | None = None, system="", user="", model=None):
@@ -121,31 +137,43 @@ class TokenHandler:
             get_logger().error(f"Error in _get_system_user_tokens: {e}")
             return 0
 
-    def _calc_claude_tokens(self, patch: str) -> int:
+    async def _acount_tokens(self, patch: str) -> int:
+        """Count tokens through LiteLLM's provider-native counter.
+
+        Uses the configured model (self.model) instead of a hardcoded id, routes
+        to the provider-native counter for Anthropic, Bedrock/Vertex Claude,
+        Gemini and OpenAI, and returns 0 when only a local estimate would be
+        produced (tokenizer_type == "local_tokenizer") or on any error; the
+        caller then applies the estimate factor.
+        """
+        if len(patch.encode('utf-8')) > self.CLAUDE_MAX_CONTENT_SIZE:
+            get_logger().warning(
+                "Content too large for provider token counting API, falling back to local estimate"
+            )
+            return 0
+
         try:
-            import anthropic
+            import litellm
 
-            client = anthropic.Anthropic(api_key=get_settings(use_context=False).get('anthropic.key'))
-
-            if len(patch.encode('utf-8')) > self.CLAUDE_MAX_CONTENT_SIZE:
-                get_logger().warning(
-                    "Content too large for Anthropic token counting API, falling back to local tokenizer"
-                )
-                return 0
-
-            response = client.messages.count_tokens(
-                model=self.CLAUDE_MODEL,
-                system="system",
+            response = await litellm.acount_tokens(
+                model=self.model,
                 messages=[{
                     "role": "user",
                     "content": patch
                 }],
+                system="system",
             )
-            return response.input_tokens
-
         except Exception as e:
-            get_logger().error(f"Error in Anthropic token counting: {e}")
+            get_logger().error(f"Error in LiteLLM token counting: {e}")
             return 0
+
+        if getattr(response, "tokenizer_type", "local_tokenizer") == "local_tokenizer":
+            get_logger().debug(
+                f"litellm produced a local token estimate for {self.model}; "
+                "applying model_token_count_estimate_factor"
+            )
+            return 0
+        return response.total_tokens
 
     def _apply_estimation_factor(self, model_name: str, default_estimate: int) -> int:
         raw_factor = get_settings().get("config.model_token_count_estimate_factor", 0)
@@ -182,11 +210,9 @@ class TokenHandler:
         if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get('openai.key'):
             return default_estimate
 
-        if ModelTypeValidator.is_anthropic_model(model_name) and get_settings(use_context=False).get('anthropic.key'):
-            claude_count = self._calc_claude_tokens(patch)
-            if claude_count > 0:
-                return claude_count
-            return self._apply_estimation_factor(model_name, default_estimate)
+        accurate_count = _await_coroutine(self._acount_tokens(patch))
+        if accurate_count > 0:
+            return accurate_count
 
         return self._apply_estimation_factor(model_name, default_estimate)
 
