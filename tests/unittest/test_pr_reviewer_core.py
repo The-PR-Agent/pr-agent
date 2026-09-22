@@ -13,6 +13,7 @@ from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment
 
 _VALID_PREDICTION = "review:\n  summary: prediction"
@@ -377,6 +378,28 @@ def test_key_issues_are_published_on_their_lines_and_leave_the_summary():
     assert "```suggestion" not in comment["body"]
     assert "key_issues_to_review" not in result["review"]
     assert len(data["review"]["key_issues_to_review"]) == 1
+
+
+def test_github_key_issue_is_published_inline_and_removed_from_summary():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.pr = MagicMock()
+    provider.pr.get_comments.return_value = []
+    provider.last_commit_id = "head-sha"
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = MagicMock(return_value=[
+        FilePatchInfo(base_file="", head_file="one\ntwo\nthree\nfour\n", patch="", filename="app.py")
+    ])
+    provider.validate_comments_inside_hunks = lambda comments: comments
+    reviewer = _make_reviewer(provider)
+    data = {"review": {"key_issues_to_review": [_key_issue()]}}
+
+    result = reviewer._publish_key_issues_as_inline_comments(data)
+
+    posted = provider.pr.create_review.call_args.kwargs["comments"]
+    assert len(posted) == 1
+    assert posted[0]["path"] == "app.py"
+    assert "The new branch never releases the lock." in posted[0]["body"]
+    assert "key_issues_to_review" not in result["review"]
 
 
 def test_prepare_pr_review_does_not_publish_key_issues_inline_by_default():
