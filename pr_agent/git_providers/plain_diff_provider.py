@@ -122,6 +122,9 @@ class PlainDiffGitProvider(GitProvider):
             return  # don't emit "Preparing review..." placeholders to stdout
         self._write_output(pr_comment)
 
+    def supports_comment_publish_confirmation(self) -> bool:
+        return False
+
     def publish_structured_review(self, review: dict):
         if not self.json_output_path:
             return

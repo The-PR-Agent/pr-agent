@@ -1347,9 +1347,10 @@ class PRCodeSuggestions:
                         self.git_provider,
                     )
                     response = self.git_provider.publish_comment(pr_body)
-                    if response is None:
-                        # Some providers surface a permanent publication failure by returning
-                        # None instead of raising; do not record the fallback as delivered.
+                    if response is None and self.git_provider.supports_comment_publish_confirmation():
+                        # This provider confirms publications with a comment object, so a
+                        # `None` return means the summary was not delivered (e.g. Gitea's
+                        # silent API failure); do not record the fallback as delivered.
                         raise RuntimeError("publish_comment returned no comment response")
                     self._output_published = True
                 except Exception as e:
