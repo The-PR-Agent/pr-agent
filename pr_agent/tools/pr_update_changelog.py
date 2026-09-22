@@ -1,8 +1,8 @@
+import asyncio
 import copy
 import re
 from datetime import date
 from functools import partial
-from time import sleep
 from typing import Tuple
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
@@ -151,7 +151,7 @@ class PRUpdateChangelog:
 
             if get_settings().config.publish_output:
                 if self.commit_changelog:
-                    self._push_changelog_update(new_file_content, answer)
+                    await self._push_changelog_update(new_file_content, answer)
                 else:
                     changelog_comment = f"**Changelog updates:** 🔄\n\n{answer}"
                     if self.push_skipped_reason:
@@ -273,7 +273,7 @@ class PRUpdateChangelog:
 
         return new_file_content, answer
 
-    def _push_changelog_update(self, new_file_content, answer):
+    async def _push_changelog_update(self, new_file_content, answer):
         if not self.git_provider.is_supported("push_code"):
             # Its only caller already gates on self.commit_changelog, which is False
             # whenever this capability is missing; kept local so the guard holds even
@@ -294,7 +294,7 @@ class PRUpdateChangelog:
             self._publish_changelog_write_error_fallback(answer)
             raise
 
-        sleep(5)  # wait for the file to be updated
+        await asyncio.sleep(5)  # wait for the file to be updated
         try:
             if self.git_provider.supports_changelog_update_review():
                 last_commit_id = list(self.git_provider.pr.get_commits())[-1]
