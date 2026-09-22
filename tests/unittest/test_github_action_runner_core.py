@@ -685,6 +685,25 @@ async def test_issue_comment_from_user_is_processed(monkeypatch, tmp_path, resto
 
     assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
 
+
+@pytest.mark.asyncio
+async def test_issue_comment_not_starting_with_slash_is_skipped(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    """Regression for #3603: a plain comment must not fail the action run."""
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_issue_comment_event_with_body(tmp_path, "thanks!")),
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []  # non-command comment skipped; action run stays green
+
 @pytest.mark.asyncio
 async def test_issue_comment_on_plain_issue_is_dispatched(monkeypatch, tmp_path, restore_github_settings):
     handled = []
