@@ -297,8 +297,8 @@ class PRUpdateChangelog:
         try:
             await asyncio.sleep(5)  # wait for the file to be updated
         except asyncio.CancelledError:
-            # The write already succeeded. Preserve the user-visible fallback that a
-            # review error would have produced, while keeping cancellation authoritative.
+            # Preserve the user-visible fallback after a successful write while keeping
+            # cancellation authoritative.
             try:
                 if self.git_provider.supports_changelog_update_review():
                     self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")

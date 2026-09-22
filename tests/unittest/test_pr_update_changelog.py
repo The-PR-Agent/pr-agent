@@ -652,7 +652,7 @@ class TestPRUpdateChangelog:
             update_task.cancel()
 
             with pytest.raises(asyncio.CancelledError):
-                await update_task
+                await asyncio.gather(update_task)
 
         mock_git_provider.publish_comment.assert_called_once_with(
             "**Changelog updates: 🔄**\n\nanswer"
@@ -687,7 +687,7 @@ class TestPRUpdateChangelog:
             run_task.cancel()
 
             with pytest.raises(asyncio.CancelledError):
-                await run_task
+                await asyncio.gather(run_task)
 
         assert mock_git_provider.publish_comment.call_args_list == [
             call("Preparing changelog updates...", is_temporary=True),
@@ -721,7 +721,7 @@ class TestPRUpdateChangelog:
             update_task.cancel()
 
             with pytest.raises(asyncio.CancelledError):
-                await update_task
+                await asyncio.gather(update_task)
 
         mock_get_logger.return_value.exception.assert_called_once_with(
             "Failed to publish changelog fallback during cancellation: comment unavailable"
@@ -847,7 +847,7 @@ class TestPRUpdateChangelog:
     async def test_push_changelog_update_falls_back_to_comment_when_written_commit_is_unavailable(
         self, changelog_tool, mock_git_provider
     ):
-        """A review-capable provider must not guess the commit when the write returns none."""
+        """Do not guess the commit when a review-capable write returns none."""
         mock_git_provider.create_or_update_pr_file = MagicMock(return_value=None)
         mock_git_provider.get_pr_branch.return_value = "feature-branch"
         mock_git_provider.supports_changelog_update_review.return_value = True
