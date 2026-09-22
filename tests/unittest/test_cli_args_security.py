@@ -209,7 +209,7 @@ async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch
     ],
 )
 async def test_handle_request_allows_protected_key_names_in_setting_values(monkeypatch, command_request):
-    """Direct string and list requests validate setting keys but retain original values."""
+    """Validate setting keys while retaining original values for direct string and list requests."""
     expected_args = ["--pr_reviewer.extra_instructions=Flag any hardcoded openai.key in the diff"]
     update_settings = Mock(side_effect=lambda args: args)
     tool = Mock()
@@ -230,6 +230,8 @@ async def test_handle_request_allows_protected_key_names_in_setting_values(monke
     tool_factory.assert_called_once_with("https://example/pr/1", ai_handler="fake-ai", args=expected_args)
     tool.run.assert_awaited_once_with()
     notify.assert_called_once_with()
+
+
 @pytest.mark.parametrize("prefix", ["  ", "\t", "\n", " \t "])
 def test_validate_user_args_rejects_forbidden_arg_with_leading_whitespace(prefix):
     """Reject a forbidden argument that arrives with leading whitespace, since
