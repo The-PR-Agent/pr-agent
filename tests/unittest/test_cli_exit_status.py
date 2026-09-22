@@ -1,3 +1,5 @@
+import copy
+import io
 import os
 import subprocess
 import sys
@@ -7,9 +9,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from starlette_context import context, request_cycle_context
 
 from pr_agent import cli
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.git_providers import get_git_provider
 
 _CONSOLE_SCRIPT_FALLBACK = (
     "import sys; from pr_agent.cli import run; sys.exit(run())"
@@ -42,6 +46,7 @@ def _run_with_result(monkeypatch, result, *, propagate_tool_errors):
         return result
 
     monkeypatch.setattr(cli, "get_settings", lambda: fake_settings)
+    monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
     monkeypatch.setattr(
         cli,
         "PRAgent",
@@ -99,6 +104,7 @@ def test_run_reads_effective_setting_after_dispatch(monkeypatch):
         lambda: SimpleNamespace(handle_request=fake_handle_request),
     )
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+    monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
 
     assert cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/1", "review"]) == 1
 
@@ -230,7 +236,7 @@ def test_run_restores_propagation_setting_between_invocations(
             pass
 
         async def run(self):
-            observed_values.append(settings.config.get("propagate_tool_errors"))
+            observed_values.append(get_settings().config.get("propagate_tool_errors"))
             if next(request_results):
                 return
             raise RuntimeError("controlled tool failure")
@@ -238,7 +244,7 @@ def test_run_restores_propagation_setting_between_invocations(
     def fake_apply_repo_settings(*_args, **_kwargs):
         nonlocal apply_calls
         if override_source == "repository" and apply_calls == 0:
-            settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", override)
+            get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", override)
         apply_calls += 1
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", ControlledReview)
@@ -266,7 +272,7 @@ def test_run_restores_propagation_setting_when_callback_drain_raises(monkeypatch
     settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", False)
 
     async def fake_handle_request(*_args, **_kwargs):
-        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", True)
+        get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", True)
         return False
 
     async def failing_drain(*_args, **_kwargs):
@@ -285,6 +291,98 @@ def test_run_restores_propagation_setting_when_callback_drain_raises(monkeypatch
         cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/1", "review"])
 
     assert settings.config.get("propagate_tool_errors") is False
+
+
+def test_run_scopes_settings_and_target_caches_between_invocations(monkeypatch):
+    expected_target_caches = ("git_provider", "repo_settings", "git_files", "diff_files")
+    outer_settings = copy.deepcopy(global_settings)
+    outer_settings.set("CONFIG.GIT_PROVIDER", "github")
+    outer_context = {
+        "settings": outer_settings,
+        "installation_id": 42,
+        "bitbucket_bearer_token": "test-token",
+        "git_provider": {"outer": object()},
+        "repo_settings": "outer-settings",
+        "git_files": ["outer.py"],
+        "diff_files": ["outer.diff"],
+    }
+    seen = []
+
+    class RecordingAgent:
+        async def handle_request(self, target, _request, notify=None):
+            seen.append(
+                {
+                    "target": target,
+                    "provider": get_git_provider().__name__,
+                    "installation_id": context.get("installation_id"),
+                    "bitbucket_bearer_token": context.get("bitbucket_bearer_token"),
+                    "caches": {key: context.get(key) for key in expected_target_caches},
+                }
+            )
+            get_settings().set("config.cli_invocation_probe", target)
+            return True
+
+    with request_cycle_context(outer_context):
+        settings_before = get_settings()
+        context_before = context.copy()
+        monkeypatch.setattr(cli, "PRAgent", RecordingAgent)
+        monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+        monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
+        monkeypatch.setattr("sys.stdin", io.StringIO("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-a\n+b\n"))
+
+        cli.run(inargs=["--pr_url=https://github.com/example/repo/pull/0", "review"])
+        cli.run(inargs=["--stdin", "review"])
+        cli.run(inargs=["--pr_url=https://github.com/example/repo/pull/1", "review"])
+
+        assert get_settings() is settings_before
+        assert context.copy() == context_before
+        assert get_settings().get("config.cli_invocation_probe") is None
+
+    assert [entry["provider"] for entry in seen] == ["GithubProvider", "PlainDiffGitProvider", "GithubProvider"]
+    assert all(entry["installation_id"] == 42 for entry in seen)
+    assert all(entry["bitbucket_bearer_token"] == "test-token" for entry in seen)
+    assert all(tuple(entry["caches"]) == expected_target_caches for entry in seen)
+    assert all(all(value is None for value in entry["caches"].values()) for entry in seen)
+
+
+def test_run_without_a_target_does_not_enter_settings_scope(monkeypatch, capsys):
+    def fail_if_entered():
+        pytest.fail("no-target help must not enter the mutation scope")
+
+    monkeypatch.setattr(cli, "_cli_settings_scope", fail_if_entered)
+
+    assert cli.run(inargs=["review"]) is None
+    assert "usage:" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("raised", [RuntimeError, KeyboardInterrupt])
+def test_run_restores_outer_context_when_dispatch_raises(monkeypatch, raised):
+    outer_settings = copy.deepcopy(global_settings)
+    outer_context = {
+        "settings": outer_settings,
+        "installation_id": 42,
+        "git_provider": {"outer": object()},
+    }
+
+    class FailingAgent:
+        async def handle_request(self, *_args, **_kwargs):
+            assert get_settings() is not outer_settings
+            assert context.get("installation_id") == 42
+            assert context.get("git_provider") is None
+            raise raised("controlled dispatch failure")
+
+    with request_cycle_context(outer_context):
+        settings_before = get_settings()
+        context_before = context.copy()
+        monkeypatch.setattr(cli, "PRAgent", FailingAgent)
+        monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+        monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
+
+        with pytest.raises(raised, match="controlled dispatch failure"):
+            cli.run(inargs=["--pr_url=https://github.com/example/repo/pull/1", "review"])
+
+        assert get_settings() is settings_before
+        assert context.copy() == context_before
 
 
 def _console_script_entrypoint(python_executable):

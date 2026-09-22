@@ -325,23 +325,26 @@ def test_cli_parser_flag_takes_precedence_over_env_var(monkeypatch):
 
 
 def test_cli_setting_reconciles_between_runs(settings_sandbox, monkeypatch):
-    """Regression: in long-lived processes that call run() multiple times,
-    a previously-set CONFIG.EXTRA_CONFIG_URL must not leak into the next call
-    that omits the flag/env var. get_settings() is a process-wide singleton."""
+    """CLI invocations reconcile the setting during dispatch without leaking it."""
     from argparse import Namespace
 
     import pr_agent.cli as cli_mod
 
     # Stub PRAgent so run() returns quickly without making network calls;
     # we only care about the synchronous setting-reconciliation prologue.
+    observed_urls = []
+
     class _StubAgent:
         async def handle_request(self, *_args, **_kwargs):
+            observed_urls.append(get_settings().get("CONFIG.EXTRA_CONFIG_URL"))
             return True
 
     monkeypatch.setattr(cli_mod, "PRAgent", lambda: _StubAgent())
     monkeypatch.delenv("PR_AGENT_EXTRA_CONFIG_URL", raising=False)
 
-    # First invocation: explicit URL — should populate the singleton key
+    outer_url_before = get_settings().get("CONFIG.EXTRA_CONFIG_URL")
+
+    # First invocation uses its explicit URL inside its isolated settings scope.
     cli_mod.run(args=Namespace(
         pr_url="https://example.com/pr/1",
         issue_url=None,
@@ -349,9 +352,8 @@ def test_cli_setting_reconciles_between_runs(settings_sandbox, monkeypatch):
         command="review",
         rest=[],
     ))
-    assert get_settings().get("CONFIG.EXTRA_CONFIG_URL") == "/first/run.toml"
 
-    # Second invocation: no URL — singleton key must be CLEARED, not carried over
+    # The next invocation omits it and must not inherit that value.
     cli_mod.run(args=Namespace(
         pr_url="https://example.com/pr/1",
         issue_url=None,
@@ -359,10 +361,8 @@ def test_cli_setting_reconciles_between_runs(settings_sandbox, monkeypatch):
         command="review",
         rest=[],
     ))
-    assert get_settings().get("CONFIG.EXTRA_CONFIG_URL") in (None, ""), (
-        "CONFIG.EXTRA_CONFIG_URL must be cleared when the flag/env var is "
-        f"absent; got {get_settings().get('CONFIG.EXTRA_CONFIG_URL')!r}"
-    )
+    assert observed_urls == ["/first/run.toml", None]
+    assert get_settings().get("CONFIG.EXTRA_CONFIG_URL") == outer_url_before
 
 
 # ---------------------------------------------------------------------------
