@@ -930,3 +930,34 @@ def test_user_comment_authorship_resolves_authenticated_user():
 
     assert provider.supports_review_finding_state() is True
     assert provider.is_comment_authored_by_pr_agent(comment) is True
+
+
+def test_validate_comments_inside_hunks_preserves_backslashes_in_fallback_diff():
+    provider = _make_provider()
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(
+            filename="src/example.py",
+            patch="@@ -10,2 +10,2 @@\n-old\n+new",
+            language="python",
+        )
+    ]
+    suggestion = {
+        "body": '**Suggestion:** preserve escapes\n```suggestion\npattern = r"\\1\\n\\\\x"\n```',
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 9,
+        "relevant_lines_end": 11,
+        "original_suggestion": {
+            "existing_code": 'pattern = r"\\1"',
+            "improved_code": 'pattern = r"\\1\\n\\\\x"',
+        },
+    }
+
+    validated = provider.validate_comments_inside_hunks([suggestion])
+    result = validated[0]
+
+    assert result["relevant_lines_start"] == 10
+    assert result["relevant_lines_end"] == 11
+    assert "```suggestion" not in result["body"]
+    assert "```diff" in result["body"]
+    assert r'-pattern = r"\1"' in result["body"]
+    assert r'+pattern = r"\1\n\\x"' in result["body"]

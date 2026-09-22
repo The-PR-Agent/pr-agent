@@ -854,7 +854,12 @@ class PRSimilarIssue:
                     },
                 )
             )
-        self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=points)
+        self.qdrant.upload_points(
+            collection_name=self.qdrant_collection_name,
+            points=points,
+            batch_size=100,
+            wait=True,
+        )
         get_logger().info('Done')
 
 

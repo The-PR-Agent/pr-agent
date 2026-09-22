@@ -11,6 +11,7 @@ from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
+from github.Commit import Commit
 from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
@@ -1706,19 +1707,20 @@ class GithubProvider(GitProvider):
 
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message=""
-    ) -> None:
+    ) -> Commit:
         try:
             file_obj = self._get_repo().get_contents(file_path, ref=branch)
             sha1=file_obj.sha
         except Exception:
             sha1=""
-        self.repo_obj.update_file(
+        response = self.repo_obj.update_file(
             path=file_path,
             message=message,
             content=contents,
             sha=sha1,
             branch=branch,
         )
+        return response["commit"]
 
     def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
         return self.get_pr_file_content(path or file.filename, sha)
@@ -1987,7 +1989,7 @@ class GithubProvider(GitProvider):
                                 diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
                                              f"```diff\n{patch.rstrip()}\n```")
                                 # replace ```suggestion ... ``` with diff_code, using regex:
-                                body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                                body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
                                 body += "\n\n</details>"
                                 suggestion['body'] = body
                                 get_logger().info(f"Comment was moved to a valid hunk, "

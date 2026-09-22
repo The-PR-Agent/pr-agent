@@ -29,7 +29,7 @@ from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import process_description
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_description import PRDescription
+from pr_agent.tools.pr_description import PRDescription, sanitize_diagram
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 
@@ -277,6 +277,34 @@ class TestPrepareAnswerWithMarkers:
         assert body.count("```mermaid") == 2
         assert "<!-- pr_agent:diagram -->" not in body
         assert "pr_agent:diagram" not in body.replace("```mermaid", "")
+
+    @pytest.mark.parametrize("marker", ["pr_agent:diagram", "<!-- pr_agent:diagram -->"])
+    @pytest.mark.parametrize("label", [r"C:\Users\demo", r"\d+", r"literal\ntext"])
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_diagram_marker_preserves_backslashes(self, mock_get_settings, label, marker):
+        mock_get_settings.return_value = _settings()
+        diagram = sanitize_diagram(f'```mermaid\nflowchart LR\nA["{label}"] --> B\n```')
+        obj = self._obj_with_user_description(
+            f"Before\n{marker}\nAfter",
+            {"title": "AI", "changes_diagram": diagram},
+        )
+
+        _, body = obj._prepare_pr_answer_with_markers()
+
+        assert body == f"Before\n{diagram}\nAfter"
+
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_empty_diagram_leaves_marker_unchanged(self, mock_get_settings):
+        mock_get_settings.return_value = _settings()
+        original_body = "Before\npr_agent:diagram\nAfter"
+        obj = self._obj_with_user_description(
+            original_body,
+            {"title": "AI", "changes_diagram": ""},
+        )
+
+        _, body = obj._prepare_pr_answer_with_markers()
+
+        assert body == original_body
 
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_title_falls_back_when_generate_ai_title_disabled(self, mock_get_settings):
