@@ -2473,6 +2473,34 @@ class LiteLLMAIHandler(BaseAiHandler):
                                 "GPT-5 models name their top reasoning level 'xhigh'; "
                                 "using 'xhigh' for reasoning_effort='max'"
                             )
+                    elif not is_gpt6_astra and effort == ReasoningEffort.MINIMAL.value:
+                        # LiteLLM 1.102.0 stopped advertising 'minimal' for the gpt-5
+                        # family's newer models (gpt-5, gpt-5.1, gpt-5.2, gpt-5.4 and dated
+                        # snapshots), and its openai gpt-5 path raises UnsupportedParamsError
+                        # when the map explicitly sets supports_minimal_reasoning_effort=false.
+                        # Clamp to 'low' (the nearest level still accepted) only when the
+                        # metadata says the specific model does not support it; unknown models
+                        # keep 'minimal'. GPT-6 Astra accepts 'minimal' natively and is handled
+                        # in the first branch.
+                        lookup_model = model
+                        while lookup_model.startswith(("openai/", "azure/")):
+                            lookup_model = lookup_model.removeprefix("openai/").removeprefix("azure/")
+                        lookup_model = lookup_model.removesuffix("_thinking")
+                        try:
+                            supports_minimal = litellm.get_model_info(lookup_model).get(
+                                "supports_minimal_reasoning_effort"
+                            )
+                        except Exception:
+                            get_logger().debug(
+                                f"litellm.get_model_info could not resolve model '{lookup_model}'"
+                            )
+                            supports_minimal = None
+                        if supports_minimal is False:
+                            effort = ReasoningEffort.LOW.value
+                            get_logger().info(
+                                f"{lookup_model} does not support reasoning_effort='minimal'; "
+                                "using 'low'"
+                            )
 
                     if openrouter_model:
                         openrouter_reasoning_effort = effort
