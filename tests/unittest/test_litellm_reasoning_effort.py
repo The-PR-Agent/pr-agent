@@ -297,13 +297,13 @@ class TestLiteLLMReasoningEffort:
         assert lookups == ["gpt-5.2" if "gpt-5.2" in model else "gpt-5.1-codex"]
 
     @pytest.mark.asyncio
-    async def test_gpt5_reasoning_effort_ignores_the_grok_registry(self, monkeypatch, mock_logger):
-        """Keep GPT-5 normalization independent of the Grok effort registry.
+    async def test_gpt5_branch_does_not_apply_the_grok_clamp(self, monkeypatch, mock_logger):
+        """Guard the GPT-5/Astra path from applying the Grok reasoning-effort clamp.
 
-        An identifier can satisfy both the GPT-5 prefix match and the Grok suffix match. The
-        direct (non-OpenRouter) request path lets its GPT-5 branch own the normalization, so
-        'max' must still convert to 'xhigh' rather than being clamped to the 'high' ceiling
-        that grok-4.5 registers.
+        The model ID satisfies both matchers on purpose; no known shipped ID does. Routing this path
+        through _resolve_reasoning_effort() would cap 'max' at grok-4.5's 'high' instead of
+        converting it to 'xhigh'. Real-model tests cannot reach that overlap, so a later dedup could
+        reintroduce the clamp silently.
         """
         model = "gpt-5.2/grok-4.5"
         grok_levels = LiteLLMAIHandler._grok_reasoning_levels_for(model)
