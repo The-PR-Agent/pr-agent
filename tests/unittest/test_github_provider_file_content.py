@@ -47,3 +47,28 @@ def test_get_pr_file_content_strict_reraises_original_error(error):
         provider.get_pr_file_content("CHANGELOG.md", "main", propagate_errors=True)
 
     assert exc_info.value is error
+
+
+def test_create_or_update_pr_file_returns_written_commit():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = MagicMock()
+    provider.repo_obj.get_contents.return_value.sha = "file-sha"
+    provider._get_repo = MagicMock(return_value=provider.repo_obj)
+    written_commit = object()
+    provider.repo_obj.update_file.return_value = {"content": object(), "commit": written_commit}
+
+    result = provider.create_or_update_pr_file(
+        file_path="CHANGELOG.md",
+        branch="feature-branch",
+        contents="new content",
+        message="Update CHANGELOG.md",
+    )
+
+    assert result is written_commit
+    provider.repo_obj.update_file.assert_called_once_with(
+        path="CHANGELOG.md",
+        message="Update CHANGELOG.md",
+        content="new content",
+        sha="file-sha",
+        branch="feature-branch",
+    )

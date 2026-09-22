@@ -11,6 +11,7 @@ from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
+from github.Commit import Commit
 from github.Issue import Issue
 from retry.api import retry_call
 from starlette_context import context
@@ -1691,19 +1692,20 @@ class GithubProvider(GitProvider):
 
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message=""
-    ) -> None:
+    ) -> Commit:
         try:
             file_obj = self._get_repo().get_contents(file_path, ref=branch)
             sha1=file_obj.sha
         except Exception:
             sha1=""
-        self.repo_obj.update_file(
+        response = self.repo_obj.update_file(
             path=file_path,
             message=message,
             content=contents,
             sha=sha1,
             branch=branch,
         )
+        return response["commit"]
 
     def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
         return self.get_pr_file_content(path or file.filename, sha)
