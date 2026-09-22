@@ -120,6 +120,41 @@ def test_pinecone_indexes_exactly_max_issues(monkeypatch):
     assert issue_ids == ["issue_1.issue", "issue_2.issue", "issue_3.issue"]
 
 
+def test_pinecone_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
+    """Oversized rejects are not counted so the scan budget reaches older index gaps."""
+    saved_vectors = []
+
+    class FakeIndex:
+        def upsert(self, **kwargs):
+            saved_vectors.extend(kwargs["vectors"])
+
+        def delete(self, **kwargs):
+            pass
+
+    tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
+    tool.max_issues_to_scan = 2
+    tool.token_handler = SimpleNamespace(count_tokens=lambda text: 10 ** 6)
+    _stub_embeddings(monkeypatch)
+
+    oversized = SimpleNamespace(
+        pull_request=False,
+        title="Oversized",
+        body="x" * 9000,
+        number=1,
+        user=SimpleNamespace(login="user"),
+        created_at="2020-01-01",
+        get_comments=lambda: [],
+    )
+    issues = [oversized, _make_issue(2), _make_issue(3), _make_issue(4)]
+    tool._update_index_with_issues(issues, "example-repo", pinecone_namespace="ns", upsert=True)
+
+    issue_ids = [
+        vector[0] for vector in saved_vectors
+        if vector[0].endswith(".issue")
+    ]
+    assert issue_ids == ["issue_2.issue", "issue_3.issue"]
+
+
 def test_pinecone_namespace_does_not_collapse_repo_separators():
     assert psi._pinecone_namespace("foo/bar-baz") != psi._pinecone_namespace("foo-bar/baz")
 

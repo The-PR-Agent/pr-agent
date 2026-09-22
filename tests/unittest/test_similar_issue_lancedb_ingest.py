@@ -223,6 +223,35 @@ def test_ingest_appends_rows_when_table_exists(monkeypatch):
     assert fake_table.delete_calls == []
 
 
+def test_ingest_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
+    """Oversized rejects are not counted so the scan budget reaches older index gaps."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table()
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+    tool.max_issues_to_scan = 2
+    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 10 ** 6)
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_max_tokens", lambda model: 8192)
+
+    oversized = SimpleNamespace(
+        number=1,
+        title="oversized",
+        body="x" * 9000,
+        pull_request=False,
+        user=SimpleNamespace(login="tester"),
+        created_at="2026-01-01T00:00:00Z",
+    )
+    tool._update_table_with_issues(
+        [oversized, _fake_issue(2), _fake_issue(3), _fake_issue(4)],
+        "utkarsh-demo",
+        ingest=True,
+    )
+
+    ids = [row["id"] for row in fake_table.rows]
+    assert ids == ["issue_2.issue", "issue_3.issue", "example_issue_utkarsh-demo"]
+
+
 def test_ingest_fetches_table_when_table_handle_unset(monkeypatch):
     """A missing table handle is fetched from the db before appending rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])

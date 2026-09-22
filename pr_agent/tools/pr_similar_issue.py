@@ -570,10 +570,6 @@ class PRSimilarIssue:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
 
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
-
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
             username = issue.user.login
@@ -606,6 +602,11 @@ class PRSimilarIssue:
                                                   level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+                # Count only indexed issues so oversized rejects do not burn the scan budget
+                counter += 1
+                if counter % 100 == 0:
+                    get_logger().info(f"Scanned {counter} issues")
 
         # the sentinel row is written last so its presence only signals a completed ingest:
         # a run interrupted partway will leave no sentinel and the next run re-indexes instead
@@ -691,10 +692,6 @@ class PRSimilarIssue:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
 
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
-
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
             username = issue.user.login
@@ -727,6 +724,11 @@ class PRSimilarIssue:
                                                     level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+                # Count only indexed issues so oversized rejects do not burn the scan budget
+                counter += 1
+                if counter % 100 == 0:
+                    get_logger().info(f"Scanned {counter} issues")
 
         if len(corpus.documents) == 0:
             if ingest and not force_refresh:
@@ -800,10 +802,6 @@ class PRSimilarIssue:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
 
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
-
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
             username = issue.user.login
@@ -836,6 +834,11 @@ class PRSimilarIssue:
                                                   level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+                # Count only indexed issues so oversized rejects do not burn the scan budget
+                counter += 1
+                if counter % 100 == 0:
+                    get_logger().info(f"Scanned {counter} issues")
 
         # Write the sentinel row last so its presence only signals a completed ingest:
         # a run interrupted partway will leave no sentinel and the next run re-indexes instead

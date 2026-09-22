@@ -227,6 +227,35 @@ def test_qdrant_sentinel_is_the_final_point_of_a_full_ingest(monkeypatch):
     assert [point.payload["id"] for point in sentinel_points] == ["example_issue_example-repo"]
 
 
+def test_qdrant_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
+    """Oversized rejects are not counted so the scan budget reaches older index gaps."""
+    client = FakeQdrantClient()
+    tool = _make_tool(monkeypatch, client)
+    tool.max_issues_to_scan = 2
+    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 10 ** 6)
+    monkeypatch.setattr(psi, "get_max_tokens", lambda model: 8192)
+
+    oversized = SimpleNamespace(
+        pull_request=False,
+        title="Oversized",
+        body="x" * 9000,
+        number=1,
+        user=SimpleNamespace(login="user"),
+        created_at="2020-01-01",
+        get_comments=lambda: [],
+    )
+    tool._update_qdrant_with_issues(
+        [oversized, _make_issue(2), _make_issue(3), _make_issue(4)],
+        "example-repo",
+        ingest=True,
+    )
+
+    _, issue_points = client.upserts[0]
+    assert [point.payload["id"] for point in issue_points] == ["issue_2.issue", "issue_3.issue"]
+    _, sentinel_points = client.upserts[1]
+    assert [point.payload["id"] for point in sentinel_points] == ["example_issue_example-repo"]
+
+
 def test_qdrant_collection_without_sentinel_reingests_full(monkeypatch):
     """Re-ingest the whole repo when an existing collection holds no sentinel.
 
