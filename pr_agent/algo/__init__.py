@@ -163,7 +163,8 @@ def _validate_claude_model_family(fam: dict) -> None:
             nested_unknown = set(extra_val) - _ALLOWED_EXTRA_ALIAS_KEYS
             if nested_unknown:
                 raise ValueError(
-                    f"unknown Claude extra-alias key(s) for {fam.get('model_id')} / {extra_alias}: {sorted(nested_unknown)}"
+                    f"unknown Claude extra-alias key(s) for {fam.get('model_id')} / {extra_alias}: "
+                    f"{sorted(nested_unknown)}"
                 )
 
 
@@ -384,8 +385,11 @@ MAX_TOKENS = {
     "bedrock/apac.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     # -- Non-Claude models -------------------------------------------------
-    "bedrock_mantle/xai.grok-4.3": 1000000,  # 1M context, but may be limited by config.max_model_tokens
-    'dashscope/qwen3.8-max': 1000000,  # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata), but may be limited by config.max_model_tokens
+    "bedrock_mantle/xai.grok-4.3": 1000000,
+    # 1M context, but may be limited by config.max_model_tokens
+    'dashscope/qwen3.8-max': 1000000,
+    # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata),
+    # but may be limited by config.max_model_tokens
     'groq/moonshotai/kimi-k2-instruct': 131072,
     'groq/deepseek-r1-distill-llama-70b': 128000,
     'groq/llama-3.3-70b-versatile': 128000,
@@ -410,8 +414,11 @@ MAX_TOKENS = {
     "watsonx/ibm/granite-34b-code-instruct": 8191,
     "deepinfra/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B": 128000,
     "deepinfra/deepseek-ai/DeepSeek-R1-Distill-Llama-70B": 128000,
-    'xiaomi_mimo/mimo-v2.5': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5, xiaomi_mimo/ is the native LiteLLM Xiaomi provider, but may be limited by config.max_model_tokens
-    'xiaomi_mimo/mimo-v2.5-pro': 1048576,  # 1M, matching the LiteLLM registry for mimo-v2.5-pro, but may be limited by config.max_model_tokens
+    'xiaomi_mimo/mimo-v2.5': 1048576,
+    # 1M, matching the LiteLLM registry for mimo-v2.5, xiaomi_mimo/ is the native LiteLLM Xiaomi provider,
+    # but may be limited by config.max_model_tokens
+    'xiaomi_mimo/mimo-v2.5-pro': 1048576,
+    # 1M, matching the LiteLLM registry for mimo-v2.5-pro, but may be limited by config.max_model_tokens
     # Provider-prefixed Claude model IDs generated from _CLAUDE_MODEL_FAMILIES
     **_claude_tokens,
 }

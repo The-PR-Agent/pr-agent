@@ -203,7 +203,8 @@ class TokenHandler:
         """
         encoder_estimate = len(self.encoder.encode(patch, disallowed_special=()))
 
-        # If an estimate is enough (for example, in cases where the maximal allowed tokens is way below the known limits), return it.
+        # If an estimate is enough (for example, where the maximal allowed tokens is
+        # way below the known limits), return it.
         if not force_accurate:
             return encoder_estimate
 

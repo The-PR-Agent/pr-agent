@@ -136,7 +136,8 @@ class PRQuestions:
             # /ask question ...  > ![image](img_path)
             img_path = self.question_str.split('![image]')[1].strip().strip('()')
             self.vars['img_path'] = img_path
-        elif 'https://' in self.question_str and ('.png' in self.question_str or 'jpg' in self.question_str): # direct image link
+        elif 'https://' in self.question_str and ('.png' in self.question_str or 'jpg' in self.question_str):
+            # direct image link
             # include https:// in the image path
             img_path = 'https://' + self.question_str.split('https://')[1]
             self.vars['img_path'] = img_path

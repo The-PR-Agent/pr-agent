@@ -315,7 +315,9 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
     if not (pull_request and api_url):
         return {}
 
-    apply_repo_settings(api_url) # we need to apply the repo settings to get the correct settings for the PR. This is quite expensive - a call to the git provider is made for each PR event.
+    # we need to apply the repo settings to get the correct settings for the PR.
+    # This is quite expensive - a call to the git provider is made for each PR event.
+    apply_repo_settings(api_url)
     if not get_settings().github_app.handle_push_trigger:
         return {}
 
@@ -444,7 +446,7 @@ async def handle_request(body: Dict[str, Any], event: str, delivery_id: str | No
         event: The GitHub event type (e.g. "pull_request", "issue_comment", etc.).
         delivery_id: GitHub's stable identifier for this webhook delivery and its redeliveries.
     """
-    action = body.get("action")  # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
+    action = body.get("action") # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
     get_logger().debug(f"Handling request with event: {event}, action: {action}")
     if not action:
         get_logger().debug("No action found in request body, exiting handle_request")
@@ -511,7 +513,8 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
     log_context["api_url"] = api_url
     if pull_request.get("state") != "open":
         return invalid_result
-    if action in ("review_requested", "synchronize") and pull_request.get("created_at") == pull_request.get("updated_at"):
+    if (action in ("review_requested", "synchronize")
+            and pull_request.get("created_at") == pull_request.get("updated_at")):
         # avoid double reviews when opening a PR for the first time
         return invalid_result
     return pull_request, api_url

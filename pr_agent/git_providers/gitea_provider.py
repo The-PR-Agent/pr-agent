@@ -380,7 +380,8 @@ class GiteaProvider(GitProvider):
             return False
 
 
-    def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         """Publish an inline comment on a specific line"""
         body = self.limit_output_characters(body, self.max_comment_chars)
         position, absolute_position = find_line_number_of_relevant_line_in_file(self.diff_files,
@@ -394,7 +395,8 @@ class GiteaProvider(GitProvider):
             subject_type = "LINE"
 
         path = relevant_file.strip()
-        payload = dict(body=body, path=path, old_position=position,new_position = absolute_position) if subject_type == "LINE" else {}
+        payload = (dict(body=body, path=path, old_position=position, new_position = absolute_position)
+                   if subject_type == "LINE" else {})
         self.publish_inline_comments([payload])
 
 
@@ -434,8 +436,11 @@ class GiteaProvider(GitProvider):
 
             path = suggestion.get("relevant_file","")
             new_position = suggestion.get("relevant_lines_start",0)
-            old_position = suggestion.get("relevant_lines_start",0) if "original_suggestion" not in suggestion else suggestion["original_suggestion"].get("relevant_lines_start",0)
-            title_body = suggestion["original_suggestion"].get("suggestion_content","") if "original_suggestion" in suggestion else ""
+            old_position = (suggestion.get("relevant_lines_start", 0)
+                            if "original_suggestion" not in suggestion
+                            else suggestion["original_suggestion"].get("relevant_lines_start", 0))
+            title_body = (suggestion["original_suggestion"].get("suggestion_content","")
+                          if "original_suggestion" in suggestion else "")
             payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
             publishable_count += 1
             if title_body:
@@ -947,7 +952,8 @@ class RepoApi(giteapy.RepositoryApi):
         self.logger = get_logger()
         super().__init__(client)
 
-    def create_inline_comment(self, owner: str, repo: str, pr_number: int, body : str ,commit_id : str, comments: List[Dict[str, Any]]):
+    def create_inline_comment(self, owner: str, repo: str, pr_number: int,
+                              body : str ,commit_id : str, comments: List[Dict[str, Any]]):
         body = {
             "body": body,
             "comments": comments,

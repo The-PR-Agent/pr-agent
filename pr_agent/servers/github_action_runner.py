@@ -258,7 +258,8 @@ async def run_action():
         action = event_payload.get("action")
 
         # Retrieve the list of actions from the configuration
-        pr_actions = get_settings().get("GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"])
+        pr_actions = get_settings().get(
+            "GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"])
 
         # Handle synchronize first so it is not captured by pr_actions
         if action == "synchronize":
@@ -322,8 +323,11 @@ async def run_action():
 
                 # Set the configuration for auto actions
                 get_settings().config.is_auto_command = True  # Set the flag to indicate that the command is auto
-                get_settings().pr_description.final_update_message = False  # No final update message when auto_describe is enabled
-                get_logger().info(f"Running auto actions: auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
+                # No final update message when auto_describe is enabled
+                get_settings().pr_description.final_update_message = False
+                get_logger().info(
+                    f"Running auto actions: "
+                    f"auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
 
                 # invoke by default all three tools
                 if auto_describe is None or is_true(auto_describe):

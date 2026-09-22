@@ -361,7 +361,10 @@ class PRCodeSuggestions:
                     # add usage guide
                     if (get_settings().pr_code_suggestions.enable_chat_text and get_settings().config.is_auto_command
                             and self.git_provider.supports_pr_chat()):
-                        pr_body += "\n\n>💡 Need additional feedback ? start a [PR chat](https://chromewebstore.google.com/detail/ephlnjeghhogofkifjloamocljapahnl) \n\n"
+                        pr_body += (
+                            "\n\n>💡 Need additional feedback ? start a "
+                            "[PR chat](https://chromewebstore.google.com/detail/ephlnjeghhogofkifjloamocljapahnl) \n\n"
+                        )
                     if get_settings().pr_code_suggestions.enable_help_text:
                         pr_body += "<hr>\n\n<details> <summary><strong>💡 Tool usage guide:</strong></summary><hr> \n\n"
                         pr_body += HelpMessage.get_improve_usage_guide()
@@ -1008,7 +1011,9 @@ class PRCodeSuggestions:
                 try:
                     if suggestion['existing_code'] == suggestion['improved_code']:
                         get_logger().debug(
-                            f"edited improved suggestion {i + 1}, because equal to existing code: {suggestion['existing_code']}")
+                            f"edited improved suggestion {i + 1}, because equal to existing code: "
+                            f"{suggestion['existing_code']}"
+                        )
                         if get_settings().pr_code_suggestions.commitable_code_suggestions:
                             suggestion['improved_code'] = ""  # we need 'existing_code' to locate the code in the PR
                         else:
@@ -1140,7 +1145,8 @@ class PRCodeSuggestions:
 
                 if get_settings().get("pr_code_suggestions.focus_only_on_problems", False):
                     CRITICAL_LABEL = 'critical'
-                    if CRITICAL_LABEL in suggestion['label'].lower(): # we want the published labels to be less declarative
+                    # We want the published labels to be less declarative
+                    if CRITICAL_LABEL in suggestion['label'].lower():
                         suggestion['label'] = 'possible issue'
 
                 if suggestion['one_sentence_summary'] in one_sentence_summary_list:
@@ -1159,7 +1165,9 @@ class PRCodeSuggestions:
                     suggestion_list.append(suggestion)
                 else:
                     get_logger().info(
-                        f"Skipping suggestion {i + 1}, because it does not contain 'existing_code' or 'improved_code': {suggestion}")
+                        f"Skipping suggestion {i + 1}, because it does not contain "
+                        f"'existing_code' or 'improved_code': {suggestion}"
+                    )
             except Exception as e:
                 get_logger().error(f"Error processing suggestion {i + 1}: {suggestion}, error: {e}")
         data['code_suggestions'] = suggestion_list
@@ -1713,10 +1721,14 @@ class PRCodeSuggestions:
             get_logger().warning("Skipping chunk recovery: no active fallback invocation chain")
             return None
         original_deployment = settings.get("openai.deployment_id", None)
-        positions = [index for index, pair in enumerate(effective_chain)
-                     if pair == (model, original_deployment)]
+        positions = [
+            index for index, pair in enumerate(effective_chain)
+            if pair == (model, original_deployment)
+        ]
         if len(positions) != 1:
-            get_logger().warning("Skipping chunk recovery: current model/deployment is not unique in the fallback chain")
+            get_logger().warning(
+                "Skipping chunk recovery: current model/deployment is not unique in the fallback chain"
+            )
             return None
         if len(set(effective_chain)) != len(effective_chain):
             get_logger().warning("Skipping chunk recovery: the fallback chain repeats a model/deployment pair")
@@ -1848,7 +1860,8 @@ class PRCodeSuggestions:
                                                         model,
                                                         max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                                                         add_line_numbers=True,
-                                                        output_token_reserve=output_token_reserve)  # decouple hunk with line numbers
+                                                        output_token_reserve=output_token_reserve)
+            # decouple hunk with line numbers
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
@@ -1871,7 +1884,8 @@ class PRCodeSuggestions:
                                                             model,
                                                             max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                                                             add_line_numbers=True,
-                                                            output_token_reserve=output_token_reserve)  # decouple hunk with line numbers
+                                                            output_token_reserve=output_token_reserve)
+                # decouple hunk with line numbers
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         if self.patches_diff_list:
@@ -1912,7 +1926,8 @@ class PRCodeSuggestions:
                                 data["code_suggestions"].append(prediction)
                             else:
                                 get_logger().info(
-                                    f"Removing suggestions {i} from call {j}, because score is {score}, and score_threshold is {score_threshold}",
+                                    f"Removing suggestions {i} from call {j}, because score is {score}, "
+                                    f"and score_threshold is {score_threshold}",
                                     artifact=prediction)
                         except Exception as e:
                             get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
@@ -1982,7 +1997,9 @@ class PRCodeSuggestions:
                 return patches_diff_list
             except Exception:
                 get_logger().exception("Error converting to decoupled with line numbers",
-                                       artifact={'patches_diff_list_no_line_numbers': patches_diff_list_no_line_numbers})
+                                       artifact={
+                    'patches_diff_list_no_line_numbers': patches_diff_list_no_line_numbers
+                })
                 return []
 
     def generate_summarized_suggestions(self, data: Dict) -> str:
@@ -2006,7 +2023,10 @@ class PRCodeSuggestions:
             header = "Suggestion"
             delta = 66
             header += "&nbsp; " * delta
-            pr_body += f"""<thead><tr><td><strong>Category</strong></td><td align=left><strong>{header}</strong></td><td align=center><strong>Impact</strong></td></tr>"""
+            pr_body += (
+                f"""<thead><tr><td><strong>Category</strong></td><td align=left><strong>{header}</strong>"""
+                f"""</td><td align=center><strong>Impact</strong></td></tr>"""
+            )
             pr_body += """<tbody>"""
             suggestions_labels = dict()
             # add all suggestions related to each label

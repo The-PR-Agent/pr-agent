@@ -79,7 +79,8 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
     if is_draft(data) and not feedback_on_draft:
         get_logger().info(f"Skipping draft MR: {api_url}")
         return
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    # auto commands for PR, and auto feedback is disabled
+    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
     if not should_process_pr_logic(data): # Here we already updated the configurations
@@ -380,7 +381,8 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 # Check PR logic after applying repo settings
                 if not should_process_pr_logic(data):
-                    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
+                    return JSONResponse(
+                        status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
 
                 if is_draft(data):
                     get_logger().info(f"Skipping draft MR reviewer assignment: {url}")
@@ -388,7 +390,8 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                                         content=jsonable_encoder({"message": "success"}))
                 if await is_bot_assigned_as_reviewer(data):
                     reviewer_commands = get_settings().get("gitlab.reviewer_commands", [])
-                    if not isinstance(reviewer_commands, list) or not all(isinstance(c, str) for c in reviewer_commands):
+                    if (not isinstance(reviewer_commands, list)
+                            or not all(isinstance(c, str) for c in reviewer_commands)):
                         get_logger().warning("gitlab.reviewer_commands is not a list of strings, skipping")
                         return JSONResponse(status_code=status.HTTP_200_OK,
                                             content=jsonable_encoder({"message": "success"}))
@@ -407,7 +410,8 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 if data.get('object_attributes', {}).get('type') == 'DiffNote' and '/ask' in body: # /ask_line
                     body = handle_ask_line(body, data)
 
-                await handle_request(url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))
+                await handle_request(
+                    url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))
 
     background_tasks.add_task(inner, request_json)
     end_time = datetime.now()

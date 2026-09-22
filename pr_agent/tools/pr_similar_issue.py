@@ -513,7 +513,9 @@ class PRSimilarIssue:
                 collection_name=self.qdrant_collection_name,
                 query_vector=embeds[0],
                 limit=5,
-                query_filter=Filter(must=[FieldCondition(key="metadata.repo", match=MatchValue(value=self.repo_name_for_index))]),
+                query_filter=Filter(
+                    must=[FieldCondition(key="metadata.repo", match=MatchValue(value=self.repo_name_for_index))]
+                ),
                 with_payload=True,
             )
 

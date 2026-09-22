@@ -589,7 +589,8 @@ class GitLabProvider(GitProvider):
     def _get_project_path_from_pr_or_issue_url(self, pr_or_issue_url: str) -> str:
         repo_project_path = None
         if 'issues' in pr_or_issue_url:
-            #replace 'issues' with 'merge_requests', since gitlab provider does not support issue urls, just to get the git repo url:
+            #replace 'issues' with 'merge_requests', since gitlab provider does not support issue urls,
+            # just to get the git repo url:
             pr_or_issue_url = pr_or_issue_url.replace('issues', 'merge_requests')
         if 'merge_requests' in pr_or_issue_url:
             repo_project_path, _ = self._parse_merge_request_url(pr_or_issue_url)
@@ -606,9 +607,12 @@ class GitLabProvider(GitProvider):
             return ""
         return f"{issues_or_pr_url.split(repo_path)[0]}{repo_path}.git"
 
-    # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: https://gitlab.com/pragent/pr-agent.git and branch: t1 -> prefix: "https://gitlab.com/pragent/pr-agent/-/blob/t1", suffix: "?ref_type=heads"
-    # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
+    # Given a git repo url, return prefix and suffix of the provider in order to view
+    # a given file belonging to that repo.
+    # Example: https://gitlab.com/pragent/pr-agent.git and branch: t1 -> prefix:
+    # "https://gitlab.com/pragent/pr-agent/-/blob/t1", suffix: "?ref_type=heads"
+    # In case git url is not provided, provider will use PR context (which includes branch)
+    # to determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
         repo_path = ""
         if not repo_git_url and not self.pr_url:
@@ -618,7 +622,8 @@ class GitLabProvider(GitProvider):
             try:
                 desired_branch = self.gl.projects.get(self.id_project).default_branch
             except (GitlabError, RequestException, AttributeError):
-                get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. Tried project ID: {self.id_project}")
+                get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. "
+                                       f"Tried project ID: {self.id_project}")
                 return ("", "")
             # numeric-alias URLs need the "projects/" segment, same as get_line_link
             prefix = f"{self._get_project_web_url()}/-/blob/{quote(desired_branch)}"
@@ -943,7 +948,8 @@ class GitLabProvider(GitProvider):
                 })
                 get_logger().debug(f"Created file {file_path} in branch {branch}")
         except GitlabAuthenticationError as e:
-            get_logger().error(f"Authentication failed while creating/updating file {file_path} in branch {branch}: {e}")
+            get_logger().error(f"Authentication failed while creating/updating file {file_path} "
+                               f"in branch {branch}: {e}")
             raise
         except (GitlabCreateError, GitlabUpdateError) as e:
             get_logger().error(f"Permission denied or validation error for file {file_path} in branch {branch}: {e}")
@@ -1345,14 +1351,16 @@ class GitLabProvider(GitProvider):
         discussion = self.mr.discussions.get(comment_id)
         discussion.notes.create({'body': body})
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         body = self.limit_output_characters(body, self.max_comment_chars)
         edit_type, found, source_line_no, target_file, target_line_no = self.search_line(relevant_file,
                                                                                          relevant_line_in_file)
         self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file, source_line_no,
                                  target_file, target_line_no, original_suggestion)
 
-    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, absolute_position: int = None):
+    def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                              absolute_position: int = None):
         raise NotImplementedError("GitLab provider does not support creating inline comments yet")
 
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
@@ -1389,7 +1397,8 @@ class GitLabProvider(GitProvider):
             pos_obj = {'position_type': 'text',
                        'new_path': target_file.filename,
                        'old_path': target_file.old_filename if target_file.old_filename else target_file.filename,
-                       'base_sha': diff.base_commit_sha, 'start_sha': diff.start_commit_sha, 'head_sha': diff.head_commit_sha}
+                       'base_sha': diff.base_commit_sha, 'start_sha': diff.start_commit_sha,
+                       'head_sha': diff.head_commit_sha}
             if edit_type == 'deletion':
                 pos_obj['old_line'] = source_line_no - 1
             elif edit_type == 'addition':
@@ -1451,8 +1460,10 @@ class GitLabProvider(GitProvider):
 
                 link = self.get_line_link(relevant_file, line_start, line_end)
                 body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
-                body_fallback +=f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
-                body_fallback += "\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
+                body_fallback += (f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"
+                                  f"</summary>\n\n")
+                body_fallback += ("\n\n___\n\n`(Cannot implement directly - GitLab API allows committable "
+                                  "suggestions strictly on MR diff lines)`")
                 body_fallback+="</details>\n\n"
                 diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
                                             new_code_snippet.split('\n'), n=999)
@@ -2222,7 +2233,8 @@ class GitLabProvider(GitProvider):
         # requires a username, which may not be applicable.
         # The following solution is taken from: https://stackoverflow.com/questions/25409700/using-gitlab-token-to-clone-without-authentication/35003812#35003812
         # For example: For repo url: https://gitlab.codium-inc.com/qodo/autoscraper.git
-        # Then to clone one will issue: 'git clone https://oauth2:<access token>@gitlab.codium-inc.com/qodo/autoscraper.git'
+        # Then to clone one will issue: 'git clone
+        # https://oauth2:<access token>@gitlab.codium-inc.com/qodo/autoscraper.git'
 
         clone_url = f"{scheme}oauth2:{access_token}@gitlab.{base_url}"
         return clone_url

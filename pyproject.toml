@@ -174,7 +174,6 @@ lint.exclude = ["api/code_completions"]
 # the entry. TODO: burn this list down.
 lint.ignore = [
   "E402", # import not at top of file
-  "E501", # line too long
   "E722", # bare `except`
   "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
@@ -185,6 +184,7 @@ lint.ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Ignore import-position and unused-import in __init__.py (re-export modules).
 "__init__.py" = ["E402", "F401"]
+"pr_agent/servers/help.py" = ["E501"] # very long urls
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -71,7 +71,11 @@ class PRDescription:
 
         # Initialize the variables dictionary
         self.COLLAPSIBLE_FILE_LIST_THRESHOLD = get_settings().pr_description.get("collapsible_file_list_threshold", 8)
-        enable_pr_diagram = get_settings().pr_description.get("enable_pr_diagram", False) and self.git_provider.is_supported("gfm_markdown") # github and gitlab support gfm_markdown
+        # github and gitlab support gfm_markdown
+        enable_pr_diagram = (
+            get_settings().pr_description.get("enable_pr_diagram", False)
+            and self.git_provider.is_supported("gfm_markdown")
+        )
         self.vars = {
             "title": self.git_provider.pr.title,
             "branch": self.git_provider.get_pr_branch(),
@@ -87,7 +91,9 @@ class PRDescription:
             "enable_semantic_files_types": get_settings().pr_description.enable_semantic_files_types,
             "related_tickets": "",
             "related_tickets_omitted": 0,
-            "include_file_summary_changes": len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD,
+            "include_file_summary_changes": (
+                len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD
+            ),
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
             "enable_pr_description": get_settings().pr_description.get("enable_pr_description", True),
@@ -151,21 +157,34 @@ class PRDescription:
 
             # Add help text if gfm_markdown is supported
             if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_description.enable_help_text:
-                pr_body += "<hr>\n\n<details> <summary><strong>✨ Describe tool usage guide:</strong></summary><hr> \n\n"
+                pr_body += (
+                    "<hr>\n\n<details> <summary><strong>✨ Describe tool usage guide:</strong>"
+                    "</summary><hr> \n\n"
+                )
                 pr_body += HelpMessage.get_describe_usage_guide()
                 pr_body += "\n</details>\n"
             elif get_settings().pr_description.enable_help_comment and self.git_provider.is_supported("gfm_markdown"):
                 if self.git_provider.supports_inline_help_footer():
-                    pr_body += ('\n\n___\n\n> <details> <summary>  Need help?</summary><li>Type <code>/help how to ...</code> '
-                                'in the comments thread for any questions about PR-Agent usage.</li><li>Check out the '
-                                '<a href="https://docs.pr-agent.ai/usage-guide/">documentation</a> '
-                                'for more information.</li></details>')
+                    pr_body += (
+                        '\n\n___\n\n> <details> <summary>  Need help?</summary>'
+                        '<li>Type <code>/help how to ...</code> in the comments thread '
+                        'for any questions about PR-Agent usage.</li>'
+                        '<li>Check out the '
+                        '<a href="https://docs.pr-agent.ai/usage-guide/">documentation</a> '
+                        'for more information.</li></details>'
+                    )
                 else:  # bullets separated by <br>, for providers whose footer cannot inline a list
-                    pr_body += ("\n\n___\n\n<details><summary>Need help?</summary>- Type <code>/help how to ...</code> in the comments "
-                                "thread for any questions about PR-Agent usage.<br>- Check out the "
-                                "<a href='https://docs.pr-agent.ai/usage-guide/'>documentation</a> for more information.</details>")
-            # elif get_settings().pr_description.enable_help_comment:
-            #     pr_body += '\n\n___\n\n> 💡 **PR-Agent usage**: Comment `/help "your question"` on any pull request to receive relevant information'
+                    pr_body += (
+                        "\n\n___\n\n<details><summary>Need help?</summary>"
+                        "- Type <code>/help how to ...</code> in the comments "
+                        "thread for any questions about PR-Agent usage.<br>"
+                        "- Check out the "
+                        "<a href='https://docs.pr-agent.ai/usage-guide/'>documentation</a> "
+                        "for more information.</details>"
+                    )
+                # elif get_settings().pr_description.enable_help_comment:
+                #     pr_body += '\n\n___\n\n> 💡 **PR-Agent usage**: '
+                #     Comment `/help "your question"` on any pull request to receive relevant information'
 
             # Output the relevant configurations if enabled
             if get_settings().get('config', {}).get('output_relevant_configurations', False):
@@ -181,7 +200,11 @@ class PRDescription:
                 push_outputs("describe", payload=self.data or {}, markdown=pr_body)
 
                 # publish labels
-                if get_settings().pr_description.publish_labels and pr_labels and self.git_provider.is_supported("get_labels"):
+                if (
+                    get_settings().pr_description.publish_labels
+                    and pr_labels
+                    and self.git_provider.is_supported("get_labels")
+                ):
                     original_labels = self.git_provider.get_pr_labels(update=True)
                     get_logger().debug("original labels", artifact=original_labels)
                     user_labels = get_user_labels(original_labels)
@@ -224,11 +247,17 @@ class PRDescription:
                         raise
 
                     # publish final update message
-                    if (get_settings().pr_description.final_update_message and not get_settings().config.get('is_auto_command', False)):
+                    if (
+                        get_settings().pr_description.final_update_message
+                        and not get_settings().config.get('is_auto_command', False)
+                    ):
                         latest_commit_url = self.git_provider.get_latest_commit_url()
                         if latest_commit_url:
                             pr_url = self.git_provider.get_pr_url()
-                            update_comment = f"**[PR Description]({pr_url})** updated to latest commit ({latest_commit_url})"
+                            update_comment = (
+                                f"**[PR Description]({pr_url})** "
+                                f"updated to latest commit ({latest_commit_url})"
+                            )
                             self.git_provider.publish_comment(update_comment)
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
@@ -263,7 +292,10 @@ class PRDescription:
         self.description_failed_chunk_count = 0
         self.description_failed_files = []
         if get_settings().pr_description.use_description_markers and 'pr_agent:' not in self.user_description:
-            get_logger().info("Markers were enabled, but user description does not contain markers. Skipping AI prediction")
+            get_logger().info(
+                "Markers were enabled, but user description does not contain "
+                "markers. Skipping AI prediction"
+            )
             return None
 
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
@@ -285,7 +317,10 @@ class PRDescription:
                 output_token_reserve=output_token_reserve,
             )
             self._description_prompt_handlers["pr_description_prompt"] = self.token_handler
-        large_pr_handling = get_settings().pr_description.get("enable_large_pr_handling", True) and "pr_description_only_files_prompts" in get_settings()
+        large_pr_handling = (
+            get_settings().pr_description.get("enable_large_pr_handling", True)
+            and "pr_description_only_files_prompts" in get_settings()
+        )
         output_token_reserve_kwargs = (
             {"output_token_reserve": output_token_reserve} if callable(output_token_reserve) else {}
         )
@@ -459,7 +494,9 @@ class PRDescription:
                     files_walkthrough_prompt += f"\n- {file}"
                     if i >= MAX_EXTRA_FILES_TO_PROMPT:
                         get_logger().debug(f"Too many remaining files, clipping to {MAX_EXTRA_FILES_TO_PROMPT}")
-                        files_walkthrough_prompt += f"\n... and {len(remaining_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
+                        files_walkthrough_prompt += (
+                            f"\n... and {len(remaining_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
+                        )
                         break
             if deleted_files_list:
                 files_walkthrough_prompt += "\n\nAdditional deleted files:"
@@ -467,7 +504,9 @@ class PRDescription:
                     files_walkthrough_prompt += f"\n- {file}"
                     if i >= MAX_EXTRA_FILES_TO_PROMPT:
                         get_logger().debug(f"Too many deleted files, clipping to {MAX_EXTRA_FILES_TO_PROMPT}")
-                        files_walkthrough_prompt += f"\n... and {len(deleted_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
+                        files_walkthrough_prompt += (
+                            f"\n... and {len(deleted_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
+                        )
                         break
             # PR header inference
             get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
@@ -797,19 +836,24 @@ class PRDescription:
                     pr_body += f'- `{filename}`: {description}\n'
                 if self.git_provider.is_supported("gfm_markdown"):
                     pr_body += "</details>\n"
-            elif 'pr_files' in key.lower() and get_settings().pr_description.enable_semantic_files_types: # 'File Walkthrough' section
+            elif 'pr_files' in key.lower() and get_settings().pr_description.enable_semantic_files_types:
+                # 'File Walkthrough' section
                 changes_walkthrough_table = self.process_pr_files_prediction(changes_walkthrough, value)
                 if get_settings().pr_description.get('file_table_collapsible_open_by_default', False):
                     initial_status = " open"
                 else:
                     initial_status = ""
-                changes_walkthrough = f"<details{initial_status}> <summary><h3> {PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n\n"
+                changes_walkthrough = (
+                    f"<details{initial_status}> <summary><h3> "
+                    f"{PRDescriptionHeader.FILE_WALKTHROUGH.value}</h3></summary>\n\n"
+                )
                 changes_walkthrough += f"{changes_walkthrough_table}\n\n"
                 changes_walkthrough += "</details>\n\n"
             elif key.lower().strip() == 'description':
                 if isinstance(value, list):
                     value = ', '.join(v.rstrip() for v in value)
-                value = value.replace('\n-', '\n\n-').strip() # makes the bullet points more readable by adding double space
+                # Makes the bullet points more readable by adding double space
+                value = value.replace('\n-', '\n\n-').strip()
                 pr_body += f"{value}\n"
             else:
                 # if the value is a list, join its items by comma
@@ -835,8 +879,10 @@ class PRDescription:
                                          artifact={"file": file})
                     continue
                 if not file.get('changes_title'):
-                    get_logger().warning(f"Empty changes title or summary in file label dict {self.pr_id}, skipping file",
-                                         artifact={"file": file})
+                    get_logger().warning(
+                        f"Empty changes title or summary in file label dict {self.pr_id}, skipping file",
+                        artifact={"file": file},
+                    )
                     continue
                 filename = file['filename'].replace("'", "`").replace('"', '`')
                 changes_summary = file.get('changes_summary', "")
@@ -888,7 +934,9 @@ class PRDescription:
                     filename_publish = filename.split("/")[-1]
                     if file_changes_title and file_changes_title.strip() != "...":
                         file_changes_title_code = f"<code>{file_changes_title}</code>"
-                        file_changes_title_code_br = insert_br_after_x_chars(file_changes_title_code, x=(delta - 5)).strip()
+                        file_changes_title_code_br = (
+                        insert_br_after_x_chars(file_changes_title_code, x=(delta - 5)).strip()
+                    )
                         if len(file_changes_title_code_br) < (delta - 5):
                             file_changes_title_code_br += "&nbsp; " * ((delta - 5) - len(file_changes_title_code_br))
                         filename_publish = f"<strong>{filename_publish}</strong><dd>{file_changes_title_code_br}</dd>"

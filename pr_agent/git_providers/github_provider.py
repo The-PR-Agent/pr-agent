@@ -91,7 +91,8 @@ class GithubProvider(GitProvider):
                 self.last_commit_id = self.pr_commits[-1]
             else:
                 self.last_commit_id = self._get_repo().get_commit(self.pr.head.sha)
-            self.pr_url = self.get_pr_url() # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
+            # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
+            self.pr_url = self.get_pr_url()
         elif pr_url and 'issue' in pr_url: #url is an issue
             self.issue_main = self._get_issue_handle(pr_url)
         else: #Instantiated the provider without a PR / Issue
@@ -112,7 +113,8 @@ class GithubProvider(GitProvider):
             # else: Valid repo handle:
             return repo_obj.get_issue(issue_number)
         except Exception:
-            get_logger().exception(f"Failed to get an issue object for issue: {issue_url}, belonging to owner/repo: {repo_name}")
+            get_logger().exception(f"Failed to get an issue object for issue: {issue_url}, "
+                                   f"belonging to owner/repo: {repo_name}")
             return None
 
     def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None):
@@ -160,7 +162,8 @@ class GithubProvider(GitProvider):
                 parsed_url = urlparse(given_url)
                 repo_path = (parsed_url.path.split('.git')[0])[1:] # /<owner>/<repo>.git -> <owner>/<repo>
             if not repo_path:
-                get_logger().error(f"url is neither an issues url nor a PR url nor a valid git url: {given_url}. Returning empty result.")
+                get_logger().error(f"url is neither an issues url nor a PR url nor a valid git url: "
+                                   f"{given_url}. Returning empty result.")
                 return ""
             return repo_path
         except Exception:
@@ -174,15 +177,20 @@ class GithubProvider(GitProvider):
             return ""
         return f"{self.base_url_html}/{repo_path}.git" #https://github.com / <OWNER>/<REPO>.git
 
-    # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: https://github.com/the-pr-agent/pr-agent.git and branch: v0.8 -> prefix: "https://github.com/the-pr-agent/pr-agent/blob/v0.8", suffix: ""
-    # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
+    # Given a git repo url, return prefix and suffix of the provider in order to view a
+    # given file belonging to that repo.
+    # Example: https://github.com/the-pr-agent/pr-agent.git and branch: v0.8 -> prefix:
+    # "https://github.com/the-pr-agent/pr-agent/blob/v0.8", suffix: ""
+    # In case git url is not provided, provider will use PR context (which includes
+    # branch) to determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> Tuple[str, str]:
         owner = None
         repo = None
         scheme_and_netloc = None
 
-        if repo_git_url or self.issue_main: #Either user provided an external git url, which may be different than what this provider was initialized with, or an issue:
+        #Either user provided an external git url, which may be different than what this
+        # provider was initialized with, or an issue:
+        if repo_git_url or self.issue_main:
             desired_branch = desired_branch if repo_git_url else self.issue_main.repository.default_branch
             html_url = repo_git_url if repo_git_url else self.issue_main.html_url
             parsed_git_url = urlparse(html_url)
@@ -194,11 +202,13 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"Invalid repo_path: {repo_path} from url: {html_url}")
                 return ("", "")
 
-        if (not owner or not repo) and self.repo: #"else" - User did not provide an external git url, or not an issue, use self.repo object
+        #"else" - User did not provide an external git url, or not an issue, use self.repo object
+        if (not owner or not repo) and self.repo:
             owner, repo = self.repo.split('/')
             scheme_and_netloc = self.base_url_html
             desired_branch = self.repo_obj.default_branch
-        if not all([scheme_and_netloc, owner, repo]): #"else": Not invoked from a PR context,but no provided git url for context
+        #"else": Not invoked from a PR context,but no provided git url for context
+        if not all([scheme_and_netloc, owner, repo]):
             get_logger().error("Unable to get canonical url parts since missing context (PR or explicit git url)")
             return ("", "")
 
@@ -379,7 +389,8 @@ class GithubProvider(GitProvider):
             invalid_files_names = []
             is_close_to_rate_limit = False
 
-            # The base.sha will point to the current state of the base branch (including parallel merges), not the original base commit when the PR was created
+            # The base.sha will point to the current state of the base branch (including
+            # parallel merges), not the original base commit when the PR was created
             # We can fix this by finding the merge base commit between the PR head and base branches
             # Note that The pr.head.sha is actually correct as is - it points to the latest commit in your PR branch.
             # This SHA isn't affected by parallel merges to the base branch since it's specific to your PR's branch.
@@ -420,7 +431,8 @@ class GithubProvider(GitProvider):
                     if avoid_load or (pr_level_status and file.status == "removed"):
                         new_file_content_str = ""
                     else:
-                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)  # communication with GitHub
+                        # communication with GitHub
+                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
@@ -431,7 +443,8 @@ class GithubProvider(GitProvider):
                         if avoid_load or file.status == "added":
                             original_file_content_str = ""
                         else:
-                            original_file_content_str = self._get_pr_file_content(file, merge_base_commit.sha, path=old_filename)
+                            original_file_content_str = self._get_pr_file_content(
+                                file, merge_base_commit.sha, path=old_filename)
                             # original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
                         if not patch:
                             patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
@@ -757,7 +770,8 @@ class GithubProvider(GitProvider):
         self.pr.comments_list.append(response)
         return response
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         body = self.limit_output_characters(body, self.max_comment_chars)
         self.publish_inline_comments([self.create_inline_comment(body, relevant_file, relevant_line_in_file)])
 
@@ -889,7 +903,8 @@ class GithubProvider(GitProvider):
             return thread_comments
 
         except Exception as e:
-            get_logger().exception("Failed to get review comments for an inline ask command", artifact={"comment_id": comment_id, "error": e})
+            get_logger().exception("Failed to get review comments for an inline ask command",
+                                   artifact={"comment_id": comment_id, "error": e})
             return []
 
     def supports_thread_resolution(self) -> bool:
@@ -1756,7 +1771,8 @@ class GithubProvider(GitProvider):
         if relevant_line_start == -1:
             link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}"
         elif relevant_line_end:
-            link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}R{relevant_line_start}-R{relevant_line_end}"
+            link = (f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files"
+                    f"#diff-{sha_file}R{relevant_line_start}-R{relevant_line_end}")
         else:
             link = f"{self.base_url_html}/{self.repo}/pull/{self.pr_num}/files#diff-{sha_file}R{relevant_line_start}"
         return link
@@ -1856,7 +1872,8 @@ class GithubProvider(GitProvider):
             if isinstance(sub_issues_response_tuple, tuple) and len(sub_issues_response_tuple) == 3:
                 sub_issues_response_json = json.loads(sub_issues_response_tuple[2])
             else:
-                get_logger().error("Unexpected sub-issues response format", artifact={"response": sub_issues_response_tuple})
+                get_logger().error("Unexpected sub-issues response format",
+                                   artifact={"response": sub_issues_response_tuple})
                 return sub_issues
 
             sub_issues_data = (((sub_issues_response_json.get("data") or {})
@@ -1951,10 +1968,13 @@ class GithubProvider(GitProvider):
                                     patch_range_min = patch_range
                                     min_distance = min(min_distance, d)
                         if not is_valid_hunk:
-                            if min_distance < 10:  # 10 lines - a reasonable distance to consider the comment inside the hunk
+                            # 10 lines - a reasonable distance to consider the comment inside the hunk
+                            if min_distance < 10:
                                 # make the suggestion non-committable, yet multi line
-                                suggestion['relevant_lines_start'] = max(suggestion['relevant_lines_start'], patch_range_min['start'])
-                                suggestion['relevant_lines_end'] = min(suggestion['relevant_lines_end'], patch_range_min['end'])
+                                suggestion['relevant_lines_start'] = max(
+                                    suggestion['relevant_lines_start'], patch_range_min['start'])
+                                suggestion['relevant_lines_end'] = min(
+                                    suggestion['relevant_lines_end'], patch_range_min['end'])
                                 body = suggestion['body'].strip()
 
                                 # present new diff code in collapsible
@@ -1964,16 +1984,21 @@ class GithubProvider(GitProvider):
                                                             improved_code.split('\n'), n=999)
                                 patch_orig = "\n".join(diff)
                                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                                diff_code = f"\n\n<details><summary>New proposed code:</summary>\n\n```diff\n{patch.rstrip()}\n```"
+                                diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
+                                             f"```diff\n{patch.rstrip()}\n```")
                                 # replace ```suggestion ... ``` with diff_code, using regex:
                                 body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
                                 body += "\n\n</details>"
                                 suggestion['body'] = body
                                 get_logger().info(f"Comment was moved to a valid hunk, "
-                                                  f"start_line={suggestion['relevant_lines_start']}, end_line={suggestion['relevant_lines_end']}, file={file.filename}")
+                                                  f"start_line={suggestion['relevant_lines_start']}, "
+                                                  f"end_line={suggestion['relevant_lines_end']}, "
+                                                  f"file={file.filename}")
                             else:
                                 get_logger().error(f"Comment is not inside a valid hunk, "
-                                                   f"start_line={suggestion['relevant_lines_start']}, end_line={suggestion['relevant_lines_end']}, file={file.filename}")
+                                                   f"start_line={suggestion['relevant_lines_start']}, "
+                                                   f"end_line={suggestion['relevant_lines_end']}, "
+                                                   f"file={file.filename}")
             except Exception as e:
                 get_logger().error(f"Failed to process patch for committable comment, error: {e}")
         return code_suggestions_copy

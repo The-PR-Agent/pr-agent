@@ -141,9 +141,12 @@ class BitbucketProvider(GitProvider):
             get_logger().exception(f"url is not a valid merge requests url: {self.pr_url}")
             return ""
 
-    # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: git clone https://bitbucket.org/pragent/pr-agent.git and branch: main -> prefix: "https://bitbucket.org/pragent/pr-agent/src/main", suffix: ""
-    # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
+    # Given a git repo url, return prefix and suffix of the provider in order to view a given
+    # file belonging to that repo.
+    # Example: git clone https://bitbucket.org/pragent/pr-agent.git and branch: main -> prefix:
+    # "https://bitbucket.org/pragent/pr-agent/src/main", suffix: ""
+    # In case git url is not provided, provider will use PR context (which includes branch) to
+    # determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
         scheme_and_netloc = None
         if repo_git_url:
@@ -713,7 +716,10 @@ class BitbucketProvider(GitProvider):
             clone_url = f"{scheme}x-token-auth:{self.bearer_token}@bitbucket.org{base_url}"
         else:
             # This case should ideally not be reached if __init__ validates auth_type
-            get_logger().error(f"Unsupported or uninitialized auth_type: {getattr(self, 'auth_type', 'N/A')}. Returning None")
+            get_logger().error(
+                f"Unsupported or uninitialized auth_type: "
+                f"{getattr(self, 'auth_type', 'N/A')}. Returning None"
+            )
             return None
 
         return clone_url

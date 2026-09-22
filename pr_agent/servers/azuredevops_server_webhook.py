@@ -206,7 +206,8 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B
 
 async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict):
     apply_repo_settings(api_url)
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    # auto commands for PR, and auto feedback is disabled
+    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
     commands = (
@@ -244,7 +245,7 @@ async def handle_request_azure(data, log_context):
         comment_content = comment["content"]
         if (isinstance(comment_content, str)
                 and (available_commands_rgx.match(comment_content) or extract_azure_mention(comment_content))):
-            if(data["resourceVersion"] == "2.0"):
+            if data["resourceVersion"] == "2.0":
                 repo = data["resource"]["pullRequest"]["repository"]["webUrl"]
                 pr_url = unquote(f'{repo}/pullrequest/{data["resource"]["pullRequest"]["pullRequestId"]}')
                 action = comment["content"]
@@ -256,7 +257,9 @@ async def handle_request_azure(data, log_context):
                 # API V1 not supported as it does not contain the PR URL
                 return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    content=json.dumps({"message": "version 1.0 webhook for Azure Devops PR comment is not supported. please upgrade to version 2.0"})),
+                    content=json.dumps(
+                        {"message": "version 1.0 webhook for Azure Devops PR comment is not supported. "
+                                    "Please upgrade to version 2.0"})),
         else:
             return JSONResponse(
                 status_code=status.HTTP_204_NO_CONTENT,

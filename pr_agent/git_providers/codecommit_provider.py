@@ -316,7 +316,10 @@ class CodeCommitProvider(GitProvider):
         for suggestion in code_suggestions:
             # Verify that each suggestion has the required keys
             if not all(key in suggestion for key in ["body", "relevant_file", "relevant_lines_start"]):
-                get_logger().warning(f"Skipping code suggestion #{counter}: Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
+                get_logger().warning(
+                    f"Skipping code suggestion #{counter}: Each suggestion must have 'body', "
+                    f"'relevant_file', 'relevant_lines_start' keys"
+                )
                 continue
 
             publishable_count += 1
@@ -378,7 +381,8 @@ class CodeCommitProvider(GitProvider):
             return False
         return updated_comment.get("commentId") == comment_id and updated_comment.get("content") == body
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/codecommit/client/post_comment_for_compared_commit.html
         raise NotImplementedError("CodeCommit provider does not support publishing inline comments yet")
 
@@ -405,7 +409,8 @@ class CodeCommitProvider(GitProvider):
         Returns a dictionary of languages, containing the percentage of each language used in the PR.
 
         Returns:
-        - dict: A dictionary where each key is a language name and the corresponding value is the percentage of that language in the PR.
+        - dict: A dictionary where each key is a language name and the corresponding value is the
+        percentage of that language in the PR.
         """
         commit_files = self.get_files()
         filenames = [ item.filename for item in commit_files ]
@@ -864,7 +869,8 @@ class CodeCommitProvider(GitProvider):
         - extensions: a list of file extensions
 
         Returns:
-        - dict: A dictionary where each key is a language name and the corresponding value is the percentage of that language in the PR.
+        - dict: A dictionary where each key is a language name and the corresponding value is the
+        percentage of that language in the PR.
         """
         total_files = len(extensions)
         if total_files == 0:

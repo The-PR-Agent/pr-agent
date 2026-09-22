@@ -40,7 +40,8 @@ some_config2=...
 ```
     """
 
-        output += "\n\nSee the review [usage page](https://docs.pr-agent.ai/tools/review/) for a comprehensive guide on using this tool.\n\n"
+        output += ("\n\nSee the review [usage page](https://docs.pr-agent.ai/tools/review/) "
+                   "for a comprehensive guide on using this tool.\n\n")
 
         return output
 
@@ -79,13 +80,15 @@ meaning the `describe` tool will run automatically on every PR.
 ```
 pr_commands = ["/describe --pr_description.use_description_markers=true", ...]
 ```
-the tool will replace every marker of the form `pr_agent:marker_name` in the PR description with the relevant content, where `marker_name` is one of the following:
+the tool will replace every marker of the form `pr_agent:marker_name` in the PR description with the relevant content,
+where `marker_name` is one of the following:
   - `type`: the PR type.
   - `summary`: the PR summary.
   - `walkthrough`: the PR walkthrough.
   - `diagram`: the PR sequence diagram (if enabled).
 
-Note that when markers are enabled, if the original PR description does not contain any markers, the tool will not alter the description at all.
+Note that when markers are enabled, if the original PR description does not contain any markers,
+ the tool will not alter the description at all.
 
 """
         output += "\n\n</details></td></tr>\n\n"
@@ -93,9 +96,11 @@ Note that when markers are enabled, if the original PR description does not cont
         # custom labels
         output += "<tr><td><details> <summary><strong> Custom labels </strong></summary><hr>\n\n"
         output += """\
-The default labels of the `describe` tool are quite generic: [`Bug fix`, `Tests`, `Enhancement`, `Documentation`, `Other`].
+The default labels of the `describe` tool are quite generic:
+ [`Bug fix`, `Tests`, `Enhancement`, `Documentation`, `Other`].
 
-If you specify [custom labels](https://docs.pr-agent.ai/tools/describe/#handle-custom-labels-from-the-repos-labels-page) in the repo's labels page or via configuration file, you can get tailored labels for your use cases.
+If you specify [custom labels](https://docs.pr-agent.ai/tools/describe/#handle-custom-labels-from-the-repos-labels-page)
+ in the repo's labels page or via configuration file, you can get tailored labels for your use cases.
 Examples for custom labels:
 - `Main topic:performance` - pr_agent:The main topic of this PR is performance
 - `New endpoint` - pr_agent:A new endpoint was added in this PR
@@ -103,18 +108,23 @@ Examples for custom labels:
 - `Dockerfile changes` - pr_agent:The PR contains changes in the Dockerfile
 - ...
 
-The list above is eclectic, and aims to give an idea of different possibilities. Define custom labels that are relevant for your repo and use cases.
+The list above is eclectic, and aims to give an idea of different possibilities.
+Define custom labels that are relevant for your repo and use cases.
 Note that Labels are not mutually exclusive, so you can add multiple label categories.
-Make sure to provide proper title, and a detailed and well-phrased description for each label, so the tool will know when to suggest it.
+Make sure to provide proper title, and a detailed and well-phrased description for each label,
+so the tool will know when to suggest it.
 """
         output += "\n\n</details></td></tr>\n\n"
 
         # extra instructions
         output += "<tr><td><details> <summary><strong> Utilizing extra instructions</strong></summary><hr>\n\n"
         output += '''\
-The `describe` tool can be configured with extra instructions, to guide the model to a feedback tailored to the needs of your project.
+The `describe` tool can be configured with extra instructions,
+to guide the model to a feedback tailored to the needs of your project.
 
-Be specific, clear, and concise in the instructions. With extra instructions, you are the prompter. Notice that the general structure of the description is fixed, and cannot be changed. Extra instructions can change the content or style of each sub-section of the PR description.
+Be specific, clear, and concise in the instructions. With extra instructions, you are the prompter.
+Notice that the general structure of the description is fixed, and cannot be changed.
+Extra instructions can change the content or style of each sub-section of the PR description.
 
 Examples for extra instructions:
 ```
@@ -137,7 +147,8 @@ Use triple quotes to write multi-line instructions. Use bullet points to make th
 
         output += "</table>"
 
-        output += "\n\nSee the [describe usage](https://docs.pr-agent.ai/tools/describe/) page for a comprehensive guide on using this tool.\n\n"
+        output += ("\n\nSee the [describe usage](https://docs.pr-agent.ai/tools/describe/) page "
+                   "for a comprehensive guide on using this tool.\n\n")
 
         return output
 
@@ -163,7 +174,8 @@ You can ask questions about the entire PR, about specific code lines, or about a
         #
         # output += "</table>"
 
-        output += "\n\nSee the [ask usage](https://docs.pr-agent.ai/tools/ask/) page for a comprehensive guide on using this tool.\n\n"
+        output += ("\n\nSee the [ask usage](https://docs.pr-agent.ai/tools/ask/) page "
+                   "for a comprehensive guide on using this tool.\n\n")
 
         return output
 
@@ -190,7 +202,8 @@ some_config2=...
 
 """
 
-        output += "\n\nSee the improve [usage page](https://docs.pr-agent.ai/tools/improve/) for a comprehensive guide on using this tool.\n\n"
+        output += ("\n\nSee the improve [usage page](https://docs.pr-agent.ai/tools/improve/) "
+                   "for a comprehensive guide on using this tool.\n\n")
 
         return output
 
@@ -199,11 +212,13 @@ some_config2=...
     def get_help_docs_usage_guide():
         output = "**Overview:**\n"
         output += """\
-The help docs tool, named `help_docs`, answers a question based on a given relative path of documentation, either from the repository of this merge request or from a given one."
+The help docs tool, named `help_docs`, answers a question based on a given relative path of documentation,
+either from the repository of this merge request or from a given one."
 It can be invoked manually by commenting on any PR:
 ```
 /help_docs "..."
 ```
 """
-        output += "\n\nSee the [help_docs usage](https://docs.pr-agent.ai/tools/help_docs/) page for a comprehensive guide on using this tool.\n\n"
+        output += ("\n\nSee the [help_docs usage](https://docs.pr-agent.ai/tools/help_docs/) page "
+                   "for a comprehensive guide on using this tool.\n\n")
         return output
