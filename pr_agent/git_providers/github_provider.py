@@ -721,7 +721,9 @@ class GithubProvider(GitProvider):
             )
             self._check_run_ids[name] = data["id"]
             return True
-        except (GithubException, RequestException, KeyError) as e:
+        except (GithubException, RequestException, KeyError, TypeError) as e:
+            # TypeError: PyGithub decodes an empty response body to None, so subscripting the
+            # created check run is a body problem rather than a failed request.
             get_logger().warning(f"Failed to create check run, error: {e}")
             return False
 
@@ -1075,7 +1077,8 @@ class GithubProvider(GitProvider):
                 "POST", f"{self.pr.url}/reviews", input=input)
             pending_review_id = data["id"]
             is_verified = True
-        except (GithubException, RequestException, KeyError) as err:
+        except (GithubException, RequestException, KeyError, TypeError) as err:
+            # TypeError: an empty review body decodes to None, so the id read fails on the body.
             is_verified = False
             pending_review_id = None
             e = err
@@ -2019,7 +2022,9 @@ class GithubProvider(GitProvider):
                             else:
                                 get_logger().error(f"Comment is not inside a valid hunk, "
                                                    f"start_line={suggestion['relevant_lines_start']}, end_line={suggestion['relevant_lines_end']}, file={file.filename}")
-            except (KeyError, TypeError, IndexError, AttributeError) as e:
+            except (KeyError, TypeError, IndexError, AttributeError, re.error) as e:
+                # re.error subclasses Exception directly, so none of the types above cover a
+                # pattern that fails to compile or substitute.
                 get_logger().error(f"Failed to process patch for committable comment, error: {e}")
         return code_suggestions_copy
 

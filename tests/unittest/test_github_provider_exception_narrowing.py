@@ -252,3 +252,57 @@ def test_get_pr_labels_tolerates_labels_without_a_name():
     provider = _make_provider(pr_extra={"labels": [SimpleNamespace()]})
 
     assert provider.get_pr_labels() == []
+
+
+def test_upsert_check_run_returns_false_on_an_empty_response_body(monkeypatch):
+    """An empty body decodes to None, which is a body problem and not a failed request.
+
+    PyGithub's ``__structuredFromJson`` returns None for a zero-length body, so reading the
+    created check run's id raises TypeError rather than KeyError.
+    """
+    provider = _make_provider(_Requester(response=({}, None)))
+    monkeypatch.setattr(provider, "_find_existing_check_run", lambda name, sha: None)
+
+    assert provider._upsert_check_run("Review", {"output": {}}) is False
+
+
+def test_verify_code_comment_reports_failure_on_an_empty_response_body():
+    provider = _make_provider(
+        _Requester(response=({}, None)),
+        pr_extra={"url": "https://api.github.com/repos/owner/repo/pulls/1"},
+    )
+
+    is_verified, error = provider._verify_code_comment({"path": "a.py", "body": "x", "line": 1})
+
+    assert is_verified is False
+    assert isinstance(error, TypeError)
+
+
+def test_validate_comments_inside_hunks_survives_a_bad_regex_replacement(monkeypatch):
+    """``re.error`` subclasses Exception directly, so the other four types never cover it.
+
+    When a comment is moved into a nearby hunk the replacement handed to ``re.sub`` is built
+    from the suggestion's improved code, so a backslash escape in it - a regex or a Windows
+    path in the proposed change - makes the substitution fail.
+    """
+    diff_file = SimpleNamespace(filename="a.py", patch="@@ -1,3 +1,3 @@\n-old\n+new\n")
+    provider = _make_provider()
+    monkeypatch.setattr(provider, "get_diff_files", lambda: [diff_file])
+    monkeypatch.setattr(
+        "pr_agent.git_providers.github_provider.set_file_languages", lambda files: files)
+
+    suggestions = [{
+        "relevant_file": "a.py",
+        "relevant_lines_start": 5,
+        "relevant_lines_end": 6,
+        "original_suggestion": {
+            "existing_code": "old",
+            "improved_code": r"re.sub(r'x', '\1', s)",
+        },
+        "body": "```suggestion\nnew\n```",
+    }]
+
+    result = provider.validate_comments_inside_hunks(suggestions)
+
+    assert len(result) == 1
+    assert result[0]["body"] == suggestions[0]["body"]
