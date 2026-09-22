@@ -1693,18 +1693,26 @@ class GithubProvider(GitProvider):
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message=""
     ) -> Commit:
+        repo = self._get_repo()
         try:
-            file_obj = self._get_repo().get_contents(file_path, ref=branch)
-            sha1=file_obj.sha
-        except Exception:
-            sha1=""
-        response = self.repo_obj.update_file(
-            path=file_path,
-            message=message,
-            content=contents,
-            sha=sha1,
-            branch=branch,
-        )
+            file_obj = repo.get_contents(file_path, ref=branch)
+        except GithubException as e:
+            if e.status != 404:
+                raise
+            response = repo.create_file(
+                path=file_path,
+                message=message,
+                content=contents,
+                branch=branch,
+            )
+        else:
+            response = repo.update_file(
+                path=file_path,
+                message=message,
+                content=contents,
+                sha=file_obj.sha,
+                branch=branch,
+            )
         return response["commit"]
 
     def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
