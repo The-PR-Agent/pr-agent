@@ -278,27 +278,37 @@ def test_verify_code_comment_reports_failure_on_an_empty_response_body():
     assert isinstance(error, TypeError)
 
 
-def test_validate_comments_inside_hunks_survives_a_bad_regex_replacement(monkeypatch):
-    """``re.error`` subclasses Exception directly, so the other four types never cover it.
+def test_validate_comments_inside_hunks_survives_a_regex_error(monkeypatch):
+    """Keep ``re.error`` handled: it subclasses Exception directly, so the other four types
+    never cover it, and main's ``except Exception`` did.
 
-    When a comment is moved into a nearby hunk the replacement handed to ``re.sub`` is built
-    from the suggestion's improved code, so a backslash escape in it - a regex or a Windows
-    path in the proposed change - makes the substitution fail.
+    #3577 passes the replacement as a function, which removed the trigger that reached this
+    handler through a backslash in the proposed code. Pin the handler itself instead, by making
+    the substitution fail inside the loop.
     """
+    import re as real_re
+
+    class _ReWithFailingSub:
+        error = real_re.error
+        DOTALL = real_re.DOTALL
+        compile = staticmethod(real_re.compile)
+
+        @staticmethod
+        def sub(*args, **kwargs):
+            raise real_re.error("bad pattern")
+
     diff_file = SimpleNamespace(filename="a.py", patch="@@ -1,3 +1,3 @@\n-old\n+new\n")
     provider = _make_provider()
     monkeypatch.setattr(provider, "get_diff_files", lambda: [diff_file])
     monkeypatch.setattr(
         "pr_agent.git_providers.github_provider.set_file_languages", lambda files: files)
+    monkeypatch.setattr("pr_agent.git_providers.github_provider.re", _ReWithFailingSub)
 
     suggestions = [{
         "relevant_file": "a.py",
         "relevant_lines_start": 5,
         "relevant_lines_end": 6,
-        "original_suggestion": {
-            "existing_code": "old",
-            "improved_code": r"re.sub(r'x', '\1', s)",
-        },
+        "original_suggestion": {"existing_code": "old", "improved_code": "new"},
         "body": "```suggestion\nnew\n```",
     }]
 
