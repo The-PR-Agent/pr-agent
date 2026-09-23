@@ -243,6 +243,7 @@ new_score_mechanism_th_medium=7
 # params for '/improve --extended' mode
 num_code_suggestions_per_chunk=3
 # Maximum suggestions retained per file after all chunks are merged; 0 disables the cap.
+# Skip unresolvable line locations before applying a positive cap to summarized output; leave inline selection unchanged.
 max_suggestions_per_file = 0
 max_number_of_calls = 3
 parallel_calls = true
@@ -546,6 +547,7 @@ max_artifact_size = 50000
 
 [mosaico]
 health_timeout_seconds = 10 # finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work
+context_history_max_tasks = 100 # maximum prior tasks considered for a context follow-up; set from 1 to 1000
 
 [asana]
 request_timeout = 10 # seconds allowed for each Asana task API request

@@ -744,9 +744,19 @@ class GitLabProvider(GitProvider):
             return
 
         if isinstance(compare_result, dict):
+            compare_timeout = compare_result.get('compare_timeout')
             diffs = compare_result.get('diffs', []) or []
         else:
+            compare_timeout = getattr(compare_result, 'compare_timeout', None)
             diffs = getattr(compare_result, 'diffs', []) or []
+
+        if compare_timeout is True:
+            get_logger().info("GitLab comparison is incomplete or timed out; falling back to a full run")
+            self.unreviewed_files_map = {}
+            self.git_files = None
+            self.diff_files = None
+            self.incremental.is_incremental = False
+            return
 
         # `repository_compare(last_seen_sha, head_sha)` walks every commit on the path between
         # the two SHAs, so if `git merge <target>` was run on the MR branch since the last

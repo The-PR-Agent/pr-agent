@@ -85,6 +85,7 @@ class GithubProvider(GitProvider):
         self._resolved_config_branch: str | None = None
         self._check_run_ids: dict = {}
         self._check_runs_in_progress: set = set()
+        self._published_inline_comment_bodies: list[str] = []
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
@@ -211,7 +212,11 @@ class GithubProvider(GitProvider):
         return self.pr.html_url
 
     def set_pr(self, pr_url: str):
-        self.repo, self.pr_num = self._parse_pr_url(pr_url)
+        repo, pr_num = self._parse_pr_url(pr_url)
+        if (self.repo, self.pr_num) != (repo, pr_num):
+            self._published_inline_comment_bodies = []
+            self._inline_comment_store = None
+        self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
 
     def _get_incremental_commits(self):
@@ -835,6 +840,7 @@ class GithubProvider(GitProvider):
         try:
             # publish all comments in a single message
             self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=comments)
+            self._remember_published_inline_comment_bodies(comments)
             # The whole batch posted; record its fingerprints so the rest of this
             # run dedups against them. Cross-run dedup relies on the markers in the
             # posted bodies, so comments the fallback below drops stay unrecorded
@@ -1025,6 +1031,7 @@ class GithubProvider(GitProvider):
         # publish as a group the verified comments
         if verified_comments:
             self.pr.create_review(commit=self.last_commit_id, event="COMMENT", comments=verified_comments)
+            self._remember_published_inline_comment_bodies(verified_comments)
             published_count += len(verified_comments)
 
         # try to publish one by one the invalid comments as a one-line code comment
@@ -1253,6 +1260,34 @@ class GithubProvider(GitProvider):
 
     def get_issue_comments(self):
         return self.pr.get_issue_comments()
+
+    def get_persistent_comment_bodies(self) -> list[str]:
+        """Return existing inline review bodies for cross-run deduplication."""
+        bodies = self.get_recent_inline_comment_bodies()
+        seen = set(bodies)
+        if self.pr is None:
+            return bodies
+        for comment in self.pr.get_comments():
+            body = getattr(comment, "body", None)
+            if isinstance(body, str) and body and body not in seen:
+                bodies.append(body)
+                seen.add(body)
+        return bodies
+
+    def get_recent_inline_comment_bodies(self) -> list[str]:
+        """Return inline review bodies published by this provider run."""
+        return list(getattr(self, "_published_inline_comment_bodies", []))
+
+    def _remember_published_inline_comment_bodies(self, comments: list[dict]) -> None:
+        """Remember bodies after GitHub accepts an inline review batch."""
+        recent = getattr(self, "_published_inline_comment_bodies", None)
+        if recent is None:
+            recent = []
+            self._published_inline_comment_bodies = recent
+        for comment in comments:
+            body = comment.get("body") if isinstance(comment, dict) else None
+            if isinstance(body, str) and body and body not in recent:
+                recent.append(body)
 
     def get_repo_settings(self):
         settings_files = []

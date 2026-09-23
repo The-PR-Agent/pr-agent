@@ -20,7 +20,7 @@ def encoder(monkeypatch):
     return encoder
 
 
-@pytest.mark.parametrize("max_tokens", [-1, 0, 60, 10_000])
+@pytest.mark.parametrize("max_tokens", [60, 10_000])
 @pytest.mark.parametrize("delete_last_line", [False, True])
 def test_special_token_literals_do_not_bypass_clipping(encoder, max_tokens, delete_last_line):
     text = "line containing <|endoftext|>\n" * 20
@@ -30,6 +30,15 @@ def test_special_token_literals_do_not_bypass_clipping(encoder, max_tokens, dele
 
     assert clip_tokens(text, max_tokens, delete_last_line=delete_last_line) == expected
     encoder.encode.assert_called_once_with(text, disallowed_special=())
+
+
+@pytest.mark.parametrize("max_tokens", [-1, 0])
+@pytest.mark.parametrize("delete_last_line", [False, True])
+def test_non_positive_budget_skips_special_token_encoding(encoder, max_tokens, delete_last_line):
+    text = "line containing <|endoftext|>\n" * 20
+
+    assert clip_tokens(text, max_tokens, delete_last_line=delete_last_line) == ""
+    encoder.encode.assert_not_called()
 
 
 def test_special_token_clipping_preserves_no_marker_option(encoder):

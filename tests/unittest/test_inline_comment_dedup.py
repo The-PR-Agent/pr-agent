@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
 from gitlab import GitlabCreateError
 
 from pr_agent.algo import inline_comment_dedup as d
@@ -195,7 +196,7 @@ def _azure_provider(existing_threads=None):
 
 def test_inline_publication_verification_supports_providers_with_comment_capability():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
-    assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
+    assert d.can_verify_inline_comment_publication(_gh_provider([])) is True
     assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
 
     class FooProvider:
@@ -266,6 +267,48 @@ def test_github_flag_off_publishes_unmarked():
     published = p.pr.create_review.call_args.kwargs["comments"]
     assert len(published) == 1
     assert "pr-agent-dedup" not in published[0]["body"]
+
+
+def test_github_comment_reads_include_existing_and_only_successful_new_bodies():
+    provider = _gh_provider(["existing inline body", "existing inline body", ""])
+    assert provider.get_persistent_comment_bodies() == ["existing inline body"]
+    assert provider.get_recent_inline_comment_bodies() == []
+
+    settings_patch = _patch_flag(False)
+    try:
+        provider.publish_inline_comments([{"path": "a.py", "line": 10, "body": "new inline body"}])
+    finally:
+        settings_patch.stop()
+
+    assert provider.get_recent_inline_comment_bodies() == ["new inline body"]
+    assert provider.get_persistent_comment_bodies() == ["new inline body", "existing inline body"]
+
+
+def test_github_failed_inline_publish_does_not_report_recent_body():
+    provider = _gh_provider([])
+    provider.pr.create_review.side_effect = RuntimeError("API unavailable")
+    settings_patch = _patch_flag(False)
+    try:
+        with pytest.raises(RuntimeError, match="API unavailable"):
+            provider.publish_inline_comments([{"path": "a.py", "line": 10, "body": "not posted"}])
+    finally:
+        settings_patch.stop()
+
+    assert provider.get_recent_inline_comment_bodies() == []
+
+
+def test_github_recent_inline_bodies_do_not_cross_prs():
+    provider = _gh_provider([])
+    provider.repo = "owner/repo"
+    provider.pr_num = 1
+    provider._published_inline_comment_bodies = ["from first PR"]
+    provider._inline_comment_store = object()
+    provider._get_pr = MagicMock(return_value=MagicMock())
+
+    provider.set_pr("https://github.com/owner/repo/pull/2")
+
+    assert provider.get_recent_inline_comment_bodies() == []
+    assert provider._inline_comment_store is None
 
 
 # --------------------------------------------------------------------------- #

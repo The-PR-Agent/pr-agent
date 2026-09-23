@@ -283,9 +283,18 @@ async def test_chat_completion_strips_temperature_for_claude_opus_4_8(monkeypatc
         "bedrock/eu.anthropic.claude-opus-5",
         "bedrock/au.anthropic.claude-opus-5",
         "bedrock/jp.anthropic.claude-opus-5",
+        "anthropic/claude-opus-5-5",
+        "claude-opus-5-5",
+        "vertex_ai/claude-opus-5-5",
+        "bedrock/anthropic.claude-opus-5-5",
+        "bedrock/global.anthropic.claude-opus-5-5",
+        "bedrock/us.anthropic.claude-opus-5-5",
+        "bedrock/eu.anthropic.claude-opus-5-5",
+        "bedrock/au.anthropic.claude-opus-5-5",
+        "bedrock/jp.anthropic.claude-opus-5-5",
     ],
 )
-async def test_chat_completion_strips_temperature_for_claude_opus_5(monkeypatch, model):
+async def test_chat_completion_strips_temperature_for_claude_opus_5_family(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
@@ -380,9 +389,18 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_4_
         "bedrock/eu.anthropic.claude-opus-5",
         "bedrock/au.anthropic.claude-opus-5",
         "bedrock/jp.anthropic.claude-opus-5",
+        "anthropic/claude-opus-5-5",
+        "claude-opus-5-5",
+        "vertex_ai/claude-opus-5-5",
+        "bedrock/anthropic.claude-opus-5-5",
+        "bedrock/global.anthropic.claude-opus-5-5",
+        "bedrock/us.anthropic.claude-opus-5-5",
+        "bedrock/eu.anthropic.claude-opus-5-5",
+        "bedrock/au.anthropic.claude-opus-5-5",
+        "bedrock/jp.anthropic.claude-opus-5-5",
     ],
 )
-async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5(monkeypatch, model):
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5_family(monkeypatch, model):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",

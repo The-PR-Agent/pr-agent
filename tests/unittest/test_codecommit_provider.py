@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.git_providers.codecommit_provider import CodeCommitFile, CodeCommitProvider, PullRequestCCMimic
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -1173,72 +1174,37 @@ class TestCodeCommitProvider:
         with pytest.raises(ValueError):
             provider.set_pr("https://example.com/codecommit/repositories/my_test_repo/pull-requests/4321")
 
-    def test_get_file_extensions(self):
+    def test_get_languages_matches_packing_and_combines_language_extensions(self):
         filenames = [
-            "app.py",
-            "cli.py",
-            "composer.json",
-            "composer.lock",
-            "hello.py",
-            "image1.jpg",
-            "image2.JPG",
-            "index.js",
-            "provider.py",
-            "README",
-            "test.py",
+            "src/one.cpp", "include/one.hpp", "src/two.C", "src/one.c",
+            "Dockerfile", "build.cmake.in", "app.py", "notes.unknown",
         ]
-        expected_extensions = [
-            ".py",
-            ".py",
-            ".json",
-            ".lock",
-            ".py",
-            ".jpg",
-            ".jpg",
-            ".js",
-            ".py",
-            "",
-            ".py",
-        ]
-        extensions = CodeCommitProvider._get_file_extensions(filenames)
-        assert extensions == expected_extensions
+        files = [SimpleNamespace(filename=name) for name in filenames]
+        provider = object.__new__(CodeCommitProvider)
+        provider.get_files = MagicMock(return_value=files)
 
-    def test_get_language_percentages(self):
-        extensions = [
-            ".py",
-            ".py",
-            ".json",
-            ".lock",
-            ".py",
-            ".jpg",
-            ".jpg",
-            ".js",
-            ".py",
-            "",
-            ".py",
-        ]
-        percentages = CodeCommitProvider._get_language_percentages(extensions)
-        assert percentages[".py"] == 45
-        assert percentages[".json"] == 9
-        assert percentages[".lock"] == 9
-        assert percentages[".jpg"] == 18
-        assert percentages[".js"] == 9
-        assert percentages[""] == 9
+        languages = provider.get_languages()
 
-        # The _get_file_extensions function needs the "." prefix on the extension,
-        # but the _get_language_percentages function will work with or without the "." prefix
-        extensions = [
-            "txt",
-            "py",
-            "py",
+        assert languages == pytest.approx({
+            "C++": 300 / 7, "C": 100 / 7, "Dockerfile": 100 / 7,
+            "CMake": 100 / 7, "Python": 100 / 7,
+        })
+        buckets = sort_files_by_main_languages(languages, files)
+        assert buckets == [
+            {"language": "C++", "files": files[:3]},
+            {"language": "C", "files": files[3:4]},
+            {"language": "Dockerfile", "files": files[4:5]},
+            {"language": "CMake", "files": files[5:6]},
+            {"language": "Python", "files": files[6:7]},
+            {"language": "Other", "files": files[7:]},
         ]
-        percentages = CodeCommitProvider._get_language_percentages(extensions)
-        assert percentages["py"] == 67
-        assert percentages["txt"] == 33
 
-        # test an empty list
-        percentages = CodeCommitProvider._get_language_percentages([])
-        assert percentages == {}
+    @pytest.mark.parametrize("filenames", [[], ["notes.unknown"]])
+    def test_get_languages_without_recognized_files(self, filenames):
+        provider = object.__new__(CodeCommitProvider)
+        provider.get_files = MagicMock(return_value=[SimpleNamespace(filename=name) for name in filenames])
+
+        assert provider.get_languages() == {}
 
     def test_get_edit_type(self):
         # Test that the _get_edit_type() function can convert a CodeCommit letter to an EDIT_TYPE enum

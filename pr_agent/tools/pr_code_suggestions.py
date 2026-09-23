@@ -334,11 +334,12 @@ class PRCodeSuggestions:
 
             # publish the suggestions
             if get_settings().config.publish_output:
-                publish_summary = ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
-                                   self.git_provider.is_supported("gfm_markdown"))
+                publish_summary = self._uses_summarized_output()
                 if publish_summary:
-                    # Filter before emitting to external sinks so they receive the same result
-                    # as the PR. An empty result must emit only the no-suggestions outcome.
+                    # Drop suggestions that can't be anchored in the diff (unresolved
+                    # sentinels, zero/negative or reversed line ranges, or positive
+                    # ranges that fall outside the changed lines of the relevant file)
+                    # before external output so every sink reports the same result.
                     data['code_suggestions'] = [
                         suggestion for suggestion in data['code_suggestions']
                         if self._is_suggestion_line_range_valid(suggestion)
@@ -1200,6 +1201,12 @@ class PRCodeSuggestions:
         except (AttributeError, TypeError, ValueError):
             return 0
 
+    def _uses_summarized_output(self) -> bool:
+        return not get_settings().config.publish_output or (
+            not get_settings().pr_code_suggestions.commitable_code_suggestions
+            and self.git_provider.is_supported("gfm_markdown")
+        )
+
     def _limit_suggestions_per_file(self, suggestions: List[Dict]) -> List[Dict]:
         raw_limit = get_settings().get("pr_code_suggestions.max_suggestions_per_file", 0)
         try:
@@ -1211,6 +1218,10 @@ class PRCodeSuggestions:
 
         if max_suggestions_per_file <= 0 or not suggestions:
             return suggestions
+
+        original_count = len(suggestions)
+        if self._uses_summarized_output():
+            suggestions = [s for s in suggestions if self._is_suggestion_line_range_valid(s)]
 
         indexed_suggestions = list(enumerate(suggestions))
         ranked_suggestions = sorted(
@@ -1232,11 +1243,11 @@ class PRCodeSuggestions:
         limited_suggestions = [
             suggestion for index, suggestion in indexed_suggestions if index in kept_indices
         ]
-        dropped_count = len(suggestions) - len(limited_suggestions)
+        dropped_count = original_count - len(limited_suggestions)
         if dropped_count:
             get_logger().info(
                 f"Limited PR code suggestions to {max_suggestions_per_file} per file; "
-                f"removed {dropped_count} lower-scored suggestion(s)")
+                f"removed {dropped_count} ineligible or lower-scored suggestion(s)")
         return limited_suggestions
 
     async def push_inline_code_suggestions(self, data, include_coverage_footer: bool = True) -> None:
@@ -1352,7 +1363,46 @@ class PRCodeSuggestions:
             self.git_provider.publish_comment("\n\n---\n\n".join(fallback_comments))
             self._output_published = True
         if code_suggestions and not is_successful:
-            raise RuntimeError("Failed to publish code suggestions after individual retries")
+            if not getattr(self, "_output_published", False):
+                # Inline publication is exhausted but generation itself succeeded. Fall back
+                # to the summarized-comment path so the author still receives the
+                # already-computed suggestions instead of a misleading failure comment (#3602).
+                get_logger().info(
+                    "Failed to publish code suggestions after retries, "
+                    "falling back to summarized suggestions comment"
+                )
+                try:
+                    pr_body = self.generate_summarized_suggestions(data)
+                    if not pr_body:
+                        # The summarizer swallows per-suggestion exceptions and renders an
+                        # empty summary instead of dropping just the malformed entry, so a
+                        # collapsed render must stay a failure and not publish an empty
+                        # comment as if the suggestions had been delivered.
+                        raise RuntimeError("summarized suggestions rendered empty")
+                    pr_body += coverage_footer
+                    pr_body = add_comment_identity(
+                        pr_body,
+                        PRCodeSuggestionsIdentity.SUMMARY.value,
+                        self.git_provider,
+                    )
+                    response = self.git_provider.publish_comment(pr_body)
+                    if response is None and self.git_provider.supports_comment_publish_confirmation():
+                        # This provider confirms publications with a comment object, so a
+                        # `None` return means the summary was not delivered (e.g. Gitea's
+                        # silent API failure); do not record the fallback as delivered.
+                        raise RuntimeError("publish_comment returned no comment response")
+                    self._output_published = True
+                except Exception as e:
+                    get_logger().error(
+                        f"Failed to publish summarized code suggestions after inline retries: {e}"
+                    )
+                    raise RuntimeError(
+                        "Failed to publish code suggestions after individual retries"
+                    ) from e
+            else:
+                # Partial output (e.g. fallback comments) was already published, so keep
+                # surfacing the exhausted retries to the operator.
+                raise RuntimeError("Failed to publish code suggestions after individual retries")
         return
 
     def _get_diff_file(self, relevant_file):

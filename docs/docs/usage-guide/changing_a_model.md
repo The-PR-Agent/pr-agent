@@ -828,7 +828,7 @@ built-in defaults.
 !!! note "Only models that accept a thinking budget are supported"
     PR-Agent enables extended thinking through the manual
     `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-    (e.g. Opus 4.7/4.8, Opus 5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+    (e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
     intentionally excluded from the built-in defaults. If you add one to
     `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
     for it and logs a warning rather than sending a request the provider would reject — use
