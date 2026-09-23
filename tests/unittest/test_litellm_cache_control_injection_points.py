@@ -208,6 +208,28 @@ def test_anthropic_routed_alias_without_metadata_is_silent(monkeypatch):
     assert mock_logger.warning.call_count == 0
 
 
+def test_openrouter_claude_route_warns_non_anthropic(monkeypatch):
+    # An openrouter/.../claude-... route cannot attach the Anthropic-only cache_control
+    # kwarg either, but its name used to bypass the route warning: a resolved non-Anthropic
+    # provider is authoritative over the model-name heuristic.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+
+    handler = litellm_handler.LiteLLMAIHandler()
+    handler._warn_prompt_cache_conditions(
+        "openrouter/anthropic/claude-3.5-sonnet",
+        "sys",
+        "usr",
+        [{"location": "message", "role": "system"}],
+        request_provider="openrouter",
+    )
+
+    assert mock_logger.warning.call_count == 1
+    warning_texts = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert len([text for text in warning_texts if "does not route to an Anthropic Claude model" in text]) == 1
+
+
 @pytest.mark.asyncio
 async def test_warns_when_cached_prefix_below_model_minimum(monkeypatch):
     mock_logger = MagicMock()
