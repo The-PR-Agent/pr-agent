@@ -164,7 +164,14 @@ def test_validate_user_args_all_allowed_together():
     ok, offending = CliArgs.validate_user_args(ALLOWED_ARGS_SINGLE)
     assert ok is True, f"Allowed batch unexpectedly rejected at {offending!r}"
     assert offending == ""
+def test_validate_user_args_rejects_forbidden_nested_key():
+    """Reject forbidden keys nested inside a section-level mapping."""
+    ok, offending = CliArgs.validate_user_args(
+        ["--pr_questions={webhook_secret: secret}"]
+    )
 
+    assert ok is False
+    assert "webhook_secret" in offending
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(

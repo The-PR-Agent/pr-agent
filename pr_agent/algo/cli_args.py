@@ -1,4 +1,5 @@
 from base64 import b64decode
+import yaml
 
 from pr_agent.config_security import (
     CLI_HOST_ONLY_KEYS_BY_SECTION,
@@ -82,6 +83,23 @@ class CliArgs:
                     host_only_arg = CliArgs._host_only_setting_arg(arg_word)
                     if host_only_arg:
                         return False, host_only_arg
+# Validate keys nested inside a section-level mapping.
+                    if "=" in arg_word:
+                        section, value = arg_word[2:].split("=", 1)
+                        try:
+                            import yaml
+
+                            parsed_value = yaml.safe_load(value)
+                            if isinstance(parsed_value, dict):
+                                for nested_key in parsed_value:
+                                    nested_arg = f"--{section}.{nested_key}=value"
+                                    nested_ok, nested_offending = CliArgs.validate_user_args(
+                                        [nested_arg]
+                                    )
+                                    if not nested_ok:
+                                        return False, nested_offending
+                        except Exception:
+                            pass
                     for forbidden_arg_word in forbidden_cli_args:
                         if forbidden_arg_word in arg_word:
                             return False, forbidden_arg_word
