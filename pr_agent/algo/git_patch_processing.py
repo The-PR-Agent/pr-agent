@@ -12,6 +12,7 @@ from pr_agent.log import get_logger
 RE_HUNK_HEADER = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
 NO_NEWLINE_AT_EOF_MARKER = r'\ No newline at end of file'
+_SPLITLINES_BREAK_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
 def to_hunk_only_patch(patch_str: str) -> str:
@@ -21,10 +22,11 @@ def to_hunk_only_patch(patch_str: str) -> str:
     treat ``---``/``+++`` file headers as changed source lines. Returns an empty
     string when the diff has no textual hunk, for example a rename-only change.
     """
-    lines = patch_str.splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if line.startswith("@@"):
-            return "".join(lines[i:])
+    hunk_start = patch_str.find("@@")
+    while hunk_start != -1:
+        if hunk_start == 0 or patch_str[hunk_start - 1] in _SPLITLINES_BREAK_CHARS:
+            return patch_str[hunk_start:]
+        hunk_start = patch_str.find("@@", hunk_start + 2)
     return ""
 
 
