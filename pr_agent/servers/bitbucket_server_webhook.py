@@ -2,8 +2,6 @@ import ast
 import copy
 import json
 import os
-from typing import List
-
 import uvicorn
 from fastapi import APIRouter, FastAPI
 from fastapi.encoders import jsonable_encoder
@@ -15,6 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
+from typing import List
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
@@ -237,7 +236,24 @@ app.include_router(router)
 
 
 def start():
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "3000")))
+    """
+    Start the BitBucket Webhook server.
+
+    The server port can be configured via the PORT environment variable.
+    Defaults to 3000 if PORT is not set or invalid.
+    """
+
+    raw_port = os.environ.get("PORT")
+    try:
+        port = int(raw_port) if raw_port else 3000
+        if not (1 <= port <= 65535):
+            raise ValueError(f"Port {port} is out of valid range")
+        if raw_port:
+            get_logger().info(f"Using custom PORT from environment: {port}")
+    except ValueError as e:
+        get_logger().warning(f"Invalid PORT environment variable ({e}), using default port 3000")
+        port = 3000
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
