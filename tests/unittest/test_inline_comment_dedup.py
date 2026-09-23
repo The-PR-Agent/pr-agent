@@ -441,7 +441,7 @@ def test_gitlab_failed_create_does_not_record_a_recent_body():
     assert p.get_recent_inline_comment_bodies() == []
 
 
-def test_gitlab_recent_inline_bodies_include_pending_draft_notes():
+def test_gitlab_recent_inline_bodies_exclude_unpublished_drafts():
     p = _gl_provider([])
     gs = _flag_on_gitlab()
     try:
@@ -454,9 +454,61 @@ def test_gitlab_recent_inline_bodies_include_pending_draft_notes():
     finally:
         gs.stop()
 
-    bodies = p.get_recent_inline_comment_bodies()
-    assert len(bodies) == 1
-    assert "draft finding" in bodies[0]
+    assert p.mr.draft_notes.create.called
+    # pending drafts are not visible to reviewers yet, so they must not count as published
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def _gitlab_settings_get(key, default=None):
+    if key == "gitlab.publish_code_suggestions_as_review":
+        return True
+    if key == "config.persistent_inline_comments":
+        return False
+    return default
+
+
+@pytest.fixture
+def _gl_review_provider():
+    p = _gl_provider([])
+    p.resolve_outdated_inline_threads = MagicMock(return_value=0)
+    p.reconcile_code_suggestion_threads = MagicMock(return_value=None)
+    return p
+
+
+def test_gitlab_recent_inline_bodies_record_drafts_after_bulk_publish(_gl_review_provider):
+    p = _gl_review_provider
+    published_draft = MagicMock()
+    published_draft.note = "draft finding"
+    p.mr.draft_notes.list.return_value = [published_draft]
+
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _gitlab_settings_get
+    try:
+        assert p.publish_code_suggestions([]) is True
+    finally:
+        gs.stop()
+
+    assert p.mr.draft_notes.bulk_publish.called
+    assert p.get_recent_inline_comment_bodies() == ["draft finding"]
+
+
+def test_gitlab_failed_bulk_publish_does_not_record_drafts(_gl_review_provider):
+    p = _gl_review_provider
+    pending_draft = MagicMock()
+    pending_draft.note = "unpublished finding"
+    p.mr.draft_notes.list.return_value = [pending_draft]
+    p.mr.draft_notes.bulk_publish.side_effect = GitlabCreateError("cannot publish")
+
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _gitlab_settings_get
+    try:
+        assert p.publish_code_suggestions([]) is True
+    finally:
+        gs.stop()
+
+    assert p.get_recent_inline_comment_bodies() == []
 
 
 def test_gitlab_persistent_bodies_list_existing_mr_notes_without_duplicates():
@@ -481,6 +533,48 @@ def test_gitlab_persistent_bodies_include_recent_posts_only_once():
 
     assert "just posted" in bodies
     assert bodies.count("just posted") == 1
+
+
+def test_gitlab_persistent_bodies_survive_draft_listing_failure():
+    p = _gl_provider(["discussion finding"])
+    p.mr.draft_notes.list.side_effect = GitlabCreateError("draft notes unavailable")
+
+    bodies = p.get_persistent_comment_bodies()
+
+    assert "discussion finding" in bodies
+
+
+def test_gitlab_fallback_supports_reduced_key_issue_shape():
+    p = _gl_provider([])
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.get_line_link = MagicMock(return_value="http://link")
+    body = "**Possible Issue**\n\nfinding text"
+    fingerprint = d.key_issue_fingerprint("a.py", body)
+    location_fingerprint = d.key_issue_location_fingerprint(fingerprint, 2, 3)
+    marked_body = d.key_issue_body_with_markers(body, fingerprint, location_fingerprint)
+    gs = _flag_on_gitlab()
+    try:
+        p.send_inline_comment(
+            body=marked_body, edit_type="addition", found=True,
+            relevant_file="a.py", relevant_line_in_file="+x = 1",
+            source_line_no=10, target_file=_FakeTargetFile(), target_line_no=10,
+            original_suggestion={
+                "relevant_file": "a.py",
+                "relevant_lines_start": 2,
+                "relevant_lines_end": 3,
+                "body": body,
+                "fallback_to_pr_comment": False,
+            },
+        )
+    finally:
+        gs.stop()
+
+    assert p.mr.notes.create.called
+    note_body = p.mr.notes.create.call_args.args[0]["body"]
+    assert "finding text" in note_body
+    # the location marker that publication verification relies on must survive
+    assert f"<!-- pr-agent-key-issue-location: {location_fingerprint} -->" in note_body
+    assert p.get_recent_inline_comment_bodies() == [note_body]
 
 
 # --------------------------------------------------------------------------- #
