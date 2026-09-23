@@ -127,3 +127,24 @@ async def test_unsigned_or_invalid_comment_is_rejected_before_dispatch(agent, si
     assert caught.value.status_code == status
     assert tasks.tasks == []
     agent.handle_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_secret_rejects_every_webhook(monkeypatch):
+    # Like the GitHub app, the Gitea webhook must fail closed when the secret is
+    # not configured instead of accepting unauthenticated events that any caller
+    # could forge to trigger expensive commands.
+    settings = SimpleNamespace(gitea=SimpleNamespace(webhook_secret=""))
+    monkeypatch.setattr(gitea_app, "get_settings", lambda: settings)
+    monkeypatch.setattr(gitea_app, "global_settings", settings)
+    monkeypatch.setattr(gitea_app, "context", {})
+    agent = SimpleNamespace(handle_request=AsyncMock())
+    monkeypatch.setattr(gitea_app, "PRAgent", lambda: agent)
+
+    tasks = BackgroundTasks()
+    with pytest.raises(HTTPException) as caught:
+        await gitea_app.handle_gitea_webhooks(tasks, _request(_payload()), Response())
+
+    assert caught.value.status_code == 403
+    assert tasks.tasks == []
+    agent.handle_request.assert_not_awaited()
