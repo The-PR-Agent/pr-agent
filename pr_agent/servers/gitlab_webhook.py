@@ -252,13 +252,20 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
     request_token = request.headers.get("X-Gitlab-Token")
     # Built only for a request that will actually consult it, so a cloud client that
     # fails to initialize cannot drop webhooks authenticated by shared secret instead.
-    secret_provider = get_fork_safe_secret_provider() if request_token else None
-    if request_token and secret_provider:
-        secret = secret_provider.get_secret(request_token)
-        if not secret:
-            get_logger().warning("Empty secret retrieved for the provided webhook token")
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                                content=jsonable_encoder({"message": "unauthorized"}))
+    secret = ""
+    secret_provider = None
+    provider_failed = False
+    if request_token:
+        try:
+            secret_provider = get_fork_safe_secret_provider()
+            if secret_provider:
+                secret = secret_provider.get_secret(request_token) or ""
+        except Exception as e:
+            get_logger().warning(
+                f"Failed to resolve the secret provider for the webhook token, "
+                f"falling back to the configured secret: {e}")
+            provider_failed = True
+    if request_token and secret and not provider_failed:
         try:
             secret_dict = json.loads(secret)
             gitlab_token = secret_dict["gitlab_token"]
@@ -268,6 +275,10 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
             get_logger().error(f"Failed to validate the secret for the provided webhook token: {e}")
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
+    elif request_token and secret_provider is not None and not provider_failed:
+        get_logger().warning("Empty secret retrieved for the provided webhook token")
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                            content=jsonable_encoder({"message": "unauthorized"}))
     elif get_settings().get("GITLAB.SHARED_SECRET"):
         secret = get_settings().get("GITLAB.SHARED_SECRET")
         if not hmac.compare_digest(str(request_token or ""), str(secret)):
