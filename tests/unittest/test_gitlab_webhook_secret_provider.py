@@ -178,8 +178,7 @@ async def test_accept_a_webhook_token_resolved_by_the_secret_provider(monkeypatc
 
 @pytest.mark.asyncio
 async def test_fall_back_to_shared_secret_when_provider_initialization_fails(monkeypatch, gitlab_webhook_settings):
-    """A cloud client that cannot be built must not 500 the delivery; the configured shared
-    secret keeps authenticating the webhook instead."""
+    """Fall back to the shared secret when the cloud client cannot be built."""
     monkeypatch.setattr(gitlab_webhook, "get_secret_provider",
                         lambda: (_ for _ in ()).throw(RuntimeError("secrets manager unreachable")))
 
@@ -189,8 +188,7 @@ async def test_fall_back_to_shared_secret_when_provider_initialization_fails(mon
 
 @pytest.mark.asyncio
 async def test_fall_back_to_shared_secret_when_the_secret_read_fails(monkeypatch, gitlab_webhook_settings):
-    """A read failure on an otherwise healthy provider must degrade to the shared secret
-    instead of crashing the endpoint."""
+    """Fall back to the shared secret when the provider read raises."""
     monkeypatch.setattr(
         gitlab_webhook, "get_secret_provider",
         lambda: FakeSecretProvider(error="secrets manager read failed"))
@@ -200,9 +198,35 @@ async def test_fall_back_to_shared_secret_when_the_secret_read_fails(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_fall_back_to_shared_secret_when_the_provider_lookup_is_empty(monkeypatch, gitlab_webhook_settings):
+    """Fall back to the shared secret when the provider answers an empty lookup, as the
+    built-in secrets clients do during a read outage."""
+    monkeypatch.setattr(gitlab_webhook, "get_secret_provider", lambda: FakeSecretProvider(secret=""))
+
+    assert (await _post_webhook("topsecret")).status_code == 200
+    assert (await _post_webhook("unseen-token")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_do_not_leak_provider_exception_details_in_the_fallback_warning(monkeypatch, gitlab_webhook_settings):
+    """Keep provider exception text out of the fallback warning, as the providers themselves
+    already redact it and the webhook logs are shipped to aggregators."""
+    records = []
+    handler_id = gitlab_webhook.get_logger().add(lambda m: records.append(str(m)))
+    try:
+        monkeypatch.setattr(gitlab_webhook, "get_secret_provider",
+                            lambda: (_ for _ in ()).throw(RuntimeError("credential-process diagnostics")))
+        assert (await _post_webhook("any-token")).status_code == 401
+    finally:
+        gitlab_webhook.get_logger().remove(handler_id)
+
+    assert records, "nothing was logged, so the assertion below would be vacuous"
+    assert not any("credential-process diagnostics" in record for record in records)
+
+
+@pytest.mark.asyncio
 async def test_degrade_to_401_when_provider_fails_and_no_shared_secret(monkeypatch, gitlab_webhook_settings):
-    """With no shared secret configured a provider failure must fail closed with 401 instead
-    of surfacing a 500 on every delivered webhook."""
+    """Fail closed with 401 when the provider fails and no shared secret is configured."""
     settings = gitlab_webhook_settings
     settings.set("GITLAB.SHARED_SECRET", "")
     monkeypatch.setattr(gitlab_webhook, "get_secret_provider",
@@ -212,9 +236,8 @@ async def test_degrade_to_401_when_provider_fails_and_no_shared_secret(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_reject_a_token_the_provider_does_not_know(monkeypatch, gitlab_webhook_settings):
-    """A configured provider answering with no secret for the given token must reject the
-    delivery, exactly as it did before the degrade path was added."""
+async def test_reject_a_token_unknown_to_provider_and_shared_secret(monkeypatch, gitlab_webhook_settings):
+    """Reject a token that neither the provider nor the shared secret recognizes."""
     monkeypatch.setattr(gitlab_webhook, "get_secret_provider", lambda: FakeSecretProvider(secret=""))
 
     assert (await _post_webhook("unseen-token")).status_code == 401
