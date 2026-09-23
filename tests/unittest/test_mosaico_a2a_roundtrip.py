@@ -319,6 +319,53 @@ class TestA2ARoundTripStubbedLLM:
                 release.set()
 
     @pytest.mark.asyncio
+    async def test_follow_up_bounds_history_store_reads(self, monkeypatch):
+        """Keep context lookup reads within the configured prior-task limit."""
+        from a2a.server.tasks import InMemoryTaskStore
+
+        from pr_agent.mosaico import dispatch, server
+
+        page_sizes = []
+
+        class RecordingTaskStore(InMemoryTaskStore):
+            async def list(self, params, context):
+                page_sizes.append(params.page_size)
+                return await super().list(params, context)
+
+        store = RecordingTaskStore()
+        monkeypatch.setattr(server, "InMemoryTaskStore", lambda: store)
+        original_get_settings = executor_mod.get_settings
+
+        def single_history_task_settings():
+            settings = original_get_settings()
+            settings.set("MOSAICO.CONTEXT_HISTORY_MAX_TASKS", 1)
+            return settings
+
+        monkeypatch.setattr(executor_mod, "get_settings", single_history_task_settings)
+        routed = []
+
+        async def fake_run_on_diff(diff_body, verb, question, title, empty_ok=True):
+            routed.append(diff_body)
+            return RouteResult("ROUTED", True)
+
+        monkeypatch.setattr(dispatch, "_run_on_diff", fake_run_on_diff)
+        newer_diff = _DIFF_TEXT.replace("foo.py", "bar.py")
+        latest_diff = _DIFF_TEXT.replace("foo.py", "baz.py")
+
+        async with _build_client(server.build_app()) as client:
+            first = (await client.post("/", json=_message_send_body(_DIFF_TEXT))).json()
+            context_id = first["result"]["task"]["contextId"]
+            await client.post("/", json=_message_send_body(newer_diff, context_id=context_id))
+            await client.post("/", json=_message_send_body(latest_diff, context_id=context_id))
+            follow_up = (await client.post(
+                "/", json=_message_send_body("What changed?", context_id=context_id),
+            )).json()
+
+        assert _extract_artifact_text(follow_up["result"]) == "ROUTED"
+        assert "diff --git a/baz.py b/baz.py" in routed[-1]
+        assert all(size <= 2 for size in page_sizes), page_sizes
+
+    @pytest.mark.asyncio
     async def test_follow_up_does_not_reparse_role_lines_inside_user_input(self, monkeypatch):
         """Keep a quoted agent URL inside one user message from becoming a new turn."""
         from pr_agent.mosaico import dispatch

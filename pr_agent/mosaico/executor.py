@@ -20,14 +20,15 @@ TaskArtifactUpdateEvent (not a TaskStatusUpdateEvent), otherwise the SDK raises
 health_check issues a single, NON-retry-wrapped litellm probe."""
 import asyncio
 import copy
-from itertools import count
+from collections import deque
 from math import isfinite
 
 from a2a.helpers.proto_helpers import get_message_text
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
-from a2a.types import ListTasksRequest, Part, Role, Task, TaskState, TaskStatus
+from a2a.server.tasks.inmemory_task_store import resolve_user_scope
+from a2a.types import Part, Role, Task, TaskState, TaskStatus
 from starlette_context import context as sctx
 
 from pr_agent.config_loader import get_settings, global_settings
@@ -35,7 +36,7 @@ from pr_agent.log import get_logger
 from pr_agent.mosaico.dispatch import _find_pr_url, _looks_like_diff, route_and_run_result
 from pr_agent.mosaico.observability import langfuse_span, mosaico_log_context, parse_observability_metadata
 
-_INPUT_SEQUENCE_KEY = "mosaico_input_sequence"
+_MAX_CONTEXT_HISTORY_TASKS = 1000
 
 
 class PRAgentExecutor(AgentExecutor):
@@ -43,44 +44,32 @@ class PRAgentExecutor(AgentExecutor):
 
     def __init__(self, task_store=None):
         self.task_store = task_store
-        self._input_sequence = count(1)
+        self._recent_task_ids: dict[tuple[str, str], deque[str]] = {}
 
     async def _history_for_context(self, context: RequestContext) -> list[str]:
         current = context.get_user_input() or ""
         if self.task_store is None or _find_pr_url(current) or _looks_like_diff(current):
             return []
 
-        # Recover prior user turns from the owner-scoped store. Sort by input
-        # sequence because the SDK lists tasks by status update time, which may
-        # place an older task first if it finishes after a newer input.
+        # Recover prior user turns in input order from the owner-scoped index.
+        # Keep late task status updates from changing the review target.
         limit = get_settings().get("MOSAICO.CONTEXT_HISTORY_MAX_TASKS", 100)
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_CONTEXT_HISTORY_TASKS:
             raise ValueError("MOSAICO context history max tasks must be an integer from 1 to 1000")
-        # Include the current task in the page budget before excluding it below.
-        tasks = await self.task_store.list(
-            ListTasksRequest(context_id=context.context_id, page_size=limit + 1), context.call_context
-        )
-        if tasks.total_size > len(tasks.tasks):
-            # Fetch the whole context when necessary: a late status update can
-            # push the newest input outside the SDK's update-sorted first page.
-            tasks = await self.task_store.list(
-                ListTasksRequest(context_id=context.context_id, page_size=tasks.total_size), context.call_context
-            )
+        key = (resolve_user_scope(context.call_context), context.context_id)
+        recent_ids = list(self._recent_task_ids.get(key, ()))[::-1]
         turns = []
         found_context = False
-        ordered_tasks = sorted(
-            tasks.tasks,
-            key=lambda task: int(task.metadata.fields[_INPUT_SEQUENCE_KEY].string_value)
-            if _INPUT_SEQUENCE_KEY in task.metadata.fields else 0,
-            reverse=True,
-        )
         prior_count = 0
-        for task in ordered_tasks:
-            if task.id == context.task_id:
+        for task_id in recent_ids:
+            if task_id == context.task_id:
                 continue
             if prior_count >= limit:
                 break
             prior_count += 1
+            task = await self.task_store.get(task_id, context.call_context)
+            if task is None:
+                continue
             for message in reversed(task.history):
                 if message.role == Role.ROLE_USER:
                     text = get_message_text(message)
@@ -109,13 +98,17 @@ class PRAgentExecutor(AgentExecutor):
             # executor's cancel() callback. Establish the task before starting the
             # long-running route, but do not replace an existing task on follow-up work.
             if context.current_task is None:
+                if self.task_store is not None:
+                    key = (resolve_user_scope(context.call_context), context.context_id)
+                    self._recent_task_ids.setdefault(
+                        key, deque(maxlen=_MAX_CONTEXT_HISTORY_TASKS + 1)
+                    ).append(context.task_id)
                 await event_queue.enqueue_event(
                     Task(
                         id=context.task_id,
                         context_id=context.context_id,
                         status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
                         history=[context.message] if context.message else [],
-                        metadata={_INPUT_SEQUENCE_KEY: str(next(self._input_sequence))},
                     )
                 )
 
