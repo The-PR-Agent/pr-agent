@@ -222,6 +222,7 @@ async def test_do_not_leak_provider_exception_details_in_the_fallback_warning(mo
 
     assert records, "nothing was logged, so the assertion below would be vacuous"
     assert not any("credential-process diagnostics" in record for record in records)
+    assert any("RuntimeError" in record and "falling back" in record for record in records)
 
 
 @pytest.mark.asyncio
