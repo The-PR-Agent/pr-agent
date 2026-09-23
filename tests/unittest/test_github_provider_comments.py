@@ -965,3 +965,37 @@ def test_validate_comments_inside_hunks_preserves_backslashes_in_fallback_diff()
     assert "```diff" in result["body"]
     assert r'-pattern = r"\1"' in result["body"]
     assert r'+pattern = r"\1\n\\x"' in result["body"]
+
+
+def test_validate_comments_inside_hunks_does_not_partially_update_on_render_error(monkeypatch):
+    provider = _make_provider()
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(
+            filename="src/example.py",
+            patch="@@ -10,2 +10,2 @@\n-old\n+new",
+            language="python",
+        )
+    ]
+    original_body = "```suggestion\nnew\n```"
+    suggestion = {
+        "body": original_body,
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 9,
+        "relevant_lines_end": 11,
+        "original_suggestion": {
+            "existing_code": "old",
+            "improved_code": "new",
+        },
+    }
+    monkeypatch.setattr(
+        gh_module.difflib,
+        "unified_diff",
+        MagicMock(side_effect=AttributeError("render failed")),
+    )
+
+    validated = provider.validate_comments_inside_hunks([suggestion])
+    result = validated[0]
+
+    assert result["relevant_lines_start"] == 9
+    assert result["relevant_lines_end"] == 11
+    assert result["body"] == original_body

@@ -1990,8 +1990,8 @@ class GithubProvider(GitProvider):
                         if not is_valid_hunk:
                             if min_distance < 10:  # 10 lines - a reasonable distance to consider the comment inside the hunk
                                 # make the suggestion non-committable, yet multi line
-                                suggestion['relevant_lines_start'] = max(suggestion['relevant_lines_start'], patch_range_min['start'])
-                                suggestion['relevant_lines_end'] = min(suggestion['relevant_lines_end'], patch_range_min['end'])
+                                new_start = max(suggestion['relevant_lines_start'], patch_range_min['start'])
+                                new_end = min(suggestion['relevant_lines_end'], patch_range_min['end'])
                                 body = suggestion['body'].strip()
 
                                 # present new diff code in collapsible
@@ -2005,9 +2005,11 @@ class GithubProvider(GitProvider):
                                 # replace ```suggestion ... ``` with diff_code, using regex:
                                 body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
                                 body += "\n\n</details>"
+                                suggestion['relevant_lines_start'] = new_start
+                                suggestion['relevant_lines_end'] = new_end
                                 suggestion['body'] = body
                                 get_logger().info(f"Comment was moved to a valid hunk, "
-                                                  f"start_line={suggestion['relevant_lines_start']}, end_line={suggestion['relevant_lines_end']}, file={file.filename}")
+                                                  f"start_line={new_start}, end_line={new_end}, file={file.filename}")
                             else:
                                 get_logger().error(f"Comment is not inside a valid hunk, "
                                                    f"start_line={suggestion['relevant_lines_start']}, end_line={suggestion['relevant_lines_end']}, file={file.filename}")
