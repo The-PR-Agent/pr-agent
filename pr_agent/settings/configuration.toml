@@ -448,9 +448,10 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}]
 # (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models
 # whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection
-# (env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default) applies only when no points are
-# configured here, so the two never double-inject. A warning is logged once per process when the points
-# cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum).
+# (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default)
+# applies only when no points are configured here, so the two never double-inject. A warning is logged
+# once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or
+# a prefix below the model's minimum).
 cache_control_injection_points = []
 
 [openrouter]
