@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 import pr_agent.agent.pr_agent as pr_agent_module
-from pr_agent.algo.cli_args import CliArgs
+from pr_agent.algo.cli_args import _MAPPING_TOO_COMPLEX_ARG, CliArgs
 
 FORBIDDEN_ARGS = [
     # section-qualified key forms
@@ -97,6 +97,9 @@ FORBIDDEN_ARGS = [
     '--github_app={private_key: "---BEGIN---", app_id: 123}',
     '--gitea={web_url: "https://evil.example"}',
     '--openai={key: "sk-leaked"}',
+    # an empty container still exposes its key path for validation
+    '--qdrant={url: {}}',
+    '--qdrant={server: {url: []}}',
 ]
 
 
@@ -124,6 +127,8 @@ HOST_ONLY_ARGS = [
     "--skills.unknown=value",
     "--skills={paths:[/etc]}",
     "--skills={nested: {paths: [\" /etc\", \"/etc\"]}}",
+    "--skills={paths: {}}",
+    '--prompt_fragments={diff_hunk_format: []}',
     "--prompt_fragments.diff_hunk_format={{ cycler.__init__.__globals__ }}",
     "--prompt_fragments__diff_hunk_format=unsafe",
     '--prompt_fragments={"diff_hunk_format": "unsafe"}',
@@ -285,3 +290,32 @@ def test_validate_user_args_rejects_forbidden_arg_with_leading_whitespace(prefix
     ok, offending = CliArgs.validate_user_args([f"{prefix}--github.webhook_secret=secret"])
     assert ok is False
     assert "webhook_secret" in offending
+
+
+@pytest.mark.parametrize(
+    "cyclic",
+    [
+        "--qdrant={\"x\": &a [*a]}",
+        "--qdrant={\"a\": &x {\"b\": *x}}",
+    ],
+)
+def test_validate_user_args_rejects_cyclic_mapping_value(cyclic):
+    """A mapping value that reuses an ancestor object must be rejected instead of
+    recursing forever through YAML aliases."""
+    ok, offending = CliArgs.validate_user_args([cyclic])
+    assert ok is False
+    assert offending == _MAPPING_TOO_COMPLEX_ARG
+
+
+def test_validate_user_args_rejects_mapping_value_beyond_depth_limit():
+    nested = '{"a": ' * 40 + '"leaf"' + '}' * 40
+    ok, offending = CliArgs.validate_user_args([f"--qdrant={nested}"])
+    assert ok is False
+    assert offending == _MAPPING_TOO_COMPLEX_ARG
+
+
+def test_validate_user_args_rejects_mapping_value_beyond_visit_limit():
+    wide = "{" + ", ".join(f'"k{i}": 1' for i in range(200)) + "}"
+    ok, offending = CliArgs.validate_user_args([f"--qdrant={wide}"])
+    assert ok is False
+    assert offending == _MAPPING_TOO_COMPLEX_ARG

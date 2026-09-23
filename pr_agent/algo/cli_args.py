@@ -8,6 +8,10 @@ from pr_agent.config_security import (
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
 )
 
+_MAPPING_MAX_DEPTH = 32
+_MAPPING_MAX_VISITS = 128
+_MAPPING_TOO_COMPLEX_ARG = ".mapping_value_too_complex"
+
 
 class CliArgs:
     @staticmethod
@@ -46,17 +50,61 @@ class CliArgs:
         return None
 
     @staticmethod
-    def _mapping_setting_paths(section: str, value: object):
-        """Yield the dotted section.key path of every leaf in a parsed mapping value."""
+    def _mapping_setting_paths(
+        section: str,
+        value: object,
+        _depth: int = 0,
+        _ancestors: set | None = None,
+        _visits: list | None = None,
+    ) -> list | None:
+        """Collect the dotted section.key path of every node in a mapping value.
+
+        A key path is included even when its value is an empty container, so a forbidden
+        or host-only key assigned ``{}`` or ``[]`` cannot evade validation. Identities on
+        the current branch are tracked to cut cycles, and depth and total-visit caps stop
+        YAML aliases from expanding into unbounded work. Any breach returns None and the
+        caller rejects the argument.
+        """
+        if _ancestors is None:
+            _ancestors = set()
+        if _visits is None:
+            _visits = [0]
+        _visits[0] += 1
+        if _depth > _MAPPING_MAX_DEPTH or _visits[0] > _MAPPING_MAX_VISITS:
+            return None
         if isinstance(value, dict):
+            value_id = id(value)
+            if value_id in _ancestors:
+                return None
+            _ancestors.add(value_id)
+            paths = []
             for key, nested in value.items():
                 path = f"{section}.{key}"
-                yield from CliArgs._mapping_setting_paths(path, nested)
-        elif isinstance(value, list):
+                paths.append(path)
+                child_paths = CliArgs._mapping_setting_paths(
+                    path, nested, _depth + 1, _ancestors, _visits
+                )
+                if child_paths is None:
+                    return None
+                paths.extend(child_paths)
+            _ancestors.discard(value_id)
+            return paths
+        if isinstance(value, list):
+            value_id = id(value)
+            if value_id in _ancestors:
+                return None
+            _ancestors.add(value_id)
+            paths = [section]
             for item in value:
-                yield from CliArgs._mapping_setting_paths(section, item)
-        else:
-            yield section
+                child_paths = CliArgs._mapping_setting_paths(
+                    section, item, _depth + 1, _ancestors, _visits
+                )
+                if child_paths is None:
+                    return None
+                paths.extend(child_paths)
+            _ancestors.discard(value_id)
+            return paths
+        return [section]
 
     @staticmethod
     def _mapping_value(arg: str):
@@ -97,7 +145,10 @@ class CliArgs:
         if mapping is None:
             return None
         section, parsed_value = mapping
-        for path in CliArgs._mapping_setting_paths(section, parsed_value):
+        paths = CliArgs._mapping_setting_paths(section, parsed_value)
+        if paths is None:
+            return _MAPPING_TOO_COMPLEX_ARG
+        for path in paths:
             offending = CliArgs._blocked_setting_path(path, forbidden_cli_args)
             if offending:
                 return offending
