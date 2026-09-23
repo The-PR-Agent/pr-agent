@@ -578,6 +578,76 @@ def test_failed_batch_retries_without_duplicates_when_persistence_is_disabled(
     assert len(p.mr.notes.list()) == 4
 
 
+@pytest.mark.parametrize("first_retry_fails", [False, True])
+def test_failed_duplicate_creation_reuses_later_queued_draft(publication_settings, first_retry_fails):
+    publication_settings(as_review=True)
+    p = _gl_provider()
+    create_draft = p.mr.draft_notes.create.side_effect
+    publish_drafts = p.mr.draft_notes.bulk_publish.side_effect
+    attempts = 0
+
+    def fail_first_occurrence(payload):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise RuntimeError("primary and fallback creation failed")
+        return create_draft(payload)
+
+    p.mr.draft_notes.create.side_effect = fail_first_occurrence
+    p.mr.discussions.create.side_effect = RuntimeError("live fallback failed")
+    p.mr.notes.create.side_effect = RuntimeError("live note fallback failed")
+    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("publication unavailable")
+    assert p.publish_code_suggestions([_suggestion(), _suggestion()]) is False
+    assert len(p.mr.draft_notes.list()) == 1
+    if not first_retry_fails:
+        p.mr.draft_notes.bulk_publish.side_effect = publish_drafts
+    assert p.publish_code_suggestions([_suggestion()]) is (not first_retry_fails)
+    p.mr.draft_notes.bulk_publish.side_effect = publish_drafts
+    assert p.publish_code_suggestions([_suggestion()]) is True
+    assert len(p.mr.notes.list()) == 1
+    assert p.mr.draft_notes.create.call_count == 3
+
+    # Retry identities expire; a later independent run still posts without persistence.
+    assert p.publish_code_suggestions([_suggestion()]) is True
+    assert len(p.mr.notes.list()) == 2
+
+
+@pytest.mark.parametrize("listing_fails", [False, True])
+@pytest.mark.parametrize("public_lookup_fails", [False, True])
+def test_public_marker_does_not_hide_matching_pending_draft(
+        publication_settings, listing_fails, public_lookup_fails):
+    publication_settings(as_review=True, persistent=True)
+    p = _gl_provider()
+    publish_drafts = p.mr.draft_notes.bulk_publish.side_effect
+    pending = p.mr.draft_notes.list.side_effect
+    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("publication unavailable")
+    assert p.publish_code_suggestions([_suggestion()]) is False
+    p.mr.notes.create({'body': pending()[0].note})
+
+    fresh = _gl_provider()
+    fresh.mr = p.mr
+    publication_settings(as_review=False, persistent=True)
+    dedup.get_inline_comment_store(fresh).load()
+    public_notes = p.mr.notes.list.side_effect
+    if public_lookup_fails:
+        p.mr.notes.list.side_effect = RuntimeError("notes unavailable")
+        p.mr.discussions.list.side_effect = RuntimeError("discussions unavailable")
+    assert fresh.publish_code_suggestions([_suggestion()]) is False
+    assert len(pending()) == 1
+    p.mr.notes.list.side_effect = public_notes
+    p.mr.discussions.list.side_effect = None
+    if listing_fails:
+        p.mr.draft_notes.list.side_effect = RuntimeError("listing unavailable")
+    assert fresh.publish_code_suggestions([_suggestion()]) is False
+
+    # Once publication is confirmed, the duplicate remains satisfied without reposting.
+    p.mr.draft_notes.list.side_effect = pending
+    publish_drafts()
+    assert fresh.publish_code_suggestions([_suggestion()]) is True
+    assert len(p.mr.notes.list()) == 2
+    p.mr.draft_notes.create.assert_called_once()
+
+
 def test_pending_batch_is_not_hidden_by_live_retry_when_draft_listing_fails(publication_settings):
     publication_settings(as_review=True)
     p = _gl_provider()

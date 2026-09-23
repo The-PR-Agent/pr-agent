@@ -338,15 +338,14 @@ class TestOpenRouterControls:
         )
         assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
 
-    def test_litellm_requires_openrouter_reasoning_in_extra_body(self):
-        """Pin the LiteLLM 1.98.0 workaround boundary so upgrades expose when it can be removed."""
-        with pytest.raises(litellm.UnsupportedParamsError):
-            get_optional_params(
-                model="google/gemini-2.5-pro",
-                custom_llm_provider="openrouter",
-                reasoning_effort="low",
-            )
+    def test_litellm_passes_openrouter_reasoning_through_extra_body(self):
+        """Pin the extra_body pass-through the OpenRouter reasoning controls depend on.
 
+        Whether LiteLLM also accepts a top-level reasoning_effort is not asserted here: it
+        follows supports_reasoning in the model cost map, which every LiteLLM process fetches
+        from GitHub main at import, so it changes with upstream data rather than our pinned
+        version.
+        """
         params = get_optional_params(
             model="google/gemini-2.5-pro",
             custom_llm_provider="openrouter",

@@ -1185,10 +1185,30 @@ class GitLabProvider(GitProvider):
         self._pending_code_suggestion_fingerprints = pending
 
     def _is_inline_comment_public(self, body_fp: str, code_fp: Optional[str]) -> bool:
+        fingerprints = {body_fp, code_fp} - {None}
+        ambiguous = getattr(self, "_ambiguous_inline_public_fingerprints", set())
+        public = self._has_public_inline_marker(body_fp, code_fp)
+        try:
+            pending = any(fingerprints & marker_fingerprints(getattr(draft, "note", "") or "")
+                          for draft in self.mr.draft_notes.list(get_all=True))
+        except Exception:
+            # An old public marker seen alongside a draft cannot prove that draft
+            # was published when the draft endpoint subsequently becomes unavailable.
+            return public is True and not bool(fingerprints & ambiguous)
+        if pending:
+            if public is not False:
+                ambiguous.update(fingerprints)
+                self._ambiguous_inline_public_fingerprints = ambiguous
+            return False
+        ambiguous.difference_update(fingerprints)
+        return public is True
+
+    def _has_public_inline_marker(self, body_fp: str, code_fp: Optional[str]) -> Optional[bool]:
         # The dedup store includes drafts. Verify public markers separately so an
         # unavailable draft endpoint cannot turn an already-public duplicate into a failure.
         fingerprints = {body_fp, code_fp} - {None}
         superseded = getattr(self, "_superseded_inline_note_ids", set())
+        verified = True
         try:
             for note in self.mr.notes.list(get_all=True):
                 if getattr(note, "id", None) in superseded:
@@ -1196,6 +1216,7 @@ class GitLabProvider(GitProvider):
                 if fingerprints & marker_fingerprints(getattr(note, "body", "") or ""):
                     return True
         except Exception as e:
+            verified = False
             get_logger().warning(f"Could not verify public notes for MR {self.id_mr}: {e}")
         try:
             for discussion in self.mr.discussions.list(get_all=True):
@@ -1206,8 +1227,9 @@ class GitLabProvider(GitProvider):
                     if isinstance(note, dict) and fingerprints & marker_fingerprints(note.get("body", "") or ""):
                         return True
         except Exception as e:
+            verified = False
             get_logger().warning(f"Could not verify public inline comment for MR {self.id_mr}: {e}")
-        return False
+        return False if verified else None
 
     def _create_suggestion_note(self, as_draft: bool, body: str, pos_obj: dict, diff, target_file,
                                 relevant_file: str, original_suggestion, store, body_fp, code_fp) -> bool:
@@ -1321,6 +1343,15 @@ class GitLabProvider(GitProvider):
             if not success:
                 for key, attempted_results in results.items():
                     retry_results[key] = attempted_results + retry_results.get(key, [])
+                    # A later identical occurrence may have succeeded after an earlier
+                    # creation failed. Reuse it for retries, but keep occurrence counts
+                    # so this cache still expires before a later independent run.
+                    successful = next((result for result in retry_results[key]
+                                       if result in (_InlineCommentResult.DRAFT, _InlineCommentResult.LIVE,
+                                                     _InlineCommentResult.PUBLIC_DUPLICATE)), None)
+                    if successful is not None:
+                        retry_results[key] = [successful if result == _InlineCommentResult.FAILED else result
+                                              for result in retry_results[key]]
             self._code_suggestion_retry_results = retry_results
             return success
 
