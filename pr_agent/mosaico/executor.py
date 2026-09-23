@@ -49,16 +49,16 @@ class PRAgentExecutor(AgentExecutor):
         # A2A sends each follow-up as a new Task with the same context_id. The SDK's
         # get_user_input() contains only this message, while prior user messages live
         # in the TaskStore. Find the newest usable context and stop there, so old
-        # diffs are never sent to the router or model on every follow-up.
+        # diffs are never sent to the router or model on every follow-up. A
+        # working task already has its user message in the store, so its state
+        # must not prevent a concurrent follow-up from using that context.
         tasks = await self.task_store.list(
             ListTasksRequest(context_id=context.context_id, page_size=100), context.call_context
         )
         turns = []
         found_context = False
         for task in tasks.tasks:
-            if task.id == context.task_id or task.status.state not in (
-                TaskState.TASK_STATE_COMPLETED, TaskState.TASK_STATE_FAILED,
-            ):
+            if task.id == context.task_id:
                 continue
             for message in reversed(task.history):
                 if message.role == Role.ROLE_USER:

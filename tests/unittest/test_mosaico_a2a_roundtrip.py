@@ -192,6 +192,48 @@ class TestA2ARoundTripStubbedLLM:
         assert _extract_artifact_text(separate["result"]) == "PR-Agent requires a PR URL or a supplied diff."
 
     @pytest.mark.asyncio
+    async def test_follow_up_reuses_diff_while_previous_task_is_working(self, monkeypatch):
+        """A return_immediately task already has user history before it completes."""
+        from pr_agent.mosaico import dispatch
+        from pr_agent.mosaico.server import build_app
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+        routed = []
+
+        async def fake_run_on_diff(diff_body, verb, question, title, empty_ok=True):
+            routed.append((diff_body, verb, question))
+            if len(routed) == 1:
+                started.set()
+                await release.wait()
+            return RouteResult("ROUTED", True)
+
+        monkeypatch.setattr(dispatch, "_run_on_diff", fake_run_on_diff)
+
+        async with _build_client(build_app()) as client:
+            try:
+                first = (await client.post(
+                    "/", json=_message_send_body(_DIFF_TEXT, return_immediately=True),
+                )).json()
+                assert "error" not in first, first
+                first_task = first["result"]["task"]
+                assert first_task["status"]["state"] == "TASK_STATE_WORKING"
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+                follow_up = (await client.post(
+                    "/", json=_message_send_body("What changed?", context_id=first_task["contextId"]),
+                )).json()
+                assert "error" not in follow_up, follow_up
+                assert _extract_artifact_text(follow_up["result"]) == "ROUTED"
+                assert routed[-1][1:] == ("ask", "What changed?")
+                assert "diff --git a/foo.py b/foo.py" in routed[-1][0]
+
+                still_working = (await client.post("/", json=_get_task_body(first_task["id"]))).json()
+                assert _get_task_state(still_working["result"]) == "TASK_STATE_WORKING"
+            finally:
+                release.set()
+
+    @pytest.mark.asyncio
     async def test_follow_up_prefers_newer_diff_in_same_context(self, monkeypatch):
         from pr_agent.mosaico import dispatch
         from pr_agent.mosaico.server import build_app
