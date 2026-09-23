@@ -1,4 +1,11 @@
+import os
+
 import pytest
+
+# Match CI (#3475): use the LiteLLM cost map bundled with the version pinned in uv.lock rather than the copy
+# LiteLLM fetches at import time, so local runs do not fail on third-party map changes (#3473, #3583).
+# An explicit LITELLM_LOCAL_MODEL_COST_MAP in the environment still takes precedence.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 
 @pytest.fixture(autouse=True)
