@@ -116,7 +116,7 @@ for the authoritative default values.
       </tr>
       <tr>
         <td><b>inline_key_issues</b></td>
-        <td>If set to true, each key issue is published as an inline comment where the provider supports verified inline-comment publication. A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary.</td>
+        <td>If set to true, each key issue is published as an inline comment where the provider supports verified inline-comment publication (GitHub, Bitbucket, Azure DevOps, GitLab). A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary.</td>
       </tr>
     </table>
 

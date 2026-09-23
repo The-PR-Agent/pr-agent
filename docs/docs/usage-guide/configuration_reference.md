@@ -158,7 +158,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `review_heading` | "PR Reviewer Guide" | Visible base heading for full and incremental review comments. Identity is tracked separately. |
 | `persistent_finding_state` | true | Persist review finding state across complete review runs. |
-| `inline_key_issues` | false |  |
+| `inline_key_issues` | false | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket, Azure DevOps, GitLab). |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
 | `final_update_message` | true |  |

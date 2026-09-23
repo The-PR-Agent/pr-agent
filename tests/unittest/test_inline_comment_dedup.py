@@ -197,7 +197,7 @@ def _azure_provider(existing_threads=None):
 def test_inline_publication_verification_supports_providers_with_comment_capability():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
     assert d.can_verify_inline_comment_publication(_gh_provider([])) is True
-    assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
+    assert d.can_verify_inline_comment_publication(_gl_provider([])) is True
 
     class FooProvider:
         pass
@@ -378,6 +378,109 @@ def test_gitlab_flag_off_posts_unmarked():
         assert "pr-agent-dedup" not in body
     finally:
         gs.stop()
+
+
+def test_gitlab_recent_inline_bodies_start_empty():
+    p = _gl_provider([])
+
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def test_gitlab_recent_inline_bodies_record_successful_posts():
+    p = _gl_provider([])
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(False)
+    try:
+        # a repeated in-memory post is recalled only once
+        _send(p, "inline finding")
+        _send(p, "inline finding")
+    finally:
+        gs.stop()
+
+    assert p.get_recent_inline_comment_bodies() == ["inline finding"]
+
+
+def test_gitlab_recent_inline_bodies_include_marked_posts():
+    p = _gl_provider([])
+    gs = _flag_on_gitlab()
+    try:
+        _send(p, "**Suggestion:** fix it [possible issue, importance: 7]")
+    finally:
+        gs.stop()
+
+    bodies = p.get_recent_inline_comment_bodies()
+    assert len(bodies) == 1
+    assert "**Suggestion:** fix it [possible issue, importance: 7]" in bodies[0]
+    assert "<!-- pr-agent-dedup:" in bodies[0]
+
+
+def test_gitlab_failed_create_does_not_record_a_recent_body():
+    p = _gl_provider([])
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.notes.create.side_effect = GitlabCreateError("note rejected")
+    p.get_line_link = MagicMock(return_value="http://link")
+    original = {
+        "relevant_lines_start": 10, "relevant_lines_end": 11,
+        "existing_code": "a = 1", "improved_code": "a = 2",
+        "suggestion_content": "fix it", "label": "possible issue", "score": 7,
+    }
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(False)
+    try:
+        p.send_inline_comment(
+            body="inline finding", edit_type="addition", found=True,
+            relevant_file="a.py", relevant_line_in_file="+a = 2",
+            source_line_no=10, target_file=_FakeTargetFile(), target_line_no=10,
+            original_suggestion=original,
+        )
+    finally:
+        gs.stop()
+
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def test_gitlab_recent_inline_bodies_include_pending_draft_notes():
+    p = _gl_provider([])
+    gs = _flag_on_gitlab()
+    try:
+        p.send_inline_comment(
+            body="draft finding", edit_type="addition", found=True,
+            relevant_file="a.py", relevant_line_in_file="+x = 1",
+            source_line_no=10, target_file=_FakeTargetFile(), target_line_no=10,
+            original_suggestion=None, as_draft=True,
+        )
+    finally:
+        gs.stop()
+
+    bodies = p.get_recent_inline_comment_bodies()
+    assert len(bodies) == 1
+    assert "draft finding" in bodies[0]
+
+
+def test_gitlab_persistent_bodies_list_existing_mr_notes_without_duplicates():
+    p = _gl_provider(["discussion finding", "discussion finding"])
+    note = MagicMock()
+    note.body = "plain note finding"
+    draft = MagicMock()
+    draft.note = "pending draft finding"
+    p.mr.notes.list.return_value = [note, note]
+    p.mr.draft_notes.list.return_value = [draft]
+
+    bodies = p.get_persistent_comment_bodies()
+
+    assert bodies == ["discussion finding", "plain note finding", "pending draft finding"]
+
+
+def test_gitlab_persistent_bodies_include_recent_posts_only_once():
+    p = _gl_provider([])
+    p._published_inline_comment_bodies = ["just posted"]
+
+    bodies = p.get_persistent_comment_bodies()
+
+    assert "just posted" in bodies
+    assert bodies.count("just posted") == 1
 
 
 # --------------------------------------------------------------------------- #

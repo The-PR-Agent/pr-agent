@@ -14,6 +14,7 @@ from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment
 
 _VALID_PREDICTION = "review:\n  summary: prediction"
@@ -484,6 +485,18 @@ def test_key_issue_is_not_published_when_the_provider_cannot_verify_it():
 
     reviewer.git_provider.publish_code_suggestions.assert_not_called()
     assert result is data
+
+
+def test_gitlab_can_verify_inline_key_issue_publication():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.mr = MagicMock()
+    provider.mr.discussions.list.return_value = []
+    provider.mr.notes.list.return_value = []
+    provider.mr.draft_notes.list.return_value = []
+
+    reviewer = _make_reviewer(provider)
+
+    assert reviewer._can_verify_inline_key_issue_publication() is True
 
 
 def test_same_key_issue_on_different_lines_is_published_at_each_location():

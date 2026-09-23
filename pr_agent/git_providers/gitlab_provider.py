@@ -263,6 +263,7 @@ class GitLabProvider(GitProvider):
         self.diff_files = None
         self.git_files = None
         self.temp_comments = []
+        self._published_inline_comment_bodies: list[str] = []
         self._submodule_cache: dict[tuple[str, str, str], list[dict]] = {}
         self.pr_url = merge_request_url
         self._set_merge_request(merge_request_url)
@@ -1365,6 +1366,44 @@ class GitLabProvider(GitProvider):
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, absolute_position: int = None):
         raise NotImplementedError("GitLab provider does not support creating inline comments yet")
 
+    def get_recent_inline_comment_bodies(self) -> list[str]:
+        """Return inline comment bodies published during this provider run."""
+        return list(getattr(self, "_published_inline_comment_bodies", []))
+
+    def get_persistent_comment_bodies(self) -> list[str]:
+        """Return existing GitLab MR note bodies for inline deduplication."""
+        bodies = list(getattr(self, "_published_inline_comment_bodies", []))
+        seen = set(bodies)
+        if self.mr is None:
+            return bodies
+        for discussion in self.mr.discussions.list(get_all=True):
+            attrs = getattr(discussion, "attributes", None) or {}
+            for note in attrs.get("notes", []) or []:
+                if isinstance(note, dict):
+                    body = note.get("body", "") or ""
+                    if body and body not in seen:
+                        bodies.append(body)
+                        seen.add(body)
+        for note in self.mr.notes.list(get_all=True):
+            body = getattr(note, "body", "") or ""
+            if body and body not in seen:
+                bodies.append(body)
+                seen.add(body)
+        for draft in self.mr.draft_notes.list(get_all=True):
+            body = getattr(draft, "note", "") or ""
+            if body and body not in seen:
+                bodies.append(body)
+                seen.add(body)
+        return bodies
+
+    def _remember_published_inline_comment_body(self, body: str) -> None:
+        recent = getattr(self, "_published_inline_comment_bodies", None)
+        if recent is None:
+            recent = []
+            self._published_inline_comment_bodies = recent
+        if body and body not in recent:
+            recent.append(body)
+
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
@@ -1432,6 +1471,7 @@ class GitLabProvider(GitProvider):
                 self.mr.draft_notes.create({'note': body, 'position': pos_obj})
             else:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
+            self._remember_published_inline_comment_body(body)
             if store is not None:
                 store.add(body_fp)
                 store.add(code_fp)
@@ -1487,6 +1527,7 @@ class GitLabProvider(GitProvider):
                 else:
                     self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
                 get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
+                self._remember_published_inline_comment_body(body_fallback)
                 if store is not None:
                     store.add(body_fp)
                     store.add(code_fp)
