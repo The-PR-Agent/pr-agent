@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -5,7 +6,7 @@ from pr_agent.algo import token_handler
 
 
 def _settings(model="primary-model", estimate_factor=0, openai_key=None, anthropic_key=None,
-              gemini_key=None):
+              gemini_key=None, ai_timeout=None):
     return SimpleNamespace(
         config=SimpleNamespace(model=model),
         get=lambda key, default=None: {
@@ -13,6 +14,7 @@ def _settings(model="primary-model", estimate_factor=0, openai_key=None, anthrop
             "ANTHROPIC.KEY": anthropic_key,
             "GOOGLE_AI_STUDIO.GEMINI_API_KEY": gemini_key,
             "config.model_token_count_estimate_factor": estimate_factor,
+            "config.ai_timeout": ai_timeout,
         }.get(key, default),
     )
 
@@ -231,3 +233,21 @@ def test_force_accurate_acount_tokens_error_falls_back_to_factor(monkeypatch):
 
     assert handler.count_tokens("patch", force_accurate=True) == 13
     mock.assert_awaited_once()
+
+
+def test_force_accurate_acount_tokens_timeout_falls_back_to_factor(monkeypatch):
+    settings = _settings(
+        model="claude-opus-4-8",
+        estimate_factor=0.3,
+        anthropic_key="test-key",
+        ai_timeout=0.01,
+    )
+    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: settings)
+
+    async def _never_resolves():
+        await asyncio.Event().wait()
+
+    _patch_acount_tokens(monkeypatch, acount_tokens=_never_resolves)
+    handler = _handler("claude-opus-4-8")
+
+    assert handler.count_tokens("patch", force_accurate=True) == 13

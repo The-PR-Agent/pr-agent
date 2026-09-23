@@ -201,15 +201,18 @@ class TokenHandler:
             import litellm
 
             api_key, api_base = self._token_count_api_params()
-            response = await litellm.acount_tokens(
-                model=self.model,
-                messages=[{
-                    "role": "user",
-                    "content": patch
-                }],
-                system="system",
-                api_key=api_key,
-                api_base=api_base,
+            response = await asyncio.wait_for(
+                litellm.acount_tokens(
+                    model=self.model,
+                    messages=[{
+                        "role": "user",
+                        "content": patch
+                    }],
+                    system="system",
+                    api_key=api_key,
+                    api_base=api_base,
+                ),
+                timeout=get_settings().get("config.ai_timeout", 120),
             )
         except Exception as e:
             get_logger().error(f"Error in LiteLLM token counting: {e}")
