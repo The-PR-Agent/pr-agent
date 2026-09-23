@@ -20,6 +20,7 @@ TaskArtifactUpdateEvent (not a TaskStatusUpdateEvent), otherwise the SDK raises
 health_check issues a single, NON-retry-wrapped litellm probe."""
 import asyncio
 import copy
+from itertools import count
 from math import isfinite
 
 from a2a.helpers.proto_helpers import get_message_text
@@ -34,45 +35,63 @@ from pr_agent.log import get_logger
 from pr_agent.mosaico.dispatch import _find_pr_url, _looks_like_diff, route_and_run_result
 from pr_agent.mosaico.observability import langfuse_span, mosaico_log_context, parse_observability_metadata
 
+_INPUT_SEQUENCE_KEY = "mosaico_input_sequence"
+
 
 class PRAgentExecutor(AgentExecutor):
     """Turns a MOSAICO message/send into a pr-agent run and returns a Task."""
 
     def __init__(self, task_store=None):
         self.task_store = task_store
+        self._input_sequence = count(1)
 
-    async def _input_with_history(self, context: RequestContext) -> str:
+    async def _history_for_context(self, context: RequestContext) -> list[str]:
         current = context.get_user_input() or ""
         if self.task_store is None or _find_pr_url(current) or _looks_like_diff(current):
-            return current
+            return []
 
-        # A2A sends each follow-up as a new Task with the same context_id. The SDK's
-        # get_user_input() contains only this message, while prior user messages live
-        # in the TaskStore. Find the newest usable context and stop there, so old
-        # diffs are never sent to the router or model on every follow-up. A
-        # working task already has its user message in the store, so its state
-        # must not prevent a concurrent follow-up from using that context.
+        # Recover prior user turns from the owner-scoped store. Sort by input
+        # sequence because the SDK lists tasks by status update time, which may
+        # place an older task first if it finishes after a newer input.
+        limit = get_settings().get("MOSAICO.CONTEXT_HISTORY_MAX_TASKS", 100)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("MOSAICO context history max tasks must be an integer from 1 to 1000")
+        # Include the current task in the page budget before excluding it below.
         tasks = await self.task_store.list(
-            ListTasksRequest(context_id=context.context_id, page_size=100), context.call_context
+            ListTasksRequest(context_id=context.context_id, page_size=limit + 1), context.call_context
         )
+        if tasks.total_size > len(tasks.tasks):
+            # Fetch the whole context when necessary: a late status update can
+            # push the newest input outside the SDK's update-sorted first page.
+            tasks = await self.task_store.list(
+                ListTasksRequest(context_id=context.context_id, page_size=tasks.total_size), context.call_context
+            )
         turns = []
         found_context = False
-        for task in tasks.tasks:
+        ordered_tasks = sorted(
+            tasks.tasks,
+            key=lambda task: int(task.metadata.fields[_INPUT_SEQUENCE_KEY].string_value)
+            if _INPUT_SEQUENCE_KEY in task.metadata.fields else 0,
+            reverse=True,
+        )
+        prior_count = 0
+        for task in ordered_tasks:
             if task.id == context.task_id:
                 continue
+            if prior_count >= limit:
+                break
+            prior_count += 1
             for message in reversed(task.history):
                 if message.role == Role.ROLE_USER:
                     text = get_message_text(message)
                     if text:
-                        turns.append(f"user: {text}")
+                        turns.append(text)
                         if _find_pr_url(text) or _looks_like_diff(text):
                             found_context = True
                             break
             if found_context:
                 break
-        if not turns:
-            return current
-        return "\n".join([*reversed(turns), f"user: {current}"])
+        return list(reversed(turns))
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         # In A2A 1.0 DefaultRequestHandler sets task_id/context_id on the context before
@@ -96,6 +115,7 @@ class PRAgentExecutor(AgentExecutor):
                         context_id=context.context_id,
                         status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
                         history=[context.message] if context.message else [],
+                        metadata={_INPUT_SEQUENCE_KEY: str(next(self._input_sequence))},
                     )
                 )
 
@@ -103,11 +123,15 @@ class PRAgentExecutor(AgentExecutor):
             # shared global. get_settings() resolves to sctx["settings"] when present.
             sctx["settings"] = copy.deepcopy(global_settings)
 
-            user_text = await self._input_with_history(context)
+            user_text = context.get_user_input() or ""
+            history = await self._history_for_context(context)
             meta = parse_observability_metadata(context.metadata)
             with mosaico_log_context(meta, context.context_id), \
                     langfuse_span(meta, context.context_id):
-                result = await route_and_run_result(user_text)
+                if history:
+                    result = await route_and_run_result(user_text, context_history=history)
+                else:
+                    result = await route_and_run_result(user_text)
 
             output_text = result.text or "(no output produced)"
             # ALWAYS add_artifact first: the SDK requires a TaskArtifactUpdateEvent

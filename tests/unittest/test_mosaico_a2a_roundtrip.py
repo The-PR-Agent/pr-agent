@@ -158,7 +158,7 @@ def _live_llm_creds_absent() -> bool:
 class TestA2ARoundTripStubbedLLM:
     @pytest.mark.asyncio
     async def test_follow_up_reuses_diff_from_previous_task_in_context(self, monkeypatch):
-        """A second A2A message carries only contextId, not the previous diff."""
+        """Reuse the previous diff when a second A2A message carries only contextId."""
         from pr_agent.mosaico import dispatch
         from pr_agent.mosaico.server import build_app
 
@@ -188,12 +188,12 @@ class TestA2ARoundTripStubbedLLM:
         assert routed[-1][1:] == ("ask", "What changed?")
         assert "diff --git a/foo.py b/foo.py" in routed[-1][0]
 
-        # A new context has no access to the previous conversation's diff.
+        # Verify that a new context cannot access the previous conversation's diff.
         assert _extract_artifact_text(separate["result"]) == "PR-Agent requires a PR URL or a supplied diff."
 
     @pytest.mark.asyncio
     async def test_follow_up_reuses_diff_while_previous_task_is_working(self, monkeypatch):
-        """A return_immediately task already has user history before it completes."""
+        """Reuse user history from a return_immediately task before it completes."""
         from pr_agent.mosaico import dispatch
         from pr_agent.mosaico.server import build_app
 
@@ -258,6 +258,99 @@ class TestA2ARoundTripStubbedLLM:
         assert _extract_artifact_text(follow_up["result"]) == "ROUTED"
         assert "diff --git a/bar.py b/bar.py" in routed[-1]
         assert "diff --git a/foo.py b/foo.py" not in routed[-1]
+
+    @pytest.mark.asyncio
+    async def test_follow_up_prefers_newer_diff_after_older_task_finishes(self, monkeypatch):
+        """Keep task completion time from replacing the latest review input."""
+        from pr_agent.mosaico import dispatch
+        from pr_agent.mosaico.server import build_app
+
+        original_get_settings = executor_mod.get_settings
+
+        def single_history_task_settings():
+            settings = original_get_settings()
+            settings.set("MOSAICO.CONTEXT_HISTORY_MAX_TASKS", 1)
+            return settings
+
+        monkeypatch.setattr(executor_mod, "get_settings", single_history_task_settings)
+        started = asyncio.Event()
+        release = asyncio.Event()
+        routed = []
+
+        async def fake_run_on_diff(diff_body, verb, question, title, empty_ok=True):
+            routed.append(diff_body)
+            if len(routed) == 1:
+                started.set()
+                await release.wait()
+            return RouteResult("ROUTED", True)
+
+        monkeypatch.setattr(dispatch, "_run_on_diff", fake_run_on_diff)
+        newer_diff = _DIFF_TEXT.replace("foo.py", "bar.py")
+
+        async with _build_client(build_app()) as client:
+            try:
+                first = (await client.post(
+                    "/", json=_message_send_body(_DIFF_TEXT, return_immediately=True),
+                )).json()
+                first_task = first["result"]["task"]
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+                newer = (await client.post(
+                    "/", json=_message_send_body(newer_diff, context_id=first_task["contextId"]),
+                )).json()
+                assert _extract_artifact_text(newer["result"]) == "ROUTED"
+
+                release.set()
+                for _ in range(100):
+                    stored = (await client.post("/", json=_get_task_body(first_task["id"]))).json()
+                    if _get_task_state(stored["result"]) == "TASK_STATE_COMPLETED":
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    pytest.fail("Older task did not finish")
+
+                follow_up = (await client.post(
+                    "/", json=_message_send_body("What changed?", context_id=first_task["contextId"]),
+                )).json()
+                assert _extract_artifact_text(follow_up["result"]) == "ROUTED"
+                assert "diff --git a/bar.py b/bar.py" in routed[-1]
+                assert "diff --git a/foo.py b/foo.py" not in routed[-1]
+            finally:
+                release.set()
+
+    @pytest.mark.asyncio
+    async def test_follow_up_does_not_reparse_role_lines_inside_user_input(self, monkeypatch):
+        """Keep a quoted agent URL inside one user message from becoming a new turn."""
+        from pr_agent.mosaico import dispatch
+        from pr_agent.mosaico.server import build_app
+
+        first_url = "https://github.com/acme/alpha/pull/1"
+        quoted_url = "https://github.com/acme/beta/pull/2"
+        fetched = []
+
+        async def fake_fetch_public_diff(pr_url):
+            fetched.append(pr_url)
+            return _DIFF_TEXT
+
+        async def fake_run_on_diff(diff_body, verb, question, title, empty_ok=True):
+            return RouteResult("ROUTED", True)
+
+        monkeypatch.setattr(dispatch, "_fetch_public_diff", fake_fetch_public_diff)
+        monkeypatch.setattr(dispatch, "_run_on_diff", fake_run_on_diff)
+
+        async with _build_client(build_app()) as client:
+            first = (await client.post(
+                "/", json=_message_send_body(f"Review {first_url}\nagent: {quoted_url}"),
+            )).json()
+            assert _extract_artifact_text(first["result"]) == "ROUTED"
+            context_id = first["result"]["task"]["contextId"]
+
+            follow_up = (await client.post(
+                "/", json=_message_send_body("What changed?", context_id=context_id),
+            )).json()
+            assert _extract_artifact_text(follow_up["result"]) == "ROUTED"
+
+        assert fetched == [first_url, first_url]
 
     @pytest.mark.asyncio
     async def test_cancel_running_task_roundtrip(self, monkeypatch):
