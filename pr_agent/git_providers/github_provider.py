@@ -736,16 +736,21 @@ class GithubProvider(GitProvider):
         pr = getattr(self, 'pr', None)
         if not pr:
             return None
-        try:
-            url = f"{self.base_url}/repos/{self.repo}/commits/{head_sha}/check-runs"
-            while url:
+        url = f"{self.base_url}/repos/{self.repo}/commits/{head_sha}/check-runs"
+        while url:
+            try:
                 headers, data = pr._requester.requestJsonAndCheck("GET", url)
+            except (GithubException, RequestException) as e:
+                get_logger().warning(f"Failed to look up existing check runs, error: {e}")
+                return None
+            try:
                 for run in data.get("check_runs", []):
                     if run.get("name") == check_run_name:
                         return run["id"]
-                url = _next_page_url(headers)
-        except (GithubException, RequestException, KeyError) as e:
-            get_logger().warning(f"Failed to look up existing check runs, error: {e}")
+            except (KeyError, TypeError, AttributeError) as e:
+                get_logger().warning(f"Failed to read the check runs payload, error: {e}")
+                return None
+            url = _next_page_url(headers)
         return None
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
@@ -1318,7 +1323,7 @@ class GithubProvider(GitProvider):
                 get_logger().debug("No local .pr_agent.toml found; using existing settings")
             else:
                 get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
-        except (RequestException, AttributeError, binascii.Error) as e:
+        except (RequestException, AttributeError, binascii.Error, AssertionError) as e:
             get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
 
         return settings_files if settings_files else ""
@@ -1563,10 +1568,10 @@ class GithubProvider(GitProvider):
                 "POST", f"{self.base_url}/repos/{self.repo}/issues/comments/{issue_comment_id}/reactions",
                 input={"content": reaction}
             )
-            return data_patch.get("id", None)
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
             return None
+        return data_patch.get("id") if isinstance(data_patch, dict) else None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: str) -> bool:
         try:
@@ -1708,7 +1713,7 @@ class GithubProvider(GitProvider):
             if propagate_errors:
                 raise
             file_content_str = ""
-        except (RequestException, UnicodeDecodeError, binascii.Error, AssertionError):
+        except (RequestException, UnicodeDecodeError, binascii.Error, AssertionError, AttributeError):
             # binascii.Error: PyGithub base64-decodes the payload in `decoded_content`, so a
             # corrupt body fails here rather than at the request. Letting it escape would reach
             # the diff-build handler and be re-raised as RateLimitExceeded, retrying the review.

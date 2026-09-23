@@ -316,3 +316,17 @@ def test_validate_comments_inside_hunks_survives_a_regex_error(monkeypatch):
 
     assert len(result) == 1
     assert result[0]["body"] == suggestions[0]["body"]
+
+
+def test_find_existing_check_run_survives_an_empty_body():
+    """Keep an empty check-runs body handled: PyGithub decodes it to None, as main did."""
+    provider = _make_provider(_Requester(response=({}, None)))
+
+    assert provider._find_existing_check_run("pr-agent", "abc123") is None
+
+
+def test_add_reaction_survives_an_empty_body():
+    """Keep an empty reaction body handled: this runs before the command, so raising here skips it."""
+    provider = _make_provider(_Requester(response=({}, None)))
+
+    assert provider.add_reaction(1, "eyes") is None
