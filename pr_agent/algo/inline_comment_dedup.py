@@ -177,6 +177,25 @@ def _append_markers(body: str, markers: str, max_chars: Optional[int]) -> str:
     return f"{body}{suffix}"
 
 
+_MARKER_BLOCK_RE = re.compile(
+    rf"({BODY_MARKER_RE.pattern}|{CODE_MARKER_RE.pattern}|{KEY_ISSUE_LOCATION_MARKER_RE.pattern})"
+)
+
+
+def extract_marker_block(body: str) -> str:
+    """Return the trailing marker block, with its leading blank line, as appended by
+    ``body_with_markers``; '' when the body carries no markers.
+
+    Used by providers that must re-post a truncated comment (e.g. a GitHub 422
+    fallback that drops a suggestion's code fence) while keeping the original
+    fingerprints, so the cross-run scan still recognises the full comment."""
+    body = body or ""
+    match = _MARKER_BLOCK_RE.search(body)
+    if match is None:
+        return ""
+    return "\n\n" + body[match.start():].lstrip("\n")
+
+
 def body_with_markers(body: str, body_fp: str, code_fp: "Optional[str]",
                       max_chars: "Optional[int]" = None, git_provider=None) -> str:
     """Append the dedup marker(s) to a comment body. If max_chars is given and

@@ -26,6 +26,7 @@ from ..algo.inline_comment_dedup import (
     body_fingerprint,
     body_with_markers,
     code_fingerprint,
+    extract_marker_block,
     get_inline_comment_store,
     has_marker,
 )
@@ -1111,6 +1112,13 @@ class GithubProvider(GitProvider):
                 fixed_comment = copy.deepcopy(comment)  # avoid modifying the original comment dict for later logging
                 if "```suggestion" in comment["body"]:
                     fixed_comment["body"] = comment["body"].split("```suggestion")[0]
+                    marker_block = extract_marker_block(comment["body"])
+                    if marker_block:
+                        # The dedup markers are appended after the code block, so truncating
+                        # at the fence would drop them: the re-posted one-liner would carry
+                        # fresh fingerprints and never suppress the full suggestion again,
+                        # producing a new duplicate on every run. Keep the original markers.
+                        fixed_comment["body"] = fixed_comment["body"].rstrip() + marker_block
                 if "start_line" in comment:
                     fixed_comment["line"] = comment["start_line"]
                     del fixed_comment["start_line"]
