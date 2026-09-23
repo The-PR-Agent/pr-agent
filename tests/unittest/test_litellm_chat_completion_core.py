@@ -258,16 +258,8 @@ async def test_chat_completion_rejects_seed_for_claude_opus_4_8_default_temperat
         "bedrock/jp.anthropic.claude-opus-4-8",
     ],
 )
-async def test_chat_completion_keeps_temperature_for_claude_opus_4_8(monkeypatch, model):
-    """Claude families tolerate the deprecated temperature parameter, so by
-    default it is forwarded when litellm's metadata reports it supported.
-    Operators opt out per model via config.no_temperature_models."""
+async def test_chat_completion_strips_temperature_for_claude_opus_4_8(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    monkeypatch.setattr(
-        litellm_handler.LiteLLMAIHandler,
-        "_litellm_supports_temperature",
-        staticmethod(lambda model, custom_llm_provider=None: True),
-    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -275,7 +267,7 @@ async def test_chat_completion_keeps_temperature_for_claude_opus_4_8(monkeypatch
 
         await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
-    assert mock_call.call_args.kwargs["temperature"] == 0.2
+    assert "temperature" not in mock_call.call_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -291,15 +283,19 @@ async def test_chat_completion_keeps_temperature_for_claude_opus_4_8(monkeypatch
         "bedrock/eu.anthropic.claude-opus-5",
         "bedrock/au.anthropic.claude-opus-5",
         "bedrock/jp.anthropic.claude-opus-5",
+        "anthropic/claude-opus-5-5",
+        "claude-opus-5-5",
+        "vertex_ai/claude-opus-5-5",
+        "bedrock/anthropic.claude-opus-5-5",
+        "bedrock/global.anthropic.claude-opus-5-5",
+        "bedrock/us.anthropic.claude-opus-5-5",
+        "bedrock/eu.anthropic.claude-opus-5-5",
+        "bedrock/au.anthropic.claude-opus-5-5",
+        "bedrock/jp.anthropic.claude-opus-5-5",
     ],
 )
-async def test_chat_completion_keeps_temperature_for_claude_opus_5(monkeypatch, model):
+async def test_chat_completion_strips_temperature_for_claude_opus_5_family(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    monkeypatch.setattr(
-        litellm_handler.LiteLLMAIHandler,
-        "_litellm_supports_temperature",
-        staticmethod(lambda model, custom_llm_provider=None: True),
-    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -307,7 +303,7 @@ async def test_chat_completion_keeps_temperature_for_claude_opus_5(monkeypatch, 
 
         await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
-    assert mock_call.call_args.kwargs["temperature"] == 0.2
+    assert "temperature" not in mock_call.call_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -325,13 +321,8 @@ async def test_chat_completion_keeps_temperature_for_claude_opus_5(monkeypatch, 
         "bedrock/jp.anthropic.claude-sonnet-5",
     ],
 )
-async def test_chat_completion_keeps_temperature_for_claude_sonnet_5(monkeypatch, model):
+async def test_chat_completion_strips_temperature_for_claude_sonnet_5(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    monkeypatch.setattr(
-        litellm_handler.LiteLLMAIHandler,
-        "_litellm_supports_temperature",
-        staticmethod(lambda model, custom_llm_provider=None: True),
-    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -339,7 +330,7 @@ async def test_chat_completion_keeps_temperature_for_claude_sonnet_5(monkeypatch
 
         await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
-    assert mock_call.call_args.kwargs["temperature"] == 0.2
+    assert "temperature" not in mock_call.call_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -354,12 +345,66 @@ async def test_chat_completion_keeps_temperature_for_claude_sonnet_5(monkeypatch
         "bedrock/us.anthropic.claude-fable-5-1",
     ],
 )
-async def test_chat_completion_keeps_temperature_for_claude_fable_5_1(monkeypatch, model):
+async def test_chat_completion_strips_temperature_for_claude_fable_5_1(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_4_8(monkeypatch):
     monkeypatch.setattr(
-        litellm_handler.LiteLLMAIHandler,
-        "_litellm_supports_temperature",
-        staticmethod(lambda model, custom_llm_provider=None: True),
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="claude-opus-4-8", system="sys", user="usr", temperature=0.2)
+
+    assert "thinking" not in mock_call.call_args.kwargs
+    assert "max_tokens" not in mock_call.call_args.kwargs
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-opus-5",
+        "claude-opus-5",
+        "vertex_ai/claude-opus-5",
+        "bedrock/anthropic.claude-opus-5",
+        "bedrock/global.anthropic.claude-opus-5",
+        "bedrock/us.anthropic.claude-opus-5",
+        "bedrock/eu.anthropic.claude-opus-5",
+        "bedrock/au.anthropic.claude-opus-5",
+        "bedrock/jp.anthropic.claude-opus-5",
+        "anthropic/claude-opus-5-5",
+        "claude-opus-5-5",
+        "vertex_ai/claude-opus-5-5",
+        "bedrock/anthropic.claude-opus-5-5",
+        "bedrock/global.anthropic.claude-opus-5-5",
+        "bedrock/us.anthropic.claude-opus-5-5",
+        "bedrock/eu.anthropic.claude-opus-5-5",
+        "bedrock/au.anthropic.claude-opus-5-5",
+        "bedrock/jp.anthropic.claude-opus-5-5",
+    ],
+)
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5_family(monkeypatch, model):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
     )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
@@ -368,8 +413,61 @@ async def test_chat_completion_keeps_temperature_for_claude_fable_5_1(monkeypatc
 
         await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
-    assert mock_call.call_args.kwargs["temperature"] == 0.2
+    assert "thinking" not in mock_call.call_args.kwargs
+    assert "max_tokens" not in mock_call.call_args.kwargs
+    assert "temperature" not in mock_call.call_args.kwargs
 
+
+@pytest.mark.asyncio
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_5(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr", temperature=0.2)
+
+    assert "thinking" not in mock_call.call_args.kwargs
+    assert "max_tokens" not in mock_call.call_args.kwargs
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-fable-5-1",
+        "claude-fable-5-1",
+        "vertex_ai/claude-fable-5-1",
+        "bedrock/anthropic.claude-fable-5-1",
+        "bedrock/global.anthropic.claude-fable-5-1",
+        "bedrock/us.anthropic.claude-fable-5-1",
+    ],
+)
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_fable_5_1(monkeypatch, model):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert "thinking" not in mock_call.call_args.kwargs
+    assert "max_tokens" not in mock_call.call_args.kwargs
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
 
 @pytest.mark.asyncio
 async def test_chat_completion_strips_temperature_for_config_no_temperature_models(monkeypatch):
@@ -414,127 +512,6 @@ async def test_chat_completion_strips_temperature_when_probe_reports_unsupported
         await handler.chat_completion(model="gpt-4o", system="sys", user="usr", temperature=0.2)
 
     assert "temperature" not in mock_call.call_args.kwargs
-
-
-@pytest.mark.asyncio
-async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_4_8(monkeypatch):
-    monkeypatch.setattr(
-        litellm_handler,
-        "get_settings",
-        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
-    )
-    monkeypatch.setattr(
-        litellm_handler.LiteLLMAIHandler,
-        "_litellm_supports_temperature",
-        staticmethod(lambda model, custom_llm_provider=None: True),
-    )
-
-    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
-        handler = litellm_handler.LiteLLMAIHandler()
-
-        await handler.chat_completion(model="claude-opus-4-8", system="sys", user="usr", temperature=0.2)
-
-    assert "thinking" not in mock_call.call_args.kwargs
-    assert "max_tokens" not in mock_call.call_args.kwargs
-    assert mock_call.call_args.kwargs["temperature"] == 0.2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "model",
-    [
-        "anthropic/claude-opus-5",
-        "claude-opus-5",
-        "vertex_ai/claude-opus-5",
-        "bedrock/anthropic.claude-opus-5",
-        "bedrock/global.anthropic.claude-opus-5",
-        "bedrock/us.anthropic.claude-opus-5",
-        "bedrock/eu.anthropic.claude-opus-5",
-        "bedrock/au.anthropic.claude-opus-5",
-        "bedrock/jp.anthropic.claude-opus-5",
-    ],
-)
-async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5(monkeypatch, model):
-    monkeypatch.setattr(
-        litellm_handler,
-        "get_settings",
-        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
-    )
-    monkeypatch.setattr(
-        litellm_handler.LiteLLMAIHandler,
-        "_litellm_supports_temperature",
-        staticmethod(lambda model, custom_llm_provider=None: True),
-    )
-
-    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
-        handler = litellm_handler.LiteLLMAIHandler()
-
-        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
-
-    assert "thinking" not in mock_call.call_args.kwargs
-    assert "max_tokens" not in mock_call.call_args.kwargs
-    assert mock_call.call_args.kwargs["temperature"] == 0.2
-
-
-@pytest.mark.asyncio
-async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_5(monkeypatch):
-    monkeypatch.setattr(
-        litellm_handler,
-        "get_settings",
-        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
-    )
-    monkeypatch.setattr(
-        litellm_handler.LiteLLMAIHandler,
-        "_litellm_supports_temperature",
-        staticmethod(lambda model, custom_llm_provider=None: True),
-    )
-
-    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
-        handler = litellm_handler.LiteLLMAIHandler()
-
-        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr", temperature=0.2)
-
-    assert "thinking" not in mock_call.call_args.kwargs
-    assert "max_tokens" not in mock_call.call_args.kwargs
-    assert mock_call.call_args.kwargs["temperature"] == 0.2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "model",
-    [
-        "anthropic/claude-fable-5-1",
-        "claude-fable-5-1",
-        "vertex_ai/claude-fable-5-1",
-        "bedrock/anthropic.claude-fable-5-1",
-        "bedrock/global.anthropic.claude-fable-5-1",
-        "bedrock/us.anthropic.claude-fable-5-1",
-    ],
-)
-async def test_chat_completion_does_not_use_extended_thinking_for_claude_fable_5_1(monkeypatch, model):
-    monkeypatch.setattr(
-        litellm_handler,
-        "get_settings",
-        lambda: FakeSettings(config_values={"enable_claude_extended_thinking": True}),
-    )
-    monkeypatch.setattr(
-        litellm_handler.LiteLLMAIHandler,
-        "_litellm_supports_temperature",
-        staticmethod(lambda model, custom_llm_provider=None: True),
-    )
-
-    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
-        handler = litellm_handler.LiteLLMAIHandler()
-
-        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
-
-    assert "thinking" not in mock_call.call_args.kwargs
-    assert "max_tokens" not in mock_call.call_args.kwargs
-    assert mock_call.call_args.kwargs["temperature"] == 0.2
 
 
 @pytest.mark.asyncio

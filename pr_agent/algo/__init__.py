@@ -28,6 +28,11 @@ _CLAUDE_MODEL_FAMILIES = [
         "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
     },
     {
+        "model_id": "claude-opus-5-5",
+        "max_tokens": 1000000,
+        "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
+    },
+    {
         "model_id": "claude-sonnet-5",
         "max_tokens": 1000000,
         "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
@@ -416,7 +421,7 @@ GROK_REASONING_EFFORT_LEVELS = {
 # thinking={"type": "enabled", "budget_tokens": ...} request built by
 # LiteLLMAIHandler._configure_claude_extended_thinking(). Only models that
 # accept budget_tokens belong here. Adaptive-only models (Claude Opus 4.7/4.8,
-# Opus 5, Sonnet 5, Fable 5, Fable 5.1) reject budget_tokens with an HTTP 400 and must not be added
+# Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject budget_tokens with an HTTP 400 and must not be added
 # without also adding an adaptive-thinking code path. This list is the built-in
 # default; it can be replaced via the `claude_extended_thinking_models_override`
 # configuration option.

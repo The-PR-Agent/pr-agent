@@ -82,6 +82,93 @@ def _settings(
 # _prepare_data
 # ---------------------------------------------------------------------------
 class TestPrepareData:
+    @pytest.mark.parametrize(
+        ("prediction", "field", "value"),
+        [
+            ({"type": ["Unknown"], "title": "A title"}, "type.0", "Unknown"),
+            ({"type": ["Bug fix"]}, "title", None),
+            (
+                {"type": ["Bug fix"], "title": "A title", "pr_files": [{"filename": "app.py", "label": "bug fix"}]},
+                "pr_files.0.changes_title",
+                None,
+            ),
+        ],
+    )
+    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_invalid_output_warns_once_without_changing_parsed_data(
+        self, mock_get_settings, mock_get_logger, prediction, field, value,
+    ):
+        mock_get_settings.return_value = _settings()
+        obj = _make_instance(yaml.dump(prediction))
+
+        obj._prepare_data()
+
+        assert obj.data == prediction
+        mock_get_logger.return_value.warning.assert_called_once_with(
+            "Description output failed schema validation",
+            artifact={"field": field, "value": value},
+        )
+
+    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_valid_output_does_not_warn(self, mock_get_settings, mock_get_logger):
+        mock_get_settings.return_value = _settings()
+        obj = _make_instance(yaml.dump({
+            "type": ["Bug fix"],
+            "title": "Fix a runtime failure",
+            "description": "Preserve the original error.",
+        }))
+
+        obj._prepare_data()
+
+        mock_get_logger.return_value.warning.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.tools.pr_description.get_settings")
+    async def test_extended_description_can_contain_more_than_twenty_files(
+        self, mock_get_settings, mock_get_logger,
+    ):
+        mock_get_settings.return_value = _settings()
+        obj = _make_instance(yaml.dump({
+            "type": ["Bug fix"],
+            "title": "Describe all changed files",
+            "pr_files": [{"filename": "shown.py", "changes_title": "Shown", "label": "bug fix"}],
+        }))
+        obj.git_provider = MagicMock()
+        obj.git_provider.get_diff_files.return_value = [
+            SimpleNamespace(filename="shown.py"),
+            *(SimpleNamespace(filename=f"remaining_{index}.py") for index in range(20)),
+        ]
+
+        obj.prediction = await obj.extend_uncovered_files(obj.prediction)
+        obj._prepare_data()
+
+        assert len(obj.data["pr_files"]) == 21
+        mock_get_logger.return_value.warning.assert_not_called()
+
+    @patch("pr_agent.tools.pr_description.get_logger")
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_assembled_description_still_checks_files_beyond_twenty(
+        self, mock_get_settings, mock_get_logger,
+    ):
+        mock_get_settings.return_value = _settings()
+        files = [
+            {"filename": f"file_{index}.py", "changes_title": "Change", "label": "bug fix"}
+            for index in range(20)
+        ]
+        files.append({"filename": "invalid.py", "label": "bug fix"})
+        obj = _make_instance(yaml.dump({"type": ["Bug fix"], "title": "Title", "pr_files": files}))
+
+        obj._prepare_data()
+
+        assert len(obj.data["pr_files"]) == 21
+        mock_get_logger.return_value.warning.assert_called_once_with(
+            "Description output failed schema validation",
+            artifact={"field": "pr_files.20.changes_title", "value": None},
+        )
+
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_keys_are_reordered_in_canonical_sequence(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
@@ -604,6 +691,28 @@ class TestDescriptionPromptGating:
             autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
         return environment.from_string(template).render(
             {**self.PROMPT_VARS, "enable_pr_description": enable_pr_description})
+
+    @pytest.mark.parametrize("prompt_name", [
+        "pr_description_prompt",
+        "pr_description_only_description_prompts",
+    ])
+    @patch("pr_agent.tools.pr_description.get_logger")
+    def test_duplicate_example_types_match_output_model(self, mock_get_logger, prompt_name):
+        template = getattr(get_settings(), prompt_name).user
+        environment = Environment(
+            autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+        rendered = environment.from_string(template).render(
+            {**self.PROMPT_VARS, "enable_pr_description": True})
+        example = rendered.split("Example output:", 1)[1].split("type:", 1)[1].split("description:", 1)[0]
+        example_types = [
+            line.removeprefix("- ").strip()
+            for line in example.splitlines()
+            if line.startswith("- ") and line.strip() != "- ..."
+        ]
+
+        assert len(example_types) >= 2
+        assert PRDescription._validate_description_schema({"type": example_types, "title": "Example"})
+        mock_get_logger.return_value.warning.assert_not_called()
 
     @pytest.mark.parametrize("part", ["system", "user"])
     def test_description_field_is_dropped_when_disabled(self, part):

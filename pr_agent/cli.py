@@ -1,7 +1,11 @@
 import argparse
 import asyncio
+import copy
 import os
 import sys
+from contextlib import contextmanager
+
+from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent, commands, parse_command
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -27,6 +31,27 @@ _PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset({
 })
 _PLAIN_DIFF_JSON_COMMANDS = frozenset({"review", "review_pr"})
 _OUTPUT_OPTIONS = ("--output", "--json-output")
+_CLI_CONTEXT_CACHES = ("git_provider", "repo_settings", "git_files", "diff_files")
+
+
+@contextmanager
+def _cli_settings_scope():
+    """Give one CLI invocation its own settings and target-derived caches."""
+    try:
+        scope_data = context.copy()
+    except Exception:
+        scope_data = {}
+    scope_data["settings"] = copy.deepcopy(get_settings())
+    for cache_key in _CLI_CONTEXT_CACHES:
+        scope_data.pop(cache_key, None)
+
+    cm = request_cycle_context(scope_data)
+    cm.__enter__()
+    try:
+        yield
+    finally:
+        # Reset the context even when BaseException would skip the bare generator's cleanup.
+        cm.__exit__(None, None, None)
 
 
 def _resolve_output_option(parser, arg):
@@ -153,6 +178,7 @@ def run(inargs=None, args=None):
     if diff_mode and args.stdin and args.diff_file:
         parser.error("--stdin and --diff-file are mutually exclusive")
     _validate_output_options(parser, args, diff_mode)
+    diff_content = None
     if diff_mode:
         if args.diff_file:
             try:
@@ -166,63 +192,56 @@ def run(inargs=None, args=None):
             diff_content = sys.stdin.read()
         if not diff_content.strip():
             parser.error("No diff content received (empty stdin/file)")
-        get_settings().set("config.git_provider", "plain-diff")
-        get_settings().set("plain_diff.content", diff_content)
-        get_settings().set("plain_diff.output_path", getattr(args, "output", None))
-        get_settings().set("plain_diff.json_output_path", getattr(args, "json_output", None))
-        # Plain-diff mode's whole purpose is to emit the result to stdout/--output, so
-        # force publishing on even if a config/env set publish_output=false.
-        get_settings().set("config.publish_output", True)
     elif not args.pr_url and not args.issue_url:
         parser.print_help()
         return
 
-    command = args.command.lower()
-    settings = get_settings()
-    propagate_tool_errors_before = settings.config.get("propagate_tool_errors", False)
-    get_settings().set("CONFIG.CLI_MODE", True)
-    # Strip each candidate independently so a whitespace-only CLI value doesn't
-    # short-circuit the PR_AGENT_CONFIG_BRANCH env fallback before precedence.
-    cli_branch = (getattr(args, "config_branch", None) or "").strip()
-    env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
-    # Always reconcile CONFIG.CONFIG_BRANCH with the current invocation so a value
-    # set by an earlier run() call in the same process can't leak into a later one
-    # (get_settings() is a process-wide singleton).
-    get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
-    # Always reconcile CONFIG.EXTRA_CONFIG_URL with the current invocation so a
-    # previously-set value from an earlier run() call in the same process can't
-    # leak into a later one (get_settings() is a process-wide singleton).
-    get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
-    # A CI artifact (see [artifacts]) reaches the prompts from the environment or the settings files,
-    # the same way it does under the GitHub Action, so any pipeline that runs the CLI can supply one.
-    inject_artifact_context()
+    with _cli_settings_scope():
+        if diff_mode:
+            get_settings().set("config.git_provider", "plain-diff")
+            get_settings().set("plain_diff.content", diff_content)
+            get_settings().set("plain_diff.output_path", getattr(args, "output", None))
+            get_settings().set("plain_diff.json_output_path", getattr(args, "json_output", None))
+            # Plain-diff mode's whole purpose is to emit the result to stdout/--output, so
+            # force publishing on even if a config/env set publish_output=false.
+            get_settings().set("config.publish_output", True)
 
-    async def inner():
-        if args.issue_url:
-            result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
-        else:
-            target = args.pr_url if args.pr_url else "local_diff"
-            result = await asyncio.create_task(PRAgent().handle_request(target, [command] + args.rest))
+        command = args.command.lower()
+        settings = get_settings()
+        get_settings().set("CONFIG.CLI_MODE", True)
+        # Strip each candidate independently so a whitespace-only CLI value doesn't
+        # short-circuit the PR_AGENT_CONFIG_BRANCH env fallback before precedence.
+        cli_branch = (getattr(args, "config_branch", None) or "").strip()
+        env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+        get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
+        get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
+        # A CI artifact (see [artifacts]) reaches the prompts from the environment or the settings files,
+        # the same way it does under the GitHub Action, so any pipeline that runs the CLI can supply one.
+        inject_artifact_context()
 
-        # litellm defers its success/failure callbacks onto the event loop, which
-        # asyncio.run() below tears down the moment this coroutine returns. Give
-        # them a chance to run first, or they are silently dropped.
-        if litellm_callbacks_registered():
-            get_logger().debug("Waiting for event queue to complete")
-            await drain_litellm_callbacks(
-                get_settings().litellm.get("callback_timeout_seconds", DEFAULT_CALLBACK_TIMEOUT_SECONDS)
-            )
+        async def inner():
+            if args.issue_url:
+                result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
+            else:
+                target = args.pr_url if args.pr_url else "local_diff"
+                result = await asyncio.create_task(PRAgent().handle_request(target, [command] + args.rest))
 
-        return result
+            # litellm defers its success/failure callbacks onto the event loop, which
+            # asyncio.run() below tears down the moment this coroutine returns. Give
+            # them a chance to run first, or they are silently dropped.
+            if litellm_callbacks_registered():
+                get_logger().debug("Waiting for event queue to complete")
+                await drain_litellm_callbacks(
+                    get_settings().litellm.get("callback_timeout_seconds", DEFAULT_CALLBACK_TIMEOUT_SECONDS)
+                )
 
-    try:
+            return result
+
         result = asyncio.run(inner())
         if not result:
             parser.print_help()
         if result is False and settings.config.get("propagate_tool_errors", False):
             return 1
-    finally:
-        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors_before)
 
 
 if __name__ == '__main__':

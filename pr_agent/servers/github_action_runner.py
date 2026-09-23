@@ -352,6 +352,17 @@ async def run_action():
                 get_logger().info("Skipping comment event from a bot sender to avoid a feedback loop")
                 return
             comment_body = event_payload.get("comment", {}).get("body")
+            # Skip comments that are not commands, mirroring the webhook guard
+            # in github_app.py. Otherwise a plain comment is lexed as an unknown
+            # command, PRAgent.handle_request returns False and the action exits 1.
+            if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
+                if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
+                    comment_body_split = comment_body.split('/ask')
+                    comment_body = '/ask' + comment_body_split[1] + ' \n' + comment_body_split[0].strip().lstrip('>')
+                    get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
+                else:
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if '/ask' in comment_body:

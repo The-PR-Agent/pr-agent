@@ -525,9 +525,18 @@ class TestGetMaxTokens:
             "bedrock/eu.anthropic.claude-opus-5",
             "bedrock/au.anthropic.claude-opus-5",
             "bedrock/jp.anthropic.claude-opus-5",
+            "anthropic/claude-opus-5-5",
+            "claude-opus-5-5",
+            "vertex_ai/claude-opus-5-5",
+            "bedrock/anthropic.claude-opus-5-5",
+            "bedrock/global.anthropic.claude-opus-5-5",
+            "bedrock/us.anthropic.claude-opus-5-5",
+            "bedrock/eu.anthropic.claude-opus-5-5",
+            "bedrock/au.anthropic.claude-opus-5-5",
+            "bedrock/jp.anthropic.claude-opus-5-5",
         ],
     )
-    def test_claude_opus_5_model_max_tokens(self, monkeypatch, model):
+    def test_claude_opus_5_family_model_max_tokens(self, monkeypatch, model):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 0,

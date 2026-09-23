@@ -473,6 +473,7 @@ def test_publish_code_suggestions_422_fallback_all_dropped_returns_false(monkeyp
     assert result is False
     # Only the initial failing create_review call occurred; 0 fallback comments posted
     assert len(fake_pr.create_review_calls) == 1
+    assert provider.get_recent_inline_comment_bodies() == []
 
 
 def test_publish_code_suggestions_422_fallback_partial_success_returns_true(monkeypatch):
@@ -509,6 +510,7 @@ def test_publish_code_suggestions_422_fallback_partial_success_returns_true(monk
     # 1 initial failed batch call, 1 successful fallback call with the verified comment
     assert len(fake_pr.create_review_calls) == 2
     assert len(fake_pr.create_review_calls[1]["comments"]) == 1
+    assert provider.get_recent_inline_comment_bodies() == ["```suggestion\nfirst\n```"]
 
 
 def test_publish_code_suggestions_422_fallback_repaired_comment_success(monkeypatch):
@@ -545,6 +547,7 @@ def test_publish_code_suggestions_422_fallback_repaired_comment_success(monkeypa
     # Call 2: repaired comment via publish_inline_comments([comment], disable_fallback=True) -> succeeds
     assert len(fake_pr.create_review_calls) == 2
     assert fake_pr.create_review_calls[1]["comments"] == repaired
+    assert provider.get_recent_inline_comment_bodies() == ["fixed single line"]
 
 
 def test_publish_code_suggestions_422_fallback_repaired_comment_failure_returns_false(monkeypatch):
@@ -590,6 +593,7 @@ def test_publish_code_suggestions_422_fallback_repaired_comment_failure_returns_
     result = provider.publish_code_suggestions(suggestions)
     assert result is False
     assert calls == 2
+    assert provider.get_recent_inline_comment_bodies() == []
 
 
 def test_publish_code_suggestions_normal_success():

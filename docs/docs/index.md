@@ -53,6 +53,23 @@ PR-Agent offers comprehensive pull request functionalities integrated with vario
 
 Legend: ✅ = supported. 💬 = the tool runs, but its output is posted as a PR comment instead of being applied (Update CHANGELOG where the provider cannot push files, Generate Labels where it cannot set labels). Blank = not supported, or not yet verified (Generate Labels on Gitea).
 
+Gerrit and CodeCommit are registered providers but are omitted from the main table to keep it readable. Support is:
+
+|       |                                                                                       | Gerrit | CodeCommit |
+| ----- |---------------------------------------------------------------------------------------|:------:|:----------:|
+| [TOOLS](./tools/index.md) | [Describe](./tools/describe.md), [Review](./tools/review.md), [Improve](./tools/improve.md), [Ask](./tools/ask.md), [Add Docs](./tools/add_docs.md), [Help](./tools/help.md) |   ✅   |     ✅     |
+|       | [Ask on code lines](./tools/ask.md#ask-lines)                                         |        |            |
+|       | [Generate Labels](./tools/generate_labels.md)                                         |   💬   |     💬     |
+|       | [Update CHANGELOG](./tools/update_changelog.md)                                       |   💬   |     💬     |
+|       | [Similar Issues](./tools/similar_issues.md)                                           |        |            |
+| [USAGE](./usage-guide/index.md) | [CLI](./usage-guide/automations_and_usage.md#local-repo-cli)                  |   ✅   |     ✅     |
+|       | [App / webhook](./usage-guide/automations_and_usage.md#github-app)                    |   ✅   |            |
+|       | Tagging bot / Actions and pipelines                                                   |        |            |
+| [CORE](./core-abilities/index.md) | [Agent skills (`SKILL.md`)](./core-abilities/agent_skills.md) and other core abilities |   ✅   |     ✅     |
+|       | [Repo context files (`AGENTS.md`)](./usage-guide/additional_configurations.md#bringing-per-repo-context-files-to-pr-agent) |        |            |
+
+Gerrit and CodeCommit do not support `gfm_markdown`, so `/describe` omits semantic file types and a few other sections. CodeCommit setup notes currently live in the [GitHub installation page](./installation/github.md); Gerrit has no dedicated installation page yet.
+
 ## Example Results
 
 <hr>
