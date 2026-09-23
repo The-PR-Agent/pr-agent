@@ -1,5 +1,7 @@
 from base64 import b64decode
 
+import yaml
+
 from pr_agent.config_security import (
     CLI_HOST_ONLY_KEYS_BY_SECTION,
     REPO_HOST_ONLY_KEYS_BY_SECTION,
@@ -30,6 +32,76 @@ class CliArgs:
         if key.split('.', 1)[0] in cli_host_only_keys:
             return f'.{section}.{key}'
         return None
+
+    @staticmethod
+    def _blocked_setting_path(path: str, forbidden_cli_args: list) -> str | None:
+        """Return the blocked token for a dotted section.key path, else None."""
+        arg_word = f"--{path}=x".replace('__', '.').lower()
+        host_only_arg = CliArgs._host_only_setting_arg(arg_word)
+        if host_only_arg:
+            return host_only_arg
+        for forbidden_arg_word in forbidden_cli_args:
+            if forbidden_arg_word in arg_word:
+                return forbidden_arg_word
+        return None
+
+    @staticmethod
+    def _mapping_setting_paths(section: str, value: object):
+        """Yield the dotted section.key path of every leaf in a parsed mapping value."""
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                path = f"{section}.{key}"
+                yield from CliArgs._mapping_setting_paths(path, nested)
+        elif isinstance(value, list):
+            for item in value:
+                yield from CliArgs._mapping_setting_paths(section, item)
+        else:
+            yield section
+
+    @staticmethod
+    def _mapping_value(arg: str):
+        """Return (section, parsed mapping) for a --section={key: value} arg, else None."""
+        arg = arg.strip()
+        if not arg.startswith('--'):
+            return None
+        setting_name, separator, value_text = arg[2:].partition('=')
+        if not separator:
+            return None
+        try:
+            parsed_value = yaml.safe_load(value_text)
+        except Exception:
+            return None
+        if not isinstance(parsed_value, dict):
+            return None
+        return setting_name.replace('__', '.').lower(), parsed_value
+
+    @staticmethod
+    def is_mapping_arg(arg: str) -> bool:
+        """Whether a --section=... argument carries a {key: value} mapping value.
+
+        Callers that project arguments down to their keys must keep a mapping value
+        intact so ``validate_user_args`` can inspect each nested ``section.key`` path.
+        """
+        return CliArgs._mapping_value(arg) is not None
+
+    @staticmethod
+    def _mapping_value_offending_arg(arg: str, forbidden_cli_args: list) -> str | None:
+        """Return the blocked token when a mapping value hides one, "" when it does not,
+        and None when the value is not a mapping.
+
+        The forbidden and host-only checks above only see the section before ``=``. A mapping
+        value sets many keys at once, so each nested ``section.key`` path must be validated the
+        same way to keep ``--<section>={key: value}`` from smuggling a forbidden key past them.
+        """
+        mapping = CliArgs._mapping_value(arg)
+        if mapping is None:
+            return None
+        section, parsed_value = mapping
+        for path in CliArgs._mapping_setting_paths(section, parsed_value):
+            offending = CliArgs._blocked_setting_path(path, forbidden_cli_args)
+            if offending:
+                return offending
+        return ""
 
     @staticmethod
     def validate_user_args(args: list) -> (bool, str):
@@ -82,6 +154,14 @@ class CliArgs:
                     host_only_arg = CliArgs._host_only_setting_arg(arg_word)
                     if host_only_arg:
                         return False, host_only_arg
+                    # A mapping value sets many keys at once, so validate each nested
+                    # section.key path against the host-only and forbidden lists instead of
+                    # matching the value text, which may legitimately mention a key name.
+                    mapping_offending_arg = CliArgs._mapping_value_offending_arg(arg, forbidden_cli_args)
+                    if mapping_offending_arg is not None:
+                        if mapping_offending_arg:
+                            return False, mapping_offending_arg
+                        continue
                     for forbidden_arg_word in forbidden_cli_args:
                         if forbidden_arg_word in arg_word:
                             return False, forbidden_arg_word

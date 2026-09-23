@@ -226,8 +226,15 @@ def parse_command(command: str) -> list[str]:
 
 
 def _validation_args(args: list[str]) -> list[str]:
-    """Project setting arguments to their keys for command-line validation."""
-    return [argument.split("=", 1)[0] for argument in args]
+    """Project setting arguments to their keys for command-line validation.
+
+    A mapping value sets many keys at once, so it is kept whole and every nested
+    ``section.key`` path is validated instead of only the section before ``=``.
+    """
+    return [
+        argument if CliArgs.is_mapping_arg(argument) else argument.split("=", 1)[0]
+        for argument in args
+    ]
 
 
 def prepare_command(command: str) -> list[str]:
