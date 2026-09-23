@@ -2385,8 +2385,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if 0 < cached_tokens < min_tokens:
             _log_anthropic_cache_warning(
                 model,
-                f"the cached prefix is only ~{cached_tokens} tokens, below the "
-                f"model's {min_tokens} token minimum",
+                f"the cached prefix is below the model's {min_tokens} token minimum",
             )
 
     @staticmethod
