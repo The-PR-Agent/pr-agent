@@ -478,16 +478,27 @@ class PRCodeSuggestions:
 
     def _get_suggestions_coverage_footer(self, suggestions_present: bool = True) -> str:
         failed_chunk_count = getattr(self, "failed_chunk_count", 0)
-        if (not failed_chunk_count or
+        remaining_files = getattr(self, "remaining_files_list", [])
+        if ((not failed_chunk_count and not remaining_files) or
                 not get_settings().pr_code_suggestions.get("enable_suggestions_coverage_footer", True)):
             return ""
-        total_chunk_count = getattr(self, "total_chunk_count", failed_chunk_count)
-        coverage_detail = ("the suggestions above are based on the successful chunks only."
-                           if suggestions_present else
-                           "no suggestions were found in the successful chunks; failed chunks could not be analyzed.")
-        return (f"\n\n⚠️ **Suggestion coverage:** {failed_chunk_count} of {total_chunk_count} "
-                "analysis chunks failed; "
-                f"{coverage_detail}")
+        details = []
+        if failed_chunk_count:
+            total_chunk_count = getattr(self, "total_chunk_count", failed_chunk_count)
+            coverage_detail = ("the suggestions above are based on the successful chunks only."
+                               if suggestions_present else
+                               "no suggestions were found in the successful chunks; "
+                               "failed chunks could not be analyzed.")
+            details.append(f"{failed_chunk_count} of {total_chunk_count} analysis chunks failed; {coverage_detail}")
+        if remaining_files:
+            displayed_files = remaining_files[:50]
+            file_list = ", ".join(f"`{name}`" for name in displayed_files)
+            extra_count = len(remaining_files) - len(displayed_files)
+            if extra_count:
+                file_list += f", and {extra_count} more"
+            details.append(f"{len(remaining_files)} file(s) were not analyzed because of the token budget or "
+                           f"maximum chunk calls: {file_list}.")
+        return "\n\n⚠️ **Suggestion coverage:** " + " ".join(details)
 
     async def publish_no_suggestions(self):
         coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
@@ -1823,6 +1834,7 @@ class PRCodeSuggestions:
         self.failed_chunk_count = 0
         self.total_chunk_count = 0
         self.parse_failure_count = 0
+        self.remaining_files_list = []
         output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
         attempt_variables = copy.deepcopy(self.vars)
         attempt_variables["diff"] = ""
@@ -1843,22 +1855,20 @@ class PRCodeSuggestions:
         attempt_token_handler = self._suggestion_attempt_budget.token_handler
         # get PR diff
         if get_settings().pr_code_suggestions.decouple_hunks:
-            self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
-                                                        attempt_token_handler,
-                                                        model,
-                                                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                        add_line_numbers=True,
-                                                        output_token_reserve=output_token_reserve)  # decouple hunk with line numbers
+            self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
+                self.git_provider, attempt_token_handler, model,
+                max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                add_line_numbers=True, return_remaining_files=True,
+                output_token_reserve=output_token_reserve)  # decouple hunk with line numbers
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
             # non-decoupled hunks
-            self.patches_diff_list_no_line_numbers = get_pr_multi_diffs(self.git_provider,
-                                                                        attempt_token_handler,
-                                                                        model,
-                                                                        max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                                        add_line_numbers=False,
-                                                                        output_token_reserve=output_token_reserve)
+            self.patches_diff_list_no_line_numbers, self.remaining_files_list = get_pr_multi_diffs(
+                self.git_provider, attempt_token_handler, model,
+                max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                add_line_numbers=False, return_remaining_files=True,
+                output_token_reserve=output_token_reserve)
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers,
                 model,
@@ -1866,12 +1876,11 @@ class PRCodeSuggestions:
             )
             if not self.patches_diff_list:
                 # fallback to decoupled hunks
-                self.patches_diff_list = get_pr_multi_diffs(self.git_provider,
-                                                            attempt_token_handler,
-                                                            model,
-                                                            max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
-                                                            add_line_numbers=True,
-                                                            output_token_reserve=output_token_reserve)  # decouple hunk with line numbers
+                self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
+                    self.git_provider, attempt_token_handler, model,
+                    max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
+                    add_line_numbers=True, return_remaining_files=True,
+                    output_token_reserve=output_token_reserve)  # decouple hunk with line numbers
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         if self.patches_diff_list:

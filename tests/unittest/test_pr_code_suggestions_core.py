@@ -4,12 +4,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
 from pr_agent.algo.pr_processing import pr_generate_extended_diff, retry_with_fallback_models
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
@@ -276,7 +278,7 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]
+            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
         ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
@@ -289,6 +291,77 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
         relevant_lines_start=1,
     )]
     assert get_pr_multi_diffs.call_args.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decouple_hunks", [True, False])
+async def test_prepare_prediction_main_retains_files_omitted_by_chunk_limit(decouple_hunks):
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    settings = get_settings()
+    settings.pr_code_suggestions.decouple_hunks = decouple_hunks
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    tool._get_prediction = AsyncMock(return_value={"code_suggestions": []})
+    tool.convert_to_decoupled_with_line_numbers = AsyncMock(return_value=["chunk-a"])
+
+    def packed_diffs(*args, **kwargs):
+        chunks = ["chunk-a"]
+        return (chunks, ["unreviewed.py"]) if kwargs.get("return_remaining_files") else chunks
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=packed_diffs):
+            await tool.prepare_prediction_main("primary-model")
+    finally:
+        restore_settings(snapshot)
+
+    assert tool.failed_chunk_count == 0
+    assert tool.remaining_files_list == ["unreviewed.py"]
+
+
+@pytest.mark.asyncio
+async def test_improve_reports_the_real_packer_omission_at_default_call_limit(monkeypatch):
+    snapshot = snapshot_settings((
+        "pr_code_suggestions.decouple_hunks",
+        "pr_code_suggestions.max_number_of_calls",
+        "config.patch_extra_lines_before",
+        "config.patch_extra_lines_after",
+    ))
+    settings = get_settings()
+    settings.pr_code_suggestions.decouple_hunks = True
+    settings.pr_code_suggestions.max_number_of_calls = 3
+    settings.config.patch_extra_lines_before = 0
+    settings.config.patch_extra_lines_after = 0
+
+    hunk = "@@ -1 +1 @@\n-old\n+" + ("alpha " * 60)
+    files = [FilePatchInfo(base_file="old\n", head_file=("alpha " * 60).rstrip() + "\n", patch=hunk,
+                           filename=name, edit_type=EDIT_TYPE.MODIFIED)
+             for name in ("first.py", "second.py", "third.py", "fourth.py")]
+    provider = MagicMock()
+    provider.get_diff_files.return_value = files
+    provider.get_languages.return_value = {"Python": 100}
+    tool = _make_tool(provider)
+    tool._get_prediction = AsyncMock(return_value={"code_suggestions": []})
+
+    class WordTokenHandler:
+        prompt_tokens = 100
+
+        @staticmethod
+        def count_tokens(text):
+            return len(text.split())
+
+    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda model, **kwargs: 1700)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages",
+                        lambda languages, diff_files: [{"files": diff_files}])
+    budget = AttemptTokenBudget.for_attempt("tiny-model", WordTokenHandler())
+    try:
+        with patch.object(AttemptTokenBudget, "for_prompt_attempt", return_value=budget):
+            await tool.prepare_prediction_main("tiny-model")
+    finally:
+        restore_settings(snapshot)
+
+    assert tool._get_prediction.await_count == 3
+    assert tool.remaining_files_list == ["fourth.py"]
+    assert "fourth.py" in tool._get_suggestions_coverage_footer(suggestions_present=False)
 
 
 def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_files():
@@ -455,7 +528,7 @@ async def test_prepare_prediction_main_keeps_successful_chunks_when_one_parallel
         return {"code_suggestions": [_valid_suggestion(relevant_file="chunk-a.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])):
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
@@ -489,7 +562,7 @@ async def test_prepare_prediction_main_propagates_chunk_cancellation_after_waiti
         return {"code_suggestions": []}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])):
             tool._get_prediction = fake_get_prediction
 
             with pytest.raises(asyncio.CancelledError):
@@ -519,9 +592,9 @@ async def test_prepare_prediction_main_keeps_processing_after_one_sequential_chu
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=[
-            "chunk-a", "chunk-b", "chunk-c"
-        ]):
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(
+            ["chunk-a", "chunk-b", "chunk-c"], []
+        )):
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
@@ -563,7 +636,7 @@ async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])):
             tool._get_prediction = fake_get_prediction
 
             data = await retry_with_fallback_models(tool.prepare_prediction_main)
@@ -603,7 +676,8 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         with patch.object(
             pr_code_suggestions_module,
             "get_pr_multi_diffs",
-            side_effect=[["stale unnumbered chunk"], ["1 fallback-a", "2 fallback-b"]],
+            side_effect=[(["stale unnumbered chunk"], ["stale.py"]),
+                         (["1 fallback-a", "2 fallback-b"], ["fallback-left-out.py"])],
         ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
@@ -618,6 +692,7 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
     ]
     assert tool.total_chunk_count == 2
     assert len(data["code_suggestions"]) == 2
+    assert tool.remaining_files_list == ["fallback-left-out.py"]
     assert len(get_pr_multi_diffs.call_args_list) == 2
     tool.convert_to_decoupled_with_line_numbers.assert_awaited_once_with(
         ["stale unnumbered chunk"],
@@ -657,6 +732,22 @@ def test_suggestions_coverage_footer_is_safe_for_tools_built_without_init():
     tool = _make_tool()
 
     assert tool._get_suggestions_coverage_footer() == ""
+
+
+def test_suggestions_coverage_footer_reports_unanalyzed_files_without_failed_chunks():
+    snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
+    tool = _make_tool()
+    tool.failed_chunk_count = 0
+    tool.remaining_files_list = ["unreviewed.py"]
+
+    try:
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        footer = tool._get_suggestions_coverage_footer(suggestions_present=False)
+    finally:
+        restore_settings(snapshot)
+
+    assert "unreviewed.py" in footer
+    assert "not analyzed" in footer
 
 
 @pytest.mark.asyncio
@@ -1571,6 +1662,27 @@ async def test_publish_no_suggestions_qualifies_partial_results(publish_output_n
     assert "No code suggestions found in the successfully analyzed chunks." in body
     assert "1 of 2 analysis chunks failed" in body
     assert "failed chunks could not be analyzed" in body
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_qualifies_omitted_files(publish_output_no_suggestions):
+    publish_output_no_suggestions(True)
+    snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
+    git_provider = MagicMock()
+    git_provider.supports_code_suggestions_artifact.return_value = False
+    tool = _make_tool(git_provider)
+    tool.failed_chunk_count = 0
+    tool.remaining_files_list = ["unreviewed.py"]
+
+    try:
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        await tool.publish_no_suggestions()
+    finally:
+        restore_settings(snapshot)
+
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "No code suggestions found in the successfully analyzed chunks." in body
+    assert "unreviewed.py" in body
 
 
 @pytest.mark.asyncio

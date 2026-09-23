@@ -248,7 +248,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `max_history_len` | 4 |  |
 | `publish_output_no_suggestions` | true |  |
-| `enable_suggestions_coverage_footer` | true | show when failed analysis chunks make the suggestions incomplete |
+| `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
 
 | Key | Default | Description |
