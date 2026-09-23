@@ -334,22 +334,11 @@ class PRCodeSuggestions:
 
             # publish the suggestions
             if get_settings().config.publish_output:
-                # Emit to the optional external sinks before touching the provider, so a sink
-                # still receives the suggestions if publishing them to the PR fails.
-                push_outputs("improve", payload=data, markdown=render_suggestions_markdown(data))
-                # If a temporary comment was published, remove it
-                self.git_provider.remove_initial_comment()
-
-                # Publish table summarized suggestions
-                if ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
-                        self.git_provider.is_supported("gfm_markdown")):
-
-                    # Drop suggestions that can't be anchored in the diff (unresolved
-                    # sentinels, zero/negative or reversed line ranges, or positive
-                    # ranges that fall outside the changed lines of the relevant file)
-                    # up front; when nothing survives, route the outcome through
-                    # publish_no_suggestions() so it honors publish_output_no_suggestions
-                    # and emits the accurate coverage footer instead of a header-only table.
+                publish_summary = ((not get_settings().pr_code_suggestions.commitable_code_suggestions) and
+                                   self.git_provider.is_supported("gfm_markdown"))
+                if publish_summary:
+                    # Filter before emitting to external sinks so they receive the same result
+                    # as the PR. An empty result must emit only the no-suggestions outcome.
                     data['code_suggestions'] = [
                         suggestion for suggestion in data['code_suggestions']
                         if self._is_suggestion_line_range_valid(suggestion)
@@ -358,6 +347,15 @@ class PRCodeSuggestions:
                         await self.publish_no_suggestions()
                         return
 
+                # Emit to the optional external sinks before touching the provider, so a sink
+                # still receives the suggestions if publishing them to the PR fails.
+                markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
+                push_outputs("improve", payload=data, markdown=markdown)
+                # If a temporary comment was published, remove it
+                self.git_provider.remove_initial_comment()
+
+                # Publish table summarized suggestions
+                if publish_summary:
                     # generate summarized suggestions
                     pr_body = self.generate_summarized_suggestions(data)
                     pr_body += self._get_suggestions_coverage_footer()
@@ -514,6 +512,10 @@ class PRCodeSuggestions:
         no_suggestions_message = ("No code suggestions found in the successfully analyzed chunks."
                                   if coverage_footer else "No code suggestions found for the PR.")
         pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
+        if get_settings().config.publish_output:
+            markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
+            push_outputs("improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
+                         markdown=markdown)
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")
