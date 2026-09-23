@@ -250,14 +250,12 @@ class PRSimilarIssue:
                 self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for issue in issues_paginated_list:
-                    if issue.pull_request:
-                        continue
+                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
+                    if scanned >= self.max_issues_to_scan:
+                        break
                     number = issue.number
                     issue_key = f"issue_{number}"
                     id = issue_key + "." + "issue"
-                    # scan the complete history instead of stopping after the newest indexed
-                    # issue, so deletions or gaps at any depth are found and backfilled
                     res = self.pinecone_index.fetch(ids=[id], namespace=self.pinecone_namespace).to_dict()
                     if not any(vector['metadata']['repo'] == repo_name_for_index
                                for vector in res["vectors"].values()):
@@ -310,14 +308,12 @@ class PRSimilarIssue:
             else:  # update table if needed
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for issue in issues_paginated_list:
-                    if issue.pull_request:
-                        continue
+                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
+                    if scanned >= self.max_issues_to_scan:
+                        break
                     number = issue.number
                     issue_key = f"issue_{number}"
                     issue_id = issue_key + "." + "issue"
-                    # scan the complete history instead of stopping after the newest indexed
-                    # issue, so deletions or gaps at any depth are found and backfilled
                     res = self.table.search().limit(len(self.table)).where(f"id='{issue_id}'").to_list()
                     if not any(r['metadata']['repo'] == repo_name_for_index for r in res):
                         issues_to_update.append(issue)
@@ -387,14 +383,12 @@ class PRSimilarIssue:
             else:
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for issue in issues_paginated_list:
-                    if issue.pull_request:
-                        continue
+                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
+                    if scanned >= self.max_issues_to_scan:
+                        break
                     number = issue.number
                     issue_key = f"issue_{number}"
                     point_id = issue_key + "." + "issue"
-                    # scan the complete history instead of stopping after the newest indexed
-                    # issue, so deletions or gaps at any depth are found and backfilled
                     response = self.qdrant.count(
                         collection_name=self.qdrant_collection_name,
                         count_filter=Filter(must=[

@@ -458,14 +458,6 @@ class _LanceSettings:
         uri = "/tmp/test-lancedb"
 
 
-class _SmallWindowLanceSettings(_LanceSettings):
-    class pr_similar_issue:
-        vectordb = "lancedb"
-        max_issues_to_scan = 2
-        skip_comments = True
-        force_update_dataset = False
-
-
 class _FakeRepo:
     def __init__(self):
         self.full_name = "org/repo-b"
@@ -568,72 +560,6 @@ def test_constructor_backfills_an_older_index_gap(monkeypatch):
     ids = [row["id"] for row in fake_db.table.rows]
     assert ids.count("issue_5.issue") == 1
     assert fake_db.table.add_calls == [1]  # gap filled, nothing new to add
-
-
-class _GapBeyondWindowRepo:
-    def __init__(self):
-        self.full_name = "org/repo-b"
-
-    def get_issues(self, state="all"):
-        return [_fake_issue(6), _fake_issue(5), _fake_issue(4), _fake_issue(3)]
-
-
-class _GapBeyondWindowGithub:
-    def __init__(self):
-        self._repo = _GapBeyondWindowRepo()
-
-    def get_repo(self, name):
-        return self._repo
-
-
-class _GapBeyondWindowProvider:
-    def __init__(self):
-        self.repo_obj = _GapBeyondWindowRepo()
-        self.github_client = _GapBeyondWindowGithub()
-
-    @staticmethod
-    def _parse_issue_url(url):
-        return ("org/repo-b", 5)
-
-
-def test_constructor_backfills_gap_beyond_the_scan_window(monkeypatch):
-    """Repair a missing issue older than the newest max_issues_to_scan issues.
-
-    The table holds the three newest issues, so a bounded window capped at two issues would
-    stop before ever seeing the missing older one and would log "No new issues to update"
-    on every run. The incremental scan now covers the complete history, so the missing
-    issue_3 is reached and re-indexed.
-    """
-    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
-    fake_db.table = _FakeSearchableTable([
-        _lancedb_row("issue_6.issue", "org-repo-b"),
-        _lancedb_row("issue_5.issue", "org-repo-b"),
-        _lancedb_row("issue_4.issue", "org-repo-b"),
-        _lancedb_row("example_issue_org-repo-b", "org-repo-b"),
-    ])
-    _install_fake_pandas(monkeypatch)
-    _install_fake_lancedb(monkeypatch, fake_db)
-    monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue.get_settings", lambda: _SmallWindowLanceSettings
-    )
-    monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue._provider_supports_issue_indexing", lambda: True
-    )
-    monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _GapBeyondWindowProvider
-    )
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
-    monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue.TokenHandler",
-        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
-    )
-
-    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
-
-    ids = [row["id"] for row in fake_db.table.rows]
-    assert "issue_3.issue" in ids
-    assert ids.count("example_issue_org-repo-b") == 1
-    assert fake_db.table.add_calls == [1]
 
 
 def test_concurrent_first_runs_do_not_duplicate_rows(monkeypatch):
