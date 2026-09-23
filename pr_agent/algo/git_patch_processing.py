@@ -355,6 +355,7 @@ __old hunk__
     else:
         patch_with_lines_str = ""
 
+    rendered_hunks = []
     patch_lines = patch.splitlines()
     new_content_lines = []
     old_content_lines = []
@@ -393,6 +394,9 @@ __old hunk__
                     patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__old hunk__\n'
                     for line_old in old_content_lines:
                         patch_with_lines_str += f"{line_old}\n"
+                # Keep completed hunks out of subsequent rstrip/concatenation work.
+                rendered_hunks.append(patch_with_lines_str)
+                patch_with_lines_str = ""
                 new_content_lines = []
                 old_content_lines = []
             if match:
@@ -435,7 +439,8 @@ __old hunk__
             for line_old in old_content_lines:
                 patch_with_lines_str += f"{line_old}\n"
 
-    return patch_with_lines_str.rstrip()
+    rendered_hunks.append(patch_with_lines_str)
+    return "".join(rendered_hunks).rstrip()
 
 
 def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, side, remove_trailing_chars: bool = True) -> tuple[str, str]:
