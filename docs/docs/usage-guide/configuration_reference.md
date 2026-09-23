@@ -521,6 +521,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `health_timeout_seconds` | 10 | finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work |
+| `context_history_max_tasks` | 100 | maximum prior tasks considered for a context follow-up; set from 1 to 1000 |
 
 
 ## `[asana]`
