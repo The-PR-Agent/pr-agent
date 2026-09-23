@@ -149,7 +149,8 @@ class LocalGitProvider(GitProvider):
     def supports_comment_publish_confirmation(self) -> bool:
         return False
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str,
+                               relevant_line_in_file: str, original_suggestion=None):
         raise NotImplementedError('Publishing inline comments is not implemented for the local git provider')
 
     def publish_inline_comments(self, comments: list[dict]):
