@@ -6,7 +6,10 @@ standard A2A surface (agent card + JSON-RPC) plus a health probe. It is **not** 
 separate project — the server is PR-Agent code under [`pr_agent/mosaico/`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/mosaico/server.py),
 ships in every release wheel, and ships as its own Docker image (`<version>-mosaico_agent`)
 starting at `v0.36.0`. The server is unbiased about the git provider: every request carries
-either a PR URL or a raw diff, and the agent answers from that input alone.
+either a PR URL or a raw diff. Follow-up messages can refer to that input by reusing the
+returned `contextId`; the server searches up to 100 recent tasks in the same context for the
+latest PR URL or diff. Task history is kept in memory, so send the input again after a restart or
+when routing a follow-up to a different server replica.
 
 ### What the mode is
 
