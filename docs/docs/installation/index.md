@@ -23,12 +23,13 @@ behavior, not Requests-specific environment settings.
 
 ## Sizing a self-hosted webhook server
 
-The GitHub, GitLab and Gitea webhook servers (the `github_app`, `gitlab_webhook` and `gitea_app` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket, Azure DevOps, GitHub polling, and the Lambda variants — do not use this gunicorn worker configuration.
+The GitHub, GitLab, Gitea and Bitbucket Server webhook servers (the `github_app`, `gitlab_webhook`, `gitea_app` and `bitbucket_server_webhook` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket Cloud, Azure DevOps, GitHub polling, and the Lambda variants — do not use this gunicorn worker configuration.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GUNICORN_WORKERS` | *(unset)* | Pins the worker count exactly. Overrides everything below. |
-| `GUNICORN_MAX_WORKERS` | `4` | Upper bound on the automatically derived worker count. |
+| Variable               | Default   | Description                                                                               |
+|------------------------|-----------|-------------------------------------------------------------------------------------------|
+| `GUNICORN_WORKERS`     | *(unset)* | Pins the worker count exactly. Overrides the derived count and `GUNICORN_MAX_WORKERS`.    |
+| `GUNICORN_MAX_WORKERS` | `4`       | Upper bound on the automatically derived worker count.                                    |
+| `PORT`                 | `3000`    | Port the server binds to. A value outside 1-65535 fails startup rather than falling back. |
 
 When `GUNICORN_WORKERS` is unset, the worker count is derived from the CPUs actually available to the container (cgroup CPU limit, falling back to CPU affinity), clamped to between 2 and `GUNICORN_MAX_WORKERS`. Note that a CPU *request* without a *limit* leaves no cgroup quota to read, so the cap is what bounds the worker count there.
 

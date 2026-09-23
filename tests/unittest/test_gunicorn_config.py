@@ -12,6 +12,7 @@ def isolated_env(monkeypatch, tmp_path):
     """Detach every test from the host's env vars, CPU affinity, and real cgroup files."""
     monkeypatch.delenv("GUNICORN_WORKERS", raising=False)
     monkeypatch.delenv("GUNICORN_MAX_WORKERS", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
     monkeypatch.setattr(gunicorn_config.os, "sched_getaffinity", lambda pid: set(range(64)), raising=False)
     for attr in ("CGROUP_V2_CPU_MAX", "CGROUP_V1_CPU_QUOTA", "CGROUP_V1_CPU_PERIOD"):
         monkeypatch.setattr(gunicorn_config, attr, str(tmp_path / "missing"))
@@ -89,6 +90,30 @@ class TestAvailableCpus:
         monkeypatch.delattr(gunicorn_config.os, "sched_getaffinity", raising=False)
         monkeypatch.setattr(gunicorn_config.os, "cpu_count", lambda: None)
         assert gunicorn_config.available_cpus() == 1
+
+
+class TestPort:
+    def test_defaults_to_3000(self):
+        assert gunicorn_config._port() == gunicorn_config.DEFAULT_PORT
+
+    def test_honors_port_env(self, monkeypatch):
+        monkeypatch.setenv("PORT", "8080")
+        assert gunicorn_config._port() == 8080
+
+    def test_blank_port_is_ignored(self, monkeypatch):
+        monkeypatch.setenv("PORT", "")
+        assert gunicorn_config._port() == gunicorn_config.DEFAULT_PORT
+
+    @pytest.mark.parametrize("value", ["abc", "0", "-1", "8080.5", "70000"])
+    def test_unusable_port_is_rejected(self, monkeypatch, value):
+        monkeypatch.setenv("PORT", value)
+        with pytest.raises(ValueError):
+            gunicorn_config._port()
+
+    def test_module_level_bind_is_usable(self):
+        host, _, port = gunicorn_config.bind.rpartition(":")
+        assert host == "0.0.0.0"
+        assert 1 <= int(port) <= 65535
 
 
 class TestComputeWorkers:

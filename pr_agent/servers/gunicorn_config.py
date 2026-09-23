@@ -3,6 +3,20 @@ import os
 
 # Sample Gunicorn configuration file.
 
+
+def _env_int(name):
+    raw = os.getenv(name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1, got {value}")
+    return value
+
+
 #
 # Server socket
 #
@@ -21,8 +35,21 @@ import os
 #       range.
 #
 
+
+DEFAULT_PORT = 3000
+
+
+def _port():
+    port = _env_int('PORT')
+    if port is None:
+        return DEFAULT_PORT
+    if port > 65535:
+        raise ValueError(f"PORT must be <= 65535, got {port}")
+    return port
+
+
 # bind = '0.0.0.0:5000'
-bind = '0.0.0.0:3000'
+bind = f'0.0.0.0:{_port()}'
 backlog = 2048
 
 #
@@ -125,19 +152,6 @@ def available_cpus():
     if not limits:
         return 1
     return max(1, int(min(limits)))
-
-
-def _env_int(name):
-    raw = os.getenv(name)
-    if not raw:
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
-    if value < 1:
-        raise ValueError(f"{name} must be >= 1, got {value}")
-    return value
 
 
 def compute_workers():
@@ -316,7 +330,7 @@ def post_fork(server, worker):
     # The webhook apps call setup_logger() at import, which under `preload_app` now runs
     # in the master. When CONFIG.ANALYTICS_FOLDER is set that opens `pr-agent.<pid>.log`
     # named for the *master*, and every worker inherits the same descriptor. Re-running it
-    # here gives each worker its own file again. All three apps that use this config call
+    # here gives each worker its own file again. All four apps that use this config call
     # setup_logger identically, so repeating that call is enough.
     from pr_agent.config_loader import get_settings
     from pr_agent.log import LoggingFormat, setup_logger

@@ -232,9 +232,11 @@ async def root():
     return {"status": "ok"}
 
 
+app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+app.include_router(router)
+
+
 def start():
-    app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
-    app.include_router(router)
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "3000")))
 
 
