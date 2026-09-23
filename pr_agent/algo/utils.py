@@ -722,8 +722,13 @@ def load_large_diff(filename, new_file_content_str: str, original_file_content_s
         return ""
 
     try:
-        original_file_content_str = (original_file_content_str or "").rstrip() + "\n"
-        new_file_content_str = (new_file_content_str or "").rstrip() + "\n"
+        original_file_content_str = original_file_content_str or ""
+        new_file_content_str = new_file_content_str or ""
+        # Keep diff lines separated without stripping content or inventing empty-side lines.
+        if original_file_content_str and not original_file_content_str.endswith("\n"):
+            original_file_content_str += "\n"
+        if new_file_content_str and not new_file_content_str.endswith("\n"):
+            new_file_content_str += "\n"
         diff = difflib.unified_diff(original_file_content_str.splitlines(keepends=True),
                                     new_file_content_str.splitlines(keepends=True))
         if get_verbosity_level() >= 2 and show_warning:

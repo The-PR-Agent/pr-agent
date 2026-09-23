@@ -386,11 +386,11 @@ __old hunk__
                 if old_content_lines:
                     is_minus_lines = any([line.startswith('-') for line in old_content_lines])
                 if is_plus_lines or is_minus_lines: # notice 'True' here - we always present __new hunk__ for section, otherwise LLM gets confused
-                    patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__new hunk__\n'
+                    patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__new hunk__\n'
                     for i, line_new in enumerate(new_content_lines):
                         patch_with_lines_str += f"{start2 + i} {line_new}\n"
                 if is_minus_lines:
-                    patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__old hunk__\n'
+                    patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__old hunk__\n'
                     for line_old in old_content_lines:
                         patch_with_lines_str += f"{line_old}\n"
                 new_content_lines = []
@@ -427,15 +427,15 @@ __old hunk__
         if old_content_lines:
             is_minus_lines = any([line.startswith('-') for line in old_content_lines])
         if is_plus_lines or is_minus_lines:  # notice 'True' here - we always present __new hunk__ for section, otherwise LLM gets confused
-            patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__new hunk__\n'
+            patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__new hunk__\n'
             for i, line_new in enumerate(new_content_lines):
                 patch_with_lines_str += f"{start2 + i} {line_new}\n"
         if is_minus_lines:
-            patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__old hunk__\n'
+            patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__old hunk__\n'
             for line_old in old_content_lines:
                 patch_with_lines_str += f"{line_old}\n"
 
-    return patch_with_lines_str.rstrip()
+    return patch_with_lines_str.rstrip('\r\n')
 
 
 def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, side, remove_trailing_chars: bool = True) -> tuple[str, str]:
@@ -503,7 +503,7 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
         return "", ""
 
     if remove_trailing_chars:
-        patch_with_lines_str = patch_with_lines_str.rstrip()
-        selected_lines = selected_lines.rstrip()
+        patch_with_lines_str = patch_with_lines_str.rstrip('\r\n')
+        selected_lines = selected_lines.rstrip('\r\n')
 
     return patch_with_lines_str, selected_lines

@@ -1996,7 +1996,7 @@ class PRCodeSuggestions:
                 patches_diff_list = []
                 for patch_prompt in patches_diff_list_no_line_numbers:
                     file_prefix = "## File: "
-                    patches = patch_prompt.strip().split(f"\n{file_prefix}")
+                    patches = patch_prompt.strip("\r\n").split(f"\n{file_prefix}")
                     patches_new = copy.deepcopy(patches)
                     for i in range(len(patches_new)):
                         patch_body = patches_new[i].rstrip("\n")
@@ -2005,9 +2005,12 @@ class PRCodeSuggestions:
                         else:
                             prefix = file_prefix + patch_body.split("\n@@")[0]
                             prefix = prefix.strip()
-                        patches_new[i] = prefix + '\n\n' + decouple_and_convert_to_hunks_with_lines_numbers(patch_body,
-                                                                                                          file=None).strip()
-                        patches_new[i] = patches_new[i].strip()
+                        numbered_patch = decouple_and_convert_to_hunks_with_lines_numbers(
+                            patch_body,
+                            file=None,
+                        ).strip("\r\n")
+                        patches_new[i] = prefix + '\n\n' + numbered_patch
+                        patches_new[i] = patches_new[i].strip("\r\n")
                     patch_final = "\n\n\n".join(patches_new)
                     token_count = attempt_budget.count_tokens(patch_final)
                     if token_count > max_input_tokens:

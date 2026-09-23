@@ -84,6 +84,73 @@ def test_extended_diff_total_counts_the_rendered_join(add_line_numbers):
     assert total == handler.prompt_tokens + handler.count_tokens("\n".join(patches))
 
 
+@pytest.mark.parametrize("add_line_numbers", [False, True])
+@pytest.mark.parametrize("whitespace", ["  ", "\t"])
+def test_extended_diff_preserves_changed_trailing_whitespace(add_line_numbers, whitespace):
+    patch = f"@@ -1 +1 @@\n-value\n+value{whitespace}\n"
+    file = FilePatchInfo(
+        "value\n",
+        f"value{whitespace}\n",
+        patch,
+        "space.py",
+        edit_type=EDIT_TYPE.MODIFIED,
+    )
+    handler = CharacterTokenHandler(prompt_tokens=0)
+
+    patches, _, _ = pr_processing.pr_generate_extended_diff(
+        [{"files": [file]}], handler, add_line_numbers,
+    )
+
+    if add_line_numbers:
+        assert f"1 +value{whitespace}\n__old hunk__" in patches[0]
+    else:
+        assert f"+value{whitespace}\n" in patches[0]
+
+
+@pytest.mark.parametrize("convert_line_numbers", [False, True])
+def test_generate_full_patch_preserves_trailing_whitespace(convert_line_numbers):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    patch = "rendered  \n"
+    file_dict = {
+        "space.py": {
+            "patch": patch,
+            "tokens": handler.count_tokens(patch),
+            "edit_type": EDIT_TYPE.MODIFIED,
+        }
+    }
+
+    _, patches, remaining, included = pr_processing.generate_full_patch(
+        convert_line_numbers,
+        file_dict,
+        1_000,
+        ["space.py"],
+        handler,
+        hard_token_budget=1_000,
+    )
+
+    assert not remaining
+    assert included == ["space.py"]
+    assert "rendered  " in patches[0]
+
+
+def test_multi_diff_packing_preserves_trailing_whitespace_when_all_files_fit():
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    patch = "rendered  \n"
+    file_dict = {
+        "space.py": {
+            "patch": patch,
+            "tokens": handler.count_tokens(patch),
+            "edit_type": EDIT_TYPE.MODIFIED,
+        }
+    }
+
+    chunks = pr_processing._pack_pr_multi_diffs(
+        file_dict, handler, 1, False, token_budget=1_000,
+    )
+
+    assert chunks == ["rendered  "]
+
+
 @pytest.mark.parametrize("packing_path", ["single", "multi"])
 @pytest.mark.parametrize("add_line_numbers", [False, True])
 def test_fast_path_rejects_a_join_that_exceeds_the_reserved_limit(

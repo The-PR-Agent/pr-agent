@@ -190,6 +190,29 @@ async def test_convert_to_decoupled_preserves_quoted_file_headings_across_files(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("whitespace", ["  ", "\t"])
+async def test_convert_to_decoupled_preserves_final_line_whitespace(whitespace):
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    attempt_budget = SimpleNamespace(
+        available_tokens=MagicMock(return_value=1_000),
+        count_tokens=MagicMock(return_value=1),
+    )
+    patch_prompt = f"## File: 'app.py'\n\n@@ -0,0 +1 @@\n+value{whitespace}\n"
+
+    result = await tool.convert_to_decoupled_with_line_numbers(
+        [patch_prompt],
+        "model",
+        attempt_budget=attempt_budget,
+    )
+
+    assert len(result) == 1
+    assert "@@ -0,0 +1 @@" in result[0]
+    assert "__new hunk__" in result[0]
+    assert result[0].endswith(f"1 +value{whitespace}")
+
+
+@pytest.mark.asyncio
 async def test_convert_to_decoupled_uses_fallback_model_budget_and_tokenizer(monkeypatch):
     counted_models = []
     reserve_calls = []

@@ -691,6 +691,26 @@ class TestExtraInstructionsPromptRendering:
 # ---------------------------------------------------------------------------
 
 class TestResolveThreadsPromptRendering:
+    @pytest.mark.parametrize("whitespace", ["  ", "\t"])
+    def test_diff_payloads_preserve_trailing_whitespace(self, whitespace):
+        variables = {
+            "title": "test",
+            "branch": "main",
+            "full_hunk": f"@@ -1 +1 @@\n-old\n+new{whitespace}",
+            "selected_lines": f"+new{whitespace}",
+            "question": "why did this change?",
+            "conversation_history": "",
+            "resolve_threads": False,
+            "extra_instructions": "",
+        }
+
+        user_prompt = _render_jinja_template(
+            get_settings().pr_line_questions_prompt.user, variables
+        )
+
+        assert f"+new{whitespace}\n======" in user_prompt
+        assert user_prompt.count(f"+new{whitespace}\n======") == 2
+
     def test_resolve_threads_marker_instruction_included_when_enabled(self):
         variables = {
             "title": "test",
