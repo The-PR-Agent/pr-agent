@@ -8,7 +8,6 @@ import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
-from pr_agent.algo.pr_processing import pr_generate_extended_diff, retry_with_fallback_models
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -116,7 +115,7 @@ async def test_convert_to_decoupled_uses_normalized_diff_and_keeps_ai_summary():
     )
     try:
         get_settings().set("config.enable_ai_metadata", True)
-        patches, _, _ = pr_generate_extended_diff(
+        patches, _, _ = pr_processing.pr_generate_extended_diff(
             [{"language": "Python", "files": [file]}],
             token_handler,
             add_line_numbers_to_hunks=False,
@@ -158,7 +157,7 @@ async def test_convert_to_decoupled_preserves_quoted_file_headings_across_files(
             filename="second.py",
         ),
     )
-    patches, _, _ = pr_generate_extended_diff(
+    patches, _, _ = pr_processing.pr_generate_extended_diff(
         [{"language": "Python", "files": files}],
         token_handler,
         add_line_numbers_to_hunks=False,
@@ -639,7 +638,7 @@ async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail
         with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])):
             tool._get_prediction = fake_get_prediction
 
-            data = await retry_with_fallback_models(tool.prepare_prediction_main)
+            data = await pr_processing.retry_with_fallback_models(tool.prepare_prediction_main)
     finally:
         settings.pr_code_suggestions.decouple_hunks = original_decouple_hunks
         settings.pr_code_suggestions.parallel_calls = original_parallel_calls
@@ -1683,6 +1682,33 @@ async def test_publish_no_suggestions_qualifies_omitted_files(publish_output_no_
     body = git_provider.publish_comment.call_args.args[0]
     assert "No code suggestions found in the successfully analyzed chunks." in body
     assert "unreviewed.py" in body
+
+
+@pytest.mark.parametrize(("filename", "rendered_name"), [
+    ("app`[@org/team](https://example.invalid).py", "``app`[@org/team](https://example.invalid).py``"),
+    ("line\n@org/team.py", "`line\\n@org/team.py`"),
+    ("`edge`.py", "`` `edge`.py ``"),
+])
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_escapes_omitted_filenames(
+    publish_output_no_suggestions, filename, rendered_name,
+):
+    publish_output_no_suggestions(True)
+    snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
+    git_provider = MagicMock()
+    git_provider.supports_code_suggestions_artifact.return_value = False
+    tool = _make_tool(git_provider)
+    tool.remaining_files_list = [filename]
+
+    try:
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        await tool.publish_no_suggestions()
+    finally:
+        restore_settings(snapshot)
+
+    body = git_provider.publish_comment.call_args.args[0]
+    assert rendered_name in body
+    assert "\n@org/team.py" not in body
 
 
 @pytest.mark.asyncio

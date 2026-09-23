@@ -70,6 +70,15 @@ def get_dual_publishing_score_threshold() -> int:
     return _as_threshold("pr_code_suggestions.dual_publishing_score_threshold", 0, 0)
 
 
+def _markdown_code_span(text: str) -> str:
+    """Keep repository-controlled filenames inside one Markdown code span."""
+    text = text.replace("\r", "\\r").replace("\n", "\\n")
+    delimiter = "`" * (max((len(run.group()) for run in re.finditer(r"`+", text)), default=0) + 1)
+    if text.startswith(("`", " ")) or text.endswith(("`", " ")):
+        text = f" {text} "
+    return f"{delimiter}{text}{delimiter}"
+
+
 def render_suggestions_markdown(data: dict) -> str:
     """Render the suggestions as plain markdown, for a sink that is not a git provider.
 
@@ -492,7 +501,7 @@ class PRCodeSuggestions:
             details.append(f"{failed_chunk_count} of {total_chunk_count} analysis chunks failed; {coverage_detail}")
         if remaining_files:
             displayed_files = remaining_files[:50]
-            file_list = ", ".join(f"`{name}`" for name in displayed_files)
+            file_list = ", ".join(_markdown_code_span(name) for name in displayed_files)
             extra_count = len(remaining_files) - len(displayed_files)
             if extra_count:
                 file_list += f", and {extra_count} more"
