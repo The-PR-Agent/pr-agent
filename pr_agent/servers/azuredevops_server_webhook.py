@@ -259,7 +259,7 @@ async def handle_request_azure(data, log_context):
                     status_code=status.HTTP_400_BAD_REQUEST,
                     content=json.dumps(
                         {"message": "version 1.0 webhook for Azure Devops PR comment is not supported. "
-                                    "Please upgrade to version 2.0"})),
+                                    "please upgrade to version 2.0"})),
         else:
             return JSONResponse(
                 status_code=status.HTTP_204_NO_CONTENT,
