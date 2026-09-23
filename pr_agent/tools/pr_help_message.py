@@ -582,6 +582,8 @@ class PRHelpMessage:
                     self.git_provider.publish_comment(pr_comment)
         except Exception as e:
             get_logger().exception(f"Error while running PRHelpMessage: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
         return ""
 
 

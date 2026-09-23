@@ -105,6 +105,7 @@ def non_openai_question_settings():
     keys = [
         "config.model",
         "config.fallback_models",
+        "config.propagate_tool_errors",
         "model_routing.enable",
         "openai.key",
         "openai.deployment_id",
@@ -142,13 +143,21 @@ async def test_question_reaches_configured_handler_without_openai_key(
     assert "requires an OpenAI API key" not in tool.git_provider.published[0]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
 async def test_question_uses_configured_handler_error_path_without_openai_key(
-    published_output, non_openai_question_settings, tmp_path, monkeypatch
+    published_output, non_openai_question_settings, tmp_path, monkeypatch, propagate_tool_errors
 ):
+    get_settings().set("config.propagate_tool_errors", propagate_tool_errors)
     handler = StubAiHandler(error=RuntimeError("provider credentials missing"))
     tool = build_question_tool(tmp_path, monkeypatch, handler)
 
-    await tool.run()
+    if propagate_tool_errors:
+        with pytest.raises(Exception, match="Failed to generate prediction with any model") as exc_info:
+            await tool.run()
+        assert exc_info.value.__cause__ is handler.error
+    else:
+        assert await tool.run() == ""
 
     assert [call["model"] for call in handler.calls] == ["anthropic/claude-3-5-sonnet-20240620"]
     assert tool.git_provider.published == []

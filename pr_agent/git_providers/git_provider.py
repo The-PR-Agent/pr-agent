@@ -204,6 +204,16 @@ class GitProvider(ABC):
         """Return whether `publish_code_suggestions()` writes a standalone output artifact."""
         return False
 
+    def supports_comment_publish_confirmation(self) -> bool:
+        """Return whether `publish_comment()` returns a comment object on success.
+
+        Providers that return a comment object on success and `None` on a permanent
+        publication failure report `True`. Providers that publish to local sinks
+        (e.g. gerrit, local git, plain-diff) return `None` even after a successful
+        publish and report `False`, so callers normalize a `None` return accordingly.
+        """
+        return True
+
     def publish_code_suggestions_artifact(
             self, code_suggestions: list, artifact_footer: str = "",
             no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:

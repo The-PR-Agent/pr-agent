@@ -222,6 +222,41 @@ def test_incremental_membership_uses_all_pages(provider_factory):
     assert set(provider.unreviewed_files_map) == {"a.py", "b.py"}
 
 
+@pytest.mark.parametrize("compare_result", [
+    {"compare_timeout": True, "diffs": [_change("a.py")]},
+    SimpleNamespace(compare_timeout=True, diffs=[]),
+])
+def test_incremental_timeout_falls_back_to_full_collection(provider_factory, compare_result):
+    provider, _ = provider_factory(_pages([_change("a.py")], [_change("b.py")]))
+    _prepare_incremental(provider)
+    provider.gl.projects.get.return_value.repository_compare.return_value = compare_result
+    provider.git_files = ["stale.py"]
+    provider.diff_files = [object()]
+    provider.unreviewed_files_map = {"stale.py": _change("stale.py")}
+
+    provider._get_incremental_commits()
+
+    assert provider.incremental.is_incremental is False
+    assert provider.git_files is None and provider.diff_files is None
+    assert provider.unreviewed_files_map == {}
+    assert [file.filename for file in provider.get_diff_files()] == ["a.py", "b.py"]
+    provider.get_pr_file_content.assert_has_calls([call("a.py", "base"), call("a.py", "head")])
+
+
+def test_incremental_timeout_does_not_hide_incomplete_full_collection(provider_factory):
+    provider, _ = provider_factory([(200, [_change("a.py")], {})], "2")
+    _prepare_incremental(provider)
+    provider.gl.projects.get.return_value.repository_compare.return_value = {"compare_timeout": True, "diffs": []}
+
+    provider._get_incremental_commits()
+
+    with pytest.raises(IncompleteGitLabDiffError):
+        provider.get_diff_files()
+    assert provider.git_files is None and provider.diff_files is None
+    assert provider.unreviewed_files_map == {}
+    provider.get_pr_file_content.assert_not_called()
+
+
 def test_incremental_filter_propagates_known_incomplete_response(provider_factory):
     provider, _ = provider_factory([(200, [_change("a.py")], {})], "2")
     _prepare_incremental(provider)

@@ -7,10 +7,12 @@ from graphlib import TopologicalSorter
 from typing import List, Tuple
 
 import yaml
+from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.comment_identity import PRDescriptionHeader
+from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     get_pr_diff,
@@ -673,6 +675,7 @@ class PRDescription:
     def _prepare_data(self):
         # Load the AI prediction data into a dictionary
         self.data = load_yaml(self.prediction.strip(), keys_fix_yaml=self.keys_fix)
+        self._validate_description_schema(self.data)
 
         if get_settings().pr_description.add_original_user_description and self.user_description:
             self.data["User Description"] = self.user_description
@@ -699,6 +702,21 @@ class PRDescription:
                 )
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
+
+    @staticmethod
+    def _validate_description_schema(data: object) -> bool:
+        try:
+            PRDescriptionAssembled.model_validate(data)
+        except ValidationError as error:
+            first_error = error.errors()[0]
+            field_path = ".".join(str(part) for part in first_error.get("loc", ())) or "$"
+            value = None if first_error.get("type") == "missing" else first_error.get("input")
+            get_logger().warning(
+                "Description output failed schema validation",
+                artifact={"field": field_path, "value": value},
+            )
+            return False
+        return True
 
     def _prepare_labels(self) -> List[str]:
         pr_labels = []

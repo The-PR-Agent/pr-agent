@@ -171,10 +171,16 @@ def test_misplaced_output_abbreviation_must_be_unambiguous():
     assert _resolve_output_option(parser, "--output=value") == "--output"
 
 
-def test_missing_diff_file_fails_fast(tmp_path, capsys):
+def test_missing_diff_file_fails_fast(tmp_path, monkeypatch, capsys):
     """A non-existent --diff-file must exit cleanly via parser.error (SystemExit)
     with a clear message, not crash with an uncaught OSError traceback."""
     missing = tmp_path / "does-not-exist.diff"
+
+    def fail_if_entered():
+        pytest.fail("missing diff-file errors must not enter the settings scope")
+
+    monkeypatch.setattr("pr_agent.cli._cli_settings_scope", fail_if_entered)
+
     with pytest.raises(SystemExit):
         run(inargs=["--diff-file", str(missing), "review"])
     err = capsys.readouterr().err
