@@ -15,9 +15,15 @@ import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 
 # What breaks at runtime when each guarded LiteLLM symbol goes missing.
 _CLOUD_AUTH_GUARDED = {
-    "AnthropicModelInfo": "Anthropic API-key/auth-token resolution returns None and Claude calls lose their auth headers",
-    "JSONProviderRegistry": "openai-compatible provider registry (list_providers/get) is unavailable, breaking the JSON provider path",
-    "_get_model_info_helper": "model-info lookup trips the runtime guard RuntimeError, breaking model fallback and capability checks",
+    "AnthropicModelInfo": (
+        "Anthropic API-key/auth-token resolution returns None and Claude calls lose their auth headers"
+    ),
+    "JSONProviderRegistry": (
+        "openai-compatible provider registry (list_providers/get) is unavailable, breaking the JSON provider path"
+    ),
+    "_get_model_info_helper": (
+        "model-info lookup trips the runtime guard RuntimeError, breaking model fallback and capability checks"
+    ),
     "BedrockMantleAuthMixin": "Bedrock Mantle request signing is skipped and Bedrock calls lose their auth signature",
 }
 
