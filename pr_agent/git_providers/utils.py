@@ -12,6 +12,7 @@ from urllib.request import Request, url2pathname, urlopen
 
 from dynaconf import Dynaconf
 from dynaconf.loaders import env_loader
+from jinja2.exceptions import SecurityError
 from starlette_context import context
 
 from pr_agent.config_loader import get_settings
@@ -38,6 +39,19 @@ _PER_DIRECTORY_SETTINGS_AGGREGATE_BYTES = 5 * 1024 * 1024
 # Bare Windows drive-letter paths (e.g. "C:\\shared.toml", "D:/cfg.toml").
 # urlparse() would otherwise interpret the drive letter as a URL scheme.
 _WINDOWS_DRIVE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _safe_configuration_error(error: Exception) -> str:
+    """Summarize configuration failures without exposing repository-controlled details."""
+    if isinstance(error, tomllib.TOMLDecodeError):
+        line = getattr(error, "lineno", None)
+        column = getattr(error, "colno", None)
+        if isinstance(line, int) and isinstance(column, int):
+            return f"TOML syntax error at line {line}, column {column}."
+        return "TOML syntax error."
+    if isinstance(error, SecurityError):
+        return "Configuration security validation failed."
+    return "Configuration could not be applied due to an internal error."
 
 
 def _safe_url_for_log(url: str) -> str:
@@ -311,8 +325,9 @@ def apply_repo_settings(pr_url):
                 try:
                     _apply_repo_settings_file(repo_settings_file, repo_settings_scope="per_directory")
                 except Exception as e:
-                    get_logger().warning(f"Failed to apply per-directory settings {category}, error: {str(e)}")
-                    config_errors.append({'error': str(e), 'settings': settings_content, 'category': category})
+                    safe_error = _safe_configuration_error(e)
+                    get_logger().warning(f"Failed to apply per-directory settings {category}: {safe_error}")
+                    config_errors.append({'error': safe_error, 'settings': settings_content, 'category': category})
 
             if config_errors:
                 handle_configurations_errors(config_errors, git_provider)
