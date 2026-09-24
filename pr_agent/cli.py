@@ -13,7 +13,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
-from pr_agent.algo.artifacts import inject_artifact_context
+from pr_agent.algo.artifacts import artifact_context_scope, inject_artifact_context
 from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
@@ -196,7 +196,7 @@ def run(inargs=None, args=None):
         parser.print_help()
         return
 
-    with _cli_settings_scope():
+    with _cli_settings_scope(), artifact_context_scope():
         if diff_mode:
             get_settings().set("config.git_provider", "plain-diff")
             get_settings().set("plain_diff.content", diff_content)

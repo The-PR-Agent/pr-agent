@@ -13,6 +13,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
+from pr_agent.algo.artifacts import artifact_context_scope
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
@@ -171,6 +172,11 @@ async def _run_review_commands(event_payload):
 
 
 async def run_action():
+    with artifact_context_scope(get_settings()):
+        await _run_action()
+
+
+async def _run_action():
     # Get environment variables
     GITHUB_EVENT_NAME = os.environ.get('GITHUB_EVENT_NAME')
     GITHUB_EVENT_PATH = os.environ.get('GITHUB_EVENT_PATH')

@@ -10,6 +10,7 @@ from starlette_context import context, request_cycle_context
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.artifacts import reapply_artifact_context
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.algo.comment_identity import add_comment_identity, comment_matches_identity
 from pr_agent.algo.utils import update_settings_from_args
@@ -371,6 +372,8 @@ class PRAgent:
             if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
                 span.set_attribute("error.message", f"Unknown command: {action}")
             return False
+
+        reapply_artifact_context()
 
         # Only after validation: an unknown action is arbitrary user input and
         # must not become a span name, span attribute, or metric label.
