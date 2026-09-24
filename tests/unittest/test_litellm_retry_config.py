@@ -8,6 +8,7 @@ an escaping ValueError would be wrapped and retried as an API error.
 """
 
 import httpx
+import litellm
 import openai
 import pytest
 
@@ -60,6 +61,27 @@ class TestShouldRetrySameModel:
 
     def test_other_api_errors_still_retry(self):
         assert _should_retry_same_model(_api_error()) is True
+
+    @pytest.mark.parametrize("error_type,status", [
+        (openai.BadRequestError, 400),
+        (openai.UnprocessableEntityError, 422),
+    ])
+    def test_request_validation_errors_do_not_retry(self, error_type, status):
+        error = error_type(
+            "invalid request",
+            response=httpx.Response(status, request=httpx.Request("POST", "http://model.invalid")),
+            body=None,
+        )
+        assert _should_retry_same_model(error) is False
+
+    @pytest.mark.parametrize("error_type", [
+        litellm.BadRequestError,
+        litellm.ContextWindowExceededError,
+        litellm.ContentPolicyViolationError,
+    ])
+    def test_litellm_bad_request_subtypes_do_not_retry(self, error_type):
+        error = error_type("rejected request", model="gpt-4o", llm_provider="openai")
+        assert _should_retry_same_model(error) is False
 
     def test_non_api_errors_never_retry(self):
         assert _should_retry_same_model(ValueError("not an API error")) is False

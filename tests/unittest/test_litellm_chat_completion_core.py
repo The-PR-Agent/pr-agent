@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import litellm
 import openai
 import pytest
 
@@ -611,6 +612,54 @@ async def test_chat_completion_keeps_image_for_custom_reasoning_models(monkeypat
 
 def _timeout_error():
     return openai.APITimeoutError(request=httpx.Request("POST", "http://model.invalid"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error, expected_attempts",
+    [
+        pytest.param(
+            openai.BadRequestError(
+                "invalid request",
+                response=httpx.Response(400, request=httpx.Request("POST", "http://model.invalid")),
+                body=None,
+            ),
+            1,
+            id="bad-request",
+        ),
+        pytest.param(
+            openai.UnprocessableEntityError(
+                "invalid request",
+                response=httpx.Response(422, request=httpx.Request("POST", "http://model.invalid")),
+                body=None,
+            ),
+            1,
+            id="unprocessable-entity",
+        ),
+        pytest.param(
+            litellm.ContextWindowExceededError("context too long", model="gpt-4o", llm_provider="openai"),
+            1,
+            id="litellm-context-window",
+        ),
+        pytest.param(
+            openai.APIError("temporary failure", request=httpx.Request("POST", "http://model.invalid"), body=None),
+            litellm_handler.MODEL_RETRIES,
+            id="generic-api-error",
+        ),
+    ],
+)
+async def test_chat_completion_retry_classification(monkeypatch, error, expected_attempts):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = error
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        with pytest.raises(type(error)) as raised:
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert raised.value is error
+    assert mock_call.call_count == expected_attempts
 
 
 @pytest.mark.asyncio

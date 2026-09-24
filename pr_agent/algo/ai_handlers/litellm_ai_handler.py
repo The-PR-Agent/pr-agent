@@ -258,8 +258,9 @@ def _should_retry_same_model(exc: BaseException) -> bool:
 
     With config.retry_same_model_on_timeout set to false, a timed-out call is handed to the
     fallback-models loop instead of being replayed on the model that just missed the deadline.
+    Request validation errors also surface immediately rather than replaying the same request.
     """
-    if isinstance(exc, openai.RateLimitError):
+    if isinstance(exc, (openai.RateLimitError, openai.BadRequestError, openai.UnprocessableEntityError)):
         return False
     if isinstance(exc, openai.APITimeoutError):
         return _as_bool(get_settings().config.get("retry_same_model_on_timeout", True), default=True)
