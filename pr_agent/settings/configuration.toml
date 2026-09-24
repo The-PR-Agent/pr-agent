@@ -108,6 +108,16 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 # providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom
 # model id now surfaces a provider-side error instead of the previous silent drop.
 additional_reasoning_effort_models = []
+# Optional: model IDs that must never receive the temperature parameter, on top of
+# what litellm's parameter metadata reports. Temperature support is otherwise decided
+# by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID
+# here when litellm reports temperature as supported but the provider rejects it, or
+# when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking
+# Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature.
+# Model IDs match exactly or through any provider prefix. The defaults below preserve
+# the former static registry entries that litellm's metadata still marks
+# temperature-capable; the probe diff for this change is posted on the issue.
+no_temperature_models = ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o1-preview", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"]
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
@@ -234,7 +244,7 @@ enable_chat_text=false
 persistent_comment=true
 max_history_len=4
 publish_output_no_suggestions=true
-enable_suggestions_coverage_footer=true # show when failed analysis chunks make the suggestions incomplete
+enable_suggestions_coverage_footer=true # show failed chunks and files omitted by the token or AI-call budget
 # suggestions scoring
 suggestions_score_threshold=0 # [0-10]| recommend not to set this value above 8, since above it may clip highly relevant suggestions
 new_score_mechanism=true

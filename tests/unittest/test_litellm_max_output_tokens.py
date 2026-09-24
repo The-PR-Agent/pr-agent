@@ -147,7 +147,7 @@ class TestMaxOutputTokens:
 
     @pytest.mark.asyncio
     async def test_extended_thinking_limit_stays_authoritative(self, monkeypatch):
-        kwargs, exposed_limit = await _run(monkeypatch, "claude-3-7-sonnet-20250219", {
+        kwargs, exposed_limit = await _run(monkeypatch, "claude-sonnet-4-6", {
             "max_output_tokens": 16000,
             "enable_claude_extended_thinking": True,
             "extended_thinking_budget_tokens": 2048,
@@ -278,7 +278,7 @@ class TestMaxOutputTokens:
 
     @pytest.mark.asyncio
     async def test_openrouter_limit_caps_extended_thinking_limit(self, monkeypatch):
-        model = "openrouter/anthropic/claude-3-7-sonnet-20250219"
+        model = "openrouter/anthropic/claude-sonnet-4-6"
         kwargs, exposed_limit = await _run(
             monkeypatch,
             model,
@@ -342,7 +342,7 @@ class TestMaxOutputTokens:
 
     @pytest.mark.asyncio
     async def test_extended_thinking_limit_is_snapshotted_for_accessor_and_request(self, monkeypatch):
-        model = "claude-3-7-sonnet-20250219"
+        model = "claude-sonnet-4-6"
         config_values = {
             "enable_claude_extended_thinking": True,
             "extended_thinking_budget_tokens": 1024,
