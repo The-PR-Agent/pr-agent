@@ -184,3 +184,33 @@ foo = "X-FROM-REPO-A"
             git_utils.apply_repo_settings("https://git.example/projects/B/repos/b/pull-requests/1")
             assert get_settings().get("my_custom_repo_section.foo") is None, \
                 "repo A's [my_custom_repo_section] leaked into repo B"
+
+
+    def test_configuration_errors_do_not_echo_repository_secrets(self, fresh_global_settings, monkeypatch):
+        """Invalid repository TOML must never expose its raw contents in a PR comment."""
+        secret = "SUPER-SECRET-REPO-TOKEN-123"
+        repo_toml = f"""
+[pr_reviewer]
+extra_instructions = "{secret}"
+""".encode()
+        published = []
+
+        class ErrorCapturingProvider(FakeGitProvider):
+            def publish_persistent_comment(self, body, **kwargs):
+                published.append(body)
+
+            def is_supported(self, feature):
+                return True
+
+        provider = ErrorCapturingProvider(repo_toml)
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            git_utils.handle_configurations_errors(
+                [{"error": f"invalid TOML containing {secret}", "settings": repo_toml, "category": "local"}],
+                provider,
+            )
+
+        assert published
+        assert secret not in published[0]
+        assert repo_toml.decode() not in published[0]
+        assert "Configuration content omitted" in published[0]
