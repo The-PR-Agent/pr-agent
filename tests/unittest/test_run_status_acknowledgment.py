@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from requests.exceptions import RequestException
 
 import pr_agent.servers.github_app as github_app
 from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
@@ -132,7 +133,7 @@ def test_start_check_run_without_a_commit_sha_reports_failure():
 
 def test_start_check_run_survives_an_api_failure():
     provider = _github()
-    provider.pr._requester.requestJsonAndCheck.side_effect = RuntimeError("boom")
+    provider.pr._requester.requestJsonAndCheck.side_effect = RequestException("boom")
 
     assert provider.start_check_run("review", "working") is False
     assert provider._check_runs_in_progress == set()

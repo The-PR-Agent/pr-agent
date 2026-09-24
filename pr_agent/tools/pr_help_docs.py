@@ -9,8 +9,8 @@ from jinja2 import Environment, StrictUndefined
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import retry_with_fallback_models
-from pr_agent.algo.token_budget import clip_tokens, get_max_tokens
+from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, retry_with_fallback_models
+from pr_agent.algo.token_budget import AttemptTokenBudget, FittedPrompt, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.config_loader import get_settings
@@ -314,15 +314,41 @@ def clean_markdown_content(content: str) -> str:
 
 class PredictionPreparator:
     def __init__(self, ai_handler, vars, system_prompt, user_prompt):
+        self.ai_handler = ai_handler
+        self._vars = copy.deepcopy(vars)
+        self._system_prompt = system_prompt
+        self._user_prompt = user_prompt
         try:
-            self.ai_handler = ai_handler
-            variables = copy.deepcopy(vars)
             environment = Environment(undefined=StrictUndefined)
-            self.system_prompt = environment.from_string(system_prompt).render(variables)
-            self.user_prompt = environment.from_string(user_prompt).render(variables)
+            environment.from_string(system_prompt).render(self._vars)
+            environment.from_string(user_prompt).render(self._vars)
         except Exception:
             get_logger().exception("Caught exception during init. Setting ai_handler to None to prevent __call__.")
             self.ai_handler = None
+
+    def _fit_snippets_for_model(self, model: str) -> FittedPrompt:
+        # Size the documentation text against the exact request that will be
+        # dispatched: the model context minus the output reserve and the fixed
+        # rendered system/user prompt. Each fallback model is fit independently,
+        # so a smaller model never retries an over-budget prompt.
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            None,
+            self._vars,
+            self._system_prompt,
+            self._user_prompt,
+            ai_handler=self.ai_handler,
+            output_token_reserve=getattr(self.ai_handler, "get_output_token_reserve", None),
+            ignore_max_model_tokens=True,
+        )
+        return budget.fit_prompt_variable(
+            self._vars,
+            "snippets",
+            self._vars.get("snippets", ""),
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
 
     #Called by retry_with_fallback_models and therefore, on any failure must throw an exception:
     async def __call__(self, model: str) -> str:
@@ -330,15 +356,14 @@ class PredictionPreparator:
             get_logger().error("ai handler not set. Cannot invoke model!")
             raise ValueError("PredictionPreparator not initialized")
         try:
+            fitted = self._fit_snippets_for_model(model)
             response, finish_reason = await self.ai_handler.chat_completion(
                 model=model, temperature=get_settings().config.temperature,
-                system=self.system_prompt, user=self.user_prompt)
+                system=fitted.system_prompt, user=fitted.user_prompt)
             return response
         except Exception as e:
             get_logger().exception(
-                "Caught exception during prediction.",
-                artifacts={'system': self.system_prompt, 'user': self.user_prompt}
-            )
+                "Caught exception during prediction.", artifacts={'model': model})
             raise e
 
 
@@ -568,6 +593,30 @@ class PRHelpDocs(object):
             get_logger().exception("Unexpected exception thrown. Returning empty dict.")
             return {}
 
+    def _docs_input_token_limit(self) -> int:
+        """Verified input budget that the documentation text alone may occupy.
+
+        The rendered system and user prompts (with empty snippets) are measured
+        as the fixed overhead, so the dispatched request never exceeds the model
+        context once the docs are fitted inside this limit.
+        """
+        attempt_vars = dict(self.vars)
+        attempt_vars["snippets"] = ""
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            get_settings().config.model,
+            None,
+            attempt_vars,
+            get_settings().pr_help_docs_prompts.system,
+            get_settings().pr_help_docs_prompts.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=getattr(self.ai_handler, "get_output_token_reserve", None),
+            ignore_max_model_tokens=True,
+        )
+        return budget.available_tokens(
+            OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+
     def _trim_docs_input(self, docs_input: str, max_allowed_txt_input: int,
                      only_return_if_trim_needed=False) -> bool | str:
         try:
@@ -581,21 +630,20 @@ class PRHelpDocs(object):
             # Then, count the tokens in the prompt. If the count exceeds the limit, trim the text.
             token_count = self.token_handler.count_tokens(docs_input, force_accurate=True)
             get_logger().debug(f"Estimated token count of documentation to send to model: {token_count}")
-            # take the actual max tokens, without any reductions. we do aim to get
-            # the full documentation website in the prompt
-            max_tokens_full = get_max_tokens(get_settings().config.model, ignore_max_model_tokens=True)
-            # Elbow room to reduce chance of exceeding token limit or model paying less attention to prompt guidelines.
-            delta_output = 5000
-            if token_count > max_tokens_full - delta_output:
+            # Size against the verified request budget instead of a hard-coded
+            # margin: the model context minus the output reserve and the fixed
+            # system/user prompt overhead.
+            input_limit = self._docs_input_token_limit()
+            if token_count > input_limit:
                 if only_return_if_trim_needed:
                     return True
                 docs_input = clean_markdown_content(
                     docs_input)  # Reduce unnecessary text/images/etc.
                 get_logger().info(
-                    f"Token count {token_count} exceeds the limit {max_tokens_full - delta_output}."
+                    f"Token count {token_count} exceeds the input limit {input_limit}."
                     f" Attempting to clip text to fit within the limit...")
-                docs_input = clip_tokens(docs_input, max_tokens_full - delta_output,
-                                                           num_input_tokens=token_count)
+                docs_input = clip_tokens(docs_input, input_limit,
+                                                   num_input_tokens=token_count)
             if only_return_if_trim_needed:
                 return False
             return docs_input

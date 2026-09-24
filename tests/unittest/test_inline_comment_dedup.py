@@ -632,6 +632,42 @@ def test_github_fallback_republish_marks_and_does_not_filter():
     assert "<!-- pr-agent-dedup:" in published[0]["body"]
 
 
+def test_github_truncated_fallback_keeps_the_original_dedup_markers():
+    # The 422 fallback truncates a suggestion at its code fence; the dedup markers
+    # appended after the block must survive so the next run still recognises the
+    # full suggestion instead of posting a one-line duplicate on every run.
+    original = "**Suggestion:** use the helper\n```suggestion\nx = 1\n```"
+    body_fp = d.body_fingerprint("a.py", 1, original)
+    code_fp = d.code_fingerprint("a.py", 1, original)
+    marked = d.body_with_markers(original, body_fp, code_fp)
+    provider = GithubProvider.__new__(GithubProvider)
+
+    fixed = provider._try_fix_invalid_inline_comments([{"path": "a.py", "line": 1, "body": marked}])
+
+    assert len(fixed) == 1
+    assert "```suggestion" not in fixed[0]["body"]
+    assert "x = 1" not in fixed[0]["body"]
+    fps = d.marker_fingerprints(fixed[0]["body"])
+    assert body_fp in fps
+    assert code_fp in fps
+
+
+def test_github_truncated_fallback_comment_suppresses_the_next_run():
+    # Simulate the next run scanning a posted one-liner: the preserved markers
+    # must make the store treat the full original suggestion as already posted.
+    original = "**Suggestion:** use the helper\n```suggestion\nx = 1\n```"
+    body_fp = d.body_fingerprint("a.py", 1, original)
+    code_fp = d.code_fingerprint("a.py", 1, original)
+    marked = d.body_with_markers(original, body_fp, code_fp)
+    provider = GithubProvider.__new__(GithubProvider)
+    fixed = provider._try_fix_invalid_inline_comments([{"path": "a.py", "line": 1, "body": marked}])[0]
+
+    store = d.InlineCommentStore(_gh_provider([]))
+    store.add_body(fixed["body"])  # scan of the existing comment on the next run
+    assert store.seen(body_fp)
+    assert store.seen(code_fp)
+
+
 def test_code_fingerprint_is_case_sensitive():
     fp_lower = d.code_fingerprint("f.py", 1, "x\n```suggestion\nuserId = 1\n```")
     fp_upper = d.code_fingerprint("f.py", 1, "x\n```suggestion\nUSERID = 1\n```")

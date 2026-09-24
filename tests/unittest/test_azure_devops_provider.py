@@ -437,6 +437,17 @@ class TestAzureDevopsProviderFiles:
         assert diff_files[0].base_file == "old content\n"
         assert any("/src/app.py" in message and "head-sha" in message for message in captured)
 
+    @pytest.mark.parametrize("whitespace", ["  ", "\t"])
+    def test_get_diff_files_preserves_final_line_whitespace(self, whitespace):
+        provider = self._provider_with_pull_request_diff(
+            SimpleNamespace(content=f"value{whitespace}\n"),
+            SimpleNamespace(content="value\n"),
+        )
+
+        diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.patch.endswith(f"+value{whitespace}")
+
     def test_get_diff_files_keeps_file_when_original_content_fetch_fails(self):
         provider = self._provider_with_pull_request_diff(
             SimpleNamespace(content="new content\n"),

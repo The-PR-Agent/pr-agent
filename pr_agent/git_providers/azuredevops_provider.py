@@ -1065,7 +1065,7 @@ class AzureDevopsProvider(GitProvider):
 
                 patch = load_large_diff(
                     file, new_file_content_str, original_file_content_str, show_warning=False
-                ).rstrip()
+                ).rstrip("\r\n")
                 if incremental_active:
                     self.unreviewed_files_map[file] = patch
 

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 import pr_agent.algo.comment_identity as _ci
 from pr_agent.algo.git_patch_processing import (
+    NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
     to_hunk_only_patch,
@@ -750,8 +751,13 @@ def load_large_diff(filename, new_file_content_str: str,
         return ""
 
     try:
-        original_file_content_str = (original_file_content_str or "").rstrip() + "\n"
-        new_file_content_str = (new_file_content_str or "").rstrip() + "\n"
+        original_file_content_str = original_file_content_str or ""
+        new_file_content_str = new_file_content_str or ""
+        # Keep diff lines separated without stripping content or inventing empty-side lines.
+        if original_file_content_str and not original_file_content_str.endswith("\n"):
+            original_file_content_str += "\n"
+        if new_file_content_str and not new_file_content_str.endswith("\n"):
+            new_file_content_str += "\n"
         diff = difflib.unified_diff(original_file_content_str.splitlines(keepends=True),
                                     new_file_content_str.splitlines(keepends=True))
         if get_verbosity_level() >= 2 and show_warning:
@@ -1263,6 +1269,8 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
             if absolute_position != -1: # matching absolute to relative
                 skip_hunk = False
                 for i, line in enumerate(patch_lines):
+                    if line == NO_NEWLINE_AT_EOF_MARKER:
+                        continue
                     # new hunk
                     if line.startswith('@@'):
                         delta = 0
@@ -1294,8 +1302,9 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                 continue
             else:
                 # try to find the line in the patch using difflib, with some margin of error
+                fuzzy_match_candidates = [line for line in patch_lines if line != NO_NEWLINE_AT_EOF_MARKER]
                 matches_difflib: list[str | Any] = difflib.get_close_matches(relevant_line_in_file,
-                                                                             patch_lines, n=3, cutoff=0.93)
+                                                                             fuzzy_match_candidates, n=3, cutoff=0.93)
                 if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
                     relevant_line_in_file = matches_difflib[0]
 
@@ -1305,6 +1314,8 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     scan_start2 = 0
                     skip_hunk = False
                     for i, line in enumerate(patch_lines):
+                        if line == NO_NEWLINE_AT_EOF_MARKER:
+                            continue
                         if line.startswith('@@'):
                             scan_delta = 0
                             header_match = re_hunk_header.match(line)
@@ -1335,6 +1346,8 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     no_plus_line = relevant_line_in_file[1:].lstrip()
                     skip_hunk = False
                     for i, line in enumerate(patch_lines):
+                        if line == NO_NEWLINE_AT_EOF_MARKER:
+                            continue
                         if line.startswith('@@'):
                             delta = 0
                             match = re_hunk_header.match(line)

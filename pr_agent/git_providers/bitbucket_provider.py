@@ -405,7 +405,12 @@ class BitbucketProvider(GitProvider):
         try:
             comment = self._get_cloud_comment(comment)
             body = self.limit_output_characters(body, self.max_comment_length)
-            comment.update(content={"raw": body})
+            if isinstance(comment, dict):
+                # publish_comment returns the raw API payload rather than a client object, so
+                # dict.update would only rewrite the local copy and never reach Bitbucket.
+                self.pr.put(f"comments/{comment['id']}", data={"content": {"raw": body}})
+            else:
+                comment.update(content={"raw": body})
             return True
         except Exception as e:
             get_logger().exception(f"Failed to update comment, error: {e}")

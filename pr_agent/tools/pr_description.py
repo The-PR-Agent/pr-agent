@@ -44,6 +44,19 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 MAX_DESCRIPTION_COVERAGE_FILES = 50
 
 
+def _build_unprocessed_files_block(file_list: list, label: str, max_files: int = 50) -> str:
+    """Render the trailer listing files not covered by the budget: list up to
+    ``max_files`` paths, then close with the exact count of the ones omitted."""
+    block = f"\n\n{label}"
+    for i, file in enumerate(file_list):
+        if i >= max_files:
+            get_logger().debug(f"Too many files, clipping to {max_files}")
+            block += f"\n... and {len(file_list) - i} more"
+            break
+        block += f"\n- {file}"
+    return block
+
+
 class PRDescription:
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -491,25 +504,13 @@ class PRDescription:
             files_walkthrough_prompt = copy.deepcopy(files_walkthrough)
             MAX_EXTRA_FILES_TO_PROMPT = 50
             if remaining_files_list:
-                files_walkthrough_prompt += "\n\nNo more token budget. Additional unprocessed files:"
-                for i, file in enumerate(remaining_files_list):
-                    files_walkthrough_prompt += f"\n- {file}"
-                    if i >= MAX_EXTRA_FILES_TO_PROMPT:
-                        get_logger().debug(f"Too many remaining files, clipping to {MAX_EXTRA_FILES_TO_PROMPT}")
-                        files_walkthrough_prompt += (
-                            f"\n... and {len(remaining_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
-                        )
-                        break
+                files_walkthrough_prompt += _build_unprocessed_files_block(
+                    remaining_files_list, "No more token budget. Additional unprocessed files:",
+                    max_files=MAX_EXTRA_FILES_TO_PROMPT)
             if deleted_files_list:
-                files_walkthrough_prompt += "\n\nAdditional deleted files:"
-                for i, file in enumerate(deleted_files_list):
-                    files_walkthrough_prompt += f"\n- {file}"
-                    if i >= MAX_EXTRA_FILES_TO_PROMPT:
-                        get_logger().debug(f"Too many deleted files, clipping to {MAX_EXTRA_FILES_TO_PROMPT}")
-                        files_walkthrough_prompt += (
-                            f"\n... and {len(deleted_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
-                        )
-                        break
+                files_walkthrough_prompt += _build_unprocessed_files_block(
+                    deleted_files_list, "Additional deleted files:",
+                    max_files=MAX_EXTRA_FILES_TO_PROMPT)
             # PR header inference
             get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,

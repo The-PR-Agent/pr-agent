@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from requests.exceptions import RequestException
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.git_provider import GitProvider, get_reaction_setting
@@ -262,7 +263,7 @@ def test_github_refuses_a_reaction_it_cannot_send(monkeypatch):
 
 def test_github_survives_an_api_failure(monkeypatch):
     provider = _github(monkeypatch)
-    provider.pr._requester.requestJsonAndCheck.side_effect = RuntimeError("boom")
+    provider.pr._requester.requestJsonAndCheck.side_effect = RequestException("boom")
 
     assert provider.add_reaction(7, "eyes") is None
 
