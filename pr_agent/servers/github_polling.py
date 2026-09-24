@@ -1,11 +1,14 @@
 import asyncio
+import copy
 import math
 import multiprocessing
 import traceback
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import aiohttp
+from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -21,6 +24,11 @@ setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL"
 NOTIFICATION_URL = "https://api.github.com/notifications"
 DEFAULT_POLLING_REQUEST_TIMEOUT = 10
 MAX_POLLING_REQUEST_TIMEOUT = 60
+POLLING_CAPACITY_CHECK_INTERVAL = 0.25
+
+
+class _PollingWorkerStartError(RuntimeError):
+    """Stop dispatch when child startup leaves process state uncertain."""
 
 
 def _get_polling_request_timeout() -> float:
@@ -106,25 +114,56 @@ def run_handle_request(pr_url, rest_of_comment, comment_id, git_provider):
     return asyncio.run(_handle_request_and_drain(pr_url, rest_of_comment, comment_id, git_provider))
 
 
+def _polling_request_settings():
+    """Clone global settings with the polling-mode overrides applied.
+
+    Applying the overrides here instead of in ``polling_loop`` makes them reach
+    the task regardless of the multiprocessing start method: fork children
+    inherit the parent's globals, spawn/forkserver children do not - and
+    forkserver is the Linux default from Python 3.14.
+    """
+    settings = copy.deepcopy(global_settings)
+    settings.set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
+    settings.set("pr_description.publish_description_as_comment", True)
+    return settings
+
+
+@contextmanager
+def _polling_settings_scope():
+    """request_cycle_context with a guaranteed reset: its bare yield (unfixed
+    upstream as of starlette-context 0.5.1) skips the ContextVar reset when an
+    exception crosses the with-body, so enter and exit are driven explicitly
+    and the reset runs on any exit, BaseException included.
+    """
+    cm = request_cycle_context({"settings": _polling_request_settings()})
+    cm.__enter__()
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
+
+
 def process_comment_sync(pr_url, rest_of_comment, comment_id):
     try:
-        # Run the async handle_request in a separate function
-        git_provider = get_git_provider()(pr_url=pr_url)
-        success = run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
+        with _polling_settings_scope():
+            # Run the async handle_request in a separate function
+            git_provider = get_git_provider()(pr_url=pr_url)
+            run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
 
 async def process_comment(pr_url, rest_of_comment, comment_id):
     try:
-        git_provider = get_git_provider()(pr_url=pr_url)
-        git_provider.set_pr(pr_url)
-        agent = PRAgent()
-        success = await agent.handle_request(
-            pr_url,
-            rest_of_comment,
-            notify=lambda: git_provider.add_eyes_reaction(comment_id)
-        )
+        with _polling_settings_scope():
+            git_provider = get_git_provider()(pr_url=pr_url)
+            git_provider.set_pr(pr_url)
+            agent = PRAgent()
+            await agent.handle_request(
+                pr_url,
+                rest_of_comment,
+                notify=lambda: git_provider.add_eyes_reaction(comment_id)
+            )
         get_logger().info(f"Finished processing comment for PR: {pr_url}")
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
@@ -196,23 +235,57 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
         return False, handled_ids
 
 
-def _start_queued_processes(task_queue, max_allowed_parallel_tasks):
-    """Start at most max_allowed_parallel_tasks queued jobs and clear the queue.
+def _reap_finished_processes(active_processes):
+    """Release completed workers without waiting for live ones."""
+    for process in active_processes[:]:
+        if not process.is_alive():
+            process.join(timeout=0)
+            process.close()
+            active_processes.remove(process)
 
-    Do not join the started processes; let the polling loop move on to the next
-    iteration without waiting for them to complete.
-    """
-    processes = []
-    for i, (func, args) in enumerate(task_queue):
-        if i >= max_allowed_parallel_tasks:
-            get_logger().error(
-                f"Dropping {len(task_queue) - max_allowed_parallel_tasks} tasks from polling session")
-            break
-        process = multiprocessing.Process(target=func, args=args)
-        processes.append(process)
-        process.start()
-    task_queue.clear()
-    return processes
+
+async def _start_queued_processes(task_queue, max_allowed_parallel_tasks, active_processes):
+    """Keep the batch limit, waiting for capacity shared across polling iterations."""
+    if max_allowed_parallel_tasks <= 0:
+        raise ValueError("The polling process limit must be positive")
+    overflow = len(task_queue) - max_allowed_parallel_tasks
+    if overflow > 0:
+        get_logger().error(f"Dropping {overflow} tasks from polling session")
+        for _ in range(overflow):
+            task_queue.pop()
+
+    waiting_logged = False
+    try:
+        while task_queue:
+            _reap_finished_processes(active_processes)
+            if len(active_processes) >= max_allowed_parallel_tasks:
+                if not waiting_logged:
+                    get_logger().info(
+                        f"Polling dispatch waiting for capacity: {len(active_processes)} workers active, "
+                        f"{len(task_queue)} tasks queued"
+                    )
+                    waiting_logged = True
+                await asyncio.sleep(POLLING_CAPACITY_CHECK_INTERVAL)
+                continue
+            func, args = task_queue[0]
+            process = multiprocessing.Process(target=func, args=args)
+            try:
+                process.start()
+            except BaseException as exc:
+                # Treat a PID-bearing child as potentially dispatched; never retry its task.
+                if process.pid is not None:
+                    active_processes.append(process)
+                    task_queue.popleft()
+                else:
+                    process.close()
+                if isinstance(exc, Exception):
+                    raise _PollingWorkerStartError("Polling worker startup failed; stopping dispatch") from exc
+                raise
+            active_processes.append(process)
+            task_queue.popleft()
+    finally:
+        if task_queue:
+            get_logger().error(f"Polling dispatch stopped with {len(task_queue)} tasks not dispatched")
 
 
 async def polling_loop():
@@ -224,8 +297,6 @@ async def polling_loop():
     last_modified = [None]
     git_provider = get_git_provider()()
     user_id = git_provider.get_user_id()
-    get_settings().set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
-    get_settings().set("pr_description.publish_description_as_comment", True)
 
     try:
         deployment_type = get_settings().github.deployment_type
@@ -239,8 +310,11 @@ async def polling_loop():
     if not token:
         raise ValueError("User token must be set to get notifications")
 
+    active_processes = []
     async with aiohttp.ClientSession() as session:
         while True:
+            task_queue = deque()
+            dispatch_started = False
             try:
                 await asyncio.sleep(5)
                 headers = {
@@ -264,7 +338,6 @@ async def polling_loop():
                         if not notifications:
                             continue
                         get_logger().info(f"Received {len(notifications)} notifications")
-                        task_queue = deque()
                         for notification in notifications:
                             if not notification:
                                 continue
@@ -288,14 +361,21 @@ async def polling_loop():
 
                         max_allowed_parallel_tasks = 10
                         if task_queue:
-                            _start_queued_processes(task_queue, max_allowed_parallel_tasks)
+                            dispatch_started = True
+                            await _start_queued_processes(task_queue, max_allowed_parallel_tasks, active_processes)
 
                     elif response.status != 304:
                         print(f"Failed to fetch notifications. Status code: {response.status}")
 
+            except _PollingWorkerStartError:
+                raise
             except Exception as e:
                 get_logger().error(f"Polling exception during processing of a notification: {e}",
                                    artifact={"traceback": traceback.format_exc()})
+            finally:
+                if task_queue and not dispatch_started:
+                    get_logger().error(f"Polling dispatch stopped with {len(task_queue)} tasks not dispatched")
+                _reap_finished_processes(active_processes)
 
 
 if __name__ == '__main__':

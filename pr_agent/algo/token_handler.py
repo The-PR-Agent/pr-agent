@@ -66,7 +66,7 @@ class TokenHandler:
     CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
 
-    def __init__(self, pr=None, vars: dict = {}, system="", user="", model=None):
+    def __init__(self, pr=None, vars: dict | None = None, system="", user="", model=None):
         """
         Initializes the TokenHandler object.
 
@@ -77,10 +77,24 @@ class TokenHandler:
         - user: The user string.
         - model: Optional model name whose tokenizer should be used.
         """
-        self.encoder = TokenEncoder.get_token_encoder(model)
+        if vars is None:
+            vars = {}
+        self.model = model or get_settings().config.model
+        self.pr = pr
+        self.vars = vars
+        self.system = system
+        self.user = user
+        self.prompt_tokens = 0
+        self.encoder = TokenEncoder.get_token_encoder(self.model)
 
         if pr is not None:
             self.prompt_tokens = self._get_system_user_tokens(pr, self.encoder, vars, system, user)
+
+    def for_model(self, model: str):
+        """Return a handler bound to ``model`` without mutating this handler."""
+        if model == self.model:
+            return self
+        return TokenHandler(self.pr, self.vars, self.system, self.user, model=model)
 
     def _get_system_user_tokens(self, pr, encoder, vars: dict, system, user):
         """
@@ -100,8 +114,8 @@ class TokenHandler:
             environment = Environment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
             user_prompt = environment.from_string(user).render(vars)
-            system_prompt_tokens = len(encoder.encode(system_prompt))
-            user_prompt_tokens = len(encoder.encode(user_prompt))
+            system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
+            user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))
             return system_prompt_tokens + user_prompt_tokens
         except Exception as e:
             get_logger().error(f"Error in _get_system_user_tokens: {e}")
@@ -163,7 +177,7 @@ class TokenHandler:
         Returns:
             int: The calculated token count.
         """
-        model_name = get_settings().config.model.lower()
+        model_name = str(getattr(self, "model", None) or get_settings().config.model).lower()
 
         if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get('openai.key'):
             return default_estimate

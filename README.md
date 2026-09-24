@@ -106,25 +106,6 @@ pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 
 Full notes for every release are on the [Releases page](https://github.com/the-pr-agent/pr-agent/releases).
 
-### Jul 26, 2026 — [v0.41.0](https://github.com/the-pr-agent/pr-agent/releases/tag/v0.41.0)
-
-Claude Opus 5 support, and `docker/mosaico` became a self-contained deployment bundle.
-
-### Jul 25, 2026 — [v0.40.0](https://github.com/the-pr-agent/pr-agent/releases/tag/v0.40.0)
-
-Default model moved to GPT-5.6, Gemini 3.6 support, persistent inline comments (no more duplicate
-suggestions across runs), an OpenRouter provider-routing/reasoning config, a tokenless
-[plain-diff provider](https://docs.pr-agent.ai/usage-guide/plain_diff_mode/), and CI artifact
-context injection.
-
-### Jul 5, 2026 — [v0.39.0](https://github.com/the-pr-agent/pr-agent/releases/tag/v0.39.0)
-
-`AGENTS.md` and friends are now fed to `/review`, `/describe` and `/improve` **by default**, so the
-model picks up your project's conventions out of the box. Also:
-[Agent Skills (`SKILL.md`)](https://docs.pr-agent.ai/core-abilities/agent_skills/),
-[organization-level settings](https://docs.pr-agent.ai/usage-guide/configuration_options/),
-[restricted mode](https://docs.pr-agent.ai/usage-guide/additional_configurations/#restricted-mode)
-for reduced GitHub permissions, GitHub Checks as an output target, and Claude Sonnet 5 support.
 
 ## Why Use PR-Agent?
 
@@ -201,8 +182,12 @@ PR-Agent tools run as a comment on a PR or from the CLI. A few common ones:
 /improve
 /ask "What does this PR change?" # free-text Q&A about the PR
 
+# Issue-scoped commands run on an issue instead of a PR:
+/similar_issue # find similar issues in the repository
+
 # Or locally via the CLI:
 pr-agent --pr_url <PR_URL> review
+pr-agent --issue_url <ISSUE_URL> similar_issue
 ```
 
 See the [Tools docs](https://docs.pr-agent.ai/tools/#usage-examples) for the full list of tools with example commands, and each tool's page for screenshots and options.

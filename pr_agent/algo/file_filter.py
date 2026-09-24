@@ -12,9 +12,8 @@ def filter_ignored(files, platform = 'github'):
 
     try:
         # load regex patterns, and translate glob patterns to regex
-        patterns = get_settings().ignore.regex
-        if isinstance(patterns, str):
-            patterns = [patterns]
+        raw_patterns = get_settings().ignore.regex
+        patterns = [raw_patterns] if isinstance(raw_patterns, str) else list(raw_patterns)
         glob_setting = get_settings().ignore.glob
         if isinstance(glob_setting, str):  # --ignore.glob=[.*utils.py], --ignore.glob=.*utils.py
             glob_setting = glob_setting.strip('[]').split(",")
@@ -40,10 +39,15 @@ def filter_ignored(files, platform = 'github'):
                     "Skipping invalid ignore pattern; files it was meant to exclude will be "
                     "sent to the model", artifact={"pattern": r, "error": str(e)})
 
+        # Materialize GitHub incremental dict_values and other iterable file views
+        # before applying the same ignore filtering as full-review lists.
+        if files and not isinstance(files, list):
+            files = list(files)
+
         # keep filenames that _don't_ match the ignore regex
-        if files and isinstance(files, list):
+        if files:
             for r in compiled_patterns:
-                if platform == 'github':
+                if platform in ('github', 'codecommit'):
                     files = [f for f in files if (f.filename and not r.match(f.filename))]
                 elif platform == 'bitbucket':
                     # files = [f for f in files if (f.new.path and not r.match(f.new.path))]

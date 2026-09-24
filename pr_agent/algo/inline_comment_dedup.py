@@ -36,15 +36,26 @@ import hashlib
 import re
 from typing import Iterator, Optional
 
-BODY_MARKER_RE = re.compile(r"<!-- pr-agent-dedup: ([a-f0-9]{12}) -->")
-CODE_MARKER_RE = re.compile(r"<!-- pr-agent-dedup-code: ([a-f0-9]{12}) -->")
-KEY_ISSUE_LOCATION_MARKER_RE = re.compile(r"<!-- pr-agent-key-issue-location: ([a-f0-9]{12}) -->")
+_MARKER_URL = r"https://github.com/The-PR-Agent/pr-agent"
+BODY_MARKER_RE = re.compile(
+    rf"<!-- pr-agent-dedup: ([a-f0-9]{{12}}) -->|\[pr-agent-dedup: "
+    rf"([a-f0-9]{{12}})\]: {_MARKER_URL}"
+)
+CODE_MARKER_RE = re.compile(
+    rf"<!-- pr-agent-dedup-code: ([a-f0-9]{{12}}) -->|\[pr-agent-dedup-code: "
+    rf"([a-f0-9]{{12}})\]: {_MARKER_URL}"
+)
+KEY_ISSUE_LOCATION_MARKER_RE = re.compile(
+    rf"<!-- pr-agent-key-issue-location: ([a-f0-9]{{12}}) -->|"
+    rf"\[pr-agent-key-issue-location: ([a-f0-9]{{12}})\]: {_MARKER_URL}"
+)
 _MARKER_RES = (BODY_MARKER_RE, CODE_MARKER_RE, KEY_ISSUE_LOCATION_MARKER_RE)
 
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
 _CODE_BLOCK_RE = re.compile(r"```suggestion[^\n]*\n(.*?)```", re.DOTALL)
+_DIFF_BLOCK_RE = re.compile(r"```diff[^\n]*\n(.*?)```", re.DOTALL)
 
 
 def has_marker(body: str) -> bool:
@@ -63,7 +74,7 @@ def marker_fingerprints(body: str) -> set:
     found = set()
     for marker_re in _MARKER_RES:
         for match in marker_re.finditer(body or ""):
-            found.add(match.group(1))
+            found.update(group for group in match.groups() if group)
     return found
 
 
@@ -72,6 +83,7 @@ def _strip_markers(body: str) -> str:
     same as its original (markers are appended after marking)."""
     body = BODY_MARKER_RE.sub("", body or "")
     body = CODE_MARKER_RE.sub("", body)
+    body = KEY_ISSUE_LOCATION_MARKER_RE.sub("", body)
     return body
 
 
@@ -104,12 +116,11 @@ def key_issue_location_fingerprint(fingerprint: str, start_line: int, end_line: 
 
 
 def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[str]:
-    match = _CODE_BLOCK_RE.search(_strip_markers(body))
-    if not match:
+    code = extract_suggestion_code(body)
+    if not code:
         return None
     # Do not lower-case: code is case-sensitive, so case-only differences
     # must produce distinct fingerprints.
-    code = match.group(1)
     code = _WS_RE.sub(" ", code).strip()
     if not code:
         return None
@@ -118,16 +129,44 @@ def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[
 
 
 def extract_suggestion_code(body: str) -> Optional[str]:
-    match = _CODE_BLOCK_RE.search(_strip_markers(body))
-    if not match:
+    body = _strip_markers(body)
+    match = _CODE_BLOCK_RE.search(body)
+    if match:
+        return match.group(1).strip("\n")
+    diff_match = _DIFF_BLOCK_RE.search(body)
+    if diff_match:
+        return _reconstruct_improved_code(diff_match.group(1))
+    return None
+
+
+def _reconstruct_improved_code(diff_text: str) -> Optional[str]:
+    """Rebuild the post-change code from a unified diff inside a ```diff fence.
+
+    Context and added lines drop their leading space or ``+`` prefix and removed
+    lines are dropped, mirroring how Azure DevOps renders a suggestion as a diff
+    block."""
+    lines = []
+    for line in diff_text.splitlines():
+        if line.startswith((" ", "+")):
+            lines.append(line[1:])
+        elif line.startswith("-"):
+            continue
+    if not lines:
         return None
-    return match.group(1).strip("\n")
+    return "\n".join(lines).strip("\n")
 
 
-def build_markers(body_fp: str, code_fp: Optional[str]) -> str:
-    markers = [f"<!-- pr-agent-dedup: {body_fp} -->"]
+def _render_marker(prefix: str, fingerprint: str, git_provider=None) -> str:
+    supports_html = getattr(git_provider, "supports_html_comment_markers", lambda: True)
+    if supports_html() is False:
+        return f"[{prefix}: {fingerprint}]: https://github.com/The-PR-Agent/pr-agent"
+    return f"<!-- {prefix}: {fingerprint} -->"
+
+
+def build_markers(body_fp: str, code_fp: Optional[str], git_provider=None) -> str:
+    markers = [_render_marker("pr-agent-dedup", body_fp, git_provider)]
     if code_fp is not None:
-        markers.append(f"<!-- pr-agent-dedup-code: {code_fp} -->")
+        markers.append(_render_marker("pr-agent-dedup-code", code_fp, git_provider))
     return "\n".join(markers)
 
 
@@ -139,17 +178,17 @@ def _append_markers(body: str, markers: str, max_chars: Optional[int]) -> str:
 
 
 def body_with_markers(body: str, body_fp: str, code_fp: "Optional[str]",
-                      max_chars: "Optional[int]" = None) -> str:
+                      max_chars: "Optional[int]" = None, git_provider=None) -> str:
     """Append the dedup marker(s) to a comment body. If max_chars is given and
     body + markers would exceed it, the body is clipped (never the markers) so
     the fingerprint marker always survives for the next run's scan."""
-    return _append_markers(body, build_markers(body_fp, code_fp), max_chars)
+    return _append_markers(body, build_markers(body_fp, code_fp, git_provider), max_chars)
 
 
 def key_issue_body_with_markers(body: str, body_fp: str, location_fp: str,
-                                max_chars: Optional[int] = None) -> str:
-    markers = (f"{build_markers(body_fp, None)}\n"
-               f"<!-- pr-agent-key-issue-location: {location_fp} -->")
+                                max_chars: Optional[int] = None, git_provider=None) -> str:
+    markers = (f"{build_markers(body_fp, None, git_provider)}\n"
+               f"{_render_marker('pr-agent-key-issue-location', location_fp, git_provider)}")
     return _append_markers(body, markers, max_chars)
 
 
@@ -164,10 +203,16 @@ def inline_comment_line(comment: dict):
 def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
     """Yield the body of every existing comment on the current PR/MR.
 
-    Dispatch is by provider class name so this module needs no provider
-    import. Unsupported providers raise NotImplementedError, which the store
-    treats as "cannot dedup here" and degrades to within-run dedup only.
+    Providers with a persistent comment-body capability are handled through
+    that interface. The remaining legacy providers use their provider-specific
+    APIs; unsupported providers raise NotImplementedError so the store can
+    degrade to within-run dedup only.
     """
+    persistent_bodies = getattr(git_provider, "get_persistent_comment_bodies", None)
+    if callable(persistent_bodies):
+        yield from persistent_bodies()
+        return
+
     provider_name = type(git_provider).__name__
     if provider_name == "GithubProvider":
         for comment in git_provider.pr.get_comments():

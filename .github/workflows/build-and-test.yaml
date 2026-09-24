@@ -14,15 +14,24 @@ jobs:
 
     steps:
       - id: checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - id: uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+
+      - name: Check uv.lock
+        run: uv lock --check
+
+      - name: Test package artifacts
+        run: uv run pytest -q tests/packaging/test_help_docs_package.py
 
       - id: dockerx
         name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - id: build
         name: Build dev docker
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: ./docker/Dockerfile
@@ -47,7 +56,7 @@ jobs:
             exit 1
           fi
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe  # v5.5.4
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
 
@@ -55,7 +64,7 @@ jobs:
       # Smoke-start github_app (gunicorn + uvicorn) with no secrets; GET / → 200.
       - id: build-smoke
         name: Build github_app docker
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: ./docker/Dockerfile
@@ -82,3 +91,39 @@ jobs:
           docker logs pr-agent-smoke
           docker rm -f pr-agent-smoke
           exit 1
+
+  # The job above runs entirely inside docker/Dockerfile, whose base moved to
+  # python:3.14.7-slim in #3294. That leaves neither interpreter pyproject
+  # actually claims support for exercised there: not the `requires-python`
+  # floor of 3.12, and not the 3.13 the google-cloud-storage pin applies at.
+  # Installing from PyPI on either was an untested combination. Deliberately
+  # separate from the docker build rather than a matrix over it: the shipped
+  # images track one interpreter on purpose, and matrixing would rebuild every
+  # layer and re-run the smoke test and coverage upload for no extra signal.
+  unit-tests-native:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Same uv release the Dockerfile pulls from ghcr.io/astral-sh/uv, via pipx
+      # so there is no additional action to pin. uv provisions the interpreter
+      # itself, so setup-python is not needed either.
+      - id: uv
+        name: Install uv
+        run: pipx install uv==0.12.10
+
+      - id: test
+        name: Test on Python ${{ matrix.python-version }}
+        env:
+          PYTHONPATH: .
+          # See docker/Dockerfile's base stage: pin litellm's bundled cost map so
+          # a remote change to it cannot redden the suite without a version bump.
+          LITELLM_LOCAL_MODEL_COST_MAP: "True"
+        run: uv run --frozen --python ${{ matrix.python-version }} pytest -v tests/unittest

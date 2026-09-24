@@ -4,10 +4,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
+from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
 from pr_agent.algo.pr_processing import pr_generate_extended_diff, retry_with_fallback_models
+from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity, load_large_diff
+from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
 from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR
@@ -15,9 +18,18 @@ from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
+@pytest.fixture(autouse=True)
+def _known_model_windows(monkeypatch):
+    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda model, **kwargs: 10_000)
+
+
 def _make_tool(git_provider=None):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
     tool.git_provider = git_provider or MagicMock()
+    tool.ai_handler = MagicMock()
+    tool.vars = {"diff": "", "diff_no_line_numbers": ""}
+    tool.pr_code_suggestions_prompt_system = "Review the pull request"
+    tool.pr_code_suggestions_prompt_user = "{{ diff_no_line_numbers }}"
     tool.progress_response = None
     return tool
 
@@ -35,6 +47,27 @@ def _valid_suggestion(**overrides):
     }
     suggestion.update(overrides)
     return suggestion
+
+
+@pytest.mark.asyncio
+async def test_get_prediction_rejects_a_clipped_suggestion_chunk():
+    tool = _make_tool()
+    tool.ai_handler.chat_completion = AsyncMock()
+    tool._suggestion_attempt_budget = SimpleNamespace(
+        model="attempt-model",
+        fit_optional_text=MagicMock(
+            return_value=SimpleNamespace(
+                optional_text="clipped diff",
+                system_prompt="system",
+                user_prompt="user",
+            )
+        ),
+    )
+
+    with pytest.raises(ValueError, match="complete suggestion chunk"):
+        await tool._get_prediction("attempt-model", "numbered diff", "complete diff")
+
+    tool.ai_handler.chat_completion.assert_not_awaited()
 
 
 def test_prepare_pr_code_suggestions_filters_duplicates_and_missing_required_fields():
@@ -94,6 +127,7 @@ async def test_convert_to_decoupled_uses_normalized_diff_and_keeps_ai_summary():
     result = await tool.convert_to_decoupled_with_line_numbers(patches, "gpt-4o-mini")
 
     assert len(result) == 1
+    assert result[0].startswith("## File: 'app.py'")
     assert "### AI-generated changes summary:" in result[0]
     assert "Keep the existing summary." in result[0]
     assert not any(line.startswith(("---", "+++")) for line in result[0].splitlines())
@@ -101,48 +135,196 @@ async def test_convert_to_decoupled_uses_normalized_diff_and_keeps_ai_summary():
 
 
 @pytest.mark.asyncio
-async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_merge():
+async def test_convert_to_decoupled_preserves_quoted_file_headings_across_files():
+    token_handler = MagicMock(prompt_tokens=0)
+    token_handler.count_tokens.return_value = 1
+    first_base = "keep first\nold first\n"
+    first_head = "keep first\nnew first\n"
+    second_base = "".join(f"line {i}\n" for i in range(1, 10)) + "keep second\nold second\n"
+    second_head = "".join(f"line {i}\n" for i in range(1, 10)) + "keep second\nnew second\n"
+    files = (
+        FilePatchInfo(
+            base_file=first_base,
+            head_file=first_head,
+            patch=load_large_diff("first.py", first_head, first_base),
+            filename="first.py",
+        ),
+        FilePatchInfo(
+            base_file=second_base,
+            head_file=second_head,
+            patch=load_large_diff("second.py", second_head, second_base),
+            filename="second.py",
+        ),
+    )
+    patches, _, _ = pr_generate_extended_diff(
+        [{"language": "Python", "files": files}],
+        token_handler,
+        add_line_numbers_to_hunks=False,
+    )
+    tool = _make_tool()
+    tool.token_handler = token_handler
+
+    result = await tool.convert_to_decoupled_with_line_numbers(["\n".join(patches)], "gpt-4o-mini")
+
+    assert len(result) == 1
+    converted = result[0]
+    assert converted.count("## File: 'first.py'") == 1
+    assert converted.count("## File: 'second.py'") == 1
+    assert "## File: second.py'" not in converted
+    first_index = converted.index("## File: 'first.py'")
+    second_index = converted.index("## File: 'second.py'")
+    assert first_index < second_index
+
+    first_section = converted[first_index:second_index]
+    second_section = converted[second_index:]
+    assert "1  keep first" in first_section
+    assert "2 +new first" in first_section
+    assert "10  keep second" not in first_section
+    assert "11 +new second" not in first_section
+    first_new_hunk = first_section.split("__new hunk__\n", 1)[1].split("__old hunk__", 1)[0]
+    assert first_new_hunk.splitlines() == ["1  keep first", "2 +new first"]
+    assert "10  keep second" in second_section
+    assert "11 +new second" in second_section
+    assert "1  keep first" not in second_section
+    assert "2 +new first" not in second_section
+
+
+@pytest.mark.asyncio
+async def test_convert_to_decoupled_uses_fallback_model_budget_and_tokenizer(monkeypatch):
+    counted_models = []
+    reserve_calls = []
+    window_calls = []
+
+    class ModelBoundTokenHandler(TokenHandler):
+        def __init__(self, model="primary-model"):
+            super().__init__(model=model)
+            self.prompt_tokens = 10 if model == "fallback-model" else 0
+
+        def for_model(self, model):
+            return ModelBoundTokenHandler(model)
+
+        def count_tokens(self, text, force_accurate=False):
+            counted_models.append(self.model)
+            return len(text) if self.model == "fallback-model" else 1
+
+    def get_window(model, ignore_max_model_tokens=False):
+        window_calls.append((model, ignore_max_model_tokens))
+        return 2_100
+
+    def get_output_token_reserve(model, default):
+        reserve_calls.append((model, default))
+        return default
+
+    monkeypatch.setattr(token_budget_module, "get_max_tokens", get_window)
+    tool = _make_tool()
+    tool.token_handler = ModelBoundTokenHandler()
+    tool.ai_handler = SimpleNamespace(get_output_token_reserve=get_output_token_reserve)
+    patch_prompt = "## File: 'app.py'\n\n@@ -1 +1 @@\n-old\n+" + "replacement " * 40
+
+    result = await tool.convert_to_decoupled_with_line_numbers([patch_prompt], "fallback-model")
+
+    assert len(result) == 1
+    assert result[0]
+    assert len(result[0]) <= 90
+    assert "replacement " * 40 not in result[0]
+    assert counted_models and set(counted_models) == {"fallback-model"}
+    assert reserve_calls == [("fallback-model", 2_000)]
+    assert window_calls == [("fallback-model", True)]
+
+
+@pytest.mark.asyncio
+async def test_convert_to_decoupled_reuses_supplied_attempt_budget():
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    attempt_budget = SimpleNamespace(
+        available_tokens=MagicMock(return_value=1_000),
+        count_tokens=MagicMock(return_value=1),
+    )
+    patch_prompt = "## File: 'app.py'\n\n@@ -1 +1 @@\n-old\n+new"
+
+    result = await tool.convert_to_decoupled_with_line_numbers(
+        [patch_prompt],
+        "fallback-model",
+        attempt_budget=attempt_budget,
+    )
+
+    assert len(result) == 1
+    assert "1 +new" in result[0]
+    attempt_budget.available_tokens.assert_called_once_with(2_000, preserve_minimum=True)
+    attempt_budget.count_tokens.assert_called_once_with(result[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "publish_output,committable,gfm,expected_summary",
+    [
+        (True, False, True, "Valid"),
+        (False, True, True, "Valid"),
+        (True, True, True, "Unanchorable"),
+        (True, False, False, "Unanchorable"),
+    ],
+    ids=["table", "unpublished-summary", "committable-inline", "non-gfm"],
+)
+async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_merge(
+    publish_output, committable, gfm, expected_summary
+):
     settings_snapshot = snapshot_settings((
         "pr_code_suggestions.decouple_hunks",
         "pr_code_suggestions.parallel_calls",
         "pr_code_suggestions.max_suggestions_per_file",
+        "pr_code_suggestions.commitable_code_suggestions",
+        "config.publish_output",
     ))
     settings = get_settings()
     settings.pr_code_suggestions.decouple_hunks = True
     settings.pr_code_suggestions.parallel_calls = False
     settings.set("pr_code_suggestions.max_suggestions_per_file", 1)
+    settings.set("pr_code_suggestions.commitable_code_suggestions", committable)
+    settings.set("config.publish_output", publish_output)
     tool = _make_tool()
     tool.token_handler = MagicMock()
+    tool.git_provider.is_supported.return_value = gfm
+    tool.git_provider.diff_files = [
+        FilePatchInfo(base_file="old()\n", head_file="old()\n", patch="", filename="app.py"),
+    ]
 
     async def fake_get_prediction(model, patches_diff, patches_diff_no_line_numbers):
+        valid = patches_diff == "chunk-a"
         return {"code_suggestions": [_valid_suggestion(
-            one_sentence_summary=f"Finding from {patches_diff}",
-            relevant_lines_start=1 if patches_diff == "chunk-a" else 2,
+            one_sentence_summary="Valid" if valid else "Unanchorable",
+            relevant_lines_start=1 if valid else 99,
+            relevant_lines_end=1 if valid else 99,
+            score=3 if valid else 9,
         )]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]):
+        with patch.object(
+            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=["chunk-a", "chunk-b"]
+        ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
     finally:
         restore_settings(settings_snapshot)
 
-    assert data["code_suggestions"] == [_valid_suggestion(
-        one_sentence_summary="Finding from chunk-a",
-        relevant_lines_start=1,
-    )]
+    assert [s["one_sentence_summary"] for s in data["code_suggestions"]] == [expected_summary]
+    assert get_pr_multi_diffs.call_args.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
 
 
-def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_files():
+def test_limit_suggestions_per_file_keeps_highest_scores_stable_ties_and_other_files():
     settings_snapshot = snapshot_settings(("pr_code_suggestions.max_suggestions_per_file",))
     settings = get_settings()
     settings.set("pr_code_suggestions.max_suggestions_per_file", 2)
     tool = _make_tool()
+    tool.git_provider.diff_files = [
+        FilePatchInfo(base_file="old()\n", head_file="old()\n", patch="", filename=filename)
+        for filename in ("app.py", "worker.py")
+    ]
     suggestions = [
         _valid_suggestion(one_sentence_summary="Low", score=3),
         _valid_suggestion(one_sentence_summary="High", score=9),
-        _valid_suggestion(one_sentence_summary="Medium", score=6),
+        _valid_suggestion(one_sentence_summary="Tied first", score=9),
+        _valid_suggestion(one_sentence_summary="Tied last", score=9),
         _valid_suggestion(one_sentence_summary="Other file", relevant_file="worker.py", score=1),
     ]
 
@@ -151,7 +333,7 @@ def test_limit_suggestions_per_file_keeps_highest_scores_and_preserves_other_fil
     finally:
         restore_settings(settings_snapshot)
 
-    assert limited == [suggestions[1], suggestions[2], suggestions[3]]
+    assert limited == [suggestions[1], suggestions[2], suggestions[4]]
 
 
 def test_limit_suggestions_per_file_is_inert_at_the_shipped_default():
@@ -216,6 +398,60 @@ code_suggestions:
         assert data["code_suggestions"][0]["relevant_lines_end"] == -1
     finally:
         settings.config.publish_output = original_publish_output
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_skips_model_when_required_prompt_exceeds_budget(monkeypatch):
+    tool = _make_tool()
+    tool.ai_handler.chat_completion = AsyncMock()
+
+    class RequiredPromptOverflow:
+        def fit_prompt_variable(self, *_args, **_kwargs):
+            raise ValueError("required prompt exceeds budget")
+
+    monkeypatch.setattr(
+        pr_code_suggestions_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: RequiredPromptOverflow(),
+    )
+
+    result = await tool.self_reflect_on_suggestions(
+        [_valid_suggestion()],
+        "numbered diff",
+        "fallback-model",
+    )
+
+    assert result == ""
+    tool.ai_handler.chat_completion.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_self_reflection_skips_model_when_numbered_diff_is_clipped(monkeypatch):
+    tool = _make_tool()
+    tool.ai_handler.chat_completion = AsyncMock()
+
+    class ClippedReflectionDiff:
+        def fit_prompt_variable(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                optional_text="numbered",
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    monkeypatch.setattr(
+        pr_code_suggestions_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: ClippedReflectionDiff(),
+    )
+
+    result = await tool.self_reflect_on_suggestions(
+        [_valid_suggestion()],
+        "numbered diff",
+        "fallback-model",
+    )
+
+    assert result == ""
+    tool.ai_handler.chat_completion.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -389,10 +625,11 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"chunk-{len(chunk_pairs)}.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=[
-            ["stale unnumbered chunk"],
-            ["1 fallback-a", "2 fallback-b"],
-        ]):
+        with patch.object(
+            pr_code_suggestions_module,
+            "get_pr_multi_diffs",
+            side_effect=[["stale unnumbered chunk"], ["1 fallback-a", "2 fallback-b"]],
+        ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
             data = await tool.prepare_prediction_main("primary-model")
@@ -406,6 +643,16 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
     ]
     assert tool.total_chunk_count == 2
     assert len(data["code_suggestions"]) == 2
+    assert len(get_pr_multi_diffs.call_args_list) == 2
+    tool.convert_to_decoupled_with_line_numbers.assert_awaited_once_with(
+        ["stale unnumbered chunk"],
+        "primary-model",
+        attempt_budget=tool._suggestion_attempt_budget,
+    )
+    assert all(
+        call.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
+        for call in get_pr_multi_diffs.call_args_list
+    )
 
 
 def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():
@@ -832,6 +1079,167 @@ async def test_push_inline_code_suggestions_falls_back_to_individual_publish_cal
     assert "```suggestion\n    return new_worker()" in second_retry[0]["body"]
 
 
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_publishes_summarized_comment_when_all_retries_fail():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.return_value = False
+    tool = _make_tool(git_provider)
+    data = {"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
+            score=8,
+        )
+    ]}
+
+    await tool.push_inline_code_suggestions(data)
+
+    # batch publish plus the individual retry both fail, then the already-computed
+    # suggestions are delivered through the summarized-comment path instead of a
+    # misleading failure comment (issue #3602).
+    assert git_provider.publish_code_suggestions.call_count == 2
+    assert tool._output_published is True
+    body = git_provider.publish_comment.call_args.args[0]
+    assert "Use the shared helper." in body
+    assert "Failed to generate code suggestions" not in body
+
+
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_raises_when_summarized_fallback_publish_fails():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.return_value = False
+    git_provider.publish_comment.side_effect = RuntimeError("network down")
+    tool = _make_tool(git_provider)
+    tool._output_published = False
+
+    with pytest.raises(RuntimeError, match="Failed to publish code suggestions after individual retries"):
+        await tool.push_inline_code_suggestions({"code_suggestions": [
+            _valid_suggestion(
+                relevant_lines_start=2,
+                relevant_lines_end=2,
+                existing_code="return old()",
+                improved_code="return new()",
+                score=8,
+            )
+        ]})
+
+    assert tool._output_published is False
+
+
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_raises_when_summarized_fallback_returns_no_comment():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.return_value = False
+    git_provider.publish_comment.return_value = None
+    git_provider.supports_comment_publish_confirmation.return_value = True
+    tool = _make_tool(git_provider)
+    tool._output_published = False
+
+    with pytest.raises(RuntimeError, match="Failed to publish code suggestions after individual retries"):
+        await tool.push_inline_code_suggestions({"code_suggestions": [
+            _valid_suggestion(
+                relevant_lines_start=2,
+                relevant_lines_end=2,
+                existing_code="return old()",
+                improved_code="return new()",
+                score=8,
+            )
+        ]})
+
+    assert tool._output_published is False
+
+
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_marks_delivered_when_none_returning_provider_publishes():
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.return_value = False
+    git_provider.publish_comment.return_value = None
+    git_provider.supports_comment_publish_confirmation.return_value = False
+    tool = _make_tool(git_provider)
+    tool._output_published = False
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
+            score=8,
+        )
+    ]})
+
+    assert tool._output_published is True
+
+
+@pytest.mark.asyncio
+async def test_push_inline_code_suggestions_raises_when_summarized_fallback_renders_empty(
+    monkeypatch,
+):
+    git_provider = MagicMock()
+    git_provider.diff_files = [
+        FilePatchInfo(
+            base_file="",
+            head_file="def f():\n    return old()\n",
+            patch="",
+            filename="app.py",
+        ),
+    ]
+    git_provider.publish_code_suggestions.return_value = False
+    tool = _make_tool(git_provider)
+    tool._output_published = False
+    # A malformed sibling suggestion makes the summarizer swallow its exceptions and
+    # render an empty summary; publishing an empty fallback would read as delivered.
+    monkeypatch.setattr(tool, "generate_summarized_suggestions", lambda data: "")
+
+    with pytest.raises(RuntimeError, match="Failed to publish code suggestions after individual retries"):
+        await tool.push_inline_code_suggestions({"code_suggestions": [
+            _valid_suggestion(
+                relevant_lines_start=2,
+                relevant_lines_end=2,
+                existing_code="return old()",
+                improved_code="return new()",
+                score=8,
+            )
+        ]})
+
+    assert tool._output_published is False
+    git_provider.publish_comment.assert_not_called()
+
+
 @pytest.fixture
 def publish_output_no_suggestions():
     settings = get_settings()
@@ -858,10 +1266,10 @@ async def test_publish_no_suggestions_removes_the_progress_comment_when_quiet(pu
     git_provider.publish_comment.assert_not_called()
 
 
-def _provider_with_file(head_file, filename="app.py"):
+def _provider_with_file(head_file, filename="app.py", patch=""):
     git_provider = MagicMock()
     git_provider.diff_files = [
-        FilePatchInfo(base_file="", head_file=head_file, patch="", filename=filename)
+        FilePatchInfo(base_file="", head_file=head_file, patch=patch, filename=filename)
     ]
     git_provider.publish_code_suggestions.return_value = True
     return git_provider
@@ -874,7 +1282,11 @@ def _published_suggestion(git_provider):
 
 
 def test_summarized_suggestions_use_the_target_file_indentation():
-    git_provider = _provider_with_file("func f() {\n\told()\n}\n", filename="main.go")
+    git_provider = _provider_with_file(
+        "func f() {\n\told()\n}\n",
+        filename="main.go",
+        patch="@@ -1,3 +1,3 @@\n func f() {\n-\told()\n+\tnew()\n }\n",
+    )
     git_provider.get_line_link.return_value = "https://example.com/main.go#L2"
     tool = _make_tool(git_provider)
     suggestion = _valid_suggestion(
@@ -924,6 +1336,7 @@ def test_summarized_suggestions_normalize_both_sides_of_the_diff():
     git_provider = _provider_with_file(
         "func f() {\n\tif old() {\n\t\tkeep()\n\t}\n}\n",
         filename="main.go",
+        patch="@@ -1,5 +1,5 @@\n func f() {\n-\tif old() {\n+\tif new() {\n \t\tkeep()\n \t}\n }\n",
     )
     git_provider.get_line_link.return_value = "https://example.com/main.go#L2-L4"
     tool = _make_tool(git_provider)
@@ -960,6 +1373,26 @@ async def test_suggestion_covering_the_anchored_range_is_published_as_committabl
     ]})
 
     assert "```suggestion\n    return new()\n```" in _published_suggestion(git_provider)["body"]
+
+
+@pytest.mark.asyncio
+async def test_aligned_original_suggestion_matches_rendered_fence_indentation():
+    git_provider = _provider_with_file("def f():\n    return old()\n")
+    tool = _make_tool(git_provider)
+
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="return old()",
+            improved_code="return new()",
+            score=8,
+        )
+    ]})
+
+    original = _published_suggestion(git_provider)["original_suggestion"]
+    assert original["existing_code"] == "    return old()"
+    assert original["improved_code"] == "    return new()"
 
 
 @pytest.mark.asyncio

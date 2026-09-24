@@ -1,6 +1,9 @@
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
+from gitlab import GitlabCreateError
+from requests.exceptions import RequestException
 
 from pr_agent.algo import inline_comment_dedup as dedup
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
@@ -16,6 +19,7 @@ class _FakeTargetFile:
     filename = "a.py"
     old_filename = "a.py"
     head_file = "line1\nline2\nline3\n"
+    patch = "@@ -1,2 +1,3 @@\n line1\n line2\n+line3\n"
 
 
 def _suggestion(**overrides):
@@ -40,6 +44,7 @@ def _gl_provider():
     clears them - so tests exercise the same create -> list -> bulk_publish flow the real code
     depends on, instead of asserting on call counts alone."""
     p = GitLabProvider.__new__(GitLabProvider)
+    p.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
     p.id_mr = 1
     p.mr = MagicMock()
     p.mr.discussions.list.return_value = []
@@ -109,6 +114,40 @@ def test_flag_off_posts_live_discussions_and_skips_bulk_publish():
     p.mr.draft_notes.bulk_publish.assert_not_called()
 
 
+def test_context_line_suggestion_sends_both_gitlab_line_numbers():
+    p = _gl_provider()
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion()]) is True
+    finally:
+        gs.stop()
+
+    position = p.mr.discussions.create.call_args.args[0]['position']
+    assert position['old_line'] == 2
+    assert position['new_line'] == 2
+
+
+@pytest.mark.parametrize("start, expected", [
+    (4, (3, 4)),  # context line whose text also appears as the added line 2
+    (3, (2, 3)),  # blank context line
+])
+def test_anchor_is_positional_not_first_text_match(start, expected):
+    class _RepeatingTargetFile(_FakeTargetFile):
+        head_file = "a\nb\n\nb\n"
+        patch = "@@ -1,3 +1,4 @@\n a\n+b\n \n b\n"
+
+    p = _gl_provider()
+    p.get_diff_files = MagicMock(return_value=[_RepeatingTargetFile()])
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([_suggestion(relevant_lines_start=start, relevant_lines_end=start)]) is True
+    finally:
+        gs.stop()
+
+    position = p.mr.discussions.create.call_args.args[0]['position']
+    assert (position['old_line'], position['new_line']) == expected
+
+
 def test_flag_on_queues_draft_notes_and_bulk_publishes_once():
     p = _gl_provider()
     gs = _settings(as_review=True)
@@ -134,7 +173,7 @@ def test_flag_on_fallback_uses_draft_note_not_live_note():
     def _create_first_call_rejected(payload):
         calls.append(payload)
         if len(calls) == 1:
-            raise RuntimeError("position rejected")
+            raise GitlabCreateError("position rejected")
         return original_create(payload)
 
     p.mr.draft_notes.create.side_effect = _create_first_call_rejected
@@ -157,7 +196,7 @@ def test_draft_totally_unavailable_falls_back_to_a_live_comment_not_a_dropped_su
     # draft-notes endpoint is unsupported/erroring for this MR. The suggestion must still be
     # posted, just live instead of batched - not silently dropped.
     p = _gl_provider()
-    p.mr.draft_notes.create.side_effect = RuntimeError("draft notes unavailable")
+    p.mr.draft_notes.create.side_effect = GitlabCreateError("draft notes unavailable")
     gs = _settings(as_review=True)
     try:
         assert p.publish_code_suggestions([_suggestion()]) is True
@@ -171,7 +210,7 @@ def test_draft_totally_unavailable_falls_back_to_a_live_comment_not_a_dropped_su
 
 def test_bulk_publish_failure_is_caught_and_does_not_propagate():
     p = _gl_provider()
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("network error")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("network error")
     gs = _settings(as_review=True)
     try:
         # Queued drafts are still invisible to the reviewer; the caller must retry.
@@ -252,9 +291,9 @@ def publication_settings(monkeypatch):
 def test_total_creation_failure_reports_failure(publication_settings, as_review):
     publication_settings(as_review=as_review)
     p = _gl_provider()
-    p.mr.draft_notes.create.side_effect = RuntimeError("draft endpoint unavailable")
-    p.mr.discussions.create.side_effect = RuntimeError("discussion rejected")
-    p.mr.notes.create.side_effect = RuntimeError("fallback rejected")
+    p.mr.draft_notes.create.side_effect = RequestException("draft endpoint unavailable")
+    p.mr.discussions.create.side_effect = RequestException("discussion rejected")
+    p.mr.notes.create.side_effect = RequestException("fallback rejected")
 
     assert p.publish_code_suggestions([_suggestion(), _suggestion()]) is False
     assert p.mr.discussions.create.call_count == 2
@@ -267,8 +306,8 @@ def test_partial_live_publication_keeps_processing_the_batch(publication_setting
     publication_settings()
     p = _gl_provider()
     p.mr.discussions.create.side_effect = (
-        [RuntimeError("rejected"), MagicMock()] if failure_first else [MagicMock(), RuntimeError("rejected")])
-    p.mr.notes.create.side_effect = RuntimeError("fallback rejected")
+        [RequestException("rejected"), MagicMock()] if failure_first else [MagicMock(), RequestException("rejected")])
+    p.mr.notes.create.side_effect = RequestException("fallback rejected")
 
     assert p.publish_code_suggestions([_suggestion(), _suggestion()]) is True
     assert p.mr.discussions.create.call_count == 2
@@ -278,7 +317,7 @@ def test_partial_live_publication_keeps_processing_the_batch(publication_setting
 def test_live_general_note_fallback_counts_as_published(publication_settings):
     publication_settings()
     p = _gl_provider()
-    p.mr.discussions.create.side_effect = RuntimeError("position rejected")
+    p.mr.discussions.create.side_effect = RequestException("position rejected")
 
     assert p.publish_code_suggestions([_suggestion()]) is True
     assert len(p.mr.notes.list()) == 1
@@ -318,11 +357,11 @@ def test_mixed_live_and_pending_draft_reports_failure_then_retries_without_dupli
 
     def selectively_create(payload):
         if 'live fallback' in payload['note']:
-            raise RuntimeError("draft rejected")
+            raise RequestException("draft rejected")
         return create_draft(payload)
 
     p.mr.draft_notes.create.side_effect = selectively_create
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("publish unavailable")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("publish unavailable")
     live = _suggestion(body="live fallback", improved_code="live fallback")
     draft = _suggestion()
 
@@ -345,11 +384,13 @@ def test_mixed_live_and_pending_draft_reports_failure_then_retries_without_dupli
 
 @pytest.mark.parametrize("notes_available", [True, False])
 @pytest.mark.parametrize("human_resolved", [True, False])
+@pytest.mark.parametrize("cleanup_mode", ["outdated", "fixed"])
 def test_publication_verification_distinguishes_superseded_and_human_resolved_notes(
-    monkeypatch, notes_available, human_resolved
+    monkeypatch, notes_available, human_resolved, cleanup_mode
 ):
     settings = {
-        "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": True,
+        "GITLAB.RESOLVE_OUTDATED_INLINE_THREADS": cleanup_mode == "outdated",
+        "GITLAB.AUTO_RESOLVE_FIXED_INLINE_THREADS": cleanup_mode == "fixed",
         "gitlab.publish_code_suggestions_as_review": True,
         "config.persistent_inline_comments": True,
     }
@@ -362,7 +403,7 @@ def test_publication_verification_distinguishes_superseded_and_human_resolved_no
     old_public.id = 10
     old_note = {
         'id': 10, 'body': old_body, 'author': {'id': 7}, 'resolved': human_resolved, 'resolvable': True,
-        'position': {'position_type': 'text', 'head_sha': 'old-head', 'new_line': 2},
+        'position': {'position_type': 'text', 'head_sha': 'old-head', 'new_line': 2, 'new_path': 'a.py'},
     }
     thread = MagicMock()
     thread.id = "old-thread"
@@ -371,12 +412,13 @@ def test_publication_verification_distinguishes_superseded_and_human_resolved_no
     p.mr.discussions.list.return_value = [thread]
     p.mr.diff_refs = {'head_sha': 'head'}
     p._get_own_user_id = lambda: 7
+    p._removed_lines_since = lambda recorded, current: {'a.py': {2}}
     public_notes = p.mr.notes.list.side_effect
     pending = p.mr.draft_notes.list.side_effect
     publish = p.mr.draft_notes.bulk_publish.side_effect
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     if not notes_available:
-        p.mr.notes.list.side_effect = RuntimeError("cannot list public notes")
+        p.mr.notes.list.side_effect = RequestException("cannot list public notes")
 
     assert p.publish_code_suggestions([_suggestion()]) is human_resolved
     if human_resolved:
@@ -386,7 +428,7 @@ def test_publication_verification_distinguishes_superseded_and_human_resolved_no
         return
 
     thread.save.assert_called_once()
-    p.mr.draft_notes.list.side_effect = RuntimeError("cannot list drafts")
+    p.mr.draft_notes.list.side_effect = RequestException("cannot list drafts")
     assert p.publish_code_suggestions([_suggestion()]) is False
     assert len(pending()) == 1
 
@@ -404,7 +446,7 @@ def test_publication_verification_distinguishes_superseded_and_human_resolved_no
 def test_draft_listing_failure_does_not_claim_queued_drafts_are_public(publication_settings):
     publication_settings(as_review=True)
     p = _gl_provider()
-    p.mr.draft_notes.list.side_effect = RuntimeError("cannot list")
+    p.mr.draft_notes.list.side_effect = RequestException("cannot list")
 
     assert p.publish_code_suggestions([_suggestion()]) is False
     p.mr.draft_notes.bulk_publish.assert_not_called()
@@ -413,8 +455,8 @@ def test_draft_listing_failure_does_not_claim_queued_drafts_are_public(publicati
 def test_unavailable_draft_endpoint_preserves_successful_live_fallback(publication_settings):
     publication_settings(as_review=True)
     p = _gl_provider()
-    p.mr.draft_notes.create.side_effect = RuntimeError("unsupported")
-    p.mr.draft_notes.list.side_effect = RuntimeError("unsupported")
+    p.mr.draft_notes.create.side_effect = RequestException("unsupported")
+    p.mr.draft_notes.list.side_effect = RequestException("unsupported")
 
     assert p.publish_code_suggestions([_suggestion()]) is True
     assert len(p.mr.notes.list()) == 1
@@ -423,9 +465,9 @@ def test_unavailable_draft_endpoint_preserves_successful_live_fallback(publicati
 def test_listing_failure_on_duplicate_pending_draft_still_reports_failure(publication_settings):
     publication_settings(as_review=True, persistent=True)
     p = _gl_provider()
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions([_suggestion()]) is False
-    p.mr.draft_notes.list.side_effect = RuntimeError("cannot list")
+    p.mr.draft_notes.list.side_effect = RequestException("cannot list")
 
     assert p.publish_code_suggestions([_suggestion()]) is False
     p.mr.draft_notes.create.assert_called_once()
@@ -444,7 +486,7 @@ def test_missing_diff_reports_failure_and_continues(publication_settings):
 def test_wrapped_original_suggestion_preserves_general_note_fallback(publication_settings):
     publication_settings()
     p = _gl_provider()
-    p.mr.discussions.create.side_effect = RuntimeError("position rejected")
+    p.mr.discussions.create.side_effect = RequestException("position rejected")
 
     assert p.publish_code_suggestions([_suggestion(original_suggestion=_suggestion())]) is True
     assert 'fix it' in p.mr.notes.list()[0].body
@@ -474,8 +516,8 @@ def test_send_inline_comment_without_position_keeps_false_result(publication_set
 def test_public_duplicate_succeeds_when_draft_endpoint_is_unavailable(publication_settings, fresh_provider):
     publication_settings(as_review=True, persistent=True)
     p = _gl_provider()
-    p.mr.draft_notes.create.side_effect = RuntimeError("unsupported")
-    p.mr.draft_notes.list.side_effect = RuntimeError("unsupported")
+    p.mr.draft_notes.create.side_effect = RequestException("unsupported")
+    p.mr.draft_notes.list.side_effect = RequestException("unsupported")
     assert p.publish_code_suggestions([_suggestion()]) is True
     retry = _gl_provider() if fresh_provider else p
     retry.mr = p.mr
@@ -497,9 +539,9 @@ def test_public_duplicate_in_discussion_preserves_success_on_draft_endpoint_erro
     discussion.attributes = {"notes": [None, {}, {"body": p.mr.notes.list()[0].body}]}
     unrelated = MagicMock()
     unrelated.attributes = {"notes": [{"body": "unrelated comment"}]}
-    p.mr.notes.list.side_effect = RuntimeError("cannot list notes") if notes_error else lambda get_all=True: []
+    p.mr.notes.list.side_effect = RequestException("cannot list notes") if notes_error else lambda get_all=True: []
     p.mr.discussions.list.return_value = [unrelated, discussion]
-    p.mr.draft_notes.list.side_effect = RuntimeError("unsupported")
+    p.mr.draft_notes.list.side_effect = RequestException("unsupported")
     publication_settings(as_review=as_review, persistent=True)
 
     assert p.publish_code_suggestions([_suggestion()]) is True
@@ -512,9 +554,9 @@ def test_unverifiable_duplicate_does_not_claim_publication(publication_settings,
     p = _gl_provider()
     assert p.publish_code_suggestions([_suggestion()]) is True
     list_notes = p.mr.notes.list.side_effect
-    p.mr.notes.list.side_effect = RuntimeError("cannot verify")
-    p.mr.discussions.list.side_effect = RuntimeError("cannot verify discussions")
-    p.mr.draft_notes.list.side_effect = RuntimeError("cannot list")
+    p.mr.notes.list.side_effect = RequestException("cannot verify")
+    p.mr.discussions.list.side_effect = RequestException("cannot verify discussions")
+    p.mr.draft_notes.list.side_effect = RequestException("cannot list")
 
     assert p.publish_code_suggestions([_suggestion()]) is False
     assert p.mr.draft_notes.create.call_count == int(as_review)
@@ -529,7 +571,7 @@ def test_unverifiable_duplicate_does_not_claim_publication(publication_settings,
 def test_pending_duplicate_is_not_successful_after_disabling_review_mode(publication_settings):
     publication_settings(as_review=True, persistent=True)
     p = _gl_provider()
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions([_suggestion()]) is False
     publication_settings(persistent=True)
 
@@ -562,7 +604,7 @@ def test_failed_batch_retries_without_duplicates_when_persistence_is_disabled(
     publication_settings(as_review=True)
     p = _gl_provider()
     publish_drafts = p.mr.draft_notes.bulk_publish.side_effect
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("temporary publication failure")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("temporary publication failure")
     suggestions = [_suggestion(), _suggestion() if repeated_key else _suggestion(body="second", improved_code="second")]
 
     assert p.publish_code_suggestions(suggestions) is False
@@ -590,13 +632,13 @@ def test_failed_duplicate_creation_reuses_later_queued_draft(publication_setting
         nonlocal attempts
         attempts += 1
         if attempts <= 2:
-            raise RuntimeError("primary and fallback creation failed")
+            raise RequestException("primary and fallback creation failed")
         return create_draft(payload)
 
     p.mr.draft_notes.create.side_effect = fail_first_occurrence
-    p.mr.discussions.create.side_effect = RuntimeError("live fallback failed")
-    p.mr.notes.create.side_effect = RuntimeError("live note fallback failed")
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("publication unavailable")
+    p.mr.discussions.create.side_effect = RequestException("live fallback failed")
+    p.mr.notes.create.side_effect = RequestException("live note fallback failed")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("publication unavailable")
     assert p.publish_code_suggestions([_suggestion(), _suggestion()]) is False
     assert len(p.mr.draft_notes.list()) == 1
     if not first_retry_fails:
@@ -620,7 +662,7 @@ def test_public_marker_does_not_hide_matching_pending_draft(
     p = _gl_provider()
     publish_drafts = p.mr.draft_notes.bulk_publish.side_effect
     pending = p.mr.draft_notes.list.side_effect
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("publication unavailable")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("publication unavailable")
     assert p.publish_code_suggestions([_suggestion()]) is False
     p.mr.notes.create({'body': pending()[0].note})
 
@@ -630,14 +672,14 @@ def test_public_marker_does_not_hide_matching_pending_draft(
     dedup.get_inline_comment_store(fresh).load()
     public_notes = p.mr.notes.list.side_effect
     if public_lookup_fails:
-        p.mr.notes.list.side_effect = RuntimeError("notes unavailable")
-        p.mr.discussions.list.side_effect = RuntimeError("discussions unavailable")
+        p.mr.notes.list.side_effect = RequestException("notes unavailable")
+        p.mr.discussions.list.side_effect = RequestException("discussions unavailable")
     assert fresh.publish_code_suggestions([_suggestion()]) is False
     assert len(pending()) == 1
     p.mr.notes.list.side_effect = public_notes
     p.mr.discussions.list.side_effect = None
     if listing_fails:
-        p.mr.draft_notes.list.side_effect = RuntimeError("listing unavailable")
+        p.mr.draft_notes.list.side_effect = RequestException("listing unavailable")
     assert fresh.publish_code_suggestions([_suggestion()]) is False
 
     # Once publication is confirmed, the duplicate remains satisfied without reposting.
@@ -655,14 +697,14 @@ def test_pending_batch_is_not_hidden_by_live_retry_when_draft_listing_fails(publ
 
     def selectively_create(payload):
         if "live" in payload['note']:
-            raise RuntimeError("draft rejected")
+            raise RequestException("draft rejected")
         return create_draft(payload)
 
     live = _suggestion(body="live", improved_code="live", suggestion_content="live")
     p.mr.draft_notes.create.side_effect = selectively_create
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions([live, _suggestion()]) is False
-    p.mr.draft_notes.list.side_effect = RuntimeError("cannot list pending drafts")
+    p.mr.draft_notes.list.side_effect = RequestException("cannot list pending drafts")
 
     assert p.publish_code_suggestions([live]) is False
     assert len(p.mr.notes.list()) == 1
@@ -685,7 +727,7 @@ def test_rediscovered_pending_draft_blocks_live_retry_when_listing_becomes_unava
     publication_settings(as_review=True, persistent=True)
     p = _gl_provider()
     draft = _suggestion()
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions([draft]) is False
     retry = _gl_provider()
     retry.mr = p.mr
@@ -693,7 +735,7 @@ def test_rediscovered_pending_draft_blocks_live_retry_when_listing_becomes_unava
 
     def selectively_create(payload):
         if "live" in payload['note']:
-            raise RuntimeError("draft rejected")
+            raise RequestException("draft rejected")
         return create_draft(payload)
 
     live = _suggestion(body="live", improved_code="live", suggestion_content="live")
@@ -706,12 +748,12 @@ def test_rediscovered_pending_draft_blocks_live_retry_when_listing_becomes_unava
             nonlocal calls
             calls += 1
             if calls > 1:
-                raise RuntimeError("cannot list")
+                raise RequestException("cannot list")
             return pending()
 
         retry.mr.draft_notes.list.side_effect = list_once
     assert retry.publish_code_suggestions([live, draft]) is False
-    retry.mr.draft_notes.list.side_effect = RuntimeError("cannot list")
+    retry.mr.draft_notes.list.side_effect = RequestException("cannot list")
 
     assert retry.publish_code_suggestions([live]) is False
     assert retry.publish_code_suggestions([draft]) is False
@@ -727,11 +769,11 @@ def test_lost_bulk_publish_response_is_verified_through_public_markers(publicati
 
     def publish_then_timeout():
         publish_drafts()
-        raise RuntimeError("response timed out after publication")
+        raise RequestException("response timed out after publication")
 
     p.mr.draft_notes.bulk_publish.side_effect = publish_then_timeout
     assert p.publish_code_suggestions(suggestions) is False
-    p.mr.draft_notes.list.side_effect = RuntimeError("cannot list")
+    p.mr.draft_notes.list.side_effect = RequestException("cannot list")
 
     for suggestion in suggestions:
         assert p.publish_code_suggestions([suggestion]) is True
@@ -743,12 +785,12 @@ def test_verifying_one_public_draft_does_not_hide_another_pending_draft(publicat
     publication_settings(as_review=True, persistent=True)
     p = _gl_provider()
     suggestions = [_suggestion(), _suggestion(body="second", improved_code="second")]
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions(suggestions) is False
     pending = p.mr.draft_notes.list.side_effect
     # One draft becomes public, but the other remains private and retryable.
     p.mr.notes.create({'body': pending()[0].note})
-    p.mr.draft_notes.list.side_effect = RuntimeError("cannot list")
+    p.mr.draft_notes.list.side_effect = RequestException("cannot list")
 
     for suggestion in suggestions:
         assert p.publish_code_suggestions([suggestion]) is False
@@ -767,23 +809,23 @@ def test_new_draft_is_not_hidden_by_an_older_public_snapshot(publication_setting
 
     def reject_first(payload):
         if "first" in payload['note']:
-            raise RuntimeError("first rejected")
+            raise RequestException("first rejected")
         return create_draft(payload)
 
     def publish_then_timeout():
         publish_drafts()
-        raise RuntimeError("lost response")
+        raise RequestException("lost response")
 
     p.mr.draft_notes.create.side_effect = reject_first
-    p.mr.discussions.create.side_effect = RuntimeError("live rejected")
-    p.mr.notes.create.side_effect = RuntimeError("fallback rejected")
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.discussions.create.side_effect = RequestException("live rejected")
+    p.mr.notes.create.side_effect = RequestException("fallback rejected")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions([first, second]) is False
     p.mr.draft_notes.bulk_publish.side_effect = publish_then_timeout
     assert p.publish_code_suggestions([second]) is False
     assert len(p.mr.notes.list()) == 1
     p.mr.draft_notes.create.side_effect = create_draft
-    p.mr.draft_notes.list.side_effect = RuntimeError("cannot list")
+    p.mr.draft_notes.list.side_effect = RequestException("cannot list")
 
     assert p.publish_code_suggestions([first]) is False
     assert len(pending()) == 1
@@ -794,13 +836,13 @@ def test_code_duplicate_with_new_wording_can_verify_publication_after_listing_fa
     publication_settings(as_review=True, persistent=True)
     p = _gl_provider()
     publish_drafts = p.mr.draft_notes.bulk_publish.side_effect
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions([_suggestion()]) is False
     retry = _gl_provider()
     retry.mr = p.mr
     # Load the old pending marker, then lose the draft endpoint for subsequent calls.
     dedup.get_inline_comment_store(retry).load()
-    retry.mr.draft_notes.list.side_effect = RuntimeError("cannot list")
+    retry.mr.draft_notes.list.side_effect = RequestException("cannot list")
     reworded = _suggestion(body=_suggestion()['body'].replace("fix it", "another explanation"))
     assert retry.publish_code_suggestions([reworded]) is False
     publish_drafts()
@@ -815,11 +857,11 @@ def test_initial_exception_does_not_leave_a_retry_identity_for_later_runs(public
     publication_settings(as_review=True)
     p = _gl_provider()
     method = getattr(p, failed_method)
-    method.side_effect = RuntimeError("transient diff API failure")
+    method.side_effect = RequestException("transient diff API failure")
     assert p.publish_code_suggestions([_suggestion()]) is False
     method.side_effect = None
     publish_drafts = p.mr.draft_notes.bulk_publish.side_effect
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions([_suggestion()]) is False
     assert len(p.mr.draft_notes.list()) == 1
     p.mr.draft_notes.bulk_publish.side_effect = publish_drafts
@@ -836,7 +878,7 @@ def test_live_mode_refreshes_markerless_drafts_without_hiding_pending_work(publi
     p = _gl_provider()
     publish = p.mr.draft_notes.bulk_publish.side_effect
     pending = p.mr.draft_notes.list.side_effect
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("cannot publish")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
     assert p.publish_code_suggestions([_suggestion()]) is False
     if not still_pending:
         publish()
@@ -848,9 +890,26 @@ def test_live_mode_refreshes_markerless_drafts_without_hiding_pending_work(publi
     assert len(pending()) == int(still_pending)
     if still_pending:
         publish()
-        p.mr.draft_notes.list.side_effect = RuntimeError("cannot refresh yet")
+        p.mr.draft_notes.list.side_effect = RequestException("cannot refresh yet")
         assert p.publish_code_suggestions([_suggestion(body="new live suggestion")]) is False
         p.mr.draft_notes.list.side_effect = pending
 
     assert p.publish_code_suggestions([_suggestion(body="independent live suggestion")]) is True
     assert p._code_suggestion_drafts_pending is False
+
+
+@pytest.mark.parametrize("endpoint", ["notes", "discussions", "draft_notes"])
+def test_publication_probes_do_not_hide_programming_errors(publication_settings, endpoint):
+    p = _gl_provider()
+    getattr(p.mr, endpoint).list.side_effect = TypeError("invalid response shape")
+    with pytest.raises(TypeError, match="invalid response shape"):
+        p._is_inline_comment_public("test-fingerprint", None)
+
+
+def test_pending_refresh_does_not_hide_programming_errors(publication_settings):
+    publication_settings(as_review=False)
+    p = _gl_provider()
+    p._code_suggestion_drafts_pending = True
+    p.mr.draft_notes.list.side_effect = TypeError("invalid pending response")
+    with pytest.raises(TypeError, match="invalid pending response"):
+        p.publish_code_suggestions([_suggestion()])

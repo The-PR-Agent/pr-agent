@@ -5,7 +5,9 @@ from typing import List, Optional
 
 from unidiff.errors import UnidiffParseError
 
+from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file, to_hunk_only_patch
@@ -120,6 +122,9 @@ class PlainDiffGitProvider(GitProvider):
             return  # don't emit "Preparing review..." placeholders to stdout
         self._write_output(pr_comment)
 
+    def supports_comment_publish_confirmation(self) -> bool:
+        return False
+
     def publish_structured_review(self, review: dict):
         if not self.json_output_path:
             return
@@ -136,9 +141,12 @@ class PlainDiffGitProvider(GitProvider):
 
     def is_supported(self, capability: str) -> bool:
         if capability in ["get_issue_comments", "create_inline_comment",
-                          "publish_inline_comments", "publish_file_comments",
-                          "get_labels"]:
+                          "publish_inline_comments",
+                          "get_labels", "edit_comment", "remove_comment"]:
             return False
+        return True
+
+    def supports_code_suggestions_artifact(self) -> bool:
         return True
 
     def get_languages(self):
@@ -175,17 +183,24 @@ class PlainDiffGitProvider(GitProvider):
         return ""
 
     # ---- code suggestions: rendered to stdout/--output (no hosting platform) ----
-    def publish_code_suggestion(self, body: str, relevant_file: str,
-                                relevant_lines_start: int, relevant_lines_end: int):
-        location = f"{relevant_file}:{relevant_lines_start}-{relevant_lines_end}"
-        self._write_output(f"### {location}\n\n{body}")
-
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         # The 'improve' tool calls this unconditionally; render the suggestions
         # as a single markdown document to stdout/--output instead of pushing
         # them to a (non-existent) hosting platform.
         if not code_suggestions:
             return True
+        return self.publish_code_suggestions_artifact(code_suggestions)
+
+    def publish_code_suggestions_artifact(
+            self, code_suggestions: list, artifact_footer: str = "",
+            no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
+        if not code_suggestions:
+            content = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{artifact_footer}"
+            if get_settings().get("config.output_run_details", False):
+                content += show_run_details(self.is_supported("gfm_markdown"))
+            self._write_output(content)
+            return True
+
         sections = ["## Code suggestions", ""]
         for s in code_suggestions:
             relevant_file = s.get("relevant_file", "")
@@ -196,7 +211,8 @@ class PlainDiffGitProvider(GitProvider):
                 sections.append(f"### {location}")
             sections.append(s.get("body", ""))
             sections.append("")
-        self._write_output("\n".join(sections).rstrip() + "\n")
+        content = "\n".join(sections).rstrip() + artifact_footer + "\n"
+        self._write_output(content)
         return True
 
     # ---- unsupported publish operations (no-op or NotImplementedError) ----

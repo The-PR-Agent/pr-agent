@@ -1,0 +1,88 @@
+version: 2
+
+updates:
+  # Python. `uv` rather than `pip`: it resolves through the uv CLI and rewrites
+  # pyproject.toml alongside uv.lock, so the declared pins here — which carry
+  # policy, not just versions — do not drift away from the lock file.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      python-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
+    commit-message:
+      prefix: chore(deps)
+
+  # GitHub Actions. Every `uses:` here is `@<sha>  # vX.Y.Z` on one line, which
+  # is the format Dependabot rewrites, comment included.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      actions-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
+    ignore:
+      # .github/workflows/pr-agent-review.yaml pins this action to a commit on
+      # `main`, not to a release. There is no version to bump to, and the
+      # documented behaviour for an untagged sha is to move it to whatever HEAD
+      # happens to be. Moving the self-review action is a deliberate act.
+      - dependency-name: Codium-ai/pr-agent
+    commit-message:
+      prefix: chore(ci)
+
+  # Base images. The docker file fetcher matches any file whose name contains
+  # "dockerfile", so `/` picks up Dockerfile.github_action_dockerhub and
+  # `/docker` picks up both Dockerfile and Dockerfile.lambda.
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /docker
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    ignore:
+      # Dockerfile.github_action_dockerhub builds FROM this project's own
+      # published image, tracked by a stage tag rather than a version.
+      - dependency-name: pragent/pr-agent
+    commit-message:
+      prefix: chore(docker)
+
+  # Hook revisions in .pre-commit-config.yaml. The `local` repo has no upstream
+  # and is left alone by the ecosystem.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore(pre-commit)

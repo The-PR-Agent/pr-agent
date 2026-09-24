@@ -1,10 +1,13 @@
 import copy
 import json
+from unittest.mock import Mock
 
 import pytest
 
+import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.servers.github_action_runner as github_action_runner
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 
 
 def test_is_true_accepts_bool_and_case_insensitive_true_string():
@@ -22,6 +25,64 @@ async def test_run_action_returns_when_required_env_is_missing(monkeypatch, caps
     await github_action_runner.run_action()
 
     assert "GITHUB_EVENT_NAME not set" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_direct_auto_tool_notifies_and_reraises_incomplete_constructor_error(monkeypatch):
+    error = IncompletePullRequestFilesError("private repository details")
+    notify = Mock()
+
+    class IncompleteTool:
+        def __init__(self, _pr_url):
+            raise error
+
+    monkeypatch.setattr(github_action_runner, "publish_incomplete_github_files_comment", notify)
+
+    with pytest.raises(IncompletePullRequestFilesError) as raised:
+        await github_action_runner._run_auto_tool(IncompleteTool, "https://example/pr/1")
+
+    assert raised.value is error
+    notify.assert_called_once_with("https://example/pr/1")
+
+
+@pytest.mark.asyncio
+async def test_direct_auto_tool_leaves_unexpected_constructor_error_unchanged(monkeypatch):
+    error = RuntimeError("unrelated")
+    notify = Mock()
+
+    class BrokenTool:
+        def __init__(self, _pr_url):
+            raise error
+
+    monkeypatch.setattr(github_action_runner, "publish_incomplete_github_files_comment", notify)
+
+    with pytest.raises(RuntimeError) as raised:
+        await github_action_runner._run_auto_tool(BrokenTool, "https://example/pr/1")
+
+    assert raised.value is error
+    notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_auto_tool_publishes_and_preserves_error_when_comment_decode_fails(
+    monkeypatch
+):
+    error = IncompletePullRequestFilesError("private repository details")
+    provider = Mock()
+    provider.get_issue_comments_newest_first.return_value = [object()]
+    provider._get_comment_body.side_effect = RuntimeError("comment decoding failed")
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
+
+    class IncompleteTool:
+        def __init__(self, _pr_url):
+            raise error
+
+    with pytest.raises(IncompletePullRequestFilesError) as raised:
+        await github_action_runner._run_auto_tool(IncompleteTool, "https://example/pr/1")
+
+    assert raised.value is error
+    provider.publish_comment.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -272,7 +333,9 @@ async def test_review_submission_runs_configured_commands(monkeypatch, tmp_path,
             "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
             "GITHUB_ACTION_CONFIG.REVIEW_STATES": '["changes_requested"]',
             "GITHUB_ACTION_CONFIG.REVIEW_AUTHOR_TYPES": '["User"]',
-            "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS": '["/review"]',
+            "GITHUB_ACTION_CONFIG.REVIEW_COMMANDS": json.dumps([
+                "/review --pr_reviewer.extra_instructions='be concise please'"
+            ]),
             "GITHUB_ACTION_CONFIG.FEEDBACK_ON_DRAFT_PR": False,
         }
         return values.get(key, default)
@@ -281,7 +344,10 @@ async def test_review_submission_runs_configured_commands(monkeypatch, tmp_path,
 
     await github_action_runner.run_action()
 
-    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
+    assert handled == [(
+        "https://api.github.com/repos/org/repo/pulls/1",
+        ["/review", '--pr_reviewer.extra_instructions="be concise please"'],
+    )]
 
 
 @pytest.mark.asyncio
@@ -384,7 +450,7 @@ async def test_action_review_config_falls_back_to_app_and_overrides_it(
         app_review_states=["changes_requested"],
         app_review_commands=["/app-review"],
     )
-    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/app-review")]
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", ["/app-review"])]
 
     handled = await _run_review_action_with_settings(
         monkeypatch,
@@ -396,7 +462,7 @@ async def test_action_review_config_falls_back_to_app_and_overrides_it(
             "review_commands": ["/action-review"],
         },
     )
-    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/action-review")]
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", ["/action-review"])]
 
 
 @pytest.mark.asyncio
@@ -452,7 +518,9 @@ def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_tri
 @pytest.mark.asyncio
 async def test_synchronize_event_triggers_push_commands(monkeypatch, tmp_path, restore_github_settings):
     handled = []
-    _patch_synchronize_deps(monkeypatch, handled, ["/describe", "/improve"])
+    _patch_synchronize_deps(monkeypatch, handled, [
+        '/describe --pr_description.extra_instructions="true"', ["/improve", "literal 'text'"]
+    ])
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
@@ -460,10 +528,53 @@ async def test_synchronize_event_triggers_push_commands(monkeypatch, tmp_path, r
     await github_action_runner.run_action()
 
     assert handled == [
-        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
-        ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/describe", '--pr_description.extra_instructions="true"']),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve", "literal 'text'"]),
     ]
 
+
+@pytest.mark.parametrize("command", ['/review --pr_reviewer.extra_instructions="unfinished', "  "])
+def test_invalid_configured_command_fails_action_but_continues(
+    monkeypatch, tmp_path, restore_github_settings, command
+):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, [command, "/review"])
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    with pytest.raises(SystemExit) as error:
+        github_action_runner.main()
+
+    assert error.value.code == 1
+    assert handled == [("https://api.github.com/repos/org/repo/pulls/1", ["/review"])]
+
+def test_action_exits_nonzero_when_command_fails_and_continues(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = []
+    _patch_synchronize_deps(monkeypatch, handled, ["/review", "/improve"])
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            handled.append((url, body))
+            return body != ["/review"]
+
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    with pytest.raises(SystemExit) as exc_info:
+        github_action_runner.main()
+
+    assert exc_info.value.code == 1
+    assert handled == [
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/review"]),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve"]),
+    ]
 
 @pytest.mark.asyncio
 async def test_synchronize_skips_when_push_trigger_disabled(monkeypatch, tmp_path, restore_github_settings):
@@ -505,8 +616,8 @@ async def test_synchronize_event_triggers_push_commands_on_pull_request_target(
     await github_action_runner.run_action()
 
     assert handled == [
-        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
-        ("https://api.github.com/repos/org/repo/pulls/1", "/improve"),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/describe"]),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/improve"]),
     ]
 
 
@@ -557,7 +668,7 @@ async def test_synchronize_uses_github_action_config_push_commands(monkeypatch, 
     await github_action_runner.run_action()
 
     assert handled == [
-        ("https://api.github.com/repos/org/repo/pulls/1", "/describe"),
+        ("https://api.github.com/repos/org/repo/pulls/1", ["/describe"]),
     ]
 
 
@@ -574,6 +685,41 @@ async def test_issue_comment_from_user_is_processed(monkeypatch, tmp_path, resto
 
     assert handled == [("https://api.github.com/repos/org/repo/pulls/1", "/review")]
 
+
+@pytest.mark.asyncio
+async def test_issue_comment_not_starting_with_slash_is_skipped(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    """Regression for #3603: a plain comment must not fail the action run."""
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_issue_comment_event_with_body(tmp_path, "thanks!")),
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == []  # non-command comment skipped; action run stays green
+
+@pytest.mark.asyncio
+async def test_issue_comment_on_plain_issue_is_dispatched(monkeypatch, tmp_path, restore_github_settings):
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_plain_issue_comment_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [
+        (
+            "https://api.github.com/repos/org/repo/issues/1",
+            "/ask what is this issue about?",
+        )
+    ]
 
 def _write_workflow_run_event(tmp_path, originating_event="pull_request", pull_requests=None, conclusion="success"):
     if pull_requests is None:
@@ -723,6 +869,17 @@ def _write_issue_comment_event_with_body(tmp_path, body):
     }))
     return event_path
 
+def _write_plain_issue_comment_event(tmp_path):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "created",
+        "comment": {"body": "/ask what is this issue about?", "id": 123},
+        "issue": {
+            "url": "https://api.github.com/repos/org/repo/issues/1",
+        },
+        "sender": {"type": "User"},
+    }))
+    return event_path
 
 @pytest.mark.asyncio
 async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(

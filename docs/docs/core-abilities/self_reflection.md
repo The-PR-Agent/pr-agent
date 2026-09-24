@@ -1,4 +1,4 @@
-`Supported Git Platforms: GitHub, GitLab, Bitbucket`
+`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
 PR-Agent implements a **self-reflection** process where the AI model reflects, scores, and re-ranks its own suggestions, eliminating irrelevant or incorrect ones.
 This approach improves the quality and relevance of suggestions, saving users time and enhancing their experience.
@@ -38,8 +38,8 @@ This results in a more refined and valuable set of suggestions for the user, sav
 
 ## Example Results
 
-![self_reflection](https://codium.ai/images/pr_agent/self_reflection1.png){width=768}
-![self_reflection](https://codium.ai/images/pr_agent/self_reflection2.png){width=768}
+![self_reflection](../assets/self_reflection1.png){width=768}
+![self_reflection](../assets/self_reflection2.png){width=768}
 
 ## Appendix - Relevant Configuration Options
 

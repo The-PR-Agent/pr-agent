@@ -11,7 +11,7 @@ body:
       options:
         - "GitHub Cloud"
         - "GitHub Enterprise"
-        - "Gitlab"
+        - "GitLab"
         - "Bitbucket Cloud"
         - "Bitbucket Server"
         - "Azure"

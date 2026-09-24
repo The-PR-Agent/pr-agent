@@ -31,6 +31,8 @@ class RunDetails:
     # took over. Stays None when no prediction succeeded, which the renderer reads as
     # "nothing worth showing".
     model_used: Optional[str] = None
+    # Retain every model contributing to a merged review; keep scalar output for other tools.
+    models_used: list[str] = field(default_factory=list)
     # Sticky: once a fallback has won, a later success on the primary model must not
     # clear this, or the comment would hide that a fallback ran at all.
     fallback_used: bool = False
@@ -55,6 +57,10 @@ class RunDetails:
     # Monotonic reference taken when the collector is installed, i.e. at the top of the
     # tool's run(). Monotonic so that wall-clock adjustments cannot yield a negative duration.
     start_time: float = field(default_factory=time.monotonic)
+    # Set when a tool caught its own error and, because `propagate_tool_errors` is false by
+    # default, returned normally anyway. Without this a caller cannot tell a run that published
+    # nothing because it failed from one that had nothing to say.
+    command_failed: bool = False
 
     @property
     def duration_seconds(self) -> float:
@@ -88,6 +94,20 @@ def init_run_details() -> RunDetails:
 def get_run_details() -> Optional[RunDetails]:
     """Return the collector for the current run, or None if not initialized."""
     return _run_details.get()
+
+
+def record_command_failure() -> None:
+    """Mark the current run as failed, for a tool that is about to swallow its own error."""
+    details = get_run_details()
+    if details is None:
+        return
+    details.command_failed = True
+
+
+def command_failed() -> bool:
+    """Whether the current run recorded a swallowed failure."""
+    details = get_run_details()
+    return bool(details is not None and details.command_failed)
 
 
 def record_model_used(model: str, is_fallback: bool) -> None:

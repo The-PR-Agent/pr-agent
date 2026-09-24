@@ -1,6 +1,7 @@
 import copy
 import importlib
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import httpx
@@ -67,14 +68,17 @@ class _StubRequest:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event_key", ["pr:from_ref_updated", "repo:refs_changed"])
-async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(event_key, monkeypatch):
+@pytest.mark.parametrize("proceed", [True, False])
+async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(event_key, proceed, monkeypatch):
     # Regression test: "pr:from_ref_updated" used to be excluded from this branch and
     # fell through to the "Unsupported event" 400 response instead of running push commands.
     settings = get_settings()
     original_webhook_secret = settings.get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
     original_handle_push_trigger = settings.get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", None)
+    original_url = settings.get("BITBUCKET_SERVER.URL", None)
     settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
     settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", True)
+    settings.set("BITBUCKET_SERVER.URL", "https://bitbucket.example.com")
 
     monkeypatch.setattr(bitbucket_server_webhook, "apply_repo_settings", lambda url: None)
     monkeypatch.setattr(bitbucket_server_webhook, "should_process_pr_logic", lambda data: True)
@@ -83,6 +87,19 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
         "_get_commands_list_from_settings",
         lambda key: ["/review"] if key == "BITBUCKET_SERVER.PUSH_COMMANDS" else [],
     )
+    slots = []
+    commands = []
+
+    @asynccontextmanager
+    async def record_slot(key, **kwargs):
+        slots.append((key, kwargs))
+        yield proceed
+
+    async def record_commands(commands_to_run, url, _log_context):
+        commands.append((commands_to_run, url))
+
+    monkeypatch.setattr(bitbucket_server_webhook, "push_trigger_slot", record_slot)
+    monkeypatch.setattr(bitbucket_server_webhook, "_run_commands_sequentially", record_commands)
 
     payload = _bitbucket_server_payload()
     payload["eventKey"] = event_key
@@ -92,13 +109,18 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
     try:
         with request_cycle_context({}):
             response = await bitbucket_server_webhook.handle_webhook(background_tasks, request)
+            await background_tasks()
     finally:
         settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", original_webhook_secret)
         settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", original_handle_push_trigger)
+        settings.set("BITBUCKET_SERVER.URL", original_url)
 
     assert response.status_code == 200
     assert json.loads(response.body)["message"] == "success"
     assert len(background_tasks.tasks) == 1
+    expected_url = "https://bitbucket.example.com/projects/PROJ/repos/repo/pull-requests/7"
+    assert slots == [(expected_url, {"allow_backlog": True, "ttl": 300})]
+    assert commands == ([(["/review"], expected_url)] if proceed else [])
 
 
 def _gitlab_payload(**object_attributes):
@@ -620,15 +642,15 @@ async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, even
         module, "get_fork_safe_secret_provider", lambda: secret_provider
     )
     object_attributes = {
-        "action": "update" if event == "draft_ready" else event,
+        "action": "update" if event.startswith("draft_ready") else event,
         "draft": draft,
         "url": "https://gitlab.com/org/repo/-/merge_requests/1",
     }
-    if event == "update":
+    if event in ("update", "draft_ready_push"):
         object_attributes["oldrev"] = "previous-revision"
     data = _gitlab_payload(**object_attributes)
     data["object_kind"] = "merge_request"
-    if event == "draft_ready":
+    if event.startswith("draft_ready"):
         data["changes"] = {"draft": {"previous": True, "current": False}}
     try:
         response = await _post_gitlab_webhook(module.app, data)
@@ -637,6 +659,246 @@ async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, even
 
     assert response.status_code == 200
     return agent.commands, repo_settings_calls
+
+
+@pytest.mark.asyncio
+async def test_gitlab_push_uses_shared_dedupe_slot(gitlab_webhook_module, monkeypatch):
+    slots = []
+
+    @asynccontextmanager
+    async def reject_duplicate(key, **kwargs):
+        slots.append((key, kwargs))
+        yield False
+
+    monkeypatch.setattr(gitlab_webhook_module, "push_trigger_slot", reject_duplicate)
+    commands, _ = await _run_gitlab_pr_commands(
+        gitlab_webhook_module, monkeypatch, draft=False, repo_setting=False, event="update"
+    )
+
+    assert commands == []
+    assert slots == [
+        ("https://gitlab.com/org/repo/-/merge_requests/1", {"allow_backlog": True, "ttl": 300})
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("feedback_on_draft_pr", [True, False])
+async def test_gitlab_draft_ready_with_new_commits(gitlab_webhook_module, monkeypatch, feedback_on_draft_pr):
+    # One update clears the draft flag and carries commits. With draft feedback already on,
+    # the review has been running all along and only the push half is new, so it takes the
+    # push path through the dedupe slot instead of returning at the guard.
+    slots = []
+
+    @asynccontextmanager
+    async def record_slot(key, **kwargs):
+        slots.append((key, kwargs))
+        yield True
+
+    monkeypatch.setattr(gitlab_webhook_module, "push_trigger_slot", record_slot)
+    commands, _ = await _run_gitlab_pr_commands(
+        gitlab_webhook_module, monkeypatch, draft=False,
+        repo_setting=feedback_on_draft_pr, event="draft_ready_push",
+    )
+
+    assert commands == [["/review"]]
+    expected_slots = [("https://gitlab.com/org/repo/-/merge_requests/1", {"allow_backlog": True, "ttl": 300})]
+    assert slots == (expected_slots if feedback_on_draft_pr else [])
+
+
+@pytest.mark.asyncio
+async def test_gitea_push_uses_shared_dedupe_slot(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/review"])
+    slots = []
+    performed = []
+
+    @asynccontextmanager
+    async def reject_duplicate(key, **kwargs):
+        slots.append((key, kwargs))
+        yield False
+
+    async def perform_commands(*args):
+        performed.append(args)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", lambda _body: True)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", reject_duplicate)
+    monkeypatch.setattr(gitea_app, "_perform_commands_gitea", perform_commands)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert performed == []
+    assert slots == [(api_url, {"allow_backlog": True, "ttl": 300})]
+
+
+@pytest.mark.asyncio
+async def test_gitea_push_applies_repo_settings_before_effective_gate(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", False)
+    settings.set("GITEA.PUSH_COMMANDS", [])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.HANDLE_PUSH_TRIGGER", True)
+        get_settings().set("GITEA.PUSH_COMMANDS", ["/review"])
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    class Agent:
+        async def handle_request(self, _url, command):
+            calls.append(command)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    monkeypatch.setattr(gitea_app, "prepare_command", lambda command: command)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+    body = {
+        "pull_request": {"url": api_url},
+        "repository": {"full_name": "org/repo"},
+    }
+
+    try:
+        await gitea_app.handle_pr_event(body, "pull_request", "synchronized", Agent())
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert calls == ["settings", "filter", "slot", "/review"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repo_trigger", "repo_commands"),
+    [
+        (False, ["/review"]),
+        (True, []),
+    ],
+)
+async def test_gitea_effective_push_config_skips_before_reserving_slot(
+    monkeypatch, repo_trigger, repo_commands
+):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/host-review"])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.HANDLE_PUSH_TRIGGER", repo_trigger)
+        get_settings().set("GITEA.PUSH_COMMANDS", list(repo_commands))
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert calls == ["settings", "filter"]
+
+
+@pytest.mark.asyncio
+async def test_gitea_repo_filter_rejects_push_before_reserving_slot(monkeypatch):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    settings.set("GITEA.HANDLE_PUSH_TRIGGER", True)
+    settings.set("GITEA.PUSH_COMMANDS", ["/review"])
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return False
+
+    @asynccontextmanager
+    async def record_slot(_key, **_kwargs):
+        calls.append("slot")
+        yield True
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "push_trigger_slot", record_slot)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", "synchronized", RecordingAgent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+
+    assert calls == ["settings", "filter"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["opened", "reopened"])
+async def test_gitea_pr_event_applies_repo_settings_once_before_dispatch(monkeypatch, action):
+    settings = get_settings()
+    original_gitea = copy.deepcopy(settings.get("GITEA"))
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    calls = []
+
+    def apply_repo_settings(_url):
+        calls.append("settings")
+        get_settings().set("GITEA.PR_COMMANDS", ["/review"])
+
+    def should_process_pr_logic(_body):
+        calls.append("filter")
+        return True
+
+    class Agent:
+        async def handle_request(self, _url, command):
+            calls.append(command)
+
+    monkeypatch.setattr(gitea_app, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(gitea_app, "should_process_pr_logic", should_process_pr_logic)
+    monkeypatch.setattr(gitea_app, "prepare_command", lambda command: command)
+    api_url = "https://gitea.example.com/org/repo/pulls/1"
+
+    try:
+        await gitea_app.handle_pr_event(
+            {"pull_request": {"url": api_url}}, "pull_request", action, Agent()
+        )
+    finally:
+        settings.set("GITEA", original_gitea)
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert calls == ["settings", "filter", "/review"]
 
 
 @pytest.mark.asyncio
@@ -705,16 +967,48 @@ async def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_modu
     assert agent.commands == ["/review"]
 
 
-def test_gitlab_handle_ask_line_converts_new_line_diff_note_to_right_side_command(gitlab_webhook_module):
+@pytest.mark.parametrize(
+    "line_range, expected_start, expected_end, expected_side",
+    [
+        (
+            {
+                "start": {"type": "new", "new_line": 10, "old_line": 9},
+                "end": {"type": "new", "new_line": 12, "old_line": 11},
+            },
+            10,
+            12,
+            "RIGHT",
+        ),
+        (
+            {
+                "start": {"type": "old", "new_line": None, "old_line": 9},
+                "end": {"type": "old", "new_line": None, "old_line": 11},
+            },
+            9,
+            11,
+            "LEFT",
+        ),
+        (
+            {
+                "start": {"new_line": 10},
+                "end": {"new_line": 12},
+            },
+            10,
+            12,
+            "RIGHT",
+        ),
+    ],
+)
+def test_gitlab_handle_ask_line_selects_line_numbers_and_side_from_line_range(
+    gitlab_webhook_module, line_range, expected_start, expected_end, expected_side
+):
     data = {
         "object_attributes": {
             "discussion_id": "disc-1",
             "position": {
-                "new_path": "src/app.py",
-                "line_range": {
-                    "start": {"new_line": 10},
-                    "end": {"new_line": 12},
-                },
+                "new_path": "new/src/app.py",
+                "old_path": "old/src/app.py",
+                "line_range": line_range,
             },
         }
     }
@@ -722,9 +1016,60 @@ def test_gitlab_handle_ask_line_converts_new_line_diff_note_to_right_side_comman
     body = gitlab_webhook_module.handle_ask_line("/ask why this change?", data)
 
     assert body == (
-        "/ask_line --line_start=10 --line_end=12 --side=RIGHT "
-        "--file_name=src/app.py --comment_id=disc-1 why this change?"
+        [
+            "/ask_line",
+            f"--line_start={expected_start}",
+            f"--line_end={expected_end}",
+            f"--side={expected_side}",
+            "--file_name=new/src/app.py",
+            "--comment_id=disc-1",
+            "why this change?",
+        ]
     )
+
+
+def test_gitlab_handle_ask_line_only_strips_leading_ask_command(gitlab_webhook_module):
+    data = {
+        "object_attributes": {
+            "discussion_id": "disc-1",
+            "position": {
+                "new_path": "src/app.py",
+                "line_range": {
+                    "start": {"type": "new", "new_line": 10},
+                    "end": {"type": "new", "new_line": 10},
+                },
+            },
+        }
+    }
+
+    body = gitlab_webhook_module.handle_ask_line(
+        "/ask explain why /ask appears in the source",
+        data,
+    )
+
+    assert body[-1] == "explain why /ask appears in the source"
+
+
+def test_gitlab_handle_ask_line_keeps_question_as_one_argv_item(gitlab_webhook_module):
+    data = {
+        "object_attributes": {
+            "discussion_id": "disc-1",
+            "position": {
+                "new_path": "src/app.py",
+                "line_range": {
+                    "start": {"type": "new", "new_line": 10},
+                    "end": {"type": "new", "new_line": 10},
+                },
+            },
+        }
+    }
+
+    body = gitlab_webhook_module.handle_ask_line(
+        "/ask explain --file_name=not-a-cli-argument and keep spaces",
+        data,
+    )
+
+    assert body[-1] == "explain --file_name=not-a-cli-argument and keep spaces"
 
 
 @pytest.mark.parametrize(
@@ -818,3 +1163,281 @@ def test_gitlab_is_bot_user_skips_non_string_entries(gitlab_webhook_module):
         ) is False
     finally:
         settings.set("CONFIG.BOT_USER_INDICATORS", original_override)
+
+
+async def _run_gitlab_update(module, monkeypatch, *, oldrev, draft_ready, handle_push_trigger):
+    """Post one merge-request `update` and report which commands ran.
+
+    Distinct `pr_commands` and `push_commands` so the two paths can be told
+    apart: the shared helper above configures `/review` for both.
+    """
+    settings = get_settings()
+    original_is_auto_command = settings.get("CONFIG.IS_AUTO_COMMAND")
+    settings.set("GITLAB.PR_COMMANDS", ["/review"])
+    settings.set("GITLAB.PUSH_COMMANDS", ["/describe"])
+    settings.set("GITLAB.HANDLE_PUSH_TRIGGER", handle_push_trigger)
+    settings.set("GITLAB.FEEDBACK_ON_DRAFT_PR", False)
+
+    agent = RecordingAgent()
+    monkeypatch.setattr(module, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(module, "PRAgent", lambda: agent)
+    monkeypatch.setattr(
+        module,
+        "get_fork_safe_secret_provider",
+        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token"}'),
+    )
+
+    object_attributes = {
+        "action": "update",
+        "draft": False,
+        "url": "https://gitlab.com/org/repo/-/merge_requests/1",
+    }
+    if oldrev:
+        object_attributes["oldrev"] = "previous-revision"
+    data = _gitlab_payload(**object_attributes)
+    data["object_kind"] = "merge_request"
+    if draft_ready:
+        data["changes"] = {"draft": {"previous": True, "current": False}}
+    try:
+        response = await _post_gitlab_webhook(module.app, data)
+    finally:
+        settings.set("CONFIG.IS_AUTO_COMMAND", original_is_auto_command)
+
+    assert response.status_code == 200
+    return agent.commands
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handle_push_trigger", [False, True])
+async def test_gitlab_update_that_is_both_a_push_and_draft_ready_still_reviews(
+    gitlab_webhook_module, monkeypatch, handle_push_trigger
+):
+    """Marking an MR ready and pushing in one action must not run nothing.
+
+    Both `update` branches match this payload. The push branch was tested
+    first, so with `handle_push_trigger` false, the common workflow -- push the
+    last commit and clear the draft flag together -- returned having run no
+    command at all, silently. Draft-to-ready is the more significant of the two
+    transitions, so it wins in either setting rather than only when the push
+    branch declines.
+    """
+    commands = await _run_gitlab_update(
+        gitlab_webhook_module,
+        monkeypatch,
+        oldrev=True,
+        draft_ready=True,
+        handle_push_trigger=handle_push_trigger,
+    )
+    assert commands == [["/review"]]
+
+
+@pytest.mark.asyncio
+async def test_gitlab_push_only_update_still_takes_the_push_branch(
+    gitlab_webhook_module, monkeypatch
+):
+    """The reordering must not steal a plain push from `push_commands`."""
+    commands = await _run_gitlab_update(
+        gitlab_webhook_module,
+        monkeypatch,
+        oldrev=True,
+        draft_ready=False,
+        handle_push_trigger=True,
+    )
+    assert commands == [["/describe"]]
+
+
+def test_shared_should_process_pr_logic_rules():
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original = {
+        "ignore_repositories": settings.get("CONFIG.IGNORE_REPOSITORIES", []),
+        "ignore_pr_authors": settings.get("CONFIG.IGNORE_PR_AUTHORS", []),
+        "ignore_pr_title": settings.get("CONFIG.IGNORE_PR_TITLE", []),
+        "ignore_pr_labels": settings.get("CONFIG.IGNORE_PR_LABELS", []),
+        "ignore_pr_source_branches": settings.get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []),
+        "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
+    }
+    try:
+        # Verify the default permits processing
+        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
+        settings.set("CONFIG.IGNORE_PR_TITLE", [])
+        settings.set("CONFIG.IGNORE_PR_LABELS", [])
+        settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
+        settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
+
+        assert should_process_pr_logic(
+            title="feat: add feature",
+            sender="alice",
+            repo_full_name="org/repo",
+            labels=["enhancement"],
+            source_branch="feat/add-feature",
+            target_branch="main",
+        ) is True
+
+        # Verify repository ignore rules
+        settings.set("CONFIG.IGNORE_REPOSITORIES", ["^org/ignored-.*$"])
+        assert should_process_pr_logic(repo_full_name="org/ignored-repo") is False
+        assert should_process_pr_logic(repo_full_name="org/allowed-repo") is True
+        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+
+        # Verify author ignore rules
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^bot-.*$", "renovate"])
+        assert should_process_pr_logic(sender="bot-service") is False
+        assert should_process_pr_logic(sender="renovate") is False
+        assert should_process_pr_logic(sender="alice") is True
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
+
+        # Verify title ignore rules for both string and list formats
+        settings.set("CONFIG.IGNORE_PR_TITLE", "^WIP:")  # as single string
+        assert should_process_pr_logic(title="WIP: something") is False
+        assert should_process_pr_logic(title="feat: done") is True
+        settings.set("CONFIG.IGNORE_PR_TITLE", ["^WIP:", "^Draft:"])  # as list
+        assert should_process_pr_logic(title="Draft: something") is False
+        assert should_process_pr_logic(title="feat: done") is True
+        settings.set("CONFIG.IGNORE_PR_TITLE", [])
+
+        # Verify label ignore rules
+        settings.set("CONFIG.IGNORE_PR_LABELS", ["skip-review", "do-not-merge"])
+        assert should_process_pr_logic(labels=["skip-review", "bug"]) is False
+        assert should_process_pr_logic(labels=["bug"]) is True
+        settings.set("CONFIG.IGNORE_PR_LABELS", [])
+
+        # Verify source and target branch ignore rules
+        settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^release/.*$"])
+        settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^production$"])
+        assert should_process_pr_logic(source_branch="release/1.0", target_branch="main") is False
+        assert should_process_pr_logic(source_branch="feature/test", target_branch="production") is False
+        assert should_process_pr_logic(source_branch="feature/test", target_branch="main") is True
+    finally:
+        for k, v in original.items():
+            settings.set(f"CONFIG.{k.upper()}", v)
+
+
+def test_shared_should_process_pr_logic_payload_parsing():
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original_repos = settings.get("CONFIG.IGNORE_REPOSITORIES", [])
+    settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
+    try:
+        # Verify GitHub payload parsing
+        gh_payload = {
+            "pull_request": {"title": "GH PR", "head": {"ref": "feat"}, "base": {"ref": "main"}},
+            "repository": {"full_name": "ignore-org/repo"},
+            "sender": {"login": "gh-user"},
+        }
+        assert should_process_pr_logic(gh_payload) is False
+
+        # Verify GitLab payload parsing
+        gl_payload = {
+            "object_attributes": {"title": "GL MR", "source_branch": "feat", "target_branch": "main"},
+            "project": {"path_with_namespace": "ignore-org/repo"},
+            "user": {"username": "gl-user"},
+        }
+        assert should_process_pr_logic(gl_payload) is False
+
+        # Verify a GitLab non-merge payload is rejected
+        assert should_process_pr_logic({}, provider="gitlab") is False
+
+        # Verify Bitbucket Cloud payload parsing
+        bb_cloud_payload = {
+            "data": {
+                "pullrequest": {
+                    "title": "BB PR",
+                    "destination": {"repository": {"full_name": "ignore-org/repo"}},
+                }
+            }
+        }
+        assert should_process_pr_logic(bb_cloud_payload) is False
+
+        # Verify Bitbucket Server payload parsing
+        bb_server_payload = {
+            "pullRequest": {
+                "title": "BBS PR",
+                "toRef": {"repository": {"project": {"key": "ignore-org"}, "slug": "repo"}},
+            }
+        }
+        assert should_process_pr_logic(bb_server_payload) is False
+    finally:
+        settings.set("CONFIG.IGNORE_REPOSITORIES", original_repos)
+
+
+def test_shared_should_process_pr_logic_explicit_empty_overrides_payload():
+    """Verify that explicitly passing empty metadata overrides nonempty payload values."""
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original = {
+        "ignore_repositories": settings.get("CONFIG.IGNORE_REPOSITORIES", []),
+        "ignore_pr_authors": settings.get("CONFIG.IGNORE_PR_AUTHORS", []),
+        "ignore_pr_title": settings.get("CONFIG.IGNORE_PR_TITLE", []),
+        "ignore_pr_labels": settings.get("CONFIG.IGNORE_PR_LABELS", []),
+        "ignore_pr_source_branches": settings.get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []),
+        "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
+    }
+    settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
+    settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^ignore-bot$"])
+    settings.set("CONFIG.IGNORE_PR_TITLE", ["\\[WIP\\].*"])
+    settings.set("CONFIG.IGNORE_PR_LABELS", ["do-not-merge"])
+    settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^ignore-source$"])
+    settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^ignore-target$"])
+
+    try:
+        # Construct a payload that matches all ignore criteria
+        payload = {
+            "pull_request": {
+                "title": "[WIP] Feature",
+                "head": {"ref": "ignore-source"},
+                "base": {"ref": "ignore-target"},
+                "labels": [{"name": "do-not-merge"}],
+            },
+            "repository": {"full_name": "ignore-org/repo"},
+            "sender": {"login": "ignore-bot"},
+        }
+        # Verify the raw payload is rejected by ignore filters
+        assert should_process_pr_logic(payload) is False
+
+        # Verify overriding ignored fields with empty values permits processing
+        assert (
+            should_process_pr_logic(
+                payload,
+                repo_full_name="",
+                sender="",
+                title="",
+                labels=[],
+                source_branch="",
+                target_branch="",
+            )
+            is True
+        )
+    finally:
+        for k, v in original.items():
+            settings.set(f"CONFIG.{k.upper()}", v)
+
+
+def test_bitbucket_server_should_process_pr_logic_fails_open_on_filter_exception(monkeypatch):
+    """Verify a malformed filter regex fails open without reaching the folder filter."""
+    settings = get_settings()
+    original_title = settings.get("CONFIG.IGNORE_PR_TITLE", [])
+    original_folders = settings.config.get("allow_only_specific_folders", [])
+    settings.set("CONFIG.IGNORE_PR_TITLE", ["[unclosed"])
+    settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", ["allowed_dir"])
+
+    class _RejectingProvider:
+        def __init__(self, pr_url=None):
+            pass
+
+        def get_files(self):
+            return ["docs/readme.md"]
+
+    monkeypatch.setattr(
+        "pr_agent.git_providers.bitbucket_server_provider.BitbucketServerProvider", _RejectingProvider
+    )
+
+    try:
+        assert bitbucket_server_webhook.should_process_pr_logic(_bitbucket_server_payload(title="Test PR")) is True
+    finally:
+        settings.set("CONFIG.IGNORE_PR_TITLE", original_title)
+        settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", original_folders)

@@ -1,64 +1,79 @@
-FROM python:3.12.14-slim AS base
+FROM python:3.14.7-slim AS base
 COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
 
-RUN apt update && apt install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
+# litellm fetches its model cost map over the network at import time, so a
+# third-party change to that map can change runtime behavior with no image
+# change and no version bump. Use the map bundled with the litellm pinned in
+# uv.lock so every stage (test and runtime) behaves how it was built and tested
+# rather than tracking today's remote data; new models then arrive with a
+# deliberate litellm bump in the lockfile.
+ENV LITELLM_LOCAL_MODEL_COST_MAP=True
+
+RUN apt-get update && apt-get install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1
-ADD pyproject.toml uv.lock ./
-ADD docs docs
+COPY pyproject.toml uv.lock ./
+COPY docs docs
 RUN uv sync --frozen --no-install-project --no-dev
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 
 FROM base AS github_app
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.github_app:app"]
 
 FROM base AS bitbucket_app
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 CMD ["python", "pr_agent/servers/bitbucket_app.py"]
 
 FROM base AS bitbucket_server_webhook
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 CMD ["python", "pr_agent/servers/bitbucket_server_webhook.py"]
 
 FROM base AS github_polling
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 CMD ["python", "pr_agent/servers/github_polling.py"]
 
 FROM base AS github_action
-ADD pr_agent pr_agent
-ADD github_action/entrypoint.sh /
+COPY pr_agent pr_agent
+COPY github_action/entrypoint.sh /
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
 FROM base AS gitlab_webhook
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.gitlab_webhook:app"]
 
 FROM base AS azure_devops_webhook
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 CMD ["python", "pr_agent/servers/azuredevops_server_webhook.py"]
 
 FROM base AS gitea_app
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py","pr_agent.servers.gitea_app:app"]
 
 FROM base AS mosaico_agent
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 EXPOSE 9000
 CMD ["python", "pr_agent/mosaico/server.py"]
 
 
 FROM base AS test
+# The base stage pins LITELLM_LOCAL_MODEL_COST_MAP for every stage; kept here
+# only as documentation that the unit suite keys off the bundled cost map.
 RUN uv sync --frozen --no-install-project
-ADD pr_agent pr_agent
-ADD tests tests
-ADD .github/workflows/publish.yml .github/workflows/publish.yml
-ADD docker/mosaico docker/mosaico
+COPY pr_agent pr_agent
+COPY tests tests
+# Config the unit suite asserts against, copied file by file so an unrelated
+# workflow edit does not invalidate this layer.
+COPY .github/workflows/publish.yml .github/workflows/publish.yml
+COPY .github/workflows/build-and-test.yaml .github/workflows/build-and-test.yaml
+COPY docker/Dockerfile docker/Dockerfile
+COPY docker/Dockerfile.lambda docker/Dockerfile.lambda
+COPY docker/mosaico docker/mosaico
 
 FROM base AS cli
-ADD pr_agent pr_agent
+COPY pr_agent pr_agent
 RUN uv sync --frozen --no-dev && ln -s /app/.venv/bin/pr-agent /usr/local/bin/pr-agent
 ENTRYPOINT ["python", "pr_agent/cli.py"]

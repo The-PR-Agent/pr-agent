@@ -1,9 +1,14 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.git_providers.codecommit_provider import CodeCommitFile, CodeCommitProvider, PullRequestCCMimic
+from pr_agent.tools.pr_reviewer import PRReviewer
 
 
 class TestCodeCommitFile:
@@ -15,8 +20,16 @@ class TestCodeCommitFile:
         b_path = "path/to/file_b"
         b_blob_id = "67890"
         edit_type = EDIT_TYPE.ADDED
+        comparison_base_commit = "merge-base"
 
-        file = CodeCommitFile(a_path, a_blob_id, b_path, b_blob_id, edit_type)
+        file = CodeCommitFile(
+            a_path,
+            a_blob_id,
+            b_path,
+            b_blob_id,
+            edit_type,
+            comparison_base_commit=comparison_base_commit,
+        )
 
         assert file.a_path == a_path
         assert file.a_blob_id == a_blob_id
@@ -24,6 +37,7 @@ class TestCodeCommitFile:
         assert file.b_blob_id == b_blob_id
         assert file.edit_type == edit_type
         assert file.filename == b_path
+        assert file.comparison_base_commit == comparison_base_commit
 
 
 class TestCodeCommitProvider:
@@ -38,6 +52,75 @@ class TestCodeCommitProvider:
         provider.git_files = git_files
         provider.codecommit_client = MagicMock()
         return provider
+
+    @staticmethod
+    def _make_persistent_provider(targets=None):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.pr_url = (
+            "https://us-east-1.console.aws.amazon.com/codesuite/codecommit/"
+            "repositories/source-repository/pull-requests/321"
+        )
+        provider.diff_files = None
+        provider.git_files = []
+        provider.codecommit_client = MagicMock()
+        targets = targets or [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-1",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-1",
+                destination_branch="refs/heads/main",
+                merge_base="merge-base-1",
+            )
+        ]
+        provider.pr = PullRequestCCMimic("Persistent PR", [], targets=targets)
+        provider.pr.source_commit = targets[0].source_commit
+        provider.pr.source_branch = targets[0].source_branch
+        provider.pr.destination_commit = targets[0].destination_commit
+        provider.pr.destination_branch = targets[0].destination_branch
+        return provider
+
+    @staticmethod
+    def _comment(
+        body,
+        comment_id="comment-1",
+        created_at=None,
+        last_modified_at=None,
+        **overrides,
+    ):
+        comment = {
+            "commentId": comment_id,
+            "content": body,
+            "creationDate": created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "lastModifiedDate": last_modified_at or created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "authorArn": "arn:aws:iam::123456789012:user/pr-agent",
+        }
+        comment.update(overrides)
+        return comment
+
+    @staticmethod
+    def _comment_group(
+        *comments,
+        repository_name="source-repository",
+        before_commit_id="old-destination-commit",
+        after_commit_id="old-source-commit",
+        location=None,
+    ):
+        group = {
+            "repositoryName": repository_name,
+            "beforeCommitId": before_commit_id,
+            "afterCommitId": after_commit_id,
+            "comments": list(comments),
+        }
+        if location is not None:
+            group["location"] = location
+        return group
+
+    @staticmethod
+    def _successful_update_response(comment_id, body):
+        return {"comment": {"commentId": comment_id, "content": body, "deleted": False}}
 
     def test_get_diff_files_includes_deleted_file(self):
         provider = object.__new__(CodeCommitProvider)
@@ -127,13 +210,137 @@ class TestCodeCommitProvider:
             call("my_test_repo", "good.py", "source-commit"),
         ]
 
-    def test_get_diff_files_does_not_swallow_client_errors(self):
+    def test_get_diff_files_applies_ignore_rules_before_fetching_content(self):
+        ignored_file = CodeCommitFile(
+            "vendor/generated.py", "before-id", "vendor/generated.py", "after-id", EDIT_TYPE.MODIFIED
+        )
+        valid_file = CodeCommitFile("good.py", "before-id", "good.py", "after-id", EDIT_TYPE.MODIFIED)
+        provider = self._make_diff_provider([ignored_file, valid_file])
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
+        )
+
+        settings = MagicMock()
+        settings.ignore.regex = []
+        settings.ignore.glob = ["vendor/**"]
+        settings.config.get.return_value = []
+
+        with patch("pr_agent.algo.file_filter.get_settings", return_value=settings):
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert provider.codecommit_client.get_file.call_args_list == [
+            call("my_test_repo", "good.py", "destination-commit"),
+            call("my_test_repo", "good.py", "source-commit"),
+        ]
+
+    def test_get_diff_files_does_not_apply_first_target_ignore_rules_to_other_targets(self):
+        first_target = SimpleNamespace(
+            repository_name="repo-one",
+            source_commit="source-1",
+            destination_commit="destination-1",
+        )
+        second_target = SimpleNamespace(
+            repository_name="repo-two",
+            source_commit="source-2",
+            destination_commit="destination-2",
+        )
+        files = [
+            CodeCommitFile(
+                "one.py", "before-1", "one.py", "after-1", EDIT_TYPE.MODIFIED,
+                repository_name="repo-one",
+                source_commit="source-1",
+                destination_commit="destination-1",
+                comparison_base_commit="destination-1",
+            ),
+            CodeCommitFile(
+                "two.py", "before-2", "two.py", "after-2", EDIT_TYPE.MODIFIED,
+                repository_name="repo-two",
+                source_commit="source-2",
+                destination_commit="destination-2",
+                comparison_base_commit="destination-2",
+            ),
+        ]
+        provider = self._make_diff_provider(files)
+        provider.pr.targets = [first_target, second_target]
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo, _path, commit: b"before\n" if commit.startswith("destination-") else b"after\n"
+        )
+
+        with patch(
+            "pr_agent.git_providers.codecommit_provider.filter_ignored",
+            return_value=[],
+        ) as filter_ignored:
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["one.py", "two.py"]
+        filter_ignored.assert_not_called()
+
+    def test_get_diff_files_caches_empty_filtered_result(self):
+        ignored_file = CodeCommitFile(
+            "vendor/generated.py", "before-id", "vendor/generated.py", "after-id", EDIT_TYPE.MODIFIED
+        )
+        provider = self._make_diff_provider([ignored_file])
+
+        with patch(
+            "pr_agent.git_providers.codecommit_provider.filter_ignored",
+            return_value=[],
+        ) as filter_ignored:
+            first_result = provider.get_diff_files()
+            second_result = provider.get_diff_files()
+
+        assert first_result == []
+        assert second_result is first_result
+        filter_ignored.assert_called_once()
+        provider.codecommit_client.get_file.assert_not_called()
+
+    def test_get_diff_files_retries_after_client_error(self):
         file = CodeCommitFile("file.py", "before-id", "file.py", "after-id", EDIT_TYPE.MODIFIED)
         provider = self._make_diff_provider([file])
         provider.codecommit_client.get_file.side_effect = ValueError("AWS request failed")
 
         with pytest.raises(ValueError, match="AWS request failed"):
             provider.get_diff_files()
+
+        assert provider.diff_files is None
+
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["file.py"]
+        assert diff_files[0].base_file == "before\n"
+        assert diff_files[0].head_file == "after\n"
+        assert "-before" in diff_files[0].patch
+        assert "+after" in diff_files[0].patch
+
+    def test_get_repo_settings_ignores_source_branch_config(self):
+        provider = self._make_persistent_provider()
+        source_settings = b"[ignore]\nglob = ['**']\n"
+        destination_settings = b"[ignore]\nglob = ['vendor/**']\n"
+
+        def get_file(_repository, _path, commit, optional=False):
+            assert optional is True
+            if commit == "source-commit-1":
+                return source_settings
+            if commit == "destination-commit-1":
+                return destination_settings
+            raise AssertionError(f"unexpected commit: {commit}")
+
+        provider.codecommit_client.get_file.side_effect = get_file
+
+        settings = provider.get_repo_settings()
+
+        assert settings == destination_settings
+        assert settings != source_settings
+        provider.codecommit_client.get_file.assert_called_once_with(
+            "source-repository",
+            ".pr_agent.toml",
+            "destination-commit-1",
+            optional=True,
+        )
 
     def test_get_files_includes_differences_from_every_pull_request_target(self):
         provider = object.__new__(CodeCommitProvider)
@@ -149,6 +356,7 @@ class TestCodeCommitProvider:
             source_branch="feature/one",
             destination_commit="destination-commit-1",
             destination_branch="main",
+            merge_base="merge-base-1",
         )
         second_target = MagicMock(
             repository_name="destination-repository",
@@ -156,18 +364,50 @@ class TestCodeCommitProvider:
             source_branch="feature/two",
             destination_commit="destination-commit-2",
             destination_branch="release",
+            merge_base="merge-base-2",
         )
         provider.codecommit_client.get_pr.return_value = MagicMock(
             title="Multi-target PR",
             description="Review both targets",
             targets=[first_target, second_target],
         )
-        provider.codecommit_client.get_differences.side_effect = [
-            [MagicMock(before_blob_path="one.py", before_blob_id="before-1",
-                       after_blob_path="one.py", after_blob_id="after-1", change_type="M")],
-            [MagicMock(before_blob_path="two.py", before_blob_id="before-2",
-                       after_blob_path="two.py", after_blob_id="after-2", change_type="M")],
-        ]
+        differences_by_repository = {
+            "source-repository": [
+                MagicMock(
+                    before_blob_path="one.py",
+                    before_blob_id="before-1",
+                    after_blob_path="one.py",
+                    after_blob_id="after-1",
+                    change_type="M",
+                )
+            ],
+            "destination-repository": [
+                MagicMock(
+                    before_blob_path="two.py",
+                    before_blob_id="before-2",
+                    after_blob_path="two.py",
+                    after_blob_id="after-2",
+                    change_type="M",
+                )
+            ],
+        }
+
+        def get_differences(repository, comparison_base, _source_commit):
+            differences = differences_by_repository[repository]
+            if comparison_base.startswith("destination-"):
+                return [
+                    MagicMock(
+                        before_blob_path="target-only.py",
+                        before_blob_id="target-only-before",
+                        after_blob_path="",
+                        after_blob_id="",
+                        change_type="D",
+                    ),
+                    *differences,
+                ]
+            return differences
+
+        provider.codecommit_client.get_differences.side_effect = get_differences
 
         provider.pr = provider._get_pr()
         files = provider.get_files()
@@ -176,20 +416,23 @@ class TestCodeCommitProvider:
             "source-repository", "destination-repository"
         ]
         assert [file.filename for file in files] == ["one.py", "two.py"]
-        assert [(file.repository_name, file.destination_commit, file.source_commit) for file in files] == [
-            ("source-repository", "destination-commit-1", "source-commit-1"),
-            ("destination-repository", "destination-commit-2", "source-commit-2"),
+        assert [
+            (file.repository_name, file.comparison_base_commit, file.destination_commit, file.source_commit)
+            for file in files
+        ] == [
+            ("source-repository", "merge-base-1", "destination-commit-1", "source-commit-1"),
+            ("destination-repository", "merge-base-2", "destination-commit-2", "source-commit-2"),
         ]
         assert provider.codecommit_client.get_differences.call_args_list == [
-            call("source-repository", "destination-commit-1", "source-commit-1"),
-            call("destination-repository", "destination-commit-2", "source-commit-2"),
+            call("source-repository", "merge-base-1", "source-commit-1"),
+            call("destination-repository", "merge-base-2", "source-commit-2"),
         ]
 
         provider.codecommit_client.get_file.side_effect = (
             lambda repository, path, commit: {
-                ("source-repository", "one.py", "destination-commit-1"): b"before one\n",
+                ("source-repository", "one.py", "merge-base-1"): b"before one\n",
                 ("source-repository", "one.py", "source-commit-1"): b"after one\n",
-                ("destination-repository", "two.py", "destination-commit-2"): b"before two\n",
+                ("destination-repository", "two.py", "merge-base-2"): b"before two\n",
                 ("destination-repository", "two.py", "source-commit-2"): b"after two\n",
             }[(repository, path, commit)]
         )
@@ -199,6 +442,97 @@ class TestCodeCommitProvider:
             ("one.py", "before one\n", "after one\n"),
             ("two.py", "before two\n", "after two\n"),
         ]
+
+    def test_get_files_falls_back_to_destination_when_merge_base_is_missing(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.git_files = None
+        provider.codecommit_client = MagicMock()
+        provider.codecommit_client.get_differences.return_value = []
+        target = SimpleNamespace(
+            repository_name="source-repository",
+            source_commit="source-commit",
+            destination_commit="destination-commit",
+            merge_base="",
+        )
+        provider.pr = PullRequestCCMimic("Legacy target", [], targets=[target])
+        provider.pr.source_commit = target.source_commit
+        provider.pr.destination_commit = target.destination_commit
+
+        assert provider.get_files() == []
+        provider.codecommit_client.get_differences.assert_called_once_with(
+            "source-repository", "destination-commit", "source-commit"
+        )
+
+    def test_prepare_comment_body_caps_at_codecommit_limit(self):
+        # PostCommentForPullRequest rejects bodies above 10,240 characters and
+        # publish_comment raises instead of degrading (#3272). The cap must be
+        # measured AFTER the newline doubling, which grows the body.
+        provider = self._make_persistent_provider()
+        body = "\n".join(["x" * 100] * 120)  # 12,099 chars before doubling
+
+        prepared = provider._prepare_comment_body(body)
+
+        assert len(prepared) <= 10240
+        assert prepared.endswith("...")
+        assert "\n\n" in prepared
+
+    def test_prepare_comment_body_keeps_review_state_marker_parseable(self):
+        # The reviewer budgets the hidden state marker before the newline
+        # doubling; once doubled, the body can exceed the cap. Only the human
+        # text may be truncated, or the next run cannot read the state.
+        from pr_agent.algo.review_finding_state import append_review_state, parse_review_state
+
+        provider = self._make_persistent_provider()
+        state = {
+            "schema_version": 1,
+            "last_run": {"commit": "abc123"},
+            "findings": [
+                {"finding_id": f"f{i}", "state": "ACTIVE", "path": "a.py", "body": "x" * 40}
+                for i in range(20)
+            ],
+        }
+        review = "\n".join(["r" * 24] * 400)
+        body = append_review_state(review, state, max_chars=10240 - 3)
+        assert len(body) <= 10240 - 3
+
+        prepared = provider._prepare_comment_body(body)
+
+        assert len(prepared) <= 10240
+        parsed = parse_review_state(prepared)
+        assert parsed.valid
+        assert [f["finding_id"] for f in parsed.state["findings"]] == [f"f{i}" for i in range(20)]
+        assert prepared.rstrip().endswith("-->")
+        assert "..." in prepared
+
+    def test_class_docstring_survives_the_comment_limit_attribute(self):
+        assert CodeCommitProvider.__doc__ is not None
+        assert "CodeCommit" in CodeCommitProvider.__doc__
+
+    def test_prepare_comment_body_leaves_short_comment_alone(self):
+        provider = self._make_persistent_provider()
+
+        assert provider._prepare_comment_body("line one\nline two") == "line one\n\nline two"
+
+    def test_publish_comment_sends_capped_body(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.publish_comment.return_value = {"comment": {}}
+
+        provider.publish_comment("\n".join(["y" * 100] * 120))
+
+        sent = provider.codecommit_client.publish_comment.call_args.kwargs["comment"]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
+
+    def test_edit_comment_sends_capped_body(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.update_comment.return_value = {"comment": {}}
+
+        provider.edit_comment({"id": "comment-1"}, "\n".join(["z" * 100] * 120))
+
+        sent = provider.codecommit_client.update_comment.call_args.args[1]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
 
     def test_publish_comment_uses_every_pull_request_target(self):
         provider = object.__new__(CodeCommitProvider)
@@ -213,11 +547,13 @@ class TestCodeCommitProvider:
                     repository_name="source-repository",
                     source_commit="source-commit-1",
                     destination_commit="destination-commit-1",
+                    merge_base="merge-base-1",
                 ),
                 MagicMock(
                     repository_name="destination-repository",
                     source_commit="source-commit-2",
                     destination_commit="destination-commit-2",
+                    merge_base="merge-base-2",
                 ),
             ],
         )
@@ -241,6 +577,482 @@ class TestCodeCommitProvider:
             ),
         ]
 
+    def test_persistent_review_creates_then_updates_each_pull_request_target(self):
+        targets = [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-1",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-1",
+                destination_branch="refs/heads/main",
+                merge_base="merge-base-1",
+            ),
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-2",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-2",
+                destination_branch="refs/heads/release",
+                merge_base="merge-base-2",
+            ),
+        ]
+        provider = self._make_persistent_provider(targets=targets)
+        provider.codecommit_client.get_comments_for_pull_request.return_value = []
+
+        def publish_comment(**kwargs):
+            return {
+                "comment": self._comment(
+                    kwargs["comment"],
+                    comment_id=f"comment-{kwargs['source_commit']}",
+                )
+            }
+
+        provider.codecommit_client.publish_comment.side_effect = publish_comment
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+        header = "## Team Review"
+
+        created = provider.publish_persistent_comment(
+            f"{header}\n\nfirst review",
+            initial_header=header,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+        first_bodies = {
+            call.kwargs["source_commit"]: call.kwargs["comment"]
+            for call in provider.codecommit_client.publish_comment.call_args_list
+        }
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(first_bodies["source-commit-1"], comment_id="comment-source-commit-1"),
+                before_commit_id="destination-commit-1",
+                after_commit_id="source-commit-1",
+            ),
+            self._comment_group(
+                self._comment(first_bodies["source-commit-2"], comment_id="comment-source-commit-2"),
+                before_commit_id="destination-commit-2",
+                after_commit_id="source-commit-2",
+            ),
+        ]
+        provider.codecommit_client.publish_comment.reset_mock()
+
+        updated = provider.publish_persistent_comment(
+            f"{header}\n\nsecond review",
+            initial_header=header,
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert [comment.id for comment in created] == ["comment-source-commit-1", "comment-source-commit-2"]
+        assert [comment.id for comment in updated] == ["comment-source-commit-1", "comment-source-commit-2"]
+        provider.codecommit_client.publish_comment.assert_not_called()
+        assert provider.codecommit_client.update_comment.call_count == 2
+        update_bodies = {
+            call.args[0]: call.args[1]
+            for call in provider.codecommit_client.update_comment.call_args_list
+        }
+        assert set(update_bodies) == {"comment-source-commit-1", "comment-source-commit-2"}
+        assert PRReviewIdentity.REGULAR.value in first_bodies["source-commit-1"]
+        assert PRReviewIdentity.REGULAR.value in update_bodies["comment-source-commit-1"]
+        assert PRReviewIdentity.REGULAR.value in update_bodies["comment-source-commit-2"]
+        assert "second review" in update_bodies["comment-source-commit-1"]
+        assert "Review updated until commit source-commit-1" in update_bodies["comment-source-commit-1"]
+        assert "Review updated until commit source-commit-2" in update_bodies["comment-source-commit-2"]
+
+    def test_persistent_review_updates_comment_from_older_commit_pair_for_single_target(self):
+        provider = self._make_persistent_provider()
+        existing_body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(existing_body, comment_id="older-commit-comment"),
+                before_commit_id="older-destination-commit",
+                after_commit_id="older-source-commit",
+            )
+        ]
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+
+        result = provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert result.id == "older-commit-comment"
+        provider.codecommit_client.publish_comment.assert_not_called()
+        comment_id, updated_body = provider.codecommit_client.update_comment.call_args.args
+        assert comment_id == "older-commit-comment"
+        assert "Review updated until commit source-commit-1" in updated_body
+
+    def test_persistent_review_falls_back_to_new_comment_when_comment_listing_fails(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.get_comments_for_pull_request.side_effect = ValueError("AccessDenied")
+        provider.codecommit_client.publish_comment.return_value = {
+            "comment": self._comment("created body", comment_id="fallback-comment")
+        }
+
+        result = provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert result.id == "fallback-comment"
+        provider.codecommit_client.update_comment.assert_not_called()
+        provider.codecommit_client.publish_comment.assert_called_once()
+        assert PRReviewIdentity.REGULAR.value in provider.codecommit_client.publish_comment.call_args.kwargs["comment"]
+
+    def test_persistent_review_does_not_use_repository_only_match_for_multiple_targets(self):
+        targets = [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-1",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-1",
+                destination_branch="refs/heads/main",
+            ),
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-2",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-2",
+                destination_branch="refs/heads/release",
+            ),
+        ]
+        provider = self._make_persistent_provider(targets=targets)
+        existing_body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(existing_body, comment_id="unmatched-comment"),
+                before_commit_id="older-destination-commit",
+                after_commit_id="older-source-commit",
+            )
+        ]
+
+        provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.codecommit_client.update_comment.assert_not_called()
+        assert provider.codecommit_client.publish_comment.call_args_list == [
+            call(
+                repo_name="source-repository",
+                pr_number=321,
+                destination_commit="destination-commit-1",
+                source_commit="source-commit-1",
+                comment=provider.codecommit_client.publish_comment.call_args_list[0].kwargs["comment"],
+            ),
+            call(
+                repo_name="source-repository",
+                pr_number=321,
+                destination_commit="destination-commit-2",
+                source_commit="source-commit-2",
+                comment=provider.codecommit_client.publish_comment.call_args_list[1].kwargs["comment"],
+            ),
+        ]
+
+    def test_persistent_review_does_not_use_ambiguous_destination_match_for_multiple_targets(self):
+        targets = [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-a-new",
+                source_branch="refs/heads/feature-a",
+                destination_commit="shared-destination-commit",
+                destination_branch="refs/heads/main",
+            ),
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-b-new",
+                source_branch="refs/heads/feature-b",
+                destination_commit="shared-destination-commit",
+                destination_branch="refs/heads/main",
+            ),
+        ]
+        provider = self._make_persistent_provider(targets=targets)
+        existing_body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(
+                    existing_body,
+                    comment_id="target-b-old",
+                    created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                ),
+                before_commit_id="shared-destination-commit",
+                after_commit_id="source-commit-b-old",
+            ),
+            self._comment_group(
+                self._comment(
+                    existing_body,
+                    comment_id="target-a-old",
+                    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                ),
+                before_commit_id="shared-destination-commit",
+                after_commit_id="source-commit-a-old",
+            ),
+        ]
+
+        provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.codecommit_client.update_comment.assert_not_called()
+        assert [
+            call.kwargs["source_commit"]
+            for call in provider.codecommit_client.publish_comment.call_args_list
+        ] == ["source-commit-a-new", "source-commit-b-new"]
+
+    @pytest.mark.parametrize("raw_order", [("old", "new"), ("new", "old")])
+    def test_get_issue_comments_uses_oldest_first_creation_order_for_answer(self, raw_order):
+        provider = self._make_persistent_provider()
+        comments_by_name = {
+            "old": self._comment(
+                "older answer",
+                comment_id="old-comment",
+                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                last_modified_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+            ),
+            "new": self._comment(
+                "newer answer",
+                comment_id="new-comment",
+                created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            ),
+        }
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(*(comments_by_name[name] for name in raw_order))
+        ]
+
+        comments = provider.get_issue_comments()
+
+        assert provider.is_supported("get_issue_comments") is True
+        assert provider.supports_review_comment_identity() is True
+        assert [comment.id for comment in comments] == ["old-comment", "new-comment"]
+        assert comments[0].user.login == "arn:aws:iam::123456789012:user/pr-agent"
+        provider.codecommit_client.get_comments_for_pull_request.assert_called_once_with(321)
+
+    @pytest.mark.parametrize("raw_order", [("q-old", "a-old", "q-new", "a-new"), ("a-new", "q-new", "a-old", "q-old")])
+    def test_answer_mode_uses_newest_question_and_answer_after_oldest_first_sort(self, raw_order):
+        provider = self._make_persistent_provider()
+        bodies_by_name = {
+            "q-old": "Questions to better understand the PR:\n\nold question",
+            "a-old": "/answer old answer",
+            "q-new": "Questions to better understand the PR:\n\nnew question",
+            "a-new": "/answer new answer",
+        }
+        dates_by_name = {
+            "q-old": datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "a-old": datetime(2024, 1, 2, tzinfo=timezone.utc),
+            "q-new": datetime(2024, 1, 3, tzinfo=timezone.utc),
+            "a-new": datetime(2024, 1, 4, tzinfo=timezone.utc),
+        }
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                *(
+                    self._comment(
+                        bodies_by_name[name],
+                        comment_id=name,
+                        created_at=dates_by_name[name],
+                    )
+                    for name in raw_order
+                )
+            )
+        ]
+        reviewer = PRReviewer.__new__(PRReviewer)
+        reviewer.is_answer = True
+        reviewer.git_provider = provider
+
+        question, answer = reviewer._get_user_answers()
+
+        assert question == bodies_by_name["q-new"]
+        assert answer == bodies_by_name["a-new"]
+
+    @pytest.mark.parametrize("raw_order", [("old", "new"), ("new", "old")])
+    def test_persistent_review_updates_newest_duplicate_under_both_api_feed_orders(self, raw_order):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+        body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        comments_by_name = {
+            "old": self._comment(
+                body,
+                comment_id="old-comment",
+                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                last_modified_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+            ),
+            "new": self._comment(
+                body,
+                comment_id="new-comment",
+                created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            ),
+        }
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(*(comments_by_name[name] for name in raw_order))
+        ]
+
+        provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.codecommit_client.update_comment.assert_called_once()
+        assert provider.codecommit_client.update_comment.call_args.args[0] == "new-comment"
+        provider.codecommit_client.publish_comment.assert_not_called()
+
+    def test_get_issue_comments_filters_deleted_replies_inline_and_malformed_comments(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            "not a group",
+            self._comment_group(self._comment("valid old", comment_id="valid-old")),
+            self._comment_group(
+                self._comment("reply", comment_id="reply", inReplyTo="valid-old"),
+                self._comment("deleted", comment_id="deleted", deleted=True),
+                self._comment("missing id", commentId=None),
+                self._comment("", comment_id="empty-body"),
+                self._comment("bad timestamp", comment_id="bad-timestamp", creationDate="yesterday"),
+            ),
+            self._comment_group(
+                self._comment("inline", comment_id="inline"),
+                location={"filePath": "src/app.py", "filePosition": 7},
+            ),
+            self._comment_group(
+                self._comment(
+                    "valid new",
+                    comment_id="valid-new",
+                    created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                )
+            ),
+        ]
+
+        comments = provider.get_issue_comments()
+
+        assert [(comment.id, comment.body) for comment in comments] == [
+            ("valid-old", "valid old"),
+            ("valid-new", "valid new"),
+        ]
+
+    def test_persistent_review_migrates_legacy_heading_to_stable_identity(self):
+        provider = self._make_persistent_provider()
+        legacy_body = f"{PRReviewHeader.REGULAR.value} 🔍\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(self._comment(legacy_body, comment_id="legacy-comment"))
+        ]
+        provider.codecommit_client.update_comment.side_effect = self._successful_update_response
+
+        provider.publish_persistent_comment(
+            "## Custom Review\n\nnew review",
+            initial_header="## Custom Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        provider.codecommit_client.publish_comment.assert_not_called()
+        comment_id, updated_body = provider.codecommit_client.update_comment.call_args.args
+        assert comment_id == "legacy-comment"
+        assert updated_body.startswith("## Custom Review\n\n")
+        assert PRReviewIdentity.REGULAR.value in updated_body
+
+    def test_persistent_review_falls_back_to_new_comment_only_for_failed_target_update(self):
+        targets = [
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-1",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-1",
+                destination_branch="refs/heads/main",
+            ),
+            SimpleNamespace(
+                repository_name="source-repository",
+                source_commit="source-commit-2",
+                source_branch="refs/heads/feature",
+                destination_commit="destination-commit-2",
+                destination_branch="refs/heads/release",
+            ),
+        ]
+        provider = self._make_persistent_provider(targets=targets)
+        existing_body = f"## Team Review\n\n{PRReviewIdentity.REGULAR.value}\n\nprevious review"
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(
+                self._comment(existing_body, comment_id="comment-target-1"),
+                before_commit_id="destination-commit-1",
+                after_commit_id="source-commit-1",
+            ),
+            self._comment_group(
+                self._comment(existing_body, comment_id="comment-target-2"),
+                before_commit_id="destination-commit-2",
+                after_commit_id="source-commit-2",
+            ),
+        ]
+
+        def update_comment(comment_id, body):
+            if comment_id == "comment-target-2":
+                return {"comment": {"commentId": comment_id, "content": "unexpected body", "deleted": False}}
+            return self._successful_update_response(comment_id, body)
+
+        provider.codecommit_client.update_comment.side_effect = update_comment
+        provider.codecommit_client.publish_comment.return_value = {
+            "comment": self._comment("fallback body", comment_id="fallback-comment")
+        }
+
+        result = provider.publish_persistent_comment(
+            "## Team Review\n\nnew review",
+            initial_header="## Team Review",
+            final_update_message=False,
+            identity_marker=PRReviewIdentity.REGULAR.value,
+            legacy_initial_header=f"{PRReviewHeader.REGULAR.value} 🔍",
+        )
+
+        assert [comment.id for comment in result] == ["comment-target-1", "fallback-comment"]
+        assert provider.codecommit_client.update_comment.call_count == 2
+        provider.codecommit_client.publish_comment.assert_called_once()
+        assert provider.codecommit_client.publish_comment.call_args.kwargs["repo_name"] == "source-repository"
+        assert (
+            provider.codecommit_client.publish_comment.call_args.kwargs["destination_commit"]
+            == "destination-commit-2"
+        )
+        assert provider.codecommit_client.publish_comment.call_args.kwargs["source_commit"] == "source-commit-2"
+
+    def test_unmarked_persistent_comment_remains_create_only(self):
+        provider = self._make_persistent_provider()
+        provider.codecommit_client.get_comments_for_pull_request.return_value = [
+            self._comment_group(self._comment("## Title\n\nold description", comment_id="describe-comment"))
+        ]
+        provider.codecommit_client.publish_comment.return_value = {
+            "comment": self._comment("## Title\n\nnew description", comment_id="new-describe-comment")
+        }
+
+        result = provider.publish_persistent_comment(
+            "## Title\n\nnew description",
+            initial_header="## Title",
+            update_header=True,
+            name="describe",
+            final_update_message=False,
+        )
+
+        assert result.id == "new-describe-comment"
+        provider.codecommit_client.get_comments_for_pull_request.assert_not_called()
+        provider.codecommit_client.update_comment.assert_not_called()
+        provider.codecommit_client.publish_comment.assert_called_once()
+
+    def test_get_issue_comments_support_does_not_enable_gfm_improve_history(self):
+        provider = self._make_persistent_provider()
+
+        assert provider.is_supported("get_issue_comments") is True
+        assert provider.is_supported("gfm_markdown") is False
+
     def test_publish_code_suggestion_uses_target_that_contains_file(self):
         provider = object.__new__(CodeCommitProvider)
         provider.repo_name = "source-repository"
@@ -255,11 +1067,13 @@ class TestCodeCommitProvider:
                     repository_name="source-repository",
                     source_commit="source-commit-1",
                     destination_commit="destination-commit-1",
+                    merge_base="merge-base-1",
                 ),
                 MagicMock(
                     repository_name="destination-repository",
                     source_commit="source-commit-2",
                     destination_commit="destination-commit-2",
+                    merge_base="merge-base-2",
                 ),
             ],
         )
@@ -273,6 +1087,7 @@ class TestCodeCommitProvider:
                 repository_name="destination-repository",
                 source_commit="source-commit-2",
                 destination_commit="destination-commit-2",
+                comparison_base_commit="merge-base-2",
             )
         ]
 
@@ -352,79 +1167,44 @@ class TestCodeCommitProvider:
         assert not CodeCommitProvider._is_valid_codecommit_hostname("no-such-region.console.aws.amazon.com")
         assert not CodeCommitProvider._is_valid_codecommit_hostname("console.aws.amazon.com")
 
-    # Test that an error is raised when an invalid CodeCommit URL is provided to the set_pr() method of the CodeCommitProvider class.
+    # Error is raised when set_pr() receives an invalid CodeCommit URL.
     # Generated by CodiumAI
     def test_invalid_codecommit_url(self):
         provider = CodeCommitProvider()
         with pytest.raises(ValueError):
             provider.set_pr("https://example.com/codecommit/repositories/my_test_repo/pull-requests/4321")
 
-    def test_get_file_extensions(self):
+    def test_get_languages_matches_packing_and_combines_language_extensions(self):
         filenames = [
-            "app.py",
-            "cli.py",
-            "composer.json",
-            "composer.lock",
-            "hello.py",
-            "image1.jpg",
-            "image2.JPG",
-            "index.js",
-            "provider.py",
-            "README",
-            "test.py",
+            "src/one.cpp", "include/one.hpp", "src/two.C", "src/one.c",
+            "Dockerfile", "build.cmake.in", "app.py", "notes.unknown",
         ]
-        expected_extensions = [
-            ".py",
-            ".py",
-            ".json",
-            ".lock",
-            ".py",
-            ".jpg",
-            ".jpg",
-            ".js",
-            ".py",
-            "",
-            ".py",
-        ]
-        extensions = CodeCommitProvider._get_file_extensions(filenames)
-        assert extensions == expected_extensions
+        files = [SimpleNamespace(filename=name) for name in filenames]
+        provider = object.__new__(CodeCommitProvider)
+        provider.get_files = MagicMock(return_value=files)
 
-    def test_get_language_percentages(self):
-        extensions = [
-            ".py",
-            ".py",
-            ".json",
-            ".lock",
-            ".py",
-            ".jpg",
-            ".jpg",
-            ".js",
-            ".py",
-            "",
-            ".py",
-        ]
-        percentages = CodeCommitProvider._get_language_percentages(extensions)
-        assert percentages[".py"] == 45
-        assert percentages[".json"] == 9
-        assert percentages[".lock"] == 9
-        assert percentages[".jpg"] == 18
-        assert percentages[".js"] == 9
-        assert percentages[""] == 9
+        languages = provider.get_languages()
 
-        # The _get_file_extensions function needs the "." prefix on the extension,
-        # but the _get_language_percentages function will work with or without the "." prefix
-        extensions = [
-            "txt",
-            "py",
-            "py",
+        assert languages == pytest.approx({
+            "C++": 300 / 7, "C": 100 / 7, "Dockerfile": 100 / 7,
+            "CMake": 100 / 7, "Python": 100 / 7,
+        })
+        buckets = sort_files_by_main_languages(languages, files)
+        assert buckets == [
+            {"language": "C++", "files": files[:3]},
+            {"language": "C", "files": files[3:4]},
+            {"language": "Dockerfile", "files": files[4:5]},
+            {"language": "CMake", "files": files[5:6]},
+            {"language": "Python", "files": files[6:7]},
+            {"language": "Other", "files": files[7:]},
         ]
-        percentages = CodeCommitProvider._get_language_percentages(extensions)
-        assert percentages["py"] == 67
-        assert percentages["txt"] == 33
 
-        # test an empty list
-        percentages = CodeCommitProvider._get_language_percentages([])
-        assert percentages == {}
+    @pytest.mark.parametrize("filenames", [[], ["notes.unknown"]])
+    def test_get_languages_without_recognized_files(self, filenames):
+        provider = object.__new__(CodeCommitProvider)
+        provider.get_files = MagicMock(return_value=[SimpleNamespace(filename=name) for name in filenames])
+
+        assert provider.get_languages() == {}
 
     def test_get_edit_type(self):
         # Test that the _get_edit_type() function can convert a CodeCommit letter to an EDIT_TYPE enum
@@ -446,8 +1226,20 @@ class TestCodeCommitProvider:
         expect = "abc\n\ndef\n\n___\n\nghi\n\njkl\n\nmno\n\npqr\n\n"
         assert CodeCommitProvider._add_additional_newlines(input) == expect
         # a test example from a real PR
-        input = "## PR Type:\nEnhancement\n\n___\n## PR Description:\nThis PR introduces a new feature to the script, allowing users to filter servers by name.\n\n___\n## PR Main Files Walkthrough:\n`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n`bar`: The bar script has been updated to list stopped servers.\n"
-        expect = "## PR Type:\n\nEnhancement\n\n___\n\n## PR Description:\n\nThis PR introduces a new feature to the script, allowing users to filter servers by name.\n\n___\n\n## PR Main Files Walkthrough:\n\n`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n\n`bar`: The bar script has been updated to list stopped servers.\n\n"
+        input = (
+            "## PR Type:\nEnhancement\n\n___\n## PR Description:\n"
+            "This PR introduces a new feature to the script, allowing users to filter servers by name.\n\n"
+            "___\n## PR Main Files Walkthrough:\n"
+            "`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n"
+            "`bar`: The bar script has been updated to list stopped servers.\n"
+        )
+        expect = (
+            "## PR Type:\n\nEnhancement\n\n___\n\n## PR Description:\n\n"
+            "This PR introduces a new feature to the script, allowing users to filter servers by name.\n\n"
+            "___\n\n## PR Main Files Walkthrough:\n\n"
+            "`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n\n"
+            "`bar`: The bar script has been updated to list stopped servers.\n\n"
+        )
         assert CodeCommitProvider._add_additional_newlines(input) == expect
 
     def test_remove_markdown_html(self):

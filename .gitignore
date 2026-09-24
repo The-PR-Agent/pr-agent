@@ -14,6 +14,7 @@ dist/
 build/
 .DS_Store
 docs/.cache/
+docs/site/
 .qodo
 poetry.lock
 .log

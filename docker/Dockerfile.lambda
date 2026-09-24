@@ -1,5 +1,13 @@
-FROM public.ecr.aws/lambda/python:3.12 AS base
+# Keep :3.14 floating: AWS publishes no CPython patch tags for Lambda
+# bases, only the minor tag and per-build dated tags that rotate almost
+# daily. Chasing dated tags adds bump churn for no real benefit; minor
+# alignment with docker/Dockerfile is enforced by the CI version guard.
+FROM public.ecr.aws/lambda/python:3.14 AS base
 COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
+
+# Use the cost map bundled with the litellm pinned in uv.lock so lambda images
+# behave as built rather than fetching today's remote data at import time.
+ENV LITELLM_LOCAL_MODEL_COST_MAP=True
 
 RUN dnf update -y && \
     dnf install -y gcc python3-devel git && \
@@ -8,10 +16,19 @@ RUN dnf update -y && \
 # Build the locked environment at /opt/venv with uv; put its site-packages
 # on the Lambda runtime's import path alongside the task root via PYTHONPATH.
 ENV UV_COMPILE_BYTECODE=1 UV_PROJECT_ENVIRONMENT=/opt/venv
-ADD pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --no-dev --extra lambda --python /var/lang/bin/python3.12
-ENV PYTHONPATH="/opt/venv/lib/python3.12/site-packages:${LAMBDA_TASK_ROOT}"
+WORKDIR ${LAMBDA_TASK_ROOT}
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev --extra lambda --python /var/lang/bin/python3.14
+ENV PYTHONPATH="/opt/venv/lib/python3.14/site-packages:${LAMBDA_TASK_ROOT}"
 COPY pr_agent/ ${LAMBDA_TASK_ROOT}/pr_agent/
+RUN --mount=type=bind,source=docs/docs,target=/tmp/help-docs-source \
+    source_count="$(find /tmp/help-docs-source -type f -name '*.md' | wc -l)" && \
+    test "$source_count" -gt 0 && \
+    cd /tmp/help-docs-source && \
+    find . -type f -name '*.md' -exec sh -c 'for source in "$@"; do destination="${LAMBDA_TASK_ROOT}/pr_agent/_help_docs/${source#./}"; mkdir -p "$(dirname "$destination")"; cp "$source" "$destination"; done' sh {} + && \
+    destination_count="$(find "${LAMBDA_TASK_ROOT}/pr_agent/_help_docs" -type f | wc -l)" && \
+    test "$destination_count" -eq "$source_count" && \
+    test -z "$(find "${LAMBDA_TASK_ROOT}/pr_agent/_help_docs" -type f ! -name '*.md' -print -quit)"
 
 FROM base AS github_lambda
 CMD ["pr_agent.servers.github_lambda_webhook.lambda_handler"]

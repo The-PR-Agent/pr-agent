@@ -1,5 +1,8 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+from gitlab import GitlabCreateError
+
 from pr_agent.algo import inline_comment_dedup as d
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -69,11 +72,53 @@ def test_code_fingerprint_whitespace_insensitive():
     assert fp1 == fp2 and len(fp1) == 12
 
 
+def test_extract_suggestion_code_reads_rendered_diff_blocks():
+    body = ("**Suggestion:** use a set [best practice]\n\n\n"
+            "```diff\n-values = []\n+values = set()\n```")
+    assert d.extract_suggestion_code(body) == "values = set()"
+
+
+def test_extract_suggestion_code_diff_keeps_context_and_drops_removed_lines():
+    body = ("```diff\n"
+            "-def old(a, b):\n"
+            " def shared(x):\n"
+            "+def shared(x, y):\n"
+            "```")
+    assert d.extract_suggestion_code(body) == "def shared(x):\ndef shared(x, y):"
+
+
+def test_extract_suggestion_code_returns_none_for_empty_diff_block():
+    assert d.extract_suggestion_code("prose\n```diff\n```") is None
+
+
 def test_build_markers():
     assert d.build_markers("aaaaaaaaaaaa", None) == "<!-- pr-agent-dedup: aaaaaaaaaaaa -->"
     out = d.build_markers("aaaaaaaaaaaa", "bbbbbbbbbbbb")
     assert "<!-- pr-agent-dedup: aaaaaaaaaaaa -->" in out
     assert "<!-- pr-agent-dedup-code: bbbbbbbbbbbb -->" in out
+
+
+def test_build_markers_uses_bitbucket_hidden_form():
+    provider = MagicMock()
+    provider.supports_html_comment_markers.return_value = False
+
+    out = d.build_markers("aaaaaaaaaaaa", "bbbbbbbbbbbb", provider)
+
+    assert "<!-- pr-agent-dedup:" not in out
+    assert "[pr-agent-dedup: aaaaaaaaaaaa]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert "[pr-agent-dedup-code: bbbbbbbbbbbb]: https://github.com/The-PR-Agent/pr-agent" in out
+
+
+def test_key_issue_markers_use_bitbucket_hidden_form():
+    provider = MagicMock()
+    provider.supports_html_comment_markers.return_value = False
+
+    out = d.key_issue_body_with_markers("finding", "aaaaaaaaaaaa", "bbbbbbbbbbbb", git_provider=provider)
+
+    assert "<!--" not in out
+    assert "[pr-agent-dedup: aaaaaaaaaaaa]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert "[pr-agent-key-issue-location: bbbbbbbbbbbb]: https://github.com/The-PR-Agent/pr-agent" in out
+    assert d.marker_fingerprints(out) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
 
 
 def test_inline_comment_line_prefers_line():
@@ -131,6 +176,14 @@ def test_iter_unsupported_provider_raises():
         pass
 
 
+def test_iter_provider_with_persistent_comment_capability():
+    class Provider:
+        def get_persistent_comment_bodies(self):
+            return ["existing Bitbucket finding"]
+
+    assert list(d.iter_existing_inline_comment_bodies(Provider())) == ["existing Bitbucket finding"]
+
+
 def _azure_provider(existing_threads=None):
     provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
     provider.azure_devops_client = MagicMock()
@@ -141,9 +194,9 @@ def _azure_provider(existing_threads=None):
     return provider
 
 
-def test_inline_publication_verification_is_limited_to_azure_devops():
+def test_inline_publication_verification_supports_providers_with_comment_capability():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
-    assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
+    assert d.can_verify_inline_comment_publication(_gh_provider([])) is True
     assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
 
     class FooProvider:
@@ -214,6 +267,48 @@ def test_github_flag_off_publishes_unmarked():
     published = p.pr.create_review.call_args.kwargs["comments"]
     assert len(published) == 1
     assert "pr-agent-dedup" not in published[0]["body"]
+
+
+def test_github_comment_reads_include_existing_and_only_successful_new_bodies():
+    provider = _gh_provider(["existing inline body", "existing inline body", ""])
+    assert provider.get_persistent_comment_bodies() == ["existing inline body"]
+    assert provider.get_recent_inline_comment_bodies() == []
+
+    settings_patch = _patch_flag(False)
+    try:
+        provider.publish_inline_comments([{"path": "a.py", "line": 10, "body": "new inline body"}])
+    finally:
+        settings_patch.stop()
+
+    assert provider.get_recent_inline_comment_bodies() == ["new inline body"]
+    assert provider.get_persistent_comment_bodies() == ["new inline body", "existing inline body"]
+
+
+def test_github_failed_inline_publish_does_not_report_recent_body():
+    provider = _gh_provider([])
+    provider.pr.create_review.side_effect = RuntimeError("API unavailable")
+    settings_patch = _patch_flag(False)
+    try:
+        with pytest.raises(RuntimeError, match="API unavailable"):
+            provider.publish_inline_comments([{"path": "a.py", "line": 10, "body": "not posted"}])
+    finally:
+        settings_patch.stop()
+
+    assert provider.get_recent_inline_comment_bodies() == []
+
+
+def test_github_recent_inline_bodies_do_not_cross_prs():
+    provider = _gh_provider([])
+    provider.repo = "owner/repo"
+    provider.pr_num = 1
+    provider._published_inline_comment_bodies = ["from first PR"]
+    provider._inline_comment_store = object()
+    provider._get_pr = MagicMock(return_value=MagicMock())
+
+    provider.set_pr("https://github.com/owner/repo/pull/2")
+
+    assert provider.get_recent_inline_comment_bodies() == []
+    assert provider._inline_comment_store is None
 
 
 # --------------------------------------------------------------------------- #
@@ -409,7 +504,7 @@ def test_gitlab_skips_when_existing_discussion_has_marker():
 
 def test_gitlab_fallback_note_carries_marker_and_records():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = RuntimeError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,

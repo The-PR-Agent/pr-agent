@@ -1,8 +1,8 @@
 """get_version() must not trust a pyproject.toml that belongs to a different project."""
 import pytest
 
-from pr_agent.algo import utils
-from pr_agent.algo.utils import get_version
+from pr_agent.algo import run_output
+from pr_agent.algo.run_output import get_version
 
 INSTALLED_VERSION = "9.44.0-from-package-metadata"
 
@@ -10,7 +10,7 @@ INSTALLED_VERSION = "9.44.0-from-package-metadata"
 @pytest.fixture
 def installed_version(monkeypatch):
     """Make the package-metadata fallback return a recognizable sentinel."""
-    monkeypatch.setattr(utils, "version", lambda name: INSTALLED_VERSION)
+    monkeypatch.setattr(run_output, "version", lambda name: INSTALLED_VERSION)
     return INSTALLED_VERSION
 
 

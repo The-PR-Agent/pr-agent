@@ -1,11 +1,13 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
 
+from pr_agent.algo.pr_processing import retry_with_fallback_models
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import load_yaml
+from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import (
     PRDescription,
@@ -45,6 +47,7 @@ def _make_large_pr_instance(diff_files=None):
         FilePatchInfo("", "", "", "src/file1.py"),
         FilePatchInfo("", "", "", "src/file2.py"),
     ]
+    obj.ai_handler = MagicMock()
     obj.token_handler = MagicMock()
     obj.vars = {
         "title": "Test PR",
@@ -66,6 +69,180 @@ def _make_large_pr_instance(diff_files=None):
         "enable_pr_description": True,
     }
     return obj
+
+
+def _large_pr_chunks():
+    chunks = [
+        ["diff --git a/src/file1.py b/src/file1.py\n... file1 ..."],
+        ["diff --git a/src/file2.py b/src/file2.py\n... file2 ..."],
+    ]
+    return chunks, [10, 10], [], [], {}, [["src/file1.py"], ["src/file2.py"]]
+
+
+def _file_prediction(filename: str) -> str:
+    return f"""pr_files:
+- filename: {filename}
+  changes_title: Describe {filename}
+  changes_summary: File summary
+  label: enhancement"""
+
+
+def _header_prediction() -> str:
+    return """type:
+- Enhancement
+title: Partial description
+description: Summarizes the successfully described files."""
+
+
+@pytest.mark.asyncio
+async def test_normal_description_rejects_clipped_packed_diff():
+    tool = _make_large_pr_instance()
+    tool._description_prompt_handlers = {}
+    tool.ai_handler.chat_completion = AsyncMock()
+
+    class ClippingBudget:
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            return MagicMock(
+                optional_text=optional_text[:-1],
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    with patch(
+        "pr_agent.tools.pr_description.AttemptTokenBudget.for_prompt_attempt",
+        return_value=ClippingBudget(),
+    ):
+        with pytest.raises(ValueError, match="complete packed description diff"):
+            await tool._get_prediction("fallback-model", "complete-diff")
+
+    tool.ai_handler.chat_completion.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_large_pr_header_uses_shared_budget_and_allows_walkthrough_truncation():
+    tool = _make_large_pr_instance()
+    header_handler = MagicMock()
+    tool._description_prompt_handlers = {
+        "pr_description_only_description_prompts": header_handler,
+    }
+    tool.ai_handler.chat_completion = AsyncMock(return_value=(_header_prediction(), "stop"))
+
+    fitted = MagicMock(
+        optional_text="trimmed walkthrough\n...(truncated)\n",
+        system_prompt="fitted system",
+        user_prompt="fitted user",
+    )
+    budget = MagicMock()
+    budget.fit_prompt_variable.return_value = fitted
+
+    with patch(
+        "pr_agent.tools.pr_description.AttemptTokenBudget.for_attempt",
+        return_value=budget,
+    ) as budget_factory:
+        result = await tool._get_prediction(
+            "fallback-model",
+            "complete walkthrough",
+            prompt="pr_description_only_description_prompts",
+        )
+
+    budget_factory.assert_called_once_with(
+        "fallback-model",
+        header_handler,
+        output_token_reserve=tool.ai_handler.get_output_token_reserve,
+    )
+    budget.fit_prompt_variable.assert_called_once()
+    fit_args, fit_kwargs = budget.fit_prompt_variable.call_args
+    assert fit_args[1:] == ("diff", "complete walkthrough")
+    assert fit_kwargs == {
+        "ai_handler": tool.ai_handler,
+        "default_output_tokens": 1000,
+        "preserve_minimum": True,
+    }
+    tool.ai_handler.chat_completion.assert_awaited_once_with(
+        model="fallback-model",
+        temperature=get_settings().config.temperature,
+        system="fitted system",
+        user="fitted user",
+    )
+    assert tool.variables["diff"] == fitted.optional_text
+    assert result == _header_prediction()
+
+
+@pytest.mark.asyncio
+async def test_large_pr_header_rejects_required_prompt_overflow_before_dispatch():
+    tool = _make_large_pr_instance()
+    tool._description_prompt_handlers = {
+        "pr_description_only_description_prompts": MagicMock(),
+    }
+    tool.ai_handler.chat_completion = AsyncMock()
+
+    budget = MagicMock()
+    budget.fit_prompt_variable.side_effect = ValueError(
+        "The required prompt exceeds the token limit for small-model"
+    )
+
+    with patch(
+        "pr_agent.tools.pr_description.AttemptTokenBudget.for_attempt",
+        return_value=budget,
+    ):
+        with pytest.raises(ValueError, match="required prompt exceeds"):
+            await tool._get_prediction(
+                "small-model",
+                "walkthrough",
+                prompt="pr_description_only_description_prompts",
+            )
+
+    tool.ai_handler.chat_completion.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_empty_primary_description_diff_uses_fallback_model(monkeypatch):
+    obj = _make_large_pr_instance()
+    obj._get_prediction = AsyncMock(return_value=_header_prediction())
+    monkeypatch.setattr(
+        get_settings().pr_description,
+        "enable_large_pr_handling",
+        False,
+    )
+    monkeypatch.setattr(
+        get_settings().pr_description,
+        "enable_semantic_files_types",
+        False,
+    )
+
+    def get_pr_diff(_provider, _handler, model, **_kwargs):
+        if model == "primary-model":
+            return "", ["src/too-large.py"]
+        return "fallback diff", []
+
+    with (
+        patch("pr_agent.tools.pr_description.get_pr_diff", side_effect=get_pr_diff),
+        patch(
+            "pr_agent.tools.pr_description.fit_related_tickets_to_prompt_budget",
+            side_effect=lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (
+                raw_vars,
+                obj.token_handler,
+            ),
+        ),
+        patch(
+            "pr_agent.algo.pr_processing._get_all_models",
+            return_value=["primary-model", "fallback-model"],
+        ),
+        patch(
+            "pr_agent.algo.pr_processing._get_all_deployments",
+            return_value=[None, None],
+        ),
+        patch("pr_agent.algo.pr_processing.route_primary_model", return_value=None),
+    ):
+        await retry_with_fallback_models(obj._prepare_prediction, ModelType.WEAK)
+
+    obj._get_prediction.assert_awaited_once_with(
+        "fallback-model",
+        "fallback diff",
+        prompt="pr_description_prompt",
+    )
+    assert obj.patches_diff == "fallback diff"
+    assert obj.prediction == _header_prediction()
 
 
 def _mock_settings(pr_diagram_direction: str = 'adaptive', pr_diagram_direction_threshold: int = 5):
@@ -276,14 +453,12 @@ class TestPRDescriptionCore:
             "changes_diagram": "\n```mermaid\ngraph LR\nA --> B\n```",
         }
 
-        title, body, walkthrough, file_changes = obj._prepare_pr_answer_with_markers()
+        title, body = obj._prepare_pr_answer_with_markers()
 
         assert title == "AI title"
         assert "Bug fix" in body
         assert "Fixes the cache invalidation bug." in body
         assert "```mermaid" in body
-        assert walkthrough == ""
-        assert file_changes == []
 
     @pytest.mark.asyncio
     async def test_extend_uncovered_files_adds_missing_diff_files_to_prediction(self):
@@ -553,9 +728,11 @@ description: |
             _, diff_kwargs = mock_diff.call_args
             assert diff_kwargs.get("large_pr_handling") is True
             assert diff_kwargs.get("return_remaining_files") is True
+            assert diff_kwargs.get("output_token_reserve") is obj.ai_handler.get_output_token_reserve
 
             # Verify get_pr_diff_multiple_patchs was invoked
             mock_multi.assert_called_once()
+            assert mock_multi.call_args.kwargs["output_token_reserve"] is obj.ai_handler.get_output_token_reserve
 
         # Verify calls to prompts
         prompts_called = [p for p, _ in recorded_prompts]
@@ -582,6 +759,235 @@ description: |
         obj._prepare_data()
         assert obj.data["title"].strip() == "Combined PR Title"
         assert [f["filename"].strip() for f in obj.data["pr_files"]] == ["src/file1.py", "src/file2.py"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_calls", [True, False])
+    async def test_large_pr_retains_valid_chunk_when_sibling_raises(self, monkeypatch, async_calls):
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", async_calls)
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                return _header_prediction()
+            if "file1" in patches_diff:
+                return _file_prediction("src/file1.py")
+            raise RuntimeError("file2 transport failed")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ):
+            await obj._prepare_prediction("gpt-4o")
+
+        parsed = load_yaml(obj.prediction, keys_fix_yaml=obj.keys_fix)
+        assert [file["filename"].strip() for file in parsed["pr_files"]] == ["src/file1.py", "src/file2.py"]
+        assert parsed["pr_files"][1]["label"].strip() == "additional files"
+        assert obj.description_failed_chunk_count == 1
+        assert obj.description_total_chunk_count == 2
+        assert obj.description_failed_files == ["src/file2.py"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("malformed_prediction", [
+        "pr_files: []",
+        "pr_files:\n- not-a-file-record",
+        "pr_files:\n- {}",
+        """pr_files:
+- filename: src/file2.py
+  changes_title: Missing label
+  changes_summary: File summary
+  label:""",
+    ])
+    async def test_large_pr_retains_valid_chunk_when_sibling_is_malformed(
+            self, monkeypatch, malformed_prediction):
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                return _header_prediction()
+            if "file1" in patches_diff:
+                return _file_prediction("src/file1.py")
+            return malformed_prediction
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ):
+            await obj._prepare_prediction("gpt-4o")
+
+        parsed = load_yaml(obj.prediction, keys_fix_yaml=obj.keys_fix)
+        assert [file["filename"].strip() for file in parsed["pr_files"]] == ["src/file1.py", "src/file2.py"]
+        assert obj.description_failed_chunk_count == 1
+        assert obj.description_failed_files == ["src/file2.py"]
+
+    @pytest.mark.asyncio
+    async def test_large_pr_keeps_complete_records_from_mixed_chunk(self, monkeypatch):
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                return _header_prediction()
+            return """pr_files:
+- filename: src/file1.py
+  changes_title: Describe src/file1.py
+  changes_summary: File summary
+  label: enhancement
+- filename: src/file2.py
+  changes_title: Missing summary
+  label: enhancement"""
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=(
+                [["diff --git a/src/file1.py b/src/file1.py\n... file1 ...",
+                  "diff --git a/src/file2.py b/src/file2.py\n... file2 ..."]],
+                [20],
+                [],
+                [],
+                {},
+                [["src/file1.py", "src/file2.py"]],
+            ),
+        ):
+            await obj._prepare_prediction("gpt-4o")
+
+        parsed = load_yaml(obj.prediction, keys_fix_yaml=obj.keys_fix)
+        assert [file["filename"].strip() for file in parsed["pr_files"]] == ["src/file1.py", "src/file2.py"]
+        obj._prepare_data()
+        assert obj._prepare_file_labels() == {
+            "enhancement": [("src/file1.py", "Describe src/file1.py", "File summary")]
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("async_calls", [True, False])
+    async def test_large_pr_all_failed_chunks_raise_for_model_fallback(self, monkeypatch, async_calls):
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", async_calls)
+        chunk_calls = []
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            chunk_calls.append(patches_diff)
+            raise RuntimeError(f"{patches_diff.splitlines()[0]} failed")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ), pytest.raises(RuntimeError, match="file1.py"):
+            await obj._prepare_prediction("gpt-4o")
+
+        assert len(chunk_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_large_pr_all_malformed_chunks_raise_for_model_fallback(self, monkeypatch):
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+
+        obj._get_prediction = AsyncMock(return_value="pr_files:\n- not-a-file-record")
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ), pytest.raises(ValueError, match="invalid YAML"):
+            await obj._prepare_prediction("gpt-4o")
+
+        assert all(
+            call.kwargs["prompt"] == "pr_description_only_files_prompts"
+            for call in obj._get_prediction.await_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_large_pr_empty_chunk_keeps_result_associated_with_its_files(self, monkeypatch):
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        chunks = [[], ["diff --git a/src/file2.py b/src/file2.py\n... file2 ..."]]
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                return _header_prediction()
+            return _file_prediction("src/file2.py")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=(chunks, [0, 10], [], [], {}, [["src/file1.py"], ["src/file2.py"]]),
+        ):
+            await obj._prepare_prediction("gpt-4o")
+
+        assert obj.description_failed_files == ["src/file1.py"]
+        assert obj.description_failed_chunk_count == 1
+        assert len(obj._get_prediction.await_args_list) == 2  # one non-empty chunk and the header pass
+
+    @pytest.mark.asyncio
+    async def test_large_pr_chunk_cancellation_propagates(self, monkeypatch):
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            if "file2" in patches_diff:
+                raise asyncio.CancelledError()
+            return _file_prediction("src/file1.py")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ), pytest.raises(asyncio.CancelledError):
+            await obj._prepare_prediction("gpt-4o")
+
+    @pytest.mark.asyncio
+    async def test_large_pr_all_fail_then_fallback_model_keeps_partial_result(self, monkeypatch):
+        obj = _make_large_pr_instance()
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", True)
+        calls = []
+
+        async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
+            calls.append((model, prompt, patches_diff))
+            if model == "gpt-4o":
+                raise RuntimeError("primary chunk failed")
+            if prompt == "pr_description_only_description_prompts":
+                return _header_prediction()
+            if "file1" in patches_diff:
+                return _file_prediction("src/file1.py")
+            raise RuntimeError("fallback file2 failed")
+
+        obj._get_prediction = AsyncMock(side_effect=mock_get_prediction)
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=_large_pr_chunks(),
+        ), patch(
+            "pr_agent.algo.pr_processing._get_all_models", return_value=["gpt-4o", "gpt-4o-mini"]
+        ), patch(
+            "pr_agent.algo.pr_processing._get_all_deployments", return_value=[None, None]
+        ), patch(
+            "pr_agent.algo.pr_processing.route_primary_model", return_value=None
+        ):
+            await retry_with_fallback_models(obj._prepare_prediction, ModelType.WEAK)
+
+        assert [(model, prompt) for model, prompt, _ in calls] == [
+            ("gpt-4o", "pr_description_only_files_prompts"),
+            ("gpt-4o", "pr_description_only_files_prompts"),
+            ("gpt-4o-mini", "pr_description_only_files_prompts"),
+            ("gpt-4o-mini", "pr_description_only_files_prompts"),
+            ("gpt-4o-mini", "pr_description_only_description_prompts"),
+        ]
+        assert obj.description_failed_chunk_count == 1
+        assert obj.description_failed_files == ["src/file2.py"]
+
+    def test_description_coverage_footer_names_failed_chunks_and_files(self):
+        obj = _make_large_pr_instance()
+        obj.description_failed_chunk_count = 1
+        obj.description_total_chunk_count = 2
+        obj.description_failed_files = ["src/file2.py"]
+
+        footer = obj._get_description_coverage_footer()
+
+        assert "1 of 2 file-description chunks failed" in footer
+        assert "based on the successful chunks only" in footer
+        assert "`src/file2.py`" in footer
+        assert "<hr>" not in footer
 
     @pytest.mark.asyncio
     async def test_prepare_prediction_normal_diff_uses_single_prompt(self):
@@ -632,6 +1038,7 @@ pr_files:
                 return """pr_files:
 - filename: src/file1.py
   changes_title: Add diagram support
+  changes_summary: Adds diagram support.
   label: enhancement"""
             elif prompt == "pr_description_only_description_prompts":
                 return """type:

@@ -13,17 +13,21 @@
 * [BitBucket Integration](installation/bitbucket.md)
 * [Azure DevOps Integration](installation/azure.md)
 * [Gitea Integration](installation/gitea.md)
+* [MOSAICO A2A Server](installation/mosaico_server.md)
 
 ## Usage Guide
 
 * [Usage Guide](usage-guide/index.md)
 * [Introduction](usage-guide/introduction.md)
 * [Configuration File](usage-guide/configuration_options.md)
+* [Configuration Reference](usage-guide/configuration_reference.md)
 * [Usage and Automation](usage-guide/automations_and_usage.md)
 * [Managing Mail Notifications](usage-guide/mail_notifications.md)
+* [Push Outputs](usage-guide/push_outputs.md)
 * [Changing a Model](usage-guide/changing_a_model.md)
 * [Extending PR-Agent](usage-guide/extending_pr_agent.md)
 * [Additional Configurations](usage-guide/additional_configurations.md)
+* [Custom CA and Self-Signed Certificates](usage-guide/custom_ca_and_self_signed_certificates.md)
 * [Plain-Diff Mode](usage-guide/plain_diff_mode.md)
 * [Local Git Provider](usage-guide/local_git_provider.md)
 * [Frequently Asked Questions](faq/index.md)

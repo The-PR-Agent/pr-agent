@@ -1,3 +1,4 @@
+import hashlib
 import time
 from enum import Enum
 from typing import List
@@ -6,13 +7,15 @@ import openai
 from pydantic import BaseModel, Field
 
 from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo.token_budget import get_max_tokens
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger
 
 MODEL = "text-embedding-ada-002"
+PINECONE_UPSERT_READY_TIMEOUT_SECONDS = 30
+PINECONE_UPSERT_READY_POLL_SECONDS = 0.5
 
 
 _EMBEDDING_CLIENTS = {}
@@ -67,10 +70,116 @@ def _qdrant_collection_name(base_name: str) -> str:
     return f"{base_name}-v2"
 
 
+def _lancedb_similar_search(table, query_vector, repo_name_for_index):
+    """Search a lancedb table with the same cosine metric and five-hit limit as the other backends.
+
+    Pinecone and qdrant both return cosine similarity and request five hits; lancedb's default
+    squared-L2 metric would otherwise make ``1 - _distance`` meaningless. Cosine distance keeps the
+    printed score (``1 - _distance``) equal to the cosine similarity reported elsewhere.
+    """
+    return (
+        table.search(query_vector)
+        .distance_type("cosine")
+        .limit(5)
+        .where(f"metadata.repo='{repo_name_for_index}'", prefilter=True)
+        .to_list()
+    )
+
+
+def _pinecone_namespace(repo_full_name: str) -> str:
+    """Return a collision-resistant Pinecone namespace for a canonical repository name."""
+    return f"repo-{hashlib.sha256(repo_full_name.lower().encode()).hexdigest()}"
+
+
+def _raise_on_pinecone_upsert_errors(response):
+    """Raise when Pinecone reports asynchronous batch failures in the upsert response."""
+    response_dict = {}
+    if isinstance(response, dict):
+        response_dict = response
+    elif hasattr(response, "to_dict"):
+        response_dict = response.to_dict()
+
+    failed_item_count = getattr(response, "failed_item_count", response_dict.get("failed_item_count"))
+    has_errors = getattr(response, "has_errors", response_dict.get("has_errors", False))
+    if not has_errors and not failed_item_count:
+        return
+
+    errors = getattr(response, "errors", response_dict.get("errors")) or []
+    get_logger().error(
+        "Pinecone upsert failed",
+        artifact={
+            "failed_item_count": failed_item_count,
+            "errors": [_get_value(error, "error_message") for error in errors],
+        },
+    )
+    raise RuntimeError(f"Pinecone upsert failed for {failed_item_count} vectors")
+
+
+def _get_value(source, key, default=None):
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def _pinecone_response_info(response):
+    response_info = _get_value(response, "response_info")
+    if response_info is None and hasattr(response, "to_dict"):
+        response_info = response.to_dict().get("response_info")
+    return response_info
+
+
+def _pinecone_lsn_committed(response):
+    response_info = _pinecone_response_info(response)
+    return _get_value(response_info, "lsn_committed")
+
+
+def _pinecone_response_is_reconciled(response, target_lsn):
+    response_info = _pinecone_response_info(response)
+    if response_info is None:
+        return False
+    if hasattr(response_info, "is_reconciled"):
+        return response_info.is_reconciled(target_lsn)
+    lsn_reconciled = _get_value(response_info, "lsn_reconciled")
+    return lsn_reconciled is not None and lsn_reconciled >= target_lsn
+
+
+def _wait_for_pinecone_upsert_readiness(pinecone_index, upsert_response, namespace, vector_id):
+    target_lsn = _pinecone_lsn_committed(upsert_response)
+    if target_lsn is None:
+        get_logger().warning("Pinecone upsert response did not include an LSN; skipping readiness wait")
+        return
+
+    deadline = time.monotonic() + PINECONE_UPSERT_READY_TIMEOUT_SECONDS
+    while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Pinecone upsert was not query-ready after {PINECONE_UPSERT_READY_TIMEOUT_SECONDS}s")
+        fetch_response = pinecone_index.fetch(ids=[vector_id], namespace=namespace)
+        if _pinecone_response_is_reconciled(fetch_response, target_lsn):
+            return
+        time.sleep(PINECONE_UPSERT_READY_POLL_SECONDS)
+
+
+def _provider_supports_issue_indexing() -> bool:
+    """Whether the configured provider can back `/similar_issue`.
+
+    The check is on the provider class rather than on the configured id, so a provider
+    registered through `register_git_provider()` is judged by the capability it declares.
+    An unresolvable configuration is reported as unsupported, which is what the tool's
+    `run()` already handles, rather than raised out of `__init__`.
+    """
+    try:
+        provider_class = get_git_provider()
+    except ValueError:
+        return False
+    return provider_class.supports_issue_indexing()
+
+
 class PRSimilarIssue:
     def __init__(self, issue_url: str, ai_handler, args: list = None):
         self.issue_url = issue_url
-        self.supported = get_settings().config.git_provider == "github"
+        self.supported = _provider_supports_issue_indexing()
         if not self.supported:
             return
 
@@ -83,44 +192,45 @@ class PRSimilarIssue:
         self.token_handler = TokenHandler()
         repo_obj = self.git_provider.repo_obj
         repo_name_for_index = self.repo_name_for_index = repo_obj.full_name.lower().replace('/', '-').replace('_/', '-')
+        self.pinecone_namespace = _pinecone_namespace(repo_obj.full_name)
         index_name = self.index_name = "codium-ai-pr-agent-issues"
 
         if get_settings().pr_similar_issue.vectordb == "pinecone":
             try:
                 import pinecone
-            except:
-                raise Exception("Please install 'pinecone' and 'pinecone_datasets' to use pinecone as vectordb")
-            # assuming pinecone api key and environment are set in secrets file
+                from pinecone import ServerlessSpec
+            except ImportError:
+                raise Exception("Please install the 'pinecone' package to use pinecone as vectordb") from None
+            # assuming pinecone api key, cloud and region are set in secrets file
             try:
                 api_key = get_settings().pinecone.api_key
-                environment = get_settings().pinecone.environment
+                cloud = get_settings().pinecone.cloud
+                region = get_settings().pinecone.region
             except Exception:
                 if not self.cli_mode:
                     repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
                     issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
-                    issue_main.create_comment("Please set pinecone api key and environment in secrets file")
-                raise Exception("Please set pinecone api key and environment in secrets file")
+                    issue_main.create_comment("Please set pinecone api key, cloud and region in secrets file")
+                raise Exception("Please set pinecone api key, cloud and region in secrets file")
+            self.pc = pinecone.Pinecone(api_key=api_key)
+            self.pc_spec = ServerlessSpec(cloud=cloud, region=region)
+            self.pinecone_index = None
 
             # check if index exists, and if repo is already indexed
             run_from_scratch = False
-            if run_from_scratch:  # for debugging
-                pinecone.init(api_key=api_key, environment=environment)
-                if index_name in pinecone.list_indexes():
-                    get_logger().info('Removing index...')
-                    pinecone.delete_index(index_name)
-                    get_logger().info('Done')
-
             upsert = True
-            pinecone.init(api_key=api_key, environment=environment)
-            if index_name not in pinecone.list_indexes():
+            if not self.pc.has_index(index_name):
                 run_from_scratch = True
                 upsert = False
             else:
                 if get_settings().pr_similar_issue.force_update_dataset:
                     upsert = True
                 else:
-                    pinecone_index = pinecone.Index(index_name=index_name)
-                    res = pinecone_index.fetch([f"example_issue_{repo_name_for_index}"]).to_dict()
+                    self.pinecone_index = self.pc.Index(name=index_name)
+                    res = self.pinecone_index.fetch(
+                        ids=[f"example_issue_{repo_name_for_index}"],
+                        namespace=self.pinecone_namespace,
+                    ).to_dict()
                     if res["vectors"]:
                         upsert = False
 
@@ -130,33 +240,41 @@ class PRSimilarIssue:
                 get_logger().info('Getting issues...')
                 issues = list(repo_obj.get_issues(state='all'))
                 get_logger().info('Done')
-                self._update_index_with_issues(issues, repo_name_for_index, upsert=upsert)
+                self._update_index_with_issues(
+                    issues,
+                    repo_name_for_index,
+                    pinecone_namespace=self.pinecone_namespace,
+                    upsert=upsert,
+                )
             else:  # update index if needed
-                pinecone_index = pinecone.Index(index_name=index_name)
+                self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                counter = 1
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
                     issue_str, comments, number = self._process_issue(issue)
                     issue_key = f"issue_{number}"
                     id = issue_key + "." + "issue"
-                    res = pinecone_index.fetch([id]).to_dict()
+                    res = self.pinecone_index.fetch(ids=[id], namespace=self.pinecone_namespace).to_dict()
                     is_new_issue = True
                     for vector in res["vectors"].values():
                         if vector['metadata']['repo'] == repo_name_for_index:
                             is_new_issue = False
                             break
                     if is_new_issue:
-                        counter += 1
                         issues_to_update.append(issue)
                     else:
                         break
 
                 if issues_to_update:
-                    get_logger().info(f'Updating index with {counter} new issues...')
-                    self._update_index_with_issues(issues_to_update, repo_name_for_index, upsert=True)
+                    get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
+                    self._update_index_with_issues(
+                        issues_to_update,
+                        repo_name_for_index,
+                        pinecone_namespace=self.pinecone_namespace,
+                        upsert=True,
+                    )
                 else:
                     get_logger().info('No new issues to update')
 
@@ -169,25 +287,21 @@ class PRSimilarIssue:
             self.table = None
 
             run_from_scratch = False
-            if run_from_scratch:  # for debugging
-                if index_name in self.db.table_names():
-                    get_logger().info('Removing Table...')
-                    self.db.drop_table(index_name)
-                    get_logger().info('Done')
-
             ingest = True
-            if index_name not in self.db.table_names():
+            force_refresh = False
+            if not self._table_exists_in_db(index_name):
                 run_from_scratch = True
                 ingest = False
             else:
                 if get_settings().pr_similar_issue.force_update_dataset:
+                    force_refresh = True
                     ingest = True
                 else:
                     self.table = self.db[index_name]
-                    res = self.table.search().limit(len(self.table)).where(f"id='example_issue_{repo_name_for_index}'").to_list()
-                    get_logger().info("result: ", res)
-                    if res[0].get("vector"):
+                    if self._lancedb_repo_already_indexed(repo_name_for_index):
                         ingest = False
+                    else:
+                        force_refresh = True
 
             if run_from_scratch or ingest:  # indexing the entire repo
                 get_logger().info('Indexing the entire repo...')
@@ -196,11 +310,10 @@ class PRSimilarIssue:
                 issues = list(repo_obj.get_issues(state='all'))
                 get_logger().info('Done')
 
-                self._update_table_with_issues(issues, repo_name_for_index, ingest=ingest)
+                self._update_table_with_issues(issues, repo_name_for_index, ingest=ingest, force_refresh=force_refresh)
             else:  # update table if needed
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                counter = 1
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
@@ -214,13 +327,12 @@ class PRSimilarIssue:
                             is_new_issue = False
                             break
                     if is_new_issue:
-                        counter += 1
                         issues_to_update.append(issue)
                     else:
                         break
 
                 if issues_to_update:
-                    get_logger().info(f'Updating index with {counter} new issues...')
+                    get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
                     self._update_table_with_issues(issues_to_update, repo_name_for_index, ingest=True)
                 else:
                     get_logger().info('No new issues to update')
@@ -241,6 +353,9 @@ class PRSimilarIssue:
                 api_key = get_settings().qdrant.api_key
                 url = get_settings().qdrant.url
             except Exception:
+                url = None
+
+            if not url:
                 if not self.cli_mode:
                     repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
                     issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
@@ -281,7 +396,6 @@ class PRSimilarIssue:
             else:
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                counter = 1
                 for issue in issues_paginated_list:
                     if issue.pull_request:
                         continue
@@ -296,21 +410,30 @@ class PRSimilarIssue:
                         ]),
                     )
                     if response.count == 0:
-                        counter += 1
                         issues_to_update.append(issue)
                     else:
                         break
 
                 if issues_to_update:
-                    get_logger().info(f'Updating index with {counter} new issues...')
+                    get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
                     self._update_qdrant_with_issues(issues_to_update, repo_name_for_index, ingest=True)
                 else:
                     get_logger().info('No new issues to update')
 
 
+    @staticmethod
+    def _record_similar_hit(relevant_issues_number_list: list, relevant_comment_number_list: list,
+                            score_list: list, issue_number: int, comment_number: int, score: float):
+        """Keep the first, best-scored hit per issue and keep the three lists aligned."""
+        if issue_number in relevant_issues_number_list:
+            return
+        relevant_issues_number_list.append(issue_number)
+        relevant_comment_number_list.append(comment_number)
+        score_list.append(str("{:.2f}".format(score)))
+
     async def run(self):
         if not self.supported:
-            message = "The /similar_issue tool is currently supported only for GitHub."
+            message = "The /similar_issue tool is not supported by the configured git provider."
             if get_settings().config.publish_output:
                 try:
                     from pr_agent.git_providers import get_git_provider_with_context
@@ -323,6 +446,7 @@ class PRSimilarIssue:
                         artifact={"error": str(e)},
                     )
             return ""
+
         get_logger().info('Getting issue...')
         repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
         issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
@@ -337,12 +461,11 @@ class PRSimilarIssue:
         score_list = []
 
         if get_settings().pr_similar_issue.vectordb == "pinecone":
-            import pinecone
-
-            pinecone_index = pinecone.Index(index_name=self.index_name)
-            res = pinecone_index.query(embeds[0],
+            pinecone_index = self.pc.Index(name=self.index_name)
+            res = pinecone_index.query(vector=embeds[0],
                                     top_k=5,
                                     filter={"repo": self.repo_name_for_index},
+                                    namespace=self.pinecone_namespace,
                                     include_metadata=True).to_dict()
 
             for r in res['matches']:
@@ -358,17 +481,13 @@ class PRSimilarIssue:
 
                 if original_issue_number == issue_number:
                     continue
-                if issue_number not in relevant_issues_number_list:
-                    relevant_issues_number_list.append(issue_number)
-                if 'comment' in r["id"]:
-                    relevant_comment_number_list.append(int(r["id"].split('.')[1].split('_')[-1]))
-                else:
-                    relevant_comment_number_list.append(-1)
-                score_list.append(str("{:.2f}".format(r['score'])))
+                comment_number = int(r["id"].split('.')[1].split('_')[-1]) if 'comment' in r["id"] else -1
+                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
+                                         score_list, issue_number, comment_number, r['score'])
             get_logger().info('Done')
 
         elif get_settings().pr_similar_issue.vectordb == "lancedb":
-            res = self.table.search(embeds[0]).where(f"metadata.repo='{self.repo_name_for_index}'", prefilter=True).to_list()
+            res = _lancedb_similar_search(self.table, embeds[0], self.repo_name_for_index)
 
             for r in res:
                 # skip example issue
@@ -383,14 +502,9 @@ class PRSimilarIssue:
 
                 if original_issue_number == issue_number:
                     continue
-                if issue_number not in relevant_issues_number_list:
-                    relevant_issues_number_list.append(issue_number)
-
-                if 'comment' in r["id"]:
-                    relevant_comment_number_list.append(int(r["id"].split('.')[1].split('_')[-1]))
-                else:
-                    relevant_comment_number_list.append(-1)
-                score_list.append(str("{:.2f}".format(1-r['_distance'])))
+                comment_number = int(r["id"].split('.')[1].split('_')[-1]) if 'comment' in r["id"] else -1
+                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
+                                         score_list, issue_number, comment_number, 1 - r['_distance'])
             get_logger().info('Done')
 
         elif get_settings().pr_similar_issue.vectordb == "qdrant":
@@ -414,13 +528,9 @@ class PRSimilarIssue:
                     continue
                 if original_issue_number == issue_number:
                     continue
-                if issue_number not in relevant_issues_number_list:
-                    relevant_issues_number_list.append(issue_number)
-                if 'comment' in rid:
-                    relevant_comment_number_list.append(int(rid.split('.')[1].split('_')[-1]))
-                else:
-                    relevant_comment_number_list.append(-1)
-                score_list.append(str("{:.2f}".format(r.score)))
+                comment_number = int(rid.split('.')[1].split('_')[-1]) if 'comment' in rid else -1
+                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
+                                         score_list, issue_number, comment_number, r.score)
             get_logger().info('Done')
 
         get_logger().info('Publishing response...')
@@ -434,9 +544,9 @@ class PRSimilarIssue:
                 url = list(issue.get_comments())[relevant_comment_number_list[i]].html_url
             similar_issues_str += f"{i + 1}. **[{title}]({url})** (score={score_list[i]})\n\n"
         if get_settings().config.publish_output:
-            response = issue_main.create_comment(similar_issues_str)
+            issue_main.create_comment(similar_issues_str)
         get_logger().info(similar_issues_str)
-        get_logger().info('Done')
+        get_logger().info("Done")
 
     def _process_issue(self, issue):
         header = issue.title
@@ -449,10 +559,8 @@ class PRSimilarIssue:
         issue_str = f"Issue Header: \"{header}\"\n\nIssue Body:\n{body}"
         return issue_str, comments, number
 
-    def _update_index_with_issues(self, issues_list, repo_name_for_index, upsert=False):
+    def _update_index_with_issues(self, issues_list, repo_name_for_index, pinecone_namespace, upsert=False):
         import pandas as pd
-        import pinecone
-        from pinecone_datasets import Dataset, DatasetMetadata
 
         get_logger().info('Processing issues...')
         corpus = Corpus()
@@ -468,12 +576,13 @@ class PRSimilarIssue:
             if issue.pull_request:
                 continue
 
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
             if counter >= self.max_issues_to_scan:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
+
+            counter += 1
+            if counter % 100 == 0:
+                get_logger().info(f"Scanned {counter} issues")
 
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
@@ -493,8 +602,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \
@@ -512,54 +620,67 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["values"] = embeds
-        meta = DatasetMetadata.empty()
-        meta.dense_model.dimension = len(embeds[0])
-        ds = Dataset.from_pandas(df, meta)
         get_logger().info('Done')
 
-        api_key = get_settings().pinecone.api_key
-        environment = get_settings().pinecone.environment
+        vectors = [
+            (row["id"], row["values"], row["metadata"])
+            for row in df.to_dict(orient="records")
+        ]
         if not upsert:
             get_logger().info('Creating index from scratch...')
-            ds.to_pinecone_index(self.index_name, api_key=api_key, environment=environment)
-            time.sleep(15)  # wait for pinecone to finalize indexing before querying
-        else:
-            get_logger().info('Upserting index...')
-            namespace = ""
-            batch_size: int = 100
-            concurrency: int = 10
-            pinecone.init(api_key=api_key, environment=environment)
-            ds._upsert_to_index(self.index_name, namespace, batch_size, concurrency)
-            time.sleep(5)  # wait for pinecone to finalize upserting before querying
+            self.pc.create_index(name=self.index_name, dimension=len(embeds[0]), metric="cosine", spec=self.pc_spec,
+                                 timeout=120)
+        get_logger().info('Upserting index...')
+        self.pinecone_index = self.pc.Index(name=self.index_name)
+        upsert_response = self.pinecone_index.upsert(vectors=vectors,
+                                                     namespace=pinecone_namespace,
+                                                     batch_size=100,
+                                                     max_concurrency=10)
+        _raise_on_pinecone_upsert_errors(upsert_response)
+        _wait_for_pinecone_upsert_readiness(self.pinecone_index, upsert_response,
+                                            namespace=pinecone_namespace, vector_id=vectors[0][0])
         get_logger().info('Done')
 
-    def _update_table_with_issues(self, issues_list, repo_name_for_index, ingest=False):
+    def _table_exists_in_db(self, index_name) -> bool:
+        return index_name in self.db.list_tables().tables
+
+    def _lancedb_repo_already_indexed(self, repo_name_for_index) -> bool:
+        """Check whether the shared lancedb table already holds this repo's sentinel row.
+
+        One sentinel row per repository is written on the first full ingest, so the row's
+        absence on an existing table means this repository has never been indexed and must
+        go through the full ingest path to join the table.
+        """
+        res = self.table.search().limit(len(self.table)).where(
+            f"id='example_issue_{repo_name_for_index}'"
+        ).to_list()
+        get_logger().info("result: ", res)
+        return bool(res)
+
+    def _update_table_with_issues(self, issues_list, repo_name_for_index, ingest=False,
+                                  force_refresh=False):
         import pandas as pd
 
         get_logger().info('Processing issues...')
 
         corpus = Corpus()
-        example_issue_record = Record(
-            id=f"example_issue_{repo_name_for_index}",
-            text="example_issue",
-            metadata=Metadata(repo=repo_name_for_index)
-        )
-        corpus.append(example_issue_record)
+        sentinel_id = f"example_issue_{repo_name_for_index}"
 
         counter = 0
         for issue in issues_list:
             if issue.pull_request:
                 continue
 
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
             if counter >= self.max_issues_to_scan:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
+
+            counter += 1
+            if counter % 100 == 0:
+                get_logger().info(f"Scanned {counter} issues")
 
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
@@ -579,8 +700,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \
@@ -594,11 +714,33 @@ class PRSimilarIssue:
                                                     level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+        if len(corpus.documents) == 0:
+            if ingest and not force_refresh:
+                get_logger().info('No issues to index, skipping update')
+                return
+            # From-scratch runs and forced refreshes still carry the sentinel row, so the
+            # table keeps a searchable marker and the subsequent query path has an index.
+            corpus.append(Record(id=sentinel_id, text="example_issue",
+                                 metadata=Metadata(repo=repo_name_for_index)))
+        else:
+            # lancedb add() does not de-duplicate rows, so only carry the sentinel row when
+            # the table will not already have one after this write.
+            add_sentinel = not ingest or force_refresh
+            if ingest and self._table_exists_in_db(self.index_name):
+                if self.table is None:
+                    self.table = self.db[self.index_name]
+                if not force_refresh:
+                    add_sentinel = not self.table.search().limit(1).where(f"id='{sentinel_id}'").to_list()
+            if add_sentinel:
+                corpus.append(Record(id=sentinel_id, text="example_issue",
+                                     metadata=Metadata(repo=repo_name_for_index)))
+
         df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
@@ -606,14 +748,16 @@ class PRSimilarIssue:
         if not ingest:
             get_logger().info('Creating table from scratch...')
             self.table = self.db.create_table(self.index_name, data=df, mode="overwrite")
-            time.sleep(15)
         else:
             get_logger().info('Ingesting in Table...')
-            if self.index_name not in self.db.table_names():
+            if self._table_exists_in_db(self.index_name):
+                if self.table is None:
+                    self.table = self.db[self.index_name]
+                if force_refresh:
+                    self.table.delete(f"metadata.repo='{repo_name_for_index}'")
                 self.table.add(df)
             else:
                 get_logger().info(f"Table {self.index_name} doesn't exists!")
-            time.sleep(5)
         get_logger().info('Done')
 
 
@@ -640,12 +784,13 @@ class PRSimilarIssue:
             if issue.pull_request:
                 continue
 
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
             if counter >= self.max_issues_to_scan:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
+
+            counter += 1
+            if counter % 100 == 0:
+                get_logger().info(f"Scanned {counter} issues")
 
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
@@ -665,8 +810,7 @@ class PRSimilarIssue:
                 if comments:
                     for j, comment in enumerate(comments):
                         comment_body = comment.body
-                        num_words_comment = len(comment_body.split())
-                        if num_words_comment < 10 or not isinstance(comment_body, str):
+                        if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
                         if len(comment_body) < 8000 or \
@@ -685,7 +829,7 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
         get_logger().info('Embedding...')
-        list_to_encode = list(df["text"].values)
+        list_to_encode = df["text"].to_list()
         embeds = _embed_with_fallback(list_to_encode)
         df["vector"] = embeds
         get_logger().info('Done')
@@ -708,7 +852,12 @@ class PRSimilarIssue:
                     },
                 )
             )
-        self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=points)
+        self.qdrant.upload_points(
+            collection_name=self.qdrant_collection_name,
+            points=points,
+            batch_size=100,
+            wait=True,
+        )
         get_logger().info('Done')
 
 

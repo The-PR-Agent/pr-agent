@@ -10,7 +10,7 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 Note that the main purpose of the `review` tool is to provide the **PR reviewer** with useful feedback and insights. The PR author, in contrast, may prefer to save time and focus on the output of the [improve](./improve.md) tool, which provides actionable code suggestions.
 
-(Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.codium.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
+(Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
 
 ## Example usage
 
@@ -18,11 +18,11 @@ Note that the main purpose of the `review` tool is to provide the **PR reviewer*
 
 Invoke the tool manually by commenting `/review` on any PR:
 
-![review comment](https://codium.ai/images/pr_agent/review_comment.png){width=512}
+![review comment](../assets/review_comment.png){width=512}
 
 After ~30 seconds, the tool will generate a review for the PR:
 
-![review](https://codium.ai/images/pr_agent/review3.png){width=512}
+![review](../assets/review3.png){width=512}
 
 If you want to edit [configurations](#configuration-options), add the relevant ones to the command:
 
@@ -83,7 +83,7 @@ for the authoritative default values.
       </tr>
       <tr>
         <td><b>persistent_finding_state</b></td>
-        <td>If set to true, PR-Agent persists structured review finding state across complete review runs, so findings can be resolved and reopened. Incremental and partial reviews do not resolve absent findings. Default is true.</td>
+        <td>If set to true, PR-Agent persists structured review finding state across complete review runs, so findings can be resolved and reopened. Resolved findings retain the original Markdown formatting of their description. Incremental and partial reviews do not resolve absent findings. Default is true.</td>
 
       </tr>
       <tr>
@@ -116,7 +116,7 @@ for the authoritative default values.
       </tr>
       <tr>
         <td><b>inline_key_issues</b></td>
-        <td>Azure DevOps only. If set to true, each key issue is published as an inline thread. A finding leaves the review summary when a matching thread exists or Azure accepts the new thread. Findings that cannot be anchored or published stay in the summary.</td>
+        <td>If set to true, each key issue is published as an inline comment where the provider supports verified inline-comment publication. A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary.</td>
       </tr>
     </table>
 
@@ -154,7 +154,11 @@ for the authoritative default values.
       </tr>
       <tr>
         <td><b>require_ticket_analysis_review</b></td>
-        <td>If set to true, and the PR contains a GitHub or Jira ticket link, the tool will add a section that checks if the PR in fact fulfilled the ticket requirements.</td>
+        <td>
+          If set to true and ticket context is available, the tool adds a ticket-compliance section to the review comment
+          that checks whether the PR fulfills the ticket requirements. Supported sources include GitHub and GitLab issues,
+          linked Azure DevOps work items, Jira Cloud tickets, and Asana tasks.
+        </td>
       </tr>
       <tr>
         <td><b>require_risk_assessment</b></td>
@@ -213,11 +217,15 @@ for the authoritative default values.
 
 !!! tip ""
 
-    The `review` can tool automatically add labels to your Pull Requests:
+    The `review` tool can automatically add labels to your Pull Requests:
 
     - **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L134) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
     - **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L118) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
-    - **`ticket compliance`**: Adds a label indicating code compliance level ("Fully compliant" | "PR Code Verified" | "Partially compliant" | "Not compliant") to any GitHub/Jira/Linea ticket linked in the PR. Controlled by the 'require_ticket_labels' flag (default: false). If 'require_no_ticket_labels' is also enabled, PRs without ticket links will receive a "No ticket found" label.
+
+    Ticket compliance is reported in the review comment, not as a PR label. It is controlled by
+    `pr_reviewer.require_ticket_analysis_review` and requires available ticket context. The tool does not add
+    ticket-compliance labels or a "No ticket found" label. See
+    [Fetching ticket context](../core-abilities/fetching_ticket_context.md) for linking and authentication details.
 
 
 ### Auto-blocking PRs from being merged based on the generated labels
@@ -226,7 +234,7 @@ for the authoritative default values.
 
     You can configure a CI/CD Action to prevent merging PRs with specific labels. For example, implement a dedicated [GitHub Action](https://medium.com/sequra-tech/quick-tip-block-pull-request-merge-using-labels-6cc326936221).
 
-    This approach helps ensure PRs with potential security issues or ticket compliance problems will not be merged without further review.
+    This approach helps ensure PRs with potential security issues will not be merged without further review.
 
     Since AI may make mistakes or lack complete context, use this feature judiciously. For flexibility, users with appropriate permissions can remove generated labels when necessary. When a label is removed, this action will be automatically documented in the PR discussion, clearly indicating it was a deliberate override by an authorized user to allow the merge.
 
@@ -264,6 +272,18 @@ for the authoritative default values.
     into a single review that says how many chunks it was built from. Files that do not fit even
     after chunking are still listed in the coverage footer. Every chunk is a separate model call,
     so a chunked review costs roughly `max_number_of_calls` times a normal one.
+
+    If a chunk fails or returns malformed output, successful chunks are retained and fallback
+    models retry only the pending work. Pending chunks can be split for a smaller model, within
+    the call limit; a larger model can also include previously omitted files. Chunks that still
+    exceed the model's budget are not sent to it.
+
+    If every fallback is exhausted, successful chunks are published as a partial review with a
+    failed-chunk coverage warning, even when `publish_output_no_suggestions = false`. Incomplete
+    reviews cannot resolve absent persistent findings. If no chunk succeeds, the review fails.
+    With `config.propagate_tool_errors = true`, an exhausted fallback chain still signals failure
+    to the caller after publishing the partial review and removing the progress comment.
+    Optional run details list all models that contributed to the merged review.
 
     Each chunk answers the same questions about a different part of the PR, so the answers are
     merged field by field:

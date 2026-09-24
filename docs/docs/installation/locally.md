@@ -122,12 +122,22 @@ def main():
     get_settings().set("github.user_token", user_token)
 
     # Run the command. Feedback will appear in GitHub PR comments
-    cli.run_command(pr_url, command)
+    return cli.run_command(pr_url, command)
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
 ```
+
+With `config.propagate_tool_errors` enabled, forwarding the return value through `SystemExit` makes this script exit with status 1 after a propagated tool error. The default remains status 0.
+
+The Python helper accepts quoted arguments, for example
+`cli.run_command(pr_url, "/review --pr_reviewer.extra_instructions='be concise please'")`.
+It uses the same quoting rules as configured automation commands: explicitly
+quoted setting values stay strings, and unquoted values retain their normal
+types. For questions containing apostrophes, use double quotes around the
+question, such as `command = '/ask "What\'s changed?"'`.
+This does not change how interactive PR comments are parsed.
 
 ## Run from source
 
