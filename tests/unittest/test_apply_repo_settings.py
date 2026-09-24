@@ -206,7 +206,7 @@ extra_instructions = "{secret}"
         with request_cycle_context({}):
             context["settings"] = copy.deepcopy(global_settings)
             git_utils.handle_configurations_errors(
-                [{"error": f"invalid TOML containing {secret}", "settings": repo_toml, "category": "local"}],
+                [{"error": "invalid TOML syntax", "settings": repo_toml, "category": "local"}],
                 provider,
             )
 
