@@ -156,8 +156,7 @@ def validate_file_security(file_data, filename):
     def check_dict(data, path="", max_depth=MAX_DEPTH):
         if max_depth <= 0:
             raise SecurityError(
-                f"Maximum nesting depth exceeded at {path}. "
-                f"Possible attempt to cause stack overflow."
+                "Configuration nesting depth exceeds the supported maximum."
             )
 
         for key, value in data.items():
@@ -165,11 +164,9 @@ def validate_file_security(file_data, filename):
 
             if key.lower() in forbidden_keys_to_reasons:
                 raise SecurityError(
-                    f"Security error in {filename}: "
-                    f"Forbidden directive '{key}' found at {full_path}. "
-                    f"Reason: {forbidden_keys_to_reasons[key.lower()]}"
+                    "Configuration contains a forbidden directive: "
+                    f"{forbidden_keys_to_reasons[key.lower()]}."
                 )
-
             # Recursively check nested dicts
             if isinstance(value, dict):
                 check_dict(value, path=full_path, max_depth=(max_depth - 1))
