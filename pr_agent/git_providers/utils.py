@@ -793,18 +793,12 @@ def handle_configurations_errors(config_errors, git_provider):
                     body += ("\n\nThe invalid configuration came from the global "
                              "`pr-agent-settings` settings repository.")
                 else:
-                    settings_content = err['settings']
-                    configuration_file_content = (
-                        settings_content.decode("utf-8", errors="replace")
-                        if isinstance(settings_content, bytes) else settings_content
+                    # Repository-controlled configuration may contain credentials or other
+                    # secrets. Never echo the raw TOML into a PR comment or log artifact.
+                    body += (
+                        "\n\n**Configuration content omitted:** the file may contain sensitive values. "
+                        "Review the repository's .pr_agent.toml locally and correct the TOML syntax.\n"
                     )
-                    if git_provider.is_supported("gfm_markdown"):
-                        body += (
-                            "\n\n<details><summary>Configuration content:</summary>\n\n"
-                            f"```toml\n{configuration_file_content}\n```\n\n</details>"
-                        )
-                    else:
-                        body += f"\n\n**Configuration content:**\n\n```toml\n{configuration_file_content}\n```\n\n"
                 get_logger().warning("Sending a 'configuration error' comment to the PR", artifact={'body': body})
                 # git_provider.publish_comment(body)
                 if hasattr(git_provider, 'publish_persistent_comment'):
