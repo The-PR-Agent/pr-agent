@@ -481,12 +481,16 @@ def test_artifact_cleanup_does_not_mask_primary_failure(monkeypatch, tmp_path, s
     def fail_restore(*_args, **_kwargs):
         raise ValueError("cleanup")
 
-    with pytest.raises(KeyboardInterrupt, match="primary failure"):
+    try:
         with artifact_context_scope():
             inject_artifact_context()
             copied = copy_context()
             monkeypatch.setattr(settings, "set", fail_restore)
             raise KeyboardInterrupt("primary failure")
+    except KeyboardInterrupt as error:
+        assert str(error) == "primary failure"
+    else:
+        pytest.fail("The artifact scope suppressed the primary failure")
     assert settings.pr_reviewer.extra_instructions == "original"
     copied.run(reapply_artifact_context)
     assert settings.pr_reviewer.extra_instructions == "original"

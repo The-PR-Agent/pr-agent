@@ -343,7 +343,8 @@ async def _run_action():
 
     # Handle submitted pull request review event
     elif GITHUB_EVENT_NAME == "pull_request_review":
-        return await _run_review_commands(event_payload)
+        await _run_review_commands(event_payload)
+        return
 
     # Handle issue comment event
     elif GITHUB_EVENT_NAME == "issue_comment" or GITHUB_EVENT_NAME == "pull_request_review_comment":

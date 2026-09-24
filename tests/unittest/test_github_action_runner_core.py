@@ -920,7 +920,7 @@ async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(
 async def test_action_configured_commands_reapply_one_artifact_after_real_repo_merges(
     monkeypatch, tmp_path, restore_github_settings, restore_artifact_action_settings,
 ):
-    """Configured commands re-merge the repo, but share the Action's one read."""
+    """Verify repeated repository merges share the Action's single artifact read."""
     settings = restore_artifact_action_settings
     artifact = tmp_path / "report.txt"
     artifact.write_text("ACTION_CONFIGURED_ARTIFACT", encoding="utf-8")

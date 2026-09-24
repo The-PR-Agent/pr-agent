@@ -58,7 +58,7 @@ def _restore_artifact_settings(state):
                 else:
                     state.settings.set(section_name, {leaf: value})
             elif isinstance(section, dynaconf.DataDict):
-                # Dynaconf's dotted unset can leave the leaf in a replaced section.
+                # Remove the leaf directly because Dynaconf's dotted unset can leave it behind.
                 for stored in list(section):
                     if stored.lower() == leaf.lower():
                         section.pop(stored)
@@ -82,7 +82,7 @@ def artifact_context_scope(settings=None):
     try:
         yield
     finally:
-        # Copied task contexts still reference this object after our token is reset.
+        # Invalidate copied task contexts before restoring settings and resetting the token.
         state.active = False
         try:
             _restore_artifact_settings(state)
