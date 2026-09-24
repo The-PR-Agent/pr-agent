@@ -1,10 +1,7 @@
 import os
-from contextlib import contextmanager
 from contextvars import ContextVar
-from copy import deepcopy
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import dynaconf
 
@@ -16,79 +13,9 @@ DEFAULT_ARTIFACT_INSTRUCTIONS = (
     "It was produced by a prior CI step."
 )
 
-_MISSING = object()
-
-
-@dataclass
-class _ArtifactContext:
-    active: bool = True
-    prepared: bool = False
-    settings: Any = None
-    originals: dict[str, Any] = field(default_factory=dict)
-    text: str = ""
-    targets: frozenset[str] = frozenset()
-
-    def bind(self, settings):
-        if self.settings is None:
-            self.remember(settings, "ARTIFACTS")
-            self.settings = settings
-
-    def remember(self, settings, key):
-        value = settings.get(key, _MISSING)
-        self.originals[key] = _MISSING if value is _MISSING else deepcopy(value)
-
-
-_artifact_context: ContextVar[Optional[_ArtifactContext]] = ContextVar("pr_agent_artifact_context", default=None)
-
-
-def _restore_artifact_settings(state):
-    for key, value in state.originals.items():
-        try:
-            if "." not in key:
-                if value is not _MISSING:
-                    state.settings.set(key, value)
-                elif key in state.settings:
-                    state.settings.unset(key, force=True)
-                continue
-            section_name, leaf = key.split(".", 1)
-            section = state.settings.get(section_name)
-            if value is not _MISSING:
-                if isinstance(section, dynaconf.DataDict):
-                    section[leaf] = value
-                else:
-                    state.settings.set(section_name, {leaf: value})
-            elif isinstance(section, dynaconf.DataDict):
-                # Remove the leaf directly because Dynaconf's dotted unset can leave it behind.
-                for stored in list(section):
-                    if stored.lower() == leaf.lower():
-                        section.pop(stored)
-                        break
-        except Exception as error:
-            # Preserve the primary failure and omit setting values and raw exception details.
-            phase = "artifact section" if "." not in key else "target instructions"
-            get_logger().warning(f"Could not restore {phase} for artifact context ({type(error).__name__})")
-
-
-@contextmanager
-def artifact_context_scope(settings=None):
-    """Keep one ingress's prepared artifact through dispatch, then restore its settings.
-
-    Action supplies settings before its first repository merge. CLI binds lazily
-    at injection, inside its existing settings-copy scope. Entry never reads a file.
-    """
-    state = _ArtifactContext()
-    if settings is not None:
-        state.bind(settings)
-    token = _artifact_context.set(state)
-    try:
-        yield
-    finally:
-        # Invalidate copied task contexts before restoring settings and resetting the token.
-        state.active = False
-        try:
-            _restore_artifact_settings(state)
-        finally:
-            _artifact_context.reset(token)
+_artifact_context: ContextVar[Optional[tuple[str, frozenset[str]]]] = ContextVar(
+    "pr_agent_artifact_context", default=None
+)
 
 
 def _append_artifact_context(settings, text, targets):
@@ -103,9 +30,10 @@ def _append_artifact_context(settings, text, targets):
 
 def reapply_artifact_context() -> None:
     """Compose already-read context after final command settings, without file I/O."""
-    state = _artifact_context.get()
-    if state is not None and state.active and state.prepared and state.text and get_settings() is state.settings:
-        _append_artifact_context(state.settings, state.text, state.targets)
+    payload = _artifact_context.get()
+    if payload is not None:
+        text, targets = payload
+        _append_artifact_context(get_settings(), text, targets)
 
 
 def resolve_artifact_path(path: str) -> Optional[Path]:
@@ -214,18 +142,9 @@ def inject_artifact_context() -> None:
     ARTIFACT_PATH in the environment turns the feature on by itself. Called once before a
     command runs, by the GitHub Action runner and by the CLI.
     """
-    state = _artifact_context.get()
-    if state is not None:
-        if not state.active:
-            return
-        settings = get_settings()
-        state.bind(settings)
-        if settings is not state.settings:
-            return
-        if state.prepared:
-            reapply_artifact_context()
-            return
-        state.prepared = True
+    # Each ingress prepares a new payload. Failed, empty, or disabled ingress must
+    # not leave an earlier task's payload available for dispatcher reapplication.
+    _artifact_context.set(None)
 
     artifact_path_env = (
         os.environ.get("ARTIFACT_PATH") or os.environ.get("PR_AGENT_ARTIFACT_PATH") or ""
@@ -256,11 +175,7 @@ def inject_artifact_context() -> None:
         if isinstance(target_tools, str):
             target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
         target_tools = frozenset(str(t).lower() for t in target_tools)
-        if state is not None:
-            for target in target_tools:
-                state.remember(state.settings, f"{target}.extra_instructions")
-            state.text = artifact_text
-            state.targets = target_tools
+        _artifact_context.set((artifact_text, target_tools))
         _append_artifact_context(get_settings(), artifact_text, target_tools)
         get_logger().info(f"Injected artifact context into tools: {target_tools}")
     except (OSError, ValueError, TypeError) as e:

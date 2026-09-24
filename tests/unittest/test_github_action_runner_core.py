@@ -1082,29 +1082,3 @@ async def test_non_pr_action_routes_do_not_read_artifacts(
         "GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, originating_event="push"))
     )
     await github_action_runner.run_action()
-
-
-@pytest.mark.asyncio
-async def test_action_restores_artifact_settings_snapshot_before_repository_merge(
-    monkeypatch, tmp_path, restore_github_settings, restore_artifact_action_settings,
-):
-    settings = restore_artifact_action_settings
-    original = {"enable": False, "artifact_path": "host.txt", "target_tools": ["pr_reviewer"]}
-    settings.set("ARTIFACTS", original, merge=False)
-    settings.set("GITHUB_ACTION_CONFIG", {"handle_push_trigger": False}, merge=False)
-
-    def replace_artifacts(_url):
-        settings.set("ARTIFACTS", {
-            "enable": True,
-            "artifact_path": "repo.txt",
-            "target_tools": ["pr_description"],
-        }, merge=False)
-
-    monkeypatch.setattr(github_action_runner, "apply_repo_settings", replace_artifacts)
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
-    monkeypatch.setenv("GITHUB_TOKEN", "token")
-
-    await github_action_runner.run_action()
-
-    assert settings.get("ARTIFACTS") == original

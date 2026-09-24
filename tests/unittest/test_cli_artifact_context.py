@@ -30,6 +30,35 @@ def test_run_injects_the_artifact_context_before_handling_the_request():
     assert order == ["inject", "handle_request"]
 
 
+def test_cli_disabled_ingress_does_not_reuse_a_calling_context_payload(monkeypatch):
+    observed = []
+
+    class FakeAgent:
+        async def handle_request(self, *_args, **_kwargs):
+            artifacts.reapply_artifact_context()
+            observed.append(str(get_settings().pr_reviewer.extra_instructions))
+            return True
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("ARTIFACTS.ENABLE", False)
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "")
+        monkeypatch.delenv("ARTIFACT_PATH", raising=False)
+        monkeypatch.delenv("PR_AGENT_ARTIFACT_PATH", raising=False)
+        payload = ("STALE_ARTIFACT", frozenset({"pr_reviewer"}))
+        token = artifacts._artifact_context.set(payload)
+        try:
+            monkeypatch.setattr(cli, "PRAgent", FakeAgent)
+            monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
+
+            cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/1", "review"])
+
+            assert observed == [""]
+            assert artifacts._artifact_context.get() == payload
+        finally:
+            artifacts._artifact_context.reset(token)
+
+
 @pytest.mark.parametrize("command_override", [False, True])
 def test_cli_artifact_survives_effective_instructions(monkeypatch, tmp_path, command_override):
     report = tmp_path / "report.txt"

@@ -13,7 +13,6 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
-from pr_agent.algo.artifacts import artifact_context_scope
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
@@ -172,11 +171,6 @@ async def _run_review_commands(event_payload):
 
 
 async def run_action():
-    with artifact_context_scope(get_settings()):
-        await _run_action()
-
-
-async def _run_action():
     # Get environment variables
     GITHUB_EVENT_NAME = os.environ.get('GITHUB_EVENT_NAME')
     GITHUB_EVENT_PATH = os.environ.get('GITHUB_EVENT_PATH')
@@ -343,8 +337,7 @@ async def _run_action():
 
     # Handle submitted pull request review event
     elif GITHUB_EVENT_NAME == "pull_request_review":
-        await _run_review_commands(event_payload)
-        return
+        return await _run_review_commands(event_payload)
 
     # Handle issue comment event
     elif GITHUB_EVENT_NAME == "issue_comment" or GITHUB_EVENT_NAME == "pull_request_review_comment":
@@ -513,7 +506,7 @@ async def _run_action_and_drain():
     Run the action, then flush litellm's deferred callbacks before the loop closes.
 
     Wrapping here rather than at the end of run_action() covers its many early
-    returns too, and keeps callback teardown separate from event routing.
+    returns too, and keeps run_action() itself free of teardown concerns.
     """
     status = _ActionStatus()
     token = _action_status.set(status)

@@ -467,7 +467,7 @@ async def test_handle_request_auto_review_uses_reviewer_auto_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_auto_review_reapplies_scoped_artifact_without_notifying(monkeypatch, tmp_path):
+async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeypatch, tmp_path):
     artifact = tmp_path / "artifact.txt"
     artifact.write_text("AUTO_REVIEW_ARTIFACT", encoding="utf-8")
     settings = get_settings()
@@ -502,11 +502,10 @@ async def test_auto_review_reapplies_scoped_artifact_without_notifying(monkeypat
         monkeypatch.setattr(pr_agent_module, "apply_repo_settings", replace_instructions)
         monkeypatch.setattr(pr_agent_module, "PRReviewer", FakeReviewer)
 
-        with artifacts.artifact_context_scope(settings):
-            artifacts.inject_artifact_context()
-            handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
-                "https://example/pr/1", "/auto_review", notify
-            )
+        artifacts.inject_artifact_context()
+        handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
+            "https://example/pr/1", "/auto_review", notify
+        )
 
         assert handled is True
         assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text in observed] == [
@@ -536,6 +535,7 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
     def fail_if_loaded():
         pytest.fail("dispatcher without an ingress must not load an artifact")
 
+    token = artifacts._artifact_context.set(None)
     try:
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Unscoped instructions")
         _patch_request_dependencies(monkeypatch)
@@ -548,6 +548,7 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
         assert observed == ["Unscoped instructions"]
     finally:
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
+        artifacts._artifact_context.reset(token)
 
 
 @pytest.mark.asyncio

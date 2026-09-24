@@ -1,21 +1,15 @@
 import os
-from contextlib import nullcontext
-from contextvars import copy_context
-from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
-from starlette_context import request_cycle_context
 
-from pr_agent.algo import artifacts
 from pr_agent.algo.artifacts import (
     DEFAULT_ARTIFACT_INSTRUCTIONS,
+    _artifact_context,
     _read_and_truncate,
-    artifact_context_scope,
     format_artifact_content,
     inject_artifact_context,
     load_artifact,
-    reapply_artifact_context,
     resolve_artifact_path,
 )
 from pr_agent.config_loader import get_settings
@@ -282,8 +276,12 @@ class TestInjectArtifactContext:
         s.set("artifacts.target_tools", ["pr_reviewer", "pr_description", "pr_code_suggestions"])
         for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
             s.set(f"{tool}.extra_instructions", "")
-        yield s
-        restore_settings(snapshot)
+        token = _artifact_context.set(None)
+        try:
+            yield s
+        finally:
+            _artifact_context.reset(token)
+            restore_settings(snapshot)
 
     @pytest.fixture
     def report(self, tmp_path):
@@ -346,170 +344,3 @@ class TestInjectArtifactContext:
             inject_artifact_context()
             inject_artifact_context()
         assert settings.get("pr_reviewer.extra_instructions").count("FAILED: test_login") == 1
-
-
-@pytest.fixture
-def scoped_artifact_settings(monkeypatch, tmp_path):
-    for key in ("ARTIFACT_PATH", "PR_AGENT_ARTIFACT_PATH", "ARTIFACT_INSTRUCTIONS", "PR_AGENT_ARTIFACT_INSTRUCTIONS"):
-        monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
-    with request_cycle_context({"settings": deepcopy(get_settings())}):
-        settings = get_settings()
-        settings.set("ARTIFACTS", {"enable": False, "target_tools": ["pr_reviewer"]})
-        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "original")
-        yield settings
-
-
-@pytest.mark.parametrize("error", [None, RuntimeError, KeyboardInterrupt])
-def test_artifact_scope_restores_replaced_settings_and_invalidates_copied_context(
-    monkeypatch, tmp_path, scoped_artifact_settings, error
-):
-    settings = scoped_artifact_settings
-    original_artifacts = deepcopy(settings.get("ARTIFACTS"))
-    report = tmp_path / "report.txt"
-    report.write_text("SCOPED_ARTIFACT")
-    monkeypatch.setenv("ARTIFACT_PATH", str(report))
-    with pytest.raises(error) if error else nullcontext():
-        with artifact_context_scope():
-            inject_artifact_context()
-            copied = copy_context()
-            settings.set("PR_REVIEWER", {"extra_instructions": "replacement", "other": "keep"})
-            reapply_artifact_context()
-            reapply_artifact_context()
-            assert settings.pr_reviewer.extra_instructions.startswith("replacement")
-            assert settings.pr_reviewer.extra_instructions.count("SCOPED_ARTIFACT") == 1
-            if error:
-                raise error("primary failure")
-    assert settings.get("ARTIFACTS") == original_artifacts
-    assert settings.pr_reviewer.extra_instructions == "original"
-    assert settings.pr_reviewer.other == "keep"
-    with patch.object(artifacts, "load_artifact", side_effect=AssertionError("late read")):
-        copied.run(reapply_artifact_context)
-        copied.run(inject_artifact_context)
-    assert settings.pr_reviewer.extra_instructions == "original"
-
-
-@pytest.mark.parametrize("original, replacement", [
-    ({}, {"extra_instructions": "new", "other": "keep"}),
-    ({"extra_instructions": None}, None),
-    ({"extra_instructions": ""}, {"extra_instructions": "new"}),
-    ({"extra_instructions": "original"}, "malformed"),
-])
-def test_artifact_scope_restores_instruction_presence(
-    monkeypatch, tmp_path, scoped_artifact_settings, original, replacement
-):
-    settings = scoped_artifact_settings
-    settings.set("PR_REVIEWER", original)
-    report = tmp_path / "report.txt"
-    report.write_text("SCOPED_ARTIFACT")
-    monkeypatch.setenv("ARTIFACT_PATH", str(report))
-    with artifact_context_scope():
-        inject_artifact_context()
-        if replacement is None:
-            settings.unset("PR_REVIEWER", force=True)
-        else:
-            settings.set("PR_REVIEWER", replacement)
-        reapply_artifact_context()
-    restored = settings.get("PR_REVIEWER")
-    assert ("extra_instructions" in restored) == ("extra_instructions" in original)
-    if "extra_instructions" in original:
-        assert restored.extra_instructions == original["extra_instructions"]
-    else:
-        assert restored.other == "keep"
-
-
-def test_nested_artifact_scopes_do_not_leak_into_a_later_invocation(monkeypatch, tmp_path, scoped_artifact_settings):
-    settings = scoped_artifact_settings
-    first, second = tmp_path / "first.txt", tmp_path / "second.txt"
-    first.write_text("FIRST_ARTIFACT")
-    second.write_text("SECOND_ARTIFACT")
-    with patch.object(artifacts, "_read_and_truncate", wraps=_read_and_truncate) as read:
-        monkeypatch.setenv("ARTIFACT_PATH", str(first))
-        with artifact_context_scope():
-            inject_artifact_context()
-            outer = settings.pr_reviewer.extra_instructions
-            monkeypatch.setenv("ARTIFACT_PATH", str(second))
-            with artifact_context_scope():
-                inject_artifact_context()
-                assert "SECOND_ARTIFACT" in settings.pr_reviewer.extra_instructions
-            assert settings.pr_reviewer.extra_instructions == outer
-            inject_artifact_context()
-            assert settings.pr_reviewer.extra_instructions == outer
-        monkeypatch.delenv("ARTIFACT_PATH")
-        with artifact_context_scope():
-            inject_artifact_context()
-            reapply_artifact_context()
-            assert settings.pr_reviewer.extra_instructions == "original"
-        assert read.call_count == 2
-    assert settings.get("ARTIFACTS.ENABLE") is False
-
-
-def test_artifact_scope_does_not_prepare_or_reapply_into_different_settings(
-    monkeypatch, tmp_path, scoped_artifact_settings
-):
-    report = tmp_path / "report.txt"
-    report.write_text("SCOPED_ARTIFACT")
-    monkeypatch.setenv("ARTIFACT_PATH", str(report))
-    other_settings = deepcopy(scoped_artifact_settings)
-    with artifact_context_scope():
-        inject_artifact_context()
-        with request_cycle_context({"settings": other_settings}):
-            with patch.object(artifacts, "load_artifact", side_effect=AssertionError("unexpected read")):
-                reapply_artifact_context()
-                inject_artifact_context()
-            assert other_settings.pr_reviewer.extra_instructions == "original"
-
-
-def test_artifact_scope_does_not_retry_a_skipped_preparation(monkeypatch, tmp_path, scoped_artifact_settings):
-    report = tmp_path / "later.txt"
-    report.write_text("LATE_ARTIFACT")
-    with artifact_context_scope():
-        inject_artifact_context()
-        monkeypatch.setenv("ARTIFACT_PATH", str(report))
-        with patch.object(artifacts, "load_artifact", side_effect=AssertionError("late read")):
-            inject_artifact_context()
-            reapply_artifact_context()
-    assert scoped_artifact_settings.pr_reviewer.extra_instructions == "original"
-
-
-def test_artifact_cleanup_does_not_mask_primary_failure(monkeypatch, tmp_path, scoped_artifact_settings):
-    settings = scoped_artifact_settings
-    report = tmp_path / "report.txt"
-    report.write_text("SCOPED_ARTIFACT")
-    monkeypatch.setenv("ARTIFACT_PATH", str(report))
-
-    def fail_restore(*_args, **_kwargs):
-        raise ValueError("private cleanup value")
-
-    with patch.object(artifacts, "get_logger") as logger:
-        caught = None
-        try:
-            with artifact_context_scope():
-                inject_artifact_context()
-                copied = copy_context()
-                monkeypatch.setattr(type(settings), "set", fail_restore)
-                raise KeyboardInterrupt("primary failure")
-        except KeyboardInterrupt as error:
-            caught = error
-        assert isinstance(caught, KeyboardInterrupt)
-        assert str(caught) == "primary failure"
-        logger.return_value.warning.assert_called_once_with(
-            "Could not restore artifact section for artifact context (ValueError)"
-        )
-    assert settings.pr_reviewer.extra_instructions == "original"
-    copied.run(reapply_artifact_context)
-    assert settings.pr_reviewer.extra_instructions == "original"
-
-
-def test_artifact_scope_restores_absent_artifacts_section(monkeypatch, tmp_path, scoped_artifact_settings):
-    settings = scoped_artifact_settings
-    settings.unset("ARTIFACTS", force=True)
-    report = tmp_path / "report.txt"
-    report.write_text("SCOPED_ARTIFACT")
-    monkeypatch.setenv("ARTIFACT_PATH", str(report))
-    with artifact_context_scope():
-        inject_artifact_context()
-        assert settings.get("ARTIFACTS.ENABLE") is True
-        assert "SCOPED_ARTIFACT" in settings.pr_reviewer.extra_instructions
-    assert "ARTIFACTS" not in settings
-    assert settings.pr_reviewer.extra_instructions == "original"
