@@ -1699,6 +1699,12 @@ class GithubProvider(GitProvider):
         except GithubException as e:
             if e.status != 404:
                 raise
+            if not self._pr_head_in_base_repo():
+                # A fork pull request resolves the bare branch name against the base
+                # repository, so creating the file here would write to the base
+                # repository's same-named branch (e.g. its main). Keep the previous
+                # fork behavior instead: the missing file fails the push.
+                raise
             response = repo.create_file(
                 path=file_path,
                 message=message,
@@ -1714,6 +1720,23 @@ class GithubProvider(GitProvider):
                 branch=branch,
             )
         return response["commit"]
+
+    def _pr_head_in_base_repo(self) -> bool:
+        """True when the pull request head branch lives in the base repository itself.
+
+        A fork pull request carries a bare head ref that the contents API resolves
+        against the base repository, so writing to that ref would land on the base
+        repository's same-named branch. A deleted head fork (``head.repo`` is null)
+        cannot be confirmed as same-repository, so it is treated as a fork.
+        """
+        pr = getattr(self, "pr", None)
+        head_name = getattr(getattr(getattr(pr, "head", None), "repo", None), "full_name", None)
+        base_name = getattr(getattr(getattr(pr, "base", None), "repo", None), "full_name", None)
+        if not isinstance(head_name, str) or not head_name:
+            return False
+        if not isinstance(base_name, str) or not base_name:
+            return False
+        return head_name.casefold() == base_name.casefold()
 
     def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
         return self.get_pr_file_content(path or file.filename, sha)
