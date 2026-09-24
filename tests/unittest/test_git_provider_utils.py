@@ -128,6 +128,7 @@ def test_apply_repo_settings_redacts_security_error_details(monkeypatch):
     assert "Configuration security validation failed" in provider.comments[0]
     assert all(secret not in str(artifact) for artifact in logged_artifacts)
 
+
 def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     provider = FakeMarkdownProvider()
 
