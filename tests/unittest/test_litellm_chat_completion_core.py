@@ -606,7 +606,7 @@ async def test_chat_completion_keeps_image_for_custom_reasoning_models(monkeypat
 # Wiring tests for the retry knobs: the helpers (_should_retry_same_model,
 # _configured_client_retries) are unit-tested in test_litellm_retry_config.py, but those
 # tests keep passing when the @retry predicate or the kwargs pass-through in
-# chat_completion is reverted. The four tests below drive chat_completion itself, so a
+# chat_completion is reverted. The tests below drive chat_completion itself, so a
 # regression in the wiring — not just the helpers — fails a test.
 
 
