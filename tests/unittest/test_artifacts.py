@@ -482,12 +482,17 @@ def test_artifact_cleanup_does_not_mask_primary_failure(monkeypatch, tmp_path, s
         raise ValueError("private cleanup value")
 
     with patch.object(artifacts, "get_logger") as logger:
-        with pytest.raises(KeyboardInterrupt, match="^primary failure$"):
+        caught = None
+        try:
             with artifact_context_scope():
                 inject_artifact_context()
                 copied = copy_context()
                 monkeypatch.setattr(type(settings), "set", fail_restore)
                 raise KeyboardInterrupt("primary failure")
+        except KeyboardInterrupt as error:
+            caught = error
+        assert isinstance(caught, KeyboardInterrupt)
+        assert str(caught) == "primary failure"
         logger.return_value.warning.assert_called_once_with(
             "Could not restore artifact section for artifact context (ValueError)"
         )
