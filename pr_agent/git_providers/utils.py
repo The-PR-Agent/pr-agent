@@ -313,8 +313,9 @@ def apply_repo_settings(pr_url):
                     try:
                         _apply_repo_settings_file(repo_settings_file)
                     except Exception as e:
-                        get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
-                        config_errors.append({'error': str(e), 'settings': settings_content, 'category': category})
+                        safe_error = _safe_configuration_error(e)
+                        get_logger().warning(f"Failed to apply repo {category} settings: {safe_error}")
+                        config_errors.append({'error': safe_error, 'settings': settings_content, 'category': category})
 
             # Per-directory layer (monorepo support, opt-in): merge `.pr_agent.toml` files found in
             # the directories the PR touches. Applied after the root config so a nearer file
