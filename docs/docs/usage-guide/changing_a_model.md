@@ -53,6 +53,23 @@ extra_body='{"service_tier": "flex"}'
 
 See [OpenAI Flex Processing docs](https://platform.openai.com/docs/guides/flex-processing) for details.
 
+### Chat template options
+
+For OpenAI-compatible endpoints that accept `chat_template_kwargs`, such as a
+[vLLM deployment serving Qwen](https://docs.vllm.ai/en/latest/features/reasoning_outputs/),
+pass a JSON object through the existing global option:
+
+```toml
+[litellm]
+extra_body='{"chat_template_kwargs": {"enable_thinking": false}}'
+```
+
+PR-Agent sends this object in the request body and preserves generated OpenRouter
+routing, reasoning, and request-attribution fields. The setting applies to every
+configured model, including fallback models, so use it only when all selected
+endpoints support the field. Existing `service_tier` and `processing_mode` options
+can be included in the same JSON object.
+
 ### Azure
 
 To use Azure, set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):

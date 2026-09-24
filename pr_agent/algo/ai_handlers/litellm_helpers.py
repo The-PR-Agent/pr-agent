@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import sys
+from collections.abc import Mapping
 from math import isfinite
 
 import httpx
@@ -195,7 +196,7 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
     Raises:
         ValueError: If extra_body contains invalid JSON, unsupported keys, or colliding keys
     """
-    allowed_extra_body_keys = {"processing_mode", "service_tier"}
+    allowed_extra_body_keys = {"processing_mode", "service_tier", "chat_template_kwargs"}
     extra_body = getattr(getattr(get_settings(), "litellm", None), "extra_body", None)
     if extra_body:
         try:
@@ -211,6 +212,16 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
             colliding_keys = kwargs.keys() & litellm_extra_body.keys()
             if colliding_keys:
                 raise ValueError(f"LITELLM.EXTRA_BODY cannot override existing parameters: {', '.join(colliding_keys)}")
+            if "chat_template_kwargs" in litellm_extra_body:
+                template_kwargs = litellm_extra_body.pop("chat_template_kwargs")
+                if not isinstance(template_kwargs, dict):
+                    raise ValueError("LITELLM.EXTRA_BODY chat_template_kwargs must be a JSON object")
+                request_body = kwargs.get("extra_body", {})
+                if not isinstance(request_body, Mapping):
+                    raise ValueError("Existing extra_body must be a mapping")
+                if "chat_template_kwargs" in request_body:
+                    raise ValueError("LITELLM.EXTRA_BODY cannot override existing chat_template_kwargs")
+                litellm_extra_body["extra_body"] = {**request_body, "chat_template_kwargs": template_kwargs}
             kwargs.update(litellm_extra_body)
         except json.JSONDecodeError as e:
             raise ValueError(f"LITELLM.EXTRA_BODY contains invalid JSON: {str(e)}")
