@@ -477,11 +477,11 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                 # keep every hunk that overlaps the requested line range, so a
                 # range spanning multiple hunks is not silently truncated
                 if side.lower() == 'left':
-                    if not (line_end >= start1 and line_start <= start1 + size1 - 1):
+                    if not (size1 > 0 and line_end >= start1 and line_start <= start1 + size1 - 1):
                         skip_hunk = True
                         continue
                 elif side.lower() == 'right':
-                    if not (line_end >= start2 and line_start <= start2 + size2 - 1):
+                    if not (size2 > 0 and line_end >= start2 and line_start <= start2 + size2 - 1):
                         skip_hunk = True
                         continue
                 patch_with_lines_str += f'\n{header_line}\n'
