@@ -316,7 +316,8 @@ def test_handle_configurations_errors_skips_empty_sentinel_entries_in_mixed_list
     ], provider)
 
     assert len(provider.comments) == 1
-    assert "Only error" in provider.comments[0]
+    assert "Configuration could not be applied due to an internal error." in provider.comments[0]
+    assert "Only error" not in provider.comments[0]
 
 
 def test_get_cached_global_settings_skips_oversized_values(monkeypatch):
