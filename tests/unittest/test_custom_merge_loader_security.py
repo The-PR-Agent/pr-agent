@@ -108,6 +108,17 @@ def test_forbidden_directive_mixed_case_raises(directive):
 # validate_file_security: max depth guard
 # ---------------------------------------------------------------------------
 
+def test_security_errors_do_not_echo_config_paths_or_keys():
+    secret = "TOPSECRET-CONFIG-NAME"
+    data = {secret: {"includes": True}}
+
+    with pytest.raises(SecurityError) as exc_info:
+        validate_file_security(data, f"/tmp/{secret}.toml")
+
+    message = str(exc_info.value)
+    assert secret not in message
+    assert "includes other config files dynamically" in message
+
 def test_excessive_nesting_raises_security_error():
     # Build a dict deeper than MAX_DEPTH (50) so the guard trips.
     data = current = {}
