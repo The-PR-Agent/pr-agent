@@ -186,7 +186,7 @@ foo = "X-FROM-REPO-A"
                 "repo A's [my_custom_repo_section] leaked into repo B"
 
     def test_configuration_errors_do_not_echo_repository_secrets(self, fresh_global_settings, monkeypatch):
-        """Invalid repository TOML must never expose its raw contents in a PR comment."""
+        """Ensure invalid repository TOML never exposes its raw contents in a PR comment."""
         secret = "SUPER-SECRET-REPO-TOKEN-123"
         repo_toml = f"""
 [pr_reviewer]
