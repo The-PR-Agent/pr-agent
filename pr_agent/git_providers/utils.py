@@ -315,7 +315,12 @@ def apply_repo_settings(pr_url):
                     except Exception as e:
                         safe_error = _safe_configuration_error(e)
                         get_logger().warning(f"Failed to apply repo {category} settings: {safe_error}")
-                        config_errors.append({'error': safe_error, 'settings': settings_content, 'category': category})
+                        config_errors.append({
+                            'error': str(e),
+                            'safe_error': safe_error,
+                            'settings': settings_content,
+                            'category': category,
+                        })
 
             # Per-directory layer (monorepo support, opt-in): merge `.pr_agent.toml` files found in
             # the directories the PR touches. Applied after the root config so a nearer file
@@ -328,7 +333,12 @@ def apply_repo_settings(pr_url):
                 except Exception as e:
                     safe_error = _safe_configuration_error(e)
                     get_logger().warning(f"Failed to apply per-directory settings {category}: {safe_error}")
-                    config_errors.append({'error': safe_error, 'settings': settings_content, 'category': category})
+                    config_errors.append({
+                        'error': str(e),
+                        'safe_error': safe_error,
+                        'settings': settings_content,
+                        'category': category,
+                    })
 
             if config_errors:
                 handle_configurations_errors(config_errors, git_provider)
@@ -794,7 +804,10 @@ def handle_configurations_errors(config_errors, git_provider):
 
         for err in config_errors:
             if err:
-                err_message = err['error']
+                err_message = err.get(
+                    'safe_error',
+                    "Configuration could not be applied due to an internal error.",
+                )
                 config_type = err['category']
                 header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
                 body = (
