@@ -84,7 +84,7 @@ PROVIDER_SETTING_ALIASES = {
     "text-completion-openai": "openai",
     "vertex_ai_beta": "vertex_ai",
 }
-# Keep chat-completion endpoint aliases in the same precedence order as LiteLLM 1.101.0.
+# Keep chat-completion endpoint aliases in the same precedence order as LiteLLM 1.102.1.
 # Native completion masks BASETEN_API_BASE, MISTRAL_API_BASE and ARK_API_BASE;
 # VERTEX_API_BASE belongs to embedding, not chat. Do not promote them to explicit routing.
 PROVIDER_API_BASE_ENV_VARS = {
@@ -208,7 +208,7 @@ PROVIDER_ROUTING_ENV_VARS = {
     "watsonx_text": dict(_WATSONX_ROUTING_ENV_VARS),
 }
 
-# Keep aliases in the same precedence order as LiteLLM 1.101.0.
+# Keep aliases in the same precedence order as LiteLLM 1.102.1.
 PROVIDER_API_KEY_ENV_VARS = {
     "ai21": ("AI21_API_KEY",),
     "ai21_chat": ("AI21_API_KEY",),
@@ -979,7 +979,7 @@ def _get_bedrock_model_region(model: str, model_id=None) -> str | None:
     """Resolve only the region carried by the request, without ambient AWS discovery."""
     from litellm.llms.bedrock.common_utils import BedrockModelInfo
 
-    # LiteLLM 1.101.0 consumes model_id before Invoke resolves its region.
+    # LiteLLM 1.102.1 consumes model_id before Invoke resolves its region.
     # Only Converse uses that separate ID or region/model path for routing.
     is_converse = BedrockModelInfo.get_bedrock_route(model) == "converse"
     if not is_converse:
@@ -995,7 +995,7 @@ def _get_bedrock_model_region(model: str, model_id=None) -> str | None:
     arn_candidate = candidate
     if not model_id:
         arn_candidate = arn_candidate.removeprefix("invoke/")
-        # Match the native chat model prefixes in LiteLLM 1.101.0 without
+        # Match the native chat model prefixes in LiteLLM 1.102.1 without
         # decoding an ARN or changing Converse's region/model path grammar.
         for prefix in ("llama/", "deepseek_r1/", "openai/", "qwen2/", "qwen3/", "moonshot/", "nova-2/", "nova/"):
             if arn_candidate.startswith(prefix):
@@ -1065,7 +1065,7 @@ def _guard_request_routing_globals(provider: str | None, params: dict) -> dict:
             and parameter in params
             and live_value != params[parameter]
         ):
-            # LiteLLM 1.101.0's ChatGPT chat transformation ignores the request
+            # LiteLLM 1.102.1's ChatGPT chat transformation ignores the request
             # api_base and re-reads these variables when resolving provider info.
             raise ValueError("Refusing changed live api_base environment for provider chatgpt")
     return params
@@ -1583,7 +1583,7 @@ def _install_vertex_executable_guard():
         setattr(guarded, marker, original)
         return guarded
 
-    # LiteLLM 1.101.0 reads expired (sync) or token_state (async) on the
+    # LiteLLM 1.102.1 reads expired (sync) or token_state (async) on the
     # actual cached credential before returning its token. Guarding the
     # descriptors also covers cache replacement during an async lock wait.
     for name in ("from_info", "refresh", "expired", "token_state"):
@@ -1610,7 +1610,7 @@ def _install_vertex_executable_guard():
 
 
 def _install_vertex_wif_project_bridge():
-    """Restore ADC project discovery for request-owned WIF JSON in LiteLLM 1.101.0."""
+    """Restore ADC project discovery for request-owned WIF JSON in LiteLLM 1.102.1."""
     from litellm.llms.vertex_ai.vertex_llm_base import VertexBase
 
     original = VertexBase.load_auth
@@ -1629,7 +1629,7 @@ def _install_vertex_wif_project_bridge():
         if json_obj != snapshot:
             return original(self, credentials, project_id)
 
-        # Preserve LiteLLM 1.101.0's WIF factories, including its explicit AWS
+        # Preserve LiteLLM 1.102.1's WIF factories, including its explicit AWS
         # supplier. Only project discovery is missing from its JSON load path.
         scopes = ["https://www.googleapis.com/auth/cloud-platform"]
         source = json_obj.get("credential_source", {})
@@ -1671,7 +1671,7 @@ def _install_vertex_wif_project_bridge():
 
 
 def _install_vertex_impersonated_credentials_bridge():
-    """Add LiteLLM 1.101.0's missing ADC type without replacing its refresh/cache path."""
+    """Add LiteLLM 1.102.1's missing ADC type without replacing its refresh/cache path."""
     from litellm.llms.vertex_ai.vertex_llm_base import VertexBase
 
     original = VertexBase._credentials_from_service_account

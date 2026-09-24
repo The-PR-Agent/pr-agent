@@ -117,7 +117,7 @@ Today's Date: {{date}}
 
 The PR Diff:
 ======
-{{ diff_no_line_numbers|trim }}
+{{ diff_no_line_numbers }}
 ======
 
 {%- if suggestion_discussion_context %}

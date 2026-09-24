@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from requests.exceptions import RequestException
+
 from pr_agent.git_providers.github_provider import GithubProvider
 
 
@@ -71,7 +73,7 @@ def test_publish_check_run_returns_false_on_post_failure():
     requester.set_exception(
         "POST",
         f"{provider.base_url}/repos/{provider.repo}/check-runs",
-        RuntimeError("API error"),
+        RequestException("API error"),
     )
 
     result = provider._publish_check_run("some output", "review")
@@ -167,7 +169,7 @@ def test_publish_check_run_falls_back_to_create_on_patch_failure():
     requester.set_exception(
         "PATCH",
         f"{provider.base_url}/repos/{provider.repo}/check-runs/42",
-        RuntimeError("Update failed"),
+        RequestException("Update failed"),
     )
     requester.set_response(
         "POST",
@@ -234,7 +236,7 @@ def test_find_existing_check_run_returns_none_on_api_error():
     requester.set_exception(
         "GET",
         f"{provider.base_url}/repos/{provider.repo}/commits/deadbeef/check-runs",
-        RuntimeError("API error"),
+        RequestException("API error"),
     )
 
     result = provider._find_existing_check_run("PR Agent - Review", "deadbeef")

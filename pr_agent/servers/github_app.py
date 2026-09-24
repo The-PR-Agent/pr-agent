@@ -2,7 +2,7 @@ import copy
 import os
 import time
 import uuid
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -110,6 +110,16 @@ async def get_body(request):
     return body
 
 
+def _reformat_quote_ask_command(comment_body: str) -> Optional[str]:
+    """Move a /ask command buried in a quoted Golf/mobile reply to the front so it
+    is dispatched, preserving the whole question text. Returns None when the
+    comment is not an image-quote reply carrying a /ask."""
+    if '/ask' not in comment_body or not comment_body.strip().startswith('> ![image]'):
+        return None
+    before, _, after = comment_body.partition('/ask')
+    return '/ask' + after + ' \n' + before.strip().lstrip('>')
+
+
 async def handle_comments_on_pr(body: Dict[str, Any],
                                 event: str,
                                 sender: str,
@@ -121,9 +131,9 @@ async def handle_comments_on_pr(body: Dict[str, Any],
         return {}
     comment_body = body.get("comment", {}).get("body")
     if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
-        if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
-            comment_body_split = comment_body.split('/ask')
-            comment_body = '/ask' + comment_body_split[1] +' \n' +comment_body_split[0].strip().lstrip('>')
+        reformatted = _reformat_quote_ask_command(comment_body) if '/ask' in comment_body else None
+        if reformatted is not None:
+            comment_body = reformatted
             get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
         else:
             get_logger().info("Ignoring comment not starting with /")
