@@ -305,7 +305,9 @@ def _get_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional
         return None
 
 
-def _set_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional[int], Optional[str]], value: str) -> None:
+def _set_cached_context(
+    cache_settings: Tuple[bool, Tuple[object, ...], Optional[int], Optional[str]], value: str
+) -> None:
     try:
         context[_CONTEXT_CACHE_SETTINGS_KEY] = cache_settings
         context[_CONTEXT_CACHE_KEY] = value
