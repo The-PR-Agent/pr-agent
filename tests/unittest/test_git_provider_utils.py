@@ -114,8 +114,8 @@ def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     assert "Invalid value" in comment["body"]
     assert "https://docs.pr-agent.ai/usage-guide/configuration_options/" in comment["body"]
     assert "qodo-merge-docs.qodo.ai" not in comment["body"]
-    assert "```toml\n[config]\nmodel =\n```" in comment["body"]
-    assert "<details><summary>Configuration content:</summary>" in comment["body"]
+    assert "Configuration content omitted" in comment["body"]
+    assert "[config]\nmodel =" not in comment["body"]
 
 
 def test_handle_configurations_errors_keeps_markdown_details_when_persistent_comment_is_missing():
@@ -130,8 +130,8 @@ def test_handle_configurations_errors_keeps_markdown_details_when_persistent_com
     assert len(provider.comments) == 1
     assert "PR-Agent failed to apply 'local' repo settings" in provider.comments[0]
     assert "Invalid value" in provider.comments[0]
-    assert "```toml\n[config]\nmodel =\n```" in provider.comments[0]
-    assert "<details><summary>Configuration content:</summary>" in provider.comments[0]
+    assert "Configuration content omitted" in provider.comments[0]
+    assert "[config]\nmodel =" not in provider.comments[0]
 
 
 def test_handle_configurations_errors_uses_plain_comment_without_markdown_support():
@@ -146,7 +146,8 @@ def test_handle_configurations_errors_uses_plain_comment_without_markdown_suppor
     assert len(provider.comments) == 1
     assert "❌ **PR-Agent failed to apply 'local' repo settings**" in provider.comments[0]
     assert "Invalid value" in provider.comments[0]
-    assert "```toml\n[config]\nmodel =\n```" in provider.comments[0]
+    assert "Configuration content omitted" in provider.comments[0]
+    assert "[config]\nmodel =" not in provider.comments[0]
     assert "<details>" not in provider.comments[0]
 
 
@@ -176,7 +177,8 @@ def test_handle_configurations_errors_publishes_each_error():
 
     assert len(provider.comments) == 2
     assert "First error" in provider.comments[0]
-    assert "[config]\nmodel =" in provider.comments[0]
+    assert "Configuration content omitted" in provider.comments[0]
+    assert "[config]\nmodel =" not in provider.comments[0]
     assert "Second error" in provider.comments[1]
     assert "global `pr-agent-settings` settings repository" in provider.comments[1]
     assert "dummy-value" not in provider.comments[1]
