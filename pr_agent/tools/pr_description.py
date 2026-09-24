@@ -7,10 +7,12 @@ from graphlib import TopologicalSorter
 from typing import List, Tuple
 
 import yaml
+from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.comment_identity import PRDescriptionHeader
+from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     get_pr_diff,
@@ -40,6 +42,19 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 )
 
 MAX_DESCRIPTION_COVERAGE_FILES = 50
+
+
+def _build_unprocessed_files_block(file_list: list, label: str, max_files: int = 50) -> str:
+    """Render the trailer listing files not covered by the budget: list up to
+    ``max_files`` paths, then close with the exact count of the ones omitted."""
+    block = f"\n\n{label}"
+    for i, file in enumerate(file_list):
+        if i >= max_files:
+            get_logger().debug(f"Too many files, clipping to {max_files}")
+            block += f"\n... and {len(file_list) - i} more"
+            break
+        block += f"\n- {file}"
+    return block
 
 
 class PRDescription:
@@ -454,21 +469,13 @@ class PRDescription:
             files_walkthrough_prompt = copy.deepcopy(files_walkthrough)
             MAX_EXTRA_FILES_TO_PROMPT = 50
             if remaining_files_list:
-                files_walkthrough_prompt += "\n\nNo more token budget. Additional unprocessed files:"
-                for i, file in enumerate(remaining_files_list):
-                    files_walkthrough_prompt += f"\n- {file}"
-                    if i >= MAX_EXTRA_FILES_TO_PROMPT:
-                        get_logger().debug(f"Too many remaining files, clipping to {MAX_EXTRA_FILES_TO_PROMPT}")
-                        files_walkthrough_prompt += f"\n... and {len(remaining_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
-                        break
+                files_walkthrough_prompt += _build_unprocessed_files_block(
+                    remaining_files_list, "No more token budget. Additional unprocessed files:",
+                    max_files=MAX_EXTRA_FILES_TO_PROMPT)
             if deleted_files_list:
-                files_walkthrough_prompt += "\n\nAdditional deleted files:"
-                for i, file in enumerate(deleted_files_list):
-                    files_walkthrough_prompt += f"\n- {file}"
-                    if i >= MAX_EXTRA_FILES_TO_PROMPT:
-                        get_logger().debug(f"Too many deleted files, clipping to {MAX_EXTRA_FILES_TO_PROMPT}")
-                        files_walkthrough_prompt += f"\n... and {len(deleted_files_list) - MAX_EXTRA_FILES_TO_PROMPT} more"
-                        break
+                files_walkthrough_prompt += _build_unprocessed_files_block(
+                    deleted_files_list, "Additional deleted files:",
+                    max_files=MAX_EXTRA_FILES_TO_PROMPT)
             # PR header inference
             get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,
@@ -634,6 +641,7 @@ class PRDescription:
     def _prepare_data(self):
         # Load the AI prediction data into a dictionary
         self.data = load_yaml(self.prediction.strip(), keys_fix_yaml=self.keys_fix)
+        self._validate_description_schema(self.data)
 
         if get_settings().pr_description.add_original_user_description and self.user_description:
             self.data["User Description"] = self.user_description
@@ -660,6 +668,21 @@ class PRDescription:
                 )
         if 'pr_files' in self.data:
             self.data['pr_files'] = self.data.pop('pr_files')
+
+    @staticmethod
+    def _validate_description_schema(data: object) -> bool:
+        try:
+            PRDescriptionAssembled.model_validate(data)
+        except ValidationError as error:
+            first_error = error.errors()[0]
+            field_path = ".".join(str(part) for part in first_error.get("loc", ())) or "$"
+            value = None if first_error.get("type") == "missing" else first_error.get("input")
+            get_logger().warning(
+                "Description output failed schema validation",
+                artifact={"field": field_path, "value": value},
+            )
+            return False
+        return True
 
     def _prepare_labels(self) -> List[str]:
         pr_labels = []

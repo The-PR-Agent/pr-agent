@@ -411,7 +411,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
     for index, group in enumerate(packed_groups):
         rendered_chunk = "\n".join(patch for _, patch, _ in group)
         if packed_all and index == len(packed_groups) - 1:
-            rendered_chunk = rendered_chunk.strip()
+            rendered_chunk = rendered_chunk.strip("\r\n")
         final_diff_list.append(rendered_chunk)
 
     if len(files_in_patches) < len(packable) and get_verbosity_level() >= 2:
@@ -486,7 +486,7 @@ def pr_generate_extended_diff(pr_languages: list,
                 full_extended_patch = decouple_and_convert_to_hunks_with_lines_numbers(extended_patch, file)
             else:
                 extended_patch = extended_patch.replace('\n@@ ', '\n\n@@ ') # add extra line before each hunk
-                full_extended_patch = f"\n\n## File: '{file.filename.strip()}'\n\n{extended_patch.strip()}\n"
+                full_extended_patch = f"\n\n## File: '{file.filename.strip()}'\n\n{extended_patch.strip("\r\n")}\n"
 
             # add AI-summary metadata to the patch
             if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
@@ -600,9 +600,9 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
 
         if patch:
             if not convert_hunks_to_line_numbers:
-                patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip()}\n"
+                patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip("\r\n")}\n"
             else:
-                patch_final = "\n\n" + patch.strip()
+                patch_final = "\n\n" + patch.strip("\r\n")
             new_patch_tokens = token_handler.count_tokens(patch_final)
             if patches and separator_tokens is None:
                 separator_tokens = token_handler.count_tokens("\n")
@@ -825,7 +825,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         if add_line_numbers:
             patch = decouple_and_convert_to_hunks_with_lines_numbers(patch, file)
         else:
-            patch = f"\n\n## File: '{file.filename.strip()}'\n\n{patch.strip()}\n"
+            patch = f"\n\n## File: '{file.filename.strip()}'\n\n{patch.strip("\r\n")}\n"
 
         # add AI-summary metadata to the patch
         if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):

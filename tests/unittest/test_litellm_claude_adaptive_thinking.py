@@ -133,6 +133,8 @@ async def _run_completion(monkeypatch, model, reasoning_effort="medium", enabled
         ("vertex_ai/claude-sonnet-5", True),
         ("anthropic/claude-opus-5", True),
         ("bedrock/us.anthropic.claude-opus-5", True),
+        ("anthropic/claude-opus-5-5", True),
+        ("bedrock/eu.anthropic.claude-opus-5-5", True),
         ("anthropic/claude-fable-5", True),
         ("anthropic/claude-fable-5-1", True),
         ("bedrock/us.anthropic.claude-fable-5-1", True),

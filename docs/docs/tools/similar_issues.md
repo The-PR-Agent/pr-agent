@@ -22,7 +22,7 @@ It is an issue-scoped command: comment `/similar_issue` on the issue (served by 
 To perform retrieval, the `similar_issue` tool indexes the repository's issues in the configured vector database. On every backend:
 
 - The **first run** indexes up to `max_issues_to_scan` issues (default `500`).
-- **Later runs** append newer issues, stopping at the first already-indexed one, so previously-indexed issues are not re-embedded.
+- **Later runs** check the newest `max_issues_to_scan` issues and index any that are missing, so previously-indexed issues are not re-embedded.
 - `force_update_dataset = true` makes every run re-index the whole repository: LanceDB deletes the repository's rows first, Pinecone and Qdrant upsert over the existing rows.
 - `skip_comments = true` skips issue comments and embeds only the issue title and body.
 
@@ -49,7 +49,7 @@ Choose from the following Vector Databases:
 
 LanceDB is the default backend (`vectordb = "lancedb"`) and needs no external credentials. The index is stored in a local directory given by the `[lancedb] uri` key (default `./lancedb`). A single table (`codium-ai-pr-agent-issues`) is shared by every repository indexed into the same directory; rows are tagged with the repository name in the metadata.
 
-As described in [Indexing and re-runs](#indexing-and-re-runs), the first run creates the table and indexes up to `max_issues_to_scan` issues; later runs append newer issues until the first already-indexed one; `force_update_dataset = true` deletes the repository's rows and re-indexes them.
+As described in [Indexing and re-runs](#indexing-and-re-runs), the first run creates the table and indexes up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` deletes the repository's rows and re-indexes them.
 
 #### Pinecone Configuration
 
@@ -72,7 +72,7 @@ gcp-starter pod tier is no longer supported.
 created. An existing index is opened by name and is never recreated, so moving an
 existing deployment to the new configuration does not lose the stored vectors.
 
-On re-runs, the first run creates the index and upserts up to `max_issues_to_scan` issues; later runs append newer issues until the first already-indexed one; `force_update_dataset = true` re-indexes the whole repository.
+On re-runs, the first run creates the index and upserts up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` re-indexes the whole repository.
 
 !!! note "No backend is tested against its real driver"
 
@@ -109,7 +109,7 @@ You can get a free managed Qdrant instance from [Qdrant Cloud](https://cloud.qdr
 
 Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`, derived by appending a `-v2` suffix to the shared index name (`codium-ai-pr-agent-issues`). The suffix is an implementation detail of the Qdrant backend only; pinecone and lancedb use the unsuffixed name.
 
-On re-runs, the first run creates the collection and stores up to `max_issues_to_scan` issues; later runs append newer issues until the first already-indexed one; `force_update_dataset = true` re-indexes the whole repository.
+On re-runs, the first run creates the collection and stores up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` re-indexes the whole repository.
 
 !!! note "Upgrading an index created before the point-id fix"
 

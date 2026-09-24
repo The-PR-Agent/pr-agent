@@ -250,22 +250,16 @@ class PRSimilarIssue:
                 self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for issue in issues_paginated_list:
-                    if issue.pull_request:
-                        continue
-                    issue_str, comments, number = self._process_issue(issue)
+                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
+                    if scanned >= self.max_issues_to_scan:
+                        break
+                    number = issue.number
                     issue_key = f"issue_{number}"
                     id = issue_key + "." + "issue"
                     res = self.pinecone_index.fetch(ids=[id], namespace=self.pinecone_namespace).to_dict()
-                    is_new_issue = True
-                    for vector in res["vectors"].values():
-                        if vector['metadata']['repo'] == repo_name_for_index:
-                            is_new_issue = False
-                            break
-                    if is_new_issue:
+                    if not any(vector['metadata']['repo'] == repo_name_for_index
+                               for vector in res["vectors"].values()):
                         issues_to_update.append(issue)
-                    else:
-                        break
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -314,22 +308,15 @@ class PRSimilarIssue:
             else:  # update table if needed
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for issue in issues_paginated_list:
-                    if issue.pull_request:
-                        continue
-                    issue_str, comments, number = self._process_issue(issue)
+                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
+                    if scanned >= self.max_issues_to_scan:
+                        break
+                    number = issue.number
                     issue_key = f"issue_{number}"
                     issue_id = issue_key + "." + "issue"
                     res = self.table.search().limit(len(self.table)).where(f"id='{issue_id}'").to_list()
-                    is_new_issue = True
-                    for r in res:
-                        if r['metadata']['repo'] == repo_name_for_index:
-                            is_new_issue = False
-                            break
-                    if is_new_issue:
+                    if not any(r['metadata']['repo'] == repo_name_for_index for r in res):
                         issues_to_update.append(issue)
-                    else:
-                        break
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -396,10 +383,10 @@ class PRSimilarIssue:
             else:
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for issue in issues_paginated_list:
-                    if issue.pull_request:
-                        continue
-                    issue_str, comments, number = self._process_issue(issue)
+                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
+                    if scanned >= self.max_issues_to_scan:
+                        break
+                    number = issue.number
                     issue_key = f"issue_{number}"
                     point_id = issue_key + "." + "issue"
                     response = self.qdrant.count(
@@ -411,8 +398,6 @@ class PRSimilarIssue:
                     )
                     if response.count == 0:
                         issues_to_update.append(issue)
-                    else:
-                        break
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -569,7 +554,6 @@ class PRSimilarIssue:
             text="example_issue",
             metadata=Metadata(repo=repo_name_for_index)
         )
-        corpus.append(example_issue_record)
 
         counter = 0
         for issue in issues_list:
@@ -579,10 +563,6 @@ class PRSimilarIssue:
             if counter >= self.max_issues_to_scan:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
-
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
 
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
@@ -616,6 +596,16 @@ class PRSimilarIssue:
                                                   level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+                # Count only indexed issues so oversized rejects do not burn the scan budget
+                counter += 1
+                if counter % 100 == 0:
+                    get_logger().info(f"Scanned {counter} issues")
+
+        # the sentinel row is written last so its presence only signals a completed ingest:
+        # a run interrupted partway will leave no sentinel and the next run re-indexes instead
+        # of trusting a partial newest-first prefix
+        corpus.append(example_issue_record)
         df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
@@ -629,19 +619,37 @@ class PRSimilarIssue:
             (row["id"], row["values"], row["metadata"])
             for row in df.to_dict(orient="records")
         ]
+        sentinel_vector = next(
+            vector for vector in vectors
+            if vector[0] == f"example_issue_{repo_name_for_index}"
+        )
+        issue_vectors = [vector for vector in vectors if vector[0] != sentinel_vector[0]]
         if not upsert:
             get_logger().info('Creating index from scratch...')
             self.pc.create_index(name=self.index_name, dimension=len(embeds[0]), metric="cosine", spec=self.pc_spec,
                                  timeout=120)
-        get_logger().info('Upserting index...')
         self.pinecone_index = self.pc.Index(name=self.index_name)
-        upsert_response = self.pinecone_index.upsert(vectors=vectors,
-                                                     namespace=pinecone_namespace,
-                                                     batch_size=100,
-                                                     max_concurrency=10)
-        _raise_on_pinecone_upsert_errors(upsert_response)
-        _wait_for_pinecone_upsert_readiness(self.pinecone_index, upsert_response,
-                                            namespace=pinecone_namespace, vector_id=vectors[0][0])
+        # Revoke the completion sentinel before writing, so a partial write (full or
+        # incremental) can never leave the repository marked complete; the sentinel is
+        # recreated below only after every issue batch succeeded
+        self.pinecone_index.delete(ids=[f"example_issue_{repo_name_for_index}"],
+                                   namespace=pinecone_namespace)
+        if issue_vectors:
+            get_logger().info('Upserting index...')
+            upsert_response = self.pinecone_index.upsert(vectors=issue_vectors,
+                                                         namespace=pinecone_namespace,
+                                                         batch_size=100,
+                                                         max_concurrency=10)
+            _raise_on_pinecone_upsert_errors(upsert_response)
+            _wait_for_pinecone_upsert_readiness(self.pinecone_index, upsert_response,
+                                                namespace=pinecone_namespace,
+                                                vector_id=issue_vectors[0][0])
+        # Write the completion sentinel in a separate call only after the issue batches
+        # succeed, so a failed or interrupted ingest leaves no sentinel and the next run
+        # re-indexes instead of trusting a partial newest-first prefix
+        get_logger().info('Writing completion sentinel...')
+        self.pinecone_index.upsert(vectors=[sentinel_vector],
+                                   namespace=pinecone_namespace)
         get_logger().info('Done')
 
     def _table_exists_in_db(self, index_name) -> bool:
@@ -678,10 +686,6 @@ class PRSimilarIssue:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
 
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
-
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
             username = issue.user.login
@@ -714,6 +718,11 @@ class PRSimilarIssue:
                                                     level=IssueLevel.COMMENT)
                             )
                             corpus.append(comment_record)
+
+                # Count only indexed issues so oversized rejects do not burn the scan budget
+                counter += 1
+                if counter % 100 == 0:
+                    get_logger().info(f"Scanned {counter} issues")
 
         if len(corpus.documents) == 0:
             if ingest and not force_refresh:
@@ -766,7 +775,7 @@ class PRSimilarIssue:
             import uuid
 
             import pandas as pd
-            from qdrant_client.models import PointStruct
+            from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
         except Exception:
             raise
 
@@ -777,7 +786,6 @@ class PRSimilarIssue:
             text="example_issue",
             metadata=Metadata(repo=repo_name_for_index)
         )
-        corpus.append(example_issue_record)
 
         counter = 0
         for issue in issues_list:
@@ -787,10 +795,6 @@ class PRSimilarIssue:
             if counter >= self.max_issues_to_scan:
                 get_logger().info(f"Scanned {self.max_issues_to_scan} issues, stopping")
                 break
-
-            counter += 1
-            if counter % 100 == 0:
-                get_logger().info(f"Scanned {counter} issues")
 
             issue_str, comments, number = self._process_issue(issue)
             issue_key = f"issue_{number}"
@@ -825,6 +829,16 @@ class PRSimilarIssue:
                             )
                             corpus.append(comment_record)
 
+                # Count only indexed issues so oversized rejects do not burn the scan budget
+                counter += 1
+                if counter % 100 == 0:
+                    get_logger().info(f"Scanned {counter} issues")
+
+        # Write the sentinel row last so its presence only signals a completed ingest:
+        # a run interrupted partway will leave no sentinel and the next run re-indexes instead
+        # of trusting a partial newest-first prefix
+        corpus.append(example_issue_record)
+
         df = pd.DataFrame(corpus.model_dump()["documents"])
         get_logger().info('Done')
 
@@ -852,12 +866,33 @@ class PRSimilarIssue:
                     },
                 )
             )
-        self.qdrant.upload_points(
-            collection_name=self.qdrant_collection_name,
-            points=points,
-            batch_size=100,
-            wait=True,
+        sentinel_point = next(
+            point for point in points
+            if point.payload["id"] == f"example_issue_{repo_name_for_index}"
         )
+        issue_points = [point for point in points if point.id != sentinel_point.id]
+        # Revoke the completion sentinel before writing, so a partial write (full or
+        # incremental) can never leave the repository marked complete; the sentinel is
+        # recreated below only after every issue point was uploaded
+        self.qdrant.delete(
+            collection_name=self.qdrant_collection_name,
+            points_selector=Filter(must=[
+                FieldCondition(key="metadata.repo", match=MatchValue(value=repo_name_for_index)),
+                FieldCondition(key="id", match=MatchValue(value=f"example_issue_{repo_name_for_index}")),
+            ]),
+        )
+        if issue_points:
+            self.qdrant.upload_points(
+                collection_name=self.qdrant_collection_name,
+                points=issue_points,
+                batch_size=100,
+                wait=True,
+            )
+        # Write the completion sentinel in a separate call only after the issue points
+        # succeed, so a failed or interrupted ingest leaves no sentinel and the next run
+        # re-indexes instead of trusting a partial newest-first prefix
+        get_logger().info('Writing completion sentinel...')
+        self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=[sentinel_point])
         get_logger().info('Done')
 
 
