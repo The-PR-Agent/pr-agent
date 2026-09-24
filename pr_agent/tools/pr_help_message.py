@@ -291,7 +291,9 @@ class PRHelpMessage:
 
         marker_prompts = render(TRUNCATION_MARKER)
         if self._count_prompt_tokens(model, *marker_prompts) > prompt_budget:
-            raise FallbackEligibleError(f"The /help prompt exceeds the token limit for {model} with a truncation marker")
+            raise FallbackEligibleError(
+                f"The /help prompt exceeds the token limit for {model} with a truncation marker"
+            )
 
         keep_chars = max(len(raw_snippets) - 1, 0)
         while keep_chars > 0:
