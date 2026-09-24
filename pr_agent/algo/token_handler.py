@@ -63,7 +63,7 @@ class TokenHandler:
     """
 
     # Constants
-    CLAUDE_MODEL = "claude-3-7-sonnet-20250219"
+    CLAUDE_MODEL = "claude-sonnet-4-6"
     CLAUDE_MAX_CONTENT_SIZE = 9_000_000 # Maximum allowed content size (9MB) for Claude API
 
     def __init__(self, pr=None, vars: dict | None = None, system="", user="", model=None):
@@ -203,7 +203,8 @@ class TokenHandler:
         """
         encoder_estimate = len(self.encoder.encode(patch, disallowed_special=()))
 
-        # If an estimate is enough (for example, in cases where the maximal allowed tokens is way below the known limits), return it.
+        # If an estimate is enough (for example, where the maximal allowed tokens is
+        # way below the known limits), return it.
         if not force_accurate:
             return encoder_estimate
 

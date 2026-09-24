@@ -154,3 +154,52 @@ def test_reconstruct_base_add_to_empty():
     # Even though head ends with "\n", an empty base must stay "" (no trailing
     # newline appended) so it is falsy for extend_patch().
     assert result == ""
+
+
+# --- hunks with no head lines (target length 0) ---
+
+_ZERO_CONTEXT_DELETE_PATCH = """--- a/f.txt
++++ b/f.txt
+@@ -3,2 +2,0 @@ b
+-c
+-d
+"""
+
+
+def test_reconstruct_base_zero_context_deletion():
+    # `git diff -U0` numbers a pure deletion by the head line before it (`+2,0`),
+    # so the removed lines belong after head line 2, not before it.
+    assert reconstruct_base_file("a\nb\ne\n", _ZERO_CONTEXT_DELETE_PATCH) == "a\nb\nc\nd\ne\n"
+
+
+# Verbatim `git diff -U0` output for the base/head pair in the test below.
+_ZERO_CONTEXT_MIXED_PATCH = """--- a/f.txt
++++ b/f.txt
+@@ -1,0 +2 @@ a
++x
+@@ -3 +3,0 @@ b
+-c
+@@ -5,0 +6,2 @@ e
++y
++z
+"""
+
+
+def test_reconstruct_base_zero_context_mixed_hunks():
+    base = "a\nb\nc\nd\ne\n"
+    head = "a\nx\nb\nd\ne\ny\nz\n"
+    assert reconstruct_base_file(head, _ZERO_CONTEXT_MIXED_PATCH) == base
+
+
+_EMPTIED_FILE_PATCH = """--- a/f.txt
++++ b/f.txt
+@@ -1,2 +0,0 @@
+-a
+-b
+"""
+
+
+def test_reconstruct_base_file_emptied():
+    # Every line removed but the file kept: `+0,0` must not be read as out of bounds.
+    # (Only the lines are checked; the trailing newline follows the EOF handling.)
+    assert reconstruct_base_file("", _EMPTIED_FILE_PATCH).splitlines() == ["a", "b"]

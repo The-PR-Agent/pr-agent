@@ -229,7 +229,9 @@ class PRReviewer:
             "require_risk_assessment": get_settings().pr_reviewer.get("require_risk_assessment", False),
             "require_merge_recommendation": get_settings().pr_reviewer.get("require_merge_recommendation", False),
             "require_priority_files": get_settings().pr_reviewer.get("require_priority_files", False),
-            "require_estimate_contribution_time_cost": get_settings().pr_reviewer.require_estimate_contribution_time_cost,
+            "require_estimate_contribution_time_cost": (
+                get_settings().pr_reviewer.require_estimate_contribution_time_cost
+            ),
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
@@ -787,7 +789,10 @@ class PRReviewer:
             self._review_state_result = result
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
-        return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
+        return (
+            get_settings().pr_reviewer.get('publish_output_no_suggestions', True)
+            or "No major issues detected" not in pr_review
+        )
 
     async def _prepare_prediction(self, model: str) -> None:
         # Each model attempt owns a fresh result. A malformed primary must not
@@ -832,7 +837,7 @@ class PRReviewer:
             self.remaining_files_list = []
 
         # Resume an incomplete chunk plan even when a fallback model can fit the full diff.
-        # Otherwise the single-call path would bypass cached successful chunks.
+        # Otherwise, the single-call path would bypass cached successful chunks.
         has_incomplete_chunk_plan = hasattr(self, "_chunked_patches_diff_list")
         if chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan):
             prepared_diff = output if isinstance(output, PreparedPRDiff) else None
@@ -1460,8 +1465,9 @@ class PRReviewer:
         num_commits_threshold = get_settings().pr_reviewer.minimal_commits_for_incremental_review
         not_enough_commits = num_new_commits < num_commits_threshold
         # checking if the commits are not too recent to start the review
-        recent_commits_threshold = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(
-            minutes=get_settings().pr_reviewer.minimal_minutes_for_incremental_review
+        recent_commits_threshold = (
+            datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+            - datetime.timedelta(minutes=get_settings().pr_reviewer.minimal_minutes_for_incremental_review)
         )
         last_seen_commit_date = (
             self.incremental.last_seen_commit.commit.author.date if self.incremental.last_seen_commit else None
@@ -1515,7 +1521,10 @@ class PRReviewer:
                     if estimated_effort_number is not None:
                         estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
-                if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
+                if (
+                        get_settings().pr_reviewer.enable_review_labels_security
+                        and get_settings().pr_reviewer.require_security_review
+                    ):
                     security_concerns = data['review'].get('security_concerns')
                     if security_concerns is None:
                         get_logger().warning("Missing security_concerns in review data")

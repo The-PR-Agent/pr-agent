@@ -312,6 +312,8 @@ PR-Agent uses a dynamic strategy to generate code suggestions based on the size 
 - For each chunk, PR-Agent generates up to `pr_code_suggestions.num_code_suggestions_per_chunk` suggestions (default: 3).
 - To bound output from large or chunked PRs, set `pr_code_suggestions.max_suggestions_per_file` to a positive integer.
   After all chunks are merged, the highest-scored suggestions are retained per file; ties keep their original order.
+  Summarized output, including unpublished summaries, skips suggestions with unresolvable line locations before
+  applying a positive cap. Inline output keeps its existing selection and fallback behavior.
   The default value `0` disables this cap.
 
 This approach has two main benefits:
@@ -381,8 +383,8 @@ for the authoritative default values.
       <tr>
         <td><b>enable_suggestions_coverage_footer</b></td>
         <td>
-          If set to true, the tool will display a coverage notice when failed analysis chunks make the
-          suggestions incomplete.
+          If set to true, the tool will display a coverage notice when analysis chunks fail or files
+          are omitted by the token budget or maximum number of AI calls.
         </td>
       </tr>
     </table>
@@ -399,6 +401,8 @@ for the authoritative default values.
         <td>
           Maximum number of suggestions retained for each file after chunk results are combined. The highest-scored
           suggestions are retained. Set to <code>0</code> to preserve the uncapped behavior.
+          Summarized output skips unresolvable line locations before applying a positive cap;
+          inline selection and fallback behavior are unchanged.
         </td>
       </tr>
       <tr>

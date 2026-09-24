@@ -241,8 +241,8 @@ To use [Google AI Studio](https://aistudio.google.com/) models, set the relevant
 
 ```toml
 [config] # in configuration.toml
-model="gemini/gemini-1.5-flash"
-fallback_models=["gemini/gemini-1.5-flash"]
+model="gemini/gemini-3.8-flash"
+fallback_models=["gemini/gemini-3.8-flash"]
 
 [google_ai_studio] # in .secrets.toml
 gemini_api_key = "..."
@@ -256,8 +256,8 @@ To use Anthropic models, set the relevant models in the configuration section of
 
 ```toml
 [config]
-model="anthropic/claude-3-opus-20240229"
-fallback_models=["anthropic/claude-3-opus-20240229"]
+model="anthropic/claude-opus-5"
+fallback_models=["anthropic/claude-opus-5"]
 ```
 
 And also set the api key in the .secrets.toml file:
@@ -602,7 +602,7 @@ To use model from Openrouter, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model="openrouter/anthropic/claude-3.7-sonnet"
+model="openrouter/anthropic/claude-sonnet-5"
 fallback_models=["openrouter/deepseek/deepseek-chat"]
 custom_model_max_tokens=20000
 
@@ -713,7 +713,7 @@ model = "github_copilot/gpt-4o"
 fallback_models = ["github_copilot/gpt-4.1"]
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. The token budget for a Copilot model is resolved automatically from litellm's model metadata (verified against the pinned litellm 1.101.0), so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the full context window of the model (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
+The GitHub identity behind the model needs an active Copilot subscription. The token budget for a Copilot model is resolved automatically from litellm's model metadata (verified against the pinned litellm 1.102.1), so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the full context window of the model (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 
@@ -787,7 +787,7 @@ custom_model_max_tokens= ...
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
 ```
 
-With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider.
+With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you can specify its reasoning effort via `config` section. The default value is `medium`. You can change it to any supported value based on your usage. Available values depend on the model and provider. Where litellm marks minimal unsupported for a GPT-5 model, PR-Agent sends low instead.
 
 For a model served through an OpenAI-compatible endpoint that litellm does not recognize as reasoning-capable, add its ID to `config.additional_reasoning_effort_models`. For known models support is decided by litellm's bundled reasoning metadata plus the maintained Grok registry (Grok ids resolve through their `xai/` prefix) with Claude models left out of the metadata path (their reasoning comes from the dedicated extended/adaptive thinking settings; an explicit entry in the list above still applies to them). Config IDs match exactly or through any provider prefix (e.g. `"deepseek-v4-flash-0731"` matches `"openai/deepseek-v4-flash-0731"`). When LiteLLM does not recognize the model, PR-Agent sets `allowed_openai_params = ["reasoning_effort"]` so the parameter reaches the endpoint. Note the default `"medium"` may be rejected by providers that accept a different subset (e.g. `"none"/"low"/"high"/"max"`); adding a custom model ID surfaces that provider-side error instead of silently dropping the setting.
 
@@ -828,7 +828,7 @@ built-in defaults.
 !!! note "Only models that accept a thinking budget are supported"
     PR-Agent enables extended thinking through the manual
     `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-    (e.g. Opus 4.7/4.8, Opus 5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+    (e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
     intentionally excluded from the built-in defaults. If you add one to
     `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
     for it and logs a warning rather than sending a request the provider would reject — use

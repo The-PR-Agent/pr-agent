@@ -225,6 +225,11 @@ def parse_command(command: str) -> list[str]:
     return [action] + args
 
 
+def _validation_args(args: list[str]) -> list[str]:
+    """Project setting arguments to their keys for command-line validation."""
+    return [argument.split("=", 1)[0] for argument in args]
+
+
 def prepare_command(command: str) -> list[str]:
     """Apply configured command settings while retaining argument boundaries.
 
@@ -239,7 +244,7 @@ def prepare_command(command: str) -> list[str]:
     for argument in args:
         # Validate the key only. The value is free text - a review instruction may legitimately
         # mention openai.key or config.url - and only the key can actually set a setting.
-        is_allowed, offending_param = CliArgs.validate_user_args([argument.split("=", 1)[0]])
+        is_allowed, offending_param = CliArgs.validate_user_args(_validation_args([argument]))
         if is_allowed:
             kept.append(argument)
         else:
@@ -314,7 +319,7 @@ class PRAgent:
             action, *args = request
 
         # validate args
-        is_valid, arg = CliArgs.validate_user_args(args)
+        is_valid, arg = CliArgs.validate_user_args(_validation_args(args))
         if not is_valid:
             get_logger().error(
                 f"CLI argument for param '{arg}' is forbidden. Use instead a configuration file."

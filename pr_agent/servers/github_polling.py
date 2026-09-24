@@ -353,7 +353,8 @@ async def polling_loop():
 
                                 # Add to the task queue
                                 get_logger().info(
-                                    f"Adding comment processing to task queue for PR, {pr_url}, comment_body: {comment_body}")
+                                    f"Adding comment processing to task queue for PR, {pr_url},"
+                                    f" comment_body: {comment_body}")
                                 task_queue.append((process_comment_sync, (pr_url, rest_of_comment, comment_id)))
                                 get_logger().info(f"Queued comment processing for PR: {pr_url}")
                             else:

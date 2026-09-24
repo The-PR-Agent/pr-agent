@@ -142,7 +142,8 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         if get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
             get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {pr_url}", **log_context)
             return JSONResponse(
-                status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "PR ignored due to auto feedback not enabled"})
+                status_code=status.HTTP_200_OK,
+                content=jsonable_encoder({"message": "PR ignored due to auto feedback not enabled"})
             )
         get_settings().set("config.is_auto_command", True)
         if data["eventKey"] == "pr:opened":
@@ -151,7 +152,8 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             if not get_settings().get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER"):
                 get_logger().info(f"Push trigger is disabled, skipping push commands for PR {pr_url}", **log_context)
                 return JSONResponse(
-                    status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "PR ignored due to push trigger not enabled"})
+                    status_code=status.HTTP_200_OK,
+                    content=jsonable_encoder({"message": "PR ignored due to push trigger not enabled"})
                 )
 
             get_settings().set("config.is_new_pr", False)

@@ -41,7 +41,6 @@ except ImportError:
 from pr_agent.algo import (
     CLAUDE_EXTENDED_THINKING_MODELS,
     GROK_REASONING_EFFORT_LEVELS,
-    NO_SUPPORT_TEMPERATURE_MODELS,
     STREAMING_REQUIRED_MODELS,
     USER_MESSAGE_ONLY_MODELS,
     normalize_litellm_model,
@@ -169,6 +168,26 @@ PROVIDER_SETTING_PATHS = {
 
 AZURE_AD_TOKEN_ENV_VARS = ("AZURE_AD_TOKEN", "AZURE_OPENAI_AD_TOKEN")
 AZURE_OIDC_AUTH_ENV_VARS = ("AZURE_CLIENT_SECRET", "AZURE_USERNAME", "AZURE_PASSWORD")
+
+AWS_PROVIDER_CALL_FALLBACK_MESSAGE = (
+    "AWS provider call failed with ambient credentials; retrying with static credentials"
+)
+
+
+def _first_environment_value(environment_variables):
+    """Return the first non-empty value among the environment variables, if any."""
+    for environment_variable in environment_variables:
+        value = os.environ.get(environment_variable)
+        if value:
+            return value
+    return None
+
+
+def _strip_openai_azure_prefixes(model: str) -> str:
+    """Strip stacked OpenAI/Azure routing prefixes, which Azure mode can prepend to a configured one."""
+    while model.startswith(("openai/", "azure/")):
+        model = model.removeprefix("openai/").removeprefix("azure/")
+    return model
 
 
 def _as_bool(value, default: bool) -> bool:
@@ -458,8 +477,36 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Models that only use user message
         self.user_message_only_models = USER_MESSAGE_ONLY_MODELS
 
-        # Model that doesn't support temperature argument
-        self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
+        # Models that must never receive the temperature argument. Support is
+        # otherwise derived from litellm's parameter metadata (see
+        # _litellm_supports_temperature); this list overrides it for endpoints
+        # whose providers reject temperature despite the metadata, and for the
+        # deprecated-but-accepted case where the parameter still reaches a model.
+        # Matched exactly or through any provider prefix, mirroring
+        # additional_reasoning_effort_models.
+        no_temperature_models = _coerce_string_list_config(
+            get_settings().config.get("no_temperature_models", [])
+        )
+        if no_temperature_models is None:
+            get_logger().warning(
+                "Invalid no_temperature_models in config; expected a list of model names. "
+                "Ignoring it."
+            )
+            no_temperature_models = []
+        elif no_temperature_models and not all(
+            isinstance(model, str) and model.strip() for model in no_temperature_models
+        ):
+            get_logger().warning(
+                "Invalid no_temperature_models in config; "
+                "expected a list of model name strings. "
+                "Ignoring it."
+            )
+            no_temperature_models = []
+        # Store stripped names so exact-match checks against the model succeed even when the
+        # config entries contain surrounding whitespace (validation above already used strip()).
+        self.no_temperature_models = [
+            model.strip() for model in no_temperature_models
+        ]
 
         # Config-listed models opt endpoints litellm does not know into receiving
         # reasoning_effort. Reasoning support otherwise comes from litellm's own
@@ -560,11 +607,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         for provider, environment_variables in PROVIDER_API_BASE_ENV_VARS.items():
             if provider_params.get(provider, {}).get("api_base"):
                 continue
-            for environment_variable in environment_variables:
-                api_base = os.environ.get(environment_variable)
-                if api_base:
-                    provider_params.setdefault(provider, {})["api_base"] = api_base
-                    break
+            api_base = _first_environment_value(environment_variables)
+            if api_base:
+                provider_params.setdefault(provider, {})["api_base"] = api_base
 
         if "api_base" not in provider_params.get("cloudflare", {}):
             cloudflare_account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
@@ -577,11 +622,9 @@ class LiteLLMAIHandler(BaseAiHandler):
             for parameter, environment_variables in PROVIDER_ROUTING_ENV_VARS[provider].items():
                 if provider_params.get(provider, {}).get(parameter):
                     continue
-                for environment_variable in environment_variables:
-                    value = os.environ.get(environment_variable)
-                    if value:
-                        provider_params.setdefault(provider, {})[parameter] = value
-                        break
+                value = _first_environment_value(environment_variables)
+                if value:
+                    provider_params.setdefault(provider, {})[parameter] = value
 
         aws_region = self._resolve_aws_region(settings)
         if aws_region:
@@ -765,11 +808,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Capture native provider API keys without mixing them with configured credentials."""
         provider_api_keys = {}
         for provider, environment_variables in PROVIDER_API_KEY_ENV_VARS.items():
-            for environment_variable in environment_variables:
-                api_key = os.environ.get(environment_variable)
-                if api_key:
-                    provider_api_keys[provider] = api_key
-                    break
+            api_key = _first_environment_value(environment_variables)
+            if api_key:
+                provider_api_keys[provider] = api_key
         for provider in JSONProviderRegistry.list_providers():
             provider_config = JSONProviderRegistry.get(provider)
             if provider_config is None or provider in provider_api_keys:
@@ -881,8 +922,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if self._aws_environment_credentials_incomplete:
             if not self._aws_static_creds:
                 raise ValueError("AWS environment credentials are incomplete")
-            self._aws_active_creds = dict(self._aws_static_creds)
-            self._aws_imds_fell_back = True
+            self._activate_static_aws_fallback()
             get_logger().warning(
                 "AWS_USE_IMDS: ambient credentials are incomplete; using static credentials"
             )
@@ -906,8 +946,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             if not self._aws_environment_creds and self._aws_profile_uses_credential_process(session):
                 if not self._aws_static_creds:
                     raise ValueError("AWS credential_process is incompatible with request isolation")
-                self._aws_active_creds = dict(self._aws_static_creds)
-                self._aws_imds_fell_back = True
+                self._activate_static_aws_fallback()
                 get_logger().warning(
                     "AWS_USE_IMDS: credential_process is incompatible with request isolation; "
                     "using static credentials"
@@ -940,8 +979,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if not region:
             get_logger().warning("AWS_USE_IMDS: could not determine AWS region; set AWS_REGION_NAME explicitly")
         if not self._aws_imds_mode and self._aws_static_creds:
-            self._aws_active_creds = dict(self._aws_static_creds)
-            self._aws_imds_fell_back = True
+            self._activate_static_aws_fallback()
             get_logger().info("AWS_USE_IMDS: IMDS resolution failed; using static credentials")
         return self._aws_imds_mode
 
@@ -1043,10 +1081,13 @@ class LiteLLMAIHandler(BaseAiHandler):
         return True
 
     def _activate_static_aws_fallback(self):
-        """Select static request credentials for an AWS provider fallback after IMDS failure."""
+        """Select static request credentials instead of the ambient AWS chain.
+
+        Each caller reports its own reason at its own level: the reasons differ per call
+        site, and reporting from here would name this helper as the record source.
+        """
         self._aws_active_creds = dict(self._aws_static_creds)
         self._aws_imds_fell_back = True
-        get_logger().warning("AWS provider call failed with ambient credentials; retrying with static credentials")
 
     def _validate_aws_credential_chain_environment(self) -> None:
         """Reject credential-chain selectors changed after this handler was initialized."""
@@ -1139,6 +1180,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 self._validate_aws_credential_chain_environment()
                 if self._aws_imds_mode and not await self._refresh_aws_imds_credentials() and self._aws_static_creds:
                     self._activate_static_aws_fallback()
+                    get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
             can_fallback = self._aws_imds_mode and not self._aws_imds_fell_back and bool(self._aws_static_creds)
             yield dict(self._aws_active_creds), can_fallback
 
@@ -1197,6 +1239,21 @@ class LiteLLMAIHandler(BaseAiHandler):
         transport_provider_cache[model] = transport_provider
         return resolved_provider
 
+    def _resolve_configured_request_provider(self, model: str | None, custom_llm_provider: str) -> str | None:
+        """Resolve the request provider, preferring an explicit custom provider over model inference."""
+        if custom_llm_provider:
+            return PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
+        return self._resolve_request_provider(model)
+
+    @staticmethod
+    def _request_deployment_id(
+        routed_model: str, request_provider: str | None, configured_deployment_id: str | None,
+    ) -> str | None:
+        """Return the Azure deployment ID only for Azure chat requests."""
+        if request_provider == "azure" and not routed_model.startswith("azure_text/"):
+            return configured_deployment_id
+        return None
+
     def _resolve_request_transport_provider(self, model: str) -> str | None:
         """Resolve the unaliased provider LiteLLM uses to select a transport."""
         self._resolve_request_provider(model)
@@ -1240,23 +1297,17 @@ class LiteLLMAIHandler(BaseAiHandler):
     @staticmethod
     def _is_gpt6_astra_model(model: str) -> bool:
         """Recognize native Astra models without changing gateway model IDs."""
-        while model.startswith(("openai/", "azure/")):
-            model = model.removeprefix("openai/").removeprefix("azure/")
-        return model.removesuffix("_thinking") == "gpt-6-astra"
+        return _strip_openai_azure_prefixes(model).removesuffix("_thinking") == "gpt-6-astra"
 
     @staticmethod
     def _is_gpt5_model(model: str) -> bool:
         """Return whether a routed model belongs to the GPT-5 family."""
-        model_base = model.removeprefix("openrouter/")
-        while model_base.startswith(("openai/", "azure/")):
-            model_base = model_base.removeprefix("openai/").removeprefix("azure/")
+        model_base = _strip_openai_azure_prefixes(model.removeprefix("openrouter/"))
         return model_base.startswith("gpt-5")
 
     def _normalize_gpt5_model_for_request(self, model: str, user_model: str, custom_llm_provider: str) -> str:
         """Normalize GPT-5/Astra suffixes and prefixes before request parameters are selected."""
-        model_base = model
-        while model_base.startswith(("openai/", "azure/")):
-            model_base = model_base.removeprefix("openai/").removeprefix("azure/")
+        model_base = _strip_openai_azure_prefixes(model)
         if not model_base.startswith("gpt-5") and model_base.removesuffix("_thinking") != "gpt-6-astra":
             return model
         if custom_llm_provider:
@@ -1454,7 +1505,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if provider == "bedrock" and "api_key" not in params and _has_live_provider_api_key_environment(provider):
             raise ValueError("Refusing process-wide Bedrock bearer token fallback")
         if provider in ("sagemaker_chat", "sagemaker_nova") and os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-            # LiteLLM 1.101.0's SageMaker signer ignores its api_key argument and
+            # LiteLLM 1.102.1's SageMaker signer ignores its api_key argument and
             # otherwise reads this Bedrock-only token directly from the environment.
             raise ValueError("Refusing Bedrock bearer token fallback for SageMaker")
         if provider == "azure" and getattr(self, "_azure_ad", False):
@@ -1533,7 +1584,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
             if not uses_bedrock_bearer:
                 if any(os.environ.get(variable) for variable in LITELLM_AWS_CREDENTIAL_SELECTOR_ENV_VARS):
-                    # LiteLLM 1.101.0 resolves these selectors ahead of explicit
+                    # LiteLLM 1.102.1 resolves these selectors ahead of explicit
                     # request credentials, which would replace the isolated keys.
                     raise ValueError(f"Refusing ambient LiteLLM AWS credential selector for provider {provider}")
                 aws_request_credentials = dict(aws_request_credentials or {})
@@ -1594,13 +1645,11 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     def _requires_streaming(self, model: str) -> bool:
         """Return whether this model requires streaming after OpenAI/Azure routing."""
-        def normalize(candidate: str) -> str:
-            while candidate.startswith(("azure/", "openai/")):
-                candidate = candidate.removeprefix("azure/").removeprefix("openai/")
-            return candidate
-
-        normalized_model = normalize(model)
-        return any(normalize(candidate) == normalized_model for candidate in self.streaming_required_models)
+        normalized_model = _strip_openai_azure_prefixes(model)
+        return any(
+            _strip_openai_azure_prefixes(candidate) == normalized_model
+            for candidate in self.streaming_required_models
+        )
 
     def _force_streaming_for_request(self, custom_llm_provider, api_base) -> bool:
         """Return whether an OpenAI-compatible endpoint requires streaming."""
@@ -1764,6 +1813,55 @@ class LiteLLMAIHandler(BaseAiHandler):
             return False
 
     @staticmethod
+    def _litellm_supports_temperature(
+        model: str,
+        custom_llm_provider: str | None = None,
+    ) -> bool:
+        """Probe litellm's parameter metadata for temperature support.
+
+        The list returned by ``litellm.get_supported_openai_params`` is the
+        provider's canonical parameters, so temperature disappears for providers
+        that reject it. Like ``_litellm_supports_reasoning``, the lookup is
+        exact per spelling, so every suffix of the id is probed after stripping
+        the leading ``openrouter/`` segment, plus the ``xai/``-prefixed bare
+        name, to mirror the old ``endswith("/<id>")`` membership. The caller
+        passes the api-key-guard-resolved provider when it has one, which skips
+        the probe's own bare-model resolution inside ``get_supported_openai_params``
+        (openai-compatible providers still map through their own config, but that
+        internal step never touches the snapshotted api key). Models litellm
+        does not know raise and are treated as not supporting temperature: the
+        same safe default as the reasoning gate, so an unknown endpoint never
+        receives a parameter that might be rejected.
+        """
+        probe = model
+        if probe.startswith("openrouter/"):
+            probe = probe.removeprefix("openrouter/")
+        segments = probe.split("/")
+        candidates = []
+        for i in range(len(segments)):
+            candidates.append("/".join(segments[i:]))
+            if i == len(segments) - 1:
+                candidates.append(f"xai/{segments[-1]}")
+        probe_failure = None
+        for candidate in candidates:
+            try:
+                supported_params = litellm.get_supported_openai_params(
+                    model=candidate,
+                    custom_llm_provider=custom_llm_provider or None,
+                ) or []
+            except Exception as e:
+                if probe_failure is None:
+                    probe_failure = e
+                continue
+            if "temperature" in supported_params:
+                return True
+        if probe_failure is not None:
+            get_logger().warning(
+                f"Failed to probe litellm temperature metadata for {model}: {probe_failure}"
+            )
+        return False
+
+    @staticmethod
     def _model_cost_entry_supports_reasoning(model: str) -> bool:
         """Return whether the bundled cost map flags one exact model id as reasoning-capable.
 
@@ -1815,11 +1913,12 @@ class LiteLLMAIHandler(BaseAiHandler):
             return "xhigh" if "xhigh" in grok_levels else "high"
         return "low"
 
-    def _resolve_reasoning_effort(self, model: str, configured_effort) -> str:
-        """Validate and normalize a configured reasoning effort for this model."""
+    @staticmethod
+    def _validate_reasoning_effort(configured_effort) -> str:
+        """Normalize a configured reasoning effort, falling back to MEDIUM for an unknown level."""
         try:
             ReasoningEffort(configured_effort)
-            reasoning_effort = configured_effort
+            return configured_effort
         except (ValueError, TypeError):
             reasoning_effort = ReasoningEffort.MEDIUM.value
             if configured_effort is not None:
@@ -1827,7 +1926,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     f"Invalid reasoning_effort '{configured_effort}' in config. "
                     f"Using default '{reasoning_effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
                 )
+            return reasoning_effort
 
+    def _resolve_reasoning_effort(self, model: str, configured_effort) -> str:
+        """Validate a configured reasoning effort and clamp it to this model's Grok levels."""
+        reasoning_effort = self._validate_reasoning_effort(configured_effort)
         clamped_effort = self._clamp_grok_reasoning_effort(model, reasoning_effort)
         if clamped_effort != reasoning_effort:
             get_logger().info(
@@ -2012,11 +2115,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         configured_deployment_id = self.deployment_id
         routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
         completion_model = self._normalize_gpt5_model_for_request(routed_model, model, custom_llm_provider)
-        request_provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(routed_model)
-        )
+        request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
         openrouter_model = self._canonical_openrouter_model(completion_model, request_provider)
         return self._resolve_output_token_limit(completion_model, openrouter_model)
 
@@ -2029,11 +2128,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         default_output_tokens = self._coerce_token_value(default_output_tokens)
         custom_llm_provider = self._custom_llm_provider
         routed_model = self._route_model_for_request(model, custom_llm_provider, self.deployment_id)
-        request_provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(routed_model)
-        )
+        request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
         openrouter_model = self._canonical_openrouter_model(
             routed_model, request_provider
         )
@@ -2121,7 +2216,10 @@ class LiteLLMAIHandler(BaseAiHandler):
             "budget_tokens": extended_thinking_budget_tokens
         }
         if get_verbosity_level() >= 2:
-            get_logger().info(f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, extended thinking budget tokens: {extended_thinking_budget_tokens}")
+            get_logger().info(
+                f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, "
+                f"extended thinking budget tokens: {extended_thinking_budget_tokens}"
+            )
         kwargs["max_tokens"] = extended_thinking_max_output_tokens
 
         # temperature may only be set to 1 when thinking is enabled
@@ -2175,8 +2273,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
         # Adaptive-thinking Claude models have sampling parameters removed, so
         # never send temperature here. This pop is load-bearing rather than
-        # defensive: NO_SUPPORT_TEMPERATURE_MODELS covers most of these ids
-        # after #2400/#2449, but not all of them. It carries
+        # defensive: litellm's parameter metadata still reports temperature for
+        # these ids, so it would otherwise reach the model. It carries
         # bedrock/anthropic.claude-opus-4-7-v1:0 and
         # bedrock/us.anthropic.claude-opus-4-7 without the two combined, so for
         # bedrock/us.anthropic.claude-opus-4-7-v1:0 this line is the only thing
@@ -2184,21 +2282,26 @@ class LiteLLMAIHandler(BaseAiHandler):
         kwargs.pop("temperature", None)
         return kwargs
 
-    def add_litellm_callbacks(self, kwargs) -> dict:
+    @staticmethod
+    def _capture_log_context(probe_key: str, message: str) -> dict:
+        """Read the command and PR URL of the current request out of the logging context.
+
+        The probe record is matched by identity, so a concurrent request adding
+        its own sink at the same time cannot capture this request's context nor
+        leak its own into it.
+        """
         probe = object()
         captured_extra = []
 
-        def capture_logs(message):
+        def capture_logs(logged_message):
             # Parsing the log message and context
-            record = message.record
-            extra = record.get("extra") or {}
-            if extra.get("litellm_callbacks_probe") is not probe:
+            extra = logged_message.record.get("extra") or {}
+            if extra.get(probe_key) is not probe:
                 return
             log_entry = {}
-            if extra.get("command") is not None:
-                log_entry.update({"command": extra["command"]})
-            if extra.get("pr_url") is not None:
-                log_entry.update({"pr_url": extra["pr_url"]})
+            for key in ("command", "pr_url"):
+                if extra.get(key) is not None:
+                    log_entry[key] = extra[key]
 
             # Append the captured request context.
             captured_extra.append(log_entry)
@@ -2206,12 +2309,16 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Adding the custom sink to Loguru
         handler_id = get_logger().add(capture_logs)
         try:
-            get_logger().debug("Capturing logs for litellm callbacks",
-                               litellm_callbacks_probe=probe)
+            get_logger().debug(message, **{probe_key: probe})
         finally:
             get_logger().remove(handler_id)
 
-        context = captured_extra[0] if len(captured_extra) > 0 else {}
+        return captured_extra[0] if len(captured_extra) > 0 else {}
+
+    def add_litellm_callbacks(self, kwargs) -> dict:
+        context = self._capture_log_context(
+            "litellm_callbacks_probe", "Capturing logs for litellm callbacks",
+        )
 
         command = context.get("command", "unknown")
         pr_url = context.get("pr_url", "unknown")
@@ -2252,31 +2359,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         e.g. {"command":"improve","pr_url":"https://..."}. Returns an empty string when
         no context is available.
         """
-        # The probe record is matched by identity, so a concurrent request adding
-        # its own sink at the same time cannot capture this request's context nor
-        # leak its own into it.
-        probe = object()
-        captured_extra = []
-
-        def capture_logs(message):
-            extra = message.record.get("extra") or {}
-            if extra.get("user_field_probe") is not probe:
-                return
-            log_entry = {}
-            if extra.get("command") is not None:
-                log_entry.update({"command": extra["command"]})
-            if extra.get("pr_url") is not None:
-                log_entry.update({"pr_url": extra["pr_url"]})
-            captured_extra.append(log_entry)
-
-        handler_id = get_logger().add(capture_logs)
-        try:
-            get_logger().debug("Capturing the request context for the user field",
-                               user_field_probe=probe)
-        finally:
-            get_logger().remove(handler_id)
-
-        context = captured_extra[0] if len(captured_extra) > 0 else {}
+        context = self._capture_log_context(
+            "user_field_probe", "Capturing the request context for the user field",
+        )
         if not context:
             return ""
         # Cap the individual values before serialization, so the result stays
@@ -2355,16 +2440,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         user_model = model
         routed_model = self._route_model_for_request(user_model, custom_llm_provider, configured_deployment_id)
         completion_model = self._normalize_gpt5_model_for_request(routed_model, user_model, custom_llm_provider)
-        request_provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(routed_model)
-        )
-        deployment_id = (
-            configured_deployment_id
-            if request_provider == "azure" and not routed_model.startswith("azure_text/")
-            else None
-        )
+        request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
+        deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
         if img_path:
             try:
                 # Finish external image I/O before validating mutable credential fallbacks.
@@ -2375,7 +2452,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     timeout=_IMAGE_HEAD_TIMEOUT_SECONDS,
                 )
                 if r.status_code == 404:
-                    error_msg = "The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+                    error_msg = (
+                    "The image link is not [alive](img_path).\n"
+                    "Please repost the original image as a comment, and send the question again with 'quote reply' "
+                    "(see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+                )
                     get_logger().error(error_msg)
                     return f"{error_msg}", "error"
             except Exception as e:
@@ -2425,18 +2506,8 @@ class LiteLLMAIHandler(BaseAiHandler):
                 is_gpt6_astra = self._is_gpt6_astra_model(model)
                 is_gpt5_model = self._is_gpt5_model(openrouter_model or model)
                 if is_gpt5_model or is_gpt6_astra:
-                    # Use configured reasoning_effort or default to MEDIUM
-                    config_effort = self._default_reasoning_effort
-                    try:
-                        ReasoningEffort(config_effort)
-                        effort = config_effort
-                    except (ValueError, TypeError):
-                        effort = ReasoningEffort.MEDIUM.value
-                        if config_effort is not None:
-                            get_logger().warning(
-                                f"Invalid reasoning_effort '{config_effort}' in config. "
-                                f"Using default '{effort}'. Valid values: {[e.value for e in ReasoningEffort]}"
-                            )
+                    # Use configured reasoning_effort or default to MEDIUM.
+                    effort = self._validate_reasoning_effort(self._default_reasoning_effort)
 
                     if is_gpt6_astra and effort in (ReasoningEffort.NONE.value, ReasoningEffort.MINIMAL.value):
                         get_logger().info(f"GPT-6 Astra does not support reasoning_effort='{effort}'; using 'low'")
@@ -2447,10 +2518,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
                         # false for gpt-5 and gpt-5.1, so those are clamped to 'high' instead.
                         # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        lookup_model = model
-                        while lookup_model.startswith(("openai/", "azure/")):
-                            lookup_model = lookup_model.removeprefix("openai/").removeprefix("azure/")
-                        lookup_model = lookup_model.removesuffix("_thinking")
+                        lookup_model = _strip_openai_azure_prefixes(model).removesuffix("_thinking")
                         try:
                             supports_xhigh = litellm.get_model_info(lookup_model).get(
                                 "supports_xhigh_reasoning_effort"
@@ -2472,6 +2540,31 @@ class LiteLLMAIHandler(BaseAiHandler):
                             get_logger().info(
                                 "GPT-5 models name their top reasoning level 'xhigh'; "
                                 "using 'xhigh' for reasoning_effort='max'"
+                            )
+                    elif not is_gpt6_astra and effort == ReasoningEffort.MINIMAL.value:
+                        # From LiteLLM 1.102.0 the bundled model map marks 'minimal' unsupported
+                        # for gpt-5.1, gpt-5.2, gpt-5.4 and newer base models (bare gpt-5 still
+                        # takes it), and litellm raises UnsupportedParamsError for that value. Clamp
+                        # to 'low' only when the metadata says so; unknown models keep 'minimal'.
+                        # GPT-6 Astra is clamped to 'low' in the first branch.
+                        lookup_model = model
+                        while lookup_model.startswith(("openai/", "azure/")):
+                            lookup_model = lookup_model.removeprefix("openai/").removeprefix("azure/")
+                        lookup_model = lookup_model.removesuffix("_thinking")
+                        try:
+                            supports_minimal = litellm.get_model_info(lookup_model).get(
+                                "supports_minimal_reasoning_effort"
+                            )
+                        except Exception:
+                            get_logger().debug(
+                                f"litellm.get_model_info could not resolve model '{lookup_model}'"
+                            )
+                            supports_minimal = None
+                        if supports_minimal is False:
+                            effort = ReasoningEffort.LOW.value
+                            get_logger().info(
+                                f"{lookup_model} does not support reasoning_effort='minimal'; "
+                                "using 'low'"
                             )
 
                     if openrouter_model:
@@ -2507,8 +2600,28 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["num_retries"] = client_retries
                     kwargs["max_retries"] = client_retries
 
-                # Add temperature only if model supports it
-                if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+                # Add temperature only if the model supports it. Support comes from
+                # litellm's parameter metadata (probed over suffix forms, mirroring the
+                # reasoning_effort gate) and config.no_temperature_models as the operator
+                # override for endpoints litellm does not know or providers that reject
+                # temperature despite the metadata. Adaptive-thinking Claude models
+                # (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it, matching the
+                # sampling-parameter removal of _configure_claude_adaptive_thinking.
+                # The probe receives the api-key-guard-resolved provider so it skips the
+                # probe's own bare-model resolution; the api key snapshot itself is
+                # untouched (see the guard tests).
+                if (
+                    not get_settings().config.custom_reasoning_model
+                    and not any(
+                        model == no_temp_model or model.endswith("/" + no_temp_model)
+                        for no_temp_model in self.no_temperature_models
+                    )
+                    and not self._model_uses_adaptive_thinking(model)
+                    and self._litellm_supports_temperature(
+                        model,
+                        request_provider or custom_llm_provider or None,
+                    )
+                ):
                     # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                     kwargs["temperature"] = temperature
 
@@ -2698,6 +2811,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if aws_can_fallback:
                     if not self._aws_imds_fell_back:
                         self._activate_static_aws_fallback()
+                        get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
                     fallback_credentials = dict(self._aws_active_creds)
                     request_region = kwargs.get("aws_region_name")
                     for key in AWS_REQUEST_CREDENTIAL_KEYS:
@@ -2745,16 +2859,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         custom_llm_provider = self._custom_llm_provider
         configured_deployment_id = self.deployment_id
         routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
-        request_provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(routed_model)
-        )
-        deployment_id = (
-            configured_deployment_id
-            if request_provider == "azure" and not routed_model.startswith("azure_text/")
-            else None
-        )
+        request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
+        deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
         async with self._snapshot_aws_request_credentials(self._should_use_aws_imds(request_provider)) as (
             aws_request_credentials,
             _,
@@ -2833,17 +2939,19 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Call LiteLLM with any provider compatibility context scoped to this task."""
         _completion = _completion or acompletion
         custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
-        provider = (
-            PROVIDER_SETTING_ALIASES.get(custom_llm_provider, custom_llm_provider)
-            if custom_llm_provider
-            else self._resolve_request_provider(kwargs.get("model"))
-        )
+        provider = self._resolve_configured_request_provider(kwargs.get("model"), custom_llm_provider)
         transport = (
-            custom_llm_provider or self._resolve_request_transport_provider(kwargs.get("model")) or provider
+            custom_llm_provider
+            or self._resolve_request_transport_provider(kwargs.get("model"))
+            or provider
         )
         transport_model = kwargs.get("deployment_id") or kwargs.get("model")
         azure_ad_token = kwargs.get("azure_ad_token")
-        oidc_selector = azure_ad_token if isinstance(azure_ad_token, str) and azure_ad_token.startswith("oidc/") else None
+        oidc_selector = (
+            azure_ad_token
+            if isinstance(azure_ad_token, str) and azure_ad_token.startswith("oidc/")
+            else None
+        )
         companion_auth = (
             self._uses_captured_azure_companion_auth(provider)
             and not _is_cloudflare_gateway(kwargs.get("api_base"))

@@ -19,7 +19,7 @@ def _settings(model="primary-model", estimate_factor=0, openai_key=None, anthrop
 
 def test_oversized_claude_patch_falls_back_to_local_estimate(monkeypatch):
     settings = SimpleNamespace(
-        config=SimpleNamespace(model="claude-3-7-sonnet-20250219"),
+        config=SimpleNamespace(model="claude-sonnet-4-6"),
         get=lambda key, default=None: {
             "anthropic.key": "test-key",
             "config.model_token_count_estimate_factor": 0.3,
@@ -118,7 +118,7 @@ def test_for_model_does_not_replace_configured_primary_encoder_cache(monkeypatch
 
 def test_force_accurate_count_uses_bound_attempt_model(monkeypatch):
     settings = _settings(
-        model="claude-3-7-sonnet-20250219",
+        model="claude-sonnet-4-6",
         estimate_factor=0.3,
         openai_key="test-key",
         anthropic_key="test-key",

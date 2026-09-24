@@ -101,6 +101,51 @@ class TestBitbucketProvider:
 
         assert provider.edit_comment(comment, "updated body") is False
 
+    def test_edit_comment_updates_the_payload_returned_by_publish_comment(self):
+        # publish_comment returns the raw API payload, which carries no update method of its own,
+        # so the edit has to reach Bitbucket through the pull request endpoint.
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 1000
+        provider.pr = MagicMock()
+        comment = {"id": 42, "type": "pullrequest_comment", "content": {"raw": "progress"}}
+
+        assert provider.edit_comment(comment, "updated body") is True
+
+        provider.pr.put.assert_called_once_with(
+            "comments/42", data={"content": {"raw": "updated body"}}
+        )
+
+    def test_edit_comment_truncates_a_payload_body_over_the_comment_limit(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 50
+        provider.pr = MagicMock()
+        comment = {"id": 42, "content": {"raw": "progress"}}
+
+        assert provider.edit_comment(comment, "a" * 200) is True
+
+        sent = provider.pr.put.call_args.kwargs["data"]["content"]["raw"]
+        assert len(sent) <= provider.max_comment_length
+
+    def test_edit_comment_returns_false_when_updating_a_payload_fails(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 1000
+        provider.pr = MagicMock()
+        provider.pr.put.side_effect = HTTPError("edit failed")
+
+        assert provider.edit_comment({"id": 42}, "updated body") is False
+
+    def test_edit_comment_updates_a_comment_object_through_the_client(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 1000
+        provider.pr = MagicMock()
+        cloud_comment = MagicMock()
+        comment = SimpleNamespace(body="progress", _cloud_comment=cloud_comment)
+
+        assert provider.edit_comment(comment, "updated body") is True
+
+        cloud_comment.update.assert_called_once_with(content={"raw": "updated body"})
+        provider.pr.put.assert_not_called()
+
     def test_publish_description_raises_on_non_success_response(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.bitbucket_pull_request_api_url = "https://api.bitbucket.org/pullrequests/1"

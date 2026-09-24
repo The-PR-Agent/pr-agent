@@ -154,10 +154,12 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
         username =_get_username(data)
         commits_data = response.json() or {}
         values = commits_data.get('values') or []
-        if (not values or not isinstance(values, list) or not values[0].get('author') or not values[0]['author'].get('user')
+        if (not values or not isinstance(values, list)
+                or not values[0].get('author') or not values[0]['author'].get('user')
                 or not values[0]['author']['user'].get('display_name')):
-            get_logger().warning("No commits returned for pull request or one of the required fields missing; skipping push validation",
-                                 artifact={'values': values})
+            get_logger().warning(
+                "No commits returned for pull request or one of the required fields missing; skipping push validation",
+                artifact={'values': values})
             return False
         commit_username = commits_data['values'][0]['author']['user']['display_name']
         if username != commit_username:
@@ -183,7 +185,8 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
 
 async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict, data: dict):
     apply_repo_settings(api_url)
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    # auto commands for PR, and auto feedback is disabled
+    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     if commands_conf == "push_commands":
@@ -373,19 +376,38 @@ async def handle_webhook_health(request: Request, response: Response):
 
 @router.post("/installed")
 async def handle_installed_webhooks(request: Request, response: Response):
+    get_logger().info("handle_installed_webhooks")
     try:
-        get_logger().info("handle_installed_webhooks")
         data = await request.json()
-        shared_secret = data["sharedSecret"]
-        client_key = data["clientKey"]
-        username = data["principal"]["username"]
-        secrets = {
-            "shared_secret": shared_secret,
-            "client_key": client_key
-        }
+    except Exception as e:
+        get_logger().error(f"Failed to register user: invalid JSON payload ({type(e).__name__})")
+        return JSONResponse({"error": "Unable to register user"}, status_code=500)
+
+    if not isinstance(data, dict):
+        get_logger().error("Failed to register user: installation payload must be a JSON object")
+        return JSONResponse({"error": "Unable to register user"}, status_code=500)
+
+    for field in ("sharedSecret", "clientKey", "principal"):
+        if field not in data:
+            get_logger().error(f"Failed to register user: missing required field '{field}'")
+            return JSONResponse({"error": "Unable to register user"}, status_code=500)
+
+    principal = data["principal"]
+    if not isinstance(principal, dict) or "username" not in principal:
+        get_logger().error("Failed to register user: missing or invalid required field 'principal.username'")
+        return JSONResponse({"error": "Unable to register user"}, status_code=500)
+
+    shared_secret = data["sharedSecret"]
+    client_key = data["clientKey"]
+    username = principal["username"]
+    secrets = {
+        "shared_secret": shared_secret,
+        "client_key": client_key
+    }
+    try:
         get_fork_safe_secret_provider().store_secret(username, json.dumps(secrets))
     except Exception as e:
-        get_logger().error(f"Failed to register user: {e}")
+        get_logger().error(f"Failed to register user: secret provider failure ({type(e).__name__})")
         return JSONResponse({"error": "Unable to register user"}, status_code=500)
 
 @router.post("/uninstalled")
