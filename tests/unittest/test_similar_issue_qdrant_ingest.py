@@ -307,7 +307,7 @@ def test_qdrant_incremental_scan_skips_comment_fetching(monkeypatch):
     """Incremental scans only need the issue number, so no comment fetch happens.
 
     Only the issue number is used to build the lookup id; fetching body and comments
-    per issue across the whole history wastes an API call per issue on every run.
+    per issue in the scan window wastes an API call per issue on every run.
     """
     client = _StatefulQdrantClient(ids={"example_issue_example-repo", "issue_5.issue"})
     comment_fetches = []
