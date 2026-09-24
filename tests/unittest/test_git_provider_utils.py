@@ -96,6 +96,21 @@ def test_apply_repo_settings_attributes_global_error_and_still_applies_local(mon
         settings.pr_reviewer.extra_instructions = original_extra_instructions
 
 
+def test_apply_repo_settings_redacts_security_error_details(monkeypatch):
+    secret = "TOPSECRET-CONFIG-NAME"
+    provider = FakeErrorReportingProvider([
+        ("local", f"[{secret}]\\nincludes = true\\n".encode()),
+    ])
+    monkeypatch.setattr(utils, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.delenv("AUTO_CAST_FOR_DYNACONF", raising=False)
+
+    apply_repo_settings("https://github.example.com/org/service/pull/1")
+
+    assert len(provider.comments) == 1
+    assert secret not in provider.comments[0]
+    assert "Configuration security validation failed" in provider.comments[0]
+
+
 def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     provider = FakeMarkdownProvider()
 
