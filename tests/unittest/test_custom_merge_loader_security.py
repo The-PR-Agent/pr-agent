@@ -117,7 +117,7 @@ def test_security_errors_do_not_echo_config_paths_or_keys():
 
     message = str(exc_info.value)
     assert secret not in message
-    assert "includes other config files dynamically" in message
+    assert "allows including other config files dynamically" in message
 
 
 def test_excessive_nesting_raises_security_error():
