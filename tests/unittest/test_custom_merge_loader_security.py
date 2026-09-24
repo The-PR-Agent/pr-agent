@@ -119,6 +119,7 @@ def test_security_errors_do_not_echo_config_paths_or_keys():
     assert secret not in message
     assert "includes other config files dynamically" in message
 
+
 def test_excessive_nesting_raises_security_error():
     # Build a dict deeper than MAX_DEPTH (50) so the guard trips.
     data = current = {}
