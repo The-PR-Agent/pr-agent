@@ -21,7 +21,7 @@ def test_multi_hunk_rendering_preserves_spacing_and_line_numbers(with_file):
         "\n@@ -1,2 +1,2 @@ first\n"
         "__new hunk__\n"
         "1 +new  \n"
-        "2\n"
+        "2  \n"
         "__old hunk__\n"
         "-old  \n"
         " \n"
@@ -31,7 +31,7 @@ def test_multi_hunk_rendering_preserves_spacing_and_line_numbers(with_file):
         "-removed\t\n"
         "\n@@ -20,0 +20 @@ addition\n"
         "__new hunk__\n"
-        "20 +added"
+        "20 +added  "
     )
     if with_file:
         expected = "\n\n## File: 'example.py'\n" + expected

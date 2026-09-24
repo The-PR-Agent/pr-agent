@@ -383,8 +383,8 @@ for the authoritative default values.
       <tr>
         <td><b>enable_suggestions_coverage_footer</b></td>
         <td>
-          If set to true, the tool will display a coverage notice when failed analysis chunks make the
-          suggestions incomplete.
+          If set to true, the tool will display a coverage notice when analysis chunks fail or files
+          are omitted by the token budget or maximum number of AI calls.
         </td>
       </tr>
     </table>

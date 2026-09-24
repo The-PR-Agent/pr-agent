@@ -41,7 +41,6 @@ except ImportError:
 from pr_agent.algo import (
     CLAUDE_EXTENDED_THINKING_MODELS,
     GROK_REASONING_EFFORT_LEVELS,
-    NO_SUPPORT_TEMPERATURE_MODELS,
     STREAMING_REQUIRED_MODELS,
     USER_MESSAGE_ONLY_MODELS,
     normalize_litellm_model,
@@ -478,8 +477,36 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Models that only use user message
         self.user_message_only_models = USER_MESSAGE_ONLY_MODELS
 
-        # Model that doesn't support temperature argument
-        self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
+        # Models that must never receive the temperature argument. Support is
+        # otherwise derived from litellm's parameter metadata (see
+        # _litellm_supports_temperature); this list overrides it for endpoints
+        # whose providers reject temperature despite the metadata, and for the
+        # deprecated-but-accepted case where the parameter still reaches a model.
+        # Matched exactly or through any provider prefix, mirroring
+        # additional_reasoning_effort_models.
+        no_temperature_models = _coerce_string_list_config(
+            get_settings().config.get("no_temperature_models", [])
+        )
+        if no_temperature_models is None:
+            get_logger().warning(
+                "Invalid no_temperature_models in config; expected a list of model names. "
+                "Ignoring it."
+            )
+            no_temperature_models = []
+        elif no_temperature_models and not all(
+            isinstance(model, str) and model.strip() for model in no_temperature_models
+        ):
+            get_logger().warning(
+                "Invalid no_temperature_models in config; "
+                "expected a list of model name strings. "
+                "Ignoring it."
+            )
+            no_temperature_models = []
+        # Store stripped names so exact-match checks against the model succeed even when the
+        # config entries contain surrounding whitespace (validation above already used strip()).
+        self.no_temperature_models = [
+            model.strip() for model in no_temperature_models
+        ]
 
         # Config-listed models opt endpoints litellm does not know into receiving
         # reasoning_effort. Reasoning support otherwise comes from litellm's own
@@ -1478,7 +1505,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if provider == "bedrock" and "api_key" not in params and _has_live_provider_api_key_environment(provider):
             raise ValueError("Refusing process-wide Bedrock bearer token fallback")
         if provider in ("sagemaker_chat", "sagemaker_nova") and os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-            # LiteLLM 1.101.0's SageMaker signer ignores its api_key argument and
+            # LiteLLM 1.102.1's SageMaker signer ignores its api_key argument and
             # otherwise reads this Bedrock-only token directly from the environment.
             raise ValueError("Refusing Bedrock bearer token fallback for SageMaker")
         if provider == "azure" and getattr(self, "_azure_ad", False):
@@ -1557,7 +1584,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
             if not uses_bedrock_bearer:
                 if any(os.environ.get(variable) for variable in LITELLM_AWS_CREDENTIAL_SELECTOR_ENV_VARS):
-                    # LiteLLM 1.101.0 resolves these selectors ahead of explicit
+                    # LiteLLM 1.102.1 resolves these selectors ahead of explicit
                     # request credentials, which would replace the isolated keys.
                     raise ValueError(f"Refusing ambient LiteLLM AWS credential selector for provider {provider}")
                 aws_request_credentials = dict(aws_request_credentials or {})
@@ -1784,6 +1811,55 @@ class LiteLLMAIHandler(BaseAiHandler):
                 f"Failed to probe litellm reasoning metadata for {model}: {e}"
             )
             return False
+
+    @staticmethod
+    def _litellm_supports_temperature(
+        model: str,
+        custom_llm_provider: str | None = None,
+    ) -> bool:
+        """Probe litellm's parameter metadata for temperature support.
+
+        The list returned by ``litellm.get_supported_openai_params`` is the
+        provider's canonical parameters, so temperature disappears for providers
+        that reject it. Like ``_litellm_supports_reasoning``, the lookup is
+        exact per spelling, so every suffix of the id is probed after stripping
+        the leading ``openrouter/`` segment, plus the ``xai/``-prefixed bare
+        name, to mirror the old ``endswith("/<id>")`` membership. The caller
+        passes the api-key-guard-resolved provider when it has one, which skips
+        the probe's own bare-model resolution inside ``get_supported_openai_params``
+        (openai-compatible providers still map through their own config, but that
+        internal step never touches the snapshotted api key). Models litellm
+        does not know raise and are treated as not supporting temperature: the
+        same safe default as the reasoning gate, so an unknown endpoint never
+        receives a parameter that might be rejected.
+        """
+        probe = model
+        if probe.startswith("openrouter/"):
+            probe = probe.removeprefix("openrouter/")
+        segments = probe.split("/")
+        candidates = []
+        for i in range(len(segments)):
+            candidates.append("/".join(segments[i:]))
+            if i == len(segments) - 1:
+                candidates.append(f"xai/{segments[-1]}")
+        probe_failure = None
+        for candidate in candidates:
+            try:
+                supported_params = litellm.get_supported_openai_params(
+                    model=candidate,
+                    custom_llm_provider=custom_llm_provider or None,
+                ) or []
+            except Exception as e:
+                if probe_failure is None:
+                    probe_failure = e
+                continue
+            if "temperature" in supported_params:
+                return True
+        if probe_failure is not None:
+            get_logger().warning(
+                f"Failed to probe litellm temperature metadata for {model}: {probe_failure}"
+            )
+        return False
 
     @staticmethod
     def _model_cost_entry_supports_reasoning(model: str) -> bool:
@@ -2194,8 +2270,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
         # Adaptive-thinking Claude models have sampling parameters removed, so
         # never send temperature here. This pop is load-bearing rather than
-        # defensive: NO_SUPPORT_TEMPERATURE_MODELS covers most of these ids
-        # after #2400/#2449, but not all of them. It carries
+        # defensive: litellm's parameter metadata still reports temperature for
+        # these ids, so it would otherwise reach the model. It carries
         # bedrock/anthropic.claude-opus-4-7-v1:0 and
         # bedrock/us.anthropic.claude-opus-4-7 without the two combined, so for
         # bedrock/us.anthropic.claude-opus-4-7-v1:0 this line is the only thing
@@ -2458,6 +2534,31 @@ class LiteLLMAIHandler(BaseAiHandler):
                                 "GPT-5 models name their top reasoning level 'xhigh'; "
                                 "using 'xhigh' for reasoning_effort='max'"
                             )
+                    elif not is_gpt6_astra and effort == ReasoningEffort.MINIMAL.value:
+                        # From LiteLLM 1.102.0 the bundled model map marks 'minimal' unsupported
+                        # for gpt-5.1, gpt-5.2, gpt-5.4 and newer base models (bare gpt-5 still
+                        # takes it), and litellm raises UnsupportedParamsError for that value. Clamp
+                        # to 'low' only when the metadata says so; unknown models keep 'minimal'.
+                        # GPT-6 Astra is clamped to 'low' in the first branch.
+                        lookup_model = model
+                        while lookup_model.startswith(("openai/", "azure/")):
+                            lookup_model = lookup_model.removeprefix("openai/").removeprefix("azure/")
+                        lookup_model = lookup_model.removesuffix("_thinking")
+                        try:
+                            supports_minimal = litellm.get_model_info(lookup_model).get(
+                                "supports_minimal_reasoning_effort"
+                            )
+                        except Exception:
+                            get_logger().debug(
+                                f"litellm.get_model_info could not resolve model '{lookup_model}'"
+                            )
+                            supports_minimal = None
+                        if supports_minimal is False:
+                            effort = ReasoningEffort.LOW.value
+                            get_logger().info(
+                                f"{lookup_model} does not support reasoning_effort='minimal'; "
+                                "using 'low'"
+                            )
 
                     if openrouter_model:
                         openrouter_reasoning_effort = effort
@@ -2492,8 +2593,28 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["num_retries"] = client_retries
                     kwargs["max_retries"] = client_retries
 
-                # Add temperature only if model supports it
-                if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+                # Add temperature only if the model supports it. Support comes from
+                # litellm's parameter metadata (probed over suffix forms, mirroring the
+                # reasoning_effort gate) and config.no_temperature_models as the operator
+                # override for endpoints litellm does not know or providers that reject
+                # temperature despite the metadata. Adaptive-thinking Claude models
+                # (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it, matching the
+                # sampling-parameter removal of _configure_claude_adaptive_thinking.
+                # The probe receives the api-key-guard-resolved provider so it skips the
+                # probe's own bare-model resolution; the api key snapshot itself is
+                # untouched (see the guard tests).
+                if (
+                    not get_settings().config.custom_reasoning_model
+                    and not any(
+                        model == no_temp_model or model.endswith("/" + no_temp_model)
+                        for no_temp_model in self.no_temperature_models
+                    )
+                    and not self._model_uses_adaptive_thinking(model)
+                    and self._litellm_supports_temperature(
+                        model,
+                        request_provider or custom_llm_provider or None,
+                    )
+                ):
                     # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                     kwargs["temperature"] = temperature
 

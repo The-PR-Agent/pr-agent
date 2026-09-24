@@ -207,32 +207,56 @@ class TestExtendedPatchMoreLines:
         )
 
 class TestLoadLargeDiff:
-    def test_no_newline(self):
-        patch = load_large_diff("test.py",
-                                """\
-                                old content 1
-                                some new content
-                                another line
-                                """,
-                                """
-                                old content 1
-                                old content 2""")
+    @pytest.mark.parametrize("old_ending", ["", "\n"])
+    @pytest.mark.parametrize("new_ending", ["", "\n"])
+    def test_no_newline(self, old_ending, new_ending):
+        original = "old content 1\nold content 2" + old_ending
+        new = "old content 1\nsome new content\nanother line" + new_ending
+        expected = (
+            "@@ -1,2 +1,3 @@\n old content 1\n-old content 2\n"
+            "+some new content\n+another line\n"
+        )
+        assert load_large_diff("test.py", new, original) == expected
 
-        patch_expected="""\
-@@ -1,3 +1,3 @@
--
-                                 old content 1
--                                old content 2
-+                                some new content
-+                                another line
-"""
-        assert patch == patch_expected
+    @pytest.mark.parametrize("original", [None, ""])
+    @pytest.mark.parametrize("new", [None, ""])
+    def test_empty_inputs(self, original, new):
+        assert load_large_diff("test.py", new, original) == ""
 
-    def test_empty_inputs(self):
-        assert load_large_diff("test.py", "", "") == ""
-        assert load_large_diff("test.py", None, None) == ""
-        assert (load_large_diff("test.py", "content\n", "") ==
-                '@@ -1 +1 @@\n-\n+content\n')
+    @pytest.mark.parametrize("empty", [None, ""])
+    @pytest.mark.parametrize("content", ["content\n", "  \n", "\n"])
+    def test_empty_sides_have_zero_line_ranges(self, empty, content):
+        assert load_large_diff("test.py", content, empty) == "@@ -0,0 +1 @@\n+" + content
+        assert load_large_diff("test.py", empty, content) == "@@ -1 +0,0 @@\n-" + content
+
+    @pytest.mark.parametrize("ending", ["", "\n", "\r\n"])
+    @pytest.mark.parametrize("whitespace", ["  ", "\t"])
+    def test_preserves_trailing_spaces_and_tabs(self, whitespace, ending):
+        original = "value" + ending
+        new = "value" + whitespace + ending
+        line_ending = ending or "\n"
+        assert load_large_diff("test.py", new, original) == (
+            f"@@ -1 +1 @@\n-value{line_ending}+value{whitespace}{line_ending}"
+        )
+        assert load_large_diff("test.py", original, new) == (
+            f"@@ -1 +1 @@\n-value{whitespace}{line_ending}+value{line_ending}"
+        )
+
+    @pytest.mark.parametrize("ending", ["\n", "\r\n"])
+    def test_preserves_trailing_blank_lines(self, ending):
+        original = "value" + ending
+        new = original + ending
+        assert load_large_diff("test.py", new, original) == (
+            f"@@ -1 +1,2 @@\n value{ending}+{ending}"
+        )
+        assert load_large_diff("test.py", original, new) == (
+            f"@@ -1,2 +1 @@\n value{ending}-{ending}"
+        )
+
+    @pytest.mark.parametrize("content", ["value  \n", "value\t\r\n", "value\n\n", "  "])
+    def test_unchanged_whitespace_has_no_diff(self, content):
+        assert load_large_diff("test.py", content, content) == ""
+
 
 class TestOmittedHunkCount:
     def test_omitted_count_is_parsed_as_one(self):

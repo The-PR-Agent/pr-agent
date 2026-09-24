@@ -1,14 +1,22 @@
 from unittest.mock import MagicMock
 
 import pytest
+from github import GithubException, RateLimitExceededException
 
 from pr_agent.git_providers.github_provider import GithubProvider
 
 
-class _Status422Error(Exception):
-    """Mimics a GithubException carrying an HTTP 422 status, which triggers the
+class _Status422Error(GithubException):
+    """A GithubException carrying an HTTP 422 status, which triggers the
     verification fallback in ``publish_inline_comments``."""
-    status = 422
+
+    def __init__(self, message):
+        super().__init__(422, {"message": message}, {})
+
+
+def _rate_limited():
+    """The transient failure the fallback must not swallow, as GitHub actually raises it."""
+    return RateLimitExceededException(429, {"message": "rate limited"}, {})
 
 
 def _make_provider(create_review_side_effect):
@@ -28,11 +36,11 @@ def test_fallback_propagates_when_verified_bulk_publish_fails(monkeypatch):
     comments = [{"body": "x", "path": "a.py", "line": 1, "side": "RIGHT"}]
     # 1st create_review (initial bulk) -> 422 to enter the fallback path
     # 2nd create_review (verified bulk inside fallback) -> transient failure
-    provider = _make_provider([_Status422Error("invalid"), RuntimeError("rate limited")])
+    provider = _make_provider([_Status422Error("invalid"), _rate_limited()])
     # All comments verify as valid; avoids the real verification API + sleep(1).
     monkeypatch.setattr(provider, "_verify_code_comments", lambda c: (list(c), []))
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RateLimitExceededException):
         provider.publish_inline_comments(comments)
 
 
@@ -40,7 +48,7 @@ def test_publish_code_suggestions_returns_false_so_retry_triggers(monkeypatch):
     """The contract the bug breaks: publish_code_suggestions must return False
     when comments were not actually published, so the one-by-one retry in
     pr_code_suggestions runs instead of reporting success."""
-    provider = _make_provider([_Status422Error("invalid"), RuntimeError("rate limited")])
+    provider = _make_provider([_Status422Error("invalid"), _rate_limited()])
     provider.validate_comments_inside_hunks = lambda cs: cs  # passthrough
     monkeypatch.setattr(provider, "_verify_code_comments", lambda c: (list(c), []))
 

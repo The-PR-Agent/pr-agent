@@ -43,13 +43,13 @@ Branch: '{{branch}}'
 
 Here is a context hunk from the PR diff:
 ======
-{{ full_hunk|trim }}
+{{ full_hunk }}
 ======
 
 
 Now focus on the selected lines from the hunk:
 ======
-{{ selected_lines|trim }}
+{{ selected_lines }}
 ======
 Note that lines in the diff body are prefixed with a symbol that represents the type of change: '-' for deletions, '+' for additions, and ' ' (a space) for unchanged lines
 

@@ -5,8 +5,8 @@
 # (bare, anthropic/, vertex_ai/, bedrock/ with optional cross-region prefixes)
 # is declared once here. The _generate_claude_registries() helper expands
 # these declarations into the token counts and capability lists that callers
-# consume via the public MAX_TOKENS, NO_SUPPORT_TEMPERATURE_MODELS, and
-# CLAUDE_EXTENDED_THINKING_MODELS registries.
+# consume via the public MAX_TOKENS and CLAUDE_EXTENDED_THINKING_MODELS
+# registries.
 #
 # Historical / one-off Claude entries that do NOT follow the repeating
 # provider-prefix pattern are left as static literals inside the registries
@@ -16,37 +16,32 @@
 _DEFAULT_BEDROCK_REGIONS = ("global", "us", "eu", "au", "jp")
 
 _CLAUDE_MODEL_FAMILIES = [
-    # ── 1M-context models (no temperature, no extended thinking) ──────────
+    # ── 1M-context models (no extended thinking) ─────────────────────────
     {
         "model_id": "claude-opus-4-8",
         "max_tokens": 1000000,
         "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
-        "no_temperature": True,
     },
     {
         "model_id": "claude-opus-5",
         "max_tokens": 1000000,
         "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
-        "no_temperature": True,
     },
     {
         "model_id": "claude-opus-5-5",
         "max_tokens": 1000000,
         "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
-        "no_temperature": True,
     },
     {
         "model_id": "claude-sonnet-5",
         "max_tokens": 1000000,
         "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
-        "no_temperature": True,
     },
     {
         "model_id": "claude-opus-4-7",
         "max_tokens": 1000000,
         "bedrock_regions": ("global", "us"),
         "extra_bedrock": ("anthropic.claude-opus-4-7-v1:0",),
-        "no_temperature": True,
     },
     # ── 200K-context models with extended thinking ────────────────────────
     {
@@ -120,15 +115,6 @@ _CLAUDE_MODEL_FAMILIES = [
         # EU/AU/JP geo inference IDs are not available.
         # Ref: https://platform.claude.com/docs/en/build-with-claude/claude-in-amazon-bedrock#regions
         "bedrock_regions": ("global", "us"),
-        "no_temperature": True,
-    },
-    # ── No-temperature only (not in MAX_TOKENS) ──────────────────────────
-    {
-        "model_id": "claude-fable-5",
-        "max_tokens": None,
-        "vertex": False,
-        "bedrock": False,
-        "no_temperature": True,
     },
 ]
 
@@ -145,14 +131,12 @@ _ALLOWED_FAMILY_KEYS = {
     "extra_aliases",
     "extra_bedrock",
     "extra_bedrock_regions",
-    "no_temperature",
     "extended_thinking",
     "thinking_bedrock_regions",
 }
 
 _ALLOWED_EXTRA_ALIAS_KEYS = {
     "max_tokens",
-    "no_temperature",
     "extended_thinking",
 }
 
@@ -176,16 +160,14 @@ def _validate_claude_model_family(fam: dict) -> None:
 def _generate_claude_registries(families=None):
     """Expand _CLAUDE_MODEL_FAMILIES into token counts and capability lists.
 
-    Returns (claude_tokens, claude_no_temp, claude_extended_thinking) where:
+    Returns (claude_tokens, claude_extended_thinking) where:
       - claude_tokens: dict[str, int] of generated model-id -> context-window
-      - claude_no_temp: list[str] of models that do not support temperature
       - claude_extended_thinking: list[str] of models supporting extended thinking
     """
     if families is None:
         families = _CLAUDE_MODEL_FAMILIES
 
     claude_tokens = {}
-    claude_no_temp = []
     claude_extended_thinking = []
 
     for fam in families:
@@ -219,30 +201,10 @@ def _generate_claude_registries(families=None):
                     tok = extra_val.get("max_tokens", tokens)
                     if tok is not None:
                         claude_tokens[extra_alias] = tok
-                    if extra_val.get("no_temperature"):
-                        claude_no_temp.append(extra_alias)
                     if extra_val.get("extended_thinking"):
                         claude_extended_thinking.append(extra_alias)
                 else:
                     claude_tokens[extra_alias] = extra_val
-
-        # -- NO_SUPPORT_TEMPERATURE_MODELS ------------------------------------
-        if fam.get("no_temperature"):
-            if fam.get("bare", True):
-                claude_no_temp.append(mid)
-            if fam.get("anthropic", True):
-                claude_no_temp.append(f"anthropic/{mid}")
-            vtx = fam.get("vertex", True)
-            if vtx:
-                vtx_name = vtx if isinstance(vtx, str) else mid
-                claude_no_temp.append(f"vertex_ai/{vtx_name}")
-            if fam.get("bedrock", True):
-                b_name = fam.get("bedrock_name", mid)
-                claude_no_temp.append(f"bedrock/anthropic.{b_name}")
-                for reg in fam.get("bedrock_regions", ()):
-                    claude_no_temp.append(f"bedrock/{reg}.anthropic.{b_name}")
-                for extra in fam.get("extra_bedrock", ()):
-                    claude_no_temp.append(f"bedrock/{extra}")
 
         # -- CLAUDE_EXTENDED_THINKING_MODELS ----------------------------------
         thinking = fam.get("extended_thinking")
@@ -266,11 +228,11 @@ def _generate_claude_registries(families=None):
                     for reg in thinking_regions:
                         claude_extended_thinking.append(f"bedrock/{reg}.anthropic.{b_name}")
 
-    return claude_tokens, claude_no_temp, claude_extended_thinking
+    return claude_tokens, claude_extended_thinking
 
 
 
-_claude_tokens, _claude_no_temp, _claude_extended_thinking = (
+_claude_tokens, _claude_extended_thinking = (
     _generate_claude_registries()
 )
 
@@ -279,8 +241,8 @@ _claude_tokens, _claude_no_temp, _claude_extended_thinking = (
 # from) LiteLLM's model registry. Exact LiteLLM duplicates were removed because
 # get_max_tokens() already falls back to litellm.get_model_info() with the same
 # value; generator-expanded Claude families (see _CLAUDE_MODEL_FAMILIES) remain
-# because they also drive the no-temperature / extended-thinking registries and
-# their 1M-context handling is a separate, deliberate judgement (issue #3196).
+# because they also drive the extended-thinking registry and their 1M-context
+# handling is a separate, deliberate judgement (issue #3196).
 MAX_TOKENS = {
     'text-embedding-ada-002': 8000,
     'gpt-3.5-turbo': 16000,
@@ -442,29 +404,6 @@ USER_MESSAGE_ONLY_MODELS = [
     "o1-mini",
     "o1-mini-2024-09-12",
     "o1-preview"
-]
-
-NO_SUPPORT_TEMPERATURE_MODELS = [
-    "deepseek/deepseek-reasoner",
-    "o1-mini",
-    "o1-mini-2024-09-12",
-    "o1",
-    "o1-2024-12-17",
-    "o3-mini",
-    "o3-mini-2025-01-31",
-    "o1-preview",
-    "o3",
-    "o3-2025-04-16",
-    "o4-mini",
-    "o4-mini-2025-04-16",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-mini",
-    "gpt-5.2-codex",
-    "gpt-5.3-codex",
-    "gpt-5-mini",
-    # Anthropic Claude -- temperature is deprecated (Issue #2400), (Issue #2449)
-    # Generated from _CLAUDE_MODEL_FAMILIES:
-    *_claude_no_temp,
 ]
 
 # Clamp OpenAI-only levels for always-on Grok reasoning; allow xhigh on 4.6+.
