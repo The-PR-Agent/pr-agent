@@ -99,7 +99,7 @@ def test_apply_repo_settings_attributes_global_error_and_still_applies_local(mon
 def test_apply_repo_settings_redacts_security_error_details(monkeypatch):
     secret = "TOPSECRET-CONFIG-NAME"
     provider = FakeErrorReportingProvider([
-        ("local", f"[{secret}]\\nincludes = true\\n".encode()),
+        ("local", f"[{secret}]\nincludes = true\n".encode()),
     ])
     logged_artifacts = []
 
