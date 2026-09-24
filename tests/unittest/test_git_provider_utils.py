@@ -101,6 +101,23 @@ def test_apply_repo_settings_redacts_security_error_details(monkeypatch):
     provider = FakeErrorReportingProvider([
         ("local", f"[{secret}]\\nincludes = true\\n".encode()),
     ])
+    logged_artifacts = []
+
+    class CapturingLogger:
+        def warning(self, message, *args, **kwargs):
+            if "artifact" in kwargs:
+                logged_artifacts.append(kwargs["artifact"])
+
+        def info(self, *args, **kwargs):
+            pass
+
+        def error(self, *args, **kwargs):
+            pass
+
+        def exception(self, *args, **kwargs):
+            pass
+
+    monkeypatch.setattr(utils, "get_logger", lambda: CapturingLogger())
     monkeypatch.setattr(utils, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.delenv("AUTO_CAST_FOR_DYNACONF", raising=False)
 
@@ -109,7 +126,7 @@ def test_apply_repo_settings_redacts_security_error_details(monkeypatch):
     assert len(provider.comments) == 1
     assert secret not in provider.comments[0]
     assert "Configuration security validation failed" in provider.comments[0]
-
+    assert all(secret not in str(artifact) for artifact in logged_artifacts)
 
 def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     provider = FakeMarkdownProvider()
