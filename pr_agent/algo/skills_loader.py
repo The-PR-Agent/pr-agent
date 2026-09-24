@@ -294,7 +294,7 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
     return separator.join(pieces).strip()
 
 
-def _get_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional[int]]) -> Optional[str]:
+def _get_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional[int], Optional[str]]) -> Optional[str]:
     try:
         if context.get(_CONTEXT_CACHE_SETTINGS_KEY, None) != cache_settings:
             return None
@@ -305,7 +305,7 @@ def _get_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional
         return None
 
 
-def _set_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional[int]], value: str) -> None:
+def _set_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional[int], Optional[str]], value: str) -> None:
     try:
         context[_CONTEXT_CACHE_SETTINGS_KEY] = cache_settings
         context[_CONTEXT_CACHE_KEY] = value
@@ -318,8 +318,8 @@ def _set_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional
 def get_skills_context() -> str:
     """Read settings, discover skills, and format them for prompt injection.
 
-    Memoised per request and effective Skills settings via ``starlette_context``
-    so the three tools that inject ``skills_context`` (review, improve, describe)
+    Memoised per request, effective Skills settings, and model via ``starlette_context``
+    so tools that inject ``skills_context`` (review, improve, describe, ask)
     share a single discovery + parse + format. Returns ``''`` when skills are
     disabled, no paths are configured, or no skills are found.
     """
@@ -329,7 +329,7 @@ def get_skills_context() -> str:
     expanded_paths = _expanded_skill_paths(paths)
 
     if not enabled:
-        cache_settings = (False, expanded_paths, None)
+        cache_settings = (False, expanded_paths, None, None)
         cached = _get_cached_context(cache_settings)
         if cached is not None:
             return cached
@@ -344,7 +344,7 @@ def get_skills_context() -> str:
         invalid_max = True
         max_tokens = _DEFAULT_MAX_SKILLS_TOKENS
 
-    cache_settings = (True, expanded_paths, max_tokens)
+    cache_settings = (True, expanded_paths, max_tokens, settings.config.model)
     cached = _get_cached_context(cache_settings)
     if cached is not None:
         return cached
