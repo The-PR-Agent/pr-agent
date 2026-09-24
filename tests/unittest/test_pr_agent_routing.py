@@ -4,6 +4,7 @@ from unittest.mock import Mock
 import pytest
 
 import pr_agent.agent.pr_agent as pr_agent_module
+from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
 
 
@@ -463,6 +464,90 @@ async def test_handle_request_auto_review_uses_reviewer_auto_mode(monkeypatch):
 
     assert handled is True
     assert calls == [("https://example/pr/1", False, True, [], "fake-ai")]
+
+
+@pytest.mark.asyncio
+async def test_auto_review_reapplies_scoped_artifact_without_notifying(monkeypatch, tmp_path):
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_text("AUTO_REVIEW_ARTIFACT", encoding="utf-8")
+    settings = get_settings()
+    original_artifacts = settings.get("ARTIFACTS")
+    original_instructions = settings.pr_reviewer.extra_instructions
+    observed = []
+    notify = Mock()
+
+    class FakeReviewer:
+        def __init__(self, _pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
+            observed.append((is_answer, is_auto, args, str(settings.pr_reviewer.extra_instructions)))
+
+        async def run(self):
+            return None
+
+    try:
+        settings.set("ARTIFACTS", {
+            "enable": True,
+            "artifact_path": str(artifact),
+            "target_tools": ["pr_reviewer"],
+        }, merge=False)
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Base instructions")
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+        _patch_request_dependencies(
+            monkeypatch,
+            update_settings_fn=lambda args: ["--kept"],
+        )
+
+        def replace_instructions(_pr_url):
+            settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Repository instructions")
+
+        monkeypatch.setattr(pr_agent_module, "apply_repo_settings", replace_instructions)
+        monkeypatch.setattr(pr_agent_module, "PRReviewer", FakeReviewer)
+
+        with artifacts.artifact_context_scope(settings):
+            artifacts.inject_artifact_context()
+            handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
+                "https://example/pr/1", "/auto_review", notify
+            )
+
+        assert handled is True
+        assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text in observed] == [
+            (False, True, ["--kept"])
+        ]
+        assert observed[0][3].startswith("Repository instructions")
+        assert observed[0][3].count("AUTO_REVIEW_ARTIFACT") == 1
+        notify.assert_not_called()
+    finally:
+        settings.set("ARTIFACTS", original_artifacts, merge=False)
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
+
+
+@pytest.mark.asyncio
+async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions(monkeypatch):
+    settings = get_settings()
+    original_instructions = settings.pr_reviewer.extra_instructions
+    observed = []
+
+    class FakeTool:
+        def __init__(self, _pr_url, ai_handler=None, args=None):
+            observed.append(str(settings.pr_reviewer.extra_instructions))
+
+        async def run(self):
+            return None
+
+    def fail_if_loaded():
+        pytest.fail("dispatcher without an ingress must not load an artifact")
+
+    try:
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Unscoped instructions")
+        _patch_request_dependencies(monkeypatch)
+        monkeypatch.setattr(artifacts, "load_artifact", fail_if_loaded)
+        monkeypatch.setitem(pr_agent_module.command2class, "review", FakeTool)
+
+        handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/review")
+
+        assert handled is True
+        assert observed == ["Unscoped instructions"]
+    finally:
+        settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
 
 
 @pytest.mark.asyncio

@@ -512,7 +512,7 @@ async def _run_action_and_drain():
     Run the action, then flush litellm's deferred callbacks before the loop closes.
 
     Wrapping here rather than at the end of run_action() covers its many early
-    returns too, and keeps run_action() itself free of teardown concerns.
+    returns too, and keeps callback teardown separate from event routing.
     """
     status = _ActionStatus()
     token = _action_status.set(status)
