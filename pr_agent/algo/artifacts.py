@@ -63,9 +63,10 @@ def _restore_artifact_settings(state):
                     if stored.lower() == leaf.lower():
                         section.pop(stored)
                         break
-        except Exception:
-            # Optional context cleanup must not replace a tool error or cancellation.
-            get_logger().warning("Could not restore an artifact context setting")
+        except Exception as error:
+            # Preserve the primary failure and omit setting values and raw exception details.
+            phase = "artifact section" if "." not in key else "target instructions"
+            get_logger().warning(f"Could not restore {phase} for artifact context ({type(error).__name__})")
 
 
 @contextmanager
