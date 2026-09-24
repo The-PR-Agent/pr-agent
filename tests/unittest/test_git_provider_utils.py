@@ -135,6 +135,7 @@ def test_handle_configurations_errors_uses_persistent_comment_when_supported():
     handle_configurations_errors([{
         "settings": b"[config]\nmodel =",
         "error": "Invalid value",
+        "safe_error": "Invalid value",
         "category": "local",
     }], provider)
 
@@ -184,6 +185,22 @@ def test_handle_configurations_errors_uses_plain_comment_without_markdown_suppor
     assert "<details>" not in provider.comments[0]
 
 
+def test_handle_configurations_errors_does_not_publish_internal_error():
+    provider = FakePlainProvider()
+    secret = "INTERNAL-CONFIG-DETAIL"
+
+    handle_configurations_errors([{
+        "settings": b"[config]\nmodel =",
+        "error": secret,
+        "safe_error": "Configuration security validation failed.",
+        "category": "local",
+    }], provider)
+
+    assert len(provider.comments) == 1
+    assert secret not in provider.comments[0]
+    assert "Configuration security validation failed." in provider.comments[0]
+
+
 def test_handle_configurations_errors_returns_without_errors():
     provider = FakePlainProvider()
 
@@ -199,11 +216,13 @@ def test_handle_configurations_errors_publishes_each_error():
         {
             "settings": b"[config]\nmodel =",
             "error": "First error",
+            "safe_error": "First error",
             "category": "local",
         },
         {
             "settings": b"[github]\nuser_token = \"dummy-value\"\n[pr_reviewer]\nnum_max_findings =",
             "error": "Second error",
+            "safe_error": "Second error",
             "category": "global",
         },
     ], provider)
@@ -239,7 +258,12 @@ def test_handle_configurations_errors_tolerates_non_utf8_settings():
     provider = FakePlainProvider()
 
     handle_configurations_errors([
-        {"settings": b"\xff\xfe[config]\nmodel =", "error": "bad config", "category": "local"},
+        {
+            "settings": b"\xff\xfe[config]\nmodel =",
+            "error": "bad config",
+            "safe_error": "bad config",
+            "category": "local",
+        },
     ], provider)
 
     assert len(provider.comments) == 1
@@ -252,8 +276,18 @@ def test_handle_configurations_errors_uses_unique_name_per_scope():
     provider = FakeMarkdownProvider()
 
     handle_configurations_errors([
-        {"settings": b"[config]\nmodel =", "error": "global error", "category": "global"},
-        {"settings": b"[config]\nmodel =", "error": "local error", "category": "local"},
+        {
+            "settings": b"[config]\nmodel =",
+            "error": "global error",
+            "safe_error": "global error",
+            "category": "global",
+        },
+        {
+            "settings": b"[config]\nmodel =",
+            "error": "local error",
+            "safe_error": "local error",
+            "category": "local",
+        },
     ], provider)
 
     names = [c["name"] for c in provider.persistent_comments]
