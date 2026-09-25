@@ -1746,14 +1746,15 @@ class GitLabProvider(GitProvider):
                 # survive a single bad one - whatever went wrong with it - and still land the rest.
                 get_logger().exception(f"Could not publish code suggestion:\nsuggestion: {suggestion}\nerror: {e}")
 
-        if as_review:
+        if as_review and needs_draft_publication:
             try:
                 # Include drafts left by an earlier failed batch even when this call dedupes every suggestion.
                 try:
                     pending = self.mr.draft_notes.list(get_all=True)
-                    self._code_suggestion_drafts_pending = bool(pending)
-                    self._pending_code_suggestion_fingerprints = [
-                        marker_fingerprints(getattr(draft, "note", "") or "") for draft in pending]
+                    if pending:
+                        self._code_suggestion_drafts_pending = True
+                        self._pending_code_suggestion_fingerprints = [
+                            marker_fingerprints(getattr(draft, "note", "") or "") for draft in pending]
                 except (GitlabError, RequestException) as e:
                     get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
                     # A bulk request can time out after publishing server-side. Only
@@ -1766,9 +1767,10 @@ class GitLabProvider(GitProvider):
                 if pending:
                     self.mr.draft_notes.bulk_publish()
                     published = True
-                elif needs_draft_publication:
-                    # No pending drafts remain (possibly published concurrently).
-                    published = True
+                else:
+                    # Missing drafts may have been deleted, not published. Preserve
+                    # their identities until public markers establish publication.
+                    return finish(verify_pending_publication())
                 drafts_published()
             except (GitlabError, RequestException) as e:
                 # Draft notes are only visible to the posting user until published, so a failure here
@@ -1788,8 +1790,7 @@ class GitLabProvider(GitProvider):
                 pending = self.mr.draft_notes.list(get_all=True)
                 if pending:
                     return finish(False)
-                drafts_published()
-                return finish(True)
+                return finish(verify_pending_publication())
             except (GitlabError, RequestException) as e:
                 get_logger().warning(f"Could not refresh pending draft notes for MR {self.id_mr}: {e}")
                 if verify_pending_publication():

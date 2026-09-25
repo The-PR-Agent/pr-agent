@@ -602,8 +602,9 @@ def test_pending_duplicate_is_not_successful_after_disabling_review_mode(publica
     p.mr.discussions.create.assert_not_called()
 
 
-def test_concurrently_published_drafts_do_not_report_failure(publication_settings):
-    publication_settings(as_review=True)
+@pytest.mark.parametrize("persistent", [False, True])
+def test_concurrently_published_drafts_require_public_evidence(publication_settings, persistent):
+    publication_settings(as_review=True, persistent=persistent)
     p = _gl_provider()
     publish_drafts = p.mr.draft_notes.bulk_publish.side_effect
 
@@ -613,8 +614,43 @@ def test_concurrently_published_drafts_do_not_report_failure(publication_setting
 
     p.mr.draft_notes.list.side_effect = list_after_concurrent_publication
 
-    assert p.publish_code_suggestions([_suggestion()]) is True
+    # With persistence off there are no identity markers to verify. Absence of a
+    # draft alone cannot distinguish publication from deletion, even in this fixture.
+    assert p.publish_code_suggestions([_suggestion()]) is persistent
     assert len(p.mr.notes.list()) == 1
+    p.mr.draft_notes.bulk_publish.assert_not_called()
+
+
+@pytest.mark.parametrize("as_review", [False, True])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_disappearing_drafts_without_public_notes_are_not_success(publication_settings, as_review, persistent):
+    publication_settings(as_review=True, persistent=persistent)
+    p = _gl_provider()
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("cannot publish")
+    assert p.publish_code_suggestions([_suggestion()]) is False
+    p.mr.draft_notes.list.side_effect = lambda get_all=True: []
+    publication_settings(as_review=as_review, persistent=persistent)
+
+    assert p.publish_code_suggestions([_suggestion()]) is False
+    assert p.mr.notes.list() == []
+    p.mr.draft_notes.create.assert_called_once()
+
+
+@pytest.mark.parametrize("failure", ["missing_file", "creation_failure"])
+def test_failed_suggestions_do_not_publish_manual_drafts(publication_settings, failure):
+    publication_settings(as_review=True)
+    p = _gl_provider()
+    p.mr.draft_notes.create({'note': 'unrelated manual draft'})
+    if failure == "missing_file":
+        p.get_diff_files.return_value = []
+    else:
+        p.mr.draft_notes.create.side_effect = RequestException("cannot create")
+        p.mr.discussions.create.side_effect = RequestException("cannot create")
+        p.mr.notes.create.side_effect = RequestException("cannot create")
+
+    assert p.publish_code_suggestions([_suggestion()]) is False
+    assert p.mr.notes.list() == []
+    assert len(p.mr.draft_notes.list()) == 1
     p.mr.draft_notes.bulk_publish.assert_not_called()
 
 
@@ -894,8 +930,8 @@ def test_initial_exception_does_not_leave_a_retry_identity_for_later_runs(public
 
 
 @pytest.mark.parametrize("still_pending", [True, False])
-def test_live_mode_refreshes_markerless_drafts_without_hiding_pending_work(publication_settings, still_pending):
-    publication_settings(as_review=True)
+def test_live_mode_verifies_published_drafts_without_hiding_pending_work(publication_settings, still_pending):
+    publication_settings(as_review=True, persistent=True)
     p = _gl_provider()
     publish = p.mr.draft_notes.bulk_publish.side_effect
     pending = p.mr.draft_notes.list.side_effect
@@ -903,7 +939,7 @@ def test_live_mode_refreshes_markerless_drafts_without_hiding_pending_work(publi
     assert p.publish_code_suggestions([_suggestion()]) is False
     if not still_pending:
         publish()
-    publication_settings(as_review=False)
+    publication_settings(as_review=False, persistent=True)
 
     assert p.publish_code_suggestions([_suggestion()]) is (not still_pending)
     p.mr.draft_notes.create.assert_called_once()
@@ -912,7 +948,9 @@ def test_live_mode_refreshes_markerless_drafts_without_hiding_pending_work(publi
     if still_pending:
         publish()
         p.mr.draft_notes.list.side_effect = RequestException("cannot refresh yet")
-        assert p.publish_code_suggestions([_suggestion(body="new live suggestion")]) is False
+        # Even when listing fails, the public markers prove the earlier drafts
+        # were published. Without markers the disappearing-draft tests stay false.
+        assert p.publish_code_suggestions([_suggestion(body="new live suggestion")]) is True
         p.mr.draft_notes.list.side_effect = pending
 
     assert p.publish_code_suggestions([_suggestion(body="independent live suggestion")]) is True
