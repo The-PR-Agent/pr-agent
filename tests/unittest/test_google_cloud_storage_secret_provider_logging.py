@@ -90,7 +90,7 @@ def test_store_does_not_log_secret_name_or_raw_sdk_error(provider_logs):
 def test_get_secret_does_not_log_secret_name_or_raw_sdk_error(provider_logs):
     error = RuntimeError(ERROR_SECRET)
     blob = MagicMock()
-    blob.download_as_string.side_effect = error
+    blob.download_as_text.side_effect = error
     bucket = MagicMock()
     bucket.blob.return_value = blob
 
@@ -99,7 +99,7 @@ def test_get_secret_does_not_log_secret_name_or_raw_sdk_error(provider_logs):
 
     assert provider.get_secret(STORE_SECRET_NAME) == ""
     bucket.blob.assert_called_once_with(STORE_SECRET_NAME)
-    blob.download_as_string.assert_called_once_with()
+    blob.download_as_text.assert_called_once_with()
     assert_safe_log(
         provider_logs,
         "Failed to get secret from Google Cloud Storage: RuntimeError",
