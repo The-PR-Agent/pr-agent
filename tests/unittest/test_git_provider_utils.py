@@ -158,6 +158,7 @@ def test_handle_configurations_errors_keeps_markdown_details_when_persistent_com
     handle_configurations_errors([{
         "settings": b"[config]\nmodel =",
         "error": "Invalid value",
+        "safe_error": "Invalid value",
         "category": "local",
     }], provider)
 
@@ -174,6 +175,7 @@ def test_handle_configurations_errors_uses_plain_comment_without_markdown_suppor
     handle_configurations_errors([{
         "settings": b"[config]\nmodel =",
         "error": "Invalid value",
+        "safe_error": "Invalid value",
         "category": "local",
     }], provider)
 
