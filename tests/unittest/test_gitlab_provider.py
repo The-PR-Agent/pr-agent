@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -997,6 +998,101 @@ class TestGitLabProvider:
             discussion.save.assert_called_once()
         else:
             discussion.save.assert_not_called()
+
+    def test_get_code_suggestion_thread_context_includes_bot_suggestion_threads(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        open_thread = _thread([
+            _thread_note(body=_AGENT_BODY + "\n<!-- pr-agent-dedup: aabbccddeeff -->"),
+        ], discussion_id='open-thread')
+        open_thread.attributes['resolved'] = False
+        human_resolved = _thread([_thread_note()], discussion_id='human-resolved')
+        human_resolved.attributes['resolved'] = True
+        human_resolved.attributes['resolved_by'] = {'id': 99, 'name': 'Alice'}
+        bot_resolved = _thread([
+            _thread_note(),
+            {'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': 'We will not do this.'},
+        ], discussion_id='bot-resolved')
+        bot_resolved.attributes['resolved'] = True
+        bot_resolved.attributes['resolved_by'] = {'id': _BOT_USER_ID, 'name': 'GitLab Bot'}
+        general = _thread([_thread_note(body=_HUMAN_BODY)], discussion_id='general')
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [open_thread, general, human_resolved, bot_resolved]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert discussions == [
+            {
+                "thread_id": "bot-resolved",
+                "status": "resolved",
+                "resolved_by": "the bot",
+                "file": "src/app.py",
+                "start_line": 12,
+                "end_line": 12,
+                "suggestion": _AGENT_BODY,
+                "replies": [{"author": "Alice", "message": "We will not do this."}],
+            },
+            {
+                "thread_id": "human-resolved",
+                "status": "resolved",
+                "resolved_by": "Alice",
+                "file": "src/app.py",
+                "start_line": 12,
+                "end_line": 12,
+                "suggestion": _AGENT_BODY,
+                "replies": [],
+            },
+            {
+                "thread_id": "open-thread",
+                "status": "open",
+                "file": "src/app.py",
+                "start_line": 12,
+                "end_line": 12,
+                "suggestion": _AGENT_BODY,
+                "replies": [],
+            },
+        ]
+
+    def test_get_code_suggestion_thread_context_truncates_messages_and_replies(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        long_message = _AGENT_BODY + "\n" + "x" * 900
+        long_reply = "y" * 900
+        reply = {'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': long_reply}
+        thread = _thread([_thread_note(body=long_message), reply], discussion_id='d1')
+        thread.attributes['resolved'] = False
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [thread]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert len(discussions[0]["suggestion"]) == 750
+        assert discussions[0]["replies"] == [{"author": "Alice", "message": long_reply[:750]}]
+
+    def test_get_code_suggestion_thread_context_caps_thread_count(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        threads = [_thread([_thread_note()], discussion_id=f'd{i}') for i in range(60)]
+        for thread in threads:
+            thread.attributes['resolved'] = False
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = threads
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert len(discussions) == 50
+
+    def test_get_code_suggestion_thread_context_empty_without_agent_threads(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [_thread([_thread_note(body=_HUMAN_BODY)])]
+
+        assert gitlab_provider.get_code_suggestion_thread_context() == ""
+
+    def test_get_code_suggestion_thread_context_soft_fails(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.side_effect = GitlabError("gitlab api error")
+
+        assert gitlab_provider.get_code_suggestion_thread_context() == ""
 
     def test_resolve_comment_thread_ignores_unrelated_discussions(self, gitlab_provider):
         # An open discussion that does not own our note must be left untouched.
