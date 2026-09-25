@@ -145,9 +145,7 @@ async def _post_gitlab_webhook(app, data):
         )
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("command", ["/review", "/improve"])
-async def test_gitlab_note_command_passes_discussion_id_to_agent(gitlab_webhook_module, monkeypatch, command):
+async def _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, note, note_type):
     calls = []
 
     async def record_request(url, body, log_context, sender_id, notify=None):
@@ -164,19 +162,33 @@ async def test_gitlab_note_command_passes_discussion_id_to_agent(gitlab_webhook_
         "get_fork_safe_secret_provider",
         lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token"}'),
     )
-    data = _gitlab_payload(
-        note=f"{command} inspect this", discussion_id="discussion-42", id=99, type="Note"
-    )
+    data = _gitlab_payload(note=note, discussion_id="discussion-42", id=99, type=note_type)
     data.update({"object_kind": "note", "event_type": "note",
                  "merge_request": {"url": "https://gitlab.com/org/repo/-/merge_requests/1"}})
 
     response = await _post_gitlab_webhook(gitlab_webhook_module.app, data)
 
     assert response.status_code == 200
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/review", "/Review_pr", "/improve", "/improve_code"])
+async def test_gitlab_note_command_passes_discussion_id_to_agent(gitlab_webhook_module, monkeypatch, command):
+    calls = await _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, f"{command} inspect this", None)
+
     assert calls == [(
         "https://gitlab.com/org/repo/-/merge_requests/1",
         f"{command} inspect this --comment_id=discussion-42",
     )]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("note_type", ["DiscussionNote", "DiffNote"])
+async def test_gitlab_threaded_note_command_keeps_discussion_id_out(gitlab_webhook_module, monkeypatch, note_type):
+    calls = await _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, "/review", note_type)
+
+    assert calls == [("https://gitlab.com/org/repo/-/merge_requests/1", "/review")]
 
 
 def test_bitbucket_server_should_process_pr_logic_ignores_author_title_and_branch():

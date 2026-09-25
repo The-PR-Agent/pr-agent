@@ -679,7 +679,7 @@ class TestGitLabProvider:
             {'body': 'the review'}
         )
         gitlab_provider.mr.notes.create.assert_not_called()
-        assert result is None
+        assert result is gitlab_provider.mr.discussions.get.return_value.notes.create.return_value
 
     def test_publish_comment_falls_back_without_trigger_discussion(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()

@@ -1221,9 +1221,7 @@ class GitLabProvider(GitProvider):
         if (not is_temporary and self.should_reply_to_trigger_comment()
                 and (comment_id := get_settings().get("comment_id", ""))):
             try:
-                discussion = self.mr.discussions.get(comment_id)
-                discussion.notes.create({'body': mr_comment})
-                return None
+                return self.reply_to_comment_from_comment_id(comment_id, mr_comment)
             except Exception as e:
                 get_logger().warning(f"Failed to reply to trigger discussion, falling back to a note: {e}")
 
@@ -1421,7 +1419,7 @@ class GitLabProvider(GitProvider):
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
         discussion = self.mr.discussions.get(comment_id)
-        discussion.notes.create({'body': body})
+        return discussion.notes.create({'body': body})
 
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
                                original_suggestion=None):

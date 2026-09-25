@@ -174,6 +174,9 @@ reply_to_trigger_comment = true
 
 This is opt-in and GitLab-only. The webhook supplies the discussion ID for top-level `/review` and `/improve` notes. If the ID is unavailable or the reply fails, PR-Agent falls back to a normal note so output is not lost. GitHub Conversation comments do not expose a compatible reply endpoint.
 
+With `persistent_comment=true` (the default for both tools), a rerun updates the earlier result where it was first posted, which may be a different discussion; `/review` also posts a short link to it in the new command's discussion.
+
+## Post the /improve suggestions as a GitLab thread
 
 By default, PR-Agent posts the `/improve` suggestions as a plain note. To post them as a resolvable thread (GitLab discussion) instead, enable (default: `false`):
 
