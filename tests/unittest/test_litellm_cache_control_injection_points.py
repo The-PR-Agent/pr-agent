@@ -145,7 +145,9 @@ async def test_not_injected_for_non_anthropic_model(monkeypatch):
 
 def _warn_settings(points=None):
     return lambda: FakeSettings(
-        settings_values={"LITELLM.CACHE_CONTROL_INJECTION_POINTS": points or [{"location": "message", "role": "system"}]}
+        settings_values={
+            "LITELLM.CACHE_CONTROL_INJECTION_POINTS": points or [{"location": "message", "role": "system"}]
+        }
     )
 
 
@@ -198,7 +200,9 @@ def test_anthropic_routed_alias_without_metadata_is_silent(monkeypatch):
     mock_logger = MagicMock()
     monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
     monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
-    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", MagicMock(side_effect=RuntimeError("no model")))
+    monkeypatch.setattr(
+        litellm_handler.litellm.utils, "supports_prompt_caching", MagicMock(side_effect=RuntimeError("no model"))
+    )
 
     handler = litellm_handler.LiteLLMAIHandler()
     handler._warn_prompt_cache_conditions(
@@ -281,7 +285,9 @@ async def test_no_warning_without_cache_metadata_but_call_proceeds(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
     monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
     monkeypatch.setattr(litellm_handler, "get_settings", _warn_settings())
-    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", MagicMock(side_effect=RuntimeError("no model")))
+    monkeypatch.setattr(
+        litellm_handler.litellm.utils, "supports_prompt_caching", MagicMock(side_effect=RuntimeError("no model"))
+    )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -304,7 +310,9 @@ def test_estimate_counts_prompt_prefix_up_to_targeted_message(monkeypatch):
     )
 
     handler = litellm_handler.LiteLLMAIHandler()
-    system_only = handler._estimate_cached_prefix_tokens("pineapple", "banana", [{"location": "message", "role": "system"}])
+    system_only = handler._estimate_cached_prefix_tokens(
+        "pineapple", "banana", [{"location": "message", "role": "system"}]
+    )
     user_only = handler._estimate_cached_prefix_tokens("pineapple", "banana", [{"location": "message", "role": "user"}])
 
     # Caching the user message also caches the system message that precedes it, so its
