@@ -36,14 +36,14 @@ def provider_logs():
         get_logger().remove(sink)
 
 
-def assert_safe_log(messages, expected_message):
+def assert_safe_log(messages, expected_message, level="ERROR"):
     assert len(messages) == 1
     message = messages[0]
     assert ERROR_SECRET not in str(message)
     assert STORE_SECRET_NAME not in str(message)
     assert "Traceback (most recent call last)" not in str(message)
     assert message.record["message"] == expected_message
-    assert message.record["level"].name == "ERROR"
+    assert message.record["level"].name == level
     assert message.record["exception"] is None
     assert not message.record["extra"]
 
@@ -84,4 +84,24 @@ def test_store_does_not_log_secret_name_or_raw_sdk_error(provider_logs):
     assert_safe_log(
         provider_logs,
         "Failed to store secret in Google Cloud Storage: RuntimeError",
+    )
+
+
+def test_get_secret_does_not_log_secret_name_or_raw_sdk_error(provider_logs):
+    error = RuntimeError(ERROR_SECRET)
+    blob = MagicMock()
+    blob.download_as_string.side_effect = error
+    bucket = MagicMock()
+    bucket.blob.return_value = blob
+
+    provider = object.__new__(gcs_provider.GoogleCloudStorageSecretProvider)
+    provider.bucket = bucket
+
+    assert provider.get_secret(STORE_SECRET_NAME) == ""
+    bucket.blob.assert_called_once_with(STORE_SECRET_NAME)
+    blob.download_as_string.assert_called_once_with()
+    assert_safe_log(
+        provider_logs,
+        "Failed to get secret from Google Cloud Storage: RuntimeError",
+        level="WARNING",
     )
