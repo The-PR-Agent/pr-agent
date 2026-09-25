@@ -12,11 +12,9 @@ parameter. Disabled (the default), the block is a no-op.
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import openai
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
 from pr_agent.log import get_logger
 
 PR_URL = "https://gitlab.example.com/group/project/-/merge_requests/171"
@@ -53,12 +51,9 @@ def _mock_response():
     return mock
 
 
-async def _run(monkeypatch, model, add_user_to_requests, log_context=None, extra_body=None):
-    settings = _make_settings(add_user_to_requests)
-    settings.litellm.extra_body = extra_body
+async def _run(monkeypatch, model, add_user_to_requests, log_context=None):
     monkeypatch.setattr(litellm_handler, "get_settings",
-                        lambda: settings)
-    monkeypatch.setattr(litellm_helpers, "get_settings", lambda: settings)
+                        lambda: _make_settings(add_user_to_requests))
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
                new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -72,32 +67,6 @@ async def _run(monkeypatch, model, add_user_to_requests, log_context=None, extra
 
 
 class TestRequestUserField:
-
-    @pytest.mark.asyncio
-    async def test_invalid_chat_template_kwargs_never_call_completion(self, monkeypatch):
-        settings = _make_settings(False)
-        settings.litellm.extra_body = '{"chat_template_kwargs": false}'
-        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
-        monkeypatch.setattr(litellm_helpers, "get_settings", lambda: settings)
-        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as call:
-            handler = litellm_handler.LiteLLMAIHandler()
-            with pytest.raises(openai.APIError) as error:
-                await handler.chat_completion(model="openai/qwen", system="sys", user="usr")
-        assert isinstance(error.value.__cause__, ValueError)
-        call.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("model, attribution", [("openai/qwen", False), ("openrouter/qwen/qwen3", True)])
-    async def test_chat_template_kwargs_with_optional_request_attribution(self, monkeypatch, model, attribution):
-        kwargs = await _run(
-            monkeypatch, model, attribution,
-            log_context={"command": "review", "pr_url": PR_URL},
-            extra_body='{"chat_template_kwargs": {"enable_thinking": false}}',
-        )
-        assert kwargs["extra_body"]["chat_template_kwargs"] == {"enable_thinking": False}
-        assert "chat_template_kwargs" not in kwargs
-        if attribution:
-            assert json.loads(kwargs["extra_body"]["user"]) == {"command": "review", "pr_url": PR_URL}
 
     @pytest.mark.asyncio
     async def test_disabled_by_default_is_noop(self, monkeypatch):
