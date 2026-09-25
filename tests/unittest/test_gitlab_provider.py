@@ -1025,7 +1025,6 @@ class TestGitLabProvider:
             {
                 "thread_id": "bot-resolved",
                 "status": "resolved",
-                "resolved_by": "the bot",
                 "file": "src/app.py",
                 "start_line": 12,
                 "end_line": 12,
@@ -1035,7 +1034,6 @@ class TestGitLabProvider:
             {
                 "thread_id": "human-resolved",
                 "status": "resolved",
-                "resolved_by": "Alice",
                 "file": "src/app.py",
                 "start_line": 12,
                 "end_line": 12,
@@ -1078,41 +1076,6 @@ class TestGitLabProvider:
         discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
 
         assert len(discussions) == 50
-
-    def test_get_code_suggestion_thread_context_preserves_multi_line_ranges(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        note = _thread_note()
-        note['position']['line_range'] = {
-            'start': {'new_line': 12, 'old_line': 8},
-            'end': {'new_line': 20, 'old_line': 16},
-        }
-        thread = _thread([note], discussion_id='d1')
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [thread]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert discussions[0]["start_line"] == 12
-        assert discussions[0]["end_line"] == 20
-
-    def test_get_code_suggestion_thread_context_line_range_falls_back_to_old_lines(self, gitlab_provider):
-        gitlab_provider._own_user_id = _BOT_USER_ID
-        note = _thread_note()
-        note['position'].pop('new_line')
-        note['position']['line_range'] = {
-            'start': {'old_line': 8},
-            'end': {'old_line': 10},
-        }
-        thread = _thread([note], discussion_id='d1')
-
-        gitlab_provider.mr = MagicMock()
-        gitlab_provider.mr.discussions.list.return_value = [thread]
-
-        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
-
-        assert discussions[0]["start_line"] == 8
-        assert discussions[0]["end_line"] == 10
 
     def test_get_code_suggestion_thread_context_enforces_context_char_budget(self, gitlab_provider):
         gitlab_provider._own_user_id = _BOT_USER_ID

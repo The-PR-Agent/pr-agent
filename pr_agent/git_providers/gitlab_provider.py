@@ -151,29 +151,6 @@ def _flagged_line_removed(position: dict, removed_lines: dict) -> bool:
     return position['new_line'] in (removed_lines.get(path) or set())
 
 
-def _position_line_range(position: dict) -> Tuple[Optional[int], Optional[int]]:
-    # Multi-line diff notes carry a line_range with distinct start/end endpoints,
-    # each exposing its own new_line/old_line. Single-line notes only have the
-    # scalar new_line/old_line, which then applies to both endpoints.
-    line_range = position.get('line_range')
-    if isinstance(line_range, dict) \
-            and isinstance(line_range.get('start'), dict) and isinstance(line_range.get('end'), dict):
-        start_line = line_range['start'].get('new_line')
-        if start_line is None:
-            start_line = line_range['start'].get('old_line')
-        end_line = line_range['end'].get('new_line')
-        if end_line is None:
-            end_line = line_range['end'].get('old_line')
-        if isinstance(start_line, int) and isinstance(end_line, int) and start_line >= 1 and end_line >= 1:
-            return start_line, end_line
-    anchor_line = position.get('new_line')
-    if anchor_line is None:
-        anchor_line = position.get('old_line')
-    if isinstance(anchor_line, int) and anchor_line >= 1:
-        return anchor_line, anchor_line
-    return None, None
-
-
 def _is_outdated_own_inline_thread(discussion, own_user_id: int, current_head_sha: str) -> bool:
     notes = discussion.attributes.get('notes') or []
     if not notes or not isinstance(notes[0], dict):
@@ -1173,84 +1150,47 @@ class GitLabProvider(GitProvider):
         return True
 
     def get_code_suggestion_thread_context(self) -> str:
-        """Return a bounded JSON block of the bot's code-suggestion threads on this MR.
+        """Return a bounded JSON block of prior code-suggestion threads on this MR.
 
-        Mirrors the Azure DevOps provider shape (thread_id, status, file, lines,
-        suggestion, replies) so /improve can reuse the prior-discussions prompt
-        rule. Only bot-opened suggestion threads are included; resolved threads
-        record who resolved them so the model knows whether the fix held or a
-        human declined it. Empty when the MR has no such threads or they cannot
-        be listed.
+        Empty when the MR has no such threads or they cannot be listed.
         """
         try:
             discussions = self.mr.discussions.list(get_all=True)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return ""
-        own_user_id = self._get_own_user_id()
-        collected = []
-        collected_json = ""
+        threads, context = [], ""
         for discussion in reversed(discussions):
             notes = discussion.attributes.get('notes') or []
-            if not notes or not isinstance(notes[0], dict):
-                continue
-            opener = notes[0]
-            if not is_agent_inline_comment(opener.get('body')):
-                continue
-            position = opener.get('position')
-            if not isinstance(position, dict) or position.get('position_type') != 'text':
-                continue
-            path = position.get('new_path') or position.get('old_path')
-            start_line, end_line = _position_line_range(position)
-            if not isinstance(path, str) or not path or start_line is None or end_line is None:
+            opener = notes[0] if notes and isinstance(notes[0], dict) else {}
+            body = opener.get('body')
+            position = opener.get('position') if isinstance(opener.get('position'), dict) else {}
+            line = position.get('new_line') or position.get('old_line')
+            if not isinstance(body, str) or not is_agent_inline_comment(body) or not isinstance(line, int):
                 continue
             replies = []
             for note in notes[1:][-_MAX_DISCUSSION_REPLIES:]:
-                if not isinstance(note, dict) or note.get('system'):
-                    continue
-                message = note.get('body')
-                if not isinstance(message, str) or not message.strip():
-                    continue
-                author = note.get('author')
-                author_name = "Unknown"
-                if isinstance(author, dict):
-                    author_name = (author.get('name') or author.get('username') or "Unknown")
-                replies.append({
-                    "author": str(author_name),
-                    "message": message.strip()[:_MAX_DISCUSSION_MESSAGE_CHARS],
-                })
-            body = opener.get('body')
-            if not isinstance(body, str):
-                continue
-            resolved = opener.get('resolved') is True
-            resolved_by_label = None
-            if resolved:
-                resolved_by = opener.get('resolved_by')
-                if own_user_id is not None and isinstance(resolved_by, dict) \
-                        and str(resolved_by.get('id')) == str(own_user_id):
-                    resolved_by_label = "the bot"
-                elif isinstance(resolved_by, dict) and (resolved_by.get('name') or resolved_by.get('username')):
-                    resolved_by_label = str(resolved_by.get('name') or resolved_by.get('username'))
-            suggestion = body.split("<!-- pr-agent", 1)[0].strip()[:_MAX_DISCUSSION_MESSAGE_CHARS]
-            discussion_context = {
-                "thread_id": getattr(discussion, 'id', None),
-                "status": "resolved" if resolved else "open",
-                "file": path,
-                "start_line": start_line,
-                "end_line": end_line,
-                "suggestion": suggestion,
+                message = note.get('body') if isinstance(note, dict) and not note.get('system') else None
+                if isinstance(message, str) and message.strip():
+                    author = note.get('author') or {}
+                    replies.append({"author": author.get('name') or author.get('username') or "Unknown",
+                                    "message": message.strip()[:_MAX_DISCUSSION_MESSAGE_CHARS]})
+            threads.append({
+                "thread_id": discussion.id,
+                "status": "resolved" if opener.get('resolved') is True else "open",
+                "file": position.get('new_path') if position.get('new_line') else position.get('old_path'),
+                "start_line": line,
+                "end_line": line,
+                "suggestion": body.split("<!-- pr-agent", 1)[0].strip()[:_MAX_DISCUSSION_MESSAGE_CHARS],
                 "replies": replies,
-            }
-            if resolved_by_label is not None:
-                discussion_context["resolved_by"] = resolved_by_label
-            candidate_json = json.dumps(collected + [discussion_context], ensure_ascii=False, indent=2)
-            if len(candidate_json) > _MAX_DISCUSSION_CONTEXT_CHARS:
+            })
+            candidate = json.dumps(threads, ensure_ascii=False, indent=2)
+            if len(candidate) > _MAX_DISCUSSION_CONTEXT_CHARS:
                 break
-            collected_json = candidate_json
-            collected = collected + [discussion_context]
-            if len(collected) >= _MAX_DISCUSSION_THREADS:
+            context = candidate
+            if len(threads) >= _MAX_DISCUSSION_THREADS:
                 break
-        return collected_json
+        return context
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
         if isinstance(comment, dict):
