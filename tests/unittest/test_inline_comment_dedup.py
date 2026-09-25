@@ -544,7 +544,7 @@ def test_gitlab_persistent_bodies_survive_draft_listing_failure():
     assert "discussion finding" in bodies
 
 
-def test_gitlab_fallback_supports_reduced_key_issue_shape():
+def test_gitlab_fallback_leaves_reduced_key_issue_in_summary():
     p = _gl_provider([])
     p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
     p.get_line_link = MagicMock(return_value="http://link")
@@ -554,7 +554,7 @@ def test_gitlab_fallback_supports_reduced_key_issue_shape():
     marked_body = d.key_issue_body_with_markers(body, fingerprint, location_fingerprint)
     gs = _flag_on_gitlab()
     try:
-        p.send_inline_comment(
+        published = p.send_inline_comment(
             body=marked_body, edit_type="addition", found=True,
             relevant_file="a.py", relevant_line_in_file="+x = 1",
             source_line_no=10, target_file=_FakeTargetFile(), target_line_no=10,
@@ -569,12 +569,13 @@ def test_gitlab_fallback_supports_reduced_key_issue_shape():
     finally:
         gs.stop()
 
-    assert p.mr.notes.create.called
-    note_body = p.mr.notes.create.call_args.args[0]["body"]
-    assert "finding text" in note_body
-    # the location marker that publication verification relies on must survive
-    assert f"<!-- pr-agent-key-issue-location: {location_fingerprint} -->" in note_body
-    assert p.get_recent_inline_comment_bodies() == [note_body]
+    # Reduced key-issue shapes carry no existing_code/improved_code/label, so the
+    # general-note fallback cannot rebuild a suggestion from them: it fails and the
+    # finding stays in the review summary (as the docs describe) instead of being
+    # published with a misleading "Cannot implement directly" footer.
+    assert published is False
+    assert not p.mr.notes.create.called
+    assert p.get_recent_inline_comment_bodies() == []
 
 
 # --------------------------------------------------------------------------- #

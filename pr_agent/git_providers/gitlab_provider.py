@@ -1481,75 +1481,62 @@ class GitLabProvider(GitProvider):
             return True
         except (GitlabError, RequestException):
             try:
-                    # fallback - create a general note on the file in the MR
-                    already_marked = False
-                    original = original_suggestion or {}
-                    if 'suggestion_orig_location' in original:
-                        line_start = original['suggestion_orig_location']['start_line']
-                        line_end = original['suggestion_orig_location']['end_line']
-                        old_code_snippet = original['prev_code_snippet']
-                        new_code_snippet = original['new_code_snippet']
-                        content = original['suggestion_summary']
-                        label = original['category']
-                        score = original.get('score', 7)
-                    elif ('existing_code' in original and 'improved_code' in original
-                            and 'suggestion_content' in original and 'label' in original):
-                        line_start = original['relevant_lines_start']
-                        line_end = original['relevant_lines_end']
-                        old_code_snippet = original['existing_code']
-                        new_code_snippet = original['improved_code']
-                        content = original['suggestion_content']
-                        label = original['label']
-                        score = original.get('score', 7)
+                # fallback - create a general note on the file in the MR
+                if 'suggestion_orig_location' in original_suggestion:
+                    line_start = original_suggestion['suggestion_orig_location']['start_line']
+                    line_end = original_suggestion['suggestion_orig_location']['end_line']
+                    old_code_snippet = original_suggestion['prev_code_snippet']
+                    new_code_snippet = original_suggestion['new_code_snippet']
+                    content = original_suggestion['suggestion_summary']
+                    label = original_suggestion['category']
+                    if 'score' in original_suggestion:
+                        score = original_suggestion['score']
                     else:
-                        # Reduced key-issue shape carries a pre-rendered (marked) body and no
-                        # legacy suggestion fields; preserve it so the dedup markers survive.
-                        already_marked = True
-                        line_start = original.get('relevant_lines_start') or 0
-                        line_end = original.get('relevant_lines_end') or line_start
+                        score = 7
+                else:
+                    line_start = original_suggestion['relevant_lines_start']
+                    line_end = original_suggestion['relevant_lines_end']
+                    old_code_snippet = original_suggestion['existing_code']
+                    new_code_snippet = original_suggestion['improved_code']
+                    content = original_suggestion['suggestion_content']
+                    label = original_suggestion['label']
+                    score = original_suggestion.get('score', 7)
 
-                    link = self.get_line_link(relevant_file, line_start, line_end)
-                    if already_marked:
-                        body_fallback = (f"{body}\n\n"
-                                         f"<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"
-                                         f"</summary>\n\n"
-                                         "\n\n___\n\n"
-                                         "`(Cannot implement directly - GitLab API allows committable "
-                                         "suggestions strictly on MR diff lines)`\n"
-                                         "</details>\n\n")
-                    else:
-                        body_fallback = f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
-                        body_fallback += f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):</summary>\n\n"
-                        body_fallback += "\n\n___\n\n`(Cannot implement directly - GitLab API allows committable suggestions strictly on MR diff lines)`"
-                        body_fallback += "</details>\n\n"
-                        diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
-                                                    new_code_snippet.split('\n'), n=999)
-                        patch_orig = "\n".join(diff_patch)
-                        patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                        diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                        body_fallback += diff_code
+                link = self.get_line_link(relevant_file, line_start, line_end)
+                body_fallback = f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                body_fallback += (f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"
+                                  f"</summary>\n\n")
+                body_fallback += ("\n\n___\n\n`(Cannot implement directly - GitLab API allows committable "
+                                  "suggestions strictly on MR diff lines)`")
+                body_fallback += "</details>\n\n"
+                diff_patch = difflib.unified_diff(old_code_snippet.split('\n'),
+                                            new_code_snippet.split('\n'), n=999)
+                patch_orig = "\n".join(diff_patch)
+                patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+                body_fallback += diff_code
 
-                    if store is not None and not already_marked:
-                        body_fallback = body_with_markers(
-                            body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
-                    # Create a general note on the file in the MR
-                    fallback_position = {
-                        'base_sha': diff.base_commit_sha,
-                        'start_sha': diff.start_commit_sha,
-                        'head_sha': diff.head_commit_sha,
-                        'position_type': 'text',
-                        'file_path': f'{target_file.filename}',
-                    }
-                    if as_draft:
-                        self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
-                    else:
-                        self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
-                        self._remember_published_inline_comment_body(body_fallback)
-                    get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
-                    if store is not None:
-                        store.add(body_fp)
-                        store.add(code_fp)
-                    return True
+                if store is not None:
+                    body_fallback = body_with_markers(
+                        body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                # Create a general note on the file in the MR
+                fallback_position = {
+                    'base_sha': diff.base_commit_sha,
+                    'start_sha': diff.start_commit_sha,
+                    'head_sha': diff.head_commit_sha,
+                    'position_type': 'text',
+                    'file_path': f'{target_file.filename}',
+                }
+                if as_draft:
+                    self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
+                else:
+                    self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
+                    self._remember_published_inline_comment_body(body_fallback)
+                get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
+                if store is not None:
+                    store.add(body_fp)
+                    store.add(code_fp)
+                return True
 
             except (GitlabError, RequestException, KeyError, TypeError):
                 get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
