@@ -1,8 +1,8 @@
+import pytest
+import runpy
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
-
-import pytest
 
 from pr_agent.servers import gunicorn_config
 
@@ -92,28 +92,11 @@ class TestAvailableCpus:
         assert gunicorn_config.available_cpus() == 1
 
 
-class TestPort:
-    def test_defaults_to_3000(self):
-        assert gunicorn_config._port() == gunicorn_config.DEFAULT_PORT
-
-    def test_honors_port_env(self, monkeypatch):
-        monkeypatch.setenv("PORT", "8080")
-        assert gunicorn_config._port() == 8080
-
-    def test_blank_port_is_ignored(self, monkeypatch):
-        monkeypatch.setenv("PORT", "")
-        assert gunicorn_config._port() == gunicorn_config.DEFAULT_PORT
-
-    @pytest.mark.parametrize("value", ["abc", "0", "-1", "8080.5", "70000"])
-    def test_unusable_port_is_rejected(self, monkeypatch, value):
-        monkeypatch.setenv("PORT", value)
-        with pytest.raises(ValueError):
-            gunicorn_config._port()
-
-    def test_module_level_bind_is_usable(self):
-        host, _, port = gunicorn_config.bind.rpartition(":")
-        assert host == "0.0.0.0"
-        assert 1 <= int(port) <= 65535
+@pytest.mark.parametrize("port,expected", [(None, "3000"), ("", "3000"), ("8080", "8080")])
+def test_bind_uses_port_or_default(monkeypatch, port, expected):
+    if port is not None:
+        monkeypatch.setenv("PORT", port)
+    assert runpy.run_path(gunicorn_config.__file__)["bind"] == f"0.0.0.0:{expected}"
 
 
 class TestComputeWorkers:

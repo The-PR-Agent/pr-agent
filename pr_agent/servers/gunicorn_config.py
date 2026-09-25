@@ -4,19 +4,6 @@ import os
 # Sample Gunicorn configuration file.
 
 
-def _env_int(name):
-    raw = os.getenv(name)
-    if not raw:
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
-    if value < 1:
-        raise ValueError(f"{name} must be >= 1, got {value}")
-    return value
-
-
 #
 # Server socket
 #
@@ -36,20 +23,8 @@ def _env_int(name):
 #
 
 
-DEFAULT_PORT = 3000
-
-
-def _port():
-    port = _env_int('PORT')
-    if port is None:
-        return DEFAULT_PORT
-    if port > 65535:
-        raise ValueError(f"PORT must be <= 65535, got {port}")
-    return port
-
-
 # bind = '0.0.0.0:5000'
-bind = f'0.0.0.0:{_port()}'
+bind = f"0.0.0.0:{os.getenv('PORT') or 3000}"
 backlog = 2048
 
 #
@@ -152,6 +127,19 @@ def available_cpus():
     if not limits:
         return 1
     return max(1, int(min(limits)))
+
+
+def _env_int(name):
+    raw = os.getenv(name)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1, got {value}")
+    return value
 
 
 def compute_workers():
