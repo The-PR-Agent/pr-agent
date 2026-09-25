@@ -2,6 +2,8 @@
 
 This file is the shared source of repository guidance for coding agents. Tool-specific instruction files should import it instead of repeating repository-wide rules.
 
+This file is updated for the purpose of the code review and I wanna see how well Ai detects the chanege and shares comments. I am just writing a sample paragraph here
+
 ## Dos and Don’ts
 
 - **Do** match the interpreter requirement declared in `pyproject.toml` (Python ≥ 3.12) and install dependencies with `uv sync` (runtime + dev, from `uv.lock`) before running tools.
