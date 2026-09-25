@@ -823,6 +823,27 @@ def _provider_with_diff(*filenames):
     return provider
 
 
+_AGENT_IDENTITY = "agent@example.com"
+
+
+def _agent_comment(content):
+    """A comment authored by the configured PR-Agent identity."""
+    return SimpleNamespace(
+        content=content,
+        author=SimpleNamespace(id="agent-guid", display_name="PR-Agent", unique_name=_AGENT_IDENTITY),
+    )
+
+
+@pytest.fixture
+def agent_identity():
+    """Configure `azure_devops_server.agent_identity` so comment authorship is verifiable."""
+    with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
+        settings.return_value.get.side_effect = lambda key, default=None: (
+            _AGENT_IDENTITY if key == "azure_devops_server.agent_identity" else default
+        )
+        yield
+
+
 def _created_threads(provider):
     return [kwargs["comment_thread"] for _, kwargs in provider.azure_devops_client.create_thread.call_args_list]
 
@@ -1822,7 +1843,7 @@ class TestAzureDevopsProviderSuggestionDiscussions:
 
         assert aliases == set()
 
-    def test_formats_replies_from_suggestion_threads(self):
+    def test_formats_replies_from_suggestion_threads(self, agent_identity):
         provider = _provider_with_diff("/src/app.py")
         thread = SimpleNamespace(
             id=21,
@@ -1833,7 +1854,7 @@ class TestAzureDevopsProviderSuggestionDiscussions:
                 right_file_end=SimpleNamespace(line=6),
             ),
             comments=[
-                SimpleNamespace(content="**Suggestion:** guard the value\n```suggestion\nsafe()\n```"),
+                _agent_comment("**Suggestion:** guard the value\n```suggestion\nsafe()\n```"),
                 SimpleNamespace(
                     content="We will move this to the backlog.",
                     author=SimpleNamespace(display_name="Alex"),
@@ -1854,7 +1875,7 @@ class TestAzureDevopsProviderSuggestionDiscussions:
             "replies": [{"author": "Alex", "message": "We will move this to the backlog."}],
         }]
 
-    def test_includes_suggestion_threads_without_replies(self):
+    def test_includes_suggestion_threads_without_replies(self, agent_identity):
         provider = _provider_with_diff("/src/app.py")
         provider.azure_devops_client.get_threads.return_value = [
             SimpleNamespace(
@@ -1865,7 +1886,7 @@ class TestAzureDevopsProviderSuggestionDiscussions:
                     right_file_start=SimpleNamespace(line=8),
                     right_file_end=SimpleNamespace(line=8),
                 ),
-                comments=[SimpleNamespace(content="**Suggestion:** use value\n```suggestion\nvalue\n```")],
+                comments=[_agent_comment("**Suggestion:** use value\n```suggestion\nvalue\n```")],
             ),
             SimpleNamespace(comments=[
                 SimpleNamespace(content="General discussion"),
@@ -1883,7 +1904,7 @@ class TestAzureDevopsProviderSuggestionDiscussions:
             "replies": [],
         }]
 
-    def test_includes_large_existing_suggestion_history(self):
+    def test_includes_large_existing_suggestion_history(self, agent_identity):
         provider = _provider_with_diff("/src/app.py")
         provider.azure_devops_client.get_threads.return_value = [
             SimpleNamespace(
@@ -1894,8 +1915,8 @@ class TestAzureDevopsProviderSuggestionDiscussions:
                     right_file_start=SimpleNamespace(line=thread_id),
                     right_file_end=SimpleNamespace(line=thread_id),
                 ),
-                comments=[SimpleNamespace(
-                    content=f"**Suggestion:** issue {thread_id}\n```suggestion\nvalue_{thread_id}\n```"
+                comments=[_agent_comment(
+                    f"**Suggestion:** issue {thread_id}\n```suggestion\nvalue_{thread_id}\n```"
                 )],
             )
             for thread_id in range(1, 31)
@@ -1905,6 +1926,126 @@ class TestAzureDevopsProviderSuggestionDiscussions:
 
         assert len(discussions) == 30
         assert {discussion["thread_id"] for discussion in discussions} == set(range(1, 31))
+
+    def test_skips_suggestion_thread_opened_by_a_human(self, agent_identity):
+        """A human who pastes a ```suggestion fence must not be read as the agent's thread."""
+        provider = _provider_with_diff("/src/app.py")
+        provider.azure_devops_client.get_threads.return_value = [
+            SimpleNamespace(
+                id=23,
+                status="active",
+                thread_context=SimpleNamespace(
+                    file_path="/src/app.py",
+                    right_file_start=SimpleNamespace(line=3),
+                    right_file_end=SimpleNamespace(line=3),
+                ),
+                comments=[SimpleNamespace(
+                    content="**Suggestion:** use value\n```suggestion\nvalue\n```",
+                    author=SimpleNamespace(unique_name="developer@example.com"),
+                )],
+            ),
+        ]
+
+        assert provider.get_code_suggestion_thread_context() == ""
+
+    def test_skips_suggestion_thread_when_authorship_cannot_be_verified(self):
+        """Without a configured agent identity the thread's author is unknown, so it is left out."""
+        provider = _provider_with_diff("/src/app.py")
+        provider.azure_devops_client.get_threads.return_value = [SimpleNamespace(
+            id=24,
+            status="active",
+            thread_context=SimpleNamespace(
+                file_path="/src/app.py",
+                right_file_start=SimpleNamespace(line=5),
+                right_file_end=SimpleNamespace(line=5),
+            ),
+            comments=[_agent_comment("**Suggestion:** use value\n```suggestion\nvalue\n```")],
+        )]
+
+        with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
+            settings.return_value.get.side_effect = lambda key, default=None: default
+
+            assert provider.get_code_suggestion_thread_context() == ""
+
+    def test_keeps_suggestion_text_that_quotes_a_marker(self, agent_identity):
+        """A suggestion that quotes the marker syntax keeps the quoted text; only the trailing marker is cut."""
+        provider = _provider_with_diff("/src/app.py")
+        provider.azure_devops_client.get_threads.return_value = [SimpleNamespace(
+            id=25,
+            status="active",
+            thread_context=SimpleNamespace(
+                file_path="/src/app.py",
+                right_file_start=SimpleNamespace(line=7),
+                right_file_end=SimpleNamespace(line=7),
+            ),
+            comments=[_agent_comment(
+                "**Suggestion:** drop the marker\n```suggestion\n"
+                "body = \"<!-- pr-agent-dedup: aabbccddeeff -->\"\n```\n\n"
+                "<!-- pr-agent-dedup: aabbccddeeff -->\n"
+                "<!-- pr-agent-dedup-code: 112233445566 -->"
+            )],
+        )]
+
+        discussion = json.loads(provider.get_code_suggestion_thread_context())[0]
+
+        assert discussion["suggestion"] == (
+            "**Suggestion:** drop the marker\n```suggestion\n"
+            "body = \"<!-- pr-agent-dedup: aabbccddeeff -->\"\n```"
+        )
+
+    def test_strips_the_agent_response_marker_from_replies(self, agent_identity):
+        provider = _provider_with_diff("/src/app.py")
+        provider.azure_devops_client.get_threads.return_value = [SimpleNamespace(
+            id=26,
+            status="active",
+            thread_context=SimpleNamespace(
+                file_path="/src/app.py",
+                right_file_start=SimpleNamespace(line=9),
+                right_file_end=SimpleNamespace(line=9),
+            ),
+            comments=[
+                _agent_comment("**Suggestion:** use value\n```suggestion\nvalue\n```"),
+                SimpleNamespace(
+                    content="Could this be nullable?\n\n<!-- pr-agent-response -->",
+                    author=SimpleNamespace(unique_name="developer@example.com"),
+                ),
+            ],
+        )]
+
+        discussion = json.loads(provider.get_code_suggestion_thread_context())[0]
+
+        assert discussion["replies"] == [{"author": "developer@example.com", "message": "Could this be nullable?"}]
+
+    def test_keeps_the_last_replies_after_filtering_progress_notes(self, agent_identity):
+        """Progress notes are dropped before the reply cap, so the cap is filled with real replies."""
+        provider = _provider_with_diff("/src/app.py")
+        provider.azure_devops_client.get_threads.return_value = [SimpleNamespace(
+            id=27,
+            status="active",
+            thread_context=SimpleNamespace(
+                file_path="/src/app.py",
+                right_file_start=SimpleNamespace(line=11),
+                right_file_end=SimpleNamespace(line=11),
+            ),
+            comments=[
+                _agent_comment("**Suggestion:** use value\n```suggestion\nvalue\n```"),
+                *[
+                    SimpleNamespace(
+                        content=f"On it! {index}\n<!-- pr-agent-progress -->",
+                        author=SimpleNamespace(unique_name=_AGENT_IDENTITY),
+                    )
+                    for index in range(20)
+                ],
+                SimpleNamespace(
+                    content="Last word.",
+                    author=SimpleNamespace(unique_name="developer@example.com"),
+                ),
+            ],
+        )]
+
+        discussion = json.loads(provider.get_code_suggestion_thread_context())[0]
+
+        assert discussion["replies"] == [{"author": "developer@example.com", "message": "Last word."}]
 
     def test_adapts_azure_thread_comments_for_conversation_history(self):
         provider = _provider_with_diff("/src/app.py")
@@ -1976,7 +2117,7 @@ class TestAzureDevopsProviderSuggestionDiscussions:
 
         assert [comment.id for comment in comments] == [1]
 
-    def test_excludes_temporary_progress_reply_from_suggestion_discussions(self):
+    def test_excludes_temporary_progress_reply_from_suggestion_discussions(self, agent_identity):
         provider = _provider_with_diff("/src/app.py")
         provider.azure_devops_client.create_comment.return_value = SimpleNamespace()
         provider.reply_to_thread(21, "On it! ⏳", True)
@@ -1991,7 +2132,7 @@ class TestAzureDevopsProviderSuggestionDiscussions:
                 right_file_end=SimpleNamespace(line=4),
             ),
             comments=[
-                SimpleNamespace(content="**Suggestion:** fix\n```suggestion\nvalue\n```"),
+                _agent_comment("**Suggestion:** fix\n```suggestion\nvalue\n```"),
                 SimpleNamespace(
                     content=progress_content,
                     author=SimpleNamespace(display_name="PR-Agent"),
@@ -2409,10 +2550,13 @@ class TestAzureDevopsProviderSuggestionFence:
         suggestion["relevant_lines_start"] = suggestion["relevant_lines_end"] = 2
         with patch("pr_agent.git_providers.azuredevops_provider.get_settings") as settings:
             settings.return_value.get.side_effect = lambda key, default=None: (
-                True if key == "config.persistent_inline_comments" else default
+                _AGENT_IDENTITY if key == "azure_devops_server.agent_identity" else (
+                    True if key == "config.persistent_inline_comments" else default
+                )
             )
             settings.return_value.azure_devops.get.return_value = "active"
             provider.publish_code_suggestions([suggestion])
+            published_opener = _created_threads(provider)[0].comments[0]
             stored = SimpleNamespace(
                 id=17,
                 status="active",
@@ -2422,7 +2566,7 @@ class TestAzureDevopsProviderSuggestionFence:
                     right_file_end=SimpleNamespace(line=2),
                 ),
                 comments=[
-                    _created_threads(provider)[0].comments[0],
+                    _agent_comment(published_opener.content),
                     SimpleNamespace(content="Not doing this.", author=SimpleNamespace(display_name="Alex")),
                 ],
             )

@@ -257,6 +257,8 @@ num_code_suggestions_per_chunk=3
 max_suggestions_per_file = 0
 max_number_of_calls = 3
 parallel_calls = true
+# Character budget for the prior code-suggestion thread context injected into the /improve prompt; 0 disables it.
+max_discussion_context_chars = 24000
 
 decouple_hunks = false
 # self-review checkbox

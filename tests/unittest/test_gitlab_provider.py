@@ -9,9 +9,8 @@ from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequ
 from requests.exceptions import RequestException
 
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
-from pr_agent.git_providers.git_provider import IncrementalPR
+from pr_agent.git_providers.git_provider import _DEFAULT_DISCUSSION_CONTEXT_CHARS, IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
-    _MAX_DISCUSSION_CONTEXT_CHARS,
     GitLabProvider,
     _GitLabIncrementalCommit,
     _GitLabIncrementalNote,
@@ -1087,7 +1086,7 @@ class TestGitLabProvider:
 
         result = gitlab_provider.get_code_suggestion_thread_context()
 
-        assert len(result) <= _MAX_DISCUSSION_CONTEXT_CHARS
+        assert len(result) <= _DEFAULT_DISCUSSION_CONTEXT_CHARS
         assert len(json.loads(result)) < 60
 
     def test_get_code_suggestion_thread_context_empty_without_agent_threads(self, gitlab_provider):
@@ -1095,6 +1094,61 @@ class TestGitLabProvider:
         gitlab_provider.mr.discussions.list.return_value = [_thread([_thread_note(body=_HUMAN_BODY)])]
 
         assert gitlab_provider.get_code_suggestion_thread_context() == ""
+
+    def test_get_code_suggestion_thread_context_skips_human_suggestion_threads(self, gitlab_provider):
+        """A human who opens a thread with a ```suggestion fence is not the agent's own suggestion."""
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        human_suggestion = _thread([_thread_note(author_id=99, body=_AGENT_BODY)], discussion_id='human')
+        bot_suggestion = _thread([_thread_note()], discussion_id='bot')
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [human_suggestion, bot_suggestion]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert [discussion["thread_id"] for discussion in discussions] == ['bot']
+
+    def test_get_code_suggestion_thread_context_skips_threads_when_author_is_unknown(self, gitlab_provider):
+        gitlab_provider._own_user_id = None
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [_thread([_thread_note()])]
+
+        assert gitlab_provider.get_code_suggestion_thread_context() == ""
+
+    def test_get_code_suggestion_thread_context_keeps_quoted_marker_text(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        body = (
+            _AGENT_BODY
+            + "\n\n<!-- pr-agent-dedup: aabbccddeeff -->\n"
+            + '[pr-agent-dedup-code: 112233445566]: https://github.com/The-PR-Agent/pr-agent'
+        )
+        thread = _thread([_thread_note(body=body)], discussion_id='d1')
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [thread]
+
+        discussion = json.loads(gitlab_provider.get_code_suggestion_thread_context())[0]
+
+        assert discussion["suggestion"] == _AGENT_BODY
+
+    def test_get_code_suggestion_thread_context_keeps_last_replies_after_filtering(self, gitlab_provider):
+        """System notes are dropped before the reply cap, so the cap holds real replies."""
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        notes = [_thread_note()]
+        notes += [
+            {'author': {'id': _BOT_USER_ID, 'name': 'PR-Agent'}, 'system': True, 'body': f'changed line {i}'}
+            for i in range(20)
+        ]
+        notes += [{'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': 'Last word.'}]
+        thread = _thread(notes, discussion_id='d1')
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [thread]
+
+        discussion = json.loads(gitlab_provider.get_code_suggestion_thread_context())[0]
+
+        assert discussion["replies"] == [{"author": "Alice", "message": "Last word."}]
 
     def test_get_code_suggestion_thread_context_soft_fails(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()

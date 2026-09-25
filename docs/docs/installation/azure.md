@@ -122,6 +122,10 @@ configure a stable identity (GUID/ID, unique name, or descriptor). A list can be
 agent_identity = "<agent identity>"
 ```
 
+The same identity gates the prior-suggestion thread context that `/improve` reads: a thread is only included when its
+opening comment is attributable to that identity, so leave `agent_identity` configured if you rely on the context.
+`pr_code_suggestions.max_discussion_context_chars` caps the injected block, and `0` disables it.
+
 For webhook security, create a sporadic username/password pair and configure the webhook username and password on both the server and Azure DevOps webhook. These will be sent as basic Auth data by the webhook with each request:
 
 ```toml

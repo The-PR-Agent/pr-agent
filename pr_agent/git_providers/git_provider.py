@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import re
 import shutil
@@ -43,6 +44,19 @@ class IncompletePullRequestFilesError(RuntimeError):
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
+
+# Limits for the shared code-suggestion thread context block. Only the overall character
+# budget is configurable (`pr_code_suggestions.max_discussion_context_chars`).
+_DEFAULT_DISCUSSION_CONTEXT_CHARS = 24000
+_MAX_DISCUSSION_REPLIES = 10
+_MAX_DISCUSSION_THREADS = 50
+_MAX_DISCUSSION_MESSAGE_CHARS = 750
+# A hidden PR-Agent marker occupies a whole trailing line of a comment: an HTML comment
+# or, for providers that do not render HTML comments, a markdown link reference.
+_TRAILING_AGENT_MARKER_LINE_RE = re.compile(
+    r"\s*(?:<!--\s*pr-agent[^\n]*-->|\[pr-agent-[^\]\n]+\]:\s*https://github\.com/The-PR-Agent/pr-agent)\s*$",
+    re.IGNORECASE,
+)
 
 
 # The reaction PR-Agent has always added when it picks a comment command up. Used as the
@@ -897,6 +911,100 @@ class GitProvider(ABC):
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
         pass
+
+    #### code suggestion thread context ####
+    def _iter_code_suggestion_threads(self):
+        """Yield this PR's code-suggestion threads, newest first.
+
+        Each item is a mapping shaped like the entry written into the context block:
+        `thread_id`, `status`, `file`, `start_line`, `end_line`, `suggestion` and `replies`
+        (a list of `{"author": ..., "message": ...}`). Providers override this to read
+        their own thread API; they own the filtering, so they must skip threads that are
+        not code suggestions and skip threads they cannot attribute to this PR-Agent
+        identity (`is_comment_authored_by_pr_agent()` raises when authorship cannot be
+        verified, which means the thread must be left out). Reply text must arrive
+        already cleaned of system notes, because the shared limits below keep the last
+        replies of what a provider yields. The default provider has no thread API.
+        """
+        return iter(())
+
+    def _code_suggestion_context_budget(self) -> int:
+        """Return the character budget for the code-suggestion context block.
+
+        `pr_code_suggestions.max_discussion_context_chars` caps the rendered block; 0
+        (or any non-positive value) disables the block, and a value that is not a number
+        falls back to the default rather than dropping the context.
+        """
+        raw_limit = get_settings().pr_code_suggestions.get(
+            "max_discussion_context_chars", _DEFAULT_DISCUSSION_CONTEXT_CHARS)
+        try:
+            return int(raw_limit)
+        except (TypeError, ValueError):
+            get_logger().warning(
+                f"max_discussion_context_chars is not a number ({raw_limit!r}); "
+                f"using {_DEFAULT_DISCUSSION_CONTEXT_CHARS}")
+            return _DEFAULT_DISCUSSION_CONTEXT_CHARS
+
+    @staticmethod
+    def _code_suggestion_context_message(text: str) -> str:
+        """Return comment text without its trailing hidden marker, bounded in length.
+
+        PR-Agent appends its identity marker as the last line of a comment, so only
+        trailing marker lines are dropped: a suggestion that quotes `<!-- pr-agent ... -->`
+        in its own text keeps the quoted text.
+        """
+        lines = text.splitlines()
+        while lines and _TRAILING_AGENT_MARKER_LINE_RE.match(lines[-1]):
+            lines.pop()
+        return "\n".join(lines).strip()[:_MAX_DISCUSSION_MESSAGE_CHARS]
+
+    @classmethod
+    def _code_suggestion_context_thread(cls, thread: dict) -> dict:
+        """Return one bounded thread entry: trailing markers removed, replies capped."""
+        replies = []
+        for reply in list(thread.get("replies") or [])[-_MAX_DISCUSSION_REPLIES:]:
+            message = reply.get("message")
+            if not isinstance(message, str) or not message.strip():
+                continue
+            replies.append({
+                "author": reply.get("author") or "Unknown",
+                "message": cls._code_suggestion_context_message(message),
+            })
+        suggestion = thread.get("suggestion")
+        return {
+            "thread_id": thread.get("thread_id"),
+            "status": thread.get("status"),
+            "file": thread.get("file"),
+            "start_line": thread.get("start_line"),
+            "end_line": thread.get("end_line"),
+            "suggestion": cls._code_suggestion_context_message(suggestion)
+            if isinstance(suggestion, str) else "",
+            "replies": replies,
+        }
+
+    def get_code_suggestion_thread_context(self) -> str:
+        """Return a bounded JSON block of prior code-suggestion threads on this PR.
+
+        Shared by every provider: the limits, the marker cleanup and the budget all live
+        here, so a provider only supplies `_iter_code_suggestion_threads()`. The budget
+        is measured on the exact indented JSON that is returned, and threads are appended
+        newest first until one no longer fits. Empty when the PR has no such threads or
+        they cannot be listed.
+        """
+        budget = self._code_suggestion_context_budget()
+        if budget <= 0:
+            return ""
+        discussions, context = [], ""
+        for thread in self._iter_code_suggestion_threads():
+            candidate = discussions + [self._code_suggestion_context_thread(thread)]
+            rendered = json.dumps(candidate, ensure_ascii=False, indent=2)
+            if len(rendered) > budget:
+                break
+            discussions = candidate
+            context = rendered
+            if len(discussions) >= _MAX_DISCUSSION_THREADS:
+                break
+        return context
 
     #### labels operations ####
     @abstractmethod

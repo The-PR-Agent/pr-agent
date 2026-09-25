@@ -266,6 +266,7 @@ to-do list.
 | `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. Skip unresolvable line locations before applying a positive cap to summarized output; leave inline selection unchanged. |
 | `max_number_of_calls` | 3 |  |
 | `parallel_calls` | true |  |
+| `max_discussion_context_chars` | 24000 | Character budget for the prior code-suggestion thread context injected into the /improve prompt; 0 disables it. |
 | `decouple_hunks` | false |  |
 **self-review checkbox**
 
