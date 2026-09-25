@@ -92,6 +92,8 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
 # Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
 # enable_large_pr_chunking, enable_large_pr_handling, async_ai_calls) are restricted so
 # a nested file cannot multiply AI calls independently of the host-trusted defaults.
+# Prompt-size controls are restricted for the same reason: max_discussion_context_chars
+# bounds how much prior code-suggestion thread context reaches the /improve prompt.
 PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_reviewer": frozenset({
         "enable_large_pr_chunking", "max_number_of_calls",
@@ -105,10 +107,14 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "publish_description_as_comment_persistent",
     }),
     "pr_questions": frozenset({"resolve_threads", "use_conversation_history"}),
+    # max_discussion_context_chars sizes how much prior code-suggestion thread context is
+    # injected into the /improve prompt, so it directly sizes request context. Without a
+    # host-trusted ceiling a nested file could inflate prompt size and model cost on its own.
     "pr_code_suggestions": frozenset({
         "commitable_code_suggestions",
         "max_number_of_calls", "parallel_calls",
         "approve_pr_on_self_review", "demand_code_suggestions_self_review",
+        "max_discussion_context_chars",
     }),
     "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb", "skip_comments"}),
 }

@@ -671,6 +671,7 @@ max_number_of_calls = 99
 parallel_calls = true
 demand_code_suggestions_self_review = true
 approve_pr_on_self_review = true
+max_discussion_context_chars = 4000000
 
 [pr_similar_issue]
 force_update_dataset = true
@@ -725,6 +726,9 @@ skip_comments = true
         assert get_settings().pr_description.async_ai_calls is True
         assert get_settings().pr_code_suggestions.max_number_of_calls != 99
         assert get_settings().pr_code_suggestions.parallel_calls is True
+        # The prior-thread context budget sizes /improve prompt content, so it stays
+        # host-controlled: a nested file cannot inflate request size on its own.
+        assert get_settings().pr_code_suggestions.max_discussion_context_chars != 4000000
         # The self-review approval workflow stays root-controlled: a nested file cannot
         # demand a self-review checklist and then auto-approve on the author's tick.
         assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
