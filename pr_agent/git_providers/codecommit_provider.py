@@ -339,7 +339,8 @@ class CodeCommitProvider(GitProvider):
                     )
                     published_count += 1
                 except Exception as e:
-                    raise ValueError(f"CodeCommit Cannot publish code suggestions for PR: {self.pr_num}") from e
+                    get_logger().warning(
+                        f"Could not publish code suggestion #{counter} for PR {self.pr_num}: {e}")
 
             counter += 1
 
