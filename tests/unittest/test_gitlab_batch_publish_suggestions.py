@@ -101,6 +101,27 @@ def _settings(as_review=False, persistent_inline_comments=False):
     return gs
 
 
+@pytest.mark.parametrize("later_success", [False, True])
+def test_publication_isolates_unexpected_suggestion_errors(publication_settings, monkeypatch, later_success):
+    p = _gl_provider()
+    send = p._send_inline_comment
+
+    def send_or_fail(body, *args, **kwargs):
+        if "broken" in body:
+            raise TypeError("invalid provider response shape")
+        return send(body, *args, **kwargs)
+
+    monkeypatch.setattr(p, "_send_inline_comment", send_or_fail)
+    suggestions = [_suggestion(body="broken")]
+    if later_success:
+        suggestions.append(_suggestion())
+
+    # The public batch boundary preserves upstream per-item isolation, while helper
+    # probes themselves must not disguise programming errors as ordinary API misses.
+    assert p.publish_code_suggestions(suggestions) is later_success
+    assert p.mr.discussions.create.call_count == int(later_success)
+
+
 def test_flag_off_posts_live_discussions_and_skips_bulk_publish():
     p = _gl_provider()
     gs = _settings(as_review=False)
