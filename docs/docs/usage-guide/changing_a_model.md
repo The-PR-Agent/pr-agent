@@ -756,7 +756,7 @@ Keep the `openai/` prefix on the model name, whichever Atlas model ID you use (`
 
 ### Cheaper Inference
 
-[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible LLM gateway. Each model costs 15–60% less than the list price of its lab. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to its base URL through litellm's OpenAI-compatible path, the same way [OrcaRouter](#orcarouter) and [Atlas Cloud](#atlas-cloud) are handled.
+[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible LLM gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to its base URL through litellm's OpenAI-compatible path, the same way [OrcaRouter](#orcarouter) and [Atlas Cloud](#atlas-cloud) are handled.
 
 To use a model through Cheaper Inference, set:
 
