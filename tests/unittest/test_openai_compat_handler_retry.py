@@ -38,8 +38,11 @@ def handler_and_completion(request, monkeypatch):
         monkeypatch.setitem(sys.modules, module.__name__, module)
 
     module_name = "pr_agent.algo.ai_handlers.langchain_ai_handler"
-    # Restore the original module at teardown so optional-dependency tests remain isolated.
-    monkeypatch.delitem(sys.modules, module_name, raising=False)
+    # Track both import caches, including missing entries, before loading the fake-backed module.
+    parent = importlib.import_module("pr_agent.algo.ai_handlers")
+    monkeypatch.setattr(parent, "langchain_ai_handler", None, raising=False)
+    monkeypatch.setitem(sys.modules, module_name, None)
+    monkeypatch.delitem(sys.modules, module_name)
     langchain_handler = importlib.import_module(module_name)
     monkeypatch.setattr(langchain_handler, "get_settings", lambda: settings)
     monkeypatch.setattr(
