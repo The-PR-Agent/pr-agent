@@ -1,5 +1,4 @@
 from base64 import b64decode
-import yaml
 
 from pr_agent.config_security import (
     CLI_HOST_ONLY_KEYS_BY_SECTION,
