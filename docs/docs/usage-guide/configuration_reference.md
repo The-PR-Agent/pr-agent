@@ -71,6 +71,7 @@ to-do list.
 | `custom_model_max_tokens` | -1 | for models not in the default list |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
+| `image_input_token_allowance` | 4096 | reserve tokens per image when provider counting omits or underestimates image cost |
 **patch extension logic**
 
 | Key | Default | Description |
@@ -87,7 +88,7 @@ to-do list.
 | `output_run_cost` | false | if true, collect estimated LiteLLM API cost and include it inside the enabled run details section |
 | `large_patch_policy` | "clip" | "clip", "skip" |
 | `duplicate_prompt_examples` | false |  |
-| `persistent_inline_comments` | false | Persistent inline comments (issue #2037): when true, providers with inline-comment deduplication support fingerprint each inline comment, embed the fingerprint as an HTML marker, and skip re-posting suggestions already present on the PR/MR across runs. |
+| `persistent_inline_comments` | false | Enable persistent inline comments (issue #2037) to fingerprint each inline comment and embed a provider-compatible marker, then skip re-posting suggestions already present on the PR/MR across runs. |
 **seed**
 
 | Key | Default | Description |
@@ -115,6 +116,8 @@ to-do list.
 | `enable_ai_metadata` | false | will enable adding ai metadata |
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
+| `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here only when litellm does not know the model (custom OpenAI-compatible endpoints). Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
+| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Model IDs match exactly or through any provider prefix. The defaults below preserve the former static registry entries that litellm's metadata still marks temperature-capable; the probe diff for this change is posted on the issue. |
 **extended thinking for Claude reasoning models**
 
 | Key | Default | Description |
@@ -123,9 +126,11 @@ to-do list.
 | `extended_thinking_budget_tokens` | 2048 |  |
 | `extended_thinking_max_output_tokens` | 4096 |  |
 | `enable_claude_adaptive_thinking` | false | Adaptive thinking for Claude Opus 4.7/4.8 and Claude 5 models. When enabled, these models receive thinking={"type": "adaptive"} and an output_config effort. Do not add adaptive-only models to claude_extended_thinking_models_override; when both features are enabled, adaptive thinking takes precedence. |
+| `claude_adaptive_thinking_models_override` | [] | Optional: list model ids to additionally treat as adaptive-only Claude models. Add opaque Bedrock application inference profile ARNs here while keeping built-in detection for named models. When adaptive thinking is enabled, use the exact request model ids so LiteLLM keeps the adaptive payload instead of converting it to the legacy budget_tokens shape. |
 | `claude_extended_thinking_models_override` | [] | Optional: override the built-in list of Claude models that receive the extended-thinking payload. When non-empty, this list fully replaces the built-in defaults (see CLAUDE_EXTENDED_THINKING_MODELS in pr_agent/algo/__init__.py). Leave empty to use the defaults. |
 | `extract_issue_from_branch` | true | Extract issue number from PR source branch name (e.g. feature/1-auth-google -> issue #1). When true, branch-derived issue URLs are merged with tickets from the PR description for compliance. Set to false to restore description-only behaviour. Note: Branch-name extraction is GitHub-only for now; other providers planned for later. |
 | `branch_issue_regex` | "" | Optional: custom regex with exactly one capturing group for the issue number (validated at runtime; falls back to default if missing). If empty, uses default pattern: first 1-6 digits at start of branch or after a slash, followed by hyphen or end (e.g. feature/1-test, 123-fix). GitHub only; other providers planned for later. |
+| `description_issue_regex` | "" | Configure a regex replacing bare #N references, with exactly one capturing group for an ASCII issue number. Leave empty for default matching (up to six digits); fall back with a warning on invalid patterns. Set the custom digit limit in the pattern; use only integer-parseable captures. Keep full URLs and owner/repo#N references. Use TOML literal quotes to preserve backslashes, e.g. description_issue_regex = '(?i)(?:fixes\|closes\|resolves)\s+#(\d+)' |
 
 
 ## `[pr_reviewer]` — /review
@@ -154,7 +159,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `review_heading` | "PR Reviewer Guide" | Visible base heading for full and incremental review comments. Identity is tracked separately. |
 | `persistent_finding_state` | true | Persist review finding state across complete review runs. |
-| `inline_key_issues` | false |  |
+| `inline_key_issues` | false | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab). |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
 | `final_update_message` | true |  |
@@ -244,7 +249,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `max_history_len` | 4 |  |
 | `publish_output_no_suggestions` | true |  |
-| `enable_suggestions_coverage_footer` | true | show when failed analysis chunks make the suggestions incomplete |
+| `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
 
 | Key | Default | Description |
@@ -258,7 +263,7 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `num_code_suggestions_per_chunk` | 3 |  |
-| `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. |
+| `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. Skip unresolvable line locations before applying a positive cap to summarized output; leave inline selection unchanged. |
 | `max_number_of_calls` | 3 |  |
 | `parallel_calls` | true |  |
 | `decouple_hunks` | false |  |
@@ -361,6 +366,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
 | `publish_code_suggestions_as_review` | false | When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
+| `auto_resolve_fixed_inline_threads` | false | Resolve the bot's own inline threads whose flagged line was modified after the comment was posted - i.e. the diff between the comment's head sha and the current head sha removes/replaces that line. Unlike resolve_outdated_inline_threads this is content-based: threads on lines nobody touched (or merely shifted by unrelated insertions) stay open. |
 | `handle_push_trigger` | false |  |
 | `push_commands` | ["/describe", "/review"] |  |
 | `handle_reviewer_assignment` | false | Auto-trigger commands when the bot is assigned as a reviewer on an MR |
@@ -424,7 +430,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
 | `force_streaming_api_base_substrings` | [] |  |
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
-| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching) |
+| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (`litellm.enable_anthropic_prompt_caching`, env `LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING`, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
 
 
 ## `[openrouter]`
@@ -434,7 +440,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `provider_only` | [] | restrict routing to these upstream providers only, a hard allowlist (e.g. ["z-ai"]); empty = OpenRouter default routing |
 | `provider_order` | [] | preferred provider order; ignored when provider_only is set; empty = unset |
 | `allow_fallbacks` | true | when provider_order is set, allow routing beyond the listed providers |
-| `reasoning_effort` | "" | Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for models in SUPPORT_REASONING_EFFORT_MODELS. Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max". OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility. Model-specific support varies; mandatory reasoning models reject "none". |
+| `reasoning_effort` | "" | Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for reasoning-capable models (probed against litellm's bundled reasoning metadata or the Grok registry, or listed in additional_reasoning_effort_models). Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max". OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility. Model-specific support varies; mandatory reasoning models reject "none". |
 | `reasoning_max_tokens` | 0 | A positive value overrides global effort and non-none OpenRouter-specific efforts. Explicit openrouter.reasoning_effort = "none" keeps reasoning disabled, except on Grok 4.5/4.6: there "none" is clamped to the lowest supported effort first, so a positive budget wins over it. Some providers require max_tokens to be greater than the reasoning budget. |
 | `max_tokens` | 0 | hard cap on completion tokens for the request; 0 = unset |
 
@@ -517,6 +523,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `health_timeout_seconds` | 10 | finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work |
+| `context_history_max_tasks` | 100 | maximum prior tasks considered for a context follow-up; set from 1 to 1000 |
 
 
 ## `[asana]`

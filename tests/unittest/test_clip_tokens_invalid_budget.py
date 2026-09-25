@@ -3,7 +3,7 @@ import io
 
 import pytest
 
-from pr_agent.algo.utils import clip_tokens
+from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.log import get_logger
 
 LONG_TEXT = "word " * 500

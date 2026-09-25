@@ -1,5 +1,5 @@
 
-`Supported Git Platforms: GitHub, GitLab, Bitbucket`
+`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
 
 ## Overview

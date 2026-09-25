@@ -86,4 +86,7 @@ def test_build_progress_comment_uses_defaults(mock_get_settings):
 
     progress_comment = build_progress_comment()
 
-    assert f'<img src="{DEFAULT_PROGRESS_GIF_URL}" alt="Work in progress" width="{DEFAULT_PROGRESS_GIF_WIDTH}">' in progress_comment
+    assert (
+        f'<img src="{DEFAULT_PROGRESS_GIF_URL}" alt="Work in progress" width="{DEFAULT_PROGRESS_GIF_WIDTH}">'
+        in progress_comment
+    )

@@ -11,18 +11,18 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from github import GithubException
+from requests.exceptions import RequestException
 
 from pr_agent.git_providers import github_provider as gh_module
 from pr_agent.git_providers.github_provider import GithubProvider
 
 
-class _FakeGithubException(Exception):
-    """Mimics github.GithubException enough for the provider's ``e.status`` check."""
+class _FakeGithubException(GithubException):
+    """A real GithubException with a shorter constructor for the provider's ``e.status`` check."""
 
     def __init__(self, status, data=None):
-        super().__init__(f"GithubException status={status}")
-        self.status = status
-        self.data = data or {}
+        super().__init__(status, data or {}, {})
 
 
 class _FakePR:
@@ -33,9 +33,9 @@ class _FakePR:
         self._raise_on_first = raise_on_first
         self._calls = 0
 
-    def create_review(self, commit=None, comments=None):
+    def create_review(self, commit=None, event=None, comments=None):
         self._calls += 1
-        self.create_review_calls.append({"commit": commit, "comments": comments})
+        self.create_review_calls.append({"commit": commit, "event": event, "comments": comments})
         if self._raise_on_first is not None and self._calls == 1:
             exc = self._raise_on_first
             self._raise_on_first = None
@@ -430,7 +430,7 @@ def test_publish_code_suggestions_returns_false_on_publish_error():
     _stub_validation_passthrough(provider)
 
     def boom(comments, disable_fallback=False):
-        raise RuntimeError("nope")
+        raise RequestException("nope")
 
     provider.publish_inline_comments = boom
 
@@ -473,6 +473,7 @@ def test_publish_code_suggestions_422_fallback_all_dropped_returns_false(monkeyp
     assert result is False
     # Only the initial failing create_review call occurred; 0 fallback comments posted
     assert len(fake_pr.create_review_calls) == 1
+    assert provider.get_recent_inline_comment_bodies() == []
 
 
 def test_publish_code_suggestions_422_fallback_partial_success_returns_true(monkeypatch):
@@ -509,6 +510,7 @@ def test_publish_code_suggestions_422_fallback_partial_success_returns_true(monk
     # 1 initial failed batch call, 1 successful fallback call with the verified comment
     assert len(fake_pr.create_review_calls) == 2
     assert len(fake_pr.create_review_calls[1]["comments"]) == 1
+    assert provider.get_recent_inline_comment_bodies() == ["```suggestion\nfirst\n```"]
 
 
 def test_publish_code_suggestions_422_fallback_repaired_comment_success(monkeypatch):
@@ -545,6 +547,7 @@ def test_publish_code_suggestions_422_fallback_repaired_comment_success(monkeypa
     # Call 2: repaired comment via publish_inline_comments([comment], disable_fallback=True) -> succeeds
     assert len(fake_pr.create_review_calls) == 2
     assert fake_pr.create_review_calls[1]["comments"] == repaired
+    assert provider.get_recent_inline_comment_bodies() == ["fixed single line"]
 
 
 def test_publish_code_suggestions_422_fallback_repaired_comment_failure_returns_false(monkeypatch):
@@ -570,7 +573,7 @@ def test_publish_code_suggestions_422_fallback_repaired_comment_failure_returns_
 
     calls = 0
 
-    def fail_repaired(commit=None, comments=None):
+    def fail_repaired(commit=None, event=None, comments=None):
         nonlocal calls
         calls += 1
         if calls == 1:
@@ -590,6 +593,7 @@ def test_publish_code_suggestions_422_fallback_repaired_comment_failure_returns_
     result = provider.publish_code_suggestions(suggestions)
     assert result is False
     assert calls == 2
+    assert provider.get_recent_inline_comment_bodies() == []
 
 
 def test_publish_code_suggestions_normal_success():
@@ -808,6 +812,21 @@ class TestResolveCommentThread:
 
         assert result is False
 
+    def test_handles_null_data_in_mutation_response(self):
+        """Mutation body carries a null data field — should return False, not raise."""
+        rest_data = {"node_id": "PRR_comment1"}
+        threads_response = _make_threads_response([
+            {"id": "PRRT_thread1", "isResolved": False,
+             "comments": {"nodes": [{"id": "PRR_comment1"}]}},
+        ])
+
+        provider, requester = _make_provider_with_graphql(
+            rest_data, [threads_response, _make_graphql_response(None)]
+        )
+        result = provider.resolve_comment_thread(123)
+
+        assert result is False
+
     def test_paginates_to_find_thread(self):
         """Thread is on the second page — pagination must follow."""
         rest_data = {"node_id": "PRR_comment1"}
@@ -842,9 +861,9 @@ class TestResolveCommentThread:
 
         class _BrokenRequester:
             def requestJsonAndCheck(self, *a, **kw):
-                raise RuntimeError("network error")
+                raise RequestException("network error")
             def requestJson(self, *a, **kw):
-                raise RuntimeError("network error")
+                raise RequestException("network error")
 
         p.pr = SimpleNamespace(_requester=_BrokenRequester())
         p.github_client = SimpleNamespace(_Github__requester=_BrokenRequester())
@@ -930,3 +949,68 @@ def test_user_comment_authorship_resolves_authenticated_user():
 
     assert provider.supports_review_finding_state() is True
     assert provider.is_comment_authored_by_pr_agent(comment) is True
+
+
+def test_validate_comments_inside_hunks_preserves_backslashes_in_fallback_diff():
+    provider = _make_provider()
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(
+            filename="src/example.py",
+            patch="@@ -10,2 +10,2 @@\n-old\n+new",
+            language="python",
+        )
+    ]
+    suggestion = {
+        "body": '**Suggestion:** preserve escapes\n```suggestion\npattern = r"\\1\\n\\\\x"\n```',
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 9,
+        "relevant_lines_end": 11,
+        "original_suggestion": {
+            "existing_code": 'pattern = r"\\1"',
+            "improved_code": 'pattern = r"\\1\\n\\\\x"',
+        },
+    }
+
+    validated = provider.validate_comments_inside_hunks([suggestion])
+    result = validated[0]
+
+    assert result["relevant_lines_start"] == 10
+    assert result["relevant_lines_end"] == 11
+    assert "```suggestion" not in result["body"]
+    assert "```diff" in result["body"]
+    assert r'-pattern = r"\1"' in result["body"]
+    assert r'+pattern = r"\1\n\\x"' in result["body"]
+
+
+def test_validate_comments_inside_hunks_does_not_partially_update_on_render_error(monkeypatch):
+    provider = _make_provider()
+    provider.get_diff_files = lambda: [
+        SimpleNamespace(
+            filename="src/example.py",
+            patch="@@ -10,2 +10,2 @@\n-old\n+new",
+            language="python",
+        )
+    ]
+    original_body = "```suggestion\nnew\n```"
+    suggestion = {
+        "body": original_body,
+        "relevant_file": "src/example.py",
+        "relevant_lines_start": 9,
+        "relevant_lines_end": 11,
+        "original_suggestion": {
+            "existing_code": "old",
+            "improved_code": "new",
+        },
+    }
+    monkeypatch.setattr(
+        gh_module.difflib,
+        "unified_diff",
+        MagicMock(side_effect=AttributeError("render failed")),
+    )
+
+    validated = provider.validate_comments_inside_hunks([suggestion])
+    result = validated[0]
+
+    assert result["relevant_lines_start"] == 9
+    assert result["relevant_lines_end"] == 11
+    assert result["body"] == original_body

@@ -3,7 +3,7 @@ import json
 import re
 from types import SimpleNamespace
 from typing import Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 from atlassian.bitbucket import Cloud
@@ -24,6 +24,10 @@ def _gef_filename(diff):
     if diff.new.path:
         return diff.new.path
     return diff.old.path
+
+
+def _split_raw_diff(raw_diff: str) -> list[str]:
+    return [part for part in re.split(r"(?m)(?=^diff --git )", raw_diff) if part.startswith("diff --git ")]
 
 
 class BitbucketProvider(GitProvider):
@@ -137,9 +141,12 @@ class BitbucketProvider(GitProvider):
             get_logger().exception(f"url is not a valid merge requests url: {self.pr_url}")
             return ""
 
-    # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: git clone https://bitbucket.org/pragent/pr-agent.git and branch: main -> prefix: "https://bitbucket.org/pragent/pr-agent/src/main", suffix: ""
-    # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
+    # Given a git repo url, return prefix and suffix of the provider in order to view a given
+    # file belonging to that repo.
+    # Example: git clone https://bitbucket.org/pragent/pr-agent.git and branch: main -> prefix:
+    # "https://bitbucket.org/pragent/pr-agent/src/main", suffix: ""
+    # In case git url is not provided, provider will use PR context (which includes branch) to
+    # determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
         scheme_and_netloc = None
         if repo_git_url:
@@ -155,7 +162,7 @@ class BitbucketProvider(GitProvider):
             parsed_pr_url = urlparse(self.pr_url)
             scheme_and_netloc = parsed_pr_url.scheme + "://" + parsed_pr_url.netloc
             workspace_name, project_name = (self.workspace_slug, self.repo_slug)
-        prefix = f"{scheme_and_netloc}/{workspace_name}/{project_name}/src/{desired_branch}"
+        prefix = f"{scheme_and_netloc}/{workspace_name}/{project_name}/src/{quote(desired_branch)}"
         suffix = "" #None
         return (prefix, suffix)
 
@@ -178,7 +185,7 @@ class BitbucketProvider(GitProvider):
                     patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                     diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                     # replace ```suggestion ... ``` with diff_code, using regex:
-                    body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                    body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
                 except Exception as e:
                     get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                     continue
@@ -287,7 +294,7 @@ class BitbucketProvider(GitProvider):
             if pr_patches is None:
                 raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}")
 
-        diff_split = ["diff --git" + x for x in pr_patches.split("diff --git") if x.strip()]
+        diff_split = _split_raw_diff(pr_patches)
         # filter all elements of 'diff_split' that are of indices in 'diffs_original' that are not in 'diffs'
         if len(diff_split) > len(diffs) and len(diffs_original) == len(diff_split):
             diff_split = [diff_split[i] for i in range(len(diff_split)) if diffs_original[i] in diffs]
@@ -371,6 +378,14 @@ class BitbucketProvider(GitProvider):
     def get_latest_commit_url(self):
         return self.pr.data['source']['commit']['links']['html']['href']
 
+    def get_pr_head_sha(self) -> str:
+        try:
+            head_sha = self.pr.data['source']['commit']['hash']
+            return head_sha if isinstance(head_sha, str) else ""
+        except (KeyError, AttributeError, TypeError) as e:
+            get_logger().warning(f"Failed to get head SHA, error: {e}")
+            return ""
+
     def _get_cloud_comment(self, comment):
         if isinstance(comment, SimpleNamespace):
             return comment._cloud_comment
@@ -390,7 +405,12 @@ class BitbucketProvider(GitProvider):
         try:
             comment = self._get_cloud_comment(comment)
             body = self.limit_output_characters(body, self.max_comment_length)
-            comment.update(content={"raw": body})
+            if isinstance(comment, dict):
+                # publish_comment returns the raw API payload rather than a client object, so
+                # dict.update would only rewrite the local copy and never reach Bitbucket.
+                self.pr.put(f"comments/{comment['id']}", data={"content": {"raw": body}})
+            else:
+                comment.update(content={"raw": body})
             return True
         except Exception as e:
             get_logger().exception(f"Failed to update comment, error: {e}")
@@ -489,26 +509,6 @@ class BitbucketProvider(GitProvider):
             link = f"{self.pr_url}/#L{relevant_file}T{relevant_line_start}"
         return link
 
-    def generate_link_to_relevant_line_number(self, suggestion) -> str:
-        try:
-            relevant_file = suggestion['relevant_file'].strip('`').strip("'").rstrip()
-            relevant_line_str = suggestion['relevant_line'].rstrip()
-            if not relevant_line_str:
-                return ""
-
-            diff_files = self.get_diff_files()
-            position, absolute_position = find_line_number_of_relevant_line_in_file \
-                (diff_files, relevant_file, relevant_line_str)
-
-            if absolute_position != -1 and self.pr_url:
-                link = f"{self.pr_url}/#L{relevant_file}T{absolute_position}"
-                return link
-        except Exception as e:
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Failed adding line link, error: {e}")
-
-        return ""
-
     def publish_inline_comments(self, comments: list[dict]) -> bool:
         publishable_count = 0
         published_count = 0
@@ -552,9 +552,6 @@ class BitbucketProvider(GitProvider):
             return response_repo['mainbranch']['name']
         except:
             return self.pr.destination_branch
-
-    def get_pr_owner_id(self) -> str | None:
-        return self.workspace_slug
 
     def get_owning_namespace(self) -> str | None:
         if not getattr(self, "headers", None):
@@ -668,10 +665,8 @@ class BitbucketProvider(GitProvider):
             "branch": branch
         }
         headers = {'Authorization': self.headers['Authorization']} if 'Authorization' in self.headers else {}
-        try:
-            requests.request("POST", url, headers=headers, data=data, files=files)
-        except Exception:
-            get_logger().exception(f"Failed to create empty file {file_path} in branch {branch}")
+        response = requests.request("POST", url, headers=headers, data=data, files=files)
+        response.raise_for_status()
 
     def _get_pr_file_content(self, remote_link: str):
         try:
@@ -726,7 +721,10 @@ class BitbucketProvider(GitProvider):
             clone_url = f"{scheme}x-token-auth:{self.bearer_token}@bitbucket.org{base_url}"
         else:
             # This case should ideally not be reached if __init__ validates auth_type
-            get_logger().error(f"Unsupported or uninitialized auth_type: {getattr(self, 'auth_type', 'N/A')}. Returning None")
+            get_logger().error(
+                f"Unsupported or uninitialized auth_type: "
+                f"{getattr(self, 'auth_type', 'N/A')}. Returning None"
+            )
             return None
 
         return clone_url

@@ -218,7 +218,7 @@ async def test_routed_weak_and_fallback_attempts_pack_with_their_own_tokenizer(m
         pr_processing.get_pr_diff(Provider(), source, model)
         attempts.append((model, {tag for tag, text in events}))
         if model != "fallback-model":
-            raise RuntimeError("try fallback")
+            raise pr_processing.FallbackEligibleError("try fallback")
         return "ok"
 
     result = await pr_processing.retry_with_fallback_models(

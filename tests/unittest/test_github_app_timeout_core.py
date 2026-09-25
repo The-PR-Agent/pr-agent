@@ -598,3 +598,26 @@ class TestPushTriggerDedupe:
         )
 
         assert push_trigger_env["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _reformat_quote_ask_command
+# ---------------------------------------------------------------------------
+
+
+def test_reformat_quote_ask_moves_command_to_front_and_keeps_the_tail():
+    # A mobile image-quote reply with a second /ask must not drop the tail:
+    # the previous split('/ask') truncation lost everything past the second
+    # occurrence before dispatching the command.
+    original = "> ![image](screenshot.png)\n> /ask what does this do? Also /ask the tail"
+    result = github_app._reformat_quote_ask_command(original)
+
+    assert result is not None
+    assert result.startswith("/ask ")
+    assert "the tail" in result
+    assert "![image]" in result
+
+
+def test_reformat_quote_ask_returns_none_for_non_quote_reply():
+    assert github_app._reformat_quote_ask_command("just a normal comment") is None
+    assert github_app._reformat_quote_ask_command("> ![image](a.png)\n> no command here") is None
