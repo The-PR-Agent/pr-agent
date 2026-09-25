@@ -287,10 +287,10 @@ def test_forbidden_directive_publishes_one_local_error(monkeypatch, settings_sna
     assert captured["errors"][0]["settings"] == forbidden_toml
     # The error message must not leak the server's internal temp path to PR users.
     import tempfile
-    error_text = captured["errors"][0]["error"]
+    error_text = captured["errors"][0]["safe_error"]
     assert tempfile.gettempdir() not in error_text
-    assert "Configuration contains a forbidden directive" in error_text
-    assert captured["errors"][0]["safe_error"] == "Configuration security validation failed."
+    assert "Configuration security validation failed." == error_text
+    assert "error" not in captured["errors"][0]
 
 
 def test_temp_file_is_removed_after_successful_apply(monkeypatch, tmp_path, settings_snapshot):
@@ -353,7 +353,8 @@ def test_temp_file_is_removed_after_failed_apply(monkeypatch, tmp_path, settings
     err = captured["errors"][0]
     assert err["category"] == "local"
     assert err["settings"] == valid_toml
-    assert "boom" in err["error"]
+    assert err["safe_error"] == "Configuration could not be applied due to an internal error."
+    assert "error" not in err
 
 
 def test_restore_settings_sections_removes_section_created_after_snapshot():
