@@ -1114,7 +1114,9 @@ class TestCodeCommitProvider:
         provider.repo_name = "source-repository"
         provider.pr_num = 321
         provider.codecommit_client = MagicMock()
-        provider.codecommit_client.publish_comment.side_effect = [None, RuntimeError("network down")]
+        provider.codecommit_client.publish_comment.side_effect = [
+            None, RuntimeError("network down"), None
+        ]
         provider._get_target_contexts_for_file = MagicMock(return_value=[{
             "repository_name": "source-repository",
             "destination_commit": "destination-commit-1",
@@ -1124,12 +1126,13 @@ class TestCodeCommitProvider:
         result = provider.publish_code_suggestions([
             {"body": "Use a constant", "relevant_file": "one.py", "relevant_lines_start": 1},
             {"body": "Use a helper", "relevant_file": "two.py", "relevant_lines_start": 2},
+            {"body": "Use a factory", "relevant_file": "three.py", "relevant_lines_start": 3},
         ])
 
-        # A partial failure must not abort the remaining suggestions or report
+        # A partial failure must not abort the later suggestions or report
         # failure, or the caller would republish the already-posted ones.
         assert result is True
-        assert provider.codecommit_client.publish_comment.call_count == 2
+        assert provider.codecommit_client.publish_comment.call_count == 3
 
     def test_publish_code_suggestions_reports_total_failure(self):
         provider = object.__new__(CodeCommitProvider)
