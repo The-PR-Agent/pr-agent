@@ -1,11 +1,10 @@
 import difflib
-import json
 import posixpath
 import re
 import urllib.parse
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Optional, Tuple
+from typing import Iterator, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import gitlab
@@ -43,18 +42,12 @@ from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
+    CodeSuggestionThread,
     GitProvider,
     IncrementalPR,
     get_config_branch,
     redact_credentials,
 )
-
-# Bounds for the code-suggestion thread context block, matching the Azure DevOps provider:
-# a bounded JSON list of prior suggestion threads is injected into the /improve prompt.
-_MAX_DISCUSSION_CONTEXT_CHARS = 24000
-_MAX_DISCUSSION_REPLIES = 10
-_MAX_DISCUSSION_THREADS = 50
-_MAX_DISCUSSION_MESSAGE_CHARS = 750
 
 
 class DiffNotFoundError(Exception):
@@ -1150,17 +1143,12 @@ class GitLabProvider(GitProvider):
     def supports_code_suggestion_state(self) -> bool:
         return True
 
-    def get_code_suggestion_thread_context(self) -> str:
-        """Return a bounded JSON block of prior code-suggestion threads on this MR.
-
-        Empty when the MR has no such threads or they cannot be listed.
-        """
+    def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         try:
             discussions = self.mr.discussions.list(get_all=True)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
-            return ""
-        threads, context = [], ""
+            return
         for discussion in reversed(discussions):
             notes = discussion.attributes.get('notes') or []
             opener = notes[0] if notes and isinstance(notes[0], dict) else {}
@@ -1169,29 +1157,26 @@ class GitLabProvider(GitProvider):
             line = position.get('new_line') or position.get('old_line')
             if not isinstance(body, str) or not is_agent_inline_comment(body) or not isinstance(line, int):
                 continue
+            try:
+                authored_by_agent = self.is_comment_authored_by_pr_agent(opener)
+            except RuntimeError:
+                authored_by_agent = None
             replies = []
-            for note in notes[1:][-_MAX_DISCUSSION_REPLIES:]:
-                message = note.get('body') if isinstance(note, dict) and not note.get('system') else None
-                if isinstance(message, str) and message.strip():
-                    author = note.get('author') or {}
-                    replies.append({"author": author.get('name') or author.get('username') or "Unknown",
-                                    "message": message.strip()[:_MAX_DISCUSSION_MESSAGE_CHARS]})
-            threads.append({
-                "thread_id": discussion.id,
-                "status": "resolved" if opener.get('resolved') is True else "open",
-                "file": position.get('new_path') if position.get('new_line') else position.get('old_path'),
-                "start_line": line,
-                "end_line": line,
-                "suggestion": body.split("<!-- pr-agent", 1)[0].strip()[:_MAX_DISCUSSION_MESSAGE_CHARS],
-                "replies": replies,
-            })
-            candidate = json.dumps(threads, ensure_ascii=False, indent=2)
-            if len(candidate) > _MAX_DISCUSSION_CONTEXT_CHARS:
-                break
-            context = candidate
-            if len(threads) >= _MAX_DISCUSSION_THREADS:
-                break
-        return context
+            for note in notes[1:]:
+                if not isinstance(note, dict) or note.get('system'):
+                    continue
+                author = note.get('author') or {}
+                replies.append((author.get('name') or author.get('username'), note.get('body')))
+            yield CodeSuggestionThread(
+                thread_id=discussion.id,
+                status="resolved" if opener.get('resolved') is True else "open",
+                file=position.get('new_path') if position.get('new_line') else position.get('old_path'),
+                start_line=line,
+                end_line=line,
+                suggestion=body,
+                replies=replies,
+                authored_by_agent=authored_by_agent,
+            )
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
         if isinstance(comment, dict):

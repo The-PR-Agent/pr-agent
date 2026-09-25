@@ -87,6 +87,11 @@ def _strip_markers(body: str) -> str:
     return body
 
 
+def strip_markers(body: str) -> str:
+    """Remove well-formed dedup markers from a comment body, keeping any text that merely quotes them."""
+    return _strip_markers(body)
+
+
 def _body_fingerprint(relevant_file: str, target_line_no, body: str, max_chars: Optional[int]) -> str:
     normalised = _LEAD_RE.sub("", _strip_markers(body))
     normalised = _TAG_RE.sub("", normalised)

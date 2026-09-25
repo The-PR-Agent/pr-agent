@@ -9,9 +9,8 @@ from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequ
 from requests.exceptions import RequestException
 
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
-from pr_agent.git_providers.git_provider import IncrementalPR
+from pr_agent.git_providers.git_provider import DEFAULT_DISCUSSION_CONTEXT_CHARS, IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
-    _MAX_DISCUSSION_CONTEXT_CHARS,
     GitLabProvider,
     _GitLabIncrementalCommit,
     _GitLabIncrementalNote,
@@ -1087,8 +1086,44 @@ class TestGitLabProvider:
 
         result = gitlab_provider.get_code_suggestion_thread_context()
 
-        assert len(result) <= _MAX_DISCUSSION_CONTEXT_CHARS
+        assert len(result) <= DEFAULT_DISCUSSION_CONTEXT_CHARS
         assert len(json.loads(result)) < 60
+
+    def test_get_code_suggestion_thread_context_caps_replies_after_dropping_system_notes(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        human_replies = [{'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': f'reply {i}'}
+                         for i in range(12)]
+        system_notes = [{'author': {'id': 99, 'name': 'Alice'}, 'system': True, 'body': 'changed this line'}
+                        for _ in range(5)]
+        thread = _thread([_thread_note(), *human_replies, *system_notes], discussion_id='d1')
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [thread]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert [reply["message"] for reply in discussions[0]["replies"]] == [f"reply {i}" for i in range(2, 12)]
+
+    def test_get_code_suggestion_thread_context_skips_threads_opened_by_a_human(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        human_thread = _thread([_thread_note(author_id=99)], discussion_id='human')
+        bot_thread = _thread([_thread_note()], discussion_id='bot')
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [bot_thread, human_thread]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert [discussion["thread_id"] for discussion in discussions] == ["bot"]
+
+    def test_get_code_suggestion_thread_context_keeps_threads_when_author_is_unverifiable(self, gitlab_provider):
+        gitlab_provider._own_user_id = None
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [_thread([_thread_note()], discussion_id='d1')]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert [discussion["thread_id"] for discussion in discussions] == ["d1"]
 
     def test_get_code_suggestion_thread_context_empty_without_agent_threads(self, gitlab_provider):
         gitlab_provider.mr = MagicMock()

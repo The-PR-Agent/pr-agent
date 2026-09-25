@@ -669,6 +669,7 @@ commitable_code_suggestions = true
 num_code_suggestions_per_chunk = 2
 max_number_of_calls = 99
 parallel_calls = true
+max_discussion_context_chars = 999999
 demand_code_suggestions_self_review = true
 approve_pr_on_self_review = true
 
@@ -725,6 +726,7 @@ skip_comments = true
         assert get_settings().pr_description.async_ai_calls is True
         assert get_settings().pr_code_suggestions.max_number_of_calls != 99
         assert get_settings().pr_code_suggestions.parallel_calls is True
+        assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
         # The self-review approval workflow stays root-controlled: a nested file cannot
         # demand a self-review checklist and then auto-approve on the author's tick.
         assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False

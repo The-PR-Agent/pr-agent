@@ -107,7 +107,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_questions": frozenset({"resolve_threads", "use_conversation_history"}),
     "pr_code_suggestions": frozenset({
         "commitable_code_suggestions",
-        "max_number_of_calls", "parallel_calls",
+        "max_number_of_calls", "parallel_calls", "max_discussion_context_chars",
         "approve_pr_on_self_review", "demand_code_suggestions_self_review",
     }),
     "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb", "skip_comments"}),

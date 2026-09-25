@@ -13,7 +13,7 @@ from pr_agent.git_providers.azuredevops_provider import (
     Comment,
     CommentThread,
 )
-from pr_agent.git_providers.git_provider import IncrementalPR
+from pr_agent.git_providers.git_provider import DEFAULT_DISCUSSION_CONTEXT_CHARS, IncrementalPR
 from pr_agent.log import get_logger
 
 
@@ -2006,6 +2006,87 @@ class TestAzureDevopsProviderSuggestionDiscussions:
         discussions = json.loads(provider.get_code_suggestion_thread_context())
 
         assert [reply["message"] for reply in discussions[0]["replies"]] == ["Rejected, keep as is."]
+
+
+    def test_suggestion_discussions_stay_within_the_context_budget(self):
+        provider = _provider_with_diff("/src/app.py")
+        provider._threads_cache = [
+            SimpleNamespace(
+                id=thread_id,
+                status="active",
+                thread_context=SimpleNamespace(
+                    file_path="/src/app.py",
+                    right_file_start=SimpleNamespace(line=thread_id),
+                    right_file_end=SimpleNamespace(line=thread_id),
+                ),
+                comments=[SimpleNamespace(content="**Suggestion:** " + "x" * 700 + "\n```suggestion\nvalue\n```")],
+            )
+            for thread_id in range(1, 61)
+        ]
+
+        result = provider.get_code_suggestion_thread_context()
+
+        assert len(result) <= DEFAULT_DISCUSSION_CONTEXT_CHARS
+        assert 0 < len(json.loads(result)) < 60
+
+    def test_caps_suggestion_replies_after_dropping_progress_messages(self):
+        provider = _provider_with_diff("/src/app.py")
+        replies = [
+            SimpleNamespace(content=f"reply {i}", author=SimpleNamespace(display_name="Alex"))
+            for i in range(12)
+        ]
+        progress = [
+            SimpleNamespace(
+                content="On it! <!-- pr-agent-progress -->",
+                author=SimpleNamespace(display_name="PR-Agent"),
+            )
+            for _ in range(5)
+        ]
+        provider._threads_cache = [SimpleNamespace(
+            id=21,
+            status="active",
+            thread_context=SimpleNamespace(
+                file_path="/src/app.py",
+                right_file_start=SimpleNamespace(line=4),
+                right_file_end=SimpleNamespace(line=4),
+            ),
+            comments=[SimpleNamespace(content="**Suggestion:** fix\n```suggestion\nvalue\n```"), *replies, *progress],
+        )]
+
+        discussions = json.loads(provider.get_code_suggestion_thread_context())
+
+        assert [reply["message"] for reply in discussions[0]["replies"]] == [f"reply {i}" for i in range(2, 12)]
+
+    @patch("pr_agent.git_providers.azuredevops_provider.get_settings")
+    def test_skips_suggestion_threads_opened_by_a_human(self, mock_get_settings):
+        mock_get_settings.return_value.get.side_effect = lambda key, default=None: (
+            "agent@example.com" if key == "azure_devops_server.agent_identity" else default
+        )
+        provider = _provider_with_diff("/src/app.py")
+
+        def suggestion_thread(thread_id, author):
+            return SimpleNamespace(
+                id=thread_id,
+                status="active",
+                thread_context=SimpleNamespace(
+                    file_path="/src/app.py",
+                    right_file_start=SimpleNamespace(line=4),
+                    right_file_end=SimpleNamespace(line=4),
+                ),
+                comments=[SimpleNamespace(
+                    content="**Suggestion:** fix\n```suggestion\nvalue\n```",
+                    author=SimpleNamespace(unique_name=author),
+                )],
+            )
+
+        provider._threads_cache = [
+            suggestion_thread(1, "agent@example.com"),
+            suggestion_thread(2, "human@example.com"),
+        ]
+
+        discussions = json.loads(provider.get_code_suggestion_thread_context())
+
+        assert [discussion["thread_id"] for discussion in discussions] == [1]
 
 
 def test_azure_issue_comments_newest_first_does_not_reverse_twice():

@@ -1,12 +1,14 @@
 import base64
+import json
 import os
 import re
 import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
-from typing import Optional, Tuple
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
+from typing import Any, Optional, Tuple
 from urllib.parse import urlsplit
 
 from pr_agent.algo.comment_identity import (
@@ -15,6 +17,7 @@ from pr_agent.algo.comment_identity import (
     comment_matches_identity,
     render_hidden_marker,
 )
+from pr_agent.algo.inline_comment_dedup import strip_markers
 from pr_agent.algo.language_handler import numeric_languages
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
@@ -35,6 +38,38 @@ def get_config_branch() -> str:
 
 
 MAX_FILES_ALLOWED_FULL = 50
+
+DEFAULT_DISCUSSION_CONTEXT_CHARS = 24000
+DISCUSSION_CONTEXT_MAX_REPLIES = 10
+DISCUSSION_CONTEXT_MAX_THREADS = 50
+DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS = 750
+
+
+@dataclass
+class CodeSuggestionThread:
+    """One prior code-suggestion thread, as a provider reports it for the /improve discussion context.
+
+    `suggestion` is the raw opener body. `replies` holds (author, message) pairs, oldest first, with
+    provider-specific noise (system notes, progress messages) already removed. `authored_by_agent` is
+    None when the provider cannot verify who opened the thread.
+    """
+    thread_id: Any
+    status: Any
+    file: Optional[str]
+    start_line: Optional[int]
+    end_line: Optional[int]
+    suggestion: str
+    replies: list[tuple[str, str]] = field(default_factory=list)
+    authored_by_agent: Optional[bool] = None
+
+
+def _discussion_context_budget() -> int:
+    value = get_settings().get("pr_code_suggestions.max_discussion_context_chars", DEFAULT_DISCUSSION_CONTEXT_CHARS)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        get_logger().warning(f"Invalid pr_code_suggestions.max_discussion_context_chars: {value!r}")
+        return DEFAULT_DISCUSSION_CONTEXT_CHARS
 
 
 class IncompletePullRequestFilesError(RuntimeError):
@@ -227,6 +262,44 @@ class GitProvider(ABC):
 
     def supports_code_suggestion_state(self) -> bool:
         return False
+
+    def get_code_suggestion_thread_context(self) -> str:
+        """Return prior code-suggestion threads as a JSON block for the /improve prompt.
+
+        Threads come newest first from `_iter_code_suggestion_threads()`. The block stays within
+        `pr_code_suggestions.max_discussion_context_chars` (0 disables it) and is empty when no thread fits.
+        """
+        budget = _discussion_context_budget()
+        if budget <= 0:
+            return ""
+        discussions, context = [], ""
+        for thread in self._iter_code_suggestion_threads():
+            if thread.authored_by_agent is False:
+                continue
+            replies = [(author, message.strip()) for author, message in thread.replies
+                       if isinstance(message, str) and message.strip()]
+            discussion = {
+                "thread_id": thread.thread_id,
+                "status": thread.status,
+                "file": thread.file,
+                "start_line": thread.start_line,
+                "end_line": thread.end_line,
+                "suggestion": strip_markers(thread.suggestion).strip()[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS],
+                "replies": [{"author": author or "Unknown", "message": message[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS]}
+                            for author, message in replies[-DISCUSSION_CONTEXT_MAX_REPLIES:]],
+            }
+            candidate = json.dumps(discussions + [discussion], ensure_ascii=False, indent=2)
+            if len(candidate) > budget:
+                break
+            discussions.append(discussion)
+            context = candidate
+            if len(discussions) >= DISCUSSION_CONTEXT_MAX_THREADS:
+                break
+        return context
+
+    def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
+        """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this."""
+        return iter(())
 
     def supports_threaded_pr_questions(self) -> bool:
         return False

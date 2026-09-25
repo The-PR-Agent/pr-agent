@@ -409,6 +409,14 @@ for the authoritative default values.
         <td><b>max_number_of_calls</b></td>
         <td>Maximum number of chunks.</td>
       </tr>
+      <tr>
+        <td><b>max_discussion_context_chars</b></td>
+        <td>
+          Character budget for the prior code-suggestion threads (and their replies) that 'improve' reads as context
+          on GitLab and Azure DevOps, so it does not repeat suggestions that were already rejected or addressed.
+          Default is 24000. Set to <code>0</code> to disable this context.
+        </td>
+      </tr>
     </table>
 
 ## Recovering a partially failed analysis
