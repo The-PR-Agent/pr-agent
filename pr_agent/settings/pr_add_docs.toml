@@ -93,7 +93,7 @@ Main PR language: '{{language}}'
 
 The PR Diff:
 ======
-{{ diff|trim }}
+{{ diff }}
 ======
 
 

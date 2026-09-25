@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import traceback
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Callable, List, Tuple
+
+import openai
 
 from pr_agent.algo.git_patch_processing import (
     decouple_and_convert_to_hunks_with_lines_numbers,
@@ -13,7 +16,7 @@ from pr_agent.algo.git_patch_processing import (
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.run_details import record_model_used
-from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.algo.utils import ModelType, get_model
@@ -30,6 +33,7 @@ ADDED_FILES_ = "Additional added files (insufficient token budget to process):\n
 OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD = 1500
 OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD = 1000
 MAX_EXTRA_LINES = 10
+
 
 _effective_fallback_chain: ContextVar[tuple[tuple[str, str | None], ...] | None] = ContextVar(
     "pr_agent_effective_fallback_chain", default=None
@@ -188,7 +192,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     # if we are over the limit, start pruning (If we got here, we will not extend the patches with extra lines)
     get_logger().info(f"Tokens: {total_tokens}, total tokens over limit: {budget.context_window}, "
                       f"pruning diff.")
-    patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, files_in_patches_list = \
+    patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, \
+        files_in_patches_list = \
         pr_generate_compressed_diff(
             pr_languages,
             token_handler,
@@ -199,7 +204,9 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         )
 
     if large_pr_handling and len(patches_compressed_list) > 1:
-        get_logger().info(f"Large PR handling mode, and found {len(patches_compressed_list)} patches with original diff.")
+        get_logger().info(
+            f"Large PR handling mode, and found {len(patches_compressed_list)} patches with original diff."
+        )
         return "" # return empty string, as we want to generate multiple patches with a different prompt
 
     # return the first patch
@@ -231,7 +238,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 else:
                     modified_list_str = modified_list_str + f"\n{filename}"
             elif file_values['edit_type'] == EDIT_TYPE.DELETED:
-                # unprocessed_files.append(filename) # not needed here, because the file was deleted, so no need to process it
+                # the file was deleted, so no need to add it to unprocessed files
+                # unprocessed_files.append(filename)
                 if not deleted_list_str:
                     deleted_list_str = DELETED_FILES_ + f"\n{filename}"
                 else:
@@ -295,8 +303,8 @@ def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenH
     hard_token_budget = budget.available_tokens(
         OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False
     )
-    patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, files_in_patches_list = \
-        pr_generate_compressed_diff(
+    patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, \
+        files_in_patches_list = pr_generate_compressed_diff(
             pr_languages,
             token_handler,
             soft_token_budget,
@@ -305,7 +313,10 @@ def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenH
             large_pr_handling=True,
         )
 
-    return patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict, files_in_patches_list
+    return (
+        patches_compressed_list, total_tokens_list, deleted_files_list,
+        remaining_files_list, file_dict, files_in_patches_list
+    )
 
 
 def _pack_pr_multi_diffs(file_dict: dict,
@@ -411,7 +422,7 @@ def _pack_pr_multi_diffs(file_dict: dict,
     for index, group in enumerate(packed_groups):
         rendered_chunk = "\n".join(patch for _, patch, _ in group)
         if packed_all and index == len(packed_groups) - 1:
-            rendered_chunk = rendered_chunk.strip()
+            rendered_chunk = rendered_chunk.strip("\r\n")
         final_diff_list.append(rendered_chunk)
 
     if len(files_in_patches) < len(packable) and get_verbosity_level() >= 2:
@@ -486,7 +497,7 @@ def pr_generate_extended_diff(pr_languages: list,
                 full_extended_patch = decouple_and_convert_to_hunks_with_lines_numbers(extended_patch, file)
             else:
                 extended_patch = extended_patch.replace('\n@@ ', '\n\n@@ ') # add extra line before each hunk
-                full_extended_patch = f"\n\n## File: '{file.filename.strip()}'\n\n{extended_patch.strip()}\n"
+                full_extended_patch = f"\n\n## File: '{file.filename.strip()}'\n\n{extended_patch.strip("\r\n")}\n"
 
             # add AI-summary metadata to the patch
             if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
@@ -552,23 +563,24 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler,
     remaining_files_list =  [file.filename for file in sorted_files]
     patches_list =[]
     total_tokens_list = []
-    total_tokens, patches, remaining_files_list, files_in_patch_list = generate_full_patch(convert_hunks_to_line_numbers, file_dict,
-                                       soft_token_budget, remaining_files_list, token_handler,
-                                       hard_token_budget=hard_token_budget)
+    total_tokens, patches, remaining_files_list, files_in_patch_list = generate_full_patch(
+        convert_hunks_to_line_numbers, file_dict, soft_token_budget, remaining_files_list, token_handler,
+        hard_token_budget=hard_token_budget
+    )
     patches_list.append(patches)
     total_tokens_list.append(total_tokens)
     files_in_patches_list.append(files_in_patch_list)
 
     # additional iterations (if needed)
     if large_pr_handling:
-        NUMBER_OF_ALLOWED_ITERATIONS = get_settings().pr_description.get("max_ai_calls", 4) - 1 # one more call is to summarize
+        NUMBER_OF_ALLOWED_ITERATIONS = get_settings().pr_description.get("max_ai_calls", 4) - 1
+        # one more call is to summarize
         for _ in range(NUMBER_OF_ALLOWED_ITERATIONS-1):
             if remaining_files_list:
-                total_tokens, patches, remaining_files_list, files_in_patch_list = generate_full_patch(convert_hunks_to_line_numbers,
-                                                                                 file_dict,
-                                                                                  soft_token_budget,
-                                                                                  remaining_files_list, token_handler,
-                                                                                  hard_token_budget=hard_token_budget)
+                total_tokens, patches, remaining_files_list, files_in_patch_list = generate_full_patch(
+                    convert_hunks_to_line_numbers, file_dict, soft_token_budget, remaining_files_list,
+                    token_handler, hard_token_budget=hard_token_budget
+                )
                 if patches:
                     patches_list.append(patches)
                     total_tokens_list.append(total_tokens)
@@ -600,9 +612,9 @@ def generate_full_patch(convert_hunks_to_line_numbers, file_dict, soft_token_bud
 
         if patch:
             if not convert_hunks_to_line_numbers:
-                patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip()}\n"
+                patch_final = f"\n\n## File: '{filename.strip()}'\n\n{patch.strip("\r\n")}\n"
             else:
-                patch_final = "\n\n" + patch.strip()
+                patch_final = "\n\n" + patch.strip("\r\n")
             new_patch_tokens = token_handler.count_tokens(patch_final)
             if patches and separator_tokens is None:
                 separator_tokens = token_handler.count_tokens("\n")
@@ -659,6 +671,7 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
     effective_chain = tuple(zip(all_models, all_deployments[:len(all_models)], strict=True))
     original_deployment_id = get_settings().get("openai.deployment_id", None)
     context_token = _effective_fallback_chain.set(effective_chain)
+    attempt_errors = []
     try:
         # try each (model, deployment_id) pair until one is successful, otherwise raise exception
         for i, (model, deployment_id) in enumerate(effective_chain):
@@ -670,12 +683,18 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
                 get_settings().set("openai.deployment_id", deployment_id)
                 result = await f(model)
             except Exception as e:
+                if not isinstance(e, (openai.APIError, asyncio.TimeoutError, FallbackEligibleError)):
+                    raise
+                attempt_errors.append(f"{model}: {type(e).__name__}: {e}")
                 get_logger().warning(
                     f"Failed to generate prediction with {model}",
                     artifact={"error": e},
                 )
                 if i == len(all_models) - 1:  # If it's the last iteration
-                    raise Exception(f"Failed to generate prediction with any model of {all_models}") from e
+                    raise Exception(
+                        f"Failed to generate prediction with any model of {all_models}. "
+                        f"Attempts: {'; '.join(attempt_errors)}"
+                    ) from e
             else:
                 record_model_used(model, is_fallback=i > 0)
                 return result
@@ -732,7 +751,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         git_provider (GitProvider): An object that provides access to Git provider APIs.
         token_handler (TokenHandler): An object that handles tokens in the context of a pull request.
         model (str): The name of the model.
-        max_calls (int, optional): Maximum number of groups for split diffs; the full-diff fast path may still return one group. Defaults to 5.
+        max_calls (int, optional): Maximum number of groups for split diffs; the full-diff fast path may still
+            return one group. Defaults to 5.
         return_remaining_files (bool, optional): Also return the files the token budget left out, in the
             same shape as `get_pr_diff`. Files without a patch, and delete-only files, are not reported:
             nothing was omitted for them. Defaults to False.
@@ -740,7 +760,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             `get_pr_diff` call for the same model attempt. Defaults to None.
 
     Returns:
-        List[str]: A list of final diff strings, split into multiple groups based on the maximum number of tokens allowed for the given model.
+        List[str]: A list of final diff strings, split into multiple groups based on the maximum number
+        of tokens allowed for the given model.
         With `return_remaining_files`, a tuple of that list and the list of omitted file names.
 
     """
@@ -817,7 +838,9 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             continue
 
         # Remove delete-only hunks
-        patch = handle_patch_deletions(patch, original_file_content_str, new_file_content_str, file.filename, file.edit_type)
+        patch = handle_patch_deletions(
+            patch, original_file_content_str, new_file_content_str, file.filename, file.edit_type
+        )
         if patch is None:
             continue
 
@@ -825,7 +848,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         if add_line_numbers:
             patch = decouple_and_convert_to_hunks_with_lines_numbers(patch, file)
         else:
-            patch = f"\n\n## File: '{file.filename.strip()}'\n\n{patch.strip()}\n"
+            patch = f"\n\n## File: '{file.filename.strip()}'\n\n{patch.strip("\r\n")}\n"
 
         # add AI-summary metadata to the patch
         if file.ai_file_summary and get_settings().get("config.enable_ai_metadata", False):
@@ -876,8 +899,9 @@ def add_ai_summary_top_patch(file, full_extended_patch):
         full_extended_patch_lines = full_extended_patch.split("\n")
         for i, line in enumerate(full_extended_patch_lines):
             if line.startswith("## File:") or line.startswith("## file:"):
-                full_extended_patch_lines.insert(i + 1,
-                                                 f"### AI-generated changes summary:\n{file.ai_file_summary['long_summary']}")
+                full_extended_patch_lines.insert(
+                    i + 1, f"### AI-generated changes summary:\n{file.ai_file_summary['long_summary']}"
+                )
                 full_extended_patch = "\n".join(full_extended_patch_lines)
                 return full_extended_patch
 

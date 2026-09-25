@@ -154,10 +154,12 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
         username =_get_username(data)
         commits_data = response.json() or {}
         values = commits_data.get('values') or []
-        if (not values or not isinstance(values, list) or not values[0].get('author') or not values[0]['author'].get('user')
+        if (not values or not isinstance(values, list)
+                or not values[0].get('author') or not values[0]['author'].get('user')
                 or not values[0]['author']['user'].get('display_name')):
-            get_logger().warning("No commits returned for pull request or one of the required fields missing; skipping push validation",
-                                 artifact={'values': values})
+            get_logger().warning(
+                "No commits returned for pull request or one of the required fields missing; skipping push validation",
+                artifact={'values': values})
             return False
         commit_username = commits_data['values'][0]['author']['user']['display_name']
         if username != commit_username:
@@ -183,7 +185,8 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
 
 async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict, data: dict):
     apply_repo_settings(api_url)
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    # auto commands for PR, and auto feedback is disabled
+    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     if commands_conf == "push_commands":

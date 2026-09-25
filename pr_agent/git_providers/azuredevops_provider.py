@@ -1065,7 +1065,7 @@ class AzureDevopsProvider(GitProvider):
 
                 patch = load_large_diff(
                     file, new_file_content_str, original_file_content_str, show_warning=False
-                ).rstrip()
+                ).rstrip("\r\n")
                 if incremental_active:
                     self.unreviewed_files_map[file] = patch
 
@@ -1219,7 +1219,8 @@ class AzureDevopsProvider(GitProvider):
         except Exception as e:
             get_logger().exception(f"Failed to remove temp comments, error: {e}")
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         self.publish_inline_comments([self.create_inline_comment(body, relevant_file, relevant_line_in_file)])
 
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
@@ -1698,7 +1699,9 @@ class AzureDevopsProvider(GitProvider):
 
     def get_thread_context(self, thread_id: int) -> CommentThreadContext:
         try:
-            thread = self.azure_devops_client.get_pull_request_thread(self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
+            thread = self.azure_devops_client.get_pull_request_thread(
+                self.repo_slug, self.pr_num, thread_id, self.workspace_slug
+            )
             return thread.thread_context
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
@@ -1847,7 +1850,9 @@ class AzureDevopsProvider(GitProvider):
                         "acceptance_criteria": item.fields.get(
                             "Microsoft.VSTS.Common.AcceptanceCriteria", ""
                         ),
-                        "tags": item.fields.get("System.Tags", "").split("; ") if item.fields.get("System.Tags") else [],
+                        "tags": item.fields.get("System.Tags", "").split("; ")
+                        if item.fields.get("System.Tags")
+                        else [],
                     }
                 )
             return work_items

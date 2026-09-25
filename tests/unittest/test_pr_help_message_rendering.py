@@ -153,9 +153,9 @@ async def test_question_uses_configured_handler_error_path_without_openai_key(
     tool = build_question_tool(tmp_path, monkeypatch, handler)
 
     if propagate_tool_errors:
-        with pytest.raises(Exception, match="Failed to generate prediction with any model") as exc_info:
+        with pytest.raises(RuntimeError) as exc_info:
             await tool.run()
-        assert exc_info.value.__cause__ is handler.error
+        assert exc_info.value is handler.error
     else:
         assert await tool.run() == ""
 

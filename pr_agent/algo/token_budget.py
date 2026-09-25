@@ -16,6 +16,10 @@ REPLY_FRAMING_TOKEN_ALLOWANCE = 16
 DEFAULT_TRUNCATION_MARKER = "\n...(truncated)\n"
 
 
+class FallbackEligibleError(ValueError):
+    """Represent a model-specific output or fit failure that another model may resolve."""
+
+
 def _positive_int(value) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
@@ -388,7 +392,7 @@ class AttemptTokenBudget:
             clamp=False,
         )
         if available <= 0:
-            raise ValueError(f"The required prompt leaves no input capacity for {self.model}")
+            raise FallbackEligibleError(f"The required prompt leaves no input capacity for {self.model}")
         return available
 
     def count_tokens(self, text: str, *, force_accurate: bool = False) -> int:
@@ -558,13 +562,13 @@ class AttemptTokenBudget:
 
         empty_prompt = prepare("")
         if empty_prompt.input_tokens > input_limit:
-            raise ValueError(f"The required prompt exceeds the token limit for {self.model}")
+            raise FallbackEligibleError(f"The required prompt exceeds the token limit for {self.model}")
         if not optional_text:
             return empty_prompt
 
         marker_prompt = prepare(truncation_marker)
         if marker_prompt.input_tokens > input_limit:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The truncation marker does not fit the token limit for {self.model}"
             )
         best_prompt = marker_prompt
@@ -608,7 +612,7 @@ class AttemptTokenBudget:
             keep_tokens = min(keep_tokens - 1, scaled_keep)
 
         if best_prompt.input_tokens > input_limit:
-            raise ValueError(f"Failed to fit the optional prompt text for {self.model}")
+            raise FallbackEligibleError(f"Failed to fit the optional prompt text for {self.model}")
         return best_prompt
 
     def fit_prompt_variable(

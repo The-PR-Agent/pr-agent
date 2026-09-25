@@ -75,7 +75,7 @@ def make_tool(monkeypatch, failures):
 
     tool.ai_handler = SimpleNamespace(chat_completion=completion)
     tool._self_reflect_with_fallback = reflect
-    monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: ["a", "b", "c"])
+    monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: (["a", "b", "c"], []))
     return tool, calls
 
 
@@ -193,7 +193,7 @@ async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured
 
 
 async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monkeypatch):
-    tool, calls = make_tool(monkeypatch, {("gpt-4o", c): RuntimeError("failure") for c in "abc"})
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", c): TimeoutError("failure") for c in "abc"})
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
     assert [m for m, _, _, _ in calls] == ["gpt-4o"] * 3 + ["gpt-4o-mini"] * 3
@@ -207,7 +207,7 @@ async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeyp
 
     def pack_for_model(_provider, _token_handler, model, **_kwargs):
         packed_models.append(model)
-        return [] if model == "gpt-4o" else ["a"]
+        return ([], ["primary-only.py"]) if model == "gpt-4o" else (["a"], [])
 
     monkeypatch.setattr(module, "get_pr_multi_diffs", pack_for_model)
 
@@ -216,10 +216,11 @@ async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeyp
     assert packed_models == ["gpt-4o", "gpt-4.1"]
     assert [(model, chunk) for model, chunk, _, _ in calls] == [("gpt-4.1", "a")]
     assert [suggestion["relevant_file"] for suggestion in result["code_suggestions"]] == ["a.py"]
+    assert tool.remaining_files_list == []
 
 
 async def test_partial_success_on_outer_fallback_only_tries_later_models(configured, monkeypatch):
-    failures = {("gpt-4o", c): RuntimeError("failure") for c in "abc"}
+    failures = {("gpt-4o", c): TimeoutError("failure") for c in "abc"}
     failures[("gpt-4o-mini", "b")] = RuntimeError("secondary failed")
     tool, calls = make_tool(monkeypatch, failures)
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
@@ -253,7 +254,7 @@ async def test_oversized_fallback_is_skipped_without_truncating_context(configur
 async def test_marker_text_in_diff_is_counted_literally_for_recovery(configured, monkeypatch):
     tool, calls = make_tool(monkeypatch, {("gpt-4o", "<|endoftext|>"): RuntimeError("failure")})
     # Patch after make_tool so the fixture's default chunk list does not win.
-    monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: ["a", "<|endoftext|>", "c"])
+    monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: (["a", "<|endoftext|>", "c"], []))
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert ("gpt-4o-mini", "<|endoftext|>", "secondary") in [(m, c, d) for m, c, d, _ in calls]
     assert len(result["code_suggestions"]) == 3

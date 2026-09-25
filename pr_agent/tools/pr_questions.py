@@ -7,6 +7,7 @@ from pr_agent.algo.comment_identity import format_pr_questions_header
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
 )
@@ -136,7 +137,8 @@ class PRQuestions:
             # /ask question ...  > ![image](img_path)
             img_path = self.question_str.split('![image]')[1].strip().strip('()')
             self.vars['img_path'] = img_path
-        elif 'https://' in self.question_str and ('.png' in self.question_str or 'jpg' in self.question_str): # direct image link
+        elif 'https://' in self.question_str and ('.png' in self.question_str or 'jpg' in self.question_str):
+            # direct image link
             # include https:// in the image path
             img_path = 'https://' + self.question_str.split('https://')[1]
             self.vars['img_path'] = img_path
@@ -194,7 +196,7 @@ class PRQuestions:
             output_token_reserve=output_token_reserve,
         )
         if not patches_diff:
-            raise ValueError(f"No PR diff fits the /ask request for {model}")
+            raise FallbackEligibleError(f"No PR diff fits the /ask request for {model}")
 
         fitted = budget.fit_prompt_variable(
             variables,
@@ -206,7 +208,7 @@ class PRQuestions:
             image_path=image_path,
         )
         if fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed question diff does not fit the token limit for {model}"
             )
         self.patches_diff = fitted.optional_text

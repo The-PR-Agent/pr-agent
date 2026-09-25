@@ -39,7 +39,7 @@ class _RecordingAIHandler:
     async def chat_completion(self, *, model, temperature, system, user):
         self.requests.append({"model": model, "system": system, "user": user})
         if model in self.fail_models:
-            raise RuntimeError(f"simulated failure for {model}")
+            raise TimeoutError(f"simulated failure for {model}")
         return "answer", "stop"
 
 
