@@ -39,9 +39,11 @@ _HUMAN_BODY = "Please rename this variable before we merge."
 
 def _thread_note(author_id=_BOT_USER_ID, system=False, resolved=False, resolvable=True,
                  with_position=True, head_sha=_OUTDATED_HEAD_SHA, position_type='text',
-                 line_key='new_line', body=_AGENT_BODY):
+                 line_key='new_line', body=_AGENT_BODY, resolved_by=None):
     note = {'author': {'id': author_id}, 'system': system, 'resolved': resolved,
             'resolvable': resolvable, 'body': body}
+    if resolved_by is not None:
+        note['resolved_by'] = resolved_by
     if with_position:
         position = {'position_type': position_type, 'new_path': 'src/app.py',
                     'old_path': 'src/app.py'}
@@ -1004,16 +1006,13 @@ class TestGitLabProvider:
         open_thread = _thread([
             _thread_note(body=_AGENT_BODY + "\n<!-- pr-agent-dedup: aabbccddeeff -->"),
         ], discussion_id='open-thread')
-        open_thread.attributes['resolved'] = False
-        human_resolved = _thread([_thread_note()], discussion_id='human-resolved')
-        human_resolved.attributes['resolved'] = True
-        human_resolved.attributes['resolved_by'] = {'id': 99, 'name': 'Alice'}
+        human_resolved = _thread([
+            _thread_note(resolved=True, resolved_by={'id': 99, 'name': 'Alice'}),
+        ], discussion_id='human-resolved')
         bot_resolved = _thread([
-            _thread_note(),
+            _thread_note(resolved=True, resolved_by={'id': _BOT_USER_ID, 'name': 'GitLab Bot'}),
             {'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': 'We will not do this.'},
         ], discussion_id='bot-resolved')
-        bot_resolved.attributes['resolved'] = True
-        bot_resolved.attributes['resolved_by'] = {'id': _BOT_USER_ID, 'name': 'GitLab Bot'}
         general = _thread([_thread_note(body=_HUMAN_BODY)], discussion_id='general')
 
         gitlab_provider.mr = MagicMock()
@@ -1059,7 +1058,6 @@ class TestGitLabProvider:
         long_reply = "y" * 900
         reply = {'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': long_reply}
         thread = _thread([_thread_note(body=long_message), reply], discussion_id='d1')
-        thread.attributes['resolved'] = False
 
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.discussions.list.return_value = [thread]
@@ -1072,8 +1070,6 @@ class TestGitLabProvider:
     def test_get_code_suggestion_thread_context_caps_thread_count(self, gitlab_provider):
         gitlab_provider._own_user_id = _BOT_USER_ID
         threads = [_thread([_thread_note()], discussion_id=f'd{i}') for i in range(60)]
-        for thread in threads:
-            thread.attributes['resolved'] = False
 
         gitlab_provider.mr = MagicMock()
         gitlab_provider.mr.discussions.list.return_value = threads

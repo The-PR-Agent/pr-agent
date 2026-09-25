@@ -1200,10 +1200,10 @@ class GitLabProvider(GitProvider):
             body = opener.get('body')
             if not isinstance(body, str):
                 continue
-            resolved = discussion.attributes.get('resolved') is True
+            resolved = opener.get('resolved') is True
             resolved_by_label = None
             if resolved:
-                resolved_by = discussion.attributes.get('resolved_by')
+                resolved_by = opener.get('resolved_by')
                 if own_user_id is not None and isinstance(resolved_by, dict) \
                         and str(resolved_by.get('id')) == str(own_user_id):
                     resolved_by_label = "the bot"
