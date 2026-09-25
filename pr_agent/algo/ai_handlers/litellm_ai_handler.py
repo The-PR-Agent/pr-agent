@@ -2357,14 +2357,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         if not isinstance(model, str) or not model:
             return
         is_claude_named = "claude" in model.lower()
-        # A resolved provider is authoritative: the kwarg applies only on the Anthropic request
-        # paths, so an explicit non-Anthropic route (e.g. openrouter/.../claude-...) cannot take
-        # effect. Fall back to the model-name heuristic only when no provider was resolved.
-        if request_provider:
-            routes_anthropic = request_provider in _ANTHROPIC_CACHE_REQUEST_PROVIDERS
-        else:
-            routes_anthropic = is_claude_named
-        if not routes_anthropic:
+        is_anthropic_provider = request_provider in _ANTHROPIC_CACHE_REQUEST_PROVIDERS
+        if not is_claude_named and not is_anthropic_provider:
             # cache_control_injection_points is an Anthropic-only kwarg; a config pointing at
             # another provider (or a model identifier that cannot resolve as Anthropic) will
             # never attach, so warn instead of silently dropping it in a debug line.
