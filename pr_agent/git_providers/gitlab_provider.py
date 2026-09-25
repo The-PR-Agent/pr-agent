@@ -151,6 +151,29 @@ def _flagged_line_removed(position: dict, removed_lines: dict) -> bool:
     return position['new_line'] in (removed_lines.get(path) or set())
 
 
+def _position_line_range(position: dict) -> Tuple[Optional[int], Optional[int]]:
+    # Multi-line diff notes carry a line_range with distinct start/end endpoints,
+    # each exposing its own new_line/old_line. Single-line notes only have the
+    # scalar new_line/old_line, which then applies to both endpoints.
+    line_range = position.get('line_range')
+    if isinstance(line_range, dict) \
+            and isinstance(line_range.get('start'), dict) and isinstance(line_range.get('end'), dict):
+        start_line = line_range['start'].get('new_line')
+        if start_line is None:
+            start_line = line_range['start'].get('old_line')
+        end_line = line_range['end'].get('new_line')
+        if end_line is None:
+            end_line = line_range['end'].get('old_line')
+        if isinstance(start_line, int) and isinstance(end_line, int) and start_line >= 1 and end_line >= 1:
+            return start_line, end_line
+    anchor_line = position.get('new_line')
+    if anchor_line is None:
+        anchor_line = position.get('old_line')
+    if isinstance(anchor_line, int) and anchor_line >= 1:
+        return anchor_line, anchor_line
+    return None, None
+
+
 def _is_outdated_own_inline_thread(discussion, own_user_id: int, current_head_sha: str) -> bool:
     notes = discussion.attributes.get('notes') or []
     if not notes or not isinstance(notes[0], dict):
@@ -1166,6 +1189,7 @@ class GitLabProvider(GitProvider):
             return ""
         own_user_id = self._get_own_user_id()
         collected = []
+        collected_json = ""
         for discussion in reversed(discussions):
             notes = discussion.attributes.get('notes') or []
             if not notes or not isinstance(notes[0], dict):
@@ -1177,10 +1201,8 @@ class GitLabProvider(GitProvider):
             if not isinstance(position, dict) or position.get('position_type') != 'text':
                 continue
             path = position.get('new_path') or position.get('old_path')
-            anchor_line = position.get('new_line')
-            if anchor_line is None:
-                anchor_line = position.get('old_line')
-            if not isinstance(path, str) or not path or not isinstance(anchor_line, int):
+            start_line, end_line = _position_line_range(position)
+            if not isinstance(path, str) or not path or start_line is None or end_line is None:
                 continue
             replies = []
             for note in notes[1:][-_MAX_DISCUSSION_REPLIES:]:
@@ -1214,20 +1236,21 @@ class GitLabProvider(GitProvider):
                 "thread_id": getattr(discussion, 'id', None),
                 "status": "resolved" if resolved else "open",
                 "file": path,
-                "start_line": anchor_line,
-                "end_line": anchor_line,
+                "start_line": start_line,
+                "end_line": end_line,
                 "suggestion": suggestion,
                 "replies": replies,
             }
             if resolved_by_label is not None:
                 discussion_context["resolved_by"] = resolved_by_label
-            candidate = collected + [discussion_context]
-            if len(json.dumps(candidate, ensure_ascii=False)) > _MAX_DISCUSSION_CONTEXT_CHARS:
+            candidate_json = json.dumps(collected + [discussion_context], ensure_ascii=False, indent=2)
+            if len(candidate_json) > _MAX_DISCUSSION_CONTEXT_CHARS:
                 break
-            collected = candidate
+            collected_json = candidate_json
+            collected = collected + [discussion_context]
             if len(collected) >= _MAX_DISCUSSION_THREADS:
                 break
-        return json.dumps(collected, ensure_ascii=False, indent=2) if collected else ""
+        return collected_json
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
         if isinstance(comment, dict):
