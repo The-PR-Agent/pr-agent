@@ -302,6 +302,8 @@ class TokenHandler:
         accurate_count = _await_coroutine(self._acount_tokens(patch))
         if accurate_count > 0:
             return accurate_count
+        if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get("OPENAI.KEY"):
+            return default_estimate
 
         return self._apply_estimation_factor(model_name, default_estimate)
 

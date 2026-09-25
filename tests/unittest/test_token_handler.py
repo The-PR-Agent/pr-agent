@@ -288,6 +288,25 @@ def test_force_accurate_local_tokenizer_estimate_applies_factor(monkeypatch):
     assert handler.count_tokens("patch", force_accurate=True) == 13
 
 
+def test_force_accurate_azure_local_fallback_keeps_exact_openai_count(monkeypatch):
+    settings = _settings(
+        model="gpt-4o",
+        estimate_factor=0.3,
+        openai_key="azure-settings-key",
+        azure_api_type="azure",
+    )
+    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: settings)
+    _patch_acount_tokens(
+        monkeypatch,
+        acount_tokens=AsyncMock(
+            return_value=SimpleNamespace(tokenizer_type="local_tokenizer", total_tokens=999)
+        ),
+    )
+    handler = _handler("gpt-4o")
+
+    assert handler.count_tokens("patch", force_accurate=True) == 10
+
+
 def test_force_accurate_acount_tokens_error_falls_back_to_factor(monkeypatch):
     settings = _settings(
         model="claude-opus-4-8",
