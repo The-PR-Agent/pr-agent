@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -17,16 +18,19 @@ def _await_coroutine(coro):
 
     ``asyncio.run`` cannot be called from a running event loop, and the accurate
     token-count path is invoked synchronously from tools that run inside one, so
-    an active loop runs the coroutine on a dedicated worker loop instead.
+    an active loop runs the coroutine on a dedicated worker loop instead. The
+    caller's contextvars are copied into the worker so request-scoped settings
+    (e.g. starlette ``context``) stay visible to the token-count coroutine.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
     worker_loop = asyncio.new_event_loop()
+    context = contextvars.copy_context()
     try:
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="token-count") as executor:
-            return executor.submit(worker_loop.run_until_complete, coro).result()
+            return executor.submit(context.run, worker_loop.run_until_complete, coro).result()
     finally:
         worker_loop.close()
 

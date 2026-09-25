@@ -252,3 +252,18 @@ def test_force_accurate_acount_tokens_timeout_falls_back_to_factor(monkeypatch):
     handler = _handler("claude-opus-4-8")
 
     assert handler.count_tokens("patch", force_accurate=True) == 13
+
+
+def test_await_coroutine_propagates_context_to_worker():
+    import contextvars
+
+    marker = contextvars.ContextVar("marker", default=None)
+
+    async def _read_marker():
+        return marker.get()
+
+    async def _probe():
+        marker.set("set-in-caller")
+        return token_handler._await_coroutine(_read_marker())
+
+    assert asyncio.run(_probe()) == "set-in-caller"
