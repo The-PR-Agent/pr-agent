@@ -6,13 +6,17 @@ from pr_agent.algo import token_handler
 
 
 def _settings(model="primary-model", estimate_factor=0, openai_key=None, anthropic_key=None,
-              gemini_key=None, ai_timeout=None):
+              gemini_key=None, ai_timeout=None, azure_api_type=None, azure_api_base=None,
+              deployment_id=None):
     return SimpleNamespace(
         config=SimpleNamespace(model=model),
         get=lambda key, default=None: {
             "OPENAI.KEY": openai_key,
             "ANTHROPIC.KEY": anthropic_key,
             "GOOGLE_AI_STUDIO.GEMINI_API_KEY": gemini_key,
+            "OPENAI.API_TYPE": azure_api_type,
+            "OPENAI.API_BASE": azure_api_base,
+            "openai.deployment_id": deployment_id,
             "config.model_token_count_estimate_factor": estimate_factor,
             "config.ai_timeout": ai_timeout,
         }.get(key, default),
@@ -150,6 +154,69 @@ def test_force_accurate_openai_uses_litellm_acount_tokens(monkeypatch):
         system="system",
         api_key="openai-settings-key",
         api_base=None,
+    )
+
+
+def test_force_accurate_routes_bare_azure_model_without_deployment(monkeypatch):
+    settings = _settings(
+        model="gpt-4o",
+        estimate_factor=0.3,
+        openai_key="azure-settings-key",
+        azure_api_type="azure",
+        azure_api_base="https://acme.openai.azure.com/",
+    )
+    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=False: settings)
+    monkeypatch.delenv("AZURE_API_BASE", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    mock = _patch_acount_tokens(
+        monkeypatch,
+        acount_tokens=AsyncMock(
+            return_value=SimpleNamespace(tokenizer_type="azure_tokenizer", total_tokens=42)
+        ),
+    )
+    handler = _handler("gpt-4o")
+
+    assert handler.count_tokens("patch", force_accurate=True) == 42
+    mock.assert_awaited_once_with(
+        model="azure/gpt-4o",
+        messages=[{"role": "user", "content": "patch"}],
+        system="system",
+        api_key="azure-settings-key",
+        api_base="https://acme.openai.azure.com/",
+    )
+
+
+def test_force_accurate_routes_azure_deployment_id(monkeypatch):
+    settings = _settings(
+        model="gpt-4o",
+        estimate_factor=0.3,
+        openai_key="azure-settings-key",
+        azure_api_type="azure",
+        azure_api_base="https://acme.openai.azure.com/",
+        deployment_id="my-deployment",
+    )
+    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=False: settings)
+    monkeypatch.delenv("AZURE_API_BASE", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    mock = _patch_acount_tokens(
+        monkeypatch,
+        acount_tokens=AsyncMock(
+            return_value=SimpleNamespace(tokenizer_type="azure_tokenizer", total_tokens=42)
+        ),
+    )
+    handler = _handler("gpt-4o")
+
+    assert handler.count_tokens("patch", force_accurate=True) == 42
+    mock.assert_awaited_once_with(
+        model="azure/my-deployment",
+        messages=[{"role": "user", "content": "patch"}],
+        system="system",
+        api_key="azure-settings-key",
+        api_base="https://acme.openai.azure.com/",
     )
 
 

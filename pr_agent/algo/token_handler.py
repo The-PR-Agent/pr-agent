@@ -142,22 +142,30 @@ class TokenHandler:
             get_logger().error(f"Error in _get_system_user_tokens: {e}")
             return 0
 
+    def _azure_mode(self) -> bool:
+        """Return whether the configured OpenAI endpoint is Azure OpenAI."""
+        return get_settings(use_context=False).get("OPENAI.API_TYPE", None) == "azure"
+
     def _provider_from_model(self) -> str | None:
         """Return the litellm provider key for the configured model, when inferable.
 
         Mirrors how ``litellm.acount_tokens`` itself resolves the provider from
         the model string: an explicit ``provider/`` prefix wins, then well-known
-        bare model names. Cloud providers such as bedrock or vertex rely on
-        ambient credentials (set up by PR-Agent for its own requests) and do not
-        need a settings key here.
+        bare model names. Bare OpenAI models in Azure mode route to ``azure``,
+        matching how ``LiteLLMAIHandler`` routes regular requests. Cloud
+        providers such as bedrock or vertex rely on ambient credentials (set up
+        by PR-Agent for its own requests) and do not need a settings key here.
         """
         if "/" in self.model:
-            return self.model.split("/", 1)[0].lower()
+            provider = self.model.split("/", 1)[0].lower()
+            if provider == "openai" and self._azure_mode():
+                return "azure"
+            return provider
         model_lower = self.model.lower()
         if "claude" in model_lower:
             return "anthropic"
         if ModelTypeValidator.is_openai_model(model_lower):
-            return "openai"
+            return "azure" if self._azure_mode() else "openai"
         return None
 
     def _token_count_api_params(self) -> tuple[str | None, str | None]:
@@ -184,15 +192,44 @@ class TokenHandler:
                 or os.environ.get("OPENAI_BASE_URL")
                 or os.environ.get("OPENAI_API_BASE")
             )
+        elif provider == "azure":
+            api_key = settings.get("OPENAI.KEY", None)
+            api_base = (
+                settings.get("OPENAI.API_BASE", None)
+                or os.environ.get("AZURE_API_BASE")
+                or os.environ.get("AZURE_OPENAI_ENDPOINT")
+                or os.environ.get("OPENAI_BASE_URL")
+                or os.environ.get("OPENAI_API_BASE")
+            )
         return api_key, api_base
+
+    def _routed_count_model(self) -> str:
+        """Return the model string to pass to ``litellm.acount_tokens``.
+
+        Azure counts need the ``azure/`` deployment-style routing that regular
+        requests get from ``LiteLLMAIHandler``, otherwise a bare OpenAI model is
+        counted as plain OpenAI and the deployment/base/version are lost.
+        """
+        if not self._azure_mode():
+            return self.model
+        if self.model.startswith("azure_text/"):
+            return self.model
+        provider = self.model.split("/", 1)[0].lower() if "/" in self.model else None
+        if provider not in (None, "openai", "azure"):
+            return self.model
+        deployment_id = get_settings(use_context=False).get("openai.deployment_id", None)
+        model_name = self.model.split("/", 1)[1] if "/" in self.model else self.model
+        if deployment_id:
+            return f"azure/{deployment_id}"
+        return f"azure/{model_name}"
 
     async def _acount_tokens(self, patch: str) -> int:
         """Count tokens through LiteLLM's provider-native counter.
 
         Uses the configured model (self.model) instead of a hardcoded id, routes
-        to the provider-native counter for Anthropic, Bedrock/Vertex Claude,
-        Gemini, OpenAI and other keyed providers, and returns 0 when only a
-        local estimate would be produced (tokenizer_type == "local_tokenizer")
+        to the provider-native counter for Anthropic, Azure/Bedrock/Vertex
+        Claude, Gemini, OpenAI and other keyed providers, and returns 0 when only
+        a local estimate would be produced (tokenizer_type == "local_tokenizer")
         or on any error; the caller then applies the estimate factor.
         """
         if len(patch.encode('utf-8')) > self.CLAUDE_MAX_CONTENT_SIZE:
@@ -207,7 +244,7 @@ class TokenHandler:
             api_key, api_base = self._token_count_api_params()
             response = await asyncio.wait_for(
                 litellm.acount_tokens(
-                    model=self.model,
+                    model=self._routed_count_model(),
                     messages=[{
                         "role": "user",
                         "content": patch
