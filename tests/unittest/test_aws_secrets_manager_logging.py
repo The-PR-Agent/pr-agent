@@ -12,6 +12,7 @@ from pr_agent.log import get_logger
 
 ERROR_SECRET = "aws-error-secret-sentinel"
 WEBHOOK_TOKEN = "webhook-token-secret-sentinel"
+STORE_SECRET_NAME = "aws-store-secret-name-sentinel"
 SECRET_NAME = "test-secret"
 SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret"
 
@@ -48,6 +49,7 @@ def assert_safe_log(messages, expected_message, level):
     message = messages[0]
     assert ERROR_SECRET not in str(message)
     assert WEBHOOK_TOKEN not in str(message)
+    assert STORE_SECRET_NAME not in str(message)
     assert "Traceback (most recent call last)" not in str(message)
     assert message.record["message"] == expected_message
     assert message.record["level"].name == level
@@ -74,9 +76,9 @@ def test_sdk_error_details_are_not_logged(monkeypatch, provider_settings, provid
         if method == "store_secret":
             client.put_secret_value.side_effect = error
             with pytest.raises(CredentialRetrievalError) as caught:
-                provider.store_secret(SECRET_NAME, "test-value")
+                provider.store_secret(STORE_SECRET_NAME, "test-value")
             assert caught.value is error
-            expected = f"Failed to store secret {SECRET_NAME} in AWS Secrets Manager: CredentialRetrievalError"
+            expected = "Failed to store secret in AWS Secrets Manager: CredentialRetrievalError"
         else:
             client.get_secret_value.side_effect = error
             if method == "get_secret":
@@ -136,3 +138,26 @@ def test_webhook_token_is_not_logged_on_service_error(monkeypatch, provider_sett
         client.close()
 
     assert_safe_log(provider_logs, "Failed to get secret from AWS Secrets Manager: InternalServiceError", "WARNING")
+
+
+def test_store_secret_logs_error_code_without_secret_name(
+    monkeypatch, provider_settings, provider_logs
+):
+    error = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": ERROR_SECRET}},
+        "PutSecretValue",
+    )
+    client = MagicMock()
+    monkeypatch.setattr(aws_provider.boto3, "client", MagicMock(return_value=client))
+    provider = aws_provider.AWSSecretsManagerProvider()
+    client.put_secret_value.side_effect = error
+
+    with pytest.raises(ClientError) as caught:
+        provider.store_secret(STORE_SECRET_NAME, "test-value")
+    assert caught.value is error
+    assert ERROR_SECRET in str(error)
+    assert_safe_log(
+        provider_logs,
+        "Failed to store secret in AWS Secrets Manager: AccessDeniedException",
+        "ERROR",
+    )

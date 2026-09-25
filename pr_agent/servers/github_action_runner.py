@@ -258,7 +258,8 @@ async def run_action():
         action = event_payload.get("action")
 
         # Retrieve the list of actions from the configuration
-        pr_actions = get_settings().get("GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"])
+        pr_actions = get_settings().get(
+            "GITHUB_ACTION_CONFIG.PR_ACTIONS", ["opened", "reopened", "ready_for_review", "review_requested"])
 
         # Handle synchronize first so it is not captured by pr_actions
         if action == "synchronize":
@@ -322,8 +323,11 @@ async def run_action():
 
                 # Set the configuration for auto actions
                 get_settings().config.is_auto_command = True  # Set the flag to indicate that the command is auto
-                get_settings().pr_description.final_update_message = False  # No final update message when auto_describe is enabled
-                get_logger().info(f"Running auto actions: auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
+                # No final update message when auto_describe is enabled
+                get_settings().pr_description.final_update_message = False
+                get_logger().info(
+                    f"Running auto actions: "
+                    f"auto_describe={auto_describe}, auto_review={auto_review}, auto_improve={auto_improve}")
 
                 # invoke by default all three tools
                 if auto_describe is None or is_true(auto_describe):
@@ -352,6 +356,17 @@ async def run_action():
                 get_logger().info("Skipping comment event from a bot sender to avoid a feedback loop")
                 return
             comment_body = event_payload.get("comment", {}).get("body")
+            # Skip comments that are not commands, mirroring the webhook guard
+            # in github_app.py. Otherwise a plain comment is lexed as an unknown
+            # command, PRAgent.handle_request returns False and the action exits 1.
+            if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
+                if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
+                    comment_body_split = comment_body.split('/ask')
+                    comment_body = '/ask' + comment_body_split[1] + ' \n' + comment_body_split[0].strip().lstrip('>')
+                    get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
+                else:
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if '/ask' in comment_body:

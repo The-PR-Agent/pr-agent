@@ -11,6 +11,7 @@ from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_description import (
     PRDescription,
+    _build_unprocessed_files_block,
     _longest_diagram_chain,
     _parse_diagram_edges,
     apply_diagram_direction,
@@ -946,7 +947,7 @@ description: |
         async def mock_get_prediction(model, patches_diff, prompt="pr_description_prompt"):
             calls.append((model, prompt, patches_diff))
             if model == "gpt-4o":
-                raise RuntimeError("primary chunk failed")
+                raise TimeoutError("primary chunk failed")
             if prompt == "pr_description_only_description_prompts":
                 return _header_prediction()
             if "file1" in patches_diff:
@@ -1137,3 +1138,27 @@ changes_diagram: |
 
             assert len(rendered_sys) > 0, f"{prompt_name} system rendered empty"
             assert len(rendered_usr) > 0, f"{prompt_name} user rendered empty"
+
+
+def test_unprocessed_files_block_lists_up_to_limit():
+    files = [f"path/{i}.py" for i in range(60)]
+    block = _build_unprocessed_files_block(files, "Additional files:")
+    assert block.count("\n- path/") == 50
+    assert block.endswith("... and 10 more")
+
+
+def test_unprocessed_files_block_reports_the_exact_remainder():
+    # Regression: the previous loop appended the (limit+1)-th file before clipping,
+    # so it listed 51 files yet reported "and 1 more", an off-by-one in both counts.
+    files = [f"path/{i}.py" for i in range(51)]
+    block = _build_unprocessed_files_block(files, "Additional files:")
+    assert block.count("\n- path/") == 50
+    assert block.endswith("... and 1 more")
+    assert len(block.split("\n- path/")) - 1 == 50
+
+
+def test_unprocessed_files_block_shows_everything_within_the_budget():
+    files = [f"path/{i}.py" for i in range(50)]
+    block = _build_unprocessed_files_block(files, "Additional files:")
+    assert block.count("\n- path/") == 50
+    assert "... and " not in block

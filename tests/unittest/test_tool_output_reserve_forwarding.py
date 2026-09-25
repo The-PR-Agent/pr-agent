@@ -7,7 +7,8 @@ import pr_agent.tools.pr_add_docs as add_docs_module
 import pr_agent.tools.pr_generate_labels as generate_labels_module
 import pr_agent.tools.pr_questions as questions_module
 import pr_agent.tools.pr_update_changelog as update_changelog_module
-from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -142,10 +143,22 @@ async def test_prepare_prediction_rejects_clipped_packed_diff(
     if tool_class is generate_labels_module.PRGenerateLabels:
         monkeypatch.setattr(tool_module, "set_custom_labels", lambda *_args: None)
 
-    with pytest.raises(ValueError, match="complete packed .* diff"):
+    with pytest.raises(FallbackEligibleError, match="complete packed .* diff"):
         await tool._prepare_prediction("fallback-model")
 
     tool._get_prediction.assert_not_awaited()
+
+
+def test_no_input_capacity_is_model_specific():
+    budget = AttemptTokenBudget(
+        "small-model",
+        object(),
+        SimpleNamespace(prompt_tokens=8),
+        context_window=10,
+    )
+
+    with pytest.raises(FallbackEligibleError, match="no input capacity"):
+        budget.require_input_capacity(3)
 
 
 @pytest.mark.asyncio
@@ -322,11 +335,13 @@ async def test_empty_attempt_diff_retries_instead_of_succeeding(
         (update_changelog_module.PRUpdateChangelog, update_changelog_module),
     ],
 )
+@pytest.mark.parametrize("fit_mode", ["empty", "clipped"])
 @pytest.mark.asyncio
-async def test_empty_attempt_diff_advances_to_fallback_model(
+async def test_model_specific_diff_failure_advances_to_fallback_model(
     monkeypatch,
     tool_class,
     tool_module,
+    fit_mode,
 ):
     settings_snapshot = snapshot_settings(
         (
@@ -354,24 +369,28 @@ async def test_empty_attempt_diff_advances_to_fallback_model(
     class FakeBudget:
         token_handler = object()
 
+        def __init__(self, model):
+            self.model = model
+
         def require_input_capacity(self, *_args, **_kwargs):
             return 1
 
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
             return SimpleNamespace(
-                optional_text=optional_text,
+                optional_text=optional_text[:-1] if fit_mode == "clipped" and self.model == "small-model"
+                else optional_text,
                 system_prompt="system",
                 user_prompt="user",
             )
 
     def get_diff(_provider, _handler, model, **_kwargs):
         diff_models.append(model)
-        return "" if model == "small-model" else "diff"
+        return "" if fit_mode == "empty" and model == "small-model" else "diff"
 
     monkeypatch.setattr(
         tool_module.AttemptTokenBudget,
         "for_prompt_attempt",
-        lambda *_args, **_kwargs: FakeBudget(),
+        lambda model, *_args, **_kwargs: FakeBudget(model),
     )
     monkeypatch.setattr(tool_module, "get_pr_diff", get_diff)
 

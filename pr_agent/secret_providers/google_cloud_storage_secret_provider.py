@@ -14,7 +14,7 @@ class GoogleCloudStorageSecretProvider(SecretProvider):
             self.bucket_name = get_settings().google_cloud_storage.bucket_name
             self.bucket = self.client.bucket(self.bucket_name)
         except Exception as e:
-            get_logger().error(f"Failed to initialize Google Cloud Storage Secret Provider: {e}")
+            get_logger().error(f"Failed to initialize Google Cloud Storage Secret Provider: {type(e).__name__}")
             raise e
 
     def get_secret(self, secret_name: str) -> str:
@@ -30,5 +30,5 @@ class GoogleCloudStorageSecretProvider(SecretProvider):
             blob = self.bucket.blob(secret_name)
             blob.upload_from_string(secret_value)
         except Exception as e:
-            get_logger().error(f"Failed to store secret {secret_name} in Google Cloud Storage: {e}")
+            get_logger().error(f"Failed to store secret in Google Cloud Storage: {type(e).__name__}")
             raise e

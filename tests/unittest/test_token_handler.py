@@ -37,7 +37,7 @@ def _handler(model, tokens=10):
 
 def test_oversized_claude_patch_falls_back_to_local_estimate(monkeypatch):
     settings = _settings(
-        model="claude-3-7-sonnet-20250219",
+        model="claude-sonnet-4-6",
         estimate_factor=0.3,
         anthropic_key="test-key",
     )
@@ -46,7 +46,7 @@ def test_oversized_claude_patch_falls_back_to_local_estimate(monkeypatch):
     )
     mock = _patch_acount_tokens(monkeypatch)
 
-    handler = _handler("claude-3-7-sonnet-20250219")
+    handler = _handler("claude-sonnet-4-6")
     handler.CLAUDE_MAX_CONTENT_SIZE = 3
 
     assert handler.count_tokens("abcd", force_accurate=True) == 13
@@ -128,7 +128,7 @@ def test_for_model_does_not_replace_configured_primary_encoder_cache(monkeypatch
 
 def test_force_accurate_openai_uses_litellm_acount_tokens(monkeypatch):
     settings = _settings(
-        model="claude-3-7-sonnet-20250219",
+        model="claude-sonnet-4-6",
         estimate_factor=0.3,
         openai_key="openai-settings-key",
     )
@@ -244,10 +244,11 @@ def test_force_accurate_acount_tokens_timeout_falls_back_to_factor(monkeypatch):
     )
     monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: settings)
 
-    async def _never_resolves():
-        await asyncio.Event().wait()
+    async def _slow_count(**kwargs):
+        await asyncio.sleep(1)
+        return SimpleNamespace(tokenizer_type="anthropic_api", total_tokens=99)
 
-    _patch_acount_tokens(monkeypatch, acount_tokens=_never_resolves)
+    _patch_acount_tokens(monkeypatch, acount_tokens=_slow_count)
     handler = _handler("claude-opus-4-8")
 
     assert handler.count_tokens("patch", force_accurate=True) == 13

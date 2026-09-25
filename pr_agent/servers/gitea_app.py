@@ -50,18 +50,23 @@ async def get_body(request: Request):
 
     # Verify webhook signature
     webhook_secret = getattr(get_settings().gitea, 'webhook_secret', None)
-    if webhook_secret:
-        body_bytes = await request.body()
-        signature_header = request.headers.get('x-gitea-signature', None)
-        if not signature_header:
-            get_logger().error("Missing signature header")
-            raise HTTPException(status_code=400, detail="Missing signature header")
+    if not webhook_secret:
+        # Refuse unauthenticated webhooks. Silently accepting requests when the
+        # secret is not configured used to allow any internet caller to forge
+        # Gitea events and trigger expensive AI commands against arbitrary PRs.
+        get_logger().error("Rejecting Gitea webhook: GITEA.WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=403, detail="Webhook secret not configured")
+    body_bytes = await request.body()
+    signature_header = request.headers.get('x-gitea-signature', None)
+    if not signature_header:
+        get_logger().error("Missing signature header")
+        raise HTTPException(status_code=400, detail="Missing signature header")
 
-        try:
-            verify_signature(body_bytes, webhook_secret, f"sha256={signature_header}")
-        except Exception as ex:
-            get_logger().error(f"Invalid signature: {ex}")
-            raise HTTPException(status_code=401, detail="Invalid signature")
+    try:
+        verify_signature(body_bytes, webhook_secret, f"sha256={signature_header}")
+    except Exception as ex:
+        get_logger().error(f"Invalid signature: {ex}")
+        raise HTTPException(status_code=401, detail="Invalid signature")
 
     return body
 
@@ -138,7 +143,8 @@ async def handle_comment_event(body: Dict[str, Any], event: str, action: str, ag
     await agent.handle_request(pr_url, comment_body)
 
 async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict, api_url: str):
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    if (commands_conf == "pr_commands"
+            and get_settings().config.disable_auto_feedback):  # auto commands for PR, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     commands = (

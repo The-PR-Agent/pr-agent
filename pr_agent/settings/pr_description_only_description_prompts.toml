@@ -130,7 +130,7 @@ Commit messages:
 
 The PR Files and Changes:
 =====
-{{ diff|trim }}
+{{ diff }}
 =====
 
 {%- if duplicate_prompt_examples %}
@@ -140,7 +140,7 @@ Example output:
 ```yaml
 type:
 - Bug fix
-- Refactoring
+- Enhancement
 - ...
 {%- if enable_pr_description %}
 description: |

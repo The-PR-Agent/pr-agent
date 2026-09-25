@@ -72,3 +72,103 @@ def test_create_or_update_pr_file_returns_written_commit():
         sha="file-sha",
         branch="feature-branch",
     )
+
+
+def test_create_or_update_pr_file_creates_missing_file():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = MagicMock()
+    provider.repo_obj.get_contents.side_effect = GithubException(404, {"message": "Not Found"}, {})
+    provider._get_repo = MagicMock(return_value=provider.repo_obj)
+    provider.pr = SimpleNamespace(
+        head=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")),
+        base=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")),
+    )
+    written_commit = object()
+    provider.repo_obj.create_file.return_value = {"content": object(), "commit": written_commit}
+
+    result = provider.create_or_update_pr_file(
+        file_path="CHANGELOG.md",
+        branch="feature-branch",
+        contents="new content",
+        message="Add CHANGELOG.md",
+    )
+
+    assert result is written_commit
+    provider.repo_obj.create_file.assert_called_once_with(
+        path="CHANGELOG.md",
+        message="Add CHANGELOG.md",
+        content="new content",
+        branch="feature-branch",
+    )
+    provider.repo_obj.update_file.assert_not_called()
+
+
+def test_create_or_update_pr_file_does_not_create_for_fork_pr():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = MagicMock()
+    read_error = GithubException(404, {"message": "Not Found"}, {})
+    provider.repo_obj.get_contents.side_effect = read_error
+    provider._get_repo = MagicMock(return_value=provider.repo_obj)
+    # Fork pull request: the head branch lives in the fork, so the bare branch name
+    # resolves against the base repository; the file must not be created there.
+    provider.pr = SimpleNamespace(
+        head=SimpleNamespace(repo=SimpleNamespace(full_name="fork-owner/repo")),
+        base=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")),
+    )
+
+    with pytest.raises(GithubException) as exc_info:
+        provider.create_or_update_pr_file(
+            file_path="CHANGELOG.md",
+            branch="main",
+            contents="new content",
+            message="Add CHANGELOG.md",
+        )
+
+    assert exc_info.value is read_error
+    provider.repo_obj.create_file.assert_not_called()
+    provider.repo_obj.update_file.assert_not_called()
+
+
+def test_create_or_update_pr_file_does_not_create_for_deleted_fork():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = MagicMock()
+    read_error = GithubException(404, {"message": "Not Found"}, {})
+    provider.repo_obj.get_contents.side_effect = read_error
+    provider._get_repo = MagicMock(return_value=provider.repo_obj)
+    # GitHub reports head.repo as null when the fork was deleted.
+    provider.pr = SimpleNamespace(
+        head=SimpleNamespace(repo=None),
+        base=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")),
+    )
+
+    with pytest.raises(GithubException) as exc_info:
+        provider.create_or_update_pr_file(
+            file_path="CHANGELOG.md",
+            branch="main",
+            contents="new content",
+            message="Add CHANGELOG.md",
+        )
+
+    assert exc_info.value is read_error
+    provider.repo_obj.create_file.assert_not_called()
+    provider.repo_obj.update_file.assert_not_called()
+
+
+def test_create_or_update_pr_file_does_not_write_after_read_failure():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = MagicMock()
+    read_error = GithubException(500, {"message": "upstream failure"}, {})
+    provider.repo_obj.get_contents.side_effect = read_error
+    provider._get_repo = MagicMock(return_value=provider.repo_obj)
+
+    with pytest.raises(GithubException) as exc_info:
+        provider.create_or_update_pr_file(
+            file_path="CHANGELOG.md",
+            branch="feature-branch",
+            contents="new content",
+            message="Update CHANGELOG.md",
+        )
+
+    assert exc_info.value is read_error
+    provider.repo_obj.create_file.assert_not_called()
+    provider.repo_obj.update_file.assert_not_called()

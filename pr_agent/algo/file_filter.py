@@ -6,9 +6,7 @@ from pr_agent.log import get_logger
 
 
 def filter_ignored(files, platform = 'github'):
-    """
-    Filter out files that match the ignore patterns.
-    """
+    """Filter out files that match the ignore patterns."""
 
     try:
         # load regex patterns, and translate glob patterns to regex
@@ -63,7 +61,10 @@ def filter_ignored(files, platform = 'github'):
                                 continue
                     files = files_o
                 elif platform == 'bitbucket_server':
-                    files = [f for f in files if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])]
+                    files = [
+                        f for f in files
+                        if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])
+                    ]
                 elif platform == 'gitlab':
                     # files = [f for f in files if (f['new_path'] and not r.match(f['new_path']))]
                     files_o = []
