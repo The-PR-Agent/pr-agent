@@ -6,6 +6,7 @@ differ: a backend either supports the operation, has nothing to do, or declares 
 """
 
 import inspect
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from typing import get_type_hints
 from unittest.mock import MagicMock
 
 import pytest
+from gitlab import GitlabCreateError
 
 from pr_agent.git_providers import _GIT_PROVIDERS
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
@@ -349,9 +351,25 @@ def _build_github_suggestion_provider(monkeypatch, tmp_path) -> GithubProvider:
 
 def _build_gitlab_suggestion_provider(monkeypatch, tmp_path) -> GitLabProvider:
     provider = _gitlab(monkeypatch)
+    monkeypatch.setattr(
+        "pr_agent.git_providers.gitlab_provider.get_settings",
+        lambda: SimpleNamespace(get=lambda key, default=None: default),
+    )
     provider.resolve_outdated_inline_threads = MagicMock()
-    provider.get_diff_files = MagicMock(return_value=[SimpleNamespace(filename="app.py", head_file="orig\n")])
+    provider.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+    provider.get_diff_files = MagicMock(return_value=[SimpleNamespace(
+        filename="app.py", old_filename="app.py", head_file="orig\n", patch="@@ -0,0 +1 @@\n+orig\n",
+    )])
+    provider.get_relevant_diff = MagicMock(return_value=SimpleNamespace(
+        base_commit_sha="base", start_commit_sha="start", head_commit_sha="head",
+    ))
+    provider.get_line_link = MagicMock(return_value="https://gitlab.example/app.py#L1")
     return provider
+
+
+def _fail_gitlab_suggestions(provider, monkeypatch, tmp_path):
+    provider.mr.discussions.create.side_effect = GitlabCreateError("network down")
+    provider.mr.notes.create.side_effect = GitlabCreateError("network down")
 
 
 def _build_gerrit_suggestion_provider(monkeypatch, tmp_path) -> GerritProvider:
@@ -413,14 +431,10 @@ SUGGESTION_OUTCOME_CONTRACTS = (
     SuggestionOutcomeContract(
         provider_name="gitlab",
         build_provider=_build_gitlab_suggestion_provider,
-        make_fail=lambda p, mp, tmp: setattr(
-            p, "send_inline_comment", MagicMock(side_effect=RuntimeError("network down"))
-        ),
-        make_succeed=lambda p, mp, tmp: setattr(p, "send_inline_comment", MagicMock(return_value=True)),
-        payload=SUGGESTION_PAYLOAD,
-        deliberate_mismatch=DeliberateMismatch(
-            "GitLab unconditionally returns True; issue #3129 owns reporting total failures."
-        ),
+        make_fail=_fail_gitlab_suggestions,
+        make_succeed=lambda p, mp, tmp: None,
+        payload=[{**SUGGESTION_PAYLOAD[0], "existing_code": "orig", "improved_code": "new",
+                  "suggestion_content": "description", "label": "possible issue"}],
     ),
     SuggestionOutcomeContract(
         provider_name="gitea",
@@ -669,6 +683,9 @@ def test_publish_code_suggestions_returns_false_on_total_failure(
         assert provider.publish_code_suggestions(contract.payload) is True
     else:
         assert provider.publish_code_suggestions(contract.payload) is False
+    if contract.provider_name == "gitlab":
+        provider.mr.discussions.create.assert_called_once()
+        provider.mr.notes.create.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -684,3 +701,7 @@ def test_publish_code_suggestions_returns_true_on_success(
     provider = contract.build_provider(monkeypatch, tmp_path)
     contract.make_succeed(provider, monkeypatch, tmp_path)
     assert provider.publish_code_suggestions(contract.payload) is True
+    if contract.provider_name == "gitlab":
+        provider.mr.discussions.create.assert_called_once()
+        assert provider.mr.discussions.create.call_args.args[0]["position"]["new_line"] == 1
+        provider.mr.notes.create.assert_not_called()
