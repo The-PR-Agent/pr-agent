@@ -316,7 +316,6 @@ def apply_repo_settings(pr_url):
                         safe_error = _safe_configuration_error(e)
                         get_logger().warning(f"Failed to apply repo {category} settings: {safe_error}")
                         config_errors.append({
-                            'error': str(e),
                             'safe_error': safe_error,
                             'settings': settings_content,
                             'category': category,
@@ -334,7 +333,6 @@ def apply_repo_settings(pr_url):
                     safe_error = _safe_configuration_error(e)
                     get_logger().warning(f"Failed to apply per-directory settings {category}: {safe_error}")
                     config_errors.append({
-                        'error': str(e),
                         'safe_error': safe_error,
                         'settings': settings_content,
                         'category': category,
