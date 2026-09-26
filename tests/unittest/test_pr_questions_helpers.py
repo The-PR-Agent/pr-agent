@@ -1,7 +1,7 @@
 """Focused unit tests for PRQuestions / PR_LineQuestions pure helpers.
 
-Helper tests construct instances with ``__new__``. Raw-dispatch tests use the
-real initializer with provider and token-handler stubs. No live providers or AI calls.
+Construct helper-test instances with ``__new__``. Use the real initializer with
+provider and token-handler stubs for raw-dispatch tests. Avoid live providers and AI calls.
 """
 
 from copy import deepcopy
@@ -13,7 +13,6 @@ from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.tools.pr_line_questions as plq
-import pr_agent.tools.pr_questions as pr_questions_module
 from pr_agent.algo.comment_identity import format_pr_questions_header
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
@@ -103,9 +102,9 @@ def raw_question_tools(monkeypatch):
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
-    monkeypatch.setattr(pr_questions_module, "get_git_provider", lambda: lambda _url: provider)
-    monkeypatch.setattr(pr_questions_module, "get_main_pr_language", lambda *_args: "Python")
-    monkeypatch.setattr(pr_questions_module, "TokenHandler", lambda *_args: None)
+    monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr("pr_agent.tools.pr_questions.get_main_pr_language", lambda *_args: "Python")
+    monkeypatch.setattr("pr_agent.tools.pr_questions.TokenHandler", lambda *_args: None)
     monkeypatch.setattr(PRQuestions, "run", capture_question)
 
     with request_cycle_context({"settings": deepcopy(get_settings())}):
