@@ -112,7 +112,9 @@ def test_incremental_review_runs_when_commit_is_older_than_utc_threshold():
     reviewer.pr_url = "https://github.com/test/repo/pull/1"
 
     commit = SimpleNamespace(
-        commit=SimpleNamespace(author=SimpleNamespace(date=datetime.datetime(2026, 9, 10, 12, 0, tzinfo=datetime.timezone.utc)))
+        commit=SimpleNamespace(
+            author=SimpleNamespace(date=datetime.datetime(2026, 9, 10, 12, 0, tzinfo=datetime.timezone.utc))
+        )
     )
     reviewer.incremental = IncrementalPR(True)
     reviewer.incremental.commits_range = [commit]
@@ -139,7 +141,9 @@ def test_incremental_review_skipped_when_commit_is_newer_than_utc_threshold():
     reviewer.pr_url = "https://github.com/test/repo/pull/1"
 
     commit = SimpleNamespace(
-        commit=SimpleNamespace(author=SimpleNamespace(date=datetime.datetime(2026, 9, 10, 13, 15, tzinfo=datetime.timezone.utc)))
+        commit=SimpleNamespace(
+            author=SimpleNamespace(date=datetime.datetime(2026, 9, 10, 13, 15, tzinfo=datetime.timezone.utc))
+        )
     )
     reviewer.incremental = IncrementalPR(True)
     reviewer.incremental.commits_range = [commit]

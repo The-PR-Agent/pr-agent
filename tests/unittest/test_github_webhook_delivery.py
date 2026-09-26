@@ -168,7 +168,9 @@ async def test_active_delivery_does_not_block_a_different_delivery(monkeypatch, 
     try:
         await asyncio.wait_for(entered.wait(), 1)
         await asyncio.wait_for(
-            github_app.handle_request({"action": "created", "comment_id": 2}, "issue_comment", delivery_id="delivery-2"),
+            github_app.handle_request(
+                {"action": "created", "comment_id": 2}, "issue_comment", delivery_id="delivery-2"
+            ),
             1,
         )
         assert dispatch_mock.await_count == 2

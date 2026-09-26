@@ -8,6 +8,7 @@ asyncio_mode=auto."""
 import aiohttp
 import pytest
 
+from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico import dispatch
 from pr_agent.mosaico.dispatch import (
@@ -257,6 +258,66 @@ class TestPathSuppliedDiff:
         mi = captured["mosaico_input"]
         assert mi and [f.filename for f in mi["files"]] == ["foo.py"]
         assert mi["title"] == "Supplied diff"
+
+    @pytest.mark.asyncio
+    async def test_diff_classifies_languages_for_packing(self, monkeypatch, restore_settings):
+        captured = {}
+        filenames = [
+            "src/core.py",
+            "src/extra.PY",
+            "ui.js",
+            "Dockerfile",
+            "build/Makefile",
+            "native/upper.C",
+            "native/lower.c",
+            "cmake/tool.cmake.in",
+            "templates/device.axi.erb",
+            "assets/README.unknown",
+        ]
+        language_diff = "\n".join(
+            f"""diff --git a/{filename} b/{filename}
+index 1111111..2222222 100644
+--- a/{filename}
++++ b/{filename}
+@@ -1 +1 @@
+-old
++new"""
+            for filename in filenames
+        )
+
+        async def fake_handle_request(self, pr_url, request, notify=None):
+            mosaico_input = global_settings.get("MOSAICO.INPUT")
+            captured["languages"] = dict(mosaico_input["languages"])
+            captured["buckets"] = sort_files_by_main_languages(
+                mosaico_input["languages"], mosaico_input["files"]
+            )
+            _set_artifact("DIFF REVIEW")
+            return True
+
+        from pr_agent.agent.pr_agent import PRAgent
+        monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
+
+        assert await route_and_run(f"review the following\n{language_diff}") == "DIFF REVIEW"
+        assert captured["languages"] == {
+            "Python": 2,
+            "JavaScript": 1,
+            "Dockerfile": 1,
+            "Makefile": 1,
+            "C++": 1,
+            "C": 1,
+            "CMake": 1,
+            "NetLinx+ERB": 1,
+        }
+        buckets = captured["buckets"]
+        assert buckets[0]["language"] == "Python"
+        assert [f.filename for f in buckets[0]["files"]] == ["src/core.py", "src/extra.PY"]
+        assert [f.filename for f in buckets[-1]["files"]] == ["assets/README.unknown"]
+        packed_filenames = [f.filename for bucket in buckets for f in bucket["files"]]
+        assert sorted(packed_filenames) == sorted(filenames)
+        assert len(packed_filenames) == len(set(packed_filenames))
+
+    def test_language_classification_tolerates_empty_input(self):
+        assert dispatch._simple_languages([]) == {}
 
     @pytest.mark.asyncio
     async def test_unparseable_diff_returns_empty_fallback(self, monkeypatch, restore_settings):

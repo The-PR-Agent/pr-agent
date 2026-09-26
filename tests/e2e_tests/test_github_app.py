@@ -82,7 +82,7 @@ def test_e2e_run_github_app():
             else:
                 logger.info(f"Waiting for the PR to get all the tool results. {i + 1} minute(s) passed")
         else:
-            assert False, f"After {NUM_MINUTES} minutes, the PR did not get all the tool results"
+            raise AssertionError(f"After {NUM_MINUTES} minutes, the PR did not get all the tool results")
 
         # cleanup - delete the branch
         logger.info(f"Deleting the branch {new_branch}")
@@ -95,7 +95,7 @@ def test_e2e_run_github_app():
         # delete the branch
         logger.info(f"Deleting the branch {new_branch}")
         repo.get_git_ref(f"heads/{new_branch}").delete()
-        assert False
+        raise AssertionError()
 
 
 if __name__ == '__main__':

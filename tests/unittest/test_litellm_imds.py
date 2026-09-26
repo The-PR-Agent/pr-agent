@@ -14,6 +14,7 @@ import pytest
 from botocore.exceptions import ClientError, CredentialRetrievalError, ProfileNotFound
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+from pr_agent.algo.ai_handlers import cloud_auth
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 
@@ -565,7 +566,7 @@ def test_bedrock_mantle_signer_bridge_forwards_future_arguments(monkeypatch):
         forwarded["kwargs"] = kwargs
         return "signed"
 
-    monkeypatch.setattr(litellm_handler, "_bedrock_mantle_sign_request", sign_request)
+    monkeypatch.setattr(cloud_auth, "_bedrock_mantle_sign_request", sign_request)
     request_credentials = {
         "aws_access_key_id": "request-key",
         "aws_secret_access_key": "request-secret",
@@ -592,7 +593,7 @@ def test_bedrock_mantle_signer_bridge_forwards_future_arguments(monkeypatch):
 
 def test_bedrock_mantle_signer_bridge_fails_closed_without_optional_params(monkeypatch):
     sign_request = MagicMock()
-    monkeypatch.setattr(litellm_handler, "_bedrock_mantle_sign_request", sign_request)
+    monkeypatch.setattr(cloud_auth, "_bedrock_mantle_sign_request", sign_request)
     token = litellm_handler._bedrock_mantle_request_credentials.set({"aws_access_key_id": "request-key"})
     try:
         with pytest.raises(RuntimeError, match="did not receive optional_params"):
@@ -614,7 +615,7 @@ async def test_health_probe_refreshes_imds_credentials_once(monkeypatch):
         "aws_region_name": "us-east-1",
     }
 
-    def refresh_credentials():
+    async def refresh_credentials():
         handler._aws_active_creds = {
             "aws_access_key_id": "refreshed-key",
             "aws_secret_access_key": "refreshed-secret",
@@ -637,12 +638,12 @@ async def test_health_probe_refreshes_imds_credentials_once(monkeypatch):
     reason="Installed LiteLLM does not provide BedrockMantleAuthMixin",
 )
 def test_bedrock_mantle_signer_bridge_installation_is_idempotent():
-    original_signer = litellm_handler._bedrock_mantle_sign_request
+    original_signer = cloud_auth._bedrock_mantle_sign_request
 
     litellm_handler._install_bedrock_mantle_signer_bridge()
     litellm_handler._install_bedrock_mantle_signer_bridge()
 
-    assert litellm_handler._bedrock_mantle_sign_request is original_signer
+    assert cloud_auth._bedrock_mantle_sign_request is original_signer
 
 
 @pytest.mark.asyncio
@@ -1291,7 +1292,9 @@ async def test_static_mode_rejects_late_aws_request_endpoint_environment(
 
 @pytest.mark.parametrize("environment_variable", ("AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE"))
 @pytest.mark.asyncio
-async def test_imds_mode_rejects_changed_credential_chain_file(monkeypatch, aws_session, tmp_path, environment_variable):
+async def test_imds_mode_rejects_changed_credential_chain_file(
+    monkeypatch, aws_session, tmp_path, environment_variable
+):
     credential_chain_file = tmp_path / environment_variable.lower()
     credential_chain_file.write_text("request-a", encoding="utf-8")
     monkeypatch.setenv("AWS_USE_IMDS", "true")
@@ -1993,7 +1996,8 @@ async def test_concurrent_handlers_keep_static_aws_credentials_isolated(monkeypa
 
 @pytest.mark.parametrize("provider_name", ("assume-role-with-web-identity", "container-role"))
 @pytest.mark.parametrize("drift", (None, "initial", "refresh"))
-def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, tmp_path, provider_name, drift):
+@pytest.mark.asyncio
+async def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, tmp_path, provider_name, drift):
     import boto3
 
     monkeypatch.setenv("AWS_USE_IMDS", "true")
@@ -2075,7 +2079,8 @@ def test_native_workload_provider_keeps_source_and_token_rotation(monkeypatch, t
 
     if drift == "refresh":
         monkeypatch.setattr(native_credentials, "get_frozen_credentials", freeze_with_drift)
-    assert handler._refresh_aws_imds_credentials() is True
+    async with handler._aws_bedrock_lock:
+        assert await handler._refresh_aws_imds_credentials() is True
     assert seen_tokens == ["rotated-token"]
     assert handler._aws_boto3_creds is native_credentials
     assert os.environ[selector] == str(token_file)

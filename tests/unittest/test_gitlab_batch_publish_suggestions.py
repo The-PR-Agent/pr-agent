@@ -2,6 +2,8 @@ import re
 from unittest.mock import MagicMock, patch
 
 import pytest
+from gitlab import GitlabCreateError
+from requests.exceptions import RequestException
 
 from pr_agent.algo import inline_comment_dedup as dedup
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
@@ -171,7 +173,7 @@ def test_flag_on_fallback_uses_draft_note_not_live_note():
     def _create_first_call_rejected(payload):
         calls.append(payload)
         if len(calls) == 1:
-            raise RuntimeError("position rejected")
+            raise GitlabCreateError("position rejected")
         return original_create(payload)
 
     p.mr.draft_notes.create.side_effect = _create_first_call_rejected
@@ -194,7 +196,7 @@ def test_draft_totally_unavailable_falls_back_to_a_live_comment_not_a_dropped_su
     # draft-notes endpoint is unsupported/erroring for this MR. The suggestion must still be
     # posted, just live instead of batched - not silently dropped.
     p = _gl_provider()
-    p.mr.draft_notes.create.side_effect = RuntimeError("draft notes unavailable")
+    p.mr.draft_notes.create.side_effect = GitlabCreateError("draft notes unavailable")
     gs = _settings(as_review=True)
     try:
         assert p.publish_code_suggestions([_suggestion()]) is True
@@ -208,7 +210,7 @@ def test_draft_totally_unavailable_falls_back_to_a_live_comment_not_a_dropped_su
 
 def test_bulk_publish_failure_is_caught_and_does_not_propagate():
     p = _gl_provider()
-    p.mr.draft_notes.bulk_publish.side_effect = RuntimeError("network error")
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("network error")
     gs = _settings(as_review=True)
     try:
         # must not raise, and must still report success for the individually-queued suggestions

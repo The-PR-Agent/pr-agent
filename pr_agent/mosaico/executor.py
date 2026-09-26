@@ -20,22 +20,67 @@ TaskArtifactUpdateEvent (not a TaskStatusUpdateEvent), otherwise the SDK raises
 health_check issues a single, NON-retry-wrapped litellm probe."""
 import asyncio
 import copy
+from collections import deque
 from math import isfinite
 
+from a2a.helpers.proto_helpers import get_message_text
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
-from a2a.types import Part, Task, TaskState, TaskStatus
+from a2a.server.tasks.inmemory_task_store import resolve_user_scope
+from a2a.types import Part, Role, Task, TaskState, TaskStatus
 from starlette_context import context as sctx
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.log import get_logger
-from pr_agent.mosaico.dispatch import route_and_run_result
+from pr_agent.mosaico.dispatch import _find_pr_url, _looks_like_diff, route_and_run_result
 from pr_agent.mosaico.observability import langfuse_span, mosaico_log_context, parse_observability_metadata
+
+_MAX_CONTEXT_HISTORY_TASKS = 1000
 
 
 class PRAgentExecutor(AgentExecutor):
     """Turns a MOSAICO message/send into a pr-agent run and returns a Task."""
+
+    def __init__(self, task_store=None):
+        self.task_store = task_store
+        self._recent_task_ids: dict[tuple[str, str], deque[str]] = {}
+
+    async def _history_for_context(self, context: RequestContext) -> list[str]:
+        current = context.get_user_input() or ""
+        if self.task_store is None or _find_pr_url(current) or _looks_like_diff(current):
+            return []
+
+        # Recover prior user turns in input order from the owner-scoped index.
+        # Keep late task status updates from changing the review target.
+        limit = get_settings().get("MOSAICO.CONTEXT_HISTORY_MAX_TASKS", 100)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_CONTEXT_HISTORY_TASKS:
+            raise ValueError("MOSAICO context history max tasks must be an integer from 1 to 1000")
+        key = (resolve_user_scope(context.call_context), context.context_id)
+        recent_ids = list(self._recent_task_ids.get(key, ()))[::-1]
+        turns = []
+        found_context = False
+        prior_count = 0
+        for task_id in recent_ids:
+            if task_id == context.task_id:
+                continue
+            if prior_count >= limit:
+                break
+            prior_count += 1
+            task = await self.task_store.get(task_id, context.call_context)
+            if task is None:
+                continue
+            for message in reversed(task.history):
+                if message.role == Role.ROLE_USER:
+                    text = get_message_text(message)
+                    if text:
+                        turns.append(text)
+                        if _find_pr_url(text) or _looks_like_diff(text):
+                            found_context = True
+                            break
+            if found_context:
+                break
+        return list(reversed(turns))
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         # In A2A 1.0 DefaultRequestHandler sets task_id/context_id on the context before
@@ -53,6 +98,11 @@ class PRAgentExecutor(AgentExecutor):
             # executor's cancel() callback. Establish the task before starting the
             # long-running route, but do not replace an existing task on follow-up work.
             if context.current_task is None:
+                if self.task_store is not None:
+                    key = (resolve_user_scope(context.call_context), context.context_id)
+                    self._recent_task_ids.setdefault(
+                        key, deque(maxlen=_MAX_CONTEXT_HISTORY_TASKS + 1)
+                    ).append(context.task_id)
                 await event_queue.enqueue_event(
                     Task(
                         id=context.task_id,
@@ -67,10 +117,14 @@ class PRAgentExecutor(AgentExecutor):
             sctx["settings"] = copy.deepcopy(global_settings)
 
             user_text = context.get_user_input() or ""
+            history = await self._history_for_context(context)
             meta = parse_observability_metadata(context.metadata)
             with mosaico_log_context(meta, context.context_id), \
                     langfuse_span(meta, context.context_id):
-                result = await route_and_run_result(user_text)
+                if history:
+                    result = await route_and_run_result(user_text, context_history=history)
+                else:
+                    result = await route_and_run_result(user_text)
 
             output_text = result.text or "(no output produced)"
             # ALWAYS add_artifact first: the SDK requires a TaskArtifactUpdateEvent

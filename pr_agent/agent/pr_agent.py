@@ -10,9 +10,13 @@ from starlette_context import context, request_cycle_context
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.artifacts import reapply_artifact_context
 from pr_agent.algo.cli_args import CliArgs
+from pr_agent.algo.comment_identity import add_comment_identity, comment_matches_identity
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.git_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
@@ -55,6 +59,71 @@ command2class = {
 }
 
 commands = list(command2class.keys())
+
+INCOMPLETE_GITHUB_FILES_COMMENT_MARKER = "<!-- pr-agent:github-incomplete-files -->"
+INCOMPLETE_GITHUB_FILES_COMMENT = (
+    "## PR-Agent command was not run\n\n"
+    "GitHub returned an incomplete or inconsistent changed-file set for this pull request, so PR-Agent stopped "
+    "instead of analyzing only part of it.\n\n"
+    "GitHub limits changed-file responses to 3,000 files. If this pull request changes more than 3,000 files, "
+    "split it into smaller pull requests and run the command again. Otherwise, retry the command."
+)
+
+
+def publish_incomplete_github_files_comment(pr_url: str) -> None:
+    """Publish one trusted, sanitized PR-level notice without replacing the primary failure."""
+    try:
+        _publish_incomplete_github_files_comment(pr_url)
+    except Exception:
+        # Preserve the original completeness failure by containing every
+        # ordinary provider or rendering failure from this secondary notice.
+        get_logger().exception("Failed to prepare the incomplete-files notice")
+
+
+def _publish_incomplete_github_files_comment(pr_url: str) -> None:
+    if not get_settings().get("CONFIG.PUBLISH_OUTPUT", True):
+        return
+
+    try:
+        provider = get_git_provider_with_context(pr_url)
+    except Exception:
+        get_logger().exception("Failed to get a GitHub provider for the incomplete-files notice")
+        return
+
+    try:
+        comments = provider.get_issue_comments_newest_first()
+    except Exception:
+        get_logger().exception("Failed to inspect existing incomplete-files notices")
+        comments = []
+
+    for comment in comments:
+        try:
+            body = provider._get_comment_body(comment)
+        except Exception:
+            # Ignore comments whose bodies cannot be read. Continue looking
+            # for a verifiable PR-Agent marker and publish if none can be
+            # confirmed.
+            get_logger().warning(
+                "Failed to read an existing incomplete-files notice; continuing"
+            )
+            continue
+        if not comment_matches_identity(body, INCOMPLETE_GITHUB_FILES_COMMENT_MARKER):
+            continue
+        try:
+            if provider.is_comment_authored_by_pr_agent(comment):
+                return
+        except Exception:
+            get_logger().exception("Failed to verify the author of an incomplete-files notice")
+
+    body = add_comment_identity(
+        INCOMPLETE_GITHUB_FILES_COMMENT,
+        INCOMPLETE_GITHUB_FILES_COMMENT_MARKER,
+        provider,
+    )
+    try:
+        provider.publish_comment(body)
+    except Exception:
+        get_logger().exception("Failed to publish the incomplete-files notice")
 
 
 def _split_command(command: str) -> list[tuple[str, bool]]:
@@ -141,15 +210,8 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
     return tokens
 
 
-def prepare_command(command: str) -> list[str]:
-    """Apply command-line settings while preserving quoted argument boundaries.
-
-    Webhook adapters use this before handing configured commands to ``PRAgent``. Parsing
-    with ``str.split(" ")`` breaks values such as ``--section.key=\"words with spaces\"``;
-    the tokenizer keeps the value as one argument and preserves explicit quoting for YAML.
-    Returning the token list avoids serializing it back to a string, which would otherwise
-    be re-parsed by ``PRAgent`` and could alter quoted arguments.
-    """
+def parse_command(command: str) -> list[str]:
+    """Normalize configured command strings to argv without applying settings."""
     tokens = _split_command(command)
     if not tokens:
         return []
@@ -161,11 +223,29 @@ def prepare_command(command: str) -> list[str]:
             key, value = argument.split("=", 1)
             argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
         args.append(argument)
+    return [action] + args
+
+
+def _validation_args(args: list[str]) -> list[str]:
+    """Project setting arguments to their keys for command-line validation."""
+    return [argument.split("=", 1)[0] for argument in args]
+
+
+def prepare_command(command: str) -> list[str]:
+    """Apply configured command settings while retaining argument boundaries.
+
+    Return argv so ``PRAgent`` does not parse the command again. Quoted setting
+    values retain their string type when passed to the settings loader.
+    """
+    command_args = parse_command(command)
+    if not command_args:
+        return []
+    action, *args = command_args
     kept, rejected = [], []
     for argument in args:
         # Validate the key only. The value is free text - a review instruction may legitimately
         # mention openai.key or config.url - and only the key can actually set a setting.
-        is_allowed, offending_param = CliArgs.validate_user_args([argument.split("=", 1)[0]])
+        is_allowed, offending_param = CliArgs.validate_user_args(_validation_args([argument]))
         if is_allowed:
             kept.append(argument)
         else:
@@ -213,6 +293,8 @@ class PRAgent:
                 )
             except Exception as e:
                 get_logger().exception("Failed to process the command.")
+                if isinstance(e, IncompletePullRequestFilesError):
+                    publish_incomplete_github_files_comment(pr_url)
                 # Status carries no description: it is free text, and the exception
                 # message can embed PR URLs, repo names, or other request content.
                 span.set_status(StatusCode.ERROR)
@@ -238,7 +320,7 @@ class PRAgent:
             action, *args = request
 
         # validate args
-        is_valid, arg = CliArgs.validate_user_args(args)
+        is_valid, arg = CliArgs.validate_user_args(_validation_args(args))
         if not is_valid:
             get_logger().error(
                 f"CLI argument for param '{arg}' is forbidden. Use instead a configuration file."
@@ -263,7 +345,9 @@ class PRAgent:
 
                         # Define the language-specific instruction and the separator
                         lang_instruction_text = (f"Your response MUST be written in the language corresponding "
-                                                 f"to locale code: '{response_language}'. This is crucial.")
+                                                 f"to locale code: '{response_language}'. This is crucial. "
+                                                 f"Keep schema control values (such as 'No', 'Yes', 'None', "
+                                                 f"'false') in their original English form and do not translate them.")
                         separator_text = "\n======\n\nIn addition, "
 
                         # Check if the specific language instruction is already present to avoid duplication
@@ -288,6 +372,8 @@ class PRAgent:
             if get_settings().get("OTEL.INCLUDE_ERROR_DETAILS", False):
                 span.set_attribute("error.message", f"Unknown command: {action}")
             return False
+
+        reapply_artifact_context()
 
         # Only after validation: an unknown action is arbitrary user input and
         # must not become a span name, span attribute, or metric label.

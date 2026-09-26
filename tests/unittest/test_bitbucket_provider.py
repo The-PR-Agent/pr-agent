@@ -3,15 +3,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from atlassian.bitbucket import Bitbucket
-from requests.exceptions import HTTPError
+from requests import Request, Response
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import HTTPError, Timeout
 
-from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.algo.utils import (
+from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsHeader,
     PRCodeSuggestionsIdentity,
     PRReviewHeader,
     PRReviewIdentity,
 )
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -24,6 +26,24 @@ def _added_file(filename="src/example.py", lines=("a = 1", "b = 2", "c = 3")):
 
 
 class TestBitbucketProvider:
+    @staticmethod
+    def _source_write_provider():
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "workspace"
+        provider.repo_slug = "repository"
+        provider.headers = {"Authorization": "Bearer test-value"}
+        return provider
+
+    @staticmethod
+    def _source_write_response(status_code: int):
+        url = "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/"
+        response = Response()
+        response.status_code = status_code
+        response.url = url
+        response.request = Request("POST", url).prepare()
+        response._content = b"response-body-sentinel"
+        return response
+
     @staticmethod
     def _code_suggestion(line: int, end_line: int = None):
         return {
@@ -81,6 +101,51 @@ class TestBitbucketProvider:
 
         assert provider.edit_comment(comment, "updated body") is False
 
+    def test_edit_comment_updates_the_payload_returned_by_publish_comment(self):
+        # publish_comment returns the raw API payload, which carries no update method of its own,
+        # so the edit has to reach Bitbucket through the pull request endpoint.
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 1000
+        provider.pr = MagicMock()
+        comment = {"id": 42, "type": "pullrequest_comment", "content": {"raw": "progress"}}
+
+        assert provider.edit_comment(comment, "updated body") is True
+
+        provider.pr.put.assert_called_once_with(
+            "comments/42", data={"content": {"raw": "updated body"}}
+        )
+
+    def test_edit_comment_truncates_a_payload_body_over_the_comment_limit(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 50
+        provider.pr = MagicMock()
+        comment = {"id": 42, "content": {"raw": "progress"}}
+
+        assert provider.edit_comment(comment, "a" * 200) is True
+
+        sent = provider.pr.put.call_args.kwargs["data"]["content"]["raw"]
+        assert len(sent) <= provider.max_comment_length
+
+    def test_edit_comment_returns_false_when_updating_a_payload_fails(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 1000
+        provider.pr = MagicMock()
+        provider.pr.put.side_effect = HTTPError("edit failed")
+
+        assert provider.edit_comment({"id": 42}, "updated body") is False
+
+    def test_edit_comment_updates_a_comment_object_through_the_client(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.max_comment_length = 1000
+        provider.pr = MagicMock()
+        cloud_comment = MagicMock()
+        comment = SimpleNamespace(body="progress", _cloud_comment=cloud_comment)
+
+        assert provider.edit_comment(comment, "updated body") is True
+
+        cloud_comment.update.assert_called_once_with(content={"raw": "updated body"})
+        provider.pr.put.assert_not_called()
+
     def test_publish_description_raises_on_non_success_response(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.bitbucket_pull_request_api_url = "https://api.bitbucket.org/pullrequests/1"
@@ -103,6 +168,64 @@ class TestBitbucketProvider:
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
             provider.publish_description("AI title", "Updated description")
 
+    @pytest.mark.parametrize("status_code", [200, 201, 204])
+    def test_create_or_update_pr_file_accepts_success_response(self, status_code):
+        provider = self._source_write_provider()
+        response = self._source_write_response(status_code)
+
+        with patch(
+            "pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response
+        ) as request:
+            result = provider.create_or_update_pr_file(
+                "CHANGELOG.md", "feature", "new content", "Update changelog"
+            )
+
+        assert result is None
+        request.assert_called_once()
+        assert request.call_args.args == (
+            "POST",
+            "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/",
+        )
+        assert request.call_args.kwargs["data"] == {"message": "Update changelog", "branch": "feature"}
+        assert request.call_args.kwargs["files"] == {"CHANGELOG.md": "new content"}
+        assert set(request.call_args.kwargs["headers"]) == {"Authorization"}
+
+    @pytest.mark.parametrize("status_code", [401, 403, 409, 500, 503])
+    def test_create_or_update_pr_file_propagates_http_errors(self, status_code):
+        provider = self._source_write_provider()
+        response = self._source_write_response(status_code)
+
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request,
+            patch("pr_agent.git_providers.bitbucket_provider.get_logger") as get_logger,
+            pytest.raises(HTTPError) as raised,
+        ):
+            provider.create_or_update_pr_file(
+                "CHANGELOG.md", "feature", "new content", "Update changelog"
+            )
+
+        assert raised.value.response is response
+        request.assert_called_once()
+        get_logger.assert_not_called()
+
+    @pytest.mark.parametrize("error_type", [RequestsConnectionError, Timeout])
+    def test_create_or_update_pr_file_propagates_transport_errors(self, error_type):
+        provider = self._source_write_provider()
+        error = error_type("transport failed")
+
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.requests.request", side_effect=error) as request,
+            patch("pr_agent.git_providers.bitbucket_provider.get_logger") as get_logger,
+            pytest.raises(error_type) as raised,
+        ):
+            provider.create_or_update_pr_file(
+                "CHANGELOG.md", "feature", "new content", "Update changelog"
+            )
+
+        assert raised.value is error
+        request.assert_called_once()
+        get_logger.assert_not_called()
+
     def test_parse_pr_url(self):
         url = "https://bitbucket.org/WORKSPACE_XYZ/MY_TEST_REPO/pull-requests/321"
         workspace_slug, repo_slug, pr_number = BitbucketProvider._parse_pr_url(url)
@@ -111,7 +234,16 @@ class TestBitbucketProvider:
         assert pr_number == 321
 
     @pytest.mark.parametrize(
-        ("status", "lines_added", "lines_removed", "filename", "old_filename", "raw_diff", "expected_patch", "edit_type"),
+        (
+            "status",
+            "lines_added",
+            "lines_removed",
+            "filename",
+            "old_filename",
+            "raw_diff",
+            "expected_patch",
+            "edit_type",
+        ),
         [
             (
                 "modified",
@@ -281,6 +413,80 @@ not a valid hunk
             "Bitbucket failed to get diff for file src/example.py"
         )
 
+    def test_get_diff_files_keeps_diff_header_literals_inside_hunks(self):
+        raw_diff = """diff --git a/src/parser.py b/src/parser.py
+index 1111111..2222222 100644
+--- a/src/parser.py
++++ b/src/parser.py
+@@ -1,2 +1,2 @@
+ diff --git context literal
+-diff --git removed literal
++diff --git added literal
+"""
+
+        diff_file = self._get_single_diff_file(
+            raw_diff,
+            "modified",
+            1,
+            1,
+            "src/parser.py",
+        )
+
+        assert diff_file.patch == (
+            "@@ -1,2 +1,2 @@\n"
+            " diff --git context literal\n"
+            "-diff --git removed literal\n"
+            "+diff --git added literal\n"
+        )
+
+    def test_get_diff_files_splits_crlf_headers_after_preamble_in_diffstat_order(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.diff_files = None
+        provider.pr = MagicMock()
+
+        first = MagicMock()
+        first.new.path = "src/first.py"
+        first.old.path = "src/first.py"
+        first.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+
+        second = MagicMock()
+        second.new.path = "src/second.py"
+        second.old.path = "src/second.py"
+        second.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+
+        diffstats = [first, second]
+        provider.pr.diffstat.return_value = diffstats
+        provider.pr.diff.return_value = (
+            "Bitbucket generated diff\r\n"
+            "\r\n"
+            "diff --git a/src/first.py b/src/first.py\r\n"
+            "index 1111111..2222222 100644\r\n"
+            "--- a/src/first.py\r\n"
+            "+++ b/src/first.py\r\n"
+            "@@ -1 +1 @@\r\n"
+            "-old first\r\n"
+            "+new first\r\n"
+            "diff --git a/src/second.py b/src/second.py\r\n"
+            "index 3333333..4444444 100644\r\n"
+            "--- a/src/second.py\r\n"
+            "+++ b/src/second.py\r\n"
+            "@@ -1 +1 @@\r\n"
+            "-old second\r\n"
+            "+new second\r\n"
+        )
+
+        settings = MagicMock()
+        settings.get.return_value = True
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
+        ):
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["src/first.py", "src/second.py"]
+        assert diff_files[0].patch.startswith("@@ -1 +1 @@\r\n-old first")
+        assert diff_files[1].patch.startswith("@@ -1 +1 @@\r\n-old second")
+
     def test_get_repo_file_content_reads_from_target_branch(self):
         # Repo-context files must be read from the PR destination (target) branch,
         # matching the other providers.
@@ -337,6 +543,23 @@ not a valid hunk
                 provider.get_pr_file_content("CHANGELOG.md", "main")
 
         response.raise_for_status.assert_called_once_with()
+
+    def test_get_pr_file_content_strict_missing_file_is_empty(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "workspace"
+        provider.repo_slug = "repository"
+        provider.headers = {"Authorization": "Bearer token"}
+        provider.pr = MagicMock(
+            source_branch="feature",
+            destination_branch="main",
+            data={"destination": {"commit": {"hash": "base-sha"}}},
+        )
+        response = MagicMock(status_code=404, text="not found")
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            assert provider.get_pr_file_content("CHANGELOG.md", "main", propagate_errors=True) == ""
+
+        response.raise_for_status.assert_not_called()
 
     @pytest.mark.parametrize("comment", [{"id": 123}, 123])
     def test_remove_comment_accepts_returned_comment_or_stored_id(self, comment):
@@ -556,6 +779,24 @@ not a valid hunk
         assert request.call_count == 2
         for response in responses:
             response.raise_for_status.assert_called_once_with()
+
+    def test_publish_code_suggestions_preserves_backslashes_in_diff(self):
+        provider = self._provider_for_code_suggestions()
+        provider.publish_inline_comments = MagicMock(return_value=True)
+        suggestion = self._code_suggestion(2)
+        suggestion["body"] = '```suggestion\npattern = r"\\d+"\n```'
+        suggestion["original_suggestion"] = {
+            "existing_code": 'pattern = r"\\w+"',
+            "improved_code": 'pattern = r"\\d+"',
+        }
+
+        result = provider.publish_code_suggestions([suggestion])
+
+        assert result is True
+        post_parameters = provider.publish_inline_comments.call_args.args[0]
+        assert len(post_parameters) == 1
+        assert r"\w+" in post_parameters[0]["body"]
+        assert r"\d+" in post_parameters[0]["body"]
 
     def test_publish_code_suggestions_reports_http_failures(self):
         provider = self._provider_for_code_suggestions()
@@ -1143,6 +1384,24 @@ class TestBitbucketServerProvider:
         assert result is True
         assert provider.bitbucket_client.post.call_count == 2
 
+    def test_publish_code_suggestions_preserves_backslashes_in_diff(self):
+        provider = self._provider_for_code_suggestions()
+        provider.publish_inline_comments = MagicMock(return_value=True)
+        suggestion = self._code_suggestion(2)
+        suggestion["body"] = '```suggestion\npattern = r"\\d+"\n```'
+        suggestion["original_suggestion"] = {
+            "existing_code": 'pattern = r"\\w+"',
+            "improved_code": 'pattern = r"\\d+"',
+        }
+
+        result = provider.publish_code_suggestions([suggestion])
+
+        assert result is True
+        post_parameters = provider.publish_inline_comments.call_args.args[0]
+        assert len(post_parameters) == 1
+        assert r"\w+" in post_parameters[0]["body"]
+        assert r"\d+" in post_parameters[0]["body"]
+
     def test_publish_code_suggestions_reports_failures_and_continues(self):
         provider = self._provider_for_code_suggestions()
         provider.bitbucket_client.post.side_effect = [
@@ -1589,7 +1848,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nmultiple\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n-multiple\n+readme\n+without\n+some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n-multiple\n+readme\n+without\n"
+                    "+some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )
@@ -1611,7 +1873,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nsome\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n"
+                    " to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )
@@ -1633,7 +1898,10 @@ class TestBitbucketServerProvider:
             FilePatchInfo(
                 'file\nwith\nsome\nlines\nto\nemulate\na\nreal\nfile',
                 'readme\nwithout\nsome\nlines\nto\nsimulate\na\nreal\nfile',
-                '@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n to\n-emulate\n+simulate\n a\n real\n file\n',
+                (
+                    "@@ -1,9 +1,9 @@\n-file\n-with\n+readme\n+without\n some\n lines\n"
+                    " to\n-emulate\n+simulate\n a\n real\n file\n"
+                ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
             )

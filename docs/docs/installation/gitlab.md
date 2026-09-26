@@ -1,3 +1,21 @@
+## Merge request diff limits
+
+PR-Agent requires GitLab 15.7 or later and retrieves all pages from the merge request
+[`/diffs` endpoint](https://docs.gitlab.com/api/merge_requests/#list-merge-request-diffs).
+Pagination does not bypass GitLab's server-side diff limits. PR-Agent raises a provider
+error if the returned file count disagrees with an exact `changes_count`, or that count
+indicates overflow or is not ready. A file whose patch GitLab omits (`too_large`, or
+`collapsed` before GitLab 19.2) is diffed locally from its two revisions instead.
+
+The `/diffs` endpoint must be available. PR-Agent does not fall back to the deprecated
+`/changes` endpoint or its raw-diff retry.
+
+PR-Agent reads fresh merge request metadata before and after collecting the diff pages.
+If the revision or file count changes during collection, it retries once, then raises a
+provider error if they change again. Non-empty results also require usable base/head
+references for loading file content. If the merge request moves after incremental
+setup, PR-Agent falls back to a full review instead of mixing revisions.
+
 ## Run as a GitLab Pipeline
 
 You can use a pre-built Action Docker image to run PR-Agent as a GitLab pipeline. This is a simple way to get started with PR-Agent without setting up your own server.
@@ -117,7 +135,7 @@ git clone https://github.com/the-pr-agent/pr-agent.git
     2. In the secrets file/variables:
         - Set your AI model key in the respective section
         - In the [gitlab] section, set `personal_access_token` (with token from step 2) and `shared_secret` (with secret from step 3)
-        - **Authentication type**: Set `auth_type` to `"private_token"` for older GitLab versions (e.g., 11.x) or private deployments. Default is `"oauth_token"` for gitlab.com and newer versions.
+        - **Authentication type**: Set `auth_type` to `"private_token"` to send the token in the `PRIVATE-TOKEN` header, or use the default `"oauth_token"` for the `Authorization: Bearer` header. Both are supported on GitLab.com and self-managed instances.
 
 6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
@@ -136,7 +154,7 @@ CONFIG__GIT_PROVIDER=gitlab
 GITLAB__PERSONAL_ACCESS_TOKEN=<personal_access_token>
 GITLAB__SHARED_SECRET=<shared_secret>
 GITLAB__URL=https://gitlab.com
-GITLAB__AUTH_TYPE=oauth_token  # Use "private_token" for older GitLab versions
+GITLAB__AUTH_TYPE=oauth_token  # Use "private_token" for the PRIVATE-TOKEN header
 OPENAI__KEY=<your_openai_api_key>
 PORT=3000  # Optional: override the webhook server port
 ```

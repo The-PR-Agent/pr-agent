@@ -116,6 +116,28 @@ repo_context_max_sibling_files = 1000
                 {"repo_id": "group/A/idea", "file_path": "AGENTS.md"},
             ], "Repo settings should still be able to select repo_context_files"
 
+    def test_repo_settings_cannot_set_description_issue_regex(self, fresh_global_settings, monkeypatch):
+        """A repo's .pr_agent.toml must not be able to choose the pattern that is
+        compiled and run over the whole pull-request description: an ambiguous one
+        backtracks exponentially. Ordinary [config] keys still apply.
+        """
+        repo_toml = b"""
+[config]
+description_issue_regex = '(?:[A-Za-z ]+)+X(\\d+)'
+model = "gpt-4o"
+"""
+        monkeypatch.setattr(
+            "pr_agent.git_providers.utils.get_git_provider_with_context",
+            lambda url: FakeGitProvider(repo_toml),
+        )
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            git_utils.apply_repo_settings("https://git.example/projects/A/repos/a/pull-requests/1")
+            assert get_settings().config.get("description_issue_regex") != "(?:[A-Za-z ]+)+X(\\d+)", \
+                "Repo settings must not be able to set description_issue_regex"
+            assert get_settings().config.get("model") == "gpt-4o", \
+                "Repo settings should still be able to set an ordinary [config] key"
+
     def test_repo_selects_siblings_without_changing_host_allowlist(self, fresh_global_settings, monkeypatch):
         repo_toml = b"""
 [config]

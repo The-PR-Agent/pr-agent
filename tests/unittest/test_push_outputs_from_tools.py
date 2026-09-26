@@ -177,3 +177,69 @@ async def test_improve_still_publishes_to_the_provider(emitted, monkeypatch):
     await tool.run()
 
     tool.git_provider.remove_initial_comment.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_improve_external_output_reports_partial_suggestion_coverage(emitted, monkeypatch):
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = MagicMock()
+    tool.git_provider.get_files.return_value = ["src/foo.py"]
+    tool.git_provider.is_supported.return_value = False
+    tool.pr_url = "https://github.com/org/repo/pull/1"
+    tool.progress_response = None
+    tool.remaining_files_list = ["omitted.py"]
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 2
+    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+                        MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
+
+    await tool.run()
+
+    assert len(emitted) == 1
+    markdown = emitted[0][1]["markdown"]
+    assert "src/foo.py:12-18" in markdown
+    assert "1 of 2 analysis chunks failed" in markdown
+    assert "omitted.py" in markdown
+
+
+@pytest.mark.asyncio
+async def test_improve_external_output_reports_no_suggestions_and_omitted_files(emitted, monkeypatch):
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = MagicMock()
+    tool.git_provider.get_files.return_value = ["src/foo.py"]
+    tool.git_provider.is_supported.return_value = False
+    tool.pr_url = "https://github.com/org/repo/pull/1"
+    tool.progress_response = None
+    tool.remaining_files_list = ["omitted.py"]
+    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+                        MagicMock(return_value=_awaitable({"code_suggestions": []})))
+
+    await tool.run()
+
+    assert len(emitted) == 1
+    markdown = emitted[0][1]["markdown"]
+    assert "No code suggestions found in the successfully analyzed chunks." in markdown
+    assert "omitted.py" in markdown
+
+
+@pytest.mark.asyncio
+async def test_improve_external_output_does_not_report_filtered_suggestions(emitted, monkeypatch):
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = MagicMock()
+    tool.git_provider.get_files.return_value = ["src/foo.py"]
+    tool.git_provider.is_supported.return_value = True
+    tool._is_suggestion_line_range_valid = MagicMock(return_value=False)
+    tool.pr_url = "https://github.com/org/repo/pull/1"
+    tool.progress = "Preparing suggestions..."
+    tool.progress_response = None
+    tool.remaining_files_list = ["omitted.py"]
+    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+                        MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
+
+    await tool.run()
+
+    assert len(emitted) == 1
+    markdown = emitted[0][1]["markdown"]
+    assert "No code suggestions found in the successfully analyzed chunks." in markdown
+    assert "src/foo.py:12-18" not in markdown
+    assert "omitted.py" in markdown
