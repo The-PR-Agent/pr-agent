@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -128,6 +129,54 @@ def test_for_model_does_not_replace_configured_primary_encoder_cache(monkeypatch
     assert token_handler.TokenEncoder._encoder_instance is primary_encoder
     assert token_handler.TokenEncoder._model == "primary-model"
     assert created_models == ["primary-model", "fallback-model"]
+
+
+def test_concurrent_model_switch_does_not_hand_out_previous_model_encoder(monkeypatch):
+    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings(model="new-model"))
+    monkeypatch.setattr(token_handler.TokenEncoder, "_model", "old-model")
+    stale_encoder = MagicMock(name="old-model-encoder")
+    monkeypatch.setattr(token_handler.TokenEncoder, "_encoder_instance", stale_encoder)
+
+    building = threading.Event()
+    release = threading.Event()
+
+    def create_encoder(model):
+        building.set()
+        assert release.wait(5), "test did not release the encoder build"
+        encoder = MagicMock(name=f"{model}-encoder")
+        return encoder
+
+    monkeypatch.setattr(token_handler.TokenEncoder, "_create_encoder", staticmethod(create_encoder))
+
+    switched = []
+
+    def switch_model():
+        switched.append(token_handler.TokenEncoder.get_token_encoder("new-model"))
+
+    builder = threading.Thread(target=switch_model)
+    builder.start()
+    assert building.wait(5), "encoder build never started"
+
+    # The cache must not advertise the new model while its encoder is still being
+    # built, otherwise a concurrent caller sees a match and returns the old encoder.
+    assert token_handler.TokenEncoder._model == "old-model"
+
+    concurrent = []
+
+    def concurrent_call():
+        concurrent.append(token_handler.TokenEncoder.get_token_encoder("new-model"))
+
+    caller = threading.Thread(target=concurrent_call)
+    caller.start()
+    release.set()
+    builder.join(5)
+    caller.join(5)
+
+    assert switched and concurrent
+    for encoder in switched + concurrent:
+        assert encoder is not stale_encoder
+        assert encoder is concurrent[0]
+        assert encoder is switched[0]
 
 
 def test_force_accurate_openai_uses_litellm_acount_tokens(monkeypatch):
