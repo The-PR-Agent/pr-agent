@@ -21,6 +21,7 @@ from pr_agent.algo.output_models import (
     PRCodeSuggestions,
     PRCodeSuggestionsFeedback,
     PRDescription,
+    PRDescriptionAssembled,
     PRDescriptionHeaders,
     PRFilesWalkthrough,
     PRRankResponses,
@@ -111,11 +112,19 @@ def _review_fixture():
             "relevant file": "src/app.py", "relevant line": 12, "doc placement": "after",
             "documentation": "Document the handler.",
         }]}),
-        (PRRankResponses, {"which_response_was_better": 1, "why": "It is clearer.", "score_response1": 9, "score_response2": 7}),
+        (PRRankResponses, {
+            "which_response_was_better": 1,
+            "why": "It is clearer.",
+            "score_response1": 9,
+            "score_response2": 7,
+        }),
         (DocHelper, {"user_question": "How?", "response": "Use the helper.", "relevant_sections": [{
             "file_name": "docs/guide.md", "relevant_section_header_string": "## Usage",
         }], "question_is_relevant": 1}),
-        (DocHeadingsHelper, {"user_question": "How?", "relevant_files_ranking": [{"idx": 0, "file_name": "docs/guide.md"}]}),
+        (DocHeadingsHelper, {
+            "user_question": "How?",
+            "relevant_files_ranking": [{"idx": 0, "file_name": "docs/guide.md"}],
+        }),
     ],
 )
 def test_output_models_validate_complete_fixtures(model, payload):
@@ -158,7 +167,10 @@ def test_labels_reject_unusable_model_shapes(payload):
 
 
 def test_review_alias_accepts_prompt_field_name():
-    assert Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review_[1-5]": 3}).estimated_effort_to_review == 3
+    assert Review.model_validate({
+        "key_issues_to_review": [],
+        "estimated_effort_to_review_[1-5]": 3,
+    }).estimated_effort_to_review == 3
     with pytest.raises(ValueError):
         Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
 
@@ -189,7 +201,9 @@ def test_required_label_and_list_constraints_are_enforced():
     with pytest.raises(ValueError):
         CodeSuggestion.model_validate(suggestion)
     with pytest.raises(ValueError):
-        PRRankResponses.model_validate({"which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1})
+        PRRankResponses.model_validate({
+            "which_response_was_better": 3, "why": "No", "score_response1": 1, "score_response2": 1,
+        })
     with pytest.raises(ValueError):
         Review.model_validate({"key_issues_to_review": [], "can_be_split": [{"relevant_files": [], "title": "x"}] * 4})
     with pytest.raises(ValueError):
@@ -206,11 +220,17 @@ def test_required_label_and_list_constraints_are_enforced():
             "relevant_lines_end": 1, "suggestion_score": 11, "why": "x",
         }]})
     with pytest.raises(ValueError):
-        PRRankResponses.model_validate({"which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11})
+        PRRankResponses.model_validate({
+            "which_response_was_better": 1, "why": "x", "score_response1": 0, "score_response2": 11,
+        })
     with pytest.raises(ValueError):
-        DocHelper.model_validate({"user_question": "x", "response": "x", "relevant_sections": [], "question_is_relevant": 2})
+        DocHelper.model_validate({
+            "user_question": "x", "response": "x", "relevant_sections": [], "question_is_relevant": 2,
+        })
     with pytest.raises(ValueError):
-        DocHeadingsHelper.model_validate({"user_question": "x", "relevant_files_ranking": [{"idx": -1, "file_name": "x"}]})
+        DocHeadingsHelper.model_validate({
+            "user_question": "x", "relevant_files_ranking": [{"idx": -1, "file_name": "x"}],
+        })
     with pytest.raises(ValueError):
         Review.model_validate({"key_issues_to_review": [], "risk_level": "critical"})
     with pytest.raises(ValueError):
@@ -226,6 +246,23 @@ def test_required_label_and_list_constraints_are_enforced():
             "relevant_file": "x", "issue_header": "x", "issue_content": "x",
             "start_line": 1, "end_line": 1, "unexpected": "x",
         }]})
+
+
+def test_assembled_description_validates_all_files_without_changing_prompt_limit():
+    files = [
+        {"filename": f"file_{index}.py", "changes_title": "Change", "label": "bug fix"}
+        for index in range(21)
+    ]
+    data = {"type": ["Bug fix"], "title": "Large PR", "pr_files": files}
+
+    with pytest.raises(ValueError):
+        PRDescription.model_validate(data)
+    assert len(PRDescriptionAssembled.model_validate(data).pr_files) == 21
+
+    files[-1] = {"filename": "invalid.py", "label": "bug fix"}
+    with pytest.raises(ValueError) as error:
+        PRDescriptionAssembled.model_validate(data)
+    assert error.value.errors()[0]["loc"] == ("pr_files", 20, "changes_title")
 
 
 def _split_type_args(value):
@@ -293,15 +330,24 @@ PROMPT_MODELS = {
                                   "PRReview": PRReview},
     "pr_description_prompts.toml": {"FileDescription": FileDescription, "PRDescription": PRDescription},
     "pr_description_only_description_prompts.toml": {"PRDescriptionHeaders": PRDescriptionHeaders},
-    "pr_description_only_files_prompts.toml": {"FileDescription": FileDescription, "PRFilesWalkthrough": PRFilesWalkthrough},
+    "pr_description_only_files_prompts.toml": {
+        "FileDescription": FileDescription, "PRFilesWalkthrough": PRFilesWalkthrough,
+    },
     "pr_custom_labels.toml": {"Labels": Labels},
     "pr_evaluate_prompt_response.toml": {"PRRankResponses": PRRankResponses},
     "pr_help_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_prompts.toml": {"relevant_section": RelevantSection, "DocHelper": DocHelper},
     "pr_help_docs_headings_prompts.toml": {"file_idx_and_path": FileIdxAndPath, "DocHeadingsHelper": DocHeadingsHelper},
-    "code_suggestions/pr_code_suggestions_prompts.toml": {"CodeSuggestion": CodeSuggestion, "PRCodeSuggestions": PRCodeSuggestions},
-    "code_suggestions/pr_code_suggestions_prompts_not_decoupled.toml": {"CodeSuggestion": CodeSuggestion, "PRCodeSuggestions": PRCodeSuggestions},
-    "code_suggestions/pr_code_suggestions_reflect_prompts.toml": {"CodeSuggestionFeedback": CodeSuggestionFeedback, "PRCodeSuggestionsFeedback": PRCodeSuggestionsFeedback},
+    "code_suggestions/pr_code_suggestions_prompts.toml": {
+        "CodeSuggestion": CodeSuggestion, "PRCodeSuggestions": PRCodeSuggestions,
+    },
+    "code_suggestions/pr_code_suggestions_prompts_not_decoupled.toml": {
+        "CodeSuggestion": CodeSuggestion, "PRCodeSuggestions": PRCodeSuggestions,
+    },
+    "code_suggestions/pr_code_suggestions_reflect_prompts.toml": {
+        "CodeSuggestionFeedback": CodeSuggestionFeedback,
+        "PRCodeSuggestionsFeedback": PRCodeSuggestionsFeedback,
+    },
 }
 
 
@@ -323,8 +369,10 @@ def test_prompt_fields_are_present_in_output_models():
             for field_name, annotation in re.findall(
                 r"^    ([A-Za-z_][A-Za-z0-9_\[\]-]*):\s*([^=]+)", block, re.MULTILINE
             ):
-                field = next((value for value in model.model_fields.values()
-                              if value.alias == field_name or value.alias is None and value.validation_alias == field_name), None)
+                field = next((
+                    value for value in model.model_fields.values()
+                    if value.alias == field_name or value.alias is None and value.validation_alias == field_name
+                ), None)
                 if field is None:
                     field = model.model_fields.get(field_name)
                 assert field is not None, f"{relative_path}: {class_name} field {field_name} is missing"

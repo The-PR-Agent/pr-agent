@@ -1,6 +1,14 @@
 FROM python:3.14.7-slim AS base
 COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
 
+# litellm fetches its model cost map over the network at import time, so a
+# third-party change to that map can change runtime behavior with no image
+# change and no version bump. Use the map bundled with the litellm pinned in
+# uv.lock so every stage (test and runtime) behaves how it was built and tested
+# rather than tracking today's remote data; new models then arrive with a
+# deliberate litellm bump in the lockfile.
+ENV LITELLM_LOCAL_MODEL_COST_MAP=True
+
 RUN apt-get update && apt-get install --no-install-recommends -y git curl && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -52,6 +60,8 @@ CMD ["python", "pr_agent/mosaico/server.py"]
 
 
 FROM base AS test
+# The base stage pins LITELLM_LOCAL_MODEL_COST_MAP for every stage; kept here
+# only as documentation that the unit suite keys off the bundled cost map.
 RUN uv sync --frozen --no-install-project
 COPY pr_agent pr_agent
 COPY tests tests
@@ -60,6 +70,7 @@ COPY tests tests
 COPY .github/workflows/publish.yml .github/workflows/publish.yml
 COPY .github/workflows/build-and-test.yaml .github/workflows/build-and-test.yaml
 COPY docker/Dockerfile docker/Dockerfile
+COPY docker/Dockerfile.lambda docker/Dockerfile.lambda
 COPY docker/mosaico docker/mosaico
 
 FROM base AS cli

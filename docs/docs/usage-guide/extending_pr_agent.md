@@ -17,12 +17,18 @@ Set these under `[config]` in `pr_agent/settings/configuration.toml`.
 Keep model names in configuration, not in tool code.
 
 Models that behave differently are registered in `pr_agent/algo/__init__.py`:
-`NO_SUPPORT_TEMPERATURE_MODELS` for models that reject a temperature
-parameter; `CLAUDE_EXTENDED_THINKING_MODELS` for Claude models that
+`CLAUDE_EXTENDED_THINKING_MODELS` for Claude models that
 take extended thinking. For Claude models with provider-prefixed aliases
 (bare, `anthropic/`, `vertex_ai/`, `bedrock/`), declare the canonical family
 in `_CLAUDE_MODEL_FAMILIES` to expand them across registries automatically.
 Other models can be added directly to the matching list.
+
+Temperature support is decided at runtime by probing
+`litellm.get_supported_openai_params()` for each model (see
+`_litellm_supports_temperature` in `pr_agent/algo/ai_handlers/litellm_ai_handler.py`).
+Models that must never receive the temperature parameter are listed in
+`config.no_temperature_models` in `configuration.toml`; adaptive-thinking Claude
+models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it.
 
 Context windows are registered in `MAX_TOKENS` in `pr_agent/algo/__init__.py`:
 Claude model families declared in `_CLAUDE_MODEL_FAMILIES` populate their
@@ -37,7 +43,7 @@ Verify with `PYTHONPATH=. uv run pytest tests/unittest`.
 Implement a `GitProvider` subclass and register it:
 
 1. Create `pr_agent/git_providers/<name>_provider.py`, extending the interface in `pr_agent/git_providers/git_provider.py` (`gitlab_provider.py` is the reference).
-2. Register the class in `_GIT_PROVIDERS` in `pr_agent/git_providers/__init__.py`. Keys already used: `github`, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, `plain-diff`.
+2. Add the built-in provider to `_BUILTIN_GIT_PROVIDERS` in `pr_agent/git_providers/__init__.py` as a `(module_path, class_name)` pair. Built-ins are imported lazily when selected. Keys already used: `github`, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, `plain-diff`.
 3. Select it via `[config]` → `git_provider="<name>"` in `pr_agent/settings/configuration.toml`.
 4. Add `docs/docs/installation/<name>.md` (see [`gitlab.md`](../installation/gitlab.md)) and register it under `Installation` in both `docs/mkdocs.yml` and `docs/docs/summary.md`.
 5. Select provider-dependent behavior with capability checks like `provider.is_supported("feature")` rather than provider-type checks.

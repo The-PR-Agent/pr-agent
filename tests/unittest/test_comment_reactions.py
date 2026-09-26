@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from requests.exceptions import RequestException
 
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.git_provider import GitProvider, get_reaction_setting
@@ -262,7 +263,7 @@ def test_github_refuses_a_reaction_it_cannot_send(monkeypatch):
 
 def test_github_survives_an_api_failure(monkeypatch):
     provider = _github(monkeypatch)
-    provider.pr._requester.requestJsonAndCheck.side_effect = RuntimeError("boom")
+    provider.pr._requester.requestJsonAndCheck.side_effect = RequestException("boom")
 
     assert provider.add_reaction(7, "eyes") is None
 
@@ -398,6 +399,44 @@ async def test_a_swallowed_tool_failure_gets_a_failure_outcome(
     assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
     assert provider.removed == [(4242, 1)]
     assert get_settings().config.get("propagate_tool_errors") is False
+
+
+@pytest.mark.asyncio
+async def test_incomplete_files_constructor_failure_is_visible_and_marked_failed(
+    reactions, comment_handler, monkeypatch
+):
+    import pr_agent.agent.pr_agent as pr_agent_module
+
+    reactions(failure="confused")
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
+    monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
+    monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)
+
+    class IncompleteReviewTool:
+        def __init__(self, _pr_url, ai_handler=None, args=None):
+            raise pr_agent_module.IncompletePullRequestFilesError("private mismatch details")
+
+    monkeypatch.setitem(pr_agent_module.command2class, "review", IncompleteReviewTool)
+
+    github_app, provider = comment_handler
+    provider.publish_comment = MagicMock()
+    monkeypatch.setattr(
+        pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider
+    )
+    agent = pr_agent_module.PRAgent(ai_handler="fake-ai")
+
+    result = await github_app.handle_comments_on_pr(
+        _comment_event(), "issue_comment", "user", "1", "created", {}, agent
+    )
+
+    assert result is False
+    published = provider.publish_comment.call_args.args[0]
+    assert "GitHub returned an incomplete or inconsistent changed-file set" in published
+    assert "If this pull request changes more than 3,000 files" in published
+    assert "Otherwise, retry the command" in published
+    assert "private mismatch details" not in published
+    assert provider.reactions == [(4242, "eyes"), (4242, "confused")]
 
 
 @pytest.mark.asyncio

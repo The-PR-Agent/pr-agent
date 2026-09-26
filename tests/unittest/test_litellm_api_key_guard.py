@@ -814,7 +814,9 @@ async def test_native_azure_oidc_bridge_responses(monkeypatch, native_azure_oidc
     monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", True)
     provider = MagicMock(side_effect=AssertionError("OIDC must not create an additional credential provider"))
     monkeypatch.setattr(azure_common, "get_azure_ad_token_provider", provider)
-    assert await state.invoke(handler, guard_key=guard_key, model="azure/responses/gpt-4o") == "Bearer exchanged-token-1"
+    assert await state.invoke(
+        handler, guard_key=guard_key, model="azure/responses/gpt-4o"
+    ) == "Bearer exchanged-token-1"
     assert len(state.exchanged) == 1
     url, data = state.exchanged[0]
     assert url == "https://owned-authority.example/owned-tenant/oauth2/v2.0/token"
@@ -1012,7 +1014,9 @@ async def test_native_azure_ad_sdk_companion(
 @pytest.mark.parametrize("guard_key", (False, True))
 @pytest.mark.parametrize("entrypoint", ("chat", "probe"))
 @pytest.mark.asyncio
-async def test_native_azure_ad_sdk_rejects_implicit_refresh(monkeypatch, native_azure_oidc, transport, guard_key, entrypoint):
+async def test_native_azure_ad_sdk_rejects_implicit_refresh(
+    monkeypatch, native_azure_oidc, transport, guard_key, entrypoint
+):
     import azure.identity
 
     state = native_azure_oidc
@@ -1226,7 +1230,9 @@ async def test_tokenless_azure_nested_contexts(monkeypatch, native_azure_oidc, t
 @pytest.mark.parametrize("host", ("https://owned.example", "https://owned.services.ai.azure.com"))
 @pytest.mark.parametrize("headers", ({}, {"api-key": "gateway-key"}, {"Authorization": "Basic explicit"}))
 @pytest.mark.asyncio
-async def test_native_raw_azure_companion_snapshot(monkeypatch, native_azure_oidc, native_companion_auth, host, headers):
+async def test_native_raw_azure_companion_snapshot(
+    monkeypatch, native_azure_oidc, native_companion_auth, host, headers
+):
     import azure.identity
 
     state = native_azure_oidc
@@ -1356,7 +1362,9 @@ async def test_ordinary_azure_sdk_context_does_not_select_oidc(monkeypatch, nati
 
     litellm_handler._install_azure_oidc_bridge()
     monkeypatch.setattr(litellm, "enable_azure_ad_token_refresh", False)
-    monkeypatch.setattr(azure_common, "get_secret_str", lambda name: "outside-token" if name == "AZURE_AD_TOKEN" else None)
+    monkeypatch.setattr(
+        azure_common, "get_secret_str", lambda name: "outside-token" if name == "AZURE_AD_TOKEN" else None
+    )
     context = litellm_handler._azure_oidc_request.set({
         "selector": None, "dispatch_token": "owned-token", "generated_guard": True,
     })
@@ -1776,21 +1784,34 @@ async def test_missing_private_import_preserves_module_and_fails_closed(monkeypa
         with pytest.raises(RuntimeError, match="JSONProviderRegistry.*request isolation"):
             module.LiteLLMAIHandler()
         return
-    handler = module.LiteLLMAIHandler()
-    completion = AsyncMock(return_value=_mock_response())
-    monkeypatch.setattr(module, "acompletion", completion)
-    if symbol == "AnthropicModelInfo":
-        with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
-            await handler.probe_completion("anthropic/claude-sonnet-4")
-        completion.assert_not_called()
-        await handler.probe_completion("gpt-4o")
-    else:
-        with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
+    # The guarded interfaces moved to cloud_auth, which resolves the handler's slot
+    # values at call time; point those lookups at the isolated module to prove its
+    # fail-closed guards fire on the missing private interface.
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(cloud_auth, "_handler_module", module)
+        if symbol == "AnthropicModelInfo":
+            with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
+                module._install_anthropic_auth_token_bridge()
+        else:
+            with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
+                module._uses_openai_responses_transport("gpt-4o", "openai")
+        handler = module.LiteLLMAIHandler()
+        completion = AsyncMock(return_value=_mock_response())
+        scoped.setattr(module, "acompletion", completion)
+        if symbol == "AnthropicModelInfo":
+            with pytest.raises(RuntimeError, match="AnthropicModelInfo.*request isolation"):
+                await handler.probe_completion("anthropic/claude-sonnet-4")
+            completion.assert_not_called()
             await handler.probe_completion("gpt-4o")
-        completion.assert_not_called()
-        assert module._uses_openai_responses_transport("openai/responses/gpt-4o", "openai")
-        assert not module._uses_openai_responses_transport("ft:babbage-002:example", "openai")
-        await handler.probe_completion("anthropic/claude-sonnet-4")
+        else:
+            with pytest.raises(RuntimeError, match="_get_model_info_helper.*request isolation"):
+                await handler.probe_completion("gpt-4o")
+            completion.assert_not_called()
+            assert module._uses_openai_responses_transport("openai/responses/gpt-4o", "openai")
+            assert not module._uses_openai_responses_transport("ft:babbage-002:example", "openai")
+            await handler.probe_completion("anthropic/claude-sonnet-4")
 
 
 @pytest.mark.parametrize("method", ("list_providers", "get", "exists"))
@@ -1834,6 +1855,27 @@ def test_provider_environment_tables_cover_known_or_legacy_transports():
     known_providers = set(litellm.provider_list) | set(litellm_handler.JSONProviderRegistry.list_providers())
     for table in (litellm_handler.PROVIDER_API_KEY_ENV_VARS, litellm_handler.PROVIDER_API_BASE_ENV_VARS):
         assert set(table) <= known_providers | legacy_transports
+
+
+def test_moved_provider_tables_remain_exposed_on_handler():
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    for name in (
+        "OPENAI_COMPATIBLE_REQUEST_PROVIDERS",
+        "OPENAI_RAW_HTTP_REQUEST_PROVIDERS",
+        "MANAGED_AUTH_REQUEST_PROVIDERS",
+    ):
+        assert getattr(litellm_handler, name) is getattr(cloud_auth, name)
+
+
+def test_moved_text_completion_transport_helper_remains_exposed_on_handler():
+    from pr_agent.algo.ai_handlers import cloud_auth
+
+    helper = litellm_handler._uses_openai_text_completion_transport
+    assert helper is cloud_auth._uses_openai_text_completion_transport
+    assert helper("gpt-3.5-turbo-instruct", "text-completion-openai")
+    assert helper("ft:babbage-002:example", "openai")
+    assert not helper("gpt-4o", "openai")
 
 
 @pytest.mark.parametrize("provider", ("aleph_alpha", "anyscale"))
@@ -2691,6 +2733,7 @@ def test_keyless_registry_provider_does_not_read_a_missing_environment_name(monk
 
     assert handler._provider_environment_api_keys == {}
     assert litellm_handler._has_live_provider_api_key_environment("keyless") is False
+    registry.get.assert_called_with("keyless")
 
 
 @pytest.mark.asyncio
@@ -2853,6 +2896,14 @@ async def test_compatible_provider_key_shadows_residual_global(monkeypatch):
     monkeypatch.setattr(litellm, "api_key", "another-request-key")
     resolve_provider = MagicMock(side_effect=AssertionError("explicit providers must use the environment snapshot"))
     monkeypatch.setattr(litellm, "get_llm_provider", resolve_provider)
+    # Isolate the handler's temperature metadata probe: its litellm lookup is
+    # orthogonal to the api key snapshot and, for openai-compatible providers,
+    # internally resolves the provider through get_llm_provider.
+    monkeypatch.setattr(
+        litellm,
+        "get_supported_openai_params",
+        lambda model, custom_llm_provider=None: ["temperature"],
+    )
 
     kwargs = await _call(LiteLLMAIHandler(), "together_ai/model")
 
@@ -4319,7 +4370,9 @@ async def test_vertex_impersonated_adc_retains_snapshot_through_load_and_refresh
     (None, {"GOOGLE_CLOUD_PROJECT": "", "GCLOUD_PROJECT": "legacy"}, None),
 ))
 @pytest.mark.asyncio
-async def test_vertex_project_snapshot_preserves_explicit_project_precedence(monkeypatch, setting, environment, expected):
+async def test_vertex_project_snapshot_preserves_explicit_project_precedence(
+    monkeypatch, setting, environment, expected
+):
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings({"VERTEXAI.VERTEX_PROJECT": setting}))
     for variable, value in environment.items():
         monkeypatch.setenv(variable, value)
@@ -5572,7 +5625,9 @@ async def test_vertex_wif_failure_does_not_cache_or_fallback(monkeypatch, failur
 
     info = _external_vertex_adc("123", "identity_pool", None)
     credentials = MagicMock()
-    credentials.get_project_id.return_value = None if failure == "missing" else 123 if failure == "wrong_type" else "project"
+    credentials.get_project_id.return_value = (
+        None if failure == "missing" else 123 if failure == "wrong_type" else "project"
+    )
     if failure == "discovery":
         credentials.get_project_id.side_effect = RuntimeError("discovery failed")
     vertex = VertexBase()
@@ -5585,7 +5640,9 @@ async def test_vertex_wif_failure_does_not_cache_or_fallback(monkeypatch, failur
     async def completion(**kwargs):
         return await vertex.get_access_token_async(kwargs["vertex_credentials"], None)
 
-    expected = {"missing": ValueError, "wrong_type": TypeError, "discovery": RuntimeError, "refresh": RuntimeError}[failure]
+    expected = {
+        "missing": ValueError, "wrong_type": TypeError, "discovery": RuntimeError, "refresh": RuntimeError,
+    }[failure]
     with pytest.raises(expected):
         await LiteLLMAIHandler()._acompletion(
             _completion=completion, model="vertex_ai/gemini-2.5-pro", vertex_credentials=json.dumps(info),
@@ -6511,6 +6568,12 @@ async def test_bare_model_provider_alias_uses_canonical_request_settings(monkeyp
 async def test_bare_model_provider_resolution_is_cached_per_handler(monkeypatch):
     resolve_provider = MagicMock(return_value=("gpt-4o", "openai", None, None))
     monkeypatch.setattr(litellm, "get_llm_provider", resolve_provider)
+    # Isolate the temperature metadata probe (see the shadowing test above).
+    monkeypatch.setattr(
+        litellm,
+        "get_supported_openai_params",
+        lambda model, custom_llm_provider=None: ["temperature"],
+    )
     handler = LiteLLMAIHandler()
 
     await _call(handler, "gpt-4o")
@@ -7954,7 +8017,9 @@ async def test_mantle_http_auth(monkeypatch, auth, entrypoint):
      "us-west-2", "https://mantle.example/v1"),
 ))
 @pytest.mark.asyncio
-async def test_native_mantle_region(monkeypatch, auth, entrypoint, selection, environment, expected_region, expected_base):
+async def test_native_mantle_region(
+    monkeypatch, auth, entrypoint, selection, environment, expected_region, expected_base
+):
     for name in ("AWS_REGION_NAME", "AWS_REGION", "AWS_DEFAULT_REGION", "DEFAULT_REGION", "BEDROCK_MANTLE_REGION"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AWS_USE_IMDS", "false")

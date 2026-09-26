@@ -55,6 +55,7 @@ _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
 _CODE_BLOCK_RE = re.compile(r"```suggestion[^\n]*\n(.*?)```", re.DOTALL)
+_DIFF_BLOCK_RE = re.compile(r"```diff[^\n]*\n(.*?)```", re.DOTALL)
 
 
 def has_marker(body: str) -> bool:
@@ -115,12 +116,11 @@ def key_issue_location_fingerprint(fingerprint: str, start_line: int, end_line: 
 
 
 def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[str]:
-    match = _CODE_BLOCK_RE.search(_strip_markers(body))
-    if not match:
+    code = extract_suggestion_code(body)
+    if not code:
         return None
     # Do not lower-case: code is case-sensitive, so case-only differences
     # must produce distinct fingerprints.
-    code = match.group(1)
     code = _WS_RE.sub(" ", code).strip()
     if not code:
         return None
@@ -129,10 +129,31 @@ def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[
 
 
 def extract_suggestion_code(body: str) -> Optional[str]:
-    match = _CODE_BLOCK_RE.search(_strip_markers(body))
-    if not match:
+    body = _strip_markers(body)
+    match = _CODE_BLOCK_RE.search(body)
+    if match:
+        return match.group(1).strip("\n")
+    diff_match = _DIFF_BLOCK_RE.search(body)
+    if diff_match:
+        return _reconstruct_improved_code(diff_match.group(1))
+    return None
+
+
+def _reconstruct_improved_code(diff_text: str) -> Optional[str]:
+    """Rebuild the post-change code from a unified diff inside a ```diff fence.
+
+    Context and added lines drop their leading space or ``+`` prefix and removed
+    lines are dropped, mirroring how Azure DevOps renders a suggestion as a diff
+    block."""
+    lines = []
+    for line in diff_text.splitlines():
+        if line.startswith((" ", "+")):
+            lines.append(line[1:])
+        elif line.startswith("-"):
+            continue
+    if not lines:
         return None
-    return match.group(1).strip("\n")
+    return "\n".join(lines).strip("\n")
 
 
 def _render_marker(prefix: str, fingerprint: str, git_provider=None) -> str:

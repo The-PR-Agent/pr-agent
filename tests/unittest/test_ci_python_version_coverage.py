@@ -7,8 +7,13 @@ run only inside docker/Dockerfile's base image, so whichever minor that image
 did not carry went declared and never tested (#3187). The base has since moved
 to 3.14 (#3294), which is why both declared minors now need native jobs.
 
+Keep docker/Dockerfile.lambda on the same Python minor: #3294 left the
+Lambda image behind on 3.12 while the main Dockerfile moved to 3.14. The sync
+test below pins the two bases together so a one-file bump cannot slip
+through silently again.
+
 These tests assert the repository's CI configuration, not pr_agent logic, hence a
-file of their own. They read the checked-in workflow and Dockerfile, which the
+file of their own. They read the checked-in workflow and Dockerfiles, which the
 `test` docker target copies into the image alongside publish.yml so the suite
 carries the same signal in CI as it does locally. No network, no docker.
 """
@@ -22,12 +27,22 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BUILD_AND_TEST_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "build-and-test.yaml"
 PYPROJECT = REPOSITORY_ROOT / "pyproject.toml"
 DOCKERFILE = REPOSITORY_ROOT / "docker" / "Dockerfile"
+LAMBDA_DOCKERFILE = REPOSITORY_ROOT / "docker" / "Dockerfile.lambda"
 
 # "google-cloud-storage==3.12.0; python_version >= '3.13'" -> "3.13"
 PIN_MARKER_VERSION = re.compile(r"""python_version\s*>=\s*['"](\d+\.\d+)""")
 REQUIRES_PYTHON_MINIMUM = re.compile(r">=\s*(\d+\.\d+)")
 # Only the base stage names an image; every other stage is "FROM base AS ...".
 DOCKER_BASE_VERSION = re.compile(r"^FROM python:(\d+\.\d+)", re.MULTILINE)
+LAMBDA_BASE_VERSION = re.compile(r"^FROM public\.ecr\.aws/lambda/python:(\d+\.\d+)", re.MULTILINE)
+LAMBDA_INTERPRETER_VERSION = re.compile(
+    r"^RUN uv sync\b.*--python /var/lang/bin/python(\d+\.\d+)(?:\s|$)",
+    re.MULTILINE,
+)
+LAMBDA_SITE_PACKAGES_VERSION = re.compile(
+    r'^ENV PYTHONPATH=["\']?/opt/venv/lib/python(\d+\.\d+)/site-packages',
+    re.MULTILINE,
+)
 UV_PYTHON_FLAG = re.compile(r"--python[ =](\d+\.\d+)")
 
 
@@ -76,4 +91,40 @@ def test_every_declared_python_version_is_tested_in_ci() -> None:
         f"pyproject declares support for Python {sorted(declared)}, but build-and-test.yaml only "
         f"exercises {sorted(tested)}. Add a job for {sorted(declared - tested)}, or narrow "
         f"requires-python and drop the now-unreachable dependency pins."
+    )
+
+
+def test_lambda_base_matches_main_base() -> None:
+    """docker/Dockerfile.lambda must track docker/Dockerfile's Python minor.
+
+    #3294 moved the main image to 3.14 while the Lambda image stayed on
+    3.12, and nothing failed because no test read the Lambda Dockerfile.
+    Only the minor is asserted: AWS publishes no CPython patch tags for
+    Lambda bases, so the Lambda Dockerfile intentionally floats on the
+    minor tag instead of chasing per-build dated tags. The uv interpreter
+    path and site-packages PYTHONPATH embed the same minor and are
+    asserted too, because nothing builds this image in CI before publish.
+    """
+    main = DOCKER_BASE_VERSION.search(DOCKERFILE.read_text(encoding="utf-8"))
+    lambda_dockerfile = LAMBDA_DOCKERFILE.read_text(encoding="utf-8")
+    lambda_base = LAMBDA_BASE_VERSION.search(lambda_dockerfile)
+    interpreter = LAMBDA_INTERPRETER_VERSION.search(lambda_dockerfile)
+    site_packages = LAMBDA_SITE_PACKAGES_VERSION.search(lambda_dockerfile)
+    assert main is not None, f"could not parse a base Python version out of {DOCKERFILE}"
+    assert lambda_base is not None, f"could not parse a base Python version out of {LAMBDA_DOCKERFILE}"
+    assert lambda_base.group(1) == main.group(1), (
+        f"docker/Dockerfile is on Python {main.group(1)} but docker/Dockerfile.lambda is on "
+        f"Python {lambda_base.group(1)}. Bump the Lambda base tag, interpreter path, and "
+        f"site-packages PYTHONPATH together."
+    )
+    assert interpreter is not None, (
+        f"could not parse the uv --python interpreter version out of {LAMBDA_DOCKERFILE}"
+    )
+    assert site_packages is not None, (
+        f"could not parse the site-packages PYTHONPATH version out of {LAMBDA_DOCKERFILE}"
+    )
+    assert interpreter.group(1) == lambda_base.group(1) == site_packages.group(1), (
+        f"docker/Dockerfile.lambda mixes Python versions: base image {lambda_base.group(1)}, "
+        f"interpreter {interpreter.group(1)}, site-packages {site_packages.group(1)}. Bump the "
+        f"base tag, interpreter path, and site-packages PYTHONPATH together."
     )

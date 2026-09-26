@@ -1,4 +1,3 @@
-import os
 import re
 from collections import Counter
 from datetime import datetime
@@ -6,17 +5,18 @@ from types import SimpleNamespace
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
-from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.file_filter import filter_ignored
+from pr_agent.algo.language_handler import build_language_file_matcher, is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
 
-from ..algo.utils import (
+from ..algo.comment_identity import (
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
-    load_large_diff,
 )
+from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider
@@ -53,6 +53,7 @@ class CodeCommitFile:
         repository_name: Optional[str] = None,
         source_commit: Optional[str] = None,
         destination_commit: Optional[str] = None,
+        comparison_base_commit: Optional[str] = None,
     ):
         self.a_path = a_path
         self.a_blob_id = a_blob_id
@@ -63,6 +64,7 @@ class CodeCommitFile:
         self.repository_name = repository_name
         self.source_commit = source_commit
         self.destination_commit = destination_commit
+        self.comparison_base_commit = comparison_base_commit
 
 
 class CodeCommitProvider(GitProvider):
@@ -117,7 +119,7 @@ class CodeCommitProvider(GitProvider):
         self.git_files = []
         for target in self._get_target_contexts():
             differences = self.codecommit_client.get_differences(
-                target["repository_name"], target["destination_commit"], target["source_commit"]
+                target["repository_name"], target["comparison_base_commit"], target["source_commit"]
             )
             for item in differences:
                 self.git_files.append(
@@ -130,6 +132,7 @@ class CodeCommitProvider(GitProvider):
                         repository_name=target["repository_name"],
                         source_commit=target["source_commit"],
                         destination_commit=target["destination_commit"],
+                        comparison_base_commit=target["comparison_base_commit"],
                     )
                 )
         return self.git_files
@@ -144,12 +147,19 @@ class CodeCommitProvider(GitProvider):
             or renamed files in the merge request.
         """
         # bring files from CodeCommit only once
-        if self.diff_files:
+        if self.diff_files is not None:
             return self.diff_files
 
-        self.diff_files = []
+        diff_files = []
 
         files = self.get_files()
+        # Repository settings are request-scoped and currently come from one canonical target.
+        # Applying those ignore rules to a multi-target PR could suppress files from unrelated
+        # target repositories, so preserve the pre-existing multi-target behavior until settings
+        # can be scoped per target.
+        if len(self._get_target_contexts()) == 1:
+            files = filter_ignored(files, platform="codecommit")
+
         for diff_item in files:
             # Skip "bad extensions" from language_extensions.toml, lockfiles and minified assets
             if not is_valid_file(diff_item.filename):
@@ -159,11 +169,12 @@ class CodeCommitProvider(GitProvider):
             repository_name = diff_item.repository_name or self.repo_name
             destination_commit = diff_item.destination_commit or self.pr.destination_commit
             source_commit = diff_item.source_commit or self.pr.source_commit
+            comparison_base_commit = diff_item.comparison_base_commit or destination_commit
             try:
                 if diff_item.a_blob_id:
                     patch_filename = diff_item.a_path
                     original_file_content_str = self.codecommit_client.get_file(
-                        repository_name, diff_item.a_path, destination_commit)
+                        repository_name, diff_item.a_path, comparison_base_commit)
                     if isinstance(original_file_content_str, (bytes, bytearray)):
                         original_file_content_str = original_file_content_str.decode("utf-8")
                 else:
@@ -194,8 +205,9 @@ class CodeCommitProvider(GitProvider):
                 if diff_item.a_path == diff_item.b_path
                 else diff_item.a_path,
             )
-            self.diff_files.append(info)
+            diff_files.append(info)
 
+        self.diff_files = diff_files
         return self.diff_files
 
     def publish_description(self, pr_title: str, pr_body: str):
@@ -303,7 +315,9 @@ class CodeCommitProvider(GitProvider):
         for suggestion in code_suggestions:
             # Verify that each suggestion has the required keys
             if not all(key in suggestion for key in ["body", "relevant_file", "relevant_lines_start"]):
-                get_logger().warning(f"Skipping code suggestion #{counter}: Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
+                get_logger().warning(
+                    f"Skipping code suggestion #{counter}: "
+                    f"Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
                 continue
 
             publishable_count += 1
@@ -325,7 +339,8 @@ class CodeCommitProvider(GitProvider):
                     )
                     published_count += 1
                 except Exception as e:
-                    raise ValueError(f"CodeCommit Cannot publish code suggestions for PR: {self.pr_num}") from e
+                    get_logger().warning(
+                        f"Could not publish code suggestion #{counter} for PR {self.pr_num}: {e}")
 
             counter += 1
 
@@ -365,7 +380,8 @@ class CodeCommitProvider(GitProvider):
             return False
         return updated_comment.get("commentId") == comment_id and updated_comment.get("content") == body
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str,
+                               relevant_line_in_file: str, original_suggestion=None):
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/codecommit/client/post_comment_for_compared_commit.html
         raise NotImplementedError("CodeCommit provider does not support publishing inline comments yet")
 
@@ -388,37 +404,19 @@ class CodeCommitProvider(GitProvider):
             return ""
 
     def get_languages(self):
-        """
-        Returns a dictionary of languages, containing the percentage of each language used in the PR.
+        """Return recognized language percentages for diff prioritization."""
+        language_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(language_map)
+        language_counts = Counter()
+        for file in self.get_files():
+            if not file.filename:
+                continue
+            language = get_language(file.filename)
+            if language:
+                language_counts[language] += 1
 
-        Returns:
-        - dict: A dictionary where each key is a language name and the corresponding value is the percentage of that language in the PR.
-        """
-        commit_files = self.get_files()
-        filenames = [ item.filename for item in commit_files ]
-        extensions = CodeCommitProvider._get_file_extensions(filenames)
-
-        # Calculate the percentage of each file extension in the PR
-        percentages = CodeCommitProvider._get_language_percentages(extensions)
-
-        # The global language_extension_map is a dictionary of languages,
-        # where each dictionary item is a BoxList of extensions.
-        # We want a dictionary of extensions,
-        # where each dictionary item is a language name.
-        # We build that language->extension dictionary here in main_extensions_flat.
-        main_extensions_flat = {}
-        language_extension_map_org = get_settings().language_extension_map_org
-        language_extension_map = {k.lower(): v for k, v in language_extension_map_org.items()}
-        for language, extensions in language_extension_map.items():
-            for ext in extensions:
-                main_extensions_flat[ext] = language
-
-        # Map the file extension/languages to percentages
-        languages = {}
-        for ext, pct in percentages.items():
-            languages[main_extensions_flat.get(ext, "")] = pct
-
-        return languages
+        total = sum(language_counts.values()) or 1
+        return {language: count / total * 100 for language, count in language_counts.items()}
 
     def get_pr_branch(self):
         return self.pr.source_branch
@@ -449,7 +447,7 @@ class CodeCommitProvider(GitProvider):
         settings_filename = ".pr_agent.toml"
         target = self._get_target_contexts()[0]
         return self.codecommit_client.get_file(
-            target["repository_name"], settings_filename, target["source_commit"], optional=True
+            target["repository_name"], settings_filename, target["destination_commit"], optional=True
         )
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
@@ -544,6 +542,7 @@ class CodeCommitProvider(GitProvider):
                 "repository_name": self.repo_name,
                 "source_commit": self.pr.source_commit,
                 "destination_commit": self.pr.destination_commit,
+                "comparison_base_commit": self.pr.destination_commit,
             }]
 
         return [
@@ -551,6 +550,7 @@ class CodeCommitProvider(GitProvider):
                 "repository_name": getattr(target, "repository_name", "") or self.repo_name,
                 "source_commit": target.source_commit,
                 "destination_commit": target.destination_commit,
+                "comparison_base_commit": getattr(target, "merge_base", "") or target.destination_commit,
             }
             for target in targets
         ]
@@ -814,51 +814,3 @@ class CodeCommitProvider(GitProvider):
         elif t == "R":
             edit_type = EDIT_TYPE.RENAMED
         return edit_type
-
-    @staticmethod
-    def _get_file_extensions(filenames):
-        """
-        Return a list of file extensions from a list of filenames.
-        The returned extensions will include the dot "." prefix,
-        to accommodate for the dots in the existing language_extension_map settings.
-        Filenames with no extension will return an empty string for the extension.
-
-        Args:
-        - filenames: a list of filenames
-
-        Returns:
-        - list: A list of file extensions, including the dot "." prefix.
-        """
-        extensions = []
-        for filename in filenames:
-            filename, ext = os.path.splitext(filename)
-            if ext:
-                extensions.append(ext.lower())
-            else:
-                extensions.append("")
-        return extensions
-
-    @staticmethod
-    def _get_language_percentages(extensions):
-        """
-        Return a dictionary containing the programming language name (as the key),
-        and the percentage that language is used (as the value),
-        given a list of file extensions.
-
-        Args:
-        - extensions: a list of file extensions
-
-        Returns:
-        - dict: A dictionary where each key is a language name and the corresponding value is the percentage of that language in the PR.
-        """
-        total_files = len(extensions)
-        if total_files == 0:
-            return {}
-
-        # Identify language by file extension and count
-        lang_count = Counter(extensions)
-        # Convert counts to percentages
-        lang_percentage = {
-            lang: round(count / total_files * 100) for lang, count in lang_count.items()
-        }
-        return lang_percentage

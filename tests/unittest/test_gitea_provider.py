@@ -1461,3 +1461,29 @@ class TestGiteaRepoIgnoreRules:
 
             names = [f.filename for f in provider.get_diff_files()]
             assert sorted(names) == ["api/schema.d.ts", "generated/client.py", "src/application.py"]
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_large_pr_skips_unused_head_content_fetches(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+        repo_api = mock_repo_api_cls.return_value
+
+        with request_cycle_context({}), patch(
+            "pr_agent.git_providers.gitea_provider.MAX_FILES_ALLOWED_FULL", 2
+        ):
+            context["settings"] = copy.deepcopy(global_settings)
+            context["settings"].ignore.glob = []
+            context["settings"].ignore.regex = []
+
+            diff_files = provider.get_diff_files()
+
+        head_calls = [
+            call.kwargs["filepath"]
+            for call in repo_api.get_file_content.call_args_list
+            if call.kwargs.get("commit_sha") == "head-sha"
+        ]
+        assert head_calls == ["generated/client.py"]
+        assert [file.head_file for file in diff_files] == ["file content", "", ""]

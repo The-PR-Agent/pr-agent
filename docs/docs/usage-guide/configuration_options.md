@@ -39,7 +39,7 @@ Then you can give a list of extra instructions to the `review` tool.
 
 ### Loading the local configuration from a non-default branch
 
-`Platforms supported: GitHub`
+`Platforms supported: GitHub, GitLab`
 
 By default, the local `.pr_agent.toml` is read from the repo's **default branch**. When running PR-Agent from the CLI (or any wrapper that exposes its arguments), you can point it at a different branch — for example to test configuration changes from a feature branch before merging them:
 
@@ -59,8 +59,8 @@ If `.pr_agent.toml` cannot be loaded from the requested branch (e.g. the branch 
 
     **Never set the config branch from untrusted or PR-derived input** (e.g. `--config-branch=$GITHUB_HEAD_REF` / `${{ github.head_ref }}` in CI). Doing so lets anyone who can push a branch to the repository supply their own `.pr_agent.toml` and control the review — for example pointing `model`/the API base at an attacker endpoint to exfiltrate the diff, injecting `extra_instructions`, or enabling auto-approval of their own PR. Always pin the config branch to a fixed, maintainer-controlled branch.
 
-!!! note "GitHub only"
-    Branch selection is currently implemented for GitHub. On all other platforms the `--config-branch` flag and `PR_AGENT_CONFIG_BRANCH` variable are ignored, and the local `.pr_agent.toml` is always read from the default branch.
+!!! note "GitHub and GitLab only"
+    Branch selection is currently implemented for GitHub and GitLab. On all other platforms the `--config-branch` flag and `PR_AGENT_CONFIG_BRANCH` variable are ignored, and the local `.pr_agent.toml` is always read from the default branch.
 
 ## Global configuration file
 

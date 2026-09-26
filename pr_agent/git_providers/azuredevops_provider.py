@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
 import json
 import re
 from collections import Counter
@@ -10,6 +11,15 @@ from urllib.parse import quote, unquote, urlparse
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
+from ..algo.comment_identity import (
+    PRCodeSuggestionsIdentity,
+    PRDescriptionHeader,
+    add_comment_identity,
+    comment_matches_any_identity,
+    comment_matches_identity,
+    format_pr_code_suggestions_header,
+    get_pr_review_comment_identifiers,
+)
 from ..algo.file_filter import filter_ignored
 from ..algo.inline_comment_dedup import (
     body_with_markers,
@@ -21,14 +31,7 @@ from ..algo.inline_comment_dedup import (
 )
 from ..algo.language_handler import build_language_file_matcher, is_valid_file
 from ..algo.utils import (
-    PRCodeSuggestionsIdentity,
-    PRDescriptionHeader,
-    add_comment_identity,
-    comment_matches_any_identity,
-    comment_matches_identity,
     find_line_number_of_relevant_line_in_file,
-    format_pr_code_suggestions_header,
-    get_pr_review_comment_identifiers,
     load_large_diff,
 )
 from ..config_loader import get_settings, get_verbosity_level
@@ -59,7 +62,13 @@ def _is_not_found_error(error: Exception) -> bool:
         status_code = getattr(response, "status_code", None)
     if status_code is not None:
         return status_code == 404
+    if getattr(error, "type_key", None) == "GitItemNotFoundException":
+        return True
     return re.search(r"\b404\b", str(error)) is not None
+
+
+def _is_code_suggestion_body(body: str) -> bool:
+    return "```suggestion" in body or "```diff" in body
 
 
 try:
@@ -130,6 +139,43 @@ def _get_azure_change_path(change):
     return getattr(item, "path", None)
 
 
+def _get_azure_change_old_path(change):
+    additional = getattr(change, "additional_properties", None)
+    if not isinstance(additional, dict):
+        additional = {}
+
+    for attribute, serialized_attribute in (
+        ("original_path", "originalPath"),
+        ("source_server_item", "sourceServerItem"),
+    ):
+        values = (
+            getattr(change, attribute, None),
+            getattr(change, serialized_attribute, None),
+            additional.get(serialized_attribute),
+            additional.get(attribute),
+        )
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
+
+
+def _get_azure_change_type(change):
+    additional = getattr(change, "additional_properties", None)
+    if not isinstance(additional, dict):
+        additional = {}
+
+    for value in (
+        getattr(change, "change_type", None),
+        getattr(change, "changeType", None),
+        additional.get("changeType"),
+        additional.get("change_type"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value
+    return "Unknown"
+
+
 class AzureDevopsProvider(GitProvider):
 
     _INCREMENTAL_ANCHOR_PREFIXES = {
@@ -162,6 +208,7 @@ class AzureDevopsProvider(GitProvider):
         self.azure_devops_client, self.azure_devops_board_client = self._get_azure_devops_client()
         self.diff_files = None
         self._diff_path_map = None
+        self._pr_iteration_changes_cache = None
         self.workspace_slug = None
         self.repo_slug = None
         self.repo = None
@@ -204,6 +251,28 @@ class AzureDevopsProvider(GitProvider):
             line = lines[relevant_lines_end - 1]
             return len(line.encode("utf-16-le")) // 2 + 1
         return None
+
+    @staticmethod
+    def _render_suggestion_as_diff(body: str, original_suggestion: Optional[dict]) -> str:
+        """Azure DevOps has no committable suggestion blocks, so a ```suggestion fence is
+        published verbatim and renders as an uneditable raw block. Replace it with a diff
+        block, the same way the Bitbucket providers do."""
+        if not original_suggestion:
+            return body
+        try:
+            existing_code = original_suggestion['existing_code'].rstrip() + "\n"
+            improved_code = original_suggestion['improved_code'].rstrip() + "\n"
+            diff = difflib.unified_diff(existing_code.split('\n'),
+                                        improved_code.split('\n'), n=999)
+            patch_orig = "\n".join(diff)
+            patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+            if not patch.strip():
+                return body
+            diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+            return re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
+        except Exception as e:
+            get_logger().exception(f"Azure failed to render a code suggestion as a diff, error: {e}")
+            return body
 
     @staticmethod
     def _fallback_suggestion_section(suggestion: dict, reason: str) -> str:
@@ -296,6 +365,11 @@ class AzureDevopsProvider(GitProvider):
                                        f"relevant_lines_start is {relevant_lines_start}")
                 continue
 
+            has_suggestion_fence = "```suggestion" in body
+            raw_body = body
+            body = self._render_suggestion_as_diff(body, suggestion.get("original_suggestion"))
+            suggestion = {**suggestion, "body": body}
+
             publishable_count += 1
             fallback_to_pr_comment = suggestion.get("fallback_to_pr_comment", True)
             fingerprint_file = relevant_file.strip().strip("`").strip().lstrip("/")
@@ -306,8 +380,8 @@ class AzureDevopsProvider(GitProvider):
             should_mark = store is not None and not has_marker(body)
             fingerprints = set()
             if should_mark:
-                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, body)
-                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, body)
+                body_fp = full_body_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
+                code_fp = code_fingerprint(fingerprint_file, fingerprint_anchor, raw_body)
                 fingerprints.add(body_fp)
                 if code_fp is not None:
                     fingerprints.add(code_fp)
@@ -334,7 +408,7 @@ class AzureDevopsProvider(GitProvider):
                 continue
 
             end_offset = 1
-            if "```suggestion" in body:
+            if has_suggestion_fence:
                 end_offset = self._get_suggestion_end_offset(resolved_file, relevant_lines_end)
                 if end_offset is None:
                     if fallback_to_pr_comment:
@@ -486,6 +560,7 @@ class AzureDevopsProvider(GitProvider):
     def set_pr(self, pr_url: str):
         self.diff_files = None
         self._diff_path_map = None
+        self._pr_iteration_changes_cache = None
         self.pr_commits = None
         self.previous_review = None
         self.unreviewed_files_map = {}
@@ -743,26 +818,64 @@ class AzureDevopsProvider(GitProvider):
                 and self.incremental.is_incremental
                 and self.unreviewed_files_map):
             return list(self.unreviewed_files_map.keys())
-        return self._get_files_full()
+        return [
+            path
+            for change in self._get_pr_iteration_changes()
+            if (path := _get_azure_change_path(change))
+        ]
 
-    def _get_files_full(self):
-        files = []
-        for i in self.azure_devops_client.get_pull_request_commits(
-                project=self.workspace_slug,
+    def _get_pr_iteration_changes(self):
+        cached_changes = getattr(self, "_pr_iteration_changes_cache", None)
+        if cached_changes is not None:
+            return cached_changes
+
+        iterations = self.azure_devops_client.get_pull_request_iterations(
+            repository_id=self.repo_slug,
+            pull_request_id=self.pr_num,
+            project=self.workspace_slug,
+        )
+        if not iterations:
+            self._pr_iteration_changes_cache = []
+            return self._pr_iteration_changes_cache
+
+        iteration_id = iterations[-1].id
+        all_changes = []
+        skip = 0
+        top = 2000
+        seen_continuations = set()
+        while True:
+            page = self.azure_devops_client.get_pull_request_iteration_changes(
                 repository_id=self.repo_slug,
                 pull_request_id=self.pr_num,
-        ):
-            changes_obj = self.azure_devops_client.get_changes(
+                iteration_id=iteration_id,
                 project=self.workspace_slug,
-                repository_id=self.repo_slug,
-                commit_id=i.commit_id,
+                top=top,
+                skip=skip,
+                compare_to=0,
             )
+            all_changes.extend(getattr(page, "change_entries", None) or [])
 
-            for c in (changes_obj.changes or []):
-                path = _get_azure_change_path(c)
-                if path:
-                    files.append(path)
-        return list(set(files))
+            next_skip = getattr(page, "next_skip", None) or 0
+            next_top = getattr(page, "next_top", None) or 0
+            if next_skip == 0 and next_top == 0:
+                break
+
+            continuation = (next_skip, next_top)
+            valid_continuation = (
+                all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+                    for value in continuation)
+                and next_skip > skip
+                and continuation not in seen_continuations
+            )
+            if not valid_continuation:
+                raise RuntimeError(
+                    f"Invalid Azure iteration changes continuation: skip={next_skip}, top={next_top}"
+                )
+            seen_continuations.add(continuation)
+            skip, top = continuation
+
+        self._pr_iteration_changes_cache = all_changes
+        return self._pr_iteration_changes_cache
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         try:
@@ -782,33 +895,18 @@ class AzureDevopsProvider(GitProvider):
             base_sha = self.pr.last_merge_target_commit
             head_sha = self.pr.last_merge_commit
 
-            # Get PR iterations
-            iterations = self.azure_devops_client.get_pull_request_iterations(
-                repository_id=self.repo_slug,
-                pull_request_id=self.pr_num,
-                project=self.workspace_slug
-            )
-            changes = None
-            if iterations:
-                iteration_id = iterations[-1].id  # Get the last iteration (most recent changes)
-
-                # Get changes for the iteration
-                changes = self.azure_devops_client.get_pull_request_iteration_changes(
-                    repository_id=self.repo_slug,
-                    pull_request_id=self.pr_num,
-                    iteration_id=iteration_id,
-                    project=self.workspace_slug
-                )
             diff_files = []
             diffs = []
             diff_types = {}
-            if changes:
-                for change in changes.change_entries:
-                    item = change.additional_properties.get('item', {})
-                    path = item.get('path', None)
-                    if path:
-                        diffs.append(path)
-                        diff_types[path] = change.additional_properties.get('changeType', 'Unknown')
+            old_paths = {}
+            for change in self._get_pr_iteration_changes():
+                path = _get_azure_change_path(change)
+                if path:
+                    diffs.append(path)
+                    change_type = _get_azure_change_type(change)
+                    diff_types[path] = change_type
+                    if "rename" in change_type:
+                        old_paths[path] = _get_azure_change_old_path(change)
 
             # wrong implementation - gets all the files that were changed in any commit in the PR
             # commits = self.azure_devops_client.get_pull_request_commits(
@@ -891,7 +989,13 @@ class AzureDevopsProvider(GitProvider):
                 elif "rename" in diff_types[file]: # diff_type can be `rename` | `edit, rename`
                     edit_type = EDIT_TYPE.RENAMED
 
-                if edit_type == EDIT_TYPE.ADDED or edit_type == EDIT_TYPE.RENAMED:
+                old_filename = old_paths.get(file) if edit_type == EDIT_TYPE.RENAMED else None
+                if edit_type == EDIT_TYPE.RENAMED and old_filename is None:
+                    get_logger().warning(
+                        f"Azure rename entry for {file} has no usable old path; using empty base content"
+                    )
+
+                if edit_type == EDIT_TYPE.ADDED or (edit_type == EDIT_TYPE.RENAMED and old_filename is None):
                     original_file_content_str = ""
                 elif incremental_active:
                     inc_version = GitVersionDescriptor(
@@ -900,7 +1004,7 @@ class AzureDevopsProvider(GitProvider):
                     try:
                         inc_original = self.azure_devops_client.get_item(
                             repository_id=self.repo_slug,
-                            path=file,
+                            path=old_filename or file,
                             project=self.workspace_slug,
                             version_descriptor=inc_version,
                             download=False,
@@ -908,10 +1012,34 @@ class AzureDevopsProvider(GitProvider):
                         )
                         original_file_content_str = inc_original.content or ""
                     except Exception as error:
-                        get_logger().warning(
-                            f"Failed to retrieve original of {file} at {self.incremental.last_seen_commit_sha}: {error}"
-                        )
-                        original_file_content_str = ""
+                        if (
+                            edit_type == EDIT_TYPE.RENAMED
+                            and old_filename != file
+                            and _is_not_found_error(error)
+                        ):
+                            try:
+                                inc_original = self.azure_devops_client.get_item(
+                                    repository_id=self.repo_slug,
+                                    path=file,
+                                    project=self.workspace_slug,
+                                    version_descriptor=inc_version,
+                                    download=False,
+                                    include_content=True,
+                                )
+                                original_file_content_str = inc_original.content or ""
+                            except Exception as retry_error:
+                                get_logger().warning(
+                                    f"Failed to retrieve original of {old_filename} "
+                                    f"at {self.incremental.last_seen_commit_sha}; "
+                                    f"retry at {file} also failed: {retry_error}"
+                                )
+                                original_file_content_str = ""
+                        else:
+                            get_logger().warning(
+                                f"Failed to retrieve original of {old_filename or file} "
+                                f"at {self.incremental.last_seen_commit_sha}: {error}"
+                            )
+                            original_file_content_str = ""
                 else:
                     base_version = GitVersionDescriptor(
                         version=base_sha.commit_id, version_type="commit"
@@ -919,7 +1047,7 @@ class AzureDevopsProvider(GitProvider):
                     try:
                         base_original = self.azure_devops_client.get_item(
                             repository_id=self.repo_slug,
-                            path=file,
+                            path=old_filename or file,
                             project=self.workspace_slug,
                             version_descriptor=base_version,
                             download=False,
@@ -929,7 +1057,7 @@ class AzureDevopsProvider(GitProvider):
                     except Exception as error:
                         get_logger().error(
                             "Failed to retrieve original file content of {file} at version {version}",
-                            file=file,
+                            file=old_filename or file,
                             version=str(base_version),
                             error=error,
                         )
@@ -937,7 +1065,7 @@ class AzureDevopsProvider(GitProvider):
 
                 patch = load_large_diff(
                     file, new_file_content_str, original_file_content_str, show_warning=False
-                ).rstrip()
+                ).rstrip("\r\n")
                 if incremental_active:
                     self.unreviewed_files_map[file] = patch
 
@@ -953,6 +1081,7 @@ class AzureDevopsProvider(GitProvider):
                         patch=patch,
                         filename=file,
                         edit_type=edit_type,
+                        old_filename=old_filename,
                         num_plus_lines=num_plus_lines,
                         num_minus_lines=num_minus_lines,
                     )
@@ -1090,7 +1219,8 @@ class AzureDevopsProvider(GitProvider):
         except Exception as e:
             get_logger().exception(f"Failed to remove temp comments, error: {e}")
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         self.publish_inline_comments([self.create_inline_comment(body, relevant_file, relevant_line_in_file)])
 
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
@@ -1205,7 +1335,7 @@ class AzureDevopsProvider(GitProvider):
         pr_info = self.azure_devops_client.get_pull_request_by_id(
             project=self.workspace_slug, pull_request_id=self.pr_num
         )
-        source_branch = pr_info.source_ref_name.split("/")[-1]
+        source_branch = pr_info.source_ref_name.removeprefix("refs/heads/")
         return source_branch
 
     def get_user_id(self):
@@ -1263,7 +1393,7 @@ class AzureDevopsProvider(GitProvider):
             root_body = self._value(comments[0], "content")
             if not isinstance(root_body, str):
                 continue
-            if "```suggestion" not in root_body:
+            if not _is_code_suggestion_body(root_body):
                 continue
             replies = []
             for comment in comments[1:][-_MAX_DISCUSSION_REPLIES:]:
@@ -1317,11 +1447,11 @@ class AzureDevopsProvider(GitProvider):
             if not isinstance(content, str):
                 continue
             if isinstance(path, str) and path and anchor:
-                if "```suggestion" not in content:
+                if not _is_code_suggestion_body(content):
                     continue
                 self._add_suggestion_fingerprints(fingerprints, path, anchor, content)
                 continue
-            if ("```suggestion" not in content and not comment_matches_identity(
+            if (not _is_code_suggestion_body(content) and not comment_matches_identity(
                     content, PRCodeSuggestionsIdentity.UNANCHORED.value)):
                 continue
             for section in content.split("\n\n---\n\n"):
@@ -1536,12 +1666,6 @@ class AzureDevopsProvider(GitProvider):
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True
 
-    def set_like(self, thread_id: int, comment_id: int, create: bool = True):
-        if create:
-            self.azure_devops_client.create_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
-        else:
-            self.azure_devops_client.delete_like(self.repo_slug, self.pr_num, thread_id, comment_id, project=self.workspace_slug)
-
     def set_thread_status(self, thread_id: int, status: str) -> bool:
         try:
             self.azure_devops_client.update_thread(
@@ -1575,7 +1699,9 @@ class AzureDevopsProvider(GitProvider):
 
     def get_thread_context(self, thread_id: int) -> CommentThreadContext:
         try:
-            thread = self.azure_devops_client.get_pull_request_thread(self.repo_slug, self.pr_num, thread_id, self.workspace_slug)
+            thread = self.azure_devops_client.get_pull_request_thread(
+                self.repo_slug, self.pr_num, thread_id, self.workspace_slug
+            )
             return thread.thread_context
         except Exception as e:
             get_logger().exception(f"Failed to set thread status, error: {e}")
@@ -1664,6 +1790,14 @@ class AzureDevopsProvider(GitProvider):
     def get_comment_url(self, comment) -> str:
         return self.pr_url + "?discussionId=" + str(comment.thread_id)
 
+    def get_pr_head_sha(self) -> str:
+        # Read the source revision from the same field `reconcile_code_suggestion_threads`
+        # already treats as head. `last_commit_id` is not always populated, so without
+        # this override the base hook returns "" and an Azure review cannot resolve
+        # absent findings after a head change, which is the defect #3431 was filed against.
+        head = getattr(getattr(self.pr, "last_merge_commit", None), "commit_id", None)
+        return head if isinstance(head, str) else ""
+
     def get_latest_commit_url(self) -> str:
         commits = self.azure_devops_client.get_pull_request_commits(self.repo_slug, self.pr_num, self.workspace_slug)
         if not commits:
@@ -1716,7 +1850,9 @@ class AzureDevopsProvider(GitProvider):
                         "acceptance_criteria": item.fields.get(
                             "Microsoft.VSTS.Common.AcceptanceCriteria", ""
                         ),
-                        "tags": item.fields.get("System.Tags", "").split("; ") if item.fields.get("System.Tags") else [],
+                        "tags": item.fields.get("System.Tags", "").split("; ")
+                        if item.fields.get("System.Tags")
+                        else [],
                     }
                 )
             return work_items

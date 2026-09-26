@@ -1,5 +1,5 @@
 
-`Supported Git Platforms: GitHub, GitLab, Bitbucket`
+`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
 PR-Agent uses an **asymmetric and dynamic context strategy** to improve AI analysis of code changes in pull requests.
 It provides more context before changes than after, and dynamically adjusts the context based on code structure (e.g., enclosing functions or classes).
