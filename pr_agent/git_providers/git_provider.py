@@ -67,7 +67,7 @@ def _discussion_context_budget() -> int:
     value = get_settings().get("pr_code_suggestions.max_discussion_context_chars", DEFAULT_DISCUSSION_CONTEXT_CHARS)
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         get_logger().warning(f"Invalid pr_code_suggestions.max_discussion_context_chars: {value!r}")
         return DEFAULT_DISCUSSION_CONTEXT_CHARS
 
