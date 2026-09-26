@@ -309,6 +309,19 @@ model="bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
 fallback_models=["bedrock/us.meta.llama4-maverick-17b-instruct-v1:0"]
 ```
 
+Kimi K3 is also available on Amazon Bedrock:
+
+```toml
+[config] # in configuration.toml
+model="bedrock/moonshotai.kimi-k3"
+fallback_models=["bedrock/us.moonshotai.kimi-k3"]
+```
+
+Use the bare `bedrock/moonshotai.kimi-k3` id where it's directly available, the `us.` cross-region
+prefix to route across US regions, or the `global.` prefix to let Bedrock route across all
+supported regions. To call it through the Bedrock Converse API instead of the classic runtime,
+prefix the model id with `bedrock/converse/`, e.g. `bedrock/converse/us.moonshotai.kimi-k3`.
+
 Grok 4.3 is available through Amazon Bedrock Mantle rather than the classic Bedrock runtime:
 
 ```toml

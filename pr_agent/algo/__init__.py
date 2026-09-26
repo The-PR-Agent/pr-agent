@@ -323,6 +323,16 @@ MAX_TOKENS = {
     'dashscope/qwen3.8-max': 1000000,
     # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata),
     # but may be limited by config.max_model_tokens
+    # -- Bedrock Kimi K3 (cross-region) --
+    # https://aws.amazon.com/blogs/machine-learning/introducing-kimi-k3-on-amazon-bedrock/
+    'bedrock/moonshotai.kimi-k3': 1000000,
+    # Keep this pinned at 1M context: absent from LiteLLM's bundled cost map
+    'bedrock/us.moonshotai.kimi-k3': 1000000,
+    'bedrock/global.moonshotai.kimi-k3': 1000000,
+    # Register the same models through Bedrock Converse; keep them pinned for the same reason
+    'bedrock/converse/moonshotai.kimi-k3': 1000000,
+    'bedrock/converse/us.moonshotai.kimi-k3': 1000000,
+    'bedrock/converse/global.moonshotai.kimi-k3': 1000000,
     'groq/moonshotai/kimi-k2-instruct': 131072,
     'groq/deepseek-r1-distill-llama-70b': 128000,
     'groq/llama-3.3-70b-versatile': 128000,
