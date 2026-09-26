@@ -6,7 +6,6 @@ import traceback
 from urllib.parse import urlparse
 
 import aiohttp
-from atlassian import Jira
 
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
 from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError
@@ -199,6 +198,15 @@ def _get_jira_client():
             get_logger().warning(
                 f"Jira is partially configured; skipping Jira ticket lookup. Missing: {', '.join(missing)}")
         return None
+    try:
+        from atlassian import Jira
+    except ModuleNotFoundError:
+        get_logger().warning(
+            "Jira ticket lookup requires the Bitbucket integration dependencies. "
+            "Install pr-agent[bitbucket] to enable Jira support."
+        )
+        return None
+
     try:
         return Jira(url=base_url, username=api_email, password=api_token, api_version=JIRA_API_VERSION)
     except Exception as e:

@@ -15,7 +15,7 @@ WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1
 COPY pyproject.toml uv.lock ./
 COPY docs docs
-RUN uv sync --frozen --no-install-project --no-dev
+RUN uv sync --frozen --no-install-project --no-dev --extra all
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 
@@ -62,7 +62,7 @@ CMD ["python", "pr_agent/mosaico/server.py"]
 FROM base AS test
 # The base stage pins LITELLM_LOCAL_MODEL_COST_MAP for every stage; kept here
 # only as documentation that the unit suite keys off the bundled cost map.
-RUN uv sync --frozen --no-install-project
+RUN uv sync --frozen --no-install-project --extra all
 COPY pr_agent pr_agent
 COPY tests tests
 # Config the unit suite asserts against, copied file by file so an unrelated
@@ -75,5 +75,5 @@ COPY docker/mosaico docker/mosaico
 
 FROM base AS cli
 COPY pr_agent pr_agent
-RUN uv sync --frozen --no-dev && ln -s /app/.venv/bin/pr-agent /usr/local/bin/pr-agent
+RUN uv sync --frozen --no-dev --extra all && ln -s /app/.venv/bin/pr-agent /usr/local/bin/pr-agent
 ENTRYPOINT ["python", "pr_agent/cli.py"]

@@ -2466,39 +2466,26 @@ name = "pr-agent"
 version = "0.46.0"
 source = { editable = "." }
 dependencies = [
-    { name = "a2a-sdk", extra = ["http-server"] },
     { name = "aiohttp" },
     { name = "anthropic" },
-    { name = "atlassian-python-api" },
-    { name = "azure-devops" },
-    { name = "azure-identity" },
-    { name = "boto3" },
     { name = "certifi" },
     { name = "dynaconf" },
     { name = "fastapi" },
-    { name = "giteapy" },
     { name = "gitpython" },
-    { name = "google-cloud-aiplatform" },
-    { name = "google-cloud-storage", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
-    { name = "google-cloud-storage", version = "3.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "gunicorn" },
     { name = "html2text" },
     { name = "jinja2" },
     { name = "langfuse" },
     { name = "litellm" },
     { name = "loguru" },
-    { name = "msrest" },
     { name = "openai" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
     { name = "prometheus-client" },
-    { name = "protobuf" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "pygithub" },
     { name = "pyjwt" },
-    { name = "python-gitlab" },
     { name = "pyyaml" },
     { name = "retry" },
     { name = "starlette" },
@@ -2511,6 +2498,47 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+    { name = "atlassian-python-api" },
+    { name = "azure-devops" },
+    { name = "azure-identity" },
+    { name = "boto3" },
+    { name = "giteapy" },
+    { name = "google-cloud-aiplatform" },
+    { name = "google-cloud-storage", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "google-cloud-storage", version = "3.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "msrest" },
+    { name = "protobuf" },
+    { name = "pygithub" },
+    { name = "python-gitlab" },
+]
+azure = [
+    { name = "azure-devops" },
+    { name = "azure-identity" },
+    { name = "msrest" },
+]
+bitbucket = [
+    { name = "atlassian-python-api" },
+]
+codecommit = [
+    { name = "boto3" },
+]
+gitea = [
+    { name = "giteapy" },
+]
+github = [
+    { name = "pygithub" },
+]
+gitlab = [
+    { name = "python-gitlab" },
+]
+google = [
+    { name = "google-cloud-aiplatform" },
+    { name = "google-cloud-storage", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "google-cloud-storage", version = "3.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "protobuf" },
+]
 lambda = [
     { name = "mangum" },
 ]
@@ -2519,18 +2547,49 @@ langchain = [
     { name = "langchain-core" },
     { name = "langchain-openai" },
 ]
+mosaico = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+]
 otel-grpc = [
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+    { name = "atlassian-python-api" },
+    { name = "azure-devops" },
+    { name = "azure-identity" },
+    { name = "boto3" },
+    { name = "giteapy" },
+    { name = "google-cloud-aiplatform" },
+    { name = "google-cloud-storage", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "google-cloud-storage", version = "3.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
     { name = "httpx" },
+    { name = "msrest" },
     { name = "pre-commit" },
+    { name = "protobuf" },
+    { name = "pygithub" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "python-gitlab" },
     { name = "ruff" },
+]
+integration-dev = [
+    { name = "a2a-sdk", extra = ["http-server"] },
+    { name = "atlassian-python-api" },
+    { name = "azure-devops" },
+    { name = "azure-identity" },
+    { name = "boto3" },
+    { name = "giteapy" },
+    { name = "google-cloud-aiplatform" },
+    { name = "google-cloud-storage", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13'" },
+    { name = "google-cloud-storage", version = "3.12.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13'" },
+    { name = "msrest" },
+    { name = "protobuf" },
+    { name = "pygithub" },
+    { name = "python-gitlab" },
 ]
 similar-issue = [
     { name = "lancedb" },
@@ -2541,21 +2600,30 @@ similar-issue = [
 
 [package.metadata]
 requires-dist = [
-    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.3" },
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'all'", specifier = "==1.0.3" },
+    { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'mosaico'", specifier = "==1.0.3" },
     { name = "aiohttp", specifier = ">=3.14.3,<4" },
     { name = "anthropic", specifier = ">=0.69.0" },
-    { name = "atlassian-python-api", specifier = "==3.41.4" },
-    { name = "azure-devops", specifier = "==7.1.0b4" },
-    { name = "azure-identity", specifier = "==1.25.0" },
-    { name = "boto3", specifier = "==1.43.78" },
+    { name = "atlassian-python-api", marker = "extra == 'all'", specifier = "==3.41.4" },
+    { name = "atlassian-python-api", marker = "extra == 'bitbucket'", specifier = "==3.41.4" },
+    { name = "azure-devops", marker = "extra == 'all'", specifier = "==7.1.0b4" },
+    { name = "azure-devops", marker = "extra == 'azure'", specifier = "==7.1.0b4" },
+    { name = "azure-identity", marker = "extra == 'all'", specifier = "==1.25.0" },
+    { name = "azure-identity", marker = "extra == 'azure'", specifier = "==1.25.0" },
+    { name = "boto3", marker = "extra == 'all'", specifier = "==1.43.78" },
+    { name = "boto3", marker = "extra == 'codecommit'", specifier = "==1.43.78" },
     { name = "certifi", specifier = ">=2026.7.22" },
     { name = "dynaconf", specifier = ">=3.3.5,<4" },
     { name = "fastapi", specifier = ">=0.141.1,<1" },
-    { name = "giteapy", specifier = "==1.0.8" },
+    { name = "giteapy", marker = "extra == 'all'", specifier = "==1.0.8" },
+    { name = "giteapy", marker = "extra == 'gitea'", specifier = "==1.0.8" },
     { name = "gitpython", specifier = ">=3.1.62,<4" },
-    { name = "google-cloud-aiplatform", specifier = "==1.154.0" },
-    { name = "google-cloud-storage", marker = "python_full_version < '3.13'", specifier = "==2.10.0" },
-    { name = "google-cloud-storage", marker = "python_full_version >= '3.13'", specifier = "==3.12.0" },
+    { name = "google-cloud-aiplatform", marker = "extra == 'all'", specifier = "==1.154.0" },
+    { name = "google-cloud-aiplatform", marker = "extra == 'google'", specifier = "==1.154.0" },
+    { name = "google-cloud-storage", marker = "python_full_version >= '3.13' and extra == 'all'", specifier = "==3.12.0" },
+    { name = "google-cloud-storage", marker = "python_full_version >= '3.13' and extra == 'google'", specifier = "==3.12.0" },
+    { name = "google-cloud-storage", marker = "python_full_version < '3.13' and extra == 'all'", specifier = "==2.10.0" },
+    { name = "google-cloud-storage", marker = "python_full_version < '3.13' and extra == 'google'", specifier = "==2.10.0" },
     { name = "gunicorn", specifier = "==23.0.0" },
     { name = "html2text", specifier = "==2024.2.26" },
     { name = "jinja2", specifier = "==3.1.6" },
@@ -2566,19 +2634,23 @@ requires-dist = [
     { name = "litellm", specifier = "==1.102.1" },
     { name = "loguru", specifier = "==0.7.3" },
     { name = "mangum", marker = "extra == 'lambda'", specifier = "==0.22.0" },
-    { name = "msrest", specifier = "==0.7.1" },
+    { name = "msrest", marker = "extra == 'all'", specifier = "==0.7.1" },
+    { name = "msrest", marker = "extra == 'azure'", specifier = "==0.7.1" },
     { name = "openai", specifier = ">=1.55.3" },
     { name = "opentelemetry-api", specifier = "==1.43.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel-grpc'", specifier = "==1.43.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = "==1.43.0" },
     { name = "opentelemetry-sdk", specifier = "==1.43.0" },
     { name = "prometheus-client", specifier = "==0.21.1" },
-    { name = "protobuf", specifier = "==6.33.6" },
+    { name = "protobuf", marker = "extra == 'all'", specifier = "==6.33.6" },
+    { name = "protobuf", marker = "extra == 'google'", specifier = "==6.33.6" },
     { name = "pydantic", specifier = "==2.13.3" },
     { name = "pydantic-settings", specifier = "==2.14.2" },
-    { name = "pygithub", specifier = ">=2.10,<3" },
+    { name = "pygithub", marker = "extra == 'all'", specifier = ">=2.10,<3" },
+    { name = "pygithub", marker = "extra == 'github'", specifier = ">=2.10,<3" },
     { name = "pyjwt", specifier = ">=2.13.0,<3" },
-    { name = "python-gitlab", specifier = "==8.3.0" },
+    { name = "python-gitlab", marker = "extra == 'all'", specifier = "==8.3.0" },
+    { name = "python-gitlab", marker = "extra == 'gitlab'", specifier = "==8.3.0" },
     { name = "pyyaml", specifier = "==6.0.1" },
     { name = "retry", specifier = "==0.9.2" },
     { name = "starlette", specifier = ">=1.6.0,<2" },
@@ -2589,16 +2661,44 @@ requires-dist = [
     { name = "unidiff", specifier = "==0.7.5" },
     { name = "uvicorn", specifier = ">=0.31.1,<1" },
 ]
-provides-extras = ["lambda", "otel-grpc", "langchain"]
+provides-extras = ["github", "gitlab", "bitbucket", "azure", "codecommit", "gitea", "google", "mosaico", "all", "lambda", "otel-grpc", "langchain"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.3" },
+    { name = "atlassian-python-api", specifier = "==3.41.4" },
+    { name = "azure-devops", specifier = "==7.1.0b4" },
+    { name = "azure-identity", specifier = "==1.25.0" },
+    { name = "boto3", specifier = "==1.43.78" },
+    { name = "giteapy", specifier = "==1.0.8" },
+    { name = "google-cloud-aiplatform", specifier = "==1.154.0" },
+    { name = "google-cloud-storage", marker = "python_full_version < '3.13'", specifier = "==2.10.0" },
+    { name = "google-cloud-storage", marker = "python_full_version >= '3.13'", specifier = "==3.12.0" },
     { name = "httpx", specifier = "==0.28.1" },
+    { name = "msrest", specifier = "==0.7.1" },
     { name = "pre-commit", specifier = ">=4,<5" },
+    { name = "protobuf", specifier = "==6.33.6" },
+    { name = "pygithub", specifier = ">=2.10,<3" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = "==7.1.0" },
+    { name = "python-gitlab", specifier = "==8.3.0" },
     { name = "ruff", specifier = "==0.16.8" },
+]
+integration-dev = [
+    { name = "a2a-sdk", extras = ["http-server"], specifier = "==1.0.3" },
+    { name = "atlassian-python-api", specifier = "==3.41.4" },
+    { name = "azure-devops", specifier = "==7.1.0b4" },
+    { name = "azure-identity", specifier = "==1.25.0" },
+    { name = "boto3", specifier = "==1.43.78" },
+    { name = "giteapy", specifier = "==1.0.8" },
+    { name = "google-cloud-aiplatform", specifier = "==1.154.0" },
+    { name = "google-cloud-storage", marker = "python_full_version < '3.13'", specifier = "==2.10.0" },
+    { name = "google-cloud-storage", marker = "python_full_version >= '3.13'", specifier = "==3.12.0" },
+    { name = "msrest", specifier = "==0.7.1" },
+    { name = "protobuf", specifier = "==6.33.6" },
+    { name = "pygithub", specifier = ">=2.10,<3" },
+    { name = "python-gitlab", specifier = "==8.3.0" },
 ]
 similar-issue = [
     { name = "lancedb", specifier = "==0.38.0" },
