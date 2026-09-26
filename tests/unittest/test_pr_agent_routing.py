@@ -1,11 +1,15 @@
 import asyncio
+import copy
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import utils as provider_utils
 
 
 def _identity_args(args):
@@ -92,6 +96,93 @@ async def test_handle_request_routes_list_request_without_string_parsing(monkeyp
     assert runs == [("https://example/pr/1", "fake-ai", ["don't split", "--flag=value"])]
 
 
+@pytest.mark.asyncio
+async def test_prepared_override_wins_after_repo_settings_and_next_command_reloads_defaults(monkeypatch):
+    observed = []
+    provider = SimpleNamespace(
+        get_repo_settings=lambda: b'[pr_reviewer]\nextra_instructions = "repository default"\n'
+    )
+
+    class FakeReview:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self):
+            observed.append(get_settings().get("PR_REVIEWER.EXTRA_INSTRUCTIONS"))
+
+    monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
+    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        get_settings().set("CONFIG.ENABLE_PER_DIRECTORY_SETTINGS", False)
+        get_settings().set("CONFIG.EXTRA_CONFIG_URL", None)
+        get_settings().set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "initial")
+        worker = pr_agent_module.PRAgent(ai_handler="fake-ai")
+        for command in ['/review --pr_reviewer.extra_instructions="command value"', "/review"]:
+            assert await worker.handle_request(
+                "https://example.com/org/repo/pull/1", pr_agent_module.prepare_command(command)
+            ) is True
+
+    assert observed == ["command value", "repository default"]
+
+
+@pytest.mark.parametrize("setting", ["USE_REPO_SETTINGS_FILE", "ENABLE_PER_DIRECTORY_SETTINGS"])
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.asyncio
+async def test_prepared_overrides_control_repository_loading(monkeypatch, setting, enabled):
+    observed = []
+    provider = SimpleNamespace(
+        get_repo_settings=Mock(return_value=b'[pr_reviewer]\nrequire_score_review = true\n'
+                                           b'extra_instructions = "root"\n'),
+        get_repo_settings_tree=Mock(return_value=(["src/.pr_agent.toml"], "main")),
+        get_pr_file_paths=lambda: ["src/app.py"],
+        get_repo_settings_contents=Mock(return_value={
+            "src/.pr_agent.toml": b'[pr_reviewer]\nrequire_tests_review = false\n'
+                                 b'extra_instructions = "nested"\n',
+        }),
+    )
+
+    class FakeReview:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self):
+            settings = get_settings()
+            observed.append((settings.pr_reviewer.require_score_review,
+                             settings.pr_reviewer.require_tests_review,
+                             settings.pr_reviewer.extra_instructions))
+
+    monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
+    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        settings = get_settings()
+        settings.set("CONFIG.EXTRA_CONFIG_URL", None)
+        settings.set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        settings.set("CONFIG.ENABLE_PER_DIRECTORY_SETTINGS", False)
+        settings.set(f"CONFIG.{setting}", not enabled)
+        settings.set("PR_REVIEWER.REQUIRE_SCORE_REVIEW", False)
+        settings.set("PR_REVIEWER.REQUIRE_TESTS_REVIEW", True)
+        command = pr_agent_module.prepare_command(
+            f'/review --config.{setting.lower()}={str(enabled).lower()} '
+            '--pr_reviewer.extra_instructions="command value"'
+        )
+        assert await pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
+            "https://example.com/org/repo/pull/1", command
+        ) is True
+
+    root_enabled = enabled if setting == "USE_REPO_SETTINGS_FILE" else True
+    nested_enabled = enabled if setting == "ENABLE_PER_DIRECTORY_SETTINGS" else False
+    assert observed == [(root_enabled, not nested_enabled, "command value")]
+    assert provider.get_repo_settings.call_count == int(root_enabled)
+    assert provider.get_repo_settings_contents.call_count == int(nested_enabled)
+
+
 def test_prepare_command_preserves_spaces_in_quoted_config_values():
     settings = get_settings()
     setting_key = "PR_REVIEWER.EXTRA_INSTRUCTIONS"
@@ -102,7 +193,8 @@ def test_prepare_command_preserves_spaces_in_quoted_config_values():
             '/review --pr_reviewer.extra_instructions="Focus on authentication and authorization"'
         )
 
-        assert command == ["/review"]
+        assert command[0] == "/review"
+        assert len(command) == 2
         assert settings.get(setting_key) == "Focus on authentication and authorization"
     finally:
         settings.set(setting_key, original)
@@ -133,7 +225,8 @@ def test_prepare_command_preserves_quoted_yaml_sensitive_values(quoted_value, ex
             f"/review --pr_reviewer.extra_instructions={quoted_value}"
         )
 
-        assert command == ["/review"]
+        assert command[0] == "/review"
+        assert len(command) == 2
         assert settings.get(setting_key) == expected_value
     finally:
         settings.set(setting_key, original)
@@ -149,7 +242,8 @@ def test_prepare_command_accepts_apostrophes_in_unquoted_arguments_and_values():
             "/review --pr_reviewer.extra_instructions=O'Reilly"
         )
 
-        assert command == ["/review"]
+        assert command[0] == "/review"
+        assert len(command) == 2
         assert settings.get(setting_key) == "O'Reilly"
         assert pr_agent_module.prepare_command("/ask What's wrong?") == [
             "/ask",
@@ -170,7 +264,8 @@ def test_prepare_command_keeps_unquoted_value_type_when_key_is_quoted():
             '/review --"pr_code_suggestions.num_code_suggestions"=3'
         )
 
-        assert command == ["/review"]
+        assert command[0] == "/review"
+        assert len(command) == 2
         assert settings.get(setting_key) == 3
         assert isinstance(settings.get(setting_key), int)
     finally:

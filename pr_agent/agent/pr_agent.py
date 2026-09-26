@@ -239,10 +239,11 @@ def _validation_args(args: list[str]) -> list[str]:
 
 
 def prepare_command(command: str) -> list[str]:
-    """Apply configured command settings while retaining argument boundaries.
+    """Apply validated automatic overrides and retain them for dispatch.
 
-    Return argv so ``PRAgent`` does not parse the command again. Quoted setting
-    values retain their string type when passed to the settings loader.
+    Apply settings now so they can control repository loading. Return the same
+    argv so ``PRAgent`` reapplies overrides after repository settings are loaded.
+    Quoted setting values retain their string type.
     """
     command_args = parse_command(command)
     if not command_args:
@@ -261,9 +262,8 @@ def prepare_command(command: str) -> list[str]:
         get_logger().error(
             "Dropping auto-command argument(s) targeting forbidden param(s): "
             + ", ".join(f"'{param}'" for param in rejected))
-        args = kept
-    other_args = update_settings_from_args(args)
-    return [action] + other_args
+    update_settings_from_args(kept)
+    return [action] + kept
 
 
 class PRAgent:
@@ -319,9 +319,10 @@ class PRAgent:
 
         # Then, apply user specific settings if exists
         if isinstance(request, str):
-            request = request.replace("'", "\\'")
             lexer = shlex.shlex(request, posix=True)
             lexer.whitespace_split = True
+            # Keep apostrophes literal without adding backslashes inside double quotes.
+            lexer.quotes = '"'
             action, *args = list(lexer)
         else:
             action, *args = request

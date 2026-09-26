@@ -494,7 +494,7 @@ def handle_line_comments(body: Dict, comment_body: [str, Any]):
     if '/ask' in comment_body:
         # Build an argv list rather than concatenating into a shell-style
         # command string. PRAgent._handle_request() tokenises string requests
-        # with shlex.shlex after escaping single quotes, which neutralises any
+        # with single quotes treated literally, which neutralises any
         # shlex.quote() output and re-introduces the CLI-argument injection
         # vector (a quoted value containing whitespace splits into multiple
         # argv tokens). Passing a list bypasses the shlex path entirely.

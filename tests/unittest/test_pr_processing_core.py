@@ -540,19 +540,20 @@ def test_append_metadata_sections_keep_complete_diff_within_budget():
 
 
 @pytest.mark.parametrize(
-    ("edit_type", "heading"),
+    ("edit_type", "deleted_files", "heading"),
     [
-        (EDIT_TYPE.ADDED, pr_processing.ADDED_FILES_.strip()),
-        (EDIT_TYPE.MODIFIED, pr_processing.MORE_MODIFIED_FILES_.strip()),
-        (EDIT_TYPE.RENAMED, pr_processing.MORE_MODIFIED_FILES_.strip()),
-        (EDIT_TYPE.DELETED, pr_processing.DELETED_FILES_.strip()),
+        (EDIT_TYPE.ADDED, [], pr_processing.ADDED_FILES_.strip()),
+        (EDIT_TYPE.MODIFIED, [], pr_processing.MORE_MODIFIED_FILES_.strip()),
+        (EDIT_TYPE.RENAMED, [], pr_processing.MORE_MODIFIED_FILES_.strip()),
+        (EDIT_TYPE.DELETED, [], pr_processing.DELETED_FILES_.strip()),
+        (None, ["metadata.py"], pr_processing.DELETED_FILES_.strip()),
     ],
 )
 def test_get_pr_diff_routes_each_metadata_type_through_bounded_append(
-    monkeypatch, edit_type, heading
+    monkeypatch, edit_type, deleted_files, heading
 ):
     token_handler = CharacterTokenHandler(prompt_tokens=0)
-    file_dict = {"metadata.py": {"edit_type": edit_type}}
+    file_dict = {"metadata.py": {"edit_type": edit_type}} if edit_type is not None else {}
     appended_sections = []
     original_append_metadata_section = pr_processing._append_metadata_section
 
@@ -575,7 +576,7 @@ def test_get_pr_diff_routes_each_metadata_type_through_bounded_append(
     monkeypatch.setattr(
         pr_processing,
         "pr_generate_compressed_diff",
-        lambda *args, **kwargs: ([["base"]], [1_498], [], [], file_dict, [[]]),
+        lambda *args, **kwargs: ([["base"]], [1_498], deleted_files, [], file_dict, [[]]),
     )
 
     diff = pr_processing.get_pr_diff(

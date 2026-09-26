@@ -222,6 +222,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     unprocessed_files = []
     # generate the added, modified, and deleted files lists
     if (max_tokens - curr_token) > delta_tokens:
+        if deleted_files_list:
+            deleted_list_str = DELETED_FILES_ + "\n" + "\n".join(deleted_files_list)
         for filename, file_values in file_dict.items():
             if filename in files_in_patch:
                 continue
