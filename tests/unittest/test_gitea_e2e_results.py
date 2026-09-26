@@ -35,8 +35,9 @@ def case(monkeypatch):
     http = MagicMock(spec=["get", "post", "put", "patch", "delete"])
     sleep = MagicMock()
     monkeypatch.setattr(gitea_e2e, "get_settings", lambda: settings)
+    monkeypatch.setattr(gitea_e2e, "setup_logger", MagicMock())
+    monkeypatch.setattr(gitea_e2e, "get_logger", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(gitea_e2e, "requests", http)
-    monkeypatch.setattr(gitea_e2e, "logger", MagicMock())
     monkeypatch.setattr(gitea_e2e.time, "sleep", sleep)
     monkeypatch.setattr(gitea_e2e, "NUM_MINUTES", 2)
 
