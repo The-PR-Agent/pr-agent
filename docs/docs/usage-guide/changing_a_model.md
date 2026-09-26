@@ -771,6 +771,34 @@ Keep the `openai/` prefix on the model name, whichever Atlas model ID you use (`
 !!! note "Reasoning models need output headroom"
     Several Atlas models are reasoning models that spend completion tokens on a hidden chain of thought before writing the answer. `deepseek-ai/deepseek-v4-pro` with `max_tokens = 16` returns `finish_reason = "length"` and an **empty** `message.content` — all 16 completion tokens were reasoning tokens. If a tool comes back blank, raise the output budget rather than assuming the request failed. Non-reasoning IDs such as `deepseek-ai/DeepSeek-V3.1` are unaffected.
 
+### Cheaper Inference
+
+[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible LLM gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to its base URL through litellm's OpenAI-compatible path.
+
+To use a model through Cheaper Inference, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/gpt-5.4-mini"
+fallback_models = ["openai/claude-sonnet-5"]
+custom_model_max_tokens = 400000 # the smaller context window of the two models
+
+[openai] # in .secrets.toml
+api_base = "https://api.cheaperinference.com/v1"
+key = "..." # your Cheaper Inference api key
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://api.cheaperinference.com/v1
+OPENAI__KEY=...
+```
+
+(you can obtain a Cheaper Inference API key from [here](https://cheaperinference.com/signup))
+
+Keep the `openai/` prefix on the model name, whichever Cheaper Inference model ID you use (`openai/gpt-5.4-mini`, `openai/claude-sonnet-5`, `openai/gemini-3.1-pro`, `openai/deepseek-v4-flash`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from the Cheaper Inference [model list](https://cheaperinference.com/#models). For GPT-5 model IDs such as `openai/gpt-5.4-mini`, PR-Agent also sends `config.reasoning_effort` (default `"medium"`). See the Cheaper Inference [docs](https://cheaperinference.com/docs) for API details.
+
 ### Custom models
 
 If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), you can still use it as a custom model:
