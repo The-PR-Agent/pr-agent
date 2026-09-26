@@ -2,6 +2,21 @@ from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.config_loader import global_settings
 
 
+class _BitbucketSide:
+    def __init__(self, path):
+        self.path = path
+
+
+class _BitbucketDiffstat:
+    def __init__(self, new_path, old_path):
+        self.new = _BitbucketSide(new_path)
+        self.old = _BitbucketSide(old_path)
+
+
+def _gitlab_change(new_path, old_path):
+    return {'new_path': new_path, 'old_path': old_path, 'diff': 'diff --git a/x b/x'}
+
+
 class TestIgnoreFilter:
     def test_no_ignores(self):
         """
@@ -167,3 +182,115 @@ class TestIgnoreFilter:
             assert filtered == [files[0]]
 
         assert configured_regex == ['^docs/']
+
+
+class TestRenameFiltering:
+    """A rename names one file by a destination and a source path.
+
+    The destination decides, the way providers label the file. Keeping the entry
+    because its other path does not match lets a rename into an ignored path
+    reach the model, and matching only the first available path with no
+    destination to fall back on drops nothing it should keep.
+    """
+
+    @staticmethod
+    def _ignore(monkeypatch, regex):
+        monkeypatch.setattr(global_settings.ignore, 'regex', regex)
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+    def test_gitlab_rename_into_ignored_path_is_ignored(self, monkeypatch):
+        self._ignore(monkeypatch, [r'.*\.lock$'])
+
+        renamed_in = _gitlab_change('poetry.lock', 'notes.txt')
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+        ignored = _gitlab_change('yarn.lock', 'yarn.lock')
+
+        assert filter_ignored([renamed_in, untouched, ignored], platform='gitlab') == [untouched]
+
+    def test_gitlab_rename_out_of_ignored_path_is_kept(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        renamed_out = _gitlab_change('docs/app.yaml', 'secrets/app.yaml')
+        untouched = _gitlab_change('docs/readme.md', 'docs/readme.md')
+
+        assert filter_ignored([renamed_out, untouched], platform='gitlab') == [renamed_out, untouched]
+
+    def test_gitlab_rename_falls_back_to_source_path(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        no_destination = _gitlab_change('', 'secrets/app.yaml')
+        no_destination_kept = _gitlab_change(None, 'src/app.py')
+
+        kept = filter_ignored([no_destination, no_destination_kept], platform='gitlab')
+
+        assert kept == [no_destination_kept]
+
+    def test_gitlab_added_file_is_ignored_by_destination_path(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        added = _gitlab_change('secrets/app.yaml', '')
+        added_outside = _gitlab_change('src/app.py', '')
+
+        assert filter_ignored([added, added_outside], platform='gitlab') == [added_outside]
+
+    def test_gitlab_entry_without_any_path_is_ignored(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        pathless = {'diff': 'diff --git a/x b/x'}
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+
+        assert filter_ignored([pathless, untouched], platform='gitlab') == [untouched]
+
+    def test_bitbucket_rename_into_ignored_path_is_ignored(self, monkeypatch):
+        self._ignore(monkeypatch, [r'.*\.pem$'])
+
+        renamed_in = _BitbucketDiffstat('id_rsa.pem', 'notes.txt')
+        untouched = _BitbucketDiffstat('src/app.py', 'src/app.py')
+        ignored = _BitbucketDiffstat('id_rsa.pem', 'id_rsa.pem')
+
+        assert filter_ignored([renamed_in, untouched, ignored], platform='bitbucket') == [untouched]
+
+    def test_bitbucket_rename_out_of_ignored_path_is_kept(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        renamed_out = _BitbucketDiffstat('docs/app.yaml', 'secrets/app.yaml')
+        untouched = _BitbucketDiffstat('docs/readme.md', 'docs/readme.md')
+
+        assert filter_ignored([renamed_out, untouched], platform='bitbucket') == [renamed_out, untouched]
+
+    def test_bitbucket_rename_falls_back_to_source_path(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        no_destination = _BitbucketDiffstat(None, 'secrets/app.yaml')
+        no_destination_kept = _BitbucketDiffstat(None, 'src/app.py')
+
+        kept = filter_ignored([no_destination, no_destination_kept], platform='bitbucket')
+
+        assert kept == [no_destination_kept]
+
+    def test_bitbucket_entry_without_any_path_is_ignored(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        pathless = _BitbucketDiffstat(None, None)
+        untouched = _BitbucketDiffstat('src/app.py', 'src/app.py')
+
+        assert filter_ignored([pathless, untouched], platform='bitbucket') == [untouched]
+
+    def test_rename_between_unignored_paths_is_kept(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/', r'.*\.lock$'])
+
+        renamed = _gitlab_change('src/renamed.py', 'src/original.py')
+        other_renamed = _BitbucketDiffstat('src/renamed.py', 'src/original.py')
+
+        assert filter_ignored([renamed], platform='gitlab') == [renamed]
+        assert filter_ignored([other_renamed], platform='bitbucket') == [other_renamed]
+
+    def test_rename_is_filtered_against_every_pattern(self, monkeypatch):
+        """Each pattern tests the chosen path, so a later pattern can still match."""
+        self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$'])
+
+        renamed = _gitlab_change('src/api_generated.py', 'src/api.py')
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+
+        assert filter_ignored([renamed, untouched], platform='gitlab') == [untouched]

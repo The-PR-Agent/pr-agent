@@ -6,7 +6,14 @@ from pr_agent.log import get_logger
 
 
 def filter_ignored(files, platform = 'github'):
-    """Filter out files that match the ignore patterns."""
+    """Filter out files that match the ignore patterns.
+
+    A file is identified by the path it has in the merge result, so a rename is
+    filtered by its destination, with its source as the fallback for entries that
+    arrive without one. One path is decided per entry up front: testing a path and
+    then keeping the entry because its other path did not match let a rename into
+    an ignored path through, and its content reached the model.
+    """
 
     try:
         # load regex patterns, and translate glob patterns to regex
@@ -44,38 +51,31 @@ def filter_ignored(files, platform = 'github'):
 
         # keep filenames that _don't_ match the ignore regex
         if files:
+            # GitLab and Bitbucket diff entries name one file by up to two paths
+            # (rename source and destination). Resolve the path each entry is
+            # filtered by once, up front, so every pattern tests the same name.
+            has_rename_paths = platform in ('bitbucket', 'gitlab')
+            entry_paths = None
+            if has_rename_paths:
+                entry_paths = [_entry_path(f, platform) for f in files]
+                for path in entry_paths:
+                    if path is None:
+                        get_logger().debug(
+                            "Excluding a diff entry from ignore filtering: it names no path to match on")
+
             for r in compiled_patterns:
                 if platform in ('github', 'codecommit'):
                     files = [f for f in files if (f.filename and not r.match(f.filename))]
-                elif platform == 'bitbucket':
-                    # files = [f for f in files if (f.new.path and not r.match(f.new.path))]
-                    files_o = []
-                    for f in files:
-                        if hasattr(f, 'new'):
-                            if f.new and f.new.path and not r.match(f.new.path):
-                                files_o.append(f)
-                                continue
-                        if hasattr(f, 'old'):
-                            if f.old and f.old.path and not r.match(f.old.path):
-                                files_o.append(f)
-                                continue
-                    files = files_o
+                elif has_rename_paths:
+                    files = [
+                        f for f, path in zip(files, entry_paths, strict=True)
+                        if path is not None and not r.match(path)
+                    ]
                 elif platform == 'bitbucket_server':
                     files = [
                         f for f in files
                         if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])
                     ]
-                elif platform == 'gitlab':
-                    # files = [f for f in files if (f['new_path'] and not r.match(f['new_path']))]
-                    files_o = []
-                    for f in files:
-                        if 'new_path' in f and f['new_path'] and not r.match(f['new_path']):
-                            files_o.append(f)
-                            continue
-                        if 'old_path' in f and f['old_path'] and not r.match(f['old_path']):
-                            files_o.append(f)
-                            continue
-                    files = files_o
                 elif platform == 'azure':
                     files = [f for f in files if not r.match(f)]
                 elif platform == 'gitea':
@@ -88,11 +88,33 @@ def filter_ignored(files, platform = 'github'):
                             files_o.append(f)
                     files = files_o
 
-
     except Exception as e:
         get_logger().error(f"Could not filter file list: {e}")
 
     return files
+
+
+def _entry_path(f, platform) -> str | None:
+    """Return the path a diff entry is filtered by, or None when it names none.
+
+    A rename carries a destination (the path the file has in the merge result) and
+    a source (where it came from). The destination decides, matching how providers
+    label the file, and the source is the fallback for entries that arrive without
+    one. A single name has to be chosen here: when the caller instead tested one
+    path and, on a match, accepted the file because the *other* path did not match,
+    a rename into an ignored path was kept and its content reached the model.
+    """
+    if platform == 'gitlab':
+        candidates = [f.get('new_path'), f.get('old_path')]
+    elif platform == 'bitbucket':
+        candidates = [getattr(side, 'path', None) for side in (getattr(f, 'new', None), getattr(f, 'old', None))]
+    else:
+        return None
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
 
 def translate_globs_to_regexes(globs: list):
     regexes = []
