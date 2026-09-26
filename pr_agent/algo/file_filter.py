@@ -6,14 +6,7 @@ from pr_agent.log import get_logger
 
 
 def filter_ignored(files, platform = 'github'):
-    """Filter out files that match the ignore patterns.
-
-    A file is identified by the path it has in the merge result, so a rename is
-    filtered by its destination, with its source as the fallback for entries that
-    arrive without one. One path is decided per entry up front: testing a path and
-    then keeping the entry because its other path did not match let a rename into
-    an ignored path through, and its content reached the model.
-    """
+    """Filter out files that match the ignore patterns."""
 
     try:
         # load regex patterns, and translate glob patterns to regex
@@ -50,75 +43,47 @@ def filter_ignored(files, platform = 'github'):
             files = list(files)
 
         # keep filenames that _don't_ match the ignore regex
-        # With no compiled pattern there is nothing to match against, so the list is
-        # returned untouched on every platform.
-        if files and compiled_patterns:
-            if platform in ('bitbucket', 'gitlab'):
-                # GitLab and Bitbucket diff entries name one file by up to two paths
-                # (rename source and destination). Resolve the path each entry is
-                # filtered by once and keep it paired with the entry while the
-                # patterns run: the pairing has to survive every pass, because each
-                # pass drops entries and the path of a dropped entry no longer has a
-                # file to pair with.
-                paired = []
-                for f in files:
-                    path = _entry_path(f, platform)
-                    if path is None:
-                        get_logger().debug(
-                            "Excluding a diff entry from ignore filtering: it names no path to match on")
-                        continue
-                    paired.append((f, path))
-                for r in compiled_patterns:
-                    paired = [(f, path) for f, path in paired if not r.match(path)]
-                files = [f for f, _ in paired]
-            else:
-                for r in compiled_patterns:
-                    if platform in ('github', 'codecommit'):
-                        files = [f for f in files if (f.filename and not r.match(f.filename))]
-                    elif platform == 'bitbucket_server':
-                        files = [
-                            f for f in files
-                            if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])
-                        ]
-                    elif platform == 'azure':
-                        files = [f for f in files if not r.match(f)]
-                    elif platform == 'gitea':
-                        files = [f for f in files if not r.match(f.get("filename", ""))]
-                    elif platform == "gerrit":
-                        files_o = []
-                        for f in files:
-                            path = f.b_path or f.a_path
-                            if path and not r.match(path):
-                                files_o.append(f)
-                        files = files_o
+        if files:
+            for r in compiled_patterns:
+                if platform in ('github', 'codecommit'):
+                    files = [f for f in files if (f.filename and not r.match(f.filename))]
+                elif platform == 'bitbucket':
+                    files_o = []
+                    for f in files:
+                        new, old = getattr(f, 'new', None), getattr(f, 'old', None)
+                        path = (new and new.path) or (old and old.path)
+                        if path and not r.match(path):
+                            files_o.append(f)
+                    files = files_o
+                elif platform == 'bitbucket_server':
+                    files = [
+                        f for f in files
+                        if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])
+                    ]
+                elif platform == 'gitlab':
+                    files_o = []
+                    for f in files:
+                        path = f.get('new_path') or f.get('old_path')
+                        if path and not r.match(path):
+                            files_o.append(f)
+                    files = files_o
+                elif platform == 'azure':
+                    files = [f for f in files if not r.match(f)]
+                elif platform == 'gitea':
+                    files = [f for f in files if not r.match(f.get("filename", ""))]
+                elif platform == "gerrit":
+                    files_o = []
+                    for f in files:
+                        path = f.b_path or f.a_path
+                        if path and not r.match(path):
+                            files_o.append(f)
+                    files = files_o
+
 
     except Exception as e:
         get_logger().error(f"Could not filter file list: {e}")
 
     return files
-
-
-def _entry_path(f, platform) -> str | None:
-    """Return the path a diff entry is filtered by, or None when it names none.
-
-    A rename carries a destination (the path the file has in the merge result) and
-    a source (where it came from). The destination decides, matching how providers
-    label the file, and the source is the fallback for entries that arrive without
-    one. A single name has to be chosen here: when the caller instead tested one
-    path and, on a match, accepted the file because the *other* path did not match,
-    a rename into an ignored path was kept and its content reached the model.
-    """
-    if platform == 'gitlab':
-        candidates = [f.get('new_path'), f.get('old_path')]
-    elif platform == 'bitbucket':
-        candidates = [getattr(side, 'path', None) for side in (getattr(f, 'new', None), getattr(f, 'old', None))]
-    else:
-        return None
-    for candidate in candidates:
-        if isinstance(candidate, str) and candidate:
-            return candidate
-    return None
-
 
 def translate_globs_to_regexes(globs: list):
     regexes = []
