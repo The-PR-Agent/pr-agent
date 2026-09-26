@@ -163,6 +163,19 @@ publish_review_as_thread = true
 - Enabling the flag does not convert a review that was already posted as a plain note: it keeps being updated in place, and GitLab cannot promote a note to a thread. Only MRs whose first review runs after the flag is set get a thread.
 - Set `pr_reviewer.persistent_comment=false` to open a new review thread on each run instead.
 
+## Reply to the triggering GitLab discussion
+
+By default, `/review` and `/improve` publish a new comment. To reply inside the GitLab discussion that triggered the command, enable (default: `false`):
+
+```toml
+[gitlab]
+reply_to_trigger_comment = true
+```
+
+This is opt-in and GitLab-only. The webhook supplies the discussion ID for top-level `/review` and `/improve` notes. If the ID is unavailable or the reply fails, PR-Agent falls back to a normal note so output is not lost. GitHub Conversation comments do not expose a compatible reply endpoint.
+
+With `persistent_comment=true` (the default for both tools), a rerun updates the earlier result where it was first posted, which may be a different discussion; `/review` also posts a short link to it in the new command's discussion.
+
 ## Post the /improve suggestions as a GitLab thread
 
 By default, PR-Agent posts the `/improve` suggestions as a plain note. To post them as a resolvable thread (GitLab discussion) instead, enable (default: `false`):

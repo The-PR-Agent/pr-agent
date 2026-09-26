@@ -645,13 +645,52 @@ class TestGitLabProvider:
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
             assert gitlab_provider.should_publish_review_as_thread() is False
 
+    @pytest.mark.parametrize("configured", [True, False])
+    def test_should_reply_to_trigger_comment_reflects_config(self, gitlab_provider, configured):
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.REPLY_TO_TRIGGER_COMMENT": configured,
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            assert gitlab_provider.should_reply_to_trigger_comment() is configured
+
     def test_publish_comment_defaults_to_a_note(self, gitlab_provider):
-        # Without as_thread (status comments, other tools), publishing stays a plain note.
+        # Without a trigger discussion, publishing stays a plain note.
         gitlab_provider.mr = MagicMock()
         result = gitlab_provider.publish_comment("a status comment")
 
         gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'a status comment'})
         gitlab_provider.mr.discussions.create.assert_not_called()
+        assert result is gitlab_provider.mr.notes.create.return_value
+
+    def test_publish_comment_replies_to_trigger_discussion(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.REPLY_TO_TRIGGER_COMMENT": True,
+            "comment_id": "discussion-1",
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            result = gitlab_provider.publish_comment("the review")
+
+        gitlab_provider.mr.discussions.get.assert_called_once_with("discussion-1")
+        gitlab_provider.mr.discussions.get.return_value.notes.create.assert_called_once_with(
+            {'body': 'the review'}
+        )
+        gitlab_provider.mr.notes.create.assert_not_called()
+        assert result is gitlab_provider.mr.discussions.get.return_value.notes.create.return_value
+
+    def test_publish_comment_falls_back_without_trigger_discussion(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.REPLY_TO_TRIGGER_COMMENT": True,
+            "comment_id": "",
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            result = gitlab_provider.publish_comment("the review")
+
+        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'the review'})
         assert result is gitlab_provider.mr.notes.create.return_value
 
     def test_publish_comment_as_thread_creates_a_discussion(self, gitlab_provider):
