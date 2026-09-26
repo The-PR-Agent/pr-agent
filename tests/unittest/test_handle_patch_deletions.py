@@ -76,8 +76,8 @@ class TestDeletionOnlyPatchIsNotErased:
 
     omit_deletion_hunks drops every hunk that carries no added line, so a diff made
     only of removals used to reduce to "". Callers cannot tell that apart from "no diff",
-    and the compressed path in pr_processing then dropped the file from the prompt while
-    adding it to no list at all, so the model was never told the file had changed.
+    and the compressed path in pr_processing then showed the file only as an empty
+    header or an unprocessed name, so the model never saw the removed lines.
     """
 
     DELETIONS_ONLY = "@@ -1,40 +1,4 @@\n-removed one\n-removed two\n kept"

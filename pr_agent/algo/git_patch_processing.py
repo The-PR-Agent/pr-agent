@@ -321,16 +321,9 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
     else:
         patch_lines = patch.splitlines()
         patch_new = omit_deletion_hunks(patch_lines)
-        if patch != patch_new:
+        if patch_new and patch != patch_new:
             if get_verbosity_level() > 0:
                 get_logger().info(f"Processing file: {file_name}, hunks were deleted")
-            # Omitting deletion-only hunks is a token-saving trim, but it must not erase a
-            # file that still exists. When every hunk is deletion-only the trim returns "",
-            # which callers cannot distinguish from "no diff", and the compressed path then
-            # drops the file from the prompt with no bookkeeping at all. Keep the original
-            # patch in that case so the change stays visible to the model.
-            if not patch_new and patch:
-                patch_new = patch
             patch = patch_new
     return patch
 
