@@ -8,7 +8,6 @@ The diff is parsed by parse_unified_diff(); per-request the parsed files/languag
 are read from MOSAICO.INPUT on the (context) settings.
 """
 import re
-import shlex
 from typing import List, Optional
 
 from pr_agent.algo.git_patch_processing import to_hunk_only_patch
@@ -25,13 +24,27 @@ class _PullRequestMimic:
         self.diff_files = diff_files
 
 
-_DIFF_GIT_RE = re.compile(r'^diff --git (?P<paths>.+?)\s*$')
+# git C-quotes a path (core.quotePath) holding '"', '\\', control or non-ASCII bytes.
+_QUOTED_PATH = r'"(?:[^"\\]|\\.)*"'
+_DIFF_GIT_RE = re.compile(rf'^diff --git (?P<a>{_QUOTED_PATH}|a/.+?) (?P<b>{_QUOTED_PATH}|b/.+)$')
+_C_ESCAPE_RE = re.compile(rb'\\([0-7]{3}|.)')
+_C_ESCAPES = {b"a": b"\a", b"b": b"\b", b"t": b"\t", b"n": b"\n", b"v": b"\v", b"f": b"\f", b"r": b"\r"}
+
+
+def _unquote_git_path(path: str) -> str:
+    if len(path) < 2 or path[0] != '"' or path[-1] != '"':
+        return path
+
+    def decode(m: re.Match) -> bytes:
+        esc = m.group(1)
+        return bytes([int(esc, 8)]) if len(esc) == 3 else _C_ESCAPES.get(esc, esc)
+
+    return _C_ESCAPE_RE.sub(decode, path[1:-1].encode()).decode(errors="replace")
 
 
 def _normalize_file_header_path(path: str) -> str:
-    path = path.strip()
-    if len(path) >= 2 and path[0] == path[-1] == '"':
-        path = path[1:-1]
+    # git appends a tab to ---/+++ paths that contain a space
+    path = _unquote_git_path(path.rstrip("\t"))
     if path == "/dev/null":
         return ""
     if path.startswith(("a/", "b/")):
@@ -53,7 +66,7 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
 
     lines = diff_text.splitlines(keepends=True)
     # Find the start index of each "diff --git" section.
-    starts = [i for i, ln in enumerate(lines) if _DIFF_GIT_RE.match(ln.rstrip("\n"))]
+    starts = [i for i, ln in enumerate(lines) if _DIFF_GIT_RE.match(ln.rstrip("\r\n"))]
     if not starts:
         return []
     starts.append(len(lines))
@@ -63,14 +76,8 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
         section = lines[starts[idx]:starts[idx + 1]]
         header = section[0].rstrip("\r\n")
         m = _DIFF_GIT_RE.match(header)
-        try:
-            paths = shlex.split(m.group("paths")) if m else []
-        except ValueError:
-            paths = []
-        a_path = paths[0] if len(paths) > 0 else ""
-        b_path = paths[1] if len(paths) > 1 else ""
-        a_path = _normalize_file_header_path(a_path)
-        b_path = _normalize_file_header_path(b_path)
+        a_path = _normalize_file_header_path(m.group("a")) if m else ""
+        b_path = _normalize_file_header_path(m.group("b")) if m else ""
 
         edit_type = EDIT_TYPE.MODIFIED
         old_filename = None
@@ -88,7 +95,7 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
                 edit_type = EDIT_TYPE.DELETED
             elif s.startswith("rename from "):
                 edit_type = EDIT_TYPE.RENAMED
-                old_filename = s[len("rename from "):].strip()
+                old_filename = _unquote_git_path(s[len("rename from "):].strip())
             elif s.startswith("rename to "):
                 edit_type = EDIT_TYPE.RENAMED
         if (

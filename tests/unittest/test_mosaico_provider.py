@@ -89,24 +89,73 @@ class TestParseUnifiedDiff:
         assert files[0].old_filename == "old.py"
         assert files[0].patch == ""
 
-    def test_quoted_paths_are_parsed(self):
-        diff = (
-            'diff --git "a/foo bar.txt" "b/foo bar.txt"\n'
-            "index 1111111..2222222 100644\n"
-            '--- "a/foo bar.txt"\n'
-            '+++ "b/foo bar.txt"\n'
-            "@@ -1 +1 @@\n"
-            "-old\n"
-            "+new\n"
-        )
+    def test_git_quoted_paths_are_decoded(self):
+        # `git diff --cached -M -U0` output with core.quotePath on
+        diff = "\n".join([
+            'diff --git "a/back\\\\slash.txt" "b/back\\\\slash.txt"',
+            "index 726b5e2..41bf49a 100644",
+            '--- "a/back\\\\slash.txt"',
+            '+++ "b/back\\\\slash.txt"',
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            'diff --git "a/caf\\303\\251.txt" "b/caf\\303\\251.txt"',
+            "index 726b5e2..41bf49a 100644",
+            '--- "a/caf\\303\\251.txt"',
+            '+++ "b/caf\\303\\251.txt"',
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            'diff --git "a/na\\303\\257ve.txt" "b/cr\\303\\250me.txt"',
+            "similarity index 100%",
+            'rename from "na\\303\\257ve.txt"',
+            'rename to "cr\\303\\250me.txt"',
+            "diff --git a/foo bar.txt b/foo bar.txt",
+            "index 726b5e2..41bf49a 100644",
+            "--- a/foo bar.txt\t",
+            "+++ b/foo bar.txt\t",
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            'diff --git "a/quo\\"te.txt" "b/quo\\"te.txt"',
+            "index 726b5e2..41bf49a 100644",
+            '--- "a/quo\\"te.txt"',
+            '+++ "b/quo\\"te.txt"',
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            "diff --git a/plain.txt b/ren me2.txt",
+            "similarity index 100%",
+            "rename from plain.txt",
+            "rename to ren me2.txt",
+            'diff --git "a/tab\\there.txt" "b/tab\\there.txt"',
+            "index 726b5e2..41bf49a 100644",
+            '--- "a/tab\\there.txt"',
+            '+++ "b/tab\\there.txt"',
+            "@@ -1 +1 @@",
+            "-old",
+            "+new",
+            'diff --git a/ren me.txt "b/x y\\"z.txt"',
+            "similarity index 100%",
+            "rename from ren me.txt",
+            'rename to "x y\\"z.txt"',
+        ]) + "\n"
 
         files = parse_unified_diff(diff)
 
-        assert len(files) == 1
-        assert files[0].filename == "foo bar.txt"
-        assert "-old" in files[0].patch
-        assert "+new" in files[0].patch
+        assert [(f.filename, f.old_filename) for f in files] == [
+            ("back\\slash.txt", None),
+            ("café.txt", None),
+            ("crème.txt", "naïve.txt"),
+            ("foo bar.txt", None),
+            ('quo"te.txt', None),
+            ("ren me2.txt", "plain.txt"),
+            ("tab\there.txt", None),
+            ('x y"z.txt', "ren me.txt"),
+        ]
+        assert all("+new" in f.patch for f in files if f.edit_type == EDIT_TYPE.MODIFIED)
 
+    def test_paths_with_spaces_are_read_from_file_headers(self):
         diff = (
             "diff --git a/src/a b/file.py b/src/a b/file.py\n"
             "index 1111111..2222222 100644\n"
