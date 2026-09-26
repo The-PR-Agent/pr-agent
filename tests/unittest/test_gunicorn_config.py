@@ -1,8 +1,8 @@
+import pytest
+import runpy
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
-
-import pytest
 
 from pr_agent.servers import gunicorn_config
 
@@ -12,6 +12,7 @@ def isolated_env(monkeypatch, tmp_path):
     """Detach every test from the host's env vars, CPU affinity, and real cgroup files."""
     monkeypatch.delenv("GUNICORN_WORKERS", raising=False)
     monkeypatch.delenv("GUNICORN_MAX_WORKERS", raising=False)
+    monkeypatch.delenv("PORT", raising=False)
     monkeypatch.setattr(gunicorn_config.os, "sched_getaffinity", lambda pid: set(range(64)), raising=False)
     for attr in ("CGROUP_V2_CPU_MAX", "CGROUP_V1_CPU_QUOTA", "CGROUP_V1_CPU_PERIOD"):
         monkeypatch.setattr(gunicorn_config, attr, str(tmp_path / "missing"))
@@ -89,6 +90,13 @@ class TestAvailableCpus:
         monkeypatch.delattr(gunicorn_config.os, "sched_getaffinity", raising=False)
         monkeypatch.setattr(gunicorn_config.os, "cpu_count", lambda: None)
         assert gunicorn_config.available_cpus() == 1
+
+
+@pytest.mark.parametrize("port,expected", [(None, "3000"), ("", "3000"), ("8080", "8080")])
+def test_bind_uses_port_or_default(monkeypatch, port, expected):
+    if port is not None:
+        monkeypatch.setenv("PORT", port)
+    assert runpy.run_path(gunicorn_config.__file__)["bind"] == f"0.0.0.0:{expected}"
 
 
 class TestComputeWorkers:

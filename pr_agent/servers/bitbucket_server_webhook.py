@@ -234,10 +234,29 @@ async def root():
     return {"status": "ok"}
 
 
+app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+app.include_router(router)
+
+
 def start():
-    app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
-    app.include_router(router)
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "3000")))
+    """
+    Start the BitBucket Webhook server.
+
+    The server port can be configured via the PORT environment variable.
+    Defaults to 3000 if PORT is not set or invalid.
+    """
+
+    raw_port = os.environ.get("PORT")
+    try:
+        port = int(raw_port) if raw_port else 3000
+        if not (1 <= port <= 65535):
+            raise ValueError(f"Port {port} is out of valid range")
+        if raw_port:
+            get_logger().info(f"Using custom PORT from environment: {port}")
+    except ValueError as e:
+        get_logger().warning(f"Invalid PORT environment variable ({e}), using default port 3000")
+        port = 3000
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
