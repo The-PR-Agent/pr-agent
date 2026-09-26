@@ -16,6 +16,14 @@ provider error if they change again. Non-empty results also require usable base/
 references for loading file content. If the merge request moves after incremental
 setup, PR-Agent falls back to a full review instead of mixing revisions.
 
+## Optional submodule diff expansion
+
+When `GITLAB.EXPAND_SUBMODULE_DIFFS` is enabled, PR-Agent compares submodule commits
+to add child-file patches. If the comparison times out or a child patch is omitted
+(`collapsed` or `too_large`), it logs a warning and skips that optional expansion.
+The parent submodule gitlink remains in the merge request diff. This repository
+comparison fallback is separate from the merge-request `/diffs` behavior above.
+
 ## Run as a GitLab Pipeline
 
 You can use a pre-built Action Docker image to run PR-Agent as a GitLab pipeline. This is a simple way to get started with PR-Agent without setting up your own server.

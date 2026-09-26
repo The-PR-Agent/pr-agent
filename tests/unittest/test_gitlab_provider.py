@@ -562,6 +562,74 @@ class TestGitLabProvider:
         m_pbp.assert_called_once_with("grp/repo")
         proj.repository_compare.assert_called_once_with("old", "new")
 
+    @pytest.mark.parametrize(
+        "comparison, reason",
+        [
+            ({"compare_timeout": True, "diffs": [{"diff": "partial"}]}, "timed out"),
+            ({"diffs": [{"diff": "partial", "collapsed": True}]}, "collapsed"),
+            ({"diffs": [{"diff": "partial", "too_large": True}]}, "too large"),
+        ],
+    )
+    def test_compare_submodule_skips_incomplete_child_diffs_once_cached(
+        self, gitlab_provider, comparison, reason
+    ):
+        proj = MagicMock()
+        proj.repository_compare.return_value = comparison
+
+        with patch.object(gitlab_provider, "_project_by_path", return_value=proj), \
+             patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
+            first = gitlab_provider._compare_submodule("grp/repo", "old", "new")
+            second = gitlab_provider._compare_submodule("grp/repo", "old", "new")
+
+        assert first == second == []
+        proj.repository_compare.assert_called_once_with("old", "new")
+        mock_logger.return_value.warning.assert_called_once()
+        assert reason in mock_logger.return_value.warning.call_args.args[0]
+
+    @pytest.mark.parametrize(
+        "comparison, expected_diffs",
+        [
+            ({"diffs": []}, []),
+            ({"compare_timeout": False, "diffs": [{"diff": "complete"}]}, [{"diff": "complete"}]),
+            (
+                {"diffs": [{"diff": "complete", "collapsed": False, "too_large": False}]},
+                [{"diff": "complete", "collapsed": False, "too_large": False}],
+            ),
+        ],
+    )
+    def test_compare_submodule_keeps_complete_responses_silent(self, gitlab_provider, comparison, expected_diffs):
+        proj = MagicMock()
+        proj.repository_compare.return_value = comparison
+
+        with patch.object(gitlab_provider, "_project_by_path", return_value=proj), \
+             patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
+            result = gitlab_provider._compare_submodule("grp/repo", "old", "new")
+
+        assert result == expected_diffs
+        mock_logger.return_value.warning.assert_not_called()
+
+    def test_get_diff_files_keeps_parent_gitlink_when_submodule_compare_is_incomplete(self, gitlab_provider):
+        gitlab_provider._get_merge_request_changes = MagicMock(return_value={
+            "changes": [self._submodule_bump()],
+            "diff_refs": {"base_sha": "base", "head_sha": "head"},
+        })
+        child_project = MagicMock()
+        child_project.repository_compare.return_value = {
+            "compare_timeout": True,
+            "diffs": [{"old_path": "child.py", "new_path": "child.py", "diff": "partial"}],
+        }
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"src/lib_a": "group/child.git"}), \
+             patch.object(gitlab_provider, "_project_by_path", return_value=child_project), \
+             patch.object(gitlab_provider, "get_pr_file_content", return_value=""):
+            files = gitlab_provider.get_diff_files()
+
+        assert [file.filename for file in files] == ["src/lib_a"]
+        child_project.repository_compare.assert_called_once_with("aaa1111", "bbb2222")
+
     def test_compare_submodule_cache_hit_skips_project_resolution(self, gitlab_provider):
         cached_diffs = [{"diff": "d"}]
         gitlab_provider._submodule_cache[("grp/repo", "old", "new")] = cached_diffs
@@ -2242,6 +2310,40 @@ class TestGitLabIncrementalReview:
         # and the resulting file list reflects the expanded entries.
         m_exp.assert_called_once()
         assert [f.filename for f in files] == ["libs/sub/file.py"]
+
+    def test_incremental_get_diff_files_keeps_parent_gitlink_when_submodule_compare_is_incomplete(
+        self, gitlab_provider
+    ):
+        gitlab_provider.incremental = IncrementalPR(True)
+        gitlab_provider.unreviewed_files_map = {
+            "libs/sub": {
+                "new_path": "libs/sub",
+                "old_path": "libs/sub",
+                "diff": "-Subproject commit aaa1111\n+Subproject commit bbb2222\n",
+                "new_file": False,
+                "deleted_file": False,
+                "renamed_file": False,
+            }
+        }
+        gitlab_provider._incremental_head_sha = "head"
+        gitlab_provider.incremental.last_seen_commit = _GitLabIncrementalCommit(
+            self._make_commit("base", "2024-05-01T09:00:00Z")
+        )
+        child_project = MagicMock()
+        child_project.repository_compare.return_value = {
+            "diffs": [{"old_path": "child.py", "new_path": "child.py", "diff": "partial", "collapsed": True}],
+        }
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"libs/sub": "group/child.git"}), \
+             patch.object(gitlab_provider, "_project_by_path", return_value=child_project), \
+             patch.object(gitlab_provider, "get_pr_file_content", return_value=""):
+            files = gitlab_provider.get_diff_files()
+
+        assert [file.filename for file in files] == ["libs/sub"]
+        child_project.repository_compare.assert_called_once_with("aaa1111", "bbb2222")
 
 
 class TestGitLabCapabilities:

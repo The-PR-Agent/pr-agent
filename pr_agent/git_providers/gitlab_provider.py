@@ -479,6 +479,20 @@ class GitLabProvider(GitProvider):
             cmp = proj.repository_compare(old_sha, new_sha)
             if isinstance(cmp, dict):
                 diffs = cmp.get("diffs", []) or []
+                incomplete_reason = None
+                if cmp.get("compare_timeout") is True:
+                    incomplete_reason = "compare timed out"
+                elif any(isinstance(diff, dict) and diff.get("collapsed") is True for diff in diffs):
+                    incomplete_reason = "a child diff is collapsed"
+                elif any(isinstance(diff, dict) and diff.get("too_large") is True for diff in diffs):
+                    incomplete_reason = "a child diff is too large"
+                if incomplete_reason:
+                    get_logger().warning(
+                        f"[submodule] compare incomplete for {proj_path} {old_sha}..{new_sha}: "
+                        f"{incomplete_reason}; child expansion skipped and parent submodule change remains"
+                    )
+                    self._submodule_cache[key] = []
+                    return []
             else:
                 diffs = []
             self._submodule_cache[key] = diffs
