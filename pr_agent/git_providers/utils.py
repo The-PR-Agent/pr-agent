@@ -790,7 +790,8 @@ def handle_configurations_errors(config_errors, git_provider):
                     # Global content is redacted, so we never render it — skip decoding it entirely.
                     # Global settings live in a `pr-agent-settings` repo scoped per platform
                     # (GitHub organization, GitLab group, or Bitbucket workspace).
-                    body += "\n\nThe invalid configuration came from the global `pr-agent-settings` settings repository."
+                    body += ("\n\nThe invalid configuration came from the global "
+                             "`pr-agent-settings` settings repository.")
                 else:
                     settings_content = err['settings']
                     configuration_file_content = (

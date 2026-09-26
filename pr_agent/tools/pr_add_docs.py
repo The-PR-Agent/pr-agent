@@ -7,6 +7,7 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
 )
@@ -112,7 +113,7 @@ class PRAddDocs:
             output_token_reserve=output_token_reserve,
         )
         if not patches_diff:
-            raise ValueError("No PR diff fits the /add_docs request")
+            raise FallbackEligibleError("No PR diff fits the /add_docs request")
         fitted = budget.fit_prompt_variable(
             variables,
             "diff",
@@ -122,7 +123,7 @@ class PRAddDocs:
             preserve_minimum=True,
         )
         if fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed documentation diff does not fit the token limit for {model}"
             )
         self.patches_diff = fitted.optional_text

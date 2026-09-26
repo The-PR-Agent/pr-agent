@@ -315,7 +315,9 @@ class CodeCommitProvider(GitProvider):
         for suggestion in code_suggestions:
             # Verify that each suggestion has the required keys
             if not all(key in suggestion for key in ["body", "relevant_file", "relevant_lines_start"]):
-                get_logger().warning(f"Skipping code suggestion #{counter}: Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
+                get_logger().warning(
+                    f"Skipping code suggestion #{counter}: "
+                    f"Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
                 continue
 
             publishable_count += 1
@@ -337,7 +339,8 @@ class CodeCommitProvider(GitProvider):
                     )
                     published_count += 1
                 except Exception as e:
-                    raise ValueError(f"CodeCommit Cannot publish code suggestions for PR: {self.pr_num}") from e
+                    get_logger().warning(
+                        f"Could not publish code suggestion #{counter} for PR {self.pr_num}: {e}")
 
             counter += 1
 
@@ -377,7 +380,8 @@ class CodeCommitProvider(GitProvider):
             return False
         return updated_comment.get("commentId") == comment_id and updated_comment.get("content") == body
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str,
+                               relevant_line_in_file: str, original_suggestion=None):
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/codecommit/client/post_comment_for_compared_commit.html
         raise NotImplementedError("CodeCommit provider does not support publishing inline comments yet")
 

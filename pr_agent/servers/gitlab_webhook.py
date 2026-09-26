@@ -79,7 +79,8 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
     if is_draft(data) and not feedback_on_draft:
         get_logger().info(f"Skipping draft MR: {api_url}")
         return
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    # auto commands for PR, and auto feedback is disabled
+    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
     if not should_process_pr_logic(data): # Here we already updated the configurations
@@ -251,21 +252,22 @@ def should_process_pr_logic(data) -> bool:
 def authenticate_gitlab_webhook(request: Request, log_context: dict):
     request_token = request.headers.get("X-Gitlab-Token")
     # Built only for a request that will actually consult it, so a cloud client that
-    # fails to initialize cannot drop webhooks authenticated by shared secret instead.
-    secret_provider = get_fork_safe_secret_provider() if request_token else None
-    if request_token and secret_provider:
-        secret = secret_provider.get_secret(request_token)
-        if not secret:
-            get_logger().warning("Empty secret retrieved for the provided webhook token")
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                                content=jsonable_encoder({"message": "unauthorized"}))
+    # fails to initialize or read cannot drop webhooks authenticated by shared secret instead.
+    secret = None
+    if request_token:
+        try:
+            secret_provider = get_fork_safe_secret_provider()
+            secret = secret_provider.get_secret(request_token) if secret_provider else None
+        except Exception as e:
+            get_logger().warning(f"Secret provider failed ({type(e).__name__}), falling back to the shared secret")
+    if secret:
         try:
             secret_dict = json.loads(secret)
-            gitlab_token = secret_dict["gitlab_token"]
+            context["settings"].gitlab.personal_access_token = secret_dict["gitlab_token"]
             log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
-            context["settings"].gitlab.personal_access_token = gitlab_token
         except Exception as e:
-            get_logger().error(f"Failed to validate the secret for the provided webhook token: {e}")
+            get_logger().error(
+                f"Failed to validate the secret for the provided webhook token: {type(e).__name__}")
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
     elif get_settings().get("GITLAB.SHARED_SECRET"):
@@ -380,7 +382,8 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 # Check PR logic after applying repo settings
                 if not should_process_pr_logic(data):
-                    return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
+                    return JSONResponse(
+                        status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
 
                 if is_draft(data):
                     get_logger().info(f"Skipping draft MR reviewer assignment: {url}")
@@ -388,7 +391,8 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                                         content=jsonable_encoder({"message": "success"}))
                 if await is_bot_assigned_as_reviewer(data):
                     reviewer_commands = get_settings().get("gitlab.reviewer_commands", [])
-                    if not isinstance(reviewer_commands, list) or not all(isinstance(c, str) for c in reviewer_commands):
+                    if (not isinstance(reviewer_commands, list)
+                            or not all(isinstance(c, str) for c in reviewer_commands)):
                         get_logger().warning("gitlab.reviewer_commands is not a list of strings, skipping")
                         return JSONResponse(status_code=status.HTTP_200_OK,
                                             content=jsonable_encoder({"message": "success"}))
@@ -404,10 +408,17 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 get_logger().info(f"A comment has been added to a merge request: {url}")
                 body = data.get('object_attributes', {}).get('note')
-                if data.get('object_attributes', {}).get('type') == 'DiffNote' and '/ask' in body: # /ask_line
+                discussion_id = data.get('object_attributes', {}).get('discussion_id')
+                command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
+                if (discussion_id and not data.get('object_attributes', {}).get('type')
+                        and command in ("/review", "/review_pr", "/improve", "/improve_code")):
+                    body = f"{body} --comment_id={discussion_id}"
+                if (data.get('object_attributes', {}).get('type') == 'DiffNote'
+                        and isinstance(body, str) and '/ask' in body):  # /ask_line
                     body = handle_ask_line(body, data)
 
-                await handle_request(url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))
+                await handle_request(
+                    url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))
 
     background_tasks.add_task(inner, request_json)
     end_time = datetime.now()

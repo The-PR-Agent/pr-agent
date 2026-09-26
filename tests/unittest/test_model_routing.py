@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from pr_agent.algo.model_routing import count_hunks, route_primary_model
-from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import ModelType
@@ -71,7 +71,7 @@ def _models_tried(git_provider, model_type=ModelType.REGULAR, fail=()):
     async def fake_f(model):
         calls.append(model)
         if model in fail:
-            raise RuntimeError(f"{model} failed")
+            raise FallbackEligibleError(f"{model} failed")
         return model
 
     asyncio.run(retry_with_fallback_models(fake_f, model_type=model_type, git_provider=git_provider))
@@ -181,7 +181,7 @@ class TestAzureDeployments:
         async def fake_f(model):
             observed.append((model, get_settings().get("openai.deployment_id")))
             if model == "tiny-model":
-                raise RuntimeError("tiny failed")
+                raise FallbackEligibleError("tiny failed")
             return model
 
         asyncio.run(retry_with_fallback_models(fake_f, git_provider=_pr(num_files=1, hunks_per_file=1)))

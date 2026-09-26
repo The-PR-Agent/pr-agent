@@ -117,6 +117,7 @@ to-do list.
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
 | `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here only when litellm does not know the model (custom OpenAI-compatible endpoints). Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
+| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Model IDs match exactly or through any provider prefix. The defaults below preserve the former static registry entries that litellm's metadata still marks temperature-capable; the probe diff for this change is posted on the issue. |
 **extended thinking for Claude reasoning models**
 
 | Key | Default | Description |
@@ -158,7 +159,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `review_heading` | "PR Reviewer Guide" | Visible base heading for full and incremental review comments. Identity is tracked separately. |
 | `persistent_finding_state` | true | Persist review finding state across complete review runs. |
-| `inline_key_issues` | false |  |
+| `inline_key_issues` | false | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab). |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
 | `final_update_message` | true |  |
@@ -248,7 +249,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `max_history_len` | 4 |  |
 | `publish_output_no_suggestions` | true |  |
-| `enable_suggestions_coverage_footer` | true | show when failed analysis chunks make the suggestions incomplete |
+| `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
 
 | Key | Default | Description |
@@ -361,6 +362,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `expand_submodule_diffs` | false |  |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
+| `reply_to_trigger_comment` | false | On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available. |
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
 | `publish_code_suggestions_as_review` | false | When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
@@ -428,7 +430,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
 | `force_streaming_api_base_substrings` | [] |  |
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
-| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching) |
+| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (`litellm.enable_anthropic_prompt_caching`, env `LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING`, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
 
 
 ## `[openrouter]`

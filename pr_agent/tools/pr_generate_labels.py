@@ -2,11 +2,14 @@ import copy
 from functools import partial
 from typing import List
 
+from pydantic import ValidationError
+
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.output_models import Labels
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
 )
@@ -150,7 +153,7 @@ class PRGenerateLabels:
             output_token_reserve=output_token_reserve,
         )
         if not patches_diff:
-            raise ValueError(f"No PR diff fits the /generate_labels request for {model}")
+            raise FallbackEligibleError(f"No PR diff fits the /generate_labels request for {model}")
         fitted = budget.fit_prompt_variable(
             variables,
             "diff",
@@ -160,7 +163,7 @@ class PRGenerateLabels:
             preserve_minimum=True,
         )
         if fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed labels diff does not fit the token limit for {model}"
             )
         variables["diff"] = fitted.optional_text
@@ -201,7 +204,12 @@ class PRGenerateLabels:
     def _load_valid_labels_yaml(prediction: str) -> dict:
         """Load a usable labels response or fail the current model attempt."""
         data = load_yaml(prediction.strip())
-        return Labels.model_validate(data).model_dump()
+        try:
+            return Labels.model_validate(data).model_dump()
+        except ValidationError as error:
+            first_error = error.errors(include_input=False)[0]
+            field = ".".join(str(part) for part in first_error["loc"]) or "$"
+            raise FallbackEligibleError(f"Invalid labels model output at {field}: {first_error['msg']}") from error
 
     def _prepare_labels(self) -> List[str]:
         pr_types = self.data["labels"].copy()

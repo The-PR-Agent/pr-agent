@@ -172,3 +172,56 @@ class TestFindLineNumberOfRelevantLineInFile:
 
         assert position == 8
         assert absolute_position == 6
+
+    def test_no_newline_marker_does_not_shift_absolute_line_lookup(self):
+        patch = (
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "\\ No newline at end of file\n"
+            "+new\n"
+            "\\ No newline at end of file\n"
+        )
+        diff_files = [
+            FilePatchInfo(base_file="old", head_file="new", patch=patch, filename="file1")
+        ]
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "", absolute_position=1
+        ) == (3, 1)
+
+    def test_no_newline_marker_is_ignored_when_matching_source_lines(self):
+        patch = (
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "\\ No newline at end of file\n"
+            "+new\n"
+            "\\ No newline at end of file\n"
+        )
+        diff_files = [
+            FilePatchInfo(base_file="old", head_file="new", patch=patch, filename="file1")
+        ]
+
+        for relevant_line in ("new", "ne", "+   new"):
+            assert find_line_number_of_relevant_line_in_file(
+                diff_files, "file1", relevant_line
+            ) == (3, 1)
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "No newline"
+        ) == (-1, -1)
+
+    def test_no_newline_marker_does_not_interfere_with_fuzzy_matching(self):
+        patch = (
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "\\ No newline at end of file\n"
+            "+No newline at end of file\n"
+            "\\ No newline at end of file\n"
+        )
+        diff_files = [
+            FilePatchInfo(base_file="old", head_file="No newline at end of file", patch=patch, filename="file1")
+        ]
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "No newline at end of filee"
+        ) == (3, 1)

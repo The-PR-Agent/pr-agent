@@ -201,7 +201,8 @@ class CliArgs:
                 arg = arg.strip()
                 if arg.startswith('--'):
                     arg_word = arg.lower()
-                    arg_word = arg_word.replace('__', '.')  # replace double underscore with dot, e.g. --openai__key -> --openai.key
+                    # replace double underscore with dot, e.g. --openai__key -> --openai.key
+                    arg_word = arg_word.replace('__', '.')
                     host_only_arg = CliArgs._host_only_setting_arg(arg_word)
                     if host_only_arg:
                         return False, host_only_arg

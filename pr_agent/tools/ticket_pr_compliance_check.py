@@ -9,7 +9,7 @@ import aiohttp
 from atlassian import Jira
 
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
-from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
@@ -450,7 +450,7 @@ def fit_related_tickets_to_prompt_budget(
             lower_bound = prefix_size + 1
 
     if best_vars is None or best_budget is None:
-        raise ValueError("Related-ticket omission marker exceeds the prompt token budget")
+        raise FallbackEligibleError("Related-ticket omission marker exceeds the prompt token budget")
 
     prompt_vars = best_vars
     included_tickets = len(prompt_vars["related_tickets"])

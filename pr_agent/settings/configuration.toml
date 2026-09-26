@@ -108,6 +108,16 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 # providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom
 # model id now surfaces a provider-side error instead of the previous silent drop.
 additional_reasoning_effort_models = []
+# Optional: model IDs that must never receive the temperature parameter, on top of
+# what litellm's parameter metadata reports. Temperature support is otherwise decided
+# by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID
+# here when litellm reports temperature as supported but the provider rejects it, or
+# when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking
+# Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature.
+# Model IDs match exactly or through any provider prefix. The defaults below preserve
+# the former static registry entries that litellm's metadata still marks
+# temperature-capable; the probe diff for this change is posted on the issue.
+no_temperature_models = ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"]
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
@@ -163,7 +173,7 @@ persistent_comment=true
 review_heading = "PR Reviewer Guide"
 persistent_finding_state=true # Persist review finding state across complete review runs.
 
-inline_key_issues=false
+inline_key_issues=false # Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab).
 extra_instructions = ""
 num_max_findings = 3
 final_update_message = true
@@ -234,7 +244,7 @@ enable_chat_text=false
 persistent_comment=true
 max_history_len=4
 publish_output_no_suggestions=true
-enable_suggestions_coverage_footer=true # show when failed analysis chunks make the suggestions incomplete
+enable_suggestions_coverage_footer=true # show failed chunks and files omitted by the token or AI-call budget
 # suggestions scoring
 suggestions_score_threshold=0 # [0-10]| recommend not to set this value above 8, since above it may clip highly relevant suggestions
 new_score_mechanism=true
@@ -340,6 +350,8 @@ feedback_on_draft_pr = false
 publish_review_as_thread = false
 # Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
 publish_improve_as_thread = false
+# Reply to the triggering GitLab note's discussion for /review and /improve output.
+reply_to_trigger_comment = false
 # When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft
 # note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of
 # posting each as its own live discussion - and its own notification - as soon as it's created.
@@ -446,7 +458,14 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 # Application inference profile ARN for classic `bedrock/` calls through the `bedrock-runtime` APIs.
 # Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
 # model_id = ""
-cache_control_injection_points = [] # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching)
+# Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}]
+# (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models
+# whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection
+# (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default)
+# applies only when no points are configured here, so the two never double-inject. A warning is logged
+# once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or
+# a prefix below the model's minimum).
+cache_control_injection_points = []
 
 [openrouter]
 # OpenRouter provider routing, reasoning control and output cap. These apply only

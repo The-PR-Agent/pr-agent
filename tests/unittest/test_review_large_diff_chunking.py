@@ -400,7 +400,7 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
     reviewer.git_provider.supports_review_comment_identity.return_value = False
     chunk_c = CHUNK_A.replace("a.py", "c.py").replace("the index is never checked", "the value is never checked")
     reviewer._get_prediction = AsyncMock(side_effect=[
-        CHUNK_A, "review: {}", chunk_c, RuntimeError("context limit exceeded"),
+        CHUNK_A, "review: {}", chunk_c, TimeoutError("context limit exceeded"),
     ])
     settings_values = {
         "config.model": "primary",

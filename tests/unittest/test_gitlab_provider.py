@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,7 @@ from requests.exceptions import RequestException
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import (
+    _MAX_DISCUSSION_CONTEXT_CHARS,
     GitLabProvider,
     _GitLabIncrementalCommit,
     _GitLabIncrementalNote,
@@ -38,9 +40,11 @@ _HUMAN_BODY = "Please rename this variable before we merge."
 
 def _thread_note(author_id=_BOT_USER_ID, system=False, resolved=False, resolvable=True,
                  with_position=True, head_sha=_OUTDATED_HEAD_SHA, position_type='text',
-                 line_key='new_line', body=_AGENT_BODY):
+                 line_key='new_line', body=_AGENT_BODY, resolved_by=None):
     note = {'author': {'id': author_id}, 'system': system, 'resolved': resolved,
             'resolvable': resolvable, 'body': body}
+    if resolved_by is not None:
+        note['resolved_by'] = resolved_by
     if with_position:
         position = {'position_type': position_type, 'new_path': 'src/app.py',
                     'old_path': 'src/app.py'}
@@ -642,13 +646,52 @@ class TestGitLabProvider:
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
             assert gitlab_provider.should_publish_review_as_thread() is False
 
+    @pytest.mark.parametrize("configured", [True, False])
+    def test_should_reply_to_trigger_comment_reflects_config(self, gitlab_provider, configured):
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.REPLY_TO_TRIGGER_COMMENT": configured,
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            assert gitlab_provider.should_reply_to_trigger_comment() is configured
+
     def test_publish_comment_defaults_to_a_note(self, gitlab_provider):
-        # Without as_thread (status comments, other tools), publishing stays a plain note.
+        # Without a trigger discussion, publishing stays a plain note.
         gitlab_provider.mr = MagicMock()
         result = gitlab_provider.publish_comment("a status comment")
 
         gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'a status comment'})
         gitlab_provider.mr.discussions.create.assert_not_called()
+        assert result is gitlab_provider.mr.notes.create.return_value
+
+    def test_publish_comment_replies_to_trigger_discussion(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.REPLY_TO_TRIGGER_COMMENT": True,
+            "comment_id": "discussion-1",
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            result = gitlab_provider.publish_comment("the review")
+
+        gitlab_provider.mr.discussions.get.assert_called_once_with("discussion-1")
+        gitlab_provider.mr.discussions.get.return_value.notes.create.assert_called_once_with(
+            {'body': 'the review'}
+        )
+        gitlab_provider.mr.notes.create.assert_not_called()
+        assert result is gitlab_provider.mr.discussions.get.return_value.notes.create.return_value
+
+    def test_publish_comment_falls_back_without_trigger_discussion(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.REPLY_TO_TRIGGER_COMMENT": True,
+            "comment_id": "",
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            result = gitlab_provider.publish_comment("the review")
+
+        gitlab_provider.mr.notes.create.assert_called_once_with({'body': 'the review'})
         assert result is gitlab_provider.mr.notes.create.return_value
 
     def test_publish_comment_as_thread_creates_a_discussion(self, gitlab_provider):
@@ -997,6 +1040,106 @@ class TestGitLabProvider:
             discussion.save.assert_called_once()
         else:
             discussion.save.assert_not_called()
+
+    def test_get_code_suggestion_thread_context_includes_bot_suggestion_threads(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        open_thread = _thread([
+            _thread_note(body=_AGENT_BODY + "\n<!-- pr-agent-dedup: aabbccddeeff -->"),
+        ], discussion_id='open-thread')
+        human_resolved = _thread([
+            _thread_note(resolved=True, resolved_by={'id': 99, 'name': 'Alice'}),
+        ], discussion_id='human-resolved')
+        bot_resolved = _thread([
+            _thread_note(resolved=True, resolved_by={'id': _BOT_USER_ID, 'name': 'GitLab Bot'}),
+            {'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': 'We will not do this.'},
+        ], discussion_id='bot-resolved')
+        general = _thread([_thread_note(body=_HUMAN_BODY)], discussion_id='general')
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [open_thread, general, human_resolved, bot_resolved]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert discussions == [
+            {
+                "thread_id": "bot-resolved",
+                "status": "resolved",
+                "file": "src/app.py",
+                "start_line": 12,
+                "end_line": 12,
+                "suggestion": _AGENT_BODY,
+                "replies": [{"author": "Alice", "message": "We will not do this."}],
+            },
+            {
+                "thread_id": "human-resolved",
+                "status": "resolved",
+                "file": "src/app.py",
+                "start_line": 12,
+                "end_line": 12,
+                "suggestion": _AGENT_BODY,
+                "replies": [],
+            },
+            {
+                "thread_id": "open-thread",
+                "status": "open",
+                "file": "src/app.py",
+                "start_line": 12,
+                "end_line": 12,
+                "suggestion": _AGENT_BODY,
+                "replies": [],
+            },
+        ]
+
+    def test_get_code_suggestion_thread_context_truncates_messages_and_replies(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        long_message = _AGENT_BODY + "\n" + "x" * 900
+        long_reply = "y" * 900
+        reply = {'author': {'id': 99, 'name': 'Alice'}, 'system': False, 'body': long_reply}
+        thread = _thread([_thread_note(body=long_message), reply], discussion_id='d1')
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [thread]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert len(discussions[0]["suggestion"]) == 750
+        assert discussions[0]["replies"] == [{"author": "Alice", "message": long_reply[:750]}]
+
+    def test_get_code_suggestion_thread_context_caps_thread_count(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        threads = [_thread([_thread_note()], discussion_id=f'd{i}') for i in range(60)]
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = threads
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert len(discussions) == 50
+
+    def test_get_code_suggestion_thread_context_enforces_context_char_budget(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        big_message = "**Suggestion:** " + "x" * 740
+        threads = [_thread([_thread_note(body=big_message)], discussion_id=f'd{i}') for i in range(60)]
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = threads
+
+        result = gitlab_provider.get_code_suggestion_thread_context()
+
+        assert len(result) <= _MAX_DISCUSSION_CONTEXT_CHARS
+        assert len(json.loads(result)) < 60
+
+    def test_get_code_suggestion_thread_context_empty_without_agent_threads(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [_thread([_thread_note(body=_HUMAN_BODY)])]
+
+        assert gitlab_provider.get_code_suggestion_thread_context() == ""
+
+    def test_get_code_suggestion_thread_context_soft_fails(self, gitlab_provider):
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.side_effect = GitlabError("gitlab api error")
+
+        assert gitlab_provider.get_code_suggestion_thread_context() == ""
 
     def test_resolve_comment_thread_ignores_unrelated_discussions(self, gitlab_provider):
         # An open discussion that does not own our note must be left untouched.

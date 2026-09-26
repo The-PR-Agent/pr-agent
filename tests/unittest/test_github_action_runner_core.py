@@ -6,7 +6,9 @@ import pytest
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.servers.github_action_runner as github_action_runner
+from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 
 
@@ -207,6 +209,21 @@ def restore_github_settings():
     for section, extra_instructions in original_extra_instructions.items():
         if extra_instructions is not None:
             getattr(settings, section).extra_instructions = extra_instructions
+
+
+@pytest.fixture
+def restore_artifact_action_settings():
+    """Keep B1 ingress settings local to the Action tests that exercise them."""
+    settings = get_settings()
+    originals = {
+        key: copy.deepcopy(settings.get(key, None))
+        for key in ("ARTIFACTS", "PR_REVIEWER", "PR_DESCRIPTION", "PR_CODE_SUGGESTIONS")
+    }
+    original_use_repo_settings = settings.get("CONFIG.USE_REPO_SETTINGS_FILE", None)
+    yield settings
+    for key, value in originals.items():
+        settings.set(key, value, merge=False)
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", original_use_repo_settings)
 
 
 def _write_synchronize_event(tmp_path, before_sha="abc", after_sha="def", merge_commit_sha=None, sender_type="User"):
@@ -897,3 +914,171 @@ async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(
 
     assert handled, "comment was not handled"
     assert handled[0][1] == body
+
+
+@pytest.mark.asyncio
+async def test_action_configured_commands_reapply_one_artifact_after_real_repo_merges(
+    monkeypatch, tmp_path, restore_github_settings, restore_artifact_action_settings,
+):
+    """Verify repeated repository merges share the Action's single artifact read."""
+    settings = restore_artifact_action_settings
+    artifact = tmp_path / "report.txt"
+    artifact.write_text("ACTION_CONFIGURED_ARTIFACT", encoding="utf-8")
+    observed = []
+
+    class Provider:
+        def get_repo_settings(self):
+            return '[pr_reviewer]\nextra_instructions = "Repository instruction"\n'
+
+        def get_files(self):
+            return []
+
+    class RecordingReviewer:
+        def __init__(self, _pr_url, ai_handler=None, args=None):
+            observed.append(str(get_settings().pr_reviewer.extra_instructions))
+
+        async def run(self):
+            return None
+
+    settings.set("ARTIFACTS", {
+        "enable": True,
+        "artifact_path": str(artifact),
+        "target_tools": ["pr_reviewer"],
+    }, merge=False)
+    settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Host instruction")
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+    settings.set("GITHUB_ACTION_CONFIG", {
+        "handle_push_trigger": True,
+        "push_commands": ["/review", "/review"],
+        "push_trigger_ignore_merge_commits": False,
+        "push_trigger_ignore_bot_commits": False,
+    }, merge=False)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda _url: Provider())
+    monkeypatch.setitem(pr_agent_module.command2class, "review", RecordingReviewer)
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
+    read = Mock(wraps=artifacts._read_and_truncate)
+    monkeypatch.setattr(artifacts, "_read_and_truncate", read)
+
+    await github_action_runner.run_action()
+
+    assert len(observed) == 2
+    assert all(text.startswith("Repository instruction") for text in observed)
+    assert all(text.count("ACTION_CONFIGURED_ARTIFACT") == 1 for text in observed)
+    read.assert_called_once_with(artifact.resolve(), 50000)
+
+
+@pytest.mark.asyncio
+async def test_direct_action_and_workflow_run_keep_artifact_before_ci_conclusion(
+    monkeypatch, tmp_path, restore_github_settings, restore_artifact_action_settings,
+):
+    settings = restore_artifact_action_settings
+    artifact = tmp_path / "report.txt"
+    artifact.write_text("ACTION_DIRECT_ARTIFACT", encoding="utf-8")
+    observations = []
+
+    class RecordingTool:
+        section = "pr_reviewer"
+
+        def __init__(self, _pr_url):
+            observations.append((self.section, str(getattr(settings, self.section).extra_instructions)))
+
+        async def run(self):
+            return None
+
+    class Description(RecordingTool):
+        section = "pr_description"
+
+    class Reviewer(RecordingTool):
+        section = "pr_reviewer"
+
+    class Suggestions(RecordingTool):
+        section = "pr_code_suggestions"
+
+    settings.set("ARTIFACTS", {
+        "enable": True,
+        "artifact_path": str(artifact),
+        "target_tools": ["pr_reviewer", "pr_description", "pr_code_suggestions"],
+    }, merge=False)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(github_action_runner, "PRDescription", Description)
+    monkeypatch.setattr(github_action_runner, "PRReviewer", Reviewer)
+    monkeypatch.setattr(github_action_runner, "PRCodeSuggestions", Suggestions)
+
+    def action_settings(key, default=None):
+        values = {
+            "GITHUB_ACTION_CONFIG.PR_ACTIONS": ["opened"],
+            "GITHUB_ACTION.AUTO_DESCRIBE": True,
+            "GITHUB_ACTION.AUTO_REVIEW": True,
+            "GITHUB_ACTION.AUTO_IMPROVE": True,
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(github_action_runner, "get_setting_or_env", action_settings)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    event = tmp_path / "opened.json"
+    event.write_text(json.dumps({"action": "opened", "pull_request": {
+        "url": "https://api.github.com/repos/org/repo/pulls/1",
+        "html_url": "https://github.com/org/repo/pull/1",
+    }}))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert {section for section, _text in observations} == {
+        "pr_description", "pr_reviewer", "pr_code_suggestions",
+    }
+    assert all(text.count("ACTION_DIRECT_ARTIFACT") == 1 for _section, text in observations)
+
+    observations.clear()
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, conclusion="failure"))
+    )
+
+    await github_action_runner.run_action()
+
+    reviewer_text = next(text for section, text in observations if section == "pr_reviewer")
+    assert reviewer_text.count("ACTION_DIRECT_ARTIFACT") == 1
+    assert reviewer_text.index("ACTION_DIRECT_ARTIFACT") < reviewer_text.index("concluded: failure")
+
+
+@pytest.mark.asyncio
+async def test_non_pr_action_routes_do_not_read_artifacts(
+    monkeypatch, tmp_path, restore_github_settings, restore_artifact_action_settings,
+):
+    artifact = tmp_path / "report.txt"
+    artifact.write_text("NON_PR_ARTIFACT", encoding="utf-8")
+    settings = restore_artifact_action_settings
+    settings.set("ARTIFACTS", {
+        "enable": True,
+        "artifact_path": str(artifact),
+        "target_tools": ["pr_reviewer"],
+    }, merge=False)
+
+    def fail_if_read(*_args, **_kwargs):
+        pytest.fail("a non-PR Action route must not read an artifact")
+
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setattr(artifacts, "_read_and_truncate", fail_if_read)
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_plain_issue_comment_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [("https://api.github.com/repos/org/repo/issues/1", "/ask what is this issue about?")]
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, originating_event="push"))
+    )
+    await github_action_runner.run_action()

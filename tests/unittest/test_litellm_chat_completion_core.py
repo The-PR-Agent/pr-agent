@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import litellm
 import openai
 import pytest
 
@@ -468,6 +469,53 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_fable_5
 
 
 @pytest.mark.asyncio
+
+@pytest.mark.asyncio
+async def test_chat_completion_strips_temperature_for_config_no_temperature_models(monkeypatch):
+    """Models listed in config.no_temperature_models never receive temperature,
+    even when litellm's metadata reports it supported."""
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"no_temperature_models": ["o1", "o1-2024-12-17"]}),
+    )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="o1", system="sys", user="usr", temperature=0.2)
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr", temperature=0.2)
+
+    assert "temperature" not in mock_call.call_args_list[0].kwargs
+    assert "temperature" in mock_call.call_args_list[1].kwargs
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_strips_temperature_when_probe_reports_unsupported(monkeypatch):
+    """A model whose litellm metadata omits temperature must not receive it."""
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: False),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr", temperature=0.2)
+
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_combines_prompts_for_user_message_only_models(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
@@ -482,7 +530,7 @@ async def test_chat_completion_combines_prompts_for_user_message_only_models(mon
     assert messages == [{"role": "user", "content": "sys\n\n\nusr"}]
 
 
-@pytest.mark.parametrize("model", ["o1-mini", "azure/o1-mini", "azure_text/o1-preview"])
+@pytest.mark.parametrize("model", ["o1-mini", "azure/o1-mini", "azure_text/o1-mini"])
 def test_request_messages_recognize_routed_user_only_models(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
     handler = litellm_handler.LiteLLMAIHandler()
@@ -558,12 +606,60 @@ async def test_chat_completion_keeps_image_for_custom_reasoning_models(monkeypat
 # Wiring tests for the retry knobs: the helpers (_should_retry_same_model,
 # _configured_client_retries) are unit-tested in test_litellm_retry_config.py, but those
 # tests keep passing when the @retry predicate or the kwargs pass-through in
-# chat_completion is reverted. The four tests below drive chat_completion itself, so a
+# chat_completion is reverted. The tests below drive chat_completion itself, so a
 # regression in the wiring — not just the helpers — fails a test.
 
 
 def _timeout_error():
     return openai.APITimeoutError(request=httpx.Request("POST", "http://model.invalid"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error, expected_attempts",
+    [
+        pytest.param(
+            openai.BadRequestError(
+                "invalid request",
+                response=httpx.Response(400, request=httpx.Request("POST", "http://model.invalid")),
+                body=None,
+            ),
+            1,
+            id="bad-request",
+        ),
+        pytest.param(
+            openai.UnprocessableEntityError(
+                "invalid request",
+                response=httpx.Response(422, request=httpx.Request("POST", "http://model.invalid")),
+                body=None,
+            ),
+            1,
+            id="unprocessable-entity",
+        ),
+        pytest.param(
+            litellm.ContextWindowExceededError("context too long", model="gpt-4o", llm_provider="openai"),
+            1,
+            id="litellm-context-window",
+        ),
+        pytest.param(
+            openai.APIError("temporary failure", request=httpx.Request("POST", "http://model.invalid"), body=None),
+            litellm_handler.MODEL_RETRIES,
+            id="generic-api-error",
+        ),
+    ],
+)
+async def test_chat_completion_retry_classification(monkeypatch, error, expected_attempts):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = error
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        with pytest.raises(type(error)) as raised:
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert raised.value is error
+    assert mock_call.call_count == expected_attempts
 
 
 @pytest.mark.asyncio

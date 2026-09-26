@@ -215,11 +215,10 @@ def run(inargs=None, args=None):
         env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
         get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
         get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
-        # A CI artifact (see [artifacts]) reaches the prompts from the environment or the settings files,
-        # the same way it does under the GitHub Action, so any pipeline that runs the CLI can supply one.
-        inject_artifact_context()
-
         async def inner():
+            # A CI artifact (see [artifacts]) reaches prompts from the environment or settings files,
+            # the same way it does under the GitHub Action. Each asyncio.run gets a fresh task context.
+            inject_artifact_context()
             if args.issue_url:
                 result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
             else:
