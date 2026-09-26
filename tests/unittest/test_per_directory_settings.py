@@ -1071,7 +1071,10 @@ class TestGithubProviderPerDirectory:
 
         assert resolved_ref == "main"
         assert paths == ["svc/.pr_agent.toml"]
-        assert repo_obj.get_git_tree.call_args_list == [call("missing-branch", recursive=True), call("main", recursive=True)]
+        assert repo_obj.get_git_tree.call_args_list == [
+            call("missing-branch", recursive=True),
+            call("main", recursive=True),
+        ]
 
     def test_get_repo_settings_tree_surfaces_unexpected_errors(self):
         repo_obj = MagicMock()
@@ -1139,11 +1142,24 @@ class TestGitLabProviderPerDirectory:
         gl.projects.get.return_value = project
         provider = _gitlab_provider(gl)
 
-        paths, resolved_ref = provider.get_repo_settings_tree("ignored-ref")
+        paths, resolved_ref = provider.get_repo_settings_tree()
 
         assert resolved_ref == "main"
         assert paths == [".pr_agent.toml", "svc/.pr_agent.toml"]
         project.repository_tree.assert_called_once_with(ref="main", recursive=True, page=1, per_page=100)
+
+    def test_get_repo_settings_tree_reads_explicit_ref_when_root_did_not_resolve(self):
+        project = MagicMock()
+        project.default_branch = "main"
+        project.repository_tree.return_value = [{"path": "svc/.pr_agent.toml", "type": "blob"}]
+        gl = MagicMock()
+        gl.projects.get.return_value = project
+        provider = _gitlab_provider(gl)
+
+        paths, resolved_ref = provider.get_repo_settings_tree("feature-config")
+
+        assert (paths, resolved_ref) == (["svc/.pr_agent.toml"], "feature-config")
+        project.repository_tree.assert_called_once_with(ref="feature-config", recursive=True, page=1, per_page=100)
 
     @pytest.mark.parametrize("complete", [True, False])
     def test_tree_discovery_is_bounded_and_requires_complete_results(self, per_dir_settings, complete):
@@ -1197,8 +1213,11 @@ class TestGitLabProviderPerDirectory:
             {"new_path": "services/api.py", "old_path": "legacy/api.py"},
             {"new_path": "services/fresh.py", "old_path": "services/fresh.py"},
         ]
-        provider._get_merge_request_changes = MagicMock(return_value={"changes": changes})
-        provider._expand_submodule_changes = lambda ch: ch
+        provider._get_merge_request_changes = MagicMock(return_value={
+            "changes": changes,
+            "diff_refs": {"base_sha": "base", "head_sha": "head"},
+        })
+        provider._expand_submodule_changes = lambda ch, diff_refs=None: ch
 
         result = provider.get_pr_file_paths()
 

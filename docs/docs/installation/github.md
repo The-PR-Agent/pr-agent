@@ -49,7 +49,7 @@ When you open your next PR, you should see a comment from `github-actions` bot w
         # ... previous environment values
         OPENAI.ORG: "<Your organization name under your OpenAI account>"
         PR_REVIEWER.REQUIRE_TESTS_REVIEW: "false" # Disable tests review
-        PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS: 6 # Increase number of code suggestions
+        PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS_PER_CHUNK: 6 # Increase number of code suggestions
 ```
 
 See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-action)
@@ -144,8 +144,8 @@ jobs:
         uses: the-pr-agent/pr-agent@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          config.model: "gemini/gemini-1.5-flash"
-          config.fallback_models: '["gemini/gemini-1.5-flash"]'
+          config.model: "gemini/gemini-3.8-flash"
+          config.fallback_models: '["gemini/gemini-3.8-flash"]'
           GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
@@ -175,8 +175,8 @@ jobs:
         uses: the-pr-agent/pr-agent@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          config.model: "anthropic/claude-3-opus-20240229"
-          config.fallback_models: '["anthropic/claude-3-haiku-20240307"]'
+          config.model: "anthropic/claude-opus-5"
+          config.fallback_models: '["anthropic/claude-haiku-4-5-20251001"]'
           ANTHROPIC.KEY: ${{ secrets.ANTHROPIC_KEY }}
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
@@ -226,8 +226,8 @@ To use Gemini models instead of the default OpenAI models:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Set the model to Gemini
-        config.model: "gemini/gemini-1.5-flash"
-        config.fallback_models: '["gemini/gemini-1.5-flash"]'
+        config.model: "gemini/gemini-3.8-flash"
+        config.fallback_models: '["gemini/gemini-3.8-flash"]'
         # Add your Gemini API key
         GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         # Tool configuration
@@ -250,8 +250,8 @@ To use Claude models:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Set the model to Claude
-        config.model: "anthropic/claude-3-opus-20240229"
-        config.fallback_models: '["anthropic/claude-3-haiku-20240307"]'
+        config.model: "anthropic/claude-opus-5"
+        config.fallback_models: '["anthropic/claude-haiku-4-5-20251001"]'
         # Add your Anthropic API key
         ANTHROPIC.KEY: ${{ secrets.ANTHROPIC_KEY }}
         # Tool configuration
@@ -380,7 +380,7 @@ Configure for specific programming languages:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Language-specific settings
         pr_reviewer.extra_instructions: "Focus on Python best practices, type hints, and docstrings."
-        pr_code_suggestions.num_code_suggestions: "8"
+        pr_code_suggestions.num_code_suggestions_per_chunk: "8"
         pr_code_suggestions.suggestions_score_threshold: "7"
         # Tool configuration
         github_action_config.auto_review: "true"
@@ -452,14 +452,14 @@ Instead of setting all options via environment variables, you can use a `.pr_age
 
 ```toml
 [config]
-model = "gemini/gemini-1.5-flash"
-fallback_models = ["anthropic/claude-3-opus-20240229"]
+model = "gemini/gemini-3.8-flash"
+fallback_models = ["anthropic/claude-opus-5"]
 
 [pr_reviewer]
 extra_instructions = "Focus on security issues and code quality."
 
 [pr_code_suggestions]
-num_code_suggestions = 6
+num_code_suggestions_per_chunk = 6
 suggestions_score_threshold = 7
 ```
 
@@ -498,7 +498,7 @@ jobs:
 
 If you get model not found errors:
 
-1. **Check model name format**: Ensure you're using the correct model identifier format (e.g., `gemini/gemini-1.5-flash`, not just `gemini-1.5-flash`)
+1. **Check model name format**: Ensure you're using the correct model identifier format (e.g., `gemini/gemini-3.8-flash`, not just `gemini-3.8-flash`)
 
 2. **Verify API keys**: Make sure your API keys are correctly set as repository secrets
 
@@ -557,6 +557,12 @@ If you encounter rate limiting:
     pull-requests: write
   ```
   See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
+
+**Error: "PR-Agent command was not run" for incomplete GitHub files**
+- **Cause**: GitHub limits pull-request changed-file responses to 3,000 files. A mismatch can also occur when GitHub
+  returns inconsistent file-count metadata.
+- **Solution**: If the pull request changes more than 3,000 files, split it into smaller pull requests and run the
+  command again. Otherwise, retry the command.
 
 **Error: "Invalid JSON format"**
 

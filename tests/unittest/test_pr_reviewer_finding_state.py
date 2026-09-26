@@ -4,19 +4,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.comment_identity import (
+    PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
+    comment_matches_identity,
+    get_pr_review_comment_identifiers,
+)
 from pr_agent.algo.review_finding_state import (
     _render_resolved_section,
     normalize_finding,
     parse_review_state,
     reconcile_review_findings,
     serialize_review_state,
-)
-from pr_agent.algo.utils import (
-    PRReviewHeader,
-    PRReviewIdentity,
-    add_pr_review_identity,
-    comment_matches_identity,
-    get_pr_review_comment_identifiers,
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
@@ -813,7 +813,9 @@ async def test_invalid_history_updates_persistent_comment_without_fallback(monke
     reviewer._review_state_result = None
     reviewer._review_state_blocked = True
     provider.get_issue_comments.return_value = [
-        SimpleNamespace(body=f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n<!-- pr-agent-review-state:v1\nbad\n-->")
+        SimpleNamespace(
+            body=f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n<!-- pr-agent-review-state:v1\nbad\n-->"
+        )
     ]
     reviewer._load_review_finding_state()
 

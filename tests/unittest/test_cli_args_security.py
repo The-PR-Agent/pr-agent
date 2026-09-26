@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -83,6 +83,12 @@ FORBIDDEN_ARGS = [
     "--config.repo_context_sibling_repos=[]",
     "--config__repo_context_sibling_repos=[]",
     '--config={"repo_context_sibling_repos": []}',
+    # description_issue_regex is compiled and run with finditer over the whole pull-request
+    # description. An ambiguous pattern backtracks exponentially, so a commenter who can choose
+    # it can burn a worker on a short body; it stays an operator choice.
+    "--config.description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
+    "--config__description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
+    '--config={"description_issue_regex": "(?:[A-Za-z ]+)+X(d+)"}',
 ]
 
 
@@ -161,41 +167,69 @@ def test_validate_user_args_all_allowed_together():
 
 
 @pytest.mark.asyncio
-async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch):
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "--github.webhook_secret=secret",
+        "--openai__key=secret",
+        "--push_outputs=enabled",
+    ],
+)
+async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch, forbidden):
     """Integration test: forbidden CLI arg should be rejected by the real
     CliArgs.validate_user_args, before any settings update, tool
     instantiation, tool run, or notify call happens."""
 
     notify = Mock()
+    update_settings = Mock()
+    tool_factory = Mock()
 
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
-
-    def _fail_update_settings(args):
-        raise AssertionError(
-            "update_settings_from_args must not be called when validation fails"
-        )
-
-    monkeypatch.setattr(
-        pr_agent_module, "update_settings_from_args", _fail_update_settings
-    )
-
-    class FakeTool:
-        def __init__(self, *args, **kwargs):
-            raise AssertionError("tool must not be instantiated for forbidden args")
-
-        async def run(self):
-            raise AssertionError("tool must not run for forbidden args")
-
-    monkeypatch.setitem(pr_agent_module.command2class, "custom", FakeTool)
+    monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
 
     handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
         "https://example/pr/1",
-        "/custom --github.webhook_secret=secret",
+        f"/custom {forbidden}",
         notify,
     )
 
     assert handled is False
+    update_settings.assert_not_called()
+    tool_factory.assert_not_called()
     notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_request",
+    [
+        '/custom --pr_reviewer.extra_instructions="Flag any hardcoded openai.key in the diff"',
+        ["/custom", "--pr_reviewer.extra_instructions=Flag any hardcoded openai.key in the diff"],
+    ],
+)
+async def test_handle_request_allows_protected_key_names_in_setting_values(monkeypatch, command_request):
+    """Validate setting keys while retaining original values for direct string and list requests."""
+    expected_args = ["--pr_reviewer.extra_instructions=Flag any hardcoded openai.key in the diff"]
+    update_settings = Mock(side_effect=lambda args: args)
+    tool = Mock()
+    tool.run = AsyncMock()
+    tool_factory = Mock(return_value=tool)
+    notify = Mock()
+
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
+    monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
+
+    handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
+        "https://example/pr/1", command_request, notify
+    )
+
+    assert handled is True
+    update_settings.assert_called_once_with(expected_args)
+    tool_factory.assert_called_once_with("https://example/pr/1", ai_handler="fake-ai", args=expected_args)
+    tool.run.assert_awaited_once_with()
+    notify.assert_called_once_with()
 
 
 @pytest.mark.parametrize("prefix", ["  ", "\t", "\n", " \t "])

@@ -3,14 +3,14 @@ from functools import partial
 from urllib.parse import unquote
 
 from jinja2 import Environment, StrictUndefined, select_autoescape
-from litellm import token_counter
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.git_patch_processing import extract_hunk_lines_from_patch
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, retry_with_fallback_models
-from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
-from pr_agent.algo.utils import ModelType, decode_user_text_args, get_max_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget
+from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.utils import ModelType, decode_user_text_args
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
@@ -191,8 +191,9 @@ class PR_LineQuestions:
         variables = copy.deepcopy(self.vars)
         variables["full_hunk"] = self.patch_with_lines  # update diff
         variables["selected_lines"] = self.selected_lines
-        variables["conversation_history"] = self._fit_conversation_history(variables, model)
-        system_prompt, user_prompt = self._render_prompts(variables)
+        fitted = self._fit_conversation_history(variables, model)
+        variables["conversation_history"] = fitted.optional_text
+        system_prompt, user_prompt = fitted.system_prompt, fitted.user_prompt
         if get_verbosity_level() >= 2:
             # get_logger().info(f"\nSystem prompt:\n{system_prompt}")
             # get_logger().info(f"\nUser prompt:\n{user_prompt}")
@@ -214,65 +215,38 @@ class PR_LineQuestions:
 
     def _fit_conversation_history(self, variables, model):
         conversation_history = variables.get("conversation_history", "")
-        encoder = None
+        variables = copy.deepcopy(variables)
+        variables["conversation_history"] = ""
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
         try:
             completion_tokens = int(get_settings().config.get("max_output_tokens", 0))
         except (TypeError, ValueError):
             completion_tokens = 0
-        if completion_tokens <= 0:
-            completion_tokens = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
-        max_tokens = max(get_max_tokens(model) - completion_tokens, 0)
+        if not callable(output_token_reserve) and completion_tokens > 0:
+            def configured_output_reserve(_model, _default):
+                return completion_tokens
 
-        def render_with_history(history):
-            prompt_variables = copy.deepcopy(variables)
-            prompt_variables["conversation_history"] = history
-            return self._render_prompts(prompt_variables)
+            output_token_reserve = configured_output_reserve
 
-        def count_prompts(prompts):
-            nonlocal encoder
-            system_prompt, user_prompt = prompts
-            try:
-                model_token_count = token_counter(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                )
-                if model_token_count > 0:
-                    return model_token_count
-            except Exception as e:
-                get_logger().debug(f"Model-aware token counting failed for {model}: {e}")
-            if encoder is None:
-                encoder = TokenEncoder.get_token_encoder(model)
-            return len(encoder.encode(system_prompt, disallowed_special=())) + len(
-                encoder.encode(user_prompt, disallowed_special=()))
-
-        if count_prompts(render_with_history(conversation_history)) <= max_tokens:
-            return conversation_history
-
-        if count_prompts(render_with_history("")) > max_tokens:
-            raise ValueError(
-                f"The /ask_line prompt exceeds the token limit for {model} even without conversation history"
-            )
-
-        truncation_marker = "\n...(truncated)\n"
-        low, high = 0, len(conversation_history)
-        best_history = ""
-        while low <= high:
-            keep_chars = (low + high) // 2
-            candidate = (
-                truncation_marker + conversation_history[-keep_chars:]
-                if keep_chars
-                else ""
-            )
-            if count_prompts(render_with_history(candidate)) <= max_tokens:
-                best_history = candidate
-                low = keep_chars + 1
-            else:
-                high = keep_chars - 1
-
-        get_logger().warning(
-            f"Conversation history was clipped for /ask_line to fit the {max_tokens}-token input limit"
+        budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_line_questions_prompt.system,
+            get_settings().pr_line_questions_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
         )
-        return best_history
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "conversation_history",
+            conversation_history,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            keep="suffix",
+        )
+        if fitted.optional_text != conversation_history:
+            get_logger().warning(
+                f"Conversation history was clipped for /ask_line to fit the token limit for {model}"
+            )
+        return fitted

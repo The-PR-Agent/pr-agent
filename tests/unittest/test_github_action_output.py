@@ -1,7 +1,8 @@
 import json
 import os
 
-from pr_agent.algo.utils import get_settings, github_action_output
+from pr_agent.algo.run_output import github_action_output
+from pr_agent.algo.utils import get_settings
 
 
 class TestGitHubOutput:

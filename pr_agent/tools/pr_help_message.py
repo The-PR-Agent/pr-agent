@@ -11,9 +11,10 @@ from litellm import token_counter
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
+from pr_agent.algo.token_budget import get_max_tokens
 from pr_agent.algo.token_handler import TokenEncoder
-from pr_agent.algo.utils import ModelType, get_max_tokens, load_yaml
+from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -135,7 +136,8 @@ def _load_help_docs_prompt() -> tuple[str, set[str]]:
 
 
 class PRHelpMessage:
-    def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, return_as_string=False):
+    def __init__(self, pr_url: str, args=None,
+             ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, return_as_string=False):
         self.git_provider = get_git_provider_with_context(pr_url)
         self.ai_handler = ai_handler()
         self.question_str = self.parse_args(args)
@@ -285,11 +287,13 @@ class PRHelpMessage:
 
         empty_prompts = render("")
         if self._count_prompt_tokens(model, *empty_prompts) > prompt_budget:
-            raise ValueError(f"The /help prompt exceeds the token limit for {model} without documentation")
+            raise FallbackEligibleError(f"The /help prompt exceeds the token limit for {model} without documentation")
 
         marker_prompts = render(TRUNCATION_MARKER)
         if self._count_prompt_tokens(model, *marker_prompts) > prompt_budget:
-            raise ValueError(f"The /help prompt exceeds the token limit for {model} with a truncation marker")
+            raise FallbackEligibleError(
+                f"The /help prompt exceeds the token limit for {model} with a truncation marker"
+            )
 
         keep_chars = max(len(raw_snippets) - 1, 0)
         while keep_chars > 0:
@@ -449,7 +453,10 @@ class PRHelpMessage:
                     if get_settings().config.publish_output:
                         answer_str = f"### Question: \n{self.question_str}\n\n"
                         answer_str += "### Answer:\n\n"
-                        answer_str += "Could not find relevant information to answer the question. Please provide more details and try again."
+                        answer_str += (
+                            "Could not find relevant information to answer the question. "
+                            "Please provide more details and try again."
+                        )
                         self.git_provider.publish_comment(answer_str)
                     return ""
 
@@ -482,7 +489,8 @@ class PRHelpMessage:
                                     'config': dict(get_settings().config)}
                 get_logger().debug("Relevant configs", artifacts=relevant_configs)
                 pr_comment = "## PR Agent Walkthrough 🤖\n\n"
-                pr_comment += "Welcome to the PR Agent, an AI-powered tool for automated pull request analysis, feedback, suggestions and more."""
+                pr_comment += ("Welcome to the PR Agent, an AI-powered tool for automated pull request analysis, "
+               "feedback, suggestions and more.")
                 pr_comment += "\n\nHere is a list of tools you can use to interact with the PR Agent:\n"
                 base_path = f"{DOCS_SITE_URL}/tools"
 
@@ -502,7 +510,9 @@ class PRHelpMessage:
                 descriptions.append("Automatically updates the changelog")
                 descriptions.append("Generates documentation to methods/functions/classes that changed in the PR")
                 descriptions.append("Answering free-text questions about the PR")
-                descriptions.append("Generates custom labels for the PR, based on specific guidelines defined by the user")
+                descriptions.append(
+                    "Generates custom labels for the PR, based on specific guidelines defined by the user"
+                )
 
                 commands  =[]
                 commands.append("`/describe`")
@@ -526,26 +536,56 @@ class PRHelpMessage:
 
                 if (supports_gfm_markdown and self.git_provider.supports_checkbox_commands()
                         and not get_settings().config.get('disable_checkboxes', False)):
-                    pr_comment += "<table><tr align='left'><th align='left'>Tool</th><th align='left'>Description</th><th align='left'>Trigger Interactively :gem:</th></tr>"
+                    pr_comment += (
+                        "<table><tr align='left'><th align='left'>Tool</th>"
+                        "<th align='left'>Description</th><th align='left'>Trigger Interactively :gem:</th></tr>"
+                    )
                     for i in range(len(tool_names)):
-                        pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>\n<td>{descriptions[i]}</td>\n<td>\n\n{checkbox_list[i]}\n</td></tr>"
+                        pr_comment += (
+                            f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>\n"
+                            f"<td>{descriptions[i]}</td>\n<td>\n\n{checkbox_list[i]}\n</td></tr>"
+                        )
                     pr_comment += "</table>\n\n"
-                    pr_comment += """\n\n(1) Note that each tool can be [triggered automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened) when a new PR is opened, or called manually by [commenting on a PR](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."""
-                    pr_comment += """\n\n(2) Tools marked with [*] require additional parameters to be passed. For example, to invoke the `/ask` tool, you need to comment on a PR: `/ask "<question content>"`. See the relevant documentation for each tool for more details."""
+                    pr_comment += (
+                        "\n\n(1) Note that each tool can be "
+                        "[triggered automatically]("
+                        "https://docs.pr-agent.ai/usage-guide/automations_and_usage/#github-app-automatic-tools-when-a-new-pr-is-opened"
+                        ") when a new PR is opened, or called manually by "
+                        "[commenting on a PR]("
+                        "https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."
+                    )
+                    pr_comment += (
+                        "\n\n(2) Tools marked with [*] require additional parameters to be passed. "
+                        "For example, to invoke the `/ask` tool, you need to comment on a PR: "
+                        "`/ask \"<question content>\"`. See the relevant documentation for each tool for more details."
+                    )
                 elif not supports_gfm_markdown:
-                    # only basic commands, in a plain markdown table (e.g. BBDC)
+                    # only basic commands, in a plain Markdown table (e.g. BBDC)
                     pr_comment = generate_bbdc_table(tool_names[:4], descriptions[:4])
                 else:
-                    pr_comment += "<table><tr align='left'><th align='left'>Tool</th><th align='left'>Command</th><th align='left'>Description</th></tr>"
+                    pr_comment += (
+                        "<table><tr align='left'><th align='left'>Tool</th>"
+                        "<th align='left'>Command</th><th align='left'>Description</th></tr>"
+                    )
                     for i in range(len(tool_names)):
-                        pr_comment += f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td><td>{commands[i]}</td><td>{descriptions[i]}</td></tr>"
+                        pr_comment += (
+                            f"\n<tr><td align='left'>\n\n<strong>{tool_names[i]}</strong></td>"
+                            f"<td>{commands[i]}</td><td>{descriptions[i]}</td></tr>"
+                        )
                     pr_comment += "</table>\n\n"
-                    pr_comment += """\n\nNote that each tool can be [invoked automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/) when a new PR is opened, or called manually by [commenting on a PR](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."""
+                    pr_comment += (
+                        "\n\nNote that each tool can be "
+                        "[invoked automatically](https://docs.pr-agent.ai/usage-guide/automations_and_usage/) "
+                        "when a new PR is opened, or called manually by "
+                        "[commenting on a PR](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#online-usage)."
+                    )
 
                 if get_settings().config.publish_output:
                     self.git_provider.publish_comment(pr_comment)
         except Exception as e:
             get_logger().exception(f"Error while running PRHelpMessage: {e}")
+            if get_settings().config.get("propagate_tool_errors", False):
+                raise
         return ""
 
 

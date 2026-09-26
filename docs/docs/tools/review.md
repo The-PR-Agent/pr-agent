@@ -10,7 +10,7 @@ The tool can be triggered automatically every time a new PR is [opened](../usage
 
 Note that the main purpose of the `review` tool is to provide the **PR reviewer** with useful feedback and insights. The PR author, in contrast, may prefer to save time and focus on the output of the [improve](./improve.md) tool, which provides actionable code suggestions.
 
-(Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.codium.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
+(Read more about the different personas in the PR process and how PR-Agent aims to assist them in our [blog](https://www.qodo.ai/blog/understanding-the-challenges-and-pain-points-of-the-pull-request-cycle/))
 
 ## Example usage
 
@@ -116,7 +116,7 @@ for the authoritative default values.
       </tr>
       <tr>
         <td><b>inline_key_issues</b></td>
-        <td>If set to true, each key issue is published as an inline comment where the provider supports verified inline-comment publication. A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary.</td>
+        <td>If set to true, each key issue is published as an inline comment where the provider supports verified inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab). A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary.</td>
       </tr>
     </table>
 
@@ -272,6 +272,18 @@ for the authoritative default values.
     into a single review that says how many chunks it was built from. Files that do not fit even
     after chunking are still listed in the coverage footer. Every chunk is a separate model call,
     so a chunked review costs roughly `max_number_of_calls` times a normal one.
+
+    If a chunk fails or returns malformed output, successful chunks are retained and fallback
+    models retry only the pending work. Pending chunks can be split for a smaller model, within
+    the call limit; a larger model can also include previously omitted files. Chunks that still
+    exceed the model's budget are not sent to it.
+
+    If every fallback is exhausted, successful chunks are published as a partial review with a
+    failed-chunk coverage warning, even when `publish_output_no_suggestions = false`. Incomplete
+    reviews cannot resolve absent persistent findings. If no chunk succeeds, the review fails.
+    With `config.propagate_tool_errors = true`, an exhausted fallback chain still signals failure
+    to the caller after publishing the partial review and removing the progress comment.
+    Optional run details list all models that contributed to the merged review.
 
     Each chunk answers the same questions about a different part of the PR, so the answers are
     merged field by field:

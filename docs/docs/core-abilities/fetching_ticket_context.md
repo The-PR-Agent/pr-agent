@@ -1,6 +1,6 @@
 # Fetching Ticket Context for PRs
 
-`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps`
+`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
 !!! note "Branch-name linking: Jira keys on all providers; numeric GitHub issues on GitHub only"
     **Jira** ticket keys (e.g. `ABC-123`) are extracted from the branch name on **every git provider**.

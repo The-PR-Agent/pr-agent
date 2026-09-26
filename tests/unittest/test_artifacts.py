@@ -5,6 +5,7 @@ import pytest
 
 from pr_agent.algo.artifacts import (
     DEFAULT_ARTIFACT_INSTRUCTIONS,
+    _artifact_context,
     _read_and_truncate,
     format_artifact_content,
     inject_artifact_context,
@@ -275,8 +276,12 @@ class TestInjectArtifactContext:
         s.set("artifacts.target_tools", ["pr_reviewer", "pr_description", "pr_code_suggestions"])
         for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
             s.set(f"{tool}.extra_instructions", "")
-        yield s
-        restore_settings(snapshot)
+        token = _artifact_context.set(None)
+        try:
+            yield s
+        finally:
+            _artifact_context.reset(token)
+            restore_settings(snapshot)
 
     @pytest.fixture
     def report(self, tmp_path):

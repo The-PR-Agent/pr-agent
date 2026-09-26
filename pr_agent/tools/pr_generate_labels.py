@@ -2,12 +2,18 @@ import copy
 from functools import partial
 from typing import List
 
-from jinja2 import Environment, StrictUndefined
+from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.output_models import Labels
-from pr_agent.algo.pr_processing import get_pr_diff, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    FallbackEligibleError,
+    get_pr_diff,
+    retry_with_fallback_models,
+)
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
@@ -52,7 +58,7 @@ class PRGenerateLabels:
 
         # Initialize the token handler
         self.token_handler = TokenHandler(
-            self.git_provider.pr,
+            getattr(self.git_provider, "pr", None),
             self.vars,
             get_settings().pr_custom_labels_prompt.system,
             get_settings().pr_custom_labels_prompt.user,
@@ -87,11 +93,10 @@ class PRGenerateLabels:
             if get_settings().config.publish_output:
                 get_logger().info(f"Pushing labels {self.pr_id}")
 
-                current_labels = self.git_provider.get_pr_labels()
-                user_labels = get_user_labels(current_labels)
-                pr_labels = pr_labels + user_labels
-
                 if self.git_provider.is_supported("get_labels"):
+                    current_labels = self.git_provider.get_pr_labels()
+                    user_labels = get_user_labels(current_labels)
+                    pr_labels = pr_labels + user_labels
                     self.git_provider.publish_labels(pr_labels)
                 elif pr_labels:
                     value = ', '.join(v for v in pr_labels)
@@ -129,18 +134,47 @@ class PRGenerateLabels:
         self.data = None
 
         get_logger().info(f"Getting PR diff {self.pr_id}")
-        self.patches_diff = get_pr_diff(
-            self.git_provider,
-            self.token_handler,
+        variables = copy.deepcopy(self.vars)
+        set_custom_labels(variables, self.git_provider)
+        output_token_reserve = getattr(self.ai_handler, "get_output_token_reserve", None)
+        budget = AttemptTokenBudget.for_prompt_attempt(
             model,
-            output_token_reserve=getattr(
-                getattr(self, "ai_handler", None), "get_output_token_reserve", None
-            ),
+            getattr(self.git_provider, "pr", None),
+            variables,
+            get_settings().pr_custom_labels_prompt.system,
+            get_settings().pr_custom_labels_prompt.user,
+            ai_handler=self.ai_handler,
+            output_token_reserve=output_token_reserve,
         )
+        patches_diff = get_pr_diff(
+            self.git_provider,
+            budget.token_handler,
+            model,
+            output_token_reserve=output_token_reserve,
+        )
+        if not patches_diff:
+            raise FallbackEligibleError(f"No PR diff fits the /generate_labels request for {model}")
+        fitted = budget.fit_prompt_variable(
+            variables,
+            "diff",
+            patches_diff,
+            ai_handler=self.ai_handler,
+            default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+            preserve_minimum=True,
+        )
+        if fitted.optional_text != patches_diff:
+            raise FallbackEligibleError(
+                f"The complete packed labels diff does not fit the token limit for {model}"
+            )
+        variables["diff"] = fitted.optional_text
+        self.patches_diff = fitted.optional_text
+        self._attempt_system_prompt = fitted.system_prompt
+        self._attempt_user_prompt = fitted.user_prompt
         get_logger().info(f"Getting AI prediction {self.pr_id}")
         prediction = await self._get_prediction(model)
         data = self._load_valid_labels_yaml(prediction)
 
+        self.variables = variables
         self.prediction = prediction
         self.data = data
 
@@ -154,21 +188,11 @@ class PRGenerateLabels:
         Returns:
             str: The generated AI prediction.
         """
-        variables = copy.deepcopy(self.vars)
-        variables["diff"] = self.patches_diff  # update diff
-
-        environment = Environment(undefined=StrictUndefined)
-        set_custom_labels(variables, self.git_provider)
-        self.variables = variables
-
-        system_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.system).render(self.variables)
-        user_prompt = environment.from_string(get_settings().pr_custom_labels_prompt.user).render(self.variables)
-
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model,
             temperature=get_settings().config.temperature,
-            system=system_prompt,
-            user=user_prompt
+            system=self._attempt_system_prompt,
+            user=self._attempt_user_prompt,
         )
 
         return response
@@ -180,7 +204,12 @@ class PRGenerateLabels:
     def _load_valid_labels_yaml(prediction: str) -> dict:
         """Load a usable labels response or fail the current model attempt."""
         data = load_yaml(prediction.strip())
-        return Labels.model_validate(data).model_dump()
+        try:
+            return Labels.model_validate(data).model_dump()
+        except ValidationError as error:
+            first_error = error.errors(include_input=False)[0]
+            field = ".".join(str(part) for part in first_error["loc"]) or "$"
+            raise FallbackEligibleError(f"Invalid labels model output at {field}: {first_error['msg']}") from error
 
     def _prepare_labels(self) -> List[str]:
         pr_types = self.data["labels"].copy()
