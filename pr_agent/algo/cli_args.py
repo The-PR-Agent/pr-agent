@@ -1,7 +1,6 @@
 from base64 import b64decode
 
-import yaml
-
+from pr_agent.algo.utils import _fix_key_value
 from pr_agent.config_security import (
     CLI_HOST_ONLY_KEYS_BY_SECTION,
     REPO_HOST_ONLY_KEYS_BY_SECTION,
@@ -10,7 +9,7 @@ from pr_agent.config_security import (
 
 _MAPPING_MAX_DEPTH = 32
 _MAPPING_MAX_VISITS = 128
-_MAPPING_TOO_COMPLEX_ARG = ".mapping_value_too_complex"
+_MAPPING_TOO_COMPLEX_ARG = '.mapping_value_too_complex'
 
 
 class CliArgs:
@@ -40,7 +39,7 @@ class CliArgs:
     @staticmethod
     def _blocked_setting_path(path: str, forbidden_cli_args: list) -> str | None:
         """Return the blocked token for a dotted section.key path, else None."""
-        arg_word = f"--{path}=x".replace('__', '.').lower()
+        arg_word = f'--{path}=x'.replace('__', '.').lower()
         host_only_arg = CliArgs._host_only_setting_arg(arg_word)
         if host_only_arg:
             return host_only_arg
@@ -79,7 +78,7 @@ class CliArgs:
             _ancestors.add(value_id)
             paths = []
             for key, nested in value.items():
-                path = f"{section}.{key}"
+                path = f'{section}.{key}'
                 paths.append(path)
                 child_paths = CliArgs._mapping_setting_paths(
                     path, nested, _depth + 1, _ancestors, _visits
@@ -108,17 +107,18 @@ class CliArgs:
 
     @staticmethod
     def _mapping_value(arg: str):
-        """Return (section, parsed mapping) for a --section={key: value} arg, else None."""
+        """Return (section, parsed mapping) for a --section={key: value} arg, else None.
+
+        The value is parsed exactly as ``update_settings_from_args`` parses it before applying
+        it, so validation and application can never disagree on whether it is a mapping.
+        """
         arg = arg.strip()
         if not arg.startswith('--'):
             return None
-        setting_name, separator, value_text = arg[2:].partition('=')
+        setting_name, separator, value_text = arg.strip('-').strip().partition('=')
         if not separator:
             return None
-        try:
-            parsed_value = yaml.safe_load(value_text)
-        except Exception:
-            return None
+        setting_name, parsed_value = _fix_key_value(setting_name, value_text)
         if not isinstance(parsed_value, dict):
             return None
         return setting_name.replace('__', '.').lower(), parsed_value
@@ -148,11 +148,12 @@ class CliArgs:
         paths = CliArgs._mapping_setting_paths(section, parsed_value)
         if paths is None:
             return _MAPPING_TOO_COMPLEX_ARG
-        for path in paths:
+        # The section itself is checked too: an empty mapping has no nested paths.
+        for path in [section, *paths]:
             offending = CliArgs._blocked_setting_path(path, forbidden_cli_args)
             if offending:
                 return offending
-        return ""
+        return ''
 
     @staticmethod
     def validate_user_args(args: list) -> (bool, str):

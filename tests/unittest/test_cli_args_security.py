@@ -255,6 +255,43 @@ async def test_handle_request_rejects_forbidden_mapping_args_in_comment_and_cli(
 @pytest.mark.parametrize(
     "command_request",
     [
+        # the settings loader strips the value before parsing it, so the validator must too
+        '/custom --qdrant="\t{url: https://evil.example}"',
+        ["/custom", "--qdrant=\t{url: https://evil.example}"],
+        # an empty mapping has no nested paths, so the section path itself is validated
+        "/custom --qdrant.url={}",
+        ["/custom", "--qdrant.url={}"],
+    ],
+)
+async def test_handle_request_rejects_mapping_args_as_the_settings_loader_parses_them(
+    monkeypatch, command_request
+):
+    """A mapping value is validated as update_settings_from_args would apply it, and a
+    rejected argument leaves the settings untouched."""
+    notify = Mock()
+    update_settings = Mock(wraps=pr_agent_module.update_settings_from_args)
+    tool_factory = Mock()
+    qdrant_url_before = pr_agent_module.get_settings().get("qdrant.url")
+
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
+    monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
+
+    handled = await pr_agent_module.PRAgent(ai_handler="fake-ai")._handle_request(
+        "https://example/pr/1", command_request, notify
+    )
+
+    assert handled is False
+    update_settings.assert_not_called()
+    assert pr_agent_module.get_settings().get("qdrant.url") == qdrant_url_before
+    tool_factory.assert_not_called()
+    notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_request",
+    [
         '/custom --pr_reviewer.extra_instructions="Flag any hardcoded openai.key in the diff"',
         ["/custom", "--pr_reviewer.extra_instructions=Flag any hardcoded openai.key in the diff"],
     ],
