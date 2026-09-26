@@ -7,6 +7,7 @@ Non-vacuity (Fix C): test_non_vacuity_ok_false_must_not_complete verifies that i
 ok=False causes complete() instead of failed(), the assertion fails — proving the
 test can detect a Fix C regression."""
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from a2a.types import Message, Part, Role
@@ -122,6 +123,32 @@ def spy_updater(monkeypatch):
 
 
 class TestExecute:
+    @pytest.mark.asyncio
+    async def test_context_index_is_scoped_to_task_owner(self, monkeypatch, spy_updater):
+        """Keep another owner's task IDs out of a reused context ID."""
+        class ForeignTaskStore:
+            async def get(self, task_id, call_context):
+                pytest.fail("Context lookup fetched another owner's task")
+
+        async def fake_route_and_run_result(text, **kwargs):
+            assert not kwargs
+            return RouteResult("ROUTED", True)
+
+        monkeypatch.setattr(executor_mod, "route_and_run_result", fake_route_and_run_result)
+        executor = PRAgentExecutor(task_store=ForeignTaskStore())
+        first = _FakeRequestContext("diff --git a/foo.py b/foo.py")
+        first.call_context = SimpleNamespace(user=SimpleNamespace(user_name="alice"))
+        second = _FakeRequestContext("What changed?")
+        second.task_id = "task-002"
+        second.call_context = SimpleNamespace(user=SimpleNamespace(user_name="bob"))
+
+        with request_cycle_context({}):
+            await executor.execute(first, _RecordingEventQueue())
+        with request_cycle_context({}):
+            await executor.execute(second, _RecordingEventQueue())
+
+        assert _artifact_text(spy_updater.last) == "ROUTED"
+
     @pytest.mark.asyncio
     async def test_completes_with_artifact(self, monkeypatch, spy_updater):
         """ok=True path: result goes into add_artifact (RISK 2), then complete()."""

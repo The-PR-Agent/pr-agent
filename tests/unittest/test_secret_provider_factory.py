@@ -54,7 +54,9 @@ class TestSecretProviderFactory:
             settings.config.secret_provider = "google_cloud_storage"
             mock_get_settings.return_value = settings
 
-            with patch('pr_agent.secret_providers.google_cloud_storage_secret_provider.GoogleCloudStorageSecretProvider') as MockProvider:
+            with patch(
+                "pr_agent.secret_providers.google_cloud_storage_secret_provider.GoogleCloudStorageSecretProvider"
+            ) as MockProvider:
                 mock_instance = MagicMock()
                 MockProvider.return_value = mock_instance
 
@@ -69,7 +71,9 @@ class TestSecretProviderFactory:
             settings.config.secret_provider = "aws_secrets_manager"
             mock_get_settings.return_value = settings
 
-            with patch('pr_agent.secret_providers.aws_secrets_manager_provider.AWSSecretsManagerProvider') as MockProvider:
+            with patch(
+                "pr_agent.secret_providers.aws_secrets_manager_provider.AWSSecretsManagerProvider"
+            ) as MockProvider:
                 mock_instance = MagicMock()
                 MockProvider.return_value = mock_instance
 
@@ -94,7 +98,9 @@ class TestSecretProviderFactory:
             settings.config.secret_provider = "aws_secrets_manager"
             mock_get_settings.return_value = settings
 
-            with patch('pr_agent.secret_providers.aws_secrets_manager_provider.AWSSecretsManagerProvider') as MockProvider:
+            with patch(
+                "pr_agent.secret_providers.aws_secrets_manager_provider.AWSSecretsManagerProvider"
+            ) as MockProvider:
                 MockProvider.side_effect = Exception("Initialization failed")
 
                 with pytest.raises(ValueError, match="Failed to initialize aws_secrets_manager secret provider"):

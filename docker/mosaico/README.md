@@ -132,9 +132,21 @@ Two outcomes:
 ## Troubleshooting
 
 - **Container stays `unhealthy`, registration never runs.** `/health` is a live LLM probe and
-  returns `503` on bad/missing credentials — this is intended (the healthcheck matches the
-  peer solution agents' probe verbatim, and a registered card backed by a dead LLM is worse
-  than no registration). Check `API_BASE`/`API_KEY`/`MODEL_NAME`, not the compose file.
+  returns `503` on bad/missing credentials — this is intended: a registered card backed by
+  a dead LLM is worse than no registration. Images with health-probe hardening return
+  `Unhealthy: LLM probe failed` for provider failures. The health check's own warning logs only the exception type,
+  not the provider's error text.
+  `mosaico.health_timeout_seconds` sets the deadline for cooperative asynchronous work
+  (default: 10 seconds; must be a finite positive number). Synchronous
+  handler construction and blocking SDK work can still exceed it. Existing image tags may
+  predate this behavior and expose provider error details.
+  Set `MOSAICO__HEALTH_TIMEOUT_SECONDS` in the agent container's environment to override
+  the default; with Compose, add it to the service's `environment` mapping.
+  Invalid values make `/health` return the generic unhealthy response (503), not the default timeout.
+  The bundled Compose probe has its own 25-second HTTP timeout. For longer health budgets,
+  increase that HTTP timeout and Docker's `healthcheck.timeout` with sufficient margin;
+  otherwise the container can remain unhealthy and registration will not run.
+  Check `API_BASE`/`API_KEY`/`MODEL_NAME`, not the compose file.
 - **Agent registers but the reference agent never reaches it.** The advertised card URL is
   `localhost`; see the `AGENT_CARD_HOST`/`AGENT_CARD_PORT` section above.
 - **The registration container itself can't fetch the agent card.** `01-compose.sh` falls back

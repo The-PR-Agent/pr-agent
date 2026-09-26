@@ -1,8 +1,11 @@
 import asyncio
 
+import httpx
+import openai
 import pytest
+from jinja2 import UndefinedError
 
-from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
@@ -61,7 +64,7 @@ def test_primary_fails_fallback_succeeds():
         async def fake_f(model):
             calls.append(model)
             if model == "primary-model":
-                raise RuntimeError("primary failed")
+                raise FallbackEligibleError("primary failed")
             return f"ok:{model}"
 
         result = asyncio.run(retry_with_fallback_models(fake_f))
@@ -80,14 +83,14 @@ def test_all_models_fail_raises_with_aggregate_message_and_cause():
         get_settings().set("openai.deployment_id", None)
         get_settings().set("openai.fallback_deployments", [])
 
-        last_error = ValueError("last failure")
+        last_error = FallbackEligibleError("last failure")
         attempted = []
 
         async def fake_f(model):
             attempted.append(model)
             if model == "fallback-1":
                 raise last_error
-            raise RuntimeError("primary failure")
+            raise FallbackEligibleError("primary failure")
 
         with pytest.raises(Exception) as exc_info:
             asyncio.run(retry_with_fallback_models(fake_f))
@@ -118,7 +121,7 @@ def test_deployment_id_updated_per_attempt():
                 (model, get_settings().get("openai.deployment_id", None))
             )
             if model != "fallback-1":
-                raise RuntimeError(f"fail for {model}")
+                raise FallbackEligibleError(f"fail for {model}")
             return "fallback-ok"
 
         result = asyncio.run(retry_with_fallback_models(fake_f))
@@ -145,7 +148,7 @@ def test_fallback_deployment_does_not_poison_the_next_retry():
         async def fake_f(model):
             observed.append((model, get_settings().get("openai.deployment_id", None)))
             if model == "primary-model":
-                raise RuntimeError("primary failed")
+                raise FallbackEligibleError("primary failed")
             return "fallback-ok"
 
         assert asyncio.run(retry_with_fallback_models(fake_f)) == "fallback-ok"
@@ -172,7 +175,7 @@ def test_deployment_id_is_restored_when_retry_is_cancelled():
 
         async def fake_f(model):
             if model == "primary-model":
-                raise RuntimeError("primary failed")
+                raise FallbackEligibleError("primary failed")
             raise asyncio.CancelledError
 
         with pytest.raises(asyncio.CancelledError):
@@ -284,7 +287,7 @@ def test_records_fallback_model_with_fallback_flag():
 
         async def fake_f(model):
             if model == "primary-model":
-                raise RuntimeError("primary failed")
+                raise FallbackEligibleError("primary failed")
             return "ok"
 
         asyncio.run(retry_with_fallback_models(fake_f))
@@ -311,7 +314,7 @@ def test_fallback_flag_set_even_when_fallback_repeats_primary_model_name():
         async def fake_f(model):
             attempts.append(model)
             if len(attempts) == 1:
-                raise RuntimeError("first attempt failed")
+                raise FallbackEligibleError("first attempt failed")
             return "ok"
 
         asyncio.run(retry_with_fallback_models(fake_f))
@@ -347,5 +350,87 @@ def test_recording_successful_model_does_not_trigger_fallback_retry(monkeypatch)
             asyncio.run(retry_with_fallback_models(fake_f))
 
         assert calls == ["primary-model"]
+    finally:
+        _restore_settings(snapshot)
+
+
+@pytest.mark.parametrize("error", [
+    TypeError("bad local type"),
+    KeyError("missing local key"),
+    UndefinedError("missing prompt variable"),
+    ValueError("unclassified local value"),
+    RuntimeError("unclassified local runtime"),
+])
+def test_local_errors_propagate_without_billing_fallback(error):
+    snapshot = _snapshot_settings()
+    try:
+        get_settings().set("config.model", "primary-model")
+        get_settings().set("config.fallback_models", ["fallback-1"])
+        get_settings().set("openai.deployment_id", "deployment-primary")
+        get_settings().set("openai.fallback_deployments", ["deployment-fallback"])
+        calls = []
+
+        async def fake_f(model):
+            calls.append(model)
+            raise error
+
+        with pytest.raises(type(error)) as exc_info:
+            asyncio.run(retry_with_fallback_models(fake_f))
+
+        assert exc_info.value is error
+        assert calls == ["primary-model"]
+        assert get_settings().get("openai.deployment_id") == "deployment-primary"
+    finally:
+        _restore_settings(snapshot)
+
+
+@pytest.mark.parametrize("error", [
+    openai.APIError("provider failed", request=httpx.Request("POST", "https://example.invalid"), body=None),
+    asyncio.TimeoutError("provider timed out"),
+])
+def test_provider_errors_and_timeouts_remain_fallback_eligible(error):
+    snapshot = _snapshot_settings()
+    try:
+        get_settings().set("config.model", "primary-model")
+        get_settings().set("config.fallback_models", ["fallback-1"])
+        get_settings().set("openai.deployment_id", None)
+        get_settings().set("openai.fallback_deployments", [])
+        calls = []
+
+        async def fake_f(model):
+            calls.append(model)
+            if model == "primary-model":
+                raise error
+            return "fallback-ok"
+
+        assert asyncio.run(retry_with_fallback_models(fake_f)) == "fallback-ok"
+        assert calls == ["primary-model", "fallback-1"]
+    finally:
+        _restore_settings(snapshot)
+
+
+def test_typed_model_fit_failures_report_each_attempt_when_exhausted():
+    snapshot = _snapshot_settings()
+    try:
+        get_settings().set("config.model", "primary-model")
+        get_settings().set("config.fallback_models", ["fallback-1"])
+        get_settings().set("openai.deployment_id", None)
+        get_settings().set("openai.fallback_deployments", [])
+        last_error = FallbackEligibleError("no non-empty review mapping")
+        calls = []
+
+        async def fake_f(model):
+            calls.append(model)
+            if model == "primary-model":
+                raise FallbackEligibleError("No PR diff fits")
+            raise last_error
+
+        with pytest.raises(Exception, match="Failed to generate prediction with any model") as exc_info:
+            asyncio.run(retry_with_fallback_models(fake_f))
+
+        assert calls == ["primary-model", "fallback-1"]
+        assert "primary-model: FallbackEligibleError: No PR diff fits" in str(exc_info.value)
+        assert "fallback-1: FallbackEligibleError: no non-empty review mapping" in str(exc_info.value)
+        assert exc_info.value.__cause__ is last_error
     finally:
         _restore_settings(snapshot)

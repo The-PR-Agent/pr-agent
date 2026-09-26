@@ -55,6 +55,42 @@ def _referenced_variables(half):
     return meta.find_undeclared_variables(environment.parse(template))
 
 
+@pytest.mark.parametrize(
+    ("duplicate_prompt_examples", "expected_user_examples"),
+    [(False, 0), (True, 1)],
+)
+def test_ticket_compliance_examples_use_consumer_field(
+    monkeypatch,
+    duplicate_prompt_examples,
+    expected_user_examples,
+):
+    reviewer = _build_reviewer(monkeypatch)
+    reviewer.vars["related_tickets"] = [
+        SimpleNamespace(
+            ticket_url="https://tracker.example/tickets/1",
+            title="Ticket",
+            labels="",
+            body="",
+            requirements="",
+        )
+    ]
+    reviewer.vars["duplicate_prompt_examples"] = duplicate_prompt_examples
+
+    environment = Environment(
+        autoescape=select_autoescape(default_for_string=False),
+        undefined=StrictUndefined,
+    )
+    system_prompt = environment.from_string(get_settings().pr_review_prompt.system).render(reviewer.vars)
+    user_prompt = environment.from_string(get_settings().pr_review_prompt.user).render(reviewer.vars)
+
+    canonical_example = "\n      requires_further_human_verification: |"
+    legacy_example = "\n      overall_compliance_level: |"
+    assert system_prompt.count(canonical_example) == 1
+    assert user_prompt.count(canonical_example) == expected_user_examples
+    assert legacy_example not in system_prompt
+    assert legacy_example not in user_prompt
+
+
 @pytest.mark.parametrize("half", ["system", "user"])
 def test_pr_review_prompt_variables_are_all_supplied(monkeypatch, half):
     reviewer = _build_reviewer(monkeypatch)

@@ -334,6 +334,8 @@ PR-Agent uses a dynamic strategy to generate code suggestions based on the size 
 - For each chunk, PR-Agent generates up to `pr_code_suggestions.num_code_suggestions_per_chunk` suggestions (default: 3).
 - To bound output from large or chunked PRs, set `pr_code_suggestions.max_suggestions_per_file` to a positive integer.
   After all chunks are merged, the highest-scored suggestions are retained per file; ties keep their original order.
+  Summarized output, including unpublished summaries, skips suggestions with unresolvable line locations before
+  applying a positive cap. Inline output keeps its existing selection and fallback behavior.
   The default value `0` disables this cap.
 
 This approach has two main benefits:
@@ -404,8 +406,8 @@ for the authoritative default values.
   <tr>
     <td><b>enable_suggestions_coverage_footer</b></td>
     <td>
-      If set to true, the tool will display a coverage notice when failed analysis chunks make the
-      suggestions incomplete.
+      If set to true, the tool will display a coverage notice when analysis chunks fail or files
+      are omitted by the token budget or maximum number of AI calls.
     </td>
   </tr>
 </table>
@@ -425,15 +427,52 @@ for the authoritative default values.
     <td>
       Maximum number of suggestions retained for each file after chunk results are combined. The highest-scored
       suggestions are retained. Set to <code>0</code> to preserve the uncapped behavior.
+      Summarized output skips unresolvable line locations before applying a positive cap;
+      inline selection and fallback behavior are unchanged.
     </td>
   </tr>
   <tr>
     <td><b>max_number_of_calls</b></td>
     <td>Maximum number of chunks.</td>
   </tr>
+  <tr>
+    <td><b>max_discussion_context_chars</b></td>
+    <td>
+      Character budget for the prior code-suggestion threads (and their replies) that 'improve' reads as context
+      on GitLab and Azure DevOps, so it does not repeat suggestions that were already rejected or addressed.
+      Default is 24000. Set to <code>0</code> to disable this context.
+    </td>
+  </tr>
 </table>
 
 </details>
+
+## Recovering a partially failed analysis
+
+A partially failed analysis automatically tries the remaining configured
+`config.fallback_models` for the chunks that raised an exception after other chunks succeeded,
+with no extra configuration beyond `config.fallback_models` itself.
+Successful predictions are retained in their original order. Recovery runs model by model,
+after the preceding batch finishes, using the matching `openai.fallback_deployments` where configured,
+and follows the effective fallback chain of the invocation, including a primary model selected by
+[model routing](../usage-guide/changing_a_model.md#routing-small-pull-requests-to-a-cheaper-model).
+A fallback model that recovers at least one chunk is marked as a fallback in the run
+details, so the published run line still reports the primary model while the sticky fallback flag
+stays set.
+
+Each remaining model is tried at most once per still-failed chunk at the tool level; the model
+handler's existing retries and self-reflection calls can add provider requests. A chunk whose complete
+generation prompt does not fit a fallback model's token budget is skipped for that model, without
+truncating its context; the reserved headroom follows the output allowance the AI handler will
+actually request for that model (`config.max_output_tokens` and related controls), falling back to
+the fixed soft threshold when no specific limit is exposed. Later, larger models can still recover
+it. Exhausted failures remain in the coverage notice. Cancellation propagates instead of starting
+another retry.
+
+This is recovery within one invocation, not persisted resume across commands. Entirely failed initial
+batches still use the existing whole-batch fallback. Valid empty suggestions are successful results;
+responses rejected by the existing YAML parser retain its existing parse-failure behavior.
+An ambiguous repeated model/deployment pair skips partial recovery rather than restarting the chain.
 
 ## Understanding AI Code Suggestions
 

@@ -63,6 +63,7 @@ async def test_start_queued_processes_respects_parallel_limit(workers):
     assert all(process.alive for process in active)
     assert [process.args for process in active] == [(i,) for i in range(10)]
     assert not queue
+    github_polling.get_logger().info.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -85,6 +86,9 @@ async def test_next_batch_waits_without_dropping_accepted_work(workers, monkeypa
         await asyncio.wait_for(waiting.wait(), 2)
         assert len(created) == 10
         assert len(queue) == 3
+        github_polling.get_logger().info.assert_called_once_with(
+            "Polling dispatch waiting for capacity: 10 workers active, 3 tasks queued"
+        )
         for process in created[:3]:
             process.alive = False
         release.set()
@@ -96,6 +100,31 @@ async def test_next_batch_waits_without_dropping_accepted_work(workers, monkeypa
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_capacity_wait_logs_once_per_batch(workers, monkeypatch):
+    active = []
+    await github_polling._start_queued_processes(_queue(10), 10, active)
+    info = github_polling.get_logger().info
+    info.assert_not_called()
+    capacity_checks = 0
+
+    async def release_capacity(delay):
+        nonlocal capacity_checks
+        assert delay == github_polling.POLLING_CAPACITY_CHECK_INTERVAL
+        capacity_checks += 1
+        if capacity_checks % 3 == 0:
+            active[0].alive = False
+
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(sleep=release_capacity))
+    for batch in range(2):
+        await github_polling._start_queued_processes(_queue(2), 10, active)
+        assert info.call_count == batch + 1
+        info.assert_called_with("Polling dispatch waiting for capacity: 10 workers active, 2 tasks queued")
+    assert capacity_checks == 12
+    await github_polling._start_queued_processes(_queue(0), 10, active)
+    assert info.call_count == 2
 
 
 @pytest.mark.asyncio

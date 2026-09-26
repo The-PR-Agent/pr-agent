@@ -434,6 +434,9 @@ class GerritProvider(GitProvider):
             msg = adopt_to_gerrit_message(pr_comment)
             add_comment(self.parsed_url, self.refspec, msg)
 
+    def supports_comment_publish_confirmation(self) -> bool:
+        return False
+
     def publish_description(self, pr_title: str, pr_body: str):
         msg = adopt_to_gerrit_message(pr_body)
         text = msg if pr_title is None else pr_title + '\n' + msg

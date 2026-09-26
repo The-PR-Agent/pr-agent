@@ -12,7 +12,7 @@ import os
 
 from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentSkill
 
-from pr_agent.algo.utils import get_version
+from pr_agent.algo.run_output import get_version
 
 OBSERVABILITY_EXTENSION_URI = "https://mosaico-project.eu/extensions/mosaico-observability"
 

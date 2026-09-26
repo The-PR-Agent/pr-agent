@@ -21,7 +21,8 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Hashable, List, Optional
 
-from pr_agent.algo.utils import as_review_text, is_value_no
+from pr_agent.algo.comment_identity import as_review_text
+from pr_agent.algo.utils import is_value_no
 from pr_agent.log import get_logger
 
 MAX_EFFORT = 5

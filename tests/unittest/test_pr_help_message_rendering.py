@@ -1,5 +1,7 @@
 """Regression tests for provider-independent /help behavior."""
 
+from pathlib import Path
+
 import pytest
 
 from pr_agent.config_loader import get_settings
@@ -103,6 +105,7 @@ def non_openai_question_settings():
     keys = [
         "config.model",
         "config.fallback_models",
+        "config.propagate_tool_errors",
         "model_routing.enable",
         "openai.key",
         "openai.deployment_id",
@@ -140,16 +143,125 @@ async def test_question_reaches_configured_handler_without_openai_key(
     assert "requires an OpenAI API key" not in tool.git_provider.published[0]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
 async def test_question_uses_configured_handler_error_path_without_openai_key(
+    published_output, non_openai_question_settings, tmp_path, monkeypatch, propagate_tool_errors
+):
+    get_settings().set("config.propagate_tool_errors", propagate_tool_errors)
+    handler = StubAiHandler(error=RuntimeError("provider credentials missing"))
+    tool = build_question_tool(tmp_path, monkeypatch, handler)
+
+    if propagate_tool_errors:
+        with pytest.raises(RuntimeError) as exc_info:
+            await tool.run()
+        assert exc_info.value is handler.error
+    else:
+        assert await tool.run() == ""
+
+    assert [call["model"] for call in handler.calls] == ["anthropic/claude-3-5-sonnet-20240620"]
+    assert tool.git_provider.published == []
+
+
+@pytest.mark.asyncio
+async def test_question_skips_malformed_sources_without_discarding_answer(
     published_output, non_openai_question_settings, tmp_path, monkeypatch
 ):
-    handler = StubAiHandler(error=RuntimeError("provider credentials missing"))
+    handler = StubAiHandler(
+        response=(
+            "response: Enable automatic review in the repository settings.\n"
+            "relevant_sections:\n"
+            "  - file_name: /tools/review.md\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: tools/review.md\n"
+            "    relevant_section_header_string:\n"
+            "  - relevant_section_header_string: Missing file name\n"
+            "  - not a mapping\n"
+            "  - file_name: ../../review.md\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: https://example.com/review.md\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: /tools/review.md?draft=true\n"
+            "    relevant_section_header_string: Automatic review\n"
+            "  - file_name: ' /tools/review.md '\n"
+            "    relevant_section_header_string: Automatic review\n"
+        )
+    )
     tool = build_question_tool(tmp_path, monkeypatch, handler)
 
     await tool.run()
 
-    assert [call["model"] for call in handler.calls] == ["anthropic/claude-3-5-sonnet-20240620"]
-    assert tool.git_provider.published == []
+    assert len(tool.git_provider.published) == 1
+    comment = tool.git_provider.published[0]
+    assert "Enable automatic review in the repository settings." in comment
+    assert f"> - {CURRENT_DOCS_URL}/tools/review/#automatic-review\n" in comment
+    assert f"> - {CURRENT_DOCS_URL}/tools/review/\n" in comment
+    assert comment.count("> - ") == 2
+    assert "example.com" not in comment
+    assert "draft=true" not in comment
+
+
+@pytest.mark.parametrize(
+    "relevant_sections",
+    [
+        "  - relevant_section_header_string: Missing file name\n",
+        "  file_name: /tools/review.md\n  relevant_section_header_string: Automatic review\n",
+    ],
+    ids=["all-invalid-rows", "non-list-value"],
+)
+@pytest.mark.asyncio
+async def test_question_preserves_answer_when_no_valid_sources_remain(
+    published_output, non_openai_question_settings, tmp_path, monkeypatch, relevant_sections
+):
+    handler = StubAiHandler(
+        response=(
+            "response: Enable automatic review in the repository settings.\n"
+            "relevant_sections:\n"
+            f"{relevant_sections}"
+        )
+    )
+    tool = build_question_tool(tmp_path, monkeypatch, handler)
+
+    await tool.run()
+
+    assert len(tool.git_provider.published) == 1
+    comment = tool.git_provider.published[0]
+    assert "Enable automatic review in the repository settings." in comment
+    assert "Relevant Sources" not in comment
+    assert CURRENT_DOCS_URL not in comment
+
+
+@pytest.mark.asyncio
+async def test_question_does_not_link_to_document_that_failed_to_load(
+    published_output, non_openai_question_settings, tmp_path, monkeypatch
+):
+    unreadable_doc = tmp_path / "package" / "docs" / "docs" / "faq.md"
+    handler = StubAiHandler(
+        response=(
+            "response: Enable automatic review in the repository settings.\n"
+            "relevant_sections:\n"
+            "  - file_name: /faq.md\n"
+            "    relevant_section_header_string: FAQ\n"
+        )
+    )
+    tool = build_question_tool(tmp_path, monkeypatch, handler)
+    unreadable_doc.write_text("# FAQ", encoding="utf-8")
+    real_read_text = Path.read_text
+
+    def fail_unreadable_doc(document, *args, **kwargs):
+        if document == unreadable_doc:
+            raise OSError("unreadable test document")
+        return real_read_text(document, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_unreadable_doc)
+
+    await tool.run()
+
+    assert len(tool.git_provider.published) == 1
+    comment = tool.git_provider.published[0]
+    assert "Enable automatic review in the repository settings." in comment
+    assert "Relevant Sources" not in comment
+    assert f"{CURRENT_DOCS_URL}/faq/" not in comment
 
 
 @pytest.mark.parametrize(
@@ -203,6 +315,13 @@ def test_question_source_urls_use_canonical_documentation_paths(file_name, heade
     tool = PRHelpMessage.__new__(PRHelpMessage)
 
     assert tool.format_docs_url(file_name, header) == expected
+
+
+def test_question_system_prompt_identifies_the_open_source_pr_agent_project():
+    system_prompt, _ = PRHelpMessage._render_prompts({"question": "What is PR-Agent?", "snippets": ""})
+
+    assert "the open-source PR-Agent project" in system_prompt
+    assert "recently renamed" not in system_prompt.lower()
 
 
 @pytest.mark.parametrize(

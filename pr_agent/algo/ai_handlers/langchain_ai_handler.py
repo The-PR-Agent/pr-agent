@@ -64,7 +64,9 @@ class LangChainOpenAIHandler(BaseAiHandler):
             raise ValueError(error_msg) from e
 
     @retry(
-        retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
+        retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(
+            (openai.RateLimitError, openai.BadRequestError, openai.UnprocessableEntityError)
+        ),
         stop=stop_after_attempt(OPENAI_RETRIES),
     )
     async def chat_completion(

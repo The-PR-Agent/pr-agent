@@ -36,7 +36,7 @@ Additional scoring considerations:
 - Assign a score of 0 to suggestions aiming at:
    - Adding docstring, type hints, or comments
    - Remove unused imports or variables
-   - Add missing import statements
+   - Add standalone or unrelated missing import statements
    - Using more specific exception types.
    - Questions the definition, declaration, import, or initialization of any entity in the PR code, that might be done in the outer codebase.
 
@@ -81,7 +81,7 @@ Each YAML output MUST be after a newline, indented, with block scalar indicator 
 
 user="""You are given a Pull Request (PR) code diff:
 ======
-{{ diff|trim }}
+{{ diff }}
 ======
 
 

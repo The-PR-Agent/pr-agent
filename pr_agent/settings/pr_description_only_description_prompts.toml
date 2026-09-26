@@ -101,6 +101,9 @@ Ticket Description:
 =====
 {% endfor %}
 {%- endif %}
+{%- if related_tickets_omitted is defined and related_tickets_omitted %}
+Context notice: {{ related_tickets_omitted }} additional related ticket(s) were omitted to fit the model context.
+{%- endif %}
 
 PR Info:
 
@@ -127,7 +130,7 @@ Commit messages:
 
 The PR Files and Changes:
 =====
-{{ diff|trim }}
+{{ diff }}
 =====
 
 {%- if duplicate_prompt_examples %}
@@ -137,7 +140,7 @@ Example output:
 ```yaml
 type:
 - Bug fix
-- Refactoring
+- Enhancement
 - ...
 {%- if enable_pr_description %}
 description: |

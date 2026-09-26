@@ -4,7 +4,7 @@ import copy
 import pytest
 import yaml
 
-from pr_agent.algo.utils import show_relevant_configurations
+from pr_agent.algo.run_output import show_relevant_configurations
 from pr_agent.config_loader import get_settings
 
 

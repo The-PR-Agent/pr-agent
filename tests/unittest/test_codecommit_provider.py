@@ -4,8 +4,9 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import PRReviewHeader, PRReviewIdentity
 from pr_agent.git_providers.codecommit_provider import CodeCommitFile, CodeCommitProvider, PullRequestCCMimic
 from pr_agent.tools.pr_reviewer import PRReviewer
 
@@ -19,8 +20,16 @@ class TestCodeCommitFile:
         b_path = "path/to/file_b"
         b_blob_id = "67890"
         edit_type = EDIT_TYPE.ADDED
+        comparison_base_commit = "merge-base"
 
-        file = CodeCommitFile(a_path, a_blob_id, b_path, b_blob_id, edit_type)
+        file = CodeCommitFile(
+            a_path,
+            a_blob_id,
+            b_path,
+            b_blob_id,
+            edit_type,
+            comparison_base_commit=comparison_base_commit,
+        )
 
         assert file.a_path == a_path
         assert file.a_blob_id == a_blob_id
@@ -28,6 +37,7 @@ class TestCodeCommitFile:
         assert file.b_blob_id == b_blob_id
         assert file.edit_type == edit_type
         assert file.filename == b_path
+        assert file.comparison_base_commit == comparison_base_commit
 
 
 class TestCodeCommitProvider:
@@ -62,6 +72,7 @@ class TestCodeCommitProvider:
                 source_branch="refs/heads/feature",
                 destination_commit="destination-commit-1",
                 destination_branch="refs/heads/main",
+                merge_base="merge-base-1",
             )
         ]
         provider.pr = PullRequestCCMimic("Persistent PR", [], targets=targets)
@@ -199,13 +210,137 @@ class TestCodeCommitProvider:
             call("my_test_repo", "good.py", "source-commit"),
         ]
 
-    def test_get_diff_files_does_not_swallow_client_errors(self):
+    def test_get_diff_files_applies_ignore_rules_before_fetching_content(self):
+        ignored_file = CodeCommitFile(
+            "vendor/generated.py", "before-id", "vendor/generated.py", "after-id", EDIT_TYPE.MODIFIED
+        )
+        valid_file = CodeCommitFile("good.py", "before-id", "good.py", "after-id", EDIT_TYPE.MODIFIED)
+        provider = self._make_diff_provider([ignored_file, valid_file])
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
+        )
+
+        settings = MagicMock()
+        settings.ignore.regex = []
+        settings.ignore.glob = ["vendor/**"]
+        settings.config.get.return_value = []
+
+        with patch("pr_agent.algo.file_filter.get_settings", return_value=settings):
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert provider.codecommit_client.get_file.call_args_list == [
+            call("my_test_repo", "good.py", "destination-commit"),
+            call("my_test_repo", "good.py", "source-commit"),
+        ]
+
+    def test_get_diff_files_does_not_apply_first_target_ignore_rules_to_other_targets(self):
+        first_target = SimpleNamespace(
+            repository_name="repo-one",
+            source_commit="source-1",
+            destination_commit="destination-1",
+        )
+        second_target = SimpleNamespace(
+            repository_name="repo-two",
+            source_commit="source-2",
+            destination_commit="destination-2",
+        )
+        files = [
+            CodeCommitFile(
+                "one.py", "before-1", "one.py", "after-1", EDIT_TYPE.MODIFIED,
+                repository_name="repo-one",
+                source_commit="source-1",
+                destination_commit="destination-1",
+                comparison_base_commit="destination-1",
+            ),
+            CodeCommitFile(
+                "two.py", "before-2", "two.py", "after-2", EDIT_TYPE.MODIFIED,
+                repository_name="repo-two",
+                source_commit="source-2",
+                destination_commit="destination-2",
+                comparison_base_commit="destination-2",
+            ),
+        ]
+        provider = self._make_diff_provider(files)
+        provider.pr.targets = [first_target, second_target]
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo, _path, commit: b"before\n" if commit.startswith("destination-") else b"after\n"
+        )
+
+        with patch(
+            "pr_agent.git_providers.codecommit_provider.filter_ignored",
+            return_value=[],
+        ) as filter_ignored:
+            diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["one.py", "two.py"]
+        filter_ignored.assert_not_called()
+
+    def test_get_diff_files_caches_empty_filtered_result(self):
+        ignored_file = CodeCommitFile(
+            "vendor/generated.py", "before-id", "vendor/generated.py", "after-id", EDIT_TYPE.MODIFIED
+        )
+        provider = self._make_diff_provider([ignored_file])
+
+        with patch(
+            "pr_agent.git_providers.codecommit_provider.filter_ignored",
+            return_value=[],
+        ) as filter_ignored:
+            first_result = provider.get_diff_files()
+            second_result = provider.get_diff_files()
+
+        assert first_result == []
+        assert second_result is first_result
+        filter_ignored.assert_called_once()
+        provider.codecommit_client.get_file.assert_not_called()
+
+    def test_get_diff_files_retries_after_client_error(self):
         file = CodeCommitFile("file.py", "before-id", "file.py", "after-id", EDIT_TYPE.MODIFIED)
         provider = self._make_diff_provider([file])
         provider.codecommit_client.get_file.side_effect = ValueError("AWS request failed")
 
         with pytest.raises(ValueError, match="AWS request failed"):
             provider.get_diff_files()
+
+        assert provider.diff_files is None
+
+        provider.codecommit_client.get_file.side_effect = (
+            lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert [diff_file.filename for diff_file in diff_files] == ["file.py"]
+        assert diff_files[0].base_file == "before\n"
+        assert diff_files[0].head_file == "after\n"
+        assert "-before" in diff_files[0].patch
+        assert "+after" in diff_files[0].patch
+
+    def test_get_repo_settings_ignores_source_branch_config(self):
+        provider = self._make_persistent_provider()
+        source_settings = b"[ignore]\nglob = ['**']\n"
+        destination_settings = b"[ignore]\nglob = ['vendor/**']\n"
+
+        def get_file(_repository, _path, commit, optional=False):
+            assert optional is True
+            if commit == "source-commit-1":
+                return source_settings
+            if commit == "destination-commit-1":
+                return destination_settings
+            raise AssertionError(f"unexpected commit: {commit}")
+
+        provider.codecommit_client.get_file.side_effect = get_file
+
+        settings = provider.get_repo_settings()
+
+        assert settings == destination_settings
+        assert settings != source_settings
+        provider.codecommit_client.get_file.assert_called_once_with(
+            "source-repository",
+            ".pr_agent.toml",
+            "destination-commit-1",
+            optional=True,
+        )
 
     def test_get_files_includes_differences_from_every_pull_request_target(self):
         provider = object.__new__(CodeCommitProvider)
@@ -221,6 +356,7 @@ class TestCodeCommitProvider:
             source_branch="feature/one",
             destination_commit="destination-commit-1",
             destination_branch="main",
+            merge_base="merge-base-1",
         )
         second_target = MagicMock(
             repository_name="destination-repository",
@@ -228,18 +364,50 @@ class TestCodeCommitProvider:
             source_branch="feature/two",
             destination_commit="destination-commit-2",
             destination_branch="release",
+            merge_base="merge-base-2",
         )
         provider.codecommit_client.get_pr.return_value = MagicMock(
             title="Multi-target PR",
             description="Review both targets",
             targets=[first_target, second_target],
         )
-        provider.codecommit_client.get_differences.side_effect = [
-            [MagicMock(before_blob_path="one.py", before_blob_id="before-1",
-                       after_blob_path="one.py", after_blob_id="after-1", change_type="M")],
-            [MagicMock(before_blob_path="two.py", before_blob_id="before-2",
-                       after_blob_path="two.py", after_blob_id="after-2", change_type="M")],
-        ]
+        differences_by_repository = {
+            "source-repository": [
+                MagicMock(
+                    before_blob_path="one.py",
+                    before_blob_id="before-1",
+                    after_blob_path="one.py",
+                    after_blob_id="after-1",
+                    change_type="M",
+                )
+            ],
+            "destination-repository": [
+                MagicMock(
+                    before_blob_path="two.py",
+                    before_blob_id="before-2",
+                    after_blob_path="two.py",
+                    after_blob_id="after-2",
+                    change_type="M",
+                )
+            ],
+        }
+
+        def get_differences(repository, comparison_base, _source_commit):
+            differences = differences_by_repository[repository]
+            if comparison_base.startswith("destination-"):
+                return [
+                    MagicMock(
+                        before_blob_path="target-only.py",
+                        before_blob_id="target-only-before",
+                        after_blob_path="",
+                        after_blob_id="",
+                        change_type="D",
+                    ),
+                    *differences,
+                ]
+            return differences
+
+        provider.codecommit_client.get_differences.side_effect = get_differences
 
         provider.pr = provider._get_pr()
         files = provider.get_files()
@@ -248,20 +416,23 @@ class TestCodeCommitProvider:
             "source-repository", "destination-repository"
         ]
         assert [file.filename for file in files] == ["one.py", "two.py"]
-        assert [(file.repository_name, file.destination_commit, file.source_commit) for file in files] == [
-            ("source-repository", "destination-commit-1", "source-commit-1"),
-            ("destination-repository", "destination-commit-2", "source-commit-2"),
+        assert [
+            (file.repository_name, file.comparison_base_commit, file.destination_commit, file.source_commit)
+            for file in files
+        ] == [
+            ("source-repository", "merge-base-1", "destination-commit-1", "source-commit-1"),
+            ("destination-repository", "merge-base-2", "destination-commit-2", "source-commit-2"),
         ]
         assert provider.codecommit_client.get_differences.call_args_list == [
-            call("source-repository", "destination-commit-1", "source-commit-1"),
-            call("destination-repository", "destination-commit-2", "source-commit-2"),
+            call("source-repository", "merge-base-1", "source-commit-1"),
+            call("destination-repository", "merge-base-2", "source-commit-2"),
         ]
 
         provider.codecommit_client.get_file.side_effect = (
             lambda repository, path, commit: {
-                ("source-repository", "one.py", "destination-commit-1"): b"before one\n",
+                ("source-repository", "one.py", "merge-base-1"): b"before one\n",
                 ("source-repository", "one.py", "source-commit-1"): b"after one\n",
-                ("destination-repository", "two.py", "destination-commit-2"): b"before two\n",
+                ("destination-repository", "two.py", "merge-base-2"): b"before two\n",
                 ("destination-repository", "two.py", "source-commit-2"): b"after two\n",
             }[(repository, path, commit)]
         )
@@ -271,6 +442,27 @@ class TestCodeCommitProvider:
             ("one.py", "before one\n", "after one\n"),
             ("two.py", "before two\n", "after two\n"),
         ]
+
+    def test_get_files_falls_back_to_destination_when_merge_base_is_missing(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.git_files = None
+        provider.codecommit_client = MagicMock()
+        provider.codecommit_client.get_differences.return_value = []
+        target = SimpleNamespace(
+            repository_name="source-repository",
+            source_commit="source-commit",
+            destination_commit="destination-commit",
+            merge_base="",
+        )
+        provider.pr = PullRequestCCMimic("Legacy target", [], targets=[target])
+        provider.pr.source_commit = target.source_commit
+        provider.pr.destination_commit = target.destination_commit
+
+        assert provider.get_files() == []
+        provider.codecommit_client.get_differences.assert_called_once_with(
+            "source-repository", "destination-commit", "source-commit"
+        )
 
     def test_prepare_comment_body_caps_at_codecommit_limit(self):
         # PostCommentForPullRequest rejects bodies above 10,240 characters and
@@ -355,11 +547,13 @@ class TestCodeCommitProvider:
                     repository_name="source-repository",
                     source_commit="source-commit-1",
                     destination_commit="destination-commit-1",
+                    merge_base="merge-base-1",
                 ),
                 MagicMock(
                     repository_name="destination-repository",
                     source_commit="source-commit-2",
                     destination_commit="destination-commit-2",
+                    merge_base="merge-base-2",
                 ),
             ],
         )
@@ -391,6 +585,7 @@ class TestCodeCommitProvider:
                 source_branch="refs/heads/feature",
                 destination_commit="destination-commit-1",
                 destination_branch="refs/heads/main",
+                merge_base="merge-base-1",
             ),
             SimpleNamespace(
                 repository_name="source-repository",
@@ -398,6 +593,7 @@ class TestCodeCommitProvider:
                 source_branch="refs/heads/feature",
                 destination_commit="destination-commit-2",
                 destination_branch="refs/heads/release",
+                merge_base="merge-base-2",
             ),
         ]
         provider = self._make_persistent_provider(targets=targets)
@@ -823,7 +1019,10 @@ class TestCodeCommitProvider:
         assert provider.codecommit_client.update_comment.call_count == 2
         provider.codecommit_client.publish_comment.assert_called_once()
         assert provider.codecommit_client.publish_comment.call_args.kwargs["repo_name"] == "source-repository"
-        assert provider.codecommit_client.publish_comment.call_args.kwargs["destination_commit"] == "destination-commit-2"
+        assert (
+            provider.codecommit_client.publish_comment.call_args.kwargs["destination_commit"]
+            == "destination-commit-2"
+        )
         assert provider.codecommit_client.publish_comment.call_args.kwargs["source_commit"] == "source-commit-2"
 
     def test_unmarked_persistent_comment_remains_create_only(self):
@@ -868,11 +1067,13 @@ class TestCodeCommitProvider:
                     repository_name="source-repository",
                     source_commit="source-commit-1",
                     destination_commit="destination-commit-1",
+                    merge_base="merge-base-1",
                 ),
                 MagicMock(
                     repository_name="destination-repository",
                     source_commit="source-commit-2",
                     destination_commit="destination-commit-2",
+                    merge_base="merge-base-2",
                 ),
             ],
         )
@@ -886,6 +1087,7 @@ class TestCodeCommitProvider:
                 repository_name="destination-repository",
                 source_commit="source-commit-2",
                 destination_commit="destination-commit-2",
+                comparison_base_commit="merge-base-2",
             )
         ]
 
@@ -906,6 +1108,50 @@ class TestCodeCommitProvider:
             annotation_file="two.py",
             annotation_line=4,
         )
+
+    def test_publish_code_suggestions_continues_after_one_failure(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider.codecommit_client.publish_comment.side_effect = [
+            None, RuntimeError("network down"), None
+        ]
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {"body": "Use a constant", "relevant_file": "one.py", "relevant_lines_start": 1},
+            {"body": "Use a helper", "relevant_file": "two.py", "relevant_lines_start": 2},
+            {"body": "Use a factory", "relevant_file": "three.py", "relevant_lines_start": 3},
+        ])
+
+        # A partial failure must not abort the later suggestions or report
+        # failure, or the caller would republish the already-posted ones.
+        assert result is True
+        assert provider.codecommit_client.publish_comment.call_count == 3
+
+    def test_publish_code_suggestions_reports_total_failure(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider.codecommit_client.publish_comment.side_effect = RuntimeError("network down")
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {"body": "Use a constant", "relevant_file": "one.py", "relevant_lines_start": 1},
+        ])
+
+        assert result is False
+        assert provider.codecommit_client.publish_comment.called
 
     def test_get_title(self):
         # Test that the get_title() function returns the PR title
@@ -965,79 +1211,44 @@ class TestCodeCommitProvider:
         assert not CodeCommitProvider._is_valid_codecommit_hostname("no-such-region.console.aws.amazon.com")
         assert not CodeCommitProvider._is_valid_codecommit_hostname("console.aws.amazon.com")
 
-    # Test that an error is raised when an invalid CodeCommit URL is provided to the set_pr() method of the CodeCommitProvider class.
+    # Error is raised when set_pr() receives an invalid CodeCommit URL.
     # Generated by CodiumAI
     def test_invalid_codecommit_url(self):
         provider = CodeCommitProvider()
         with pytest.raises(ValueError):
             provider.set_pr("https://example.com/codecommit/repositories/my_test_repo/pull-requests/4321")
 
-    def test_get_file_extensions(self):
+    def test_get_languages_matches_packing_and_combines_language_extensions(self):
         filenames = [
-            "app.py",
-            "cli.py",
-            "composer.json",
-            "composer.lock",
-            "hello.py",
-            "image1.jpg",
-            "image2.JPG",
-            "index.js",
-            "provider.py",
-            "README",
-            "test.py",
+            "src/one.cpp", "include/one.hpp", "src/two.C", "src/one.c",
+            "Dockerfile", "build.cmake.in", "app.py", "notes.unknown",
         ]
-        expected_extensions = [
-            ".py",
-            ".py",
-            ".json",
-            ".lock",
-            ".py",
-            ".jpg",
-            ".jpg",
-            ".js",
-            ".py",
-            "",
-            ".py",
-        ]
-        extensions = CodeCommitProvider._get_file_extensions(filenames)
-        assert extensions == expected_extensions
+        files = [SimpleNamespace(filename=name) for name in filenames]
+        provider = object.__new__(CodeCommitProvider)
+        provider.get_files = MagicMock(return_value=files)
 
-    def test_get_language_percentages(self):
-        extensions = [
-            ".py",
-            ".py",
-            ".json",
-            ".lock",
-            ".py",
-            ".jpg",
-            ".jpg",
-            ".js",
-            ".py",
-            "",
-            ".py",
-        ]
-        percentages = CodeCommitProvider._get_language_percentages(extensions)
-        assert percentages[".py"] == 45
-        assert percentages[".json"] == 9
-        assert percentages[".lock"] == 9
-        assert percentages[".jpg"] == 18
-        assert percentages[".js"] == 9
-        assert percentages[""] == 9
+        languages = provider.get_languages()
 
-        # The _get_file_extensions function needs the "." prefix on the extension,
-        # but the _get_language_percentages function will work with or without the "." prefix
-        extensions = [
-            "txt",
-            "py",
-            "py",
+        assert languages == pytest.approx({
+            "C++": 300 / 7, "C": 100 / 7, "Dockerfile": 100 / 7,
+            "CMake": 100 / 7, "Python": 100 / 7,
+        })
+        buckets = sort_files_by_main_languages(languages, files)
+        assert buckets == [
+            {"language": "C++", "files": files[:3]},
+            {"language": "C", "files": files[3:4]},
+            {"language": "Dockerfile", "files": files[4:5]},
+            {"language": "CMake", "files": files[5:6]},
+            {"language": "Python", "files": files[6:7]},
+            {"language": "Other", "files": files[7:]},
         ]
-        percentages = CodeCommitProvider._get_language_percentages(extensions)
-        assert percentages["py"] == 67
-        assert percentages["txt"] == 33
 
-        # test an empty list
-        percentages = CodeCommitProvider._get_language_percentages([])
-        assert percentages == {}
+    @pytest.mark.parametrize("filenames", [[], ["notes.unknown"]])
+    def test_get_languages_without_recognized_files(self, filenames):
+        provider = object.__new__(CodeCommitProvider)
+        provider.get_files = MagicMock(return_value=[SimpleNamespace(filename=name) for name in filenames])
+
+        assert provider.get_languages() == {}
 
     def test_get_edit_type(self):
         # Test that the _get_edit_type() function can convert a CodeCommit letter to an EDIT_TYPE enum
@@ -1059,8 +1270,20 @@ class TestCodeCommitProvider:
         expect = "abc\n\ndef\n\n___\n\nghi\n\njkl\n\nmno\n\npqr\n\n"
         assert CodeCommitProvider._add_additional_newlines(input) == expect
         # a test example from a real PR
-        input = "## PR Type:\nEnhancement\n\n___\n## PR Description:\nThis PR introduces a new feature to the script, allowing users to filter servers by name.\n\n___\n## PR Main Files Walkthrough:\n`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n`bar`: The bar script has been updated to list stopped servers.\n"
-        expect = "## PR Type:\n\nEnhancement\n\n___\n\n## PR Description:\n\nThis PR introduces a new feature to the script, allowing users to filter servers by name.\n\n___\n\n## PR Main Files Walkthrough:\n\n`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n\n`bar`: The bar script has been updated to list stopped servers.\n\n"
+        input = (
+            "## PR Type:\nEnhancement\n\n___\n## PR Description:\n"
+            "This PR introduces a new feature to the script, allowing users to filter servers by name.\n\n"
+            "___\n## PR Main Files Walkthrough:\n"
+            "`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n"
+            "`bar`: The bar script has been updated to list stopped servers.\n"
+        )
+        expect = (
+            "## PR Type:\n\nEnhancement\n\n___\n\n## PR Description:\n\n"
+            "This PR introduces a new feature to the script, allowing users to filter servers by name.\n\n"
+            "___\n\n## PR Main Files Walkthrough:\n\n"
+            "`foo`: The foo script has been updated to include a new command line option `-f` or `--filter`.\n\n"
+            "`bar`: The bar script has been updated to list stopped servers.\n\n"
+        )
         assert CodeCommitProvider._add_additional_newlines(input) == expect
 
     def test_remove_markdown_html(self):

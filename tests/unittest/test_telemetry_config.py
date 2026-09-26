@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import pr_agent
-from pr_agent.algo.utils import get_version
+from pr_agent.algo.run_output import get_version
 from pr_agent.telemetry import config as config_module
 from pr_agent.telemetry.config import VALID_EXPORTER_TYPES, _parse_otlp_headers, get_otel_config
 from pr_agent.telemetry.types import ExporterType

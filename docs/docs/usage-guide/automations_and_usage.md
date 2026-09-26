@@ -39,6 +39,14 @@ This is useful for debugging or experimenting with different tools.
 3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
 `github` **(default)**, `gitlab`, `bitbucket`, `azure`, `codecommit`, `local`, and `gitea`.
 
+4. For scripts that need a failed request to return a non-zero process status, enable tool error propagation:
+
+```bash
+python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
+```
+
+When a propagated tool error makes the request fail, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1. The default remains compatible with existing CLI behavior and exits with status 0; argparse parse and usage errors continue to exit with status 2.
+
 ### CLI Health Check
 
 To verify that PR-Agent has been configured correctly, you can run this health check command from the repository root:
@@ -145,6 +153,7 @@ Every time you run the `describe` tool (including automatic runs) the PR title w
 **Parameters for automated runs:**
 
 You can customize configurations specifically for automated runs by using the `--config_path=<value>` parameter.
+These command parameters apply before repository loading, so they can control that loading, and again afterward so command values take precedence over repository settings.
 For instance, to modify the `review` tool settings only for newly opened PRs, use:
 
 ```toml
@@ -244,7 +253,7 @@ env:
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
 
-`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML.
+`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML. On the GitHub App, each automatic command opens its check run as in progress before the tool runs, so the author sees that PR-Agent picked the pull request up before any output exists; the run is completed with the tool's output, or marked failed if the command did not finish.
 
 Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` [configuration file](./configuration_options.md#global-configuration-file) in the root of your repo
 
@@ -278,8 +287,8 @@ For detailed step-by-step examples of configuring different models (Gemini, Clau
 **Common Model Configuration Patterns:**
 
 - **OpenAI**: Set `config.model: "<openai-model>"` and `OPENAI_KEY`
-- **Gemini**: Set `config.model: "gemini/gemini-1.5-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
-- **Claude**: Set `config.model: "anthropic/claude-3-opus-20240229"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
+- **Gemini**: Set `config.model: "gemini/gemini-3.8-flash"` and `GOOGLE_AI_STUDIO.GEMINI_API_KEY` (no `OPENAI_KEY` needed)
+- **Claude**: Set `config.model: "anthropic/claude-opus-5"` and `ANTHROPIC.KEY` (no `OPENAI_KEY` needed)
 - **Azure OpenAI**: Set `OPENAI.API_TYPE: "azure"`, `OPENAI.API_BASE`, and `OPENAI.DEPLOYMENT_ID`
 - **Local Models**: Set `config.model: "ollama/model-name"` and `OLLAMA.API_BASE`
 

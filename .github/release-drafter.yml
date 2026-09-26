@@ -10,30 +10,64 @@ template: |
 
 categories:
   - title: '🚀 Features'
-    labels:
-      - feature
-      - enhancement
+    when:
+      labels:
+        - feature
+        - enhancement
   - title: '🐛 Bug Fixes'
-    labels:
-      - bug
-      - 'Bug fix'
-      - 'Bug fix with tests'
+    when:
+      labels:
+        - bug
+        - 'Bug fix'
+        - 'Bug fix with tests'
   - title: '⚡ Performance'
-    labels:
-      - performance
+    when:
+      labels:
+        - performance
   - title: '📚 Documentation'
-    labels:
-      - documentation
-      - 'Includes Documentation'
+    when:
+      labels:
+        - documentation
+        - 'Includes Documentation'
   - title: '🧹 Maintenance'
-    labels:
-      - chore
-      - Refactoring
-      - Configuration
-      - 'Configuration changes'
+    when:
+      labels:
+        - chore
+        - Refactoring
+        - Configuration
+        - 'Configuration changes'
   - title: '⬆️ Dependencies'
-    labels:
-      - dependencies
+    when:
+      labels:
+        - dependencies
+  - type: version-resolver
+    semver-increment: major
+    when:
+      labels:
+        - breaking
+  - type: version-resolver
+    semver-increment: minor
+    when:
+      labels:
+        - feature
+        - enhancement
+  - type: version-resolver
+    semver-increment: patch
+    when:
+      labels:
+        - bug
+        - 'Bug fix'
+        - 'Bug fix with tests'
+        - documentation
+        - 'Includes Documentation'
+        - chore
+        - Refactoring
+        - Configuration
+        - 'Configuration changes'
+        - performance
+        - dependencies
+  - type: version-resolver
+    semver-increment: patch
 
 change-template: '- $TITLE by @$AUTHOR in #$NUMBER'
 change-title-escapes: '\<*_&'
@@ -64,26 +98,3 @@ autolabeler:
   - label: breaking
     title:
       - '/^[a-z]+(\(.+\))?!:/i'
-
-version-resolver:
-  major:
-    labels:
-      - breaking
-  minor:
-    labels:
-      - feature
-      - enhancement
-  patch:
-    labels:
-      - bug
-      - 'Bug fix'
-      - 'Bug fix with tests'
-      - documentation
-      - 'Includes Documentation'
-      - chore
-      - Refactoring
-      - Configuration
-      - 'Configuration changes'
-      - performance
-      - dependencies
-  default: patch

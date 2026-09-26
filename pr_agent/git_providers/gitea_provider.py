@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import giteapy
 from giteapy.rest import ApiException
@@ -8,8 +8,9 @@ from giteapy.rest import ApiException
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
+from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.types import EDIT_TYPE
-from pr_agent.algo.utils import clip_tokens, find_line_number_of_relevant_line_in_file
+from pr_agent.algo.utils import find_line_number_of_relevant_line_in_file
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
     MAX_FILES_ALLOWED_FULL,
@@ -184,25 +185,22 @@ class GiteaProvider(GitProvider):
         )
         self.last_commit_id = self.last_commit
 
-    def __add_file_content(self):
-        for file in self.git_files:
-            file_path = file.get("filename")
-            # Ignore file from default settings
-            if not is_valid_file(file_path):
-                continue
+    def __add_file_content(self, file_path: str):
+        if not is_valid_file(file_path) or file_path in self.file_contents:
+            return
 
-            if file_path and self.sha:
-                try:
-                    content = self.repo_api.get_file_content(
-                        owner=self.owner,
-                        repo=self.repo,
-                        commit_sha=self.sha,
-                        filepath=file_path
-                    )
-                    self.file_contents[file_path] = content
-                except ApiException as e:
-                    self.logger.error(f"Error getting file content for {file_path}: {str(e)}")
-                    self.file_contents[file_path] = ""
+        if file_path and self.sha:
+            try:
+                content = self.repo_api.get_file_content(
+                    owner=self.owner,
+                    repo=self.repo,
+                    commit_sha=self.sha,
+                    filepath=file_path
+                )
+                self.file_contents[file_path] = content
+            except ApiException as e:
+                self.logger.error(f"Error getting file content for {file_path}: {str(e)}")
+                self.file_contents[file_path] = ""
 
     def __add_file_diff(self):
         try:
@@ -311,11 +309,12 @@ class GiteaProvider(GitProvider):
             return f"{self.base_url_html}/{self.owner}/{self.repo}/pulls/{self.pr_number}"
         return self.pr_url
 
-    def get_issue_url(self) -> str:
-        return self.issue_url
-
     def get_latest_commit_url(self) -> str:
         return self.last_commit.html_url if self.last_commit else ""
+
+    def get_pr_head_sha(self) -> str:
+        sha = getattr(self.last_commit, "sha", None)
+        return sha if isinstance(sha, str) else ""
 
     def get_comment_url(self, comment) -> str:
         if isinstance(comment, dict):
@@ -381,7 +380,8 @@ class GiteaProvider(GitProvider):
             return False
 
 
-    def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         """Publish an inline comment on a specific line"""
         body = self.limit_output_characters(body, self.max_comment_chars)
         position, absolute_position = find_line_number_of_relevant_line_in_file(self.diff_files,
@@ -395,7 +395,8 @@ class GiteaProvider(GitProvider):
             subject_type = "LINE"
 
         path = relevant_file.strip()
-        payload = dict(body=body, path=path, old_position=position,new_position = absolute_position) if subject_type == "LINE" else {}
+        payload = (dict(body=body, path=path, old_position=position, new_position = absolute_position)
+                   if subject_type == "LINE" else {})
         self.publish_inline_comments([payload])
 
 
@@ -435,8 +436,11 @@ class GiteaProvider(GitProvider):
 
             path = suggestion.get("relevant_file","")
             new_position = suggestion.get("relevant_lines_start",0)
-            old_position = suggestion.get("relevant_lines_start",0) if "original_suggestion" not in suggestion else suggestion["original_suggestion"].get("relevant_lines_start",0)
-            title_body = suggestion["original_suggestion"].get("suggestion_content","") if "original_suggestion" in suggestion else ""
+            old_position = (suggestion.get("relevant_lines_start", 0)
+                            if "original_suggestion" not in suggestion
+                            else suggestion["original_suggestion"].get("relevant_lines_start", 0))
+            title_body = (suggestion["original_suggestion"].get("suggestion_content","")
+                          if "original_suggestion" in suggestion else "")
             payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
             publishable_count += 1
             if title_body:
@@ -560,7 +564,6 @@ class GiteaProvider(GitProvider):
         # those settings exist). This matches the other providers, which filter
         # lazily inside their diff fetch. See #2620.
         self.git_files = filter_ignored(self.git_files, platform="gitea")
-        self.__add_file_content()
 
         invalid_files_names = []
         counter_valid = 0
@@ -588,7 +591,8 @@ class GiteaProvider(GitProvider):
             if avoid_load:
                 head_file = ""
             else:
-                # Get file content from this pr
+                # Get file content from this pr only when the full content is needed.
+                self.__add_file_content(filename)
                 head_file = self.file_contents.get(filename,"")
 
             if self.incremental.is_incremental and self.unreviewed_files_map:
@@ -634,7 +638,7 @@ class GiteaProvider(GitProvider):
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{self.get_pr_branch()}/{relevant_file}"
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{relevant_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -948,7 +952,8 @@ class RepoApi(giteapy.RepositoryApi):
         self.logger = get_logger()
         super().__init__(client)
 
-    def create_inline_comment(self, owner: str, repo: str, pr_number: int, body : str ,commit_id : str, comments: List[Dict[str, Any]]):
+    def create_inline_comment(self, owner: str, repo: str, pr_number: int,
+                              body : str ,commit_id : str, comments: List[Dict[str, Any]]):
         body = {
             "body": body,
             "comments": comments,
@@ -1189,19 +1194,6 @@ class RepoApi(giteapy.RepositoryApi):
         return self.repository.repo_get_all_commits(
             owner=owner,
             repo=repo
-        )
-
-    def add_reviewer(self, owner: str, repo: str, pr_number: int, reviewers: List[str]):
-        body = {
-            "reviewers": reviewers
-        }
-        return self.api_client.call_api(
-            '/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers',
-            'POST',
-            path_params={'owner': owner, 'repo': repo, 'pr_number': pr_number},
-            body=body,
-            response_type='Repository',
-            auth_settings=['AuthorizationHeaderToken']
         )
 
     def add_reaction_comment(self, owner: str, repo: str, comment_id: int, reaction: str):

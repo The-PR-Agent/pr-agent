@@ -1,0 +1,32 @@
+name: Provider smoke
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  github-provider-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Smoke /describe on a real GitHub PR
+        env:
+          GITHUB.USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: PYTHONPATH=. uv run pytest tests/health_test/test_github_smoke.py -q

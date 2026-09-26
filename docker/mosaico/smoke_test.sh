@@ -23,8 +23,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
 BASE="http://localhost:${PORT}"
 
-# 0700 by construction, so the /health body (which embeds the raw provider exception
-# when unhealthy) is neither world-readable nor writable at a predictable path.
+# 0700 by construction, so captured responses are neither world-readable nor
+# writable at a predictable path, including when testing older image versions.
 TMPDIR_RUN="$(mktemp -d)" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 # Only tear down a container this run actually started: the name is fixed, so an early
 # exit (a failed pull, or a `docker run` that lost a name race) must not reap someone
@@ -106,8 +106,8 @@ fi
 # --- FULL: /health (live LLM ping -> 200/503) ---
 echo "==> [full] GET /health (live LLM probe)"
 code=$(curl -s "${CURL_CONNECT[@]}" --max-time 120 -o "$TMPDIR_RUN/health.json" -w '%{http_code}' "$BASE/health")
-# On 503 the body is a raw provider exception (it can name the endpoint), which is
-# exactly the diagnostic you want here - just don't paste it into a public issue.
+# Images without health-probe redaction can include provider details in a 503 body;
+# inspect captured output before sharing it publicly.
 cat "$TMPDIR_RUN/health.json"; echo
 [[ "$code" == "200" ]] || fail "/health returned $code (expected 200) — check LLM creds"
 

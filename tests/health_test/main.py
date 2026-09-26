@@ -29,7 +29,7 @@ async def run_async() -> None:
         assert isinstance(pr_header_body, str), f"Expected artifact to be str, got {type(pr_header_body).__name__}"
         assert pr_header_body.startswith("###") and "PR Type" in pr_header_body and "Description" in pr_header_body, \
             "PR description artifact missing expected sections"
-        context['settings'] = copy.deepcopy(original_settings) # Restore settings state after each test to prevent test interference
+        context['settings'] = copy.deepcopy(original_settings)  # Restore settings after each test
         get_logger().info("PR description generated successfully\n")
 
         # Run the 'review' command
@@ -40,7 +40,7 @@ async def run_async() -> None:
         assert isinstance(pr_review_body, str), f"Expected artifact to be str, got {type(pr_review_body).__name__}"
         assert pr_review_body.startswith("##") and "PR Reviewer Guide" in pr_review_body, \
             "PR review artifact missing expected header"
-        context['settings'] = copy.deepcopy(original_settings)  # Restore settings state after each test to prevent test interference
+        context['settings'] = copy.deepcopy(original_settings)  # Restore settings after each test
         get_logger().info("PR review generated successfully\n")
 
         # Run the 'improve' command
@@ -51,7 +51,7 @@ async def run_async() -> None:
         assert isinstance(pr_improve_body, str), f"Expected artifact to be str, got {type(pr_improve_body).__name__}"
         assert pr_improve_body.startswith("##") and "PR Code Suggestions" in pr_improve_body, \
             "PR improve artifact missing expected header"
-        context['settings'] = copy.deepcopy(original_settings)  # Restore settings state after each test to prevent test interference
+        context['settings'] = copy.deepcopy(original_settings)  # Restore settings after each test
         get_logger().info("PR improvements generated successfully\n")
 
         get_logger().info("\n\n========\nHealth test passed successfully\n========")

@@ -98,7 +98,9 @@ async def _handle_streaming_response(response, model=None):
         raise openai.APIError("Empty streaming response received without proper completion",
                               request=httpx.Request("POST", model or ""), body=None)
     elif not full_response and finish_reason:
-        get_logger().debug(f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}")
+        get_logger().debug(
+            f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}"
+        )
         raise openai.APIError(
             f"Streaming response completed with finish_reason '{finish_reason}' but no content received",
             request=httpx.Request("POST", model or ""), body=None)
@@ -193,7 +195,7 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
     Raises:
         ValueError: If extra_body contains invalid JSON, unsupported keys, or colliding keys
     """
-    allowed_extra_body_keys = {"processing_mode", "service_tier"}
+    allowed_extra_body_keys = {"processing_mode", "service_tier", "chat_template_kwargs"}
     extra_body = getattr(getattr(get_settings(), "litellm", None), "extra_body", None)
     if extra_body:
         try:
@@ -202,7 +204,10 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
                 raise ValueError("LITELLM.EXTRA_BODY must be a JSON object")
             unsupported_keys = set(litellm_extra_body.keys()) - allowed_extra_body_keys
             if unsupported_keys:
-                raise ValueError(f"LITELLM.EXTRA_BODY contains unsupported keys: {', '.join(unsupported_keys)}. Allowed keys: {', '.join(allowed_extra_body_keys)}")
+                raise ValueError(
+                f"LITELLM.EXTRA_BODY contains unsupported keys: {', '.join(unsupported_keys)}. "
+                f"Allowed keys: {', '.join(allowed_extra_body_keys)}"
+            )
             colliding_keys = kwargs.keys() & litellm_extra_body.keys()
             if colliding_keys:
                 raise ValueError(f"LITELLM.EXTRA_BODY cannot override existing parameters: {', '.join(colliding_keys)}")

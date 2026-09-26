@@ -5,7 +5,7 @@ import pytest
 
 from pr_agent.algo import run_details
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_ai_call, record_model_used
-from pr_agent.algo.utils import show_run_details
+from pr_agent.algo.run_output import show_run_details
 from pr_agent.config_loader import get_settings
 
 
@@ -97,6 +97,40 @@ def test_omits_ai_calls_line_when_no_calls_were_recorded():
 
     assert "Model: openai/gpt-5.4" in output
     assert "AI calls:" not in output
+
+
+def test_renders_prompt_cache_line_when_cache_usage_reported():
+    init_run_details()
+    record_model_used("anthropic/claude-sonnet-5", is_fallback=False)
+    record_ai_call(
+        {"prompt_tokens": 1234, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 200}
+    )
+
+    output = show_run_details(gfm_supported=True)
+
+    assert "Prompt cache: 900 read / 200 written" in output
+
+
+def test_omits_cache_line_when_only_read_or_creation_reported():
+    init_run_details()
+    record_model_used("anthropic/claude-sonnet-5", is_fallback=False)
+    record_ai_call({"prompt_tokens": 10, "cache_read_input_tokens": 7})
+
+    output = show_run_details(gfm_supported=True)
+
+    assert "Prompt cache: 7 read" in output
+    assert "written" not in output
+
+
+def test_omits_prompt_cache_line_when_no_cache_usage():
+    init_run_details()
+    record_model_used("anthropic/claude-sonnet-5", is_fallback=False)
+    record_ai_call({"prompt_tokens": 10, "completion_tokens": 2})
+
+    output = show_run_details(gfm_supported=True)
+
+    assert "Tokens: 10 in / 2 out / 12 total" in output
+    assert "Prompt cache:" not in output
 
 
 def test_returns_empty_string_when_no_model_was_recorded():

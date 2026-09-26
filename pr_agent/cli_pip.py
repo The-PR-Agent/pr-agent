@@ -16,8 +16,8 @@ def main():
     get_settings().set("github.user_token", user_token)
 
     # Run the command. Feedback will appear in GitHub PR comments
-    cli.run_command(pr_url, command)
+    return cli.run_command(pr_url, command)
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

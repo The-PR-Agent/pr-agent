@@ -10,6 +10,8 @@ pr_agent.command attribute, or a pr_agent.commands metric label, and must not
 inflate the counter.
 """
 
+from unittest.mock import Mock
+
 import pytest
 from opentelemetry.trace import StatusCode
 
@@ -193,6 +195,67 @@ async def test_tool_exception_not_auto_recorded_by_default(telemetry, monkeypatc
     assert len(spans) == 1
     assert spans[0].events == (), "the command span must not auto-record the exception"
     assert spans[0].status.description is None
+    assert SENTINEL_URL not in _all_exported_text(exporter)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_files_error_keeps_bounded_telemetry_when_notification_fails(
+    telemetry, monkeypatch
+):
+    exporter, _ = telemetry
+    provider = Mock()
+    provider.get_issue_comments_newest_first.return_value = []
+    provider.supports_html_comment_markers.return_value = True
+    provider.publish_comment.side_effect = RuntimeError("notification failed")
+
+    class IncompleteTool:
+        def __init__(self, pr_url, ai_handler, args):
+            raise pr_agent_module.IncompletePullRequestFilesError(
+                f"failed to fetch {SENTINEL_URL}"
+            )
+
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
+    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", IncompleteTool)
+
+    handled = await PRAgent(ai_handler="fake")._handle_request(
+        "https://example/pr/1", ["customcmd"]
+    )
+
+    assert handled is False
+    provider.publish_comment.assert_called_once()
+    span = exporter.get_finished_spans()[0]
+    assert dict(span.attributes)["error.type"] == "IncompletePullRequestFilesError"
+    assert SENTINEL_URL not in _all_exported_text(exporter)
+
+
+@pytest.mark.asyncio
+async def test_incomplete_files_error_keeps_primary_telemetry_when_comment_decode_fails(
+    telemetry, monkeypatch
+):
+    exporter, _ = telemetry
+    provider = Mock()
+    provider.get_issue_comments_newest_first.return_value = [object()]
+    provider._get_comment_body.side_effect = RuntimeError(
+        f"could not decode comment from {SENTINEL_URL}"
+    )
+
+    class IncompleteTool:
+        def __init__(self, pr_url, ai_handler, args):
+            raise pr_agent_module.IncompletePullRequestFilesError("primary failure")
+
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
+    monkeypatch.setitem(pr_agent_module.command2class, "customcmd", IncompleteTool)
+
+    handled = await PRAgent(ai_handler="fake")._handle_request(
+        "https://example/pr/1", ["customcmd"]
+    )
+
+    assert handled is False
+    provider.publish_comment.assert_called_once()
+    span = exporter.get_finished_spans()[0]
+    assert dict(span.attributes)["error.type"] == "IncompletePullRequestFilesError"
     assert SENTINEL_URL not in _all_exported_text(exporter)
 
 

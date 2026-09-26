@@ -182,8 +182,12 @@ PR-Agent tools run as a comment on a PR or from the CLI. A few common ones:
 /improve
 /ask "What does this PR change?" # free-text Q&A about the PR
 
+# Issue-scoped commands run on an issue instead of a PR:
+/similar_issue # find similar issues in the repository
+
 # Or locally via the CLI:
 pr-agent --pr_url <PR_URL> review
+pr-agent --issue_url <ISSUE_URL> similar_issue
 ```
 
 See the [Tools docs](https://docs.pr-agent.ai/tools/#usage-examples) for the full list of tools with example commands, and each tool's page for screenshots and options.

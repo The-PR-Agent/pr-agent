@@ -125,6 +125,7 @@ async def test_pinecone_query_branch_runs(monkeypatch):
     tool.issue_url = "https://github.com/example/repo/issues/1"
     tool.index_name = "issues"
     tool.repo_name_for_index = "example-repo"
+    tool.pinecone_namespace = psi._pinecone_namespace("example/repo")
     tool.pc = SimpleNamespace(Index=lambda name: FakeIndex())
     tool.git_provider = SimpleNamespace(
         _parse_issue_url=lambda url: ("example/repo", 1),
@@ -134,3 +135,4 @@ async def test_pinecone_query_branch_runs(monkeypatch):
     assert await tool.run() is None
     assert queried, "run() never entered the pinecone branch"
     assert queried[0]["vector"] == [0.5]
+    assert queried[0]["namespace"] == psi._pinecone_namespace("example/repo")

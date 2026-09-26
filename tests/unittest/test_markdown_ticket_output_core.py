@@ -20,9 +20,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from pr_agent.algo.comment_identity import emphasize_header
 from pr_agent.algo.utils import (
     convert_to_markdown_v2,
-    emphasize_header,
     format_todo_item,
     format_todo_items,
     is_value_no,

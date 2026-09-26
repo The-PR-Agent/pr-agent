@@ -9,8 +9,8 @@ import aiohttp
 from atlassian import Jira
 
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import get_max_tokens
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
@@ -52,6 +52,15 @@ JIRA_API_VERSION = "2"
 # cannot contain '.', '/', ':', '@' etc. that would let it escape *.atlassian.net.
 JIRA_SITE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 
+# A Jira project key as configured in jira.project_keys: the "<PROJECT>" in PROJECT-123.
+# Bounded like the prefix in find_jira_tickets (2-10 letters) so an entry can only ever be
+# a plain label, never a URL or a full ticket key. Case-sensitive: Jira project keys are
+# upper case, so a configured "proj" is a typo rather than a spelling variant, and
+# accepting it silently would widen the lookup to a project the repo never named. Keys
+# found in the PR text are still matched case-insensitively and upper-cased
+# (find_jira_tickets) before they are compared.
+JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z]{2,10}$")
+
 
 def _jira_cloud_base_url():
     """
@@ -71,6 +80,63 @@ def _jira_cloud_base_url():
             f"(the '<site>' in https://<site>.atlassian.net). Skipping Jira ticket lookup.")
         return None
     return f"https://{site}.atlassian.net"
+
+
+def _jira_project_keys():
+    """
+    Return the configured jira.project_keys allowlist as a set of project keys, or None
+    when nothing was supplied (look up every key found).
+
+    Only three values count as "nothing was supplied": the option missing entirely, the
+    shipped empty list, and a top-level string that is blank, the last because
+    `jira__project_keys=""` is how a shell spells an unset environment variable.
+
+    Everything else is a supplied value and is judged on its entries. Entries that are not
+    plain upper-case project keys, including a blank one (so `[""]` is a malformed
+    override rather than a second spelling of the default), are ignored with a warning,
+    and a supplied value left with no valid entry yields an empty set, which drops every
+    key. So does a value that is not a list at all (a boolean or number from a YAML or CLI
+    override). A typo fails closed instead of silently widening the lookup to every
+    key-shaped string. Accepts a list or a comma-separated string, the latter for
+    environment-variable overrides (jira__project_keys="PROJ,OPS").
+    """
+    configured = get_settings().get("JIRA.PROJECT_KEYS", None)
+    if configured is None:
+        return None
+    if isinstance(configured, str):
+        if not configured.strip():
+            return None
+        configured = configured.split(",")
+    elif not isinstance(configured, (list, tuple)):
+        # A YAML/CLI override such as `project_keys=true` or `=false` is neither
+        # "unset" nor a list; fail closed rather than guess what it meant.
+        get_logger().warning(
+            f"jira.project_keys must be a list of project keys, got {type(configured).__name__}; "
+            "skipping Jira ticket lookup until it is fixed")
+        return set()
+    if not configured:
+        # The shipped default. An empty container carries no entry to be wrong about.
+        return None
+    allowed = set()
+    for index, item in enumerate(configured):
+        # Only strings are candidates: a TOML/YAML boolean or null in the list must not
+        # be stringified into a key-shaped label ("TRUE", "NONE") that then filters.
+        key = item.strip() if isinstance(item, str) else item
+        if not isinstance(key, str) or not JIRA_PROJECT_KEY_PATTERN.match(key):
+            # The entry is named by position and type, never quoted back. Its content is
+            # configuration this tool does not control: it can be long, hold a secret
+            # pasted into the wrong setting, or carry newlines that would forge log
+            # lines. The position is what an operator needs to find and fix it.
+            get_logger().warning(
+                f"Ignoring invalid jira.project_keys entry at index {index} "
+                f"(type {type(item).__name__}); expected a plain upper-case project key "
+                "like 'PROJ'")
+            continue
+        allowed.add(key)
+    if not allowed:
+        get_logger().warning(
+            "jira.project_keys has no valid entry; skipping Jira ticket lookup until it is fixed")
+    return allowed
 
 
 def find_jira_tickets(text):
@@ -151,6 +217,9 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     MAX_JIRA_FETCH_ATTEMPTS lookups have been made. Counting resolved tickets rather than
     truncating the candidate list keeps key-shaped noise ("SHA-256", "UTF-8") from
     displacing a real ticket that appears later in the text.
+
+    When jira.project_keys is configured, candidates whose prefix isn't in that allowlist
+    are dropped before any lookup, so they don't consume a fetch attempt.
     """
     # Look for keys before building a client: most PRs have none, and building the
     # client first would do needless work (and log a noisy init failure if Jira is
@@ -158,6 +227,26 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     keys = find_jira_tickets(text or "")
     if not keys:
         return []
+
+    # Optional allowlist: key-shaped false positives like "SHA-256" or "UTF-8" match the
+    # regex but aren't real Jira keys. Filtering by known project prefixes here means they
+    # never consume one of the MAX_JIRA_FETCH_ATTEMPTS lookups below. Empty keeps today's
+    # behaviour; a supplied but invalid allowlist drops every key (see _jira_project_keys).
+    allowed_projects = _jira_project_keys()
+    if allowed_projects is not None:
+        # Partitioned in one pass: the candidate list is not capped until lookups begin,
+        # so a PR carrying many distinct key-shaped tokens would otherwise pay a
+        # membership scan of the skipped list for every one of them.
+        kept, skipped = [], []
+        for key in keys:
+            target = kept if key.split("-", 1)[0] in allowed_projects else skipped
+            target.append(key)
+        if skipped:
+            get_logger().debug(
+                f"Skipping Jira lookup for keys outside jira.project_keys: {', '.join(skipped)}")
+        keys = kept
+        if not keys:
+            return []
 
     jira_client = _get_jira_client()
     if jira_client is None:
@@ -268,6 +357,7 @@ DEFAULT_ASANA_REQUEST_TIMEOUT = 10
 MAX_ASANA_REQUEST_TIMEOUT = 60
 MAX_ASANA_TICKETS = 3
 MAX_GITHUB_TICKETS = 3
+MAX_GITHUB_TICKET_LOOKUPS = 30
 MAX_GITLAB_TICKETS = 3
 GITLAB_TICKET_PATTERN = re.compile(
     r"(?P<url>https?://[^\s<>(),;]+)"
@@ -283,65 +373,102 @@ def fit_related_tickets_to_prompt_budget(
     system_prompt: str,
     user_prompt: str,
     model: str,
+    *,
+    ai_handler=None,
+    output_token_reserve=None,
 ) -> tuple[dict, TokenHandler]:
     """Fit complete related-ticket records while preserving room for the PR diff."""
     prompt_vars = copy.deepcopy(raw_vars)
     related_tickets = prompt_vars.get("related_tickets")
-    if not isinstance(related_tickets, list) or not related_tickets:
-        return prompt_vars, TokenHandler(
-            pr,
-            prompt_vars,
-            system_prompt,
-            user_prompt,
-            model=model,
-        )
+    if not isinstance(related_tickets, list):
+        related_tickets = []
 
     raw_tickets = copy.deepcopy(related_tickets)
     prompt_vars["related_tickets"] = []
-    token_handler = TokenHandler(
+    budget = AttemptTokenBudget.for_prompt_attempt(
+        model,
         pr,
         prompt_vars,
         system_prompt,
         user_prompt,
-        model=model,
+        ai_handler=ai_handler,
+        output_token_reserve=output_token_reserve,
     )
-    prompt_token_limit = max(
-        token_handler.prompt_tokens,
-        get_max_tokens(model) - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-    )
+    if not raw_tickets:
+        budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
+        return prompt_vars, budget.token_handler
 
-    lower_bound = 1
-    upper_bound = len(raw_tickets)
+    prompt_token_limit = budget.input_token_limit(
+        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        preserve_minimum=True,
+        additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    )
+    full_vars = copy.deepcopy(prompt_vars)
+    full_vars["related_tickets"] = copy.deepcopy(raw_tickets)
+    full_budget = AttemptTokenBudget.for_prompt_attempt(
+        model,
+        pr,
+        full_vars,
+        system_prompt,
+        user_prompt,
+        ai_handler=ai_handler,
+        output_token_reserve=output_token_reserve,
+    )
+    if full_budget.prompt_tokens <= prompt_token_limit:
+        full_budget.require_input_capacity(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+        )
+        return full_vars, full_budget.token_handler
+
+    best_vars = None
+    best_budget = None
+    lower_bound = 0
+    upper_bound = len(raw_tickets) - 1
     while lower_bound <= upper_bound:
         prefix_size = (lower_bound + upper_bound) // 2
         candidate_vars = copy.deepcopy(prompt_vars)
         candidate_vars["related_tickets"] = copy.deepcopy(raw_tickets[:prefix_size])
-        candidate_handler = TokenHandler(
+        candidate_vars["related_tickets_omitted"] = len(raw_tickets) - prefix_size
+        candidate_budget = AttemptTokenBudget.for_prompt_attempt(
+            model,
             pr,
             candidate_vars,
             system_prompt,
             user_prompt,
-            model=model,
+            ai_handler=ai_handler,
+            output_token_reserve=output_token_reserve,
         )
-        if candidate_handler.prompt_tokens > prompt_token_limit:
+        if candidate_budget.prompt_tokens > prompt_token_limit:
             upper_bound = prefix_size - 1
         else:
-            prompt_vars = candidate_vars
-            token_handler = candidate_handler
+            best_vars = candidate_vars
+            best_budget = candidate_budget
             lower_bound = prefix_size + 1
 
-    included_tickets = len(prompt_vars["related_tickets"])
-    if included_tickets < len(raw_tickets):
-        get_logger().info(
-            "Clipped related tickets to preserve the prompt token budget",
-            artifact={
-                "included_tickets": included_tickets,
-                "omitted_tickets": len(raw_tickets) - included_tickets,
-                "model": model,
-            },
-        )
+    if best_vars is None or best_budget is None:
+        raise FallbackEligibleError("Related-ticket omission marker exceeds the prompt token budget")
 
-    return prompt_vars, token_handler
+    prompt_vars = best_vars
+    included_tickets = len(prompt_vars["related_tickets"])
+    get_logger().info(
+        "Clipped related tickets to preserve the prompt token budget",
+        artifact={
+            "included_tickets": included_tickets,
+            "omitted_tickets": len(raw_tickets) - included_tickets,
+            "model": model,
+        },
+    )
+
+    best_budget.require_input_capacity(
+        OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        preserve_minimum=True,
+    )
+
+    return prompt_vars, best_budget.token_handler
 
 
 def find_asana_tickets(text: str | None) -> list:
@@ -535,7 +662,8 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
     return references[:MAX_GITLAB_TICKETS]
 
 
-def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com'):
+def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com',
+                                             max_tickets=MAX_GITHUB_TICKETS):
     """
     Extract all ticket links from PR description
     """
@@ -550,24 +678,62 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
             github_tickets.append(url)
 
     try:
-        # Use the updated pattern to find matches
-        matches = GITHUB_TICKET_PATTERN.findall(pr_description)
+        custom_pattern = None
+        custom_matches = []
+        custom_regex = get_settings().get("config.description_issue_regex", "")
+        if custom_regex:
+            try:
+                custom_pattern = re.compile(custom_regex)
+                if custom_pattern.groups != 1:
+                    raise ValueError("expected exactly one capturing group for the issue number")
+                custom_matches = list(custom_pattern.finditer(pr_description))
+            except (re.error, TypeError, ValueError, OverflowError, RecursionError) as e:
+                get_logger().warning(f"Invalid description_issue_regex: {e}; using default pattern.")
+                custom_pattern = None
 
-        for match in matches:
-            if match[0]:  # Full URL match
-                _add(match[0])
-            elif match[1]:  # Shorthand notation match: owner/repo#issue_number
-                owner, repo, issue_number = match[2], match[3], match[4]
-                _add(f"{base_url_html.strip('/')}/{owner}/{repo}/issues/{issue_number}")
-            else:  # #123 format
-                issue_number = match[5][1:]  # remove #
+        candidates = []
+        explicit_spans = []
+        for match in GITHUB_TICKET_PATTERN.finditer(pr_description):
+            if match[1]:  # Full URL match
+                candidates.append((match.start(), match[1]))
+                explicit_spans.append(match.span())
+            elif match[2]:  # Shorthand notation match: owner/repo#issue_number
+                owner, repo, issue_number = match[3], match[4], match[5]
+                candidates.append((match.start(),
+                                   f"{base_url_html.strip('/')}/{owner}/{repo}/issues/{issue_number}"))
+                explicit_spans.append(match.span())
+            elif custom_pattern is None:  # Default #123 format
+                issue_number = match[6][1:]
                 if (issue_number.isdigit() and repo_path
                         and len(issue_number) <= MAX_SHORTHAND_ISSUE_DIGITS):
-                    _add(f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}")
+                    candidates.append((match.start(),
+                                       f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
 
-        if len(github_tickets) > MAX_GITHUB_TICKETS:
+        if custom_pattern is not None and repo_path:
+            explicit_index = 0
+            for match in custom_matches:
+                issue_number = match[1]
+                # Keep explicit references from also becoming tickets in the current repository.
+                # Use one forward pointer because both match sequences are ordered.
+                start, end = match.span(1)
+                while explicit_index < len(explicit_spans) and explicit_spans[explicit_index][1] <= start:
+                    explicit_index += 1
+                if explicit_index < len(explicit_spans) and explicit_spans[explicit_index][0] < end:
+                    continue
+                if issue_number and issue_number.isascii() and issue_number.isdigit():
+                    try:
+                        int(issue_number)
+                    except ValueError:
+                        continue
+                    candidates.append((match.start(),
+                                       f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
+
+        for _, url in sorted(candidates, key=lambda candidate: candidate[0]):
+            _add(url)
+
+        if len(github_tickets) > max_tickets:
             get_logger().info(f"Too many tickets found in PR description: {len(github_tickets)}")
-            github_tickets = github_tickets[:MAX_GITHUB_TICKETS]
+            github_tickets = github_tickets[:max_tickets]
     except Exception as e:
         get_logger().error(f"Error extracting tickets error= {e}",
                            artifact={"traceback": traceback.format_exc()})
@@ -713,7 +879,8 @@ async def extract_tickets(git_provider):
 
         if _provider_supports(git_provider, "supports_issue_url_tickets"):
             description_tickets = extract_ticket_links_from_pr_description(
-                user_description, git_provider.repo, git_provider.base_url_html
+                user_description, git_provider.repo, git_provider.base_url_html,
+                max_tickets=MAX_GITHUB_TICKET_LOOKUPS,
             )
             branch_name = git_provider.get_pr_branch()
             branch_tickets = extract_ticket_links_from_branch_name(
@@ -728,23 +895,27 @@ async def extract_tickets(git_provider):
 
             if len(merged) > MAX_GITHUB_TICKETS:
                 get_logger().info(f"Too many GitHub tickets (description + branch): {len(merged)}")
-            # Preserve GitHub's established three-candidate budget. Asana tasks use
-            # their own bounded budget and therefore do not displace GitHub issues.
-            tickets = merged[:MAX_GITHUB_TICKETS]
+            # Bound lookups separately so skipped PRs do not consume the issue budget.
+            tickets = merged[:MAX_GITHUB_TICKET_LOOKUPS]
             tickets_content = []
             repo_obj_cache = {}
 
             if tickets:
 
                 for ticket in tickets:
-                    repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
+                    if len(tickets_content) >= MAX_GITHUB_TICKETS:
+                        break
 
                     try:
+                        repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
                         issue_main = repo_obj.get_issue(original_issue_number)
                     except Exception as e:
-                        get_logger().error(f"Error getting main issue {repo_name}#{original_issue_number}: {e}",
+                        get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
+                        continue
+
+                    if getattr(issue_main, "pull_request", None) is not None:
                         continue
 
                     issue_body_str = issue_main.body or ""
@@ -785,7 +956,7 @@ async def extract_tickets(git_provider):
                                 get_logger().warning(f"Failed to fetch sub-issue content for {sub_issue_url}: {e}")
 
                     except Exception as e:
-                        get_logger().warning(f"Failed to fetch sub-issues for {ticket}: {e}")
+                        get_logger().warning(f"Failed to fetch sub-issues for {ticket!r}: {e}")
 
                     # Extract labels
                     labels = []
@@ -819,7 +990,8 @@ async def extract_tickets(git_provider):
             tickets_content = []
             for project_path, issue_iid in references:
                 try:
-                    project = git_provider.gl.projects.get(project_path)
+                    # Only the issue manager is needed; avoid fetching unused project metadata.
+                    project = git_provider.gl.projects.get(project_path, lazy=True)
                     issue = project.issues.get(issue_iid)
                 except Exception as e:
                     get_logger().error(

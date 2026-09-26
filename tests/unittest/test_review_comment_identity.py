@@ -3,14 +3,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.utils import (
+from pr_agent.algo.comment_identity import (
     PRReviewIdentity,
     add_pr_review_identity,
     comment_matches_identity,
-    convert_to_markdown_v2,
     format_pr_review_header,
     get_pr_review_comment_identifiers,
 )
+from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
@@ -241,7 +241,7 @@ def test_bitbucket_comment_path_forwards_review_identity():
 
     assert provider.supports_review_comment_identity() is True
     provider.publish_comment.assert_called_once_with(
-        "## Team Review 🔍\n\n<!-- pr-agent:review:full -->\n\nbody"
+        "## Team Review 🔍\n\n[pr-agent:review:full]: https://github.com/The-PR-Agent/pr-agent\n\nbody"
     )
 
 

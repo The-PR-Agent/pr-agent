@@ -86,7 +86,10 @@ def test_the_commit_hint_is_appended_when_not_committing():
 @pytest.fixture
 def committing_tool(monkeypatch):
     """The real push path, with only the provider and the 5s settle sleep replaced."""
-    monkeypatch.setattr("pr_agent.tools.pr_update_changelog.sleep", lambda seconds: None)
+    async def no_sleep(seconds):
+        assert seconds == 5
+
+    monkeypatch.setattr("pr_agent.tools.pr_update_changelog.asyncio.sleep", no_sleep)
     monkeypatch.setattr(get_settings().config, "git_provider", "local", raising=False)
     provider = MagicMock()
     provider.get_pr_branch.return_value = "feature/retry"
@@ -97,12 +100,13 @@ def committing_tool(monkeypatch):
     return tool, provider
 
 
-def test_the_committed_file_keeps_the_inline_code_span(committing_tool):
+@pytest.mark.asyncio
+async def test_the_committed_file_keeps_the_inline_code_span(committing_tool):
     tool, provider = committing_tool
     tool.prediction = "## 2026-09-06\n\n### Fixed\n- Handle `None` in `parse()`"
 
     new_file_content, answer = tool._prepare_changelog_update()
-    tool._push_changelog_update(new_file_content, answer)
+    await tool._push_changelog_update(new_file_content, answer)
 
     committed = provider.create_or_update_pr_file.call_args.kwargs["contents"]
     assert committed.startswith("## 2026-09-06\n\n### Fixed\n- Handle `None` in `parse()`")
@@ -110,12 +114,13 @@ def test_the_committed_file_keeps_the_inline_code_span(committing_tool):
     assert committed.endswith(EXISTING)
 
 
-def test_the_committed_file_is_written_to_the_pr_branch(committing_tool):
+@pytest.mark.asyncio
+async def test_the_committed_file_is_written_to_the_pr_branch(committing_tool):
     tool, provider = committing_tool
     tool.prediction = "## 2026-09-06\n- Handle `None`"
 
     new_file_content, answer = tool._prepare_changelog_update()
-    tool._push_changelog_update(new_file_content, answer)
+    await tool._push_changelog_update(new_file_content, answer)
 
     kwargs = provider.create_or_update_pr_file.call_args.kwargs
     assert kwargs["file_path"] == "CHANGELOG.md"
@@ -123,13 +128,14 @@ def test_the_committed_file_is_written_to_the_pr_branch(committing_tool):
     assert kwargs["message"] == "[skip ci] Update CHANGELOG.md"
 
 
-def test_a_fenced_answer_is_committed_without_its_fence(committing_tool):
+@pytest.mark.asyncio
+async def test_a_fenced_answer_is_committed_without_its_fence(committing_tool):
     """The model often wraps the whole entry; the fence must not reach the file."""
     tool, provider = committing_tool
     tool.prediction = "```markdown\n## 2026-09-06\n- Handle `None`\n```"
 
     new_file_content, answer = tool._prepare_changelog_update()
-    tool._push_changelog_update(new_file_content, answer)
+    await tool._push_changelog_update(new_file_content, answer)
 
     committed = provider.create_or_update_pr_file.call_args.kwargs["contents"]
     assert committed.startswith("## 2026-09-06\n- Handle `None`")

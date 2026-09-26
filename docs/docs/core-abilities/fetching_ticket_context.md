@@ -3,7 +3,7 @@ title: "Fetching Ticket Context for PRs"
 sidebar_position: 5
 ---
 
-`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps`
+`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
 :::note[Branch-name linking: Jira keys on all providers; numeric GitHub issues on GitHub only]
 **Jira** ticket keys (e.g. `ABC-123`) are extracted from the branch name on **every git provider**.
@@ -200,6 +200,26 @@ instance (for example `customfield_10127`); leave it empty to skip requirements.
 [jira]
 jira_requirements_field = "customfield_10127"
 ```
+
+#### Project key allowlist (optional)
+
+Ticket detection matches any `PROJECT-123` shaped text, so strings like `SHA-256`,
+`UTF-8` or `ISO-8601` in a title or description each cost an authenticated lookup that
+returns 404. If your repository works with a known set of Jira projects, list their keys
+in `project_keys`; keys with any other prefix are then dropped before any lookup (they are
+named once at debug level in the log). Leave the list empty to look up every key found.
+
+```toml
+[jira]
+project_keys = ["PROJ", "OPS"]
+```
+
+Entries are plain upper-case project keys (letters only, as Jira writes them); anything
+else (a lower-case label, a full ticket key, a URL, a blank entry) is ignored with a
+warning. If the list is set but none of its entries is valid, no Jira lookup is made at all
+until it is fixed, so a typo cannot silently widen the lookup again. Only a missing option,
+the empty list, and an environment override set to the empty string mean "look up every
+key".
 
 ### How to link a PR to a Jira ticket
 

@@ -49,7 +49,7 @@ Commit messages:
 
 The PR Git Diff:
 ======
-{{ diff|trim }}
+{{ diff }}
 ======
 
 

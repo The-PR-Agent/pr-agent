@@ -150,7 +150,9 @@ async def test_databricks_does_not_receive_another_provider_credentials(monkeypa
 
 
 @pytest.mark.parametrize("entrypoint", ("chat_completion", "probe_completion"))
-@pytest.mark.parametrize("key_source", ("global_before", "global_after", "provider_global", "captured_pat", "literal_dummy"))
+@pytest.mark.parametrize(
+    "key_source", ("global_before", "global_after", "provider_global", "captured_pat", "literal_dummy")
+)
 @pytest.mark.asyncio
 async def test_databricks_native_oauth_is_not_overwritten_by_foreign_keys(monkeypatch, entrypoint, key_source):
     from litellm.litellm_core_utils import logging_worker

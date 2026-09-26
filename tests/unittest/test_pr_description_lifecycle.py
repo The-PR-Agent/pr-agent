@@ -219,7 +219,9 @@ async def test_run_reports_description_publication_failure(monkeypatch, propagat
 
         provider.publish_description.assert_called_once()
         assert call("Failed to update PR description") in provider.publish_comment.call_args_list
-        assert not any("updated to latest commit" in str(published) for published in provider.publish_comment.call_args_list)
+        assert not any(
+            "updated to latest commit" in str(published) for published in provider.publish_comment.call_args_list
+        )
         provider.remove_comment.assert_called_once_with(progress_comment)
     finally:
         restore_settings(settings_snapshot)

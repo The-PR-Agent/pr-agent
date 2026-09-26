@@ -106,6 +106,60 @@ def test_affected_templates_delegate_to_shared_fragment_once(prompt_name, legacy
     assert legacy_example not in system_prompt
 
 
+@pytest.mark.parametrize(
+    ("prompt_name", "variable"),
+    [
+        ("pr_review_prompt", "diff"),
+        ("pr_add_docs_prompt", "diff"),
+        ("pr_questions_prompt", "diff"),
+        ("pr_custom_labels_prompt", "diff"),
+        ("pr_update_changelog_prompt", "diff"),
+        ("pr_information_from_user_prompt", "diff"),
+        ("pr_description_prompt", "diff"),
+        ("pr_description_only_files_prompts", "diff"),
+        ("pr_description_only_description_prompts", "diff"),
+        ("pr_code_suggestions_reflect_prompt", "diff"),
+        ("pr_code_suggestions_prompt", "diff_no_line_numbers"),
+        ("pr_code_suggestions_prompt_not_decoupled", "diff_no_line_numbers"),
+    ],
+)
+def test_diff_prompt_variables_do_not_use_content_trimming(prompt_name, variable):
+    user_prompt = get_settings().get(prompt_name).user
+
+    assert f"{{{{ {variable}|trim }}}}" not in user_prompt
+    assert f"{{{{ {variable} }}}}" in user_prompt
+
+
+@pytest.mark.parametrize("prompt_name", [
+    "pr_code_suggestions_prompt",
+    "pr_code_suggestions_prompt_not_decoupled",
+])
+def test_suggestion_prompts_allow_dependencies_introduced_by_improved_code(prompt_name):
+    prompt = get_settings().get(prompt_name).system
+    variables = {
+        "focus_only_on_problems": True,
+        "num_code_suggestions": 3,
+        "diff_hunk_format": "diff",
+        "skills_context": "",
+        "extra_instructions": "",
+        "repo_context": "",
+    }
+
+    rendered = Environment().from_string(prompt).render(variables)
+
+    assert "If the suggested `improved_code` introduces a dependency" in rendered
+    assert "standalone or unrelated missing" in rendered
+
+
+def test_reflection_prompt_does_not_zero_required_imports():
+    prompt = get_settings().pr_code_suggestions_reflect_prompt.system
+
+    rendered = Environment().from_string(prompt).render({"diff_hunk_format": "diff"})
+
+    assert "- Add standalone or unrelated missing import statements" in rendered
+    assert "- Add missing import statements" not in rendered
+
+
 def test_fragment_renderer_sandboxes_host_overrides(restore_prompt_settings):
     get_settings().set(
         "prompt_fragments.diff_hunk_format",
@@ -196,6 +250,7 @@ def test_non_decoupled_suggestions_render_without_the_shared_fragment(monkeypatc
 
 
 @pytest.mark.parametrize("include_ai_metadata", [False, True])
+@pytest.mark.asyncio
 async def test_reflection_supplies_the_numbered_fragment(
     include_ai_metadata,
     restore_prompt_settings,
@@ -210,7 +265,7 @@ async def test_reflection_supplies_the_numbered_fragment(
     result = await tool.self_reflect_on_suggestions(
         [{"one_sentence_summary": "Keep the shared prompt accurate"}],
         diff,
-        "test-model",
+        settings.config.model,
     )
 
     call = ai_handler.chat_completion.await_args.kwargs

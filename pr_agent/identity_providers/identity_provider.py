@@ -12,7 +12,3 @@ class IdentityProvider(ABC):
     @abstractmethod
     def verify_eligibility(self, git_provider, git_provider_id, pr_url):
         pass
-
-    @abstractmethod
-    def inc_invocation_count(self, git_provider, git_provider_id):
-        pass

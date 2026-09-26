@@ -1,11 +1,10 @@
 import difflib
 import re
-import shlex
 import subprocess
 from collections import Counter
 from types import SimpleNamespace
 from typing import Optional, Tuple
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote, quote_plus, urlparse
 
 from atlassian.bitbucket import Bitbucket
 from packaging.version import parse as parse_version
@@ -61,7 +60,9 @@ class BitbucketServerProvider(GitProvider):
                     password=password
                 )
         try:
-            self.bitbucket_api_version = parse_version(self.bitbucket_client.get("rest/api/1.0/application-properties").get('version'))
+            self.bitbucket_api_version = parse_version(
+                self.bitbucket_client.get("rest/api/1.0/application-properties").get('version')
+            )
         except Exception:
             self.bitbucket_api_version = None
 
@@ -72,13 +73,17 @@ class BitbucketServerProvider(GitProvider):
         try:
             parsed_url = urlparse(self.pr_url)
             return f"{parsed_url.scheme}://{parsed_url.netloc}/scm/{self.workspace_slug.lower()}/{self.repo_slug.lower()}.git"
-        except Exception as e:
+        except Exception:
             get_logger().exception(f"url is not a valid merge requests url: {self.pr_url}")
             return ""
 
-    # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo.
-    # Example: https://bitbucket.dev.my_inc.com/scm/my_work/my_repo.git and branch: my_branch -> prefix: "https://bitbucket.dev.my_inc.com/projects/MY_WORK/repos/my_repo/browse/src", suffix: "?at=refs%2Fheads%2Fmy_branch"
-    # In case git url is not provided, provider will use PR context (which includes branch) to determine the prefix and suffix.
+    # Given a git repo url, return prefix and suffix of the provider in order to view a given
+    # file belonging to that repo.
+    # Example: https://bitbucket.dev.my_inc.com/scm/my_work/my_repo.git and branch: my_branch
+    # -> prefix: "https://bitbucket.dev.my_inc.com/projects/MY_WORK/repos/my_repo/browse/src",
+    # suffix: "?at=refs%2Fheads%2Fmy_branch"
+    # In case git url is not provided, provider will use PR context (which includes branch) to
+    # determine the prefix and suffix.
     def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
         workspace_name = None
         project_name = None
@@ -97,10 +102,13 @@ class BitbucketServerProvider(GitProvider):
             if repo_path.count('/') == 1:  # Has to have the form <workspace>/<repo>
                 workspace_name, project_name = repo_path.split('/')
         if not workspace_name or not project_name:
-            get_logger().error(f"workspace_name or project_name not found in context, either git url: {repo_git_url} or uninitialized workspace/project.")
+            get_logger().error(
+                f"workspace_name or project_name not found in context, either git url: "
+                f"{repo_git_url} or uninitialized workspace/project."
+            )
             return ("", "")
         prefix = f"{self.bitbucket_server_url}/projects/{workspace_name}/repos/{project_name}/browse"
-        suffix = f"?at=refs%2Fheads%2F{desired_branch}"
+        suffix = f"?at=refs%2Fheads%2F{quote(desired_branch, safe='')}"
         return (prefix, suffix)
 
     def get_repo_settings(self):
@@ -169,7 +177,7 @@ class BitbucketServerProvider(GitProvider):
                     patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                     diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
                     # replace ```suggestion ... ``` with diff_code, using regex:
-                    body = re.sub(r'```suggestion.*?```', diff_code, body, flags=re.DOTALL)
+                    body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
                 except Exception as e:
                     get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                     continue
@@ -291,14 +299,18 @@ class BitbucketServerProvider(GitProvider):
                     base_sha = self.get_best_common_ancestor(source_commits_list, destination_commits, base_sha)
                 except Exception as e:
                     get_logger().error(
-                        f"Failed to get the commit list for calculating best common ancestor for PR: {self.pr_url}, \nerror: {e}")
+                        f"Failed to get the commit list for calculating best common ancestor "
+                        f"for PR: {self.pr_url}, \nerror: {e}"
+                    )
                     raise e
 
         diff_files = []
         original_file_content_str = ""
         new_file_content_str = ""
 
-        changes_original = list(self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num))
+        changes_original = list(
+            self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
+        )
         changes = filter_ignored(changes_original, 'bitbucket_server')
         for change in changes:
             file_path = change['path']['toString']
@@ -411,7 +423,26 @@ class BitbucketServerProvider(GitProvider):
             get_logger().exception(f"Failed to remove temp comments, error: {e}")
 
     def remove_comment(self, comment):
-        pass
+        comment_id = comment.get("id") if isinstance(comment, dict) else getattr(comment, "id", None)
+        comment_version = comment.get("version") if isinstance(comment, dict) else getattr(comment, "version", None)
+        if not isinstance(comment_id, int) or not isinstance(comment_version, int):
+            get_logger().warning(
+                f"Failed to remove Bitbucket Server comment: invalid id or version for {comment!r}"
+            )
+            return False
+
+        try:
+            self.bitbucket_client.delete_pull_request_comment(
+                self.workspace_slug,
+                self.repo_slug,
+                self.pr_num,
+                comment_id,
+                comment_version,
+            )
+            return True
+        except Exception as e:
+            get_logger().exception(f"Failed to remove comment, error: {e}")
+            return False
 
     # function to create_inline_comment
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
@@ -457,7 +488,10 @@ class BitbucketServerProvider(GitProvider):
         try:
             self.bitbucket_client.post(self._get_pr_comments_path(), data=payload)
         except Exception as e:
-            get_logger().error(f"Failed to publish inline comment to '{relevant_file}' at line {relevant_line_in_file}, error: {e}")
+            get_logger().error(
+                f"Failed to publish inline comment to '{relevant_file}' at line "
+                f"{relevant_line_in_file}, error: {e}"
+            )
             return False
         return True
 
@@ -467,37 +501,6 @@ class BitbucketServerProvider(GitProvider):
         else:
             link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
         return link
-
-    def generate_link_to_relevant_line_number(self, suggestion) -> str:
-        try:
-            relevant_file = suggestion['relevant_file'].strip('`').strip("'").rstrip()
-            relevant_line_str = suggestion['relevant_line'].rstrip()
-            if not relevant_line_str:
-                return ""
-
-            diff_files = self.get_diff_files()
-            position, absolute_position = find_line_number_of_relevant_line_in_file \
-                (diff_files, relevant_file, relevant_line_str)
-
-            if absolute_position != -1:
-                if self.pr:
-                    link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={absolute_position}"
-                    return link
-                else:
-                    if get_verbosity_level() >= 2:
-                        get_logger().info(f"Failed adding line link to '{relevant_file}' since PR not set")
-            else:
-                if get_verbosity_level() >= 2:
-                    get_logger().info(f"Failed adding line link to '{relevant_file}' since position not found")
-
-            if absolute_position != -1 and self.pr_url:
-                link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={absolute_position}"
-                return link
-        except Exception as e:
-            if get_verbosity_level() >= 2:
-                get_logger().info(f"Failed adding line link to '{relevant_file}', error: {e}")
-
-        return ""
 
     def publish_inline_comments(self, comments: list[dict]) -> bool:
         publishable_count = 0
@@ -543,9 +546,6 @@ class BitbucketServerProvider(GitProvider):
 
     def get_pr_branch(self):
         return self.pr.fromRef['displayId']
-
-    def get_pr_owner_id(self) -> str | None:
-        return self.workspace_slug
 
     def get_owning_namespace(self) -> str | None:
         return self.workspace_slug
@@ -602,6 +602,14 @@ class BitbucketServerProvider(GitProvider):
             return f"{self._get_repo_web_url()}/commits/{self.pr.fromRef['latestCommit']}"
         except Exception as e:
             get_logger().warning(f"Failed to get latest commit URL, error: {e}")
+            return ""
+
+    def get_pr_head_sha(self) -> str:
+        try:
+            head_sha = self.pr.fromRef['latestCommit']
+            return head_sha if isinstance(head_sha, str) else ""
+        except (KeyError, TypeError) as e:
+            get_logger().warning(f"Failed to get head SHA, error: {e}")
             return ""
 
     def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
@@ -712,7 +720,10 @@ class BitbucketServerProvider(GitProvider):
         pass
 
     def _get_pr_comments_path(self):
-        return f"rest/api/latest/projects/{self.workspace_slug}/repos/{self.repo_slug}/pull-requests/{self.pr_num}/comments"
+        return (
+            f"rest/api/latest/projects/{self.workspace_slug}/repos/{self.repo_slug}/"
+            f"pull-requests/{self.pr_num}/comments"
+        )
 
     def _get_repo_web_url(self) -> str:
         parsed_url = urlparse(self.pr_url)
@@ -723,7 +734,10 @@ class BitbucketServerProvider(GitProvider):
         return f"{self._get_repo_web_url()}/pull-requests/{self.pr_num}"
 
     def _get_merge_base(self):
-        return f"rest/api/latest/projects/{self.workspace_slug}/repos/{self.repo_slug}/pull-requests/{self.pr_num}/merge-base"
+        return (
+            f"rest/api/latest/projects/{self.workspace_slug}/repos/{self.repo_slug}/"
+            f"pull-requests/{self.pr_num}/merge-base"
+        )
     # Clone related
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
         if 'bitbucket.' not in repo_url_to_clone:
@@ -744,10 +758,15 @@ class BitbucketServerProvider(GitProvider):
             #Shouldn't happen since this is checked in _prepare_clone, therefore - throwing an exception.
             raise RuntimeError("Bearer token is required!")
 
-        cli_args = shlex.split(f"git clone -c http.extraHeader='Authorization: Bearer {bearer_token}' "
-                               f"--filter=blob:none --depth 1 {repo_url} {dest_folder}")
-
-        ssl_env = get_git_ssl_env()
-
-        subprocess.run(cli_args, env=ssl_env, check=True,  # check=True will raise an exception if the command fails
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=operation_timeout_in_seconds)
+        # Pass the header through the Git process environment (Git >= 2.31), so it never
+        # reaches argv or the checkout's .git/config.
+        ssl_env = {
+            **get_git_ssl_env(),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "http.extraHeader",
+            "GIT_CONFIG_VALUE_0": f"Authorization: Bearer {bearer_token}",
+        }
+        cli_args = ["git", "clone", "--filter=blob:none", "--depth", "1", repo_url, dest_folder]
+        subprocess.run(cli_args, env=ssl_env, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=operation_timeout_in_seconds)

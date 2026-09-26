@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from github import GithubException
 
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -12,12 +13,20 @@ def _provider_with_repo(repo_obj):
     return provider
 
 
+@pytest.fixture(autouse=True)
+def no_global_settings():
+    # Patch get_settings in git_provider, where get_config_branch() lives, and keep the
+    # namespace-wide lookup out of the way so that patch does not leak into it.
+    with patch.object(GithubProvider, "_get_global_repo_settings", return_value=""):
+        yield
+
+
 def test_get_repo_settings_uses_config_branch_from_settings():
     repo_obj = MagicMock()
     repo_obj.get_contents.return_value = SimpleNamespace(decoded_content=b"[config]\nmodel='x'")
     provider = _provider_with_repo(repo_obj)
 
-    with patch("pr_agent.git_providers.github_provider.get_settings") as mock_settings:
+    with patch("pr_agent.git_providers.git_provider.get_settings") as mock_settings:
         mock_settings.return_value.get.return_value = "feature-config"
         settings = provider.get_repo_settings()
 
@@ -33,7 +42,7 @@ def test_get_repo_settings_falls_back_to_default_branch_on_missing_file_in_confi
     ]
     provider = _provider_with_repo(repo_obj)
 
-    with patch("pr_agent.git_providers.github_provider.get_settings") as mock_settings:
+    with patch("pr_agent.git_providers.git_provider.get_settings") as mock_settings:
         mock_settings.return_value.get.return_value = "feature-config"
         settings = provider.get_repo_settings()
 
@@ -47,7 +56,7 @@ def test_get_repo_settings_uses_env_var_when_settings_are_missing():
     repo_obj.get_contents.return_value = SimpleNamespace(decoded_content=b"[config]\nmodel='env'")
     provider = _provider_with_repo(repo_obj)
 
-    with patch("pr_agent.git_providers.github_provider.get_settings") as mock_settings, patch.dict(
+    with patch("pr_agent.git_providers.git_provider.get_settings") as mock_settings, patch.dict(
         "os.environ",
         {"PR_AGENT_CONFIG_BRANCH": "env-branch"},
         clear=False,
@@ -65,7 +74,7 @@ def test_get_repo_settings_whitespace_settings_falls_back_to_env_var():
     repo_obj.get_contents.return_value = SimpleNamespace(decoded_content=b"[config]\nmodel='env'")
     provider = _provider_with_repo(repo_obj)
 
-    with patch("pr_agent.git_providers.github_provider.get_settings") as mock_settings, patch.dict(
+    with patch("pr_agent.git_providers.git_provider.get_settings") as mock_settings, patch.dict(
         "os.environ",
         {"PR_AGENT_CONFIG_BRANCH": "env-branch"},
         clear=False,

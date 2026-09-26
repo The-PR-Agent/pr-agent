@@ -23,6 +23,7 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.mosaico.diff_provider import parse_unified_diff
@@ -352,14 +353,15 @@ async def _run_ask(target: str, question: str) -> "RouteResult":
 
 
 def _simple_languages(files) -> dict:
-    """Best-effort language map (extension -> count) for get_main_pr_language; tolerant
-    of empties (downstream handles an empty dict)."""
+    """Return configured language-name counts, tolerating an empty file list."""
+    language_map = get_settings().get("language_extension_map_org", {}) or {}
+    get_language = build_language_file_matcher(language_map)
     langs = {}
     for f in files:
         name = getattr(f, "filename", "") or ""
-        if "." in name:
-            ext = name.rsplit(".", 1)[1].lower()
-            langs[ext] = langs.get(ext, 0) + 1
+        language = get_language(name)
+        if language:
+            langs[language] = langs.get(language, 0) + 1
     return langs
 
 
@@ -385,11 +387,16 @@ async def _run_on_diff(diff_body: str, verb: str, text: str, title: str, empty_o
     return await _run_pr_agent("mosaico://supplied-diff", verb)
 
 
-async def route_and_run_result(user_text: str) -> "RouteResult":
-    """Route inbound text to a pr-agent command and return a RouteResult. Never raises."""
+async def route_and_run_result(user_text: str, *, context_history: list[str] | None = None) -> "RouteResult":
+    """Route inbound text; keep A2A context_history as literal user messages. Never raises."""
     try:
         text = user_text or ""
-        turns = _split_turns(text)
+        # Keep A2A message boundaries explicit; only parse role labels for a
+        # standalone forwarded conversation blob.
+        if context_history is None:
+            turns = _split_turns(text)
+        else:
+            turns = [_Turn("user", turn) for turn in [*context_history, text]]
         user_segments = [t.content for t in reversed(turns) if t.is_user] or [text]
         context_segments = [t.content for t in reversed(turns)] or [text]
 

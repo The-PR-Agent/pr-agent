@@ -3,7 +3,7 @@ title: "Compression Strategy"
 sidebar_position: 3
 ---
 
-`Supported Git Platforms: GitHub, GitLab, Bitbucket`
+`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
 
 ## Overview

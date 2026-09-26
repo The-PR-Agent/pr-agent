@@ -3,7 +3,7 @@ title: "Local and global metadata injection with multi-stage analysis"
 sidebar_position: 6
 ---
 
-`Supported Git Platforms: GitHub, GitLab, Bitbucket`
+`Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
 1\.
 PR-Agent initially retrieves for each PR the following data:

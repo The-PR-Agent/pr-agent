@@ -10,9 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+from github import GithubException, RateLimitExceededException
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.git_providers import github_provider
+from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
 
 
 def _bare_provider():
@@ -225,6 +227,7 @@ def _make_provider_for_diff(files):
         base=SimpleNamespace(sha="base-sha"),
         head=SimpleNamespace(sha="head-sha"),
         get_files=lambda: files,
+        changed_files=len(files),
     )
     # repo_obj.compare returns an object with a merge_base_commit.
     p.repo_obj = SimpleNamespace(
@@ -308,6 +311,62 @@ class TestGetDiffFilesEditTypes:
         assert diffs[0].num_minus_lines == 2
 
 
+class TestGetDiffFilesContentReads:
+    def test_added_file_skips_impossible_base_read(self, patched_helpers):
+        f = _make_file("added.py", "added")
+        p = _make_provider_for_diff([f])
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["head-sha"]
+
+    def test_removed_file_skips_impossible_head_read(self, patched_helpers):
+        f = _make_file("removed.py", "removed", patch="@@ -1 +0,0 @@\n-old")
+        p = _make_provider_for_diff([f])
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["base-sha"]
+
+    def test_modified_file_still_reads_both_revisions(self, patched_helpers):
+        f = _make_file("modified.py", "modified")
+        p = _make_provider_for_diff([f])
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["head-sha", "base-sha"]
+
+    def test_incremental_added_file_still_reads_both_revisions(self, patched_helpers):
+        f = _make_file("added.py", "added")
+        p = _make_provider_for_diff([f])
+        p.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        p.unreviewed_files_map = {"added.py": f}
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["head-sha", "prev-sha"]
+
+    def test_incremental_empty_scope_uses_pr_level_removed_status(self, patched_helpers):
+        f = _make_file("removed.py", "removed", patch="@@ -1 +0,0 @@\n-old")
+        p = _make_provider_for_diff([f])
+        p.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        p.unreviewed_files_map = {}
+        spy = Mock(return_value="content")
+        p._get_pr_file_content = spy
+
+        p.get_diff_files()
+
+        assert [call.args[1] for call in spy.call_args_list] == ["base-sha"]
+
+
 class TestGetDiffFilesRename:
     """A pure GitHub rename carries no `.patch` and reports 0 additions/0
     deletions, so `previous_filename` is the only place the old path lives."""
@@ -371,3 +430,405 @@ class TestGetDiffFilesRename:
         original_content_call = spy.call_args_list[-1]
         assert original_content_call.args[1] == "prev-sha"
         assert original_content_call.kwargs.get("path") == "old_dir/module.py"
+
+
+# ---------------------------------------------------------------------------
+# Complete pull-request file collection
+# ---------------------------------------------------------------------------
+class _RequestContext(dict):
+    def __init__(self, values=None, *, exists=True):
+        super().__init__(values or {})
+        self._exists = exists
+
+    def exists(self):
+        return self._exists
+
+    def __eq__(self, other):
+        if not isinstance(other, _RequestContext):
+            return NotImplemented
+        return super().__eq__(other) and self._exists == other._exists
+
+    def __ne__(self, other):
+        equal = self.__eq__(other)
+        if equal is NotImplemented:
+            return NotImplemented
+        return not equal
+
+
+class _FakePullRequest:
+    def __init__(self, files, changed_files):
+        self.files = files
+        self.changed_files = changed_files
+        self.get_files_calls = 0
+
+    def get_files(self):
+        self.get_files_calls += 1
+        if isinstance(self.files, BaseException):
+            raise self.files
+        return self.files
+
+
+class _ChangedFilesErrorPullRequest(_FakePullRequest):
+    def __init__(self, files, error):
+        super().__init__(files, 0)
+        self.error = error
+        self.changed_files_calls = 0
+
+    @property
+    def changed_files(self):
+        self.changed_files_calls += 1
+        raise self.error
+
+    @changed_files.setter
+    def changed_files(self, value):
+        pass
+
+
+class _SequencedFilesPullRequest(_FakePullRequest):
+    def __init__(self, outcomes, changed_files):
+        super().__init__(None, changed_files)
+        self.outcomes = list(outcomes)
+
+    def get_files(self):
+        self.get_files_calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class _SequencedChangedFilesPullRequest:
+    def __init__(self, files, outcomes):
+        self.files = files
+        self.outcomes = list(outcomes)
+        self.get_files_calls = 0
+        self.changed_files_calls = 0
+
+    def get_files(self):
+        self.get_files_calls += 1
+        return self.files
+
+    @property
+    def changed_files(self):
+        self.changed_files_calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class _ExplodingIterable:
+    def __init__(self, error):
+        self.error = error
+        self.iteration_calls = 0
+
+    def __iter__(self):
+        self.iteration_calls += 1
+        raise self.error
+
+
+class _TransientIterable:
+    def __init__(self, error, files):
+        self.error = error
+        self.files = files
+        self.iteration_calls = 0
+
+    def __iter__(self):
+        self.iteration_calls += 1
+        if self.iteration_calls == 1:
+            raise self.error
+        return iter(self.files)
+
+
+def _make_provider_for_file_collection(pr, *, incremental=False, unreviewed_files_map=None):
+    provider = _bare_provider()
+    provider.pr = pr
+    provider.git_files = None
+    provider.diff_files = None
+    provider.incremental = SimpleNamespace(is_incremental=incremental)
+    provider.unreviewed_files_map = unreviewed_files_map or {}
+    return provider
+
+
+def _set_request_context(monkeypatch, values=None):
+    request_context = _RequestContext(values)
+    monkeypatch.setattr(github_provider, "context", request_context)
+    return request_context
+
+
+def test_request_context_equality_includes_existence_state():
+    present = _RequestContext({"git_files": ["first"]})
+    same = _RequestContext({"git_files": ["first"]})
+    absent = _RequestContext({"git_files": ["first"]}, exists=False)
+
+    assert present == same
+    assert present != absent
+    assert present.__eq__({"git_files": ["first"]}) is NotImplemented
+    assert present.__ne__({"git_files": ["first"]}) is NotImplemented
+
+
+class TestCompletePullRequestFiles:
+    @pytest.mark.parametrize(
+        ("files", "changed_files"),
+        [(["first"], 2), (["first", "second"], 1)],
+        ids=["fewer-files-than-reported", "more-files-than-reported"],
+    )
+    def test_mismatched_count_fails_closed_without_caching(self, monkeypatch, files, changed_files):
+        request_context = _set_request_context(monkeypatch)
+        pr = _FakePullRequest(files, changed_files)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(IncompletePullRequestFilesError):
+            provider.get_files()
+
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+        assert pr.get_files_calls == 1
+
+    @pytest.mark.parametrize("changed_files", [None, "two", True])
+    def test_invalid_changed_files_metadata_fails_closed_without_caching(self, monkeypatch, changed_files):
+        request_context = _set_request_context(monkeypatch)
+        provider = _make_provider_for_file_collection(_FakePullRequest(["first"], changed_files))
+
+        with pytest.raises(IncompletePullRequestFilesError):
+            provider.get_files()
+
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_changed_files_access_error_propagates_without_caching(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        error = RuntimeError("changed_files failed")
+        pr = _ChangedFilesErrorPullRequest(["first"], error)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(RuntimeError, match="changed_files failed") as raised:
+            provider.get_files()
+
+        assert raised.value is error
+        assert pr.get_files_calls == 2
+        assert pr.changed_files_calls == 2
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_rate_limit_request_propagates_immediately_without_caching(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        error = RateLimitExceededException(403, {"message": "API rate limit exceeded"}, None)
+        pr = _FakePullRequest(error, 1)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(RateLimitExceededException) as raised:
+            provider.get_files()
+
+        assert raised.value is error
+        assert pr.get_files_calls == 1
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_rate_limit_metadata_error_propagates_immediately_without_caching(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        error = RateLimitExceededException(403, {"message": "API rate limit exceeded"}, None)
+        pr = _ChangedFilesErrorPullRequest(["first"], error)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(RateLimitExceededException) as raised:
+            provider.get_files()
+
+        assert raised.value is error
+        assert pr.get_files_calls == 1
+        assert pr.changed_files_calls == 1
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_non_rate_limit_403_uses_the_ordinary_retry_policy(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        error = GithubException(403, {"message": "Resource not accessible by integration"}, None)
+        pr = _FakePullRequest(error, 1)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(GithubException) as raised:
+            provider.get_files()
+
+        assert raised.value is error
+        assert pr.get_files_calls == 2
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    @pytest.mark.parametrize(
+        "failure",
+        [RuntimeError("request failed"), _ExplodingIterable(RuntimeError("page failed"))],
+    )
+    def test_file_collection_errors_propagate_after_retry_without_caching(self, monkeypatch, failure):
+        request_context = _set_request_context(monkeypatch)
+        pr = _FakePullRequest(failure, 1)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(RuntimeError) as raised:
+            provider.get_files()
+
+        expected_error = failure.error if isinstance(failure, _ExplodingIterable) else failure
+        assert raised.value is expected_error
+        assert pr.get_files_calls == 2
+        if isinstance(failure, _ExplodingIterable):
+            assert failure.iteration_calls == 2
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_transient_file_request_recovers_and_populates_caches(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["first"]
+        pr = _SequencedFilesPullRequest([RuntimeError("request failed"), files], len(files))
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 2
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+
+    def test_transient_materialization_error_recovers_and_populates_caches(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["first"]
+        iterable = _TransientIterable(RuntimeError("page failed"), files)
+        pr = _FakePullRequest(iterable, len(files))
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 2
+        assert iterable.iteration_calls == 2
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+
+    def test_transient_changed_files_error_recovers_and_populates_caches(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["first"]
+        pr = _SequencedChangedFilesPullRequest(files, [RuntimeError("metadata failed"), len(files)])
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 2
+        assert pr.changed_files_calls == 2
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+
+    def test_transient_failure_then_mismatch_fails_closed_without_caching(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        pr = _SequencedFilesPullRequest([RuntimeError("request failed"), ["first"]], 2)
+        provider = _make_provider_for_file_collection(pr)
+
+        with pytest.raises(IncompletePullRequestFilesError):
+            provider.get_files()
+
+        assert pr.get_files_calls == 2
+        assert provider.git_files is None
+        assert "git_files" not in request_context
+
+    def test_get_diff_files_recovers_within_collection_retry(self, monkeypatch, patched_helpers):
+        _set_request_context(monkeypatch)
+        file = _make_file("first.py", "modified")
+        provider = _make_provider_for_diff([file])
+        provider.pr.get_files = Mock(side_effect=[RuntimeError("request failed"), [file]])
+        provider._get_pr_file_content = lambda file, sha, path=None: "content"
+
+        diffs = provider.get_diff_files()
+
+        assert [diff.filename for diff in diffs] == ["first.py"]
+        assert provider.pr.get_files.call_count == 2
+
+    def test_get_diff_files_preserves_completeness_error_without_retrying(self, monkeypatch):
+        _set_request_context(monkeypatch)
+        pr = _FakePullRequest(["first"], 2)
+        provider = _make_provider_for_file_collection(pr)
+        settings = Mock()
+        settings.get.return_value = 5
+        monkeypatch.setattr(github_provider, "get_settings", lambda: settings)
+
+        with pytest.raises(IncompletePullRequestFilesError):
+            provider.get_diff_files()
+
+        assert pr.get_files_calls == 1
+
+    def test_matching_count_populates_request_and_instance_caches(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["first", "second"]
+        pr = _FakePullRequest(files, len(files))
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+        assert pr.get_files_calls == 1
+
+    def test_request_context_cache_avoids_another_api_call(self, monkeypatch):
+        files = ["first"]
+        _set_request_context(monkeypatch, {"git_files": files})
+        pr = _FakePullRequest(RuntimeError("should not fetch"), 1)
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 0
+
+    def test_none_request_context_cache_is_refetched(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch, {"git_files": None})
+        files = ["first"]
+        pr = _FakePullRequest(files, len(files))
+        provider = _make_provider_for_file_collection(pr)
+
+        assert provider.get_files() == files
+        assert request_context["git_files"] == files
+        assert pr.get_files_calls == 1
+
+    def test_instance_cache_avoids_another_api_call(self, monkeypatch):
+        _set_request_context(monkeypatch)
+        files = ["first"]
+        pr = _FakePullRequest(RuntimeError("should not fetch"), 1)
+        provider = _make_provider_for_file_collection(pr)
+        provider.git_files = files
+
+        assert provider.get_files() == files
+        assert pr.get_files_calls == 0
+
+    @pytest.mark.parametrize("cache_owner", ["request", "instance"])
+    def test_empty_cache_is_reused_without_fetching(self, monkeypatch, cache_owner):
+        request_context = _set_request_context(monkeypatch, {"git_files": []} if cache_owner == "request" else None)
+        pr = _FakePullRequest(RuntimeError("should not fetch"), 0)
+        provider = _make_provider_for_file_collection(pr)
+        if cache_owner == "instance":
+            provider.git_files = []
+
+        assert provider.get_files() == []
+        assert pr.get_files_calls == 0
+        if cache_owner == "request":
+            assert request_context["git_files"] == []
+
+    def test_get_pr_file_paths_uses_complete_collector_during_incremental_review(self, monkeypatch):
+        request_context = _set_request_context(monkeypatch)
+        files = ["full-file"]
+        pr = _FakePullRequest(files, len(files))
+        provider = _make_provider_for_file_collection(
+            pr,
+            incremental=True,
+            unreviewed_files_map={"incremental-file": "incremental-file"},
+        )
+
+        assert provider.get_pr_file_paths() == files
+        assert provider.git_files == files
+        assert request_context["git_files"] == files
+        assert pr.get_files_calls == 1
+
+    def test_incremental_subset_bypasses_full_collection_and_count_access(self, monkeypatch):
+        _set_request_context(monkeypatch)
+        error = RuntimeError("changed_files should not be read")
+        pr = _ChangedFilesErrorPullRequest([], error)
+        file = "incremental-file"
+        provider = _make_provider_for_file_collection(
+            pr,
+            incremental=True,
+            unreviewed_files_map={file: file},
+        )
+
+        files = provider.get_files()
+
+        assert files == [file]
+        assert isinstance(files, list)
+        assert pr.get_files_calls == 0
+        assert pr.changed_files_calls == 0

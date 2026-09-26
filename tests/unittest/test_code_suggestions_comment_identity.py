@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pr_agent.algo.utils import (
+from pr_agent.algo.comment_identity import (
     PRCodeSuggestionsIdentity,
     add_comment_identity,
     comment_matches_identity,

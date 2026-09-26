@@ -45,6 +45,7 @@ class CodeCommitPullRequestResponse:
             self.source_branch = json.get("sourceReference", "")
             self.destination_commit = json.get("destinationCommit", "")
             self.destination_branch = json.get("destinationReference", "")
+            self.merge_base = json.get("mergeBase", "")
 
 
 class CodeCommitClient:
@@ -73,7 +74,8 @@ class CodeCommitClient:
 
         Args:
         - repo_name: Name of the repository
-        - destination_commit: Commit hash you want to merge into (the "before" hash) (usually on the main or master branch)
+        - destination_commit: Commit hash you want to merge into (the "before" hash) (usually on the
+        main or master branch)
         - source_commit: Commit hash of the code you are adding (the "after" branch)
 
         Returns:
@@ -86,7 +88,8 @@ class CodeCommitClient:
         if self.boto_client is None:
             self._connect_boto_client()
 
-        # The differences response from AWS is paginated, so we need to iterate through the pages to get all the differences.
+        # The differences response from AWS is paginated, so we need to iterate through the pages to
+        # get all the differences.
         differences = []
         try:
             paginator = self.boto_client.get_paginator("get_differences")
@@ -98,7 +101,9 @@ class CodeCommitClient:
                 differences.extend(page.get("differences", []))
         except botocore.exceptions.ClientError as e:
             if e.response["Error"]["Code"] == 'RepositoryDoesNotExistException':
-                raise ValueError(f"CodeCommit cannot retrieve differences: Repository does not exist: {repo_name}") from e
+                raise ValueError(
+                    f"CodeCommit cannot retrieve differences: Repository does not exist: {repo_name}"
+                ) from e
             raise ValueError(f"CodeCommit cannot retrieve differences for {source_commit}..{destination_commit}") from e
         except Exception as e:
             raise ValueError(f"CodeCommit cannot retrieve differences for {source_commit}..{destination_commit}") from e
@@ -218,14 +223,16 @@ class CodeCommitClient:
         except Exception as e:
             raise ValueError("Error calling publish_description") from e
 
-    def publish_comment(self, repo_name: str, pr_number: int, destination_commit: str, source_commit: str, comment: str, annotation_file: str = None, annotation_line: int = None):
+    def publish_comment(self, repo_name: str, pr_number: int, destination_commit: str, source_commit: str,
+                        comment: str, annotation_file: str = None, annotation_line: int = None):
         """
         Publish a comment to a pull request
 
         Args:
         - repo_name: name of the repository
         - pr_number: number of the pull request
-        - destination_commit: The commit hash you want to merge into (the "before" hash) (usually on the main or master branch)
+        - destination_commit: The commit hash you want to merge into (the "before" hash) (usually on
+        the main or master branch)
         - source_commit: The commit hash of the code you are adding (the "after" branch)
         - comment: The comment you want to publish
         - annotation_file: The file you want to annotate (optional)

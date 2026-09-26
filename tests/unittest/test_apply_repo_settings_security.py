@@ -192,6 +192,23 @@ def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_sn
     assert _section(settings, "prompt_fragments").get("diff_hunk_format") == fragment_before
 
 
+def test_repo_settings_cannot_override_extra_config_url(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[config]\nextra_config_url = "https://evil.example.com/evil.toml"\n'
+    )
+    captured = _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    get_settings().set("config.extra_config_url", "")
+    settings = get_settings()
+    extra_before = _section(settings, "config").get("extra_config_url")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert _section(settings, "config").get("extra_config_url") == extra_before
+
+
 def test_invalid_toml_does_not_pollute_settings(monkeypatch, settings_snapshot):
     """
     Malformed TOML must never leak into the live settings. The custom loader

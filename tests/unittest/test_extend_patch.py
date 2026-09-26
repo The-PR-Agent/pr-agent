@@ -56,7 +56,7 @@ class TestExtendPatch:
         original_file_str = 'line1\nline2\nline3\nline4\nline5'
         patch_str = '@@ -2,3 +2,3 @@ init()\n-line2\n+new_line2\n line3\n line4'
 
-        for num_lines in [1, 2, 3]: # check that even if we are over the number of lines in the file, the function still works
+        for num_lines in [1, 2, 3]:  # still works if extra lines exceed the file
             expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5'
             actual_output = extend_patch(original_file_str, patch_str,
                                          patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
@@ -93,21 +93,35 @@ class TestExtendPatch:
         num_lines=1
 
         get_settings(use_context=False).config.allow_dynamic_context = True
-        actual_output = extend_patch(original_file_str, patch_str,
-                                     patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines, new_file_str=new_file_str)
-        expected_output='\n@@ -1,10 +1,10 @@ \n def foo():\n     line(0)\n     line(1)\n     line(2)\n     line(3)\n     line(4)\n     line(5)\n     line(6)\n     line(7)\n-    line(8)\n+    new_line(8)'
+        actual_output = extend_patch(
+            original_file_str,
+            patch_str,
+            patch_extra_lines_before=num_lines,
+            patch_extra_lines_after=num_lines,
+            new_file_str=new_file_str,
+        )
+        expected_output = (
+            "\n@@ -1,10 +1,10 @@ \n def foo():\n     line(0)\n     line(1)\n"
+            "     line(2)\n     line(3)\n     line(4)\n     line(5)\n     line(6)\n"
+            "     line(7)\n-    line(8)\n+    new_line(8)"
+        )
         assert actual_output == expected_output
 
         get_settings(use_context=False).config.allow_dynamic_context = False
         actual_output2 = extend_patch(original_file_str, patch_str,
                                      patch_extra_lines_before=1, patch_extra_lines_after=1)
-        expected_output_no_dynamic_context = '\n@@ -9,2 +9,2 @@ def foo():\n     line(7)\n-    line(8)\n+    new_line(8)'
+        expected_output_no_dynamic_context = (
+            "\n@@ -9,2 +9,2 @@ def foo():\n     line(7)\n-    line(8)\n+    new_line(8)"
+        )
         assert actual_output2 == expected_output_no_dynamic_context
 
         get_settings(use_context=False).config.allow_dynamic_context = False
         actual_output3 = extend_patch(original_file_str, patch_str,
                                      patch_extra_lines_before=3, patch_extra_lines_after=3)
-        expected_output_no_dynamic_context = '\n@@ -7,4 +7,4 @@ def foo():\n     line(5)\n     line(6)\n     line(7)\n-    line(8)\n+    new_line(8)'
+        expected_output_no_dynamic_context = (
+            "\n@@ -7,4 +7,4 @@ def foo():\n     line(5)\n     line(6)\n     line(7)\n"
+            "-    line(8)\n+    new_line(8)"
+        )
         assert actual_output3 == expected_output_no_dynamic_context
 
 
@@ -135,15 +149,34 @@ class TestExtendedPatchMoreLines:
         # Create a list of languages with files containing base_file and patch data
         return [
             {
-                'files': [
-                    self.File(base_file="line000\nline00\nline0\nline1\noriginal content\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10",
-                              patch="@@ -5,5 +5,5 @@\n-original content\n+modified content\n line2\n line3\n line4\n line5",
-                              head_file="line000\nline00\nline0\nline1\nmodified content\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10",
-                              filename="file1"),
-                    self.File(base_file="original content\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10",
-                              patch="@@ -6,5 +6,5 @@\nline6\nline7\nline8\n-line9\n+modified line9\nline10",
-                              head_file="original content\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nmodified line9\nline10",
-                              filename="file2")
+                "files": [
+                    self.File(
+                        base_file=(
+                            "line000\nline00\nline0\nline1\noriginal content\n"
+                            "line2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+                        ),
+                        patch=(
+                            "@@ -5,5 +5,5 @@\n-original content\n+modified content\n"
+                            " line2\n line3\n line4\n line5"
+                        ),
+                        head_file=(
+                            "line000\nline00\nline0\nline1\nmodified content\n"
+                            "line2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10"
+                        ),
+                        filename="file1",
+                    ),
+                    self.File(
+                        base_file=(
+                            "original content\nline2\nline3\nline4\nline5\n"
+                            "line6\nline7\nline8\nline9\nline10"
+                        ),
+                        patch="@@ -6,5 +6,5 @@\nline6\nline7\nline8\n-line9\n+modified line9\nline10",
+                        head_file=(
+                            "original content\nline2\nline3\nline4\nline5\n"
+                            "line6\nline7\nline8\nmodified line9\nline10"
+                        ),
+                        filename="file2",
+                    ),
                 ]
             }
         ]
@@ -168,35 +201,62 @@ class TestExtendedPatchMoreLines:
         )
 
         p0_extended = patches_extended_with_extra_lines[0].strip()
-        assert p0_extended == "## File: 'file1'\n\n@@ -3,8 +3,8 @@ \n line0\n line1\n-original content\n+modified content\n line2\n line3\n line4\n line5\n line6"
+        assert p0_extended == (
+            "## File: 'file1'\n\n@@ -3,8 +3,8 @@ \n line0\n line1\n"
+            "-original content\n+modified content\n line2\n line3\n line4\n line5\n line6"
+        )
 
 class TestLoadLargeDiff:
-    def test_no_newline(self):
-        patch = load_large_diff("test.py",
-                                """\
-                                old content 1
-                                some new content
-                                another line
-                                """,
-                                """
-                                old content 1
-                                old content 2""")
+    @pytest.mark.parametrize("old_ending", ["", "\n"])
+    @pytest.mark.parametrize("new_ending", ["", "\n"])
+    def test_no_newline(self, old_ending, new_ending):
+        original = "old content 1\nold content 2" + old_ending
+        new = "old content 1\nsome new content\nanother line" + new_ending
+        expected = (
+            "@@ -1,2 +1,3 @@\n old content 1\n-old content 2\n"
+            "+some new content\n+another line\n"
+        )
+        assert load_large_diff("test.py", new, original) == expected
 
-        patch_expected="""\
-@@ -1,3 +1,3 @@
--
-                                 old content 1
--                                old content 2
-+                                some new content
-+                                another line
-"""
-        assert patch == patch_expected
+    @pytest.mark.parametrize("original", [None, ""])
+    @pytest.mark.parametrize("new", [None, ""])
+    def test_empty_inputs(self, original, new):
+        assert load_large_diff("test.py", new, original) == ""
 
-    def test_empty_inputs(self):
-        assert load_large_diff("test.py", "", "") == ""
-        assert load_large_diff("test.py", None, None) == ""
-        assert (load_large_diff("test.py", "content\n", "") ==
-                '@@ -1 +1 @@\n-\n+content\n')
+    @pytest.mark.parametrize("empty", [None, ""])
+    @pytest.mark.parametrize("content", ["content\n", "  \n", "\n"])
+    def test_empty_sides_have_zero_line_ranges(self, empty, content):
+        assert load_large_diff("test.py", content, empty) == "@@ -0,0 +1 @@\n+" + content
+        assert load_large_diff("test.py", empty, content) == "@@ -1 +0,0 @@\n-" + content
+
+    @pytest.mark.parametrize("ending", ["", "\n", "\r\n"])
+    @pytest.mark.parametrize("whitespace", ["  ", "\t"])
+    def test_preserves_trailing_spaces_and_tabs(self, whitespace, ending):
+        original = "value" + ending
+        new = "value" + whitespace + ending
+        line_ending = ending or "\n"
+        assert load_large_diff("test.py", new, original) == (
+            f"@@ -1 +1 @@\n-value{line_ending}+value{whitespace}{line_ending}"
+        )
+        assert load_large_diff("test.py", original, new) == (
+            f"@@ -1 +1 @@\n-value{whitespace}{line_ending}+value{line_ending}"
+        )
+
+    @pytest.mark.parametrize("ending", ["\n", "\r\n"])
+    def test_preserves_trailing_blank_lines(self, ending):
+        original = "value" + ending
+        new = original + ending
+        assert load_large_diff("test.py", new, original) == (
+            f"@@ -1 +1,2 @@\n value{ending}+{ending}"
+        )
+        assert load_large_diff("test.py", original, new) == (
+            f"@@ -1,2 +1 @@\n value{ending}-{ending}"
+        )
+
+    @pytest.mark.parametrize("content", ["value  \n", "value\t\r\n", "value\n\n", "  "])
+    def test_unchanged_whitespace_has_no_diff(self, content):
+        assert load_large_diff("test.py", content, content) == ""
+
 
 class TestOmittedHunkCount:
     def test_omitted_count_is_parsed_as_one(self):
