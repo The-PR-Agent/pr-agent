@@ -12,6 +12,11 @@ const sidebars = {
       label: 'Introduction',
     },
     {
+      type: 'doc',
+      id: 'overview/data_privacy',
+      label: 'Data Privacy',
+    },
+    {
       type: 'category',
       label: 'Installation',
       collapsed: false,
@@ -86,11 +91,6 @@ const sidebars = {
       type: 'doc',
       id: 'faq/index',
       label: 'Frequently Asked Questions',
-    },
-    {
-      type: 'doc',
-      id: 'overview/data_privacy',
-      label: 'Data Privacy',
     },
   ],
 };

@@ -11,5 +11,5 @@ After [installation](../installation/index.md), there are three basic ways to in
 
 Specifically, CLI commands can be issued by invoking a pre-built [docker image](../installation/locally.md#using-docker-image), or by invoking a [locally cloned repo](../installation/locally.md#run-from-source).
 
-For online usage, you will need to setup either a [GitHub App](../installation/github.md#run-as-a-github-app) or a [GitHub Action](../installation/github.md#run-as-a-github-action) (GitHub), a [GitLab webhook](../installation/gitlab.md#run-a-gitlab-webhook-server) (GitLab), or a [BitBucket App](../installation/bitbucket.md#run-using-codiumai-hosted-bitbucket-app) (BitBucket).
+For online usage, you will need to setup either a [GitHub App](../installation/github.md#run-as-a-github-app) or a [GitHub Action](../installation/github.md#run-as-a-github-action) (GitHub), a [GitLab webhook](../installation/gitlab.md#run-a-gitlab-webhook-server) (GitLab), or a [BitBucket App](../installation/bitbucket.md) (BitBucket).
 These platforms also enable to run PR-Agent specific tools automatically when a new PR is opened, or on each push to a branch.

@@ -18,6 +18,48 @@ from pr_agent.log import get_logger
 DOCS_SITE_URL = "https://docs.pr-agent.ai"
 
 
+# Folders and files that are deliberately kept out of the /help documentation corpus.
+DOCS_FOLDERS_TO_EXCLUDE = ("/finetuning_benchmark/",)
+DOCS_FILES_TO_EXCLUDE = frozenset({"compression_strategy.md"})
+
+# Pages the model should see first. Suffix-free, so a page keeps its priority
+# when it is stored as '.mdx' rather than '.md'.
+DOCS_PRIORITY_MARKERS = (
+    "/docs/index.",
+    "/usage-guide",
+    "tools/describe.",
+    "tools/review.",
+    "tools/improve.",
+    "/faq",
+)
+
+
+def docs_root() -> Path:
+    """Directory holding the documentation pages shipped alongside the package.
+
+    Resolved on each call rather than at import time so tests can redirect it.
+    """
+    return Path(__file__).parent.parent.parent / "docs" / "docs"
+
+
+def collect_docs_files(docs_path: Path | None = None) -> list[Path]:
+    """Return every documentation page fed to /help, priority pages first.
+
+    Pages that need JSX are stored as '.mdx', so both suffixes are collected;
+    globbing only '*.md' would silently drop them from the corpus.
+    """
+    docs_path = docs_root() if docs_path is None else docs_path
+    files = sorted(docs_path.glob("**/*.md")) + sorted(docs_path.glob("**/*.mdx"))
+    files = [
+        file
+        for file in files
+        if not any(folder in file.as_posix() for folder in DOCS_FOLDERS_TO_EXCLUDE)
+        and file.name not in DOCS_FILES_TO_EXCLUDE
+    ]
+    priority = [f for f in files if any(marker in f.as_posix() for marker in DOCS_PRIORITY_MARKERS)]
+    return priority + [f for f in files if f not in priority]
+
+
 class PRHelpMessage:
     def __init__(self, pr_url: str, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, return_as_string=False):
         self.git_provider = get_git_provider_with_context(pr_url)
@@ -82,7 +124,9 @@ class PRHelpMessage:
             return ""
 
     def format_docs_url(self, file_name: str, header: str) -> str:
-        relative_path = file_name.strip().lstrip('/').removesuffix('.md')
+        # '.mdx' must be stripped before '.md', or the longer suffix survives and
+        # the emitted URL keeps it (e.g. '/tools/improve.mdx/').
+        relative_path = file_name.strip().lstrip('/').removesuffix('.mdx').removesuffix('.md')
         if relative_path == 'index':
             relative_path = ''
         elif relative_path.endswith('/index'):
@@ -101,21 +145,8 @@ class PRHelpMessage:
             if self.question_str:
                 get_logger().info(f'Answering a PR question about the PR {self.git_provider.pr_url} ')
 
-                # current path
-                docs_path= Path(__file__).parent.parent.parent / 'docs' / 'docs'
-                # get all the 'md' files inside docs_path and its subdirectories
-                md_files = list(docs_path.glob('**/*.md'))
-                folders_to_exclude = ['/finetuning_benchmark/']
-                files_to_exclude = {'compression_strategy.md', '/docs/overview/index.md'}
-                md_files = [file for file in md_files if not any(folder in str(file) for folder in folders_to_exclude) and not any(file.name == file_to_exclude for file_to_exclude in files_to_exclude)]
-
-                # sort the 'md_files' so that 'priority_files' will be at the top
-                priority_files_strings = ['/docs/index.md', '/usage-guide', 'tools/describe.md', 'tools/review.md',
-                                          'tools/improve.md', '/faq']
-                md_files_priority = [file for file in md_files if
-                                     any(priority_string in str(file) for priority_string in priority_files_strings)]
-                md_files_not_priority = [file for file in md_files if file not in md_files_priority]
-                md_files = md_files_priority + md_files_not_priority
+                docs_path = docs_root()
+                md_files = collect_docs_files(docs_path)
 
                 docs_prompt = ""
                 for file in md_files:

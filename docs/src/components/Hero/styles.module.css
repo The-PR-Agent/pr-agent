@@ -1,0 +1,332 @@
+/* Masthead for the Overview page, which the docs plugin serves at `/`.
+   Contained rather than full-bleed: the sidebar and TOC are present on this
+   route, so a full-width band would have to escape `.container` and would
+   fight both. Every visual is CSS, so no extra asset ships and the global
+   `.markdown img` framing never applies here. */
+
+.hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  margin: -0.5rem -1rem 2.75rem;
+  padding: 2.75rem 2rem 2.25rem;
+  border-radius: 1rem;
+  border: 1px solid #dbe4f2;
+  background: linear-gradient(152deg, #f8fafc 0%, #eff4ff 58%, #e4ecff 100%);
+}
+
+[data-theme='dark'] .hero {
+  border-color: rgba(56, 189, 248, 0.18);
+  background: linear-gradient(152deg, #0e1729 0%, #101e3a 55%, #0c1626 100%);
+}
+
+.glow {
+  position: absolute;
+  inset: -40% -20% auto auto;
+  width: 34rem;
+  height: 34rem;
+  z-index: -1;
+  background: radial-gradient(
+    circle at center,
+    rgba(29, 78, 216, 0.11) 0%,
+    rgba(29, 78, 216, 0) 68%
+  );
+}
+
+[data-theme='dark'] .glow {
+  background: radial-gradient(
+    circle at center,
+    rgba(56, 189, 248, 0.16) 0%,
+    rgba(56, 189, 248, 0) 68%
+  );
+}
+
+/* -------------------------------------------------------------- eyebrow */
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 1.1rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid #c9d6ec;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 0.6875rem;
+  font-weight: 650;
+  letter-spacing: 0.085em;
+  text-transform: uppercase;
+  color: #1e40af; /* 8.6:1 on the chip */
+}
+
+[data-theme='dark'] .eyebrow {
+  border-color: rgba(125, 211, 252, 0.28);
+  background: rgba(56, 189, 248, 0.09);
+  color: #bae6fd; /* 11.8:1 */
+}
+
+.dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22);
+}
+
+/* ------------------------------------------------------- title, tagline */
+
+.title {
+  margin: 0 0 0.75rem;
+  font-size: clamp(2.25rem, 1.4rem + 3vw, 3.25rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  color: #0f172a; /* 18.6:1 */
+}
+
+[data-theme='dark'] .title {
+  color: #f1f5f9; /* 15.1:1 */
+}
+
+.tagline {
+  max-width: 46ch;
+  margin: 0 0 1.75rem;
+  font-size: 1.0625rem;
+  line-height: 1.58;
+  color: #334155; /* 9.4:1 */
+}
+
+[data-theme='dark'] .tagline {
+  color: #a9b7cc; /* 8.1:1 */
+}
+
+/* ----------------------------------------------------------------- CTAs */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-bottom: 1.9rem;
+}
+
+.ctaPrimary,
+.ctaSecondary,
+.ctaGhost {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.6rem 1.2rem;
+  border-radius: 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-decoration: none !important;
+  transition: background-color 160ms ease, border-color 160ms ease,
+    transform 160ms ease, color 160ms ease;
+}
+
+.ctaPrimary:hover,
+.ctaSecondary:hover,
+.ctaGhost:hover {
+  transform: translateY(-1px);
+}
+
+.ctaPrimary {
+  background: #1d4ed8;
+  color: #ffffff; /* 6.70:1 */
+}
+.ctaPrimary:hover {
+  background: #1a46c2;
+  color: #ffffff;
+}
+/* White on #38bdf8 is 2.14:1, so the dark-mode button takes ink instead. */
+[data-theme='dark'] .ctaPrimary {
+  background: #38bdf8;
+  color: #04121f; /* 8.82:1 */
+}
+[data-theme='dark'] .ctaPrimary:hover {
+  background: #55c7f9;
+  color: #04121f;
+}
+
+.ctaSecondary {
+  background: #ffffff;
+  border: 1px solid #c7d2e5;
+  color: #1e40af; /* 8.7:1 */
+}
+.ctaSecondary:hover {
+  border-color: #1d4ed8;
+  background: #f5f8ff;
+  color: #1e40af;
+}
+[data-theme='dark'] .ctaSecondary {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(125, 211, 252, 0.32);
+  color: #bae6fd; /* 11.4:1 */
+}
+[data-theme='dark'] .ctaSecondary:hover {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.15);
+  color: #e0f2fe;
+}
+
+.ctaGhost {
+  color: #475569; /* 7.6:1 */
+}
+.ctaGhost:hover {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.05);
+}
+[data-theme='dark'] .ctaGhost {
+  color: #94a3b8; /* 7.0:1 */
+}
+[data-theme='dark'] .ctaGhost:hover {
+  color: #e5e7eb;
+  background: rgba(148, 163, 184, 0.1);
+}
+
+/* ------------------------------------------------------- command chips */
+
+.commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.commands li {
+  margin: 0;
+}
+
+.command {
+  display: inline-block;
+  padding: 0.32rem 0.65rem;
+  border-radius: 0.4rem;
+  border: 1px solid #cdd9ec;
+  background: rgba(255, 255, 255, 0.8);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #1e40af; /* 8.2:1 */
+  text-decoration: none !important;
+  transition: border-color 160ms ease, background-color 160ms ease,
+    color 160ms ease;
+}
+.command:hover {
+  border-color: #1d4ed8;
+  background: #ffffff;
+  color: #1d4ed8;
+}
+[data-theme='dark'] .command {
+  border-color: rgba(125, 211, 252, 0.26);
+  background: rgba(15, 23, 42, 0.55);
+  color: #7dd3fc; /* 10.3:1 */
+}
+[data-theme='dark'] .command:hover {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  color: #bae6fd;
+}
+
+/* ------------------------------------------------------- provider strip */
+
+.providers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.09);
+  font-size: 0.8125rem;
+}
+
+[data-theme='dark'] .providers {
+  border-top-color: rgba(148, 163, 184, 0.16);
+}
+
+.providersLabel {
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.6875rem;
+  color: #64748b; /* 4.8:1 */
+}
+
+[data-theme='dark'] .providersLabel {
+  color: #8494a8; /* 6.1:1 */
+}
+
+.provider {
+  font-weight: 550;
+  color: #334155;
+}
+
+[data-theme='dark'] .provider {
+  color: #cbd5e1;
+}
+
+.sep {
+  color: #94a3b8;
+}
+
+[data-theme='dark'] .sep {
+  color: #475569;
+}
+
+.matrixLink {
+  margin-left: auto;
+  font-weight: 600;
+  color: #1e40af;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(30, 64, 175, 0.35);
+}
+.matrixLink:hover {
+  color: #1d4ed8;
+  border-bottom-color: #1d4ed8;
+  text-decoration: none;
+}
+[data-theme='dark'] .matrixLink {
+  color: #7dd3fc;
+  border-bottom-color: rgba(125, 211, 252, 0.4);
+}
+[data-theme='dark'] .matrixLink:hover {
+  color: #bae6fd;
+  border-bottom-color: #bae6fd;
+}
+
+/* ----------------------------------------------------------- responsive */
+
+@media (max-width: 996px) {
+  .hero {
+    margin-left: 0;
+    margin-right: 0;
+    padding: 2rem 1.35rem 1.75rem;
+  }
+  .matrixLink {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+@media (max-width: 560px) {
+  .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ctaPrimary,
+  .ctaSecondary,
+  .ctaGhost {
+    justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ctaPrimary:hover,
+  .ctaSecondary:hover,
+  .ctaGhost:hover {
+    transform: none;
+  }
+}

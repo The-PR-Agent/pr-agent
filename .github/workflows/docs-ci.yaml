@@ -6,10 +6,13 @@ on:
       - add-docs-portal
     paths:
       - docs/**
+  pull_request:
+    paths:
+      - docs/**
 permissions:
   contents: write
 jobs:
-  deploy:
+  docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -20,9 +23,14 @@ jobs:
           cache-dependency-path: docs/package-lock.json
       - run: npm ci
         working-directory: docs
+      # The build fails on broken links and anchors, so this is the gate that keeps
+      # a bad docs change from reaching main. It runs on pull requests too.
       - run: npm run build
         working-directory: docs
+      - name: Verify documentation URLs referenced from the codebase still resolve
+        run: python3 scripts/check_docs_urls.py
       - name: Deploy to GitHub Pages
+        if: github.event_name == 'push'
         uses: peaceiris/actions-gh-pages@4f9cc6602d3f66b9c108549d475ec49e8ef4d45e  # v4.0.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

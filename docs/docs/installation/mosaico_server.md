@@ -3,8 +3,6 @@ title: "MOSAICO A2A Server"
 sidebar_position: 9
 ---
 
-## MOSAICO A2A server
-
 PR-Agent can run as an [A2A](https://a2a-protocol.org/) 1.0 *solution agent* for the
 [MOSAICO](https://mosaico-project.eu/) ecosystem: a small Starlette server that exposes the
 standard A2A surface (agent card + JSON-RPC) plus a health probe. It is **not** a fork or a
