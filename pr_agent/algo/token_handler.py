@@ -59,13 +59,17 @@ class TokenEncoder:
         # The cached encoder and the model it belongs to must be read and written
         # as one unit. Checking outside the lock let a concurrent caller see the
         # new `_model` while `_encoder_instance` still held the previous model's
-        # tokenizer, and it would then get an encoder for the wrong model.
+        # tokenizer, and it would then get an encoder for the wrong model. Reading
+        # the cache again on return had the same problem in reverse: another
+        # request could swap the cache in between, so the encoder to return is
+        # captured here rather than re-read after the lock is released.
         with cls._lock:
             if cls._encoder_instance is None or model != cls._model:
                 encoder = cls._create_encoder(model)
                 cls._model = model
                 cls._encoder_instance = encoder
-        return cls._encoder_instance
+            encoder = cls._encoder_instance
+        return encoder
 
     @staticmethod
     def _create_encoder(model):

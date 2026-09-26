@@ -179,6 +179,56 @@ def test_concurrent_model_switch_does_not_hand_out_previous_model_encoder(monkey
         assert encoder is switched[0]
 
 
+def test_concurrent_model_swap_after_unlock_does_not_replace_returned_encoder(monkeypatch):
+    """A second request must not be able to swap the cache between the end of the
+    critical section and the encoder the first request returns."""
+    per_thread_model = {}
+
+    def fake_get_settings(use_context=True):
+        settings = SimpleNamespace(config=SimpleNamespace(model=per_thread_model.get("a", "model-a")))
+        return settings
+
+    monkeypatch.setattr(token_handler, "get_settings", fake_get_settings)
+    monkeypatch.setattr(token_handler.TokenEncoder, "_model", None)
+    monkeypatch.setattr(token_handler.TokenEncoder, "_encoder_instance", None)
+
+    encoder_a = MagicMock(name="model-a-encoder")
+    encoder_b = MagicMock(name="model-b-encoder")
+    encoders = {"model-a": encoder_a, "model-b": encoder_b}
+    monkeypatch.setattr(
+        token_handler.TokenEncoder,
+        "_create_encoder",
+        staticmethod(lambda model: encoders[model]),
+    )
+
+    def second_request_replaces_the_cache():
+        token_handler.TokenEncoder._model = "model-b"
+        token_handler.TokenEncoder._encoder_instance = encoder_b
+
+    class InterleavingLock:
+        """Lock that runs a hook as the critical section ends, to stand in for a
+        concurrent request committing its own cache entry at that instant."""
+
+        def __init__(self, real_lock, on_exit):
+            self._real_lock = real_lock
+            self._on_exit = on_exit
+
+        def __enter__(self):
+            return self._real_lock.__enter__()
+
+        def __exit__(self, *exc_info):
+            self._on_exit()
+            return self._real_lock.__exit__(*exc_info)
+
+    monkeypatch.setattr(
+        token_handler.TokenEncoder,
+        "_lock",
+        InterleavingLock(threading.Lock(), second_request_replaces_the_cache),
+    )
+
+    assert token_handler.TokenEncoder.get_token_encoder("model-a") is encoder_a
+
+
 def test_force_accurate_openai_uses_litellm_acount_tokens(monkeypatch):
     settings = _settings(
         model="claude-sonnet-4-6",
