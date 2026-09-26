@@ -3,6 +3,7 @@ import pytest
 
 from pr_agent.agent.pr_agent import prepare_command
 from pr_agent.algo.cli_args import CliArgs
+from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -40,13 +41,14 @@ def test_a_forbidden_argument_is_not_applied(settings, argument):
         settings.set(key, original)
 
 
-def test_an_allowed_argument_is_still_applied(settings):
-    """Ordinary auto-command overrides must keep working."""
+def test_an_allowed_argument_is_retained_without_applying_it(settings):
+    """Apply accepted overrides only when the command is dispatched."""
     original = settings.get("pr_reviewer.extra_instructions", "")
     try:
-        prepare_command('/review --pr_reviewer.extra_instructions="focus on tests"')
+        command = prepare_command('/review --pr_reviewer.extra_instructions="focus on tests"')
 
-        assert settings.get("pr_reviewer.extra_instructions") == "focus on tests"
+        assert command == ["/review", '--pr_reviewer.extra_instructions="focus on tests"']
+        assert settings.get("pr_reviewer.extra_instructions") == original
     finally:
         settings.set("pr_reviewer.extra_instructions", original)
 
@@ -77,8 +79,10 @@ def test_an_instruction_that_mentions_a_forbidden_key_is_still_applied(settings,
     """Only the key can set a setting; the value is free text a reviewer may write anything in."""
     original = settings.get("pr_reviewer.extra_instructions", "")
     try:
-        prepare_command(f'/review --pr_reviewer.extra_instructions="{instruction}"')
+        command = prepare_command(f'/review --pr_reviewer.extra_instructions="{instruction}"')
 
+        assert settings.get("pr_reviewer.extra_instructions") == original
+        assert update_settings_from_args(command[1:]) == []
         assert settings.get("pr_reviewer.extra_instructions") == instruction
     finally:
         settings.set("pr_reviewer.extra_instructions", original)
@@ -114,9 +118,12 @@ def test_a_forbidden_and_an_allowed_argument_are_separated(settings):
     """A dropped argument must not take an allowed one with it."""
     original = settings.get("pr_reviewer.extra_instructions", "")
     try:
-        prepare_command('/review --openai.key=sk-leaked '
-                        '--pr_reviewer.extra_instructions="focus on retries"')
+        command = prepare_command('/review --openai.key=sk-leaked '
+                                  '--pr_reviewer.extra_instructions="focus on retries"')
 
+        assert command == ["/review", '--pr_reviewer.extra_instructions="focus on retries"']
+        assert settings.get("pr_reviewer.extra_instructions") == original
+        assert update_settings_from_args(command[1:]) == []
         assert settings.get("pr_reviewer.extra_instructions") == "focus on retries"
     finally:
         settings.set("pr_reviewer.extra_instructions", original)

@@ -1,11 +1,16 @@
 import asyncio
+import copy
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo import artifacts
+from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import utils as provider_utils
 
 
 def _identity_args(args):
@@ -92,6 +97,39 @@ async def test_handle_request_routes_list_request_without_string_parsing(monkeyp
     assert runs == [("https://example/pr/1", "fake-ai", ["don't split", "--flag=value"])]
 
 
+@pytest.mark.asyncio
+async def test_prepared_override_wins_after_repo_settings_and_next_command_reloads_defaults(monkeypatch):
+    observed = []
+    provider = SimpleNamespace(
+        get_repo_settings=lambda: b'[pr_reviewer]\nextra_instructions = "repository default"\n'
+    )
+
+    class FakeReview:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self):
+            observed.append(get_settings().get("PR_REVIEWER.EXTRA_INSTRUCTIONS"))
+
+    monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
+    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        get_settings().set("CONFIG.USE_REPO_SETTINGS_FILE", True)
+        get_settings().set("CONFIG.ENABLE_PER_DIRECTORY_SETTINGS", False)
+        get_settings().set("CONFIG.EXTRA_CONFIG_URL", None)
+        get_settings().set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "initial")
+        worker = pr_agent_module.PRAgent(ai_handler="fake-ai")
+        for command in ['/review --pr_reviewer.extra_instructions="command value"', "/review"]:
+            assert await worker.handle_request(
+                "https://example.com/org/repo/pull/1", pr_agent_module.prepare_command(command)
+            ) is True
+
+    assert observed == ["command value", "repository default"]
+
+
 def test_prepare_command_preserves_spaces_in_quoted_config_values():
     settings = get_settings()
     setting_key = "PR_REVIEWER.EXTRA_INSTRUCTIONS"
@@ -102,7 +140,9 @@ def test_prepare_command_preserves_spaces_in_quoted_config_values():
             '/review --pr_reviewer.extra_instructions="Focus on authentication and authorization"'
         )
 
-        assert command == ["/review"]
+        assert command[0] == "/review"
+        assert settings.get(setting_key) == original
+        assert update_settings_from_args(command[1:]) == []
         assert settings.get(setting_key) == "Focus on authentication and authorization"
     finally:
         settings.set(setting_key, original)
@@ -133,7 +173,9 @@ def test_prepare_command_preserves_quoted_yaml_sensitive_values(quoted_value, ex
             f"/review --pr_reviewer.extra_instructions={quoted_value}"
         )
 
-        assert command == ["/review"]
+        assert command[0] == "/review"
+        assert settings.get(setting_key) == original
+        assert update_settings_from_args(command[1:]) == []
         assert settings.get(setting_key) == expected_value
     finally:
         settings.set(setting_key, original)
@@ -149,7 +191,9 @@ def test_prepare_command_accepts_apostrophes_in_unquoted_arguments_and_values():
             "/review --pr_reviewer.extra_instructions=O'Reilly"
         )
 
-        assert command == ["/review"]
+        assert command[0] == "/review"
+        assert settings.get(setting_key) == original
+        assert update_settings_from_args(command[1:]) == []
         assert settings.get(setting_key) == "O'Reilly"
         assert pr_agent_module.prepare_command("/ask What's wrong?") == [
             "/ask",
@@ -170,7 +214,9 @@ def test_prepare_command_keeps_unquoted_value_type_when_key_is_quoted():
             '/review --"pr_code_suggestions.num_code_suggestions"=3'
         )
 
-        assert command == ["/review"]
+        assert command[0] == "/review"
+        assert settings.get(setting_key) == original
+        assert update_settings_from_args(command[1:]) == []
         assert settings.get(setting_key) == 3
         assert isinstance(settings.get(setting_key), int)
     finally:

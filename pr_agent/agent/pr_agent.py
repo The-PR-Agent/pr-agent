@@ -239,10 +239,10 @@ def _validation_args(args: list[str]) -> list[str]:
 
 
 def prepare_command(command: str) -> list[str]:
-    """Apply configured command settings while retaining argument boundaries.
+    """Validate configured argv without applying settings before repository defaults.
 
-    Return argv so ``PRAgent`` does not parse the command again. Quoted setting
-    values retain their string type when passed to the settings loader.
+    Return argv so ``PRAgent`` applies overrides after repository settings without
+    parsing the command again. Quoted setting values retain their string type.
     """
     command_args = parse_command(command)
     if not command_args:
@@ -261,9 +261,7 @@ def prepare_command(command: str) -> list[str]:
         get_logger().error(
             "Dropping auto-command argument(s) targeting forbidden param(s): "
             + ", ".join(f"'{param}'" for param in rejected))
-        args = kept
-    other_args = update_settings_from_args(args)
-    return [action] + other_args
+    return [action] + kept
 
 
 class PRAgent:
