@@ -44,6 +44,11 @@ class TestExtractRelevantLinesStr:
         result = extract_relevant_lines_str(end_line=2, files=[file], relevant_file="src/foo.py", start_line=1)
         assert result == ""
 
+    def test_returns_empty_when_slice_is_out_of_range(self):
+        file = _make_file("src/foo.py", "line1\nline2\nline3\n")
+        result = extract_relevant_lines_str(end_line=99, files=[file], relevant_file="src/foo.py", start_line=50)
+        assert result == ""
+
     def test_extracts_single_line(self):
         file = _make_file("src/foo.py", "line1\nline2\nline3\n")
         result = extract_relevant_lines_str(end_line=2, files=[file], relevant_file="src/foo.py", start_line=2)
