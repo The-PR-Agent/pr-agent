@@ -319,9 +319,10 @@ class PRAgent:
 
         # Then, apply user specific settings if exists
         if isinstance(request, str):
-            request = request.replace("'", "\\'")
             lexer = shlex.shlex(request, posix=True)
             lexer.whitespace_split = True
+            # Keep apostrophes literal without adding backslashes inside double quotes.
+            lexer.quotes = '"'
             action, *args = list(lexer)
         else:
             action, *args = request
