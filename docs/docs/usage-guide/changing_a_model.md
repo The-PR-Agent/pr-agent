@@ -808,6 +808,22 @@ With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you ca
 
 For a model served through an OpenAI-compatible endpoint that litellm does not recognize as reasoning-capable, add its ID to `config.additional_reasoning_effort_models`. For known models support is decided by litellm's bundled reasoning metadata plus the maintained Grok registry (Grok ids resolve through their `xai/` prefix) with Claude models left out of the metadata path (their reasoning comes from the dedicated extended/adaptive thinking settings; an explicit entry in the list above still applies to them). Config IDs match exactly or through any provider prefix (e.g. `"deepseek-v4-flash-0731"` matches `"openai/deepseek-v4-flash-0731"`). When LiteLLM does not recognize the model, PR-Agent sets `allowed_openai_params = ["reasoning_effort"]` so the parameter reaches the endpoint. Note the default `"medium"` may be rejected by providers that accept a different subset (e.g. `"none"/"low"/"high"/"max"`); adding a custom model ID surfaces that provider-side error instead of silently dropping the setting.
 
+To use [GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol) or
+[GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna):
+
+```toml
+[config]
+model = "gpt-6-sol" # or "gpt-6-luna"
+reasoning_effort = "medium" # "none", "low", "medium", "high", "xhigh", "max"
+```
+
+PR-Agent omits temperature for GPT-6 Sol and Luna. Their native `none` and `max` reasoning
+efforts are passed through unchanged, while the legacy `minimal` setting is mapped to `low`.
+Both models have a 1,050,000-token context window, still subject to `config.max_model_tokens`,
+and support up to 128,000 output tokens. The existing Chat Completions path is used for PR-Agent's
+text requests. OpenAI requires the Responses API for built-in tools and function calling with
+reasoning; Chat Completions function calling is limited to `reasoning_effort = "none"`.
+
 To use [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra):
 
 ```toml
@@ -868,8 +884,8 @@ provider's own default applies. On some providers that default is low — for ex
 (Converse API) can cap Claude reasoning models at 4096 output tokens, and since reasoning tokens
 count against that budget, the visible answer can come back empty or truncated. Set
 `config.max_output_tokens` to a positive value (e.g. `16000`) to send it to LiteLLM as
-`max_completion_tokens` for GPT-6 Astra or `max_tokens` for other models. Use a value supported by
-the selected model; GPT-6 Astra supports at most 128,000 output tokens, including reasoning tokens.
+`max_completion_tokens` for supported GPT-6 models or `max_tokens` for other models. Use a value supported by
+the selected model; GPT-6 Astra, Sol, and Luna support at most 128,000 output tokens, including reasoning tokens.
 PR-Agent does not automatically clamp this setting to the model's output limit.
 When Claude extended thinking is enabled, `extended_thinking_max_output_tokens` takes precedence.
 For models with small context windows, keep in mind that prompt and completion tokens share the

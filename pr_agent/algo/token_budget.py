@@ -6,7 +6,7 @@ from typing import Callable, Literal
 from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 
-from pr_agent.algo import MAX_TOKENS
+from pr_agent.algo import GPT6_MODELS, MAX_TOKENS
 from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -47,7 +47,7 @@ def get_max_tokens(model, ignore_max_model_tokens=False):
     logic:
     (1) If the model is in './pr_agent/algo/__init__.py', use the value from there.
     (2) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
-    (3) else if it is a GPT-5.x _thinking alias registered under its base name, use that value.
+    (3) Resolve a supported GPT-5.x/GPT-6 alias to its registered base-model value.
     (4) else, query LiteLLM for provider-qualified and bare alias bases before the original model.
     (5) else, raise an error.
 
@@ -58,13 +58,14 @@ def get_max_tokens(model, ignore_max_model_tokens=False):
     """
     settings = get_settings()
     custom_max_tokens = _as_int(settings.config.custom_model_max_tokens)
-    # Resolve GPT-6 Astra aliases before diff token accounting, just as the handler does.
+    # Resolve supported GPT-6 aliases before diff token accounting, just as the handler does.
     # Preserve explicit custom limits for provider aliases that were not in the registry.
     model_base = model
     while model_base.startswith(("openai/", "azure/")):
         model_base = model_base.removeprefix("openai/").removeprefix("azure/")
-    if custom_max_tokens <= 0 and model_base.removesuffix("_thinking") == "gpt-6-astra":
-        model = "gpt-6-astra"
+    model_base = model_base.removesuffix("_thinking")
+    if custom_max_tokens <= 0 and model_base in GPT6_MODELS:
+        model = model_base
     # Normalize GPT-5.x _thinking aliases before token-limit lookup to match
     # LiteLLMAIHandler request normalization.
     model_for_max_tokens = model

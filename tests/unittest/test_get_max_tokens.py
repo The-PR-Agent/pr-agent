@@ -106,10 +106,11 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1050000
 
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
     @pytest.mark.parametrize("prefix", ["", "openai/", "azure/", "azure/openai/"])
     @pytest.mark.parametrize("suffix", ["", "_thinking"])
     @pytest.mark.parametrize("cap", [0, 32000])
-    def test_gpt6_astra_model_max_tokens(self, monkeypatch, prefix, suffix, cap):
+    def test_gpt6_model_max_tokens(self, monkeypatch, model, prefix, suffix, cap):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 0,
@@ -119,14 +120,14 @@ class TestGetMaxTokens:
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_model_info", lambda *args, **kwargs: pytest.fail("Static lookup expected"))
 
-        assert get_max_tokens(f"{prefix}gpt-6-astra{suffix}") == (cap or 1050000)
+        assert get_max_tokens(f"{prefix}{model}{suffix}") == (cap or 1050000)
 
-    @pytest.mark.parametrize("model", [
-        "openai/gpt-6-astra", "azure/gpt-6-astra", "azure/openai/gpt-6-astra_thinking",
-        "gpt-6-astra_thinking",
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("alias", [
+        "openai/{}", "azure/{}", "azure/openai/{}_thinking", "{}_thinking",
     ])
     @pytest.mark.parametrize("cap, expected", [(0, 128000), (32000, 32000)])
-    def test_gpt6_astra_alias_preserves_custom_limit(self, monkeypatch, model, cap, expected):
+    def test_gpt6_alias_preserves_custom_limit(self, monkeypatch, model, alias, cap, expected):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 128000,
@@ -135,7 +136,7 @@ class TestGetMaxTokens:
         })()
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == expected
+        assert get_max_tokens(alias.format(model)) == expected
 
     @pytest.mark.parametrize("model", [
         "gpt-5_thinking",

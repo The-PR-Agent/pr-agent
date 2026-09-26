@@ -46,7 +46,7 @@ max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
 custom_model_max_tokens=-1 # for models not in the default list
-# Sent as max_completion_tokens for GPT-6 Astra, otherwise max_tokens; use a limit supported by the model.
+# Send max_completion_tokens for supported GPT-6 models, otherwise max_tokens; use a limit supported by the model.
 max_output_tokens = 0 # 0 = unset (the provider's own default applies)
 model_token_count_estimate_factor=0.3 # factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.
 image_input_token_allowance=4096 # reserve tokens per image when provider counting omits or underestimates image cost
