@@ -51,42 +51,44 @@ def filter_ignored(files, platform = 'github'):
 
         # keep filenames that _don't_ match the ignore regex
         if files:
-            # GitLab and Bitbucket diff entries name one file by up to two paths
-            # (rename source and destination). Resolve the path each entry is
-            # filtered by once, up front, so every pattern tests the same name.
-            has_rename_paths = platform in ('bitbucket', 'gitlab')
-            entry_paths = None
-            if has_rename_paths:
-                entry_paths = [_entry_path(f, platform) for f in files]
-                for path in entry_paths:
+            if platform in ('bitbucket', 'gitlab'):
+                # GitLab and Bitbucket diff entries name one file by up to two paths
+                # (rename source and destination). Resolve the path each entry is
+                # filtered by once and keep it paired with the entry while the
+                # patterns run: the pairing has to survive every pass, because each
+                # pass drops entries and the path of a dropped entry no longer has a
+                # file to pair with.
+                paired = []
+                for f in files:
+                    path = _entry_path(f, platform)
                     if path is None:
                         get_logger().debug(
                             "Excluding a diff entry from ignore filtering: it names no path to match on")
-
-            for r in compiled_patterns:
-                if platform in ('github', 'codecommit'):
-                    files = [f for f in files if (f.filename and not r.match(f.filename))]
-                elif has_rename_paths:
-                    files = [
-                        f for f, path in zip(files, entry_paths, strict=True)
-                        if path is not None and not r.match(path)
-                    ]
-                elif platform == 'bitbucket_server':
-                    files = [
-                        f for f in files
-                        if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])
-                    ]
-                elif platform == 'azure':
-                    files = [f for f in files if not r.match(f)]
-                elif platform == 'gitea':
-                    files = [f for f in files if not r.match(f.get("filename", ""))]
-                elif platform == "gerrit":
-                    files_o = []
-                    for f in files:
-                        path = f.b_path or f.a_path
-                        if path and not r.match(path):
-                            files_o.append(f)
-                    files = files_o
+                        continue
+                    paired.append((f, path))
+                for r in compiled_patterns:
+                    paired = [(f, path) for f, path in paired if not r.match(path)]
+                files = [f for f, _ in paired]
+            else:
+                for r in compiled_patterns:
+                    if platform in ('github', 'codecommit'):
+                        files = [f for f in files if (f.filename and not r.match(f.filename))]
+                    elif platform == 'bitbucket_server':
+                        files = [
+                            f for f in files
+                            if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])
+                        ]
+                    elif platform == 'azure':
+                        files = [f for f in files if not r.match(f)]
+                    elif platform == 'gitea':
+                        files = [f for f in files if not r.match(f.get("filename", ""))]
+                    elif platform == "gerrit":
+                        files_o = []
+                        for f in files:
+                            path = f.b_path or f.a_path
+                            if path and not r.match(path):
+                                files_o.append(f)
+                        files = files_o
 
     except Exception as e:
         get_logger().error(f"Could not filter file list: {e}")

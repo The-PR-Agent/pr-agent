@@ -1,5 +1,22 @@
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.config_loader import global_settings
+from pr_agent.log import get_logger
+
+
+def _capture_logs(call):
+    import io
+
+    buffer = io.StringIO()
+    handler_id = get_logger().add(buffer, level='DEBUG', format='{message}', colorize=False)
+    try:
+        call()
+    finally:
+        get_logger().remove(handler_id)
+    return buffer.getvalue()
+
+
+def _capture_errors(call):
+    return [line for line in _capture_logs(call).splitlines() if 'Could not filter file list' in line]
 
 
 class _BitbucketSide:
@@ -294,3 +311,86 @@ class TestRenameFiltering:
         untouched = _gitlab_change('src/app.py', 'src/app.py')
 
         assert filter_ignored([renamed, untouched], platform='gitlab') == [untouched]
+
+
+class TestMultiplePatterns:
+    """Every pattern has to run, including after an earlier one drops entries.
+
+    A file is matched against one path per entry, and each pass removes entries,
+    so the file and its path must stay paired across passes. When a pass shortened
+    the file list without shortening the path list, the next pass raised and the
+    remaining patterns never ran, leaving later matches in the result.
+    """
+
+    @staticmethod
+    def _ignore(monkeypatch, regex):
+        monkeypatch.setattr(global_settings.ignore, 'regex', regex)
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+    def test_gitlab_later_pattern_still_applies_after_an_earlier_one_drops_entries(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$', r'^secrets/'])
+
+        dropped_first = _gitlab_change('vendor/lib.py', 'vendor/lib.py')
+        dropped_second = _gitlab_change('src/api_generated.py', 'src/api.py')
+        dropped_third = _gitlab_change('secrets/app.yaml', 'secrets/app.yaml')
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+
+        files = [dropped_first, dropped_second, dropped_third, untouched]
+
+        assert filter_ignored(list(files), platform='gitlab') == [untouched]
+
+    def test_bitbucket_later_pattern_still_applies_after_an_earlier_one_drops_entries(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$', r'^secrets/'])
+
+        dropped_first = _BitbucketDiffstat('vendor/lib.py', 'vendor/lib.py')
+        dropped_second = _BitbucketDiffstat('src/api_generated.py', 'src/api.py')
+        dropped_third = _BitbucketDiffstat('secrets/app.yaml', 'secrets/app.yaml')
+        untouched = _BitbucketDiffstat('src/app.py', 'src/app.py')
+
+        files = [dropped_first, dropped_second, dropped_third, untouched]
+
+        assert filter_ignored(list(files), platform='bitbucket') == [untouched]
+
+    def test_renamed_entry_survives_earlier_pattern_passes(self, monkeypatch):
+        """A rename that an earlier pattern drops must not shift later matches.
+
+        The entry before the rename in the list is what an earlier pattern removes;
+        if its removal shifts the path list relative to the file list, the rename
+        that a later pattern should drop is left in the result.
+        """
+        self._ignore(monkeypatch, [r'^vendor/', r'.*\.pem$'])
+
+        dropped_first = _gitlab_change('vendor/lib.py', 'vendor/lib.py')
+        dropped_later = _gitlab_change('id_rsa.pem', 'notes.txt')
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+
+        assert filter_ignored([dropped_first, dropped_later, untouched], platform='gitlab') == [untouched]
+
+    def test_no_filter_error_is_logged_across_pattern_passes(self, monkeypatch):
+        """A mismatch between the file and path lists must surface, not be swallowed."""
+        self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$'])
+
+        files = [
+            _gitlab_change('vendor/lib.py', 'vendor/lib.py'),
+            _gitlab_change('src/api_generated.py', 'src/api.py'),
+        ]
+
+        errors = _capture_errors(lambda: filter_ignored(list(files), platform='gitlab'))
+
+        assert errors == []
+
+    def test_every_pattern_can_drop_an_entry_one_at_a_time(self, monkeypatch):
+        """Narrow down to a single survivor so each pass has something to drop."""
+        self._ignore(monkeypatch, [r'^a/', r'^b/', r'^c/', r'^d/', r'^e/'])
+
+        files = [
+            _gitlab_change('a/1.py', 'a/1.py'),
+            _gitlab_change('b/2.py', 'b/2.py'),
+            _gitlab_change('c/3.py', 'c/3.py'),
+            _gitlab_change('d/4.py', 'd/4.py'),
+            _gitlab_change('e/5.py', 'e/5.py'),
+            _gitlab_change('src/keep.py', 'src/keep.py'),
+        ]
+
+        assert filter_ignored(list(files), platform='gitlab') == [files[-1]]
