@@ -50,7 +50,9 @@ def filter_ignored(files, platform = 'github'):
             files = list(files)
 
         # keep filenames that _don't_ match the ignore regex
-        if files:
+        # With no compiled pattern there is nothing to match against, so the list is
+        # returned untouched on every platform.
+        if files and compiled_patterns:
             if platform in ('bitbucket', 'gitlab'):
                 # GitLab and Bitbucket diff entries name one file by up to two paths
                 # (rename source and destination). Resolve the path each entry is

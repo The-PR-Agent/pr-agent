@@ -394,3 +394,59 @@ class TestMultiplePatterns:
         ]
 
         assert filter_ignored(list(files), platform='gitlab') == [files[-1]]
+
+
+class TestNoPatternsConfigured:
+    """No compiled pattern means there is nothing to match, so nothing is filtered.
+
+    This holds for every platform, including one whose entry names no path: the
+    filter is a no-op, not an opportunity to drop entries the user never asked to
+    exclude. It also means a pathless entry is only ever dropped by a pattern pass.
+    """
+
+    @staticmethod
+    def _no_patterns(monkeypatch, regex=None):
+        monkeypatch.setattr(global_settings.ignore, 'regex', regex if regex is not None else [])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+    def test_gitlab_pathless_entry_survives_when_no_pattern_is_configured(self, monkeypatch):
+        self._no_patterns(monkeypatch)
+
+        pathless = {'diff': 'diff --git a/x b/x'}
+        files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
+
+        assert filter_ignored(list(files), platform='gitlab') == files
+
+    def test_bitbucket_pathless_entry_survives_when_no_pattern_is_configured(self, monkeypatch):
+        self._no_patterns(monkeypatch)
+
+        pathless = _BitbucketDiffstat(None, None)
+        files = [pathless, _BitbucketDiffstat('src/app.py', 'src/app.py')]
+
+        assert filter_ignored(list(files), platform='bitbucket') == files
+
+    def test_gitlab_rename_survives_when_no_pattern_is_configured(self, monkeypatch):
+        self._no_patterns(monkeypatch)
+
+        renamed = _gitlab_change('poetry.lock', 'notes.txt')
+
+        assert filter_ignored([renamed], platform='gitlab') == [renamed]
+
+    def test_nothing_is_filtered_when_every_pattern_fails_to_compile(self, monkeypatch):
+        """An unusable pattern leaves no pattern to match, so the list is untouched."""
+        self._no_patterns(monkeypatch, regex=['(((||', '[[['])
+
+        pathless = {'diff': 'diff --git a/x b/x'}
+        files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
+
+        assert filter_ignored(list(files), platform='gitlab') == files
+
+    def test_pathless_entry_is_dropped_once_a_pattern_exists(self, monkeypatch):
+        """The drop belongs to a pattern pass, which is the only thing that excludes."""
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        pathless = {'diff': 'diff --git a/x b/x'}
+        files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
+
+        assert filter_ignored(list(files), platform='gitlab') == [files[1]]
