@@ -1391,6 +1391,7 @@ class TestLiteLLMReasoningEffortGrok:
             ("gemini/gemini-3.8-flash", "minimal", "low"),
             ("vertex_ai/gemini-3.8-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.8-flash", "minimal", "low"),
+            ("openrouter/google/gemini-3.8-flash:nitro", "minimal", "low"),
             ("gemini/gemini-3.7-flash", "low", "low"),
             ("gemini/gemini-3.7-flash", "medium", "medium"),
             ("gemini/gemini-3.7-flash", "high", "high"),

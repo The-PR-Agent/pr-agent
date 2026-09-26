@@ -1912,8 +1912,9 @@ class LiteLLMAIHandler(BaseAiHandler):
     @staticmethod
     def _is_gemini_minimal_reasoning_model(model: str) -> bool:
         """Return whether Gemini's ``minimal`` effort needs a supported-level fallback."""
+        normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
         return any(
-            model == gemini_id or model.endswith("/" + gemini_id)
+            normalized_model == gemini_id or normalized_model.endswith("/" + gemini_id)
             for gemini_id in ("gemini-3.7-flash", "gemini-3.8-flash")
         )
 
