@@ -75,7 +75,10 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
     head_idx = 0  # 0-based cursor into head_lines
 
     for hunk in patch_set[0]:
-        hunk_head_start = hunk.target_start - 1  # 1-based -> 0-based
+        # 1-based -> 0-based. A hunk with no head lines (a pure deletion, as in
+        # `git diff -U0`, or a file emptied of all lines) numbers the line *before*
+        # the change instead, so its start already is the 0-based insertion point.
+        hunk_head_start = hunk.target_start if hunk.target_length == 0 else hunk.target_start - 1
         if hunk_head_start < head_idx or hunk_head_start > len(head_lines):
             return ""  # out-of-order / out-of-bounds hunk
         base_lines.extend(head_lines[head_idx:hunk_head_start])

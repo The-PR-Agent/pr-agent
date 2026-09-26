@@ -186,7 +186,8 @@ class DiffInputProvider(GitProvider):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str,
+                               relevant_line_in_file: str, original_suggestion=None):
         pass
 
     def publish_inline_comments(self, comments: list):

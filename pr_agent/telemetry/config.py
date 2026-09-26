@@ -1,4 +1,4 @@
-from pr_agent.algo.utils import get_version
+from pr_agent.algo.run_output import get_version
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.prometheus_multiproc import ensure_prometheus_multiproc_dir

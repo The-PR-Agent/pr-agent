@@ -60,7 +60,7 @@ def chunking_enabled():
     snapshot = snapshot_settings(_TRACKED_KEYS)
     get_settings().set("pr_reviewer.enable_large_pr_chunking", True)
     get_settings().set("pr_reviewer.max_number_of_calls", 3)
-    with patch("pr_agent.tools.pr_reviewer.get_max_tokens", return_value=10000):
+    with patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000):
         yield
     restore_settings(snapshot)
 
@@ -128,6 +128,41 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
     assert reviewer.review_failed_chunk_count == 0
     # the coverage footer keeps reporting what even chunking could not fit
     assert reviewer.remaining_files_list == ["still_left_out.py"]
+
+
+@pytest.mark.asyncio
+async def test_final_fit_clipping_marks_a_review_chunk_failed(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._raw_prompt_vars = None
+    reviewer.vars = {"diff": ""}
+    reviewer.ai_handler.chat_completion = AsyncMock(return_value=(CHUNK_A, "stop"))
+
+    class SelectiveBudget:
+        def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            fitted_text = optional_text[:-1] if optional_text == "chunk-b" else optional_text
+            return SimpleNamespace(
+                optional_text=fitted_text,
+                system_prompt="system",
+                user_prompt="user",
+            )
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch(
+            "pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+            return_value=(["chunk-a", "chunk-b"], []),
+        ),
+        patch(
+            "pr_agent.tools.pr_reviewer.AttemptTokenBudget.for_attempt",
+            return_value=SelectiveBudget(),
+        ),
+        pytest.raises(ValueError, match="complete packed review diff"),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    assert list(reviewer._chunked_results) == [0]
+    assert reviewer.prediction is None
+    reviewer.ai_handler.chat_completion.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -365,7 +400,7 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
     reviewer.git_provider.supports_review_comment_identity.return_value = False
     chunk_c = CHUNK_A.replace("a.py", "c.py").replace("the index is never checked", "the value is never checked")
     reviewer._get_prediction = AsyncMock(side_effect=[
-        CHUNK_A, "review: {}", chunk_c, RuntimeError("context limit exceeded"),
+        CHUNK_A, "review: {}", chunk_c, TimeoutError("context limit exceeded"),
     ])
     settings_values = {
         "config.model": "primary",
@@ -448,7 +483,7 @@ async def test_larger_fallback_includes_omitted_files_without_repeating_successe
         ]) as get_diff,
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=([chunk_a, chunk_b], ["c.py"])) as get_multi,
-        patch("pr_agent.tools.pr_reviewer.get_max_tokens",
+        patch("pr_agent.algo.token_budget.get_max_tokens",
               return_value=10000 if fallback_fits else 1500 + len(chunk_b)),
     ):
         with pytest.raises(RuntimeError, match="model refused"):
@@ -485,8 +520,8 @@ async def test_a_smaller_fallback_splits_an_oversized_pending_chunk(chunking_ena
               side_effect=[(combined_chunk, ["c.py", "blong.py"]), (combined_chunk, [])]),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
               return_value=([combined_chunk, chunk_c], [])),
-        patch("pr_agent.tools.pr_reviewer.get_max_tokens",
-              side_effect=lambda model: 10000 if model == "primary" else 1540),
+        patch("pr_agent.algo.token_budget.get_max_tokens",
+              side_effect=lambda model, **_kwargs: 10000 if model == "primary" else 1540),
     ):
         with pytest.raises(RuntimeError, match="model refused"):
             await reviewer._prepare_prediction("primary")

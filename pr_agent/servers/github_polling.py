@@ -254,10 +254,17 @@ async def _start_queued_processes(task_queue, max_allowed_parallel_tasks, active
         for _ in range(overflow):
             task_queue.pop()
 
+    waiting_logged = False
     try:
         while task_queue:
             _reap_finished_processes(active_processes)
             if len(active_processes) >= max_allowed_parallel_tasks:
+                if not waiting_logged:
+                    get_logger().info(
+                        f"Polling dispatch waiting for capacity: {len(active_processes)} workers active, "
+                        f"{len(task_queue)} tasks queued"
+                    )
+                    waiting_logged = True
                 await asyncio.sleep(POLLING_CAPACITY_CHECK_INTERVAL)
                 continue
             func, args = task_queue[0]
@@ -346,7 +353,8 @@ async def polling_loop():
 
                                 # Add to the task queue
                                 get_logger().info(
-                                    f"Adding comment processing to task queue for PR, {pr_url}, comment_body: {comment_body}")
+                                    f"Adding comment processing to task queue for PR, {pr_url},"
+                                    f" comment_body: {comment_body}")
                                 task_queue.append((process_comment_sync, (pr_url, rest_of_comment, comment_id)))
                                 get_logger().info(f"Queued comment processing for PR: {pr_url}")
                             else:

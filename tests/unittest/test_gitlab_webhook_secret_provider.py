@@ -1,3 +1,4 @@
+import json
 import os
 
 import httpx
@@ -9,6 +10,15 @@ import pr_agent.servers.gitlab_webhook as gitlab_webhook
 
 class FakeSecretProvider:
     """Stands in for a cloud secret client, which must not be shared across a fork."""
+
+    def __init__(self, secret=None, error=None):
+        self.secret = secret
+        self.error = error
+
+    def get_secret(self, token):
+        if self.error is not None:
+            raise RuntimeError(self.error)
+        return self.secret
 
 
 @pytest.fixture(autouse=True)
@@ -154,3 +164,81 @@ async def test_keep_the_webhook_token_out_of_the_logs(gitlab_webhook_settings):
 
     assert records, "nothing was logged, so the assertion below would be vacuous"
     assert not any(secret_token in record for record in records)
+
+
+@pytest.mark.asyncio
+async def test_accept_a_webhook_token_resolved_by_the_secret_provider(monkeypatch, gitlab_webhook_settings):
+    """Accept a delivery whose token resolves through the cloud secret provider even when it
+    does not match the configured shared secret."""
+    secret = json.dumps({"gitlab_token": "glpat-provider", "token_name": "webhook-1"})
+    monkeypatch.setattr(gitlab_webhook, "get_secret_provider", lambda: FakeSecretProvider(secret=secret))
+
+    assert (await _post_webhook("provider-token")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_fall_back_to_shared_secret_when_provider_initialization_fails(monkeypatch, gitlab_webhook_settings):
+    """Fall back to the shared secret when the cloud client cannot be built."""
+    monkeypatch.setattr(gitlab_webhook, "get_secret_provider",
+                        lambda: (_ for _ in ()).throw(RuntimeError("secrets manager unreachable")))
+
+    assert (await _post_webhook("topsecret")).status_code == 200
+    assert (await _post_webhook("wrong-secret")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_fall_back_to_shared_secret_when_the_secret_read_fails(monkeypatch, gitlab_webhook_settings):
+    """Fall back to the shared secret when the provider read raises."""
+    monkeypatch.setattr(
+        gitlab_webhook, "get_secret_provider",
+        lambda: FakeSecretProvider(error="secrets manager read failed"))
+
+    assert (await _post_webhook("topsecret")).status_code == 200
+    assert (await _post_webhook("wrong-secret")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_fall_back_to_shared_secret_when_the_provider_lookup_is_empty(monkeypatch, gitlab_webhook_settings):
+    """Fall back to the shared secret when the provider answers an empty lookup, as the
+    built-in secrets clients do during a read outage."""
+    monkeypatch.setattr(gitlab_webhook, "get_secret_provider", lambda: FakeSecretProvider(secret=""))
+
+    assert (await _post_webhook("topsecret")).status_code == 200
+    assert (await _post_webhook("unseen-token")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_do_not_leak_provider_exception_details_in_the_fallback_warning(monkeypatch, gitlab_webhook_settings):
+    """Keep provider exception text out of the fallback warning, as the providers themselves
+    already redact it and the webhook logs are shipped to aggregators."""
+    records = []
+    handler_id = gitlab_webhook.get_logger().add(lambda m: records.append(str(m)))
+    try:
+        monkeypatch.setattr(gitlab_webhook, "get_secret_provider",
+                            lambda: (_ for _ in ()).throw(RuntimeError("credential-process diagnostics")))
+        assert (await _post_webhook("any-token")).status_code == 401
+    finally:
+        gitlab_webhook.get_logger().remove(handler_id)
+
+    assert records, "nothing was logged, so the assertion below would be vacuous"
+    assert not any("credential-process diagnostics" in record for record in records)
+    assert any("RuntimeError" in record and "falling back" in record for record in records)
+
+
+@pytest.mark.asyncio
+async def test_degrade_to_401_when_provider_fails_and_no_shared_secret(monkeypatch, gitlab_webhook_settings):
+    """Fail closed with 401 when the provider fails and no shared secret is configured."""
+    settings = gitlab_webhook_settings
+    settings.set("GITLAB.SHARED_SECRET", "")
+    monkeypatch.setattr(gitlab_webhook, "get_secret_provider",
+                        lambda: (_ for _ in ()).throw(RuntimeError("secrets manager unreachable")))
+
+    assert (await _post_webhook("any-token")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_reject_a_token_unknown_to_provider_and_shared_secret(monkeypatch, gitlab_webhook_settings):
+    """Reject a token that neither the provider nor the shared secret recognizes."""
+    monkeypatch.setattr(gitlab_webhook, "get_secret_provider", lambda: FakeSecretProvider(secret=""))
+
+    assert (await _post_webhook("unseen-token")).status_code == 401

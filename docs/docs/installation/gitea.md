@@ -10,6 +10,8 @@
     WEBHOOK_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
     ```
 
+    The webhook secret is required: if `GITEA.WEBHOOK_SECRET` is not configured, the server rejects every incoming webhook with HTTP 403.
+
 4. Clone this repository:
 
     ```bash

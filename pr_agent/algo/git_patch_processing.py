@@ -11,6 +11,8 @@ from pr_agent.log import get_logger
 # in performance-critical patch processing functions.
 RE_HUNK_HEADER = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+NO_NEWLINE_AT_EOF_MARKER = r'\ No newline at end of file'
+_SPLITLINES_BREAK_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
 def to_hunk_only_patch(patch_str: str) -> str:
@@ -20,10 +22,11 @@ def to_hunk_only_patch(patch_str: str) -> str:
     treat ``---``/``+++`` file headers as changed source lines. Returns an empty
     string when the diff has no textual hunk, for example a rename-only change.
     """
-    lines = patch_str.splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if line.startswith("@@"):
-            return "".join(lines[i:])
+    hunk_start = patch_str.find("@@")
+    while hunk_start != -1:
+        if hunk_start == 0 or patch_str[hunk_start - 1] in _SPLITLINES_BREAK_CHARS:
+            return patch_str[hunk_start:]
+        hunk_start = patch_str.find("@@", hunk_start + 2)
     return ""
 
 
@@ -72,7 +75,8 @@ def should_skip_patch(filename):
     return False
 
 
-def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, patch_extra_lines_after, new_file_str=""):
+def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, patch_extra_lines_after,
+                        new_file_str=""):
     allow_dynamic_context = get_settings().config.allow_dynamic_context
     patch_extra_lines_before_dynamic = get_settings().config.max_extra_lines_before_dynamic_context
 
@@ -92,7 +96,12 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                 if match:
                     # finish processing previous hunk
                     if is_valid_hunk and (start1 != -1 and patch_extra_lines_after > 0):
-                        delta_lines_original = [f' {line}' for line in file_original_lines[start1 + size1 - 1:start1 + size1 - 1 + patch_extra_lines_after]]
+                        delta_lines_original = [
+                            f' {line}'
+                            for line in file_original_lines[
+                                start1 + size1 - 1:start1 + size1 - 1 + patch_extra_lines_after
+                            ]
+                        ]
                         extended_patch_lines.extend(delta_lines_original)
 
                     section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
@@ -127,11 +136,14 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                                     lines_before_original_dynamic_context = lines_before_original[i:]
                                     lines_before_new_dynamic_context = lines_before_new[i:]
                                     if lines_before_original_dynamic_context == lines_before_new_dynamic_context:
-                                        # get_logger().debug(f"found dynamic context match for section header: {section_header}")
+                                        # get_logger().debug(f"found dynamic context match for section "
+                                        #                   f"header: {section_header}")
                                         found_header = True
                                         section_header = ''
                                     else:
-                                        pass  # its ok to be here. We can't apply dynamic context if the lines are different if 'old' and 'new' hunks
+                                        # It's ok to be here. We can't apply dynamic context if the
+                                        # lines are different in 'old' and 'new' hunks
+                                        pass
                                     break
 
                             if not found_header:
@@ -143,7 +155,9 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                                 _calc_context_limits(patch_extra_lines_before)
 
                         # check if extra lines before hunk are different in original and new file
-                        delta_lines_original = [f' {line}' for line in file_original_lines[extended_start1 - 1:start1 - 1]]
+                        delta_lines_original = [
+                            f' {line}' for line in file_original_lines[extended_start1 - 1:start1 - 1]
+                        ]
                         if file_new_lines:
                             delta_lines_new = [f' {line}' for line in file_new_lines[extended_start2 - 1:start2 - 1]]
                             if delta_lines_original != delta_lines_new:
@@ -164,11 +178,11 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                                     extended_start2 = start2
                                     extended_size2 = size2
                                     delta_lines_original = []
-                                    # get_logger().debug(f"Extra lines before hunk are different in original and new file",
+                                    # get_logger().debug(f"Extra lines before hunk are different",
                                     #                    artifact={"delta_lines_original": delta_lines_original,
                                     #                              "delta_lines_new": delta_lines_new})
 
-                        #  logic to remove section header if its in the extra delta lines (in dynamic context, this is also done)
+                        # Remove section header if present in extra delta lines (also done for dynamic context)
                         if section_header and not allow_dynamic_context:
                             for line in delta_lines_original:
                                 if section_header in line:
@@ -203,8 +217,9 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
 
 def check_if_hunk_lines_matches_to_file(i, original_lines, patch_lines, start1):
     """
-    Check if the hunk lines match the original file content. We saw cases where the hunk header line doesn't match the original file content, and then
-    extending the hunk with extra lines before the hunk header can cause the hunk to be invalid.
+    Check if the hunk lines match the original file content. We saw cases where the hunk header
+    line doesn't match the original file content, and then extending the hunk with extra lines
+    before the hunk header can cause the hunk to be invalid.
     """
     is_valid_hunk = True
     try:
@@ -215,7 +230,9 @@ def check_if_hunk_lines_matches_to_file(i, original_lines, patch_lines, start1):
                 for encoding in ['iso-8859-1', 'latin-1', 'ascii', 'utf-16']:
                     try:
                         if original_line.encode(encoding).decode().strip() == patch_lines[i + 1].strip():
-                            get_logger().info(f"Detected different encoding in hunk header line {start1}, needed encoding: {encoding}")
+                            get_logger().info(
+                            f"Detected different encoding in hunk header line {start1}, needed encoding: {encoding}"
+                        )
                             return False # we still want to avoid extending the hunk. But we don't want to log an error
                     except:
                         pass
@@ -354,6 +371,7 @@ __old hunk__
     else:
         patch_with_lines_str = ""
 
+    rendered_hunks = []
     patch_lines = patch.splitlines()
     new_content_lines = []
     old_content_lines = []
@@ -363,7 +381,7 @@ __old hunk__
     header_line = []
     skip_hunk = False
     for line_i, line in enumerate(patch_lines):
-        if 'no newline at end of file' in line.lower():
+        if line == NO_NEWLINE_AT_EOF_MARKER:
             continue
 
         if line.startswith('@@'):
@@ -384,14 +402,18 @@ __old hunk__
                     is_plus_lines = any([line.startswith('+') for line in new_content_lines])
                 if old_content_lines:
                     is_minus_lines = any([line.startswith('-') for line in old_content_lines])
-                if is_plus_lines or is_minus_lines: # notice 'True' here - we always present __new hunk__ for section, otherwise LLM gets confused
-                    patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__new hunk__\n'
+                # Always present the new hunk for the section, otherwise the LLM gets confused
+                if is_plus_lines or is_minus_lines:
+                    patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__new hunk__\n'
                     for i, line_new in enumerate(new_content_lines):
                         patch_with_lines_str += f"{start2 + i} {line_new}\n"
                 if is_minus_lines:
-                    patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__old hunk__\n'
+                    patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__old hunk__\n'
                     for line_old in old_content_lines:
                         patch_with_lines_str += f"{line_old}\n"
+                # Keep completed hunks out of subsequent rstrip/concatenation work.
+                rendered_hunks.append(patch_with_lines_str)
+                patch_with_lines_str = ""
                 new_content_lines = []
                 old_content_lines = []
             if match:
@@ -425,19 +447,22 @@ __old hunk__
             is_plus_lines = any([line.startswith('+') for line in new_content_lines])
         if old_content_lines:
             is_minus_lines = any([line.startswith('-') for line in old_content_lines])
-        if is_plus_lines or is_minus_lines:  # notice 'True' here - we always present __new hunk__ for section, otherwise LLM gets confused
-            patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__new hunk__\n'
+        # Always present the new hunk for the section, otherwise the LLM gets confused
+        if is_plus_lines or is_minus_lines:
+            patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__new hunk__\n'
             for i, line_new in enumerate(new_content_lines):
                 patch_with_lines_str += f"{start2 + i} {line_new}\n"
         if is_minus_lines:
-            patch_with_lines_str = patch_with_lines_str.rstrip() + '\n__old hunk__\n'
+            patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__old hunk__\n'
             for line_old in old_content_lines:
                 patch_with_lines_str += f"{line_old}\n"
 
-    return patch_with_lines_str.rstrip()
+    rendered_hunks.append(patch_with_lines_str)
+    return "".join(rendered_hunks).rstrip('\r\n')
 
 
-def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, side, remove_trailing_chars: bool = True) -> tuple[str, str]:
+def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, side,
+                                  remove_trailing_chars: bool = True) -> tuple[str, str]:
     try:
         try:
             line_start = int(line_start)
@@ -457,7 +482,7 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
         skip_hunk = False
         selected_lines_num = 0
         for line in patch_lines:
-            if 'no newline at end of file' in line.lower():
+            if line == NO_NEWLINE_AT_EOF_MARKER:
                 continue
 
             if line.startswith('@@'):
@@ -473,14 +498,14 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
 
                 section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
 
-                # check if line range is in this hunk
+                # keep every hunk that overlaps the requested line range, so a
+                # range spanning multiple hunks is not silently truncated
                 if side.lower() == 'left':
-                    # check if line range is in this hunk
-                    if not (start1 <= line_start <= start1 + size1 - 1):
+                    if not (size1 > 0 and line_end >= start1 and line_start <= start1 + size1 - 1):
                         skip_hunk = True
                         continue
                 elif side.lower() == 'right':
-                    if not (start2 <= line_start <= start2 + size2 - 1):
+                    if not (size2 > 0 and line_end >= start2 and line_start <= start2 + size2 - 1):
                         skip_hunk = True
                         continue
                 patch_with_lines_str += f'\n{header_line}\n'
@@ -498,11 +523,13 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
                         selected_lines_num += 1
                 patch_with_lines_str += line + '\n'
     except Exception as e:
-        get_logger().error(f"Failed to extract hunk lines from patch: {e}", artifact={"traceback": traceback.format_exc()})
+        get_logger().error(
+            f"Failed to extract hunk lines from patch: {e}", artifact={"traceback": traceback.format_exc()}
+        )
         return "", ""
 
     if remove_trailing_chars:
-        patch_with_lines_str = patch_with_lines_str.rstrip()
-        selected_lines = selected_lines.rstrip()
+        patch_with_lines_str = patch_with_lines_str.rstrip('\r\n')
+        selected_lines = selected_lines.rstrip('\r\n')
 
     return patch_with_lines_str, selected_lines

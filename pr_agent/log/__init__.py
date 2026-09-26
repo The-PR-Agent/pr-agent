@@ -27,7 +27,34 @@ def inv_analytics_filter(record: dict) -> bool:
     return not record.get("extra", {}).get("analytics", False)
 
 
+_BOTOCORE_CREDENTIAL_REFRESH_WARNING = "Refreshing temporary credentials failed during %s refresh period."
+
+
+def _redact_botocore_credential_process_error(record: logging.LogRecord) -> bool:
+    """Omit credential_process stderr from Botocore refresh warnings."""
+    if record.name != "botocore.credentials" or record.msg != _BOTOCORE_CREDENTIAL_REFRESH_WARNING:
+        return True
+
+    if record.exc_info:
+        from botocore.exceptions import CredentialRetrievalError
+
+        error = record.exc_info[1]
+        if isinstance(error, CredentialRetrievalError) and error.kwargs.get("provider") == "custom-process":
+            record.exc_info = None
+            record.exc_text = None
+    return True
+
+
+def _install_botocore_credential_filter():
+    """Install the credential-process redaction filter once per process."""
+    logging.getLogger("botocore.credentials").addFilter(_redact_botocore_credential_process_error)
+
+
+_install_botocore_credential_filter()
+
+
 def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE):
+    _install_botocore_credential_filter()
     level: int = logging.getLevelName(level.upper())
     if type(level) is not int:
         level = logging.INFO

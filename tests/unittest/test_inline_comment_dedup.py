@@ -1,5 +1,8 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+from gitlab import GitlabCreateError
+
 from pr_agent.algo import inline_comment_dedup as d
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.github_provider import GithubProvider
@@ -67,6 +70,25 @@ def test_code_fingerprint_whitespace_insensitive():
     fp1 = d.code_fingerprint("f.py", 1, "prose\n```suggestion\nfoo = 1\n```\n")
     fp2 = d.code_fingerprint("f.py", 1, "different prose\n```suggestion\n  foo   = 1  \n```")
     assert fp1 == fp2 and len(fp1) == 12
+
+
+def test_extract_suggestion_code_reads_rendered_diff_blocks():
+    body = ("**Suggestion:** use a set [best practice]\n\n\n"
+            "```diff\n-values = []\n+values = set()\n```")
+    assert d.extract_suggestion_code(body) == "values = set()"
+
+
+def test_extract_suggestion_code_diff_keeps_context_and_drops_removed_lines():
+    body = ("```diff\n"
+            "-def old(a, b):\n"
+            " def shared(x):\n"
+            "+def shared(x, y):\n"
+            "```")
+    assert d.extract_suggestion_code(body) == "def shared(x):\ndef shared(x, y):"
+
+
+def test_extract_suggestion_code_returns_none_for_empty_diff_block():
+    assert d.extract_suggestion_code("prose\n```diff\n```") is None
 
 
 def test_build_markers():
@@ -174,8 +196,8 @@ def _azure_provider(existing_threads=None):
 
 def test_inline_publication_verification_supports_providers_with_comment_capability():
     assert d.can_verify_inline_comment_publication(_azure_provider()) is True
-    assert d.can_verify_inline_comment_publication(_gh_provider([])) is False
-    assert d.can_verify_inline_comment_publication(_gl_provider([])) is False
+    assert d.can_verify_inline_comment_publication(_gh_provider([])) is True
+    assert d.can_verify_inline_comment_publication(_gl_provider([])) is True
 
     class FooProvider:
         pass
@@ -247,6 +269,48 @@ def test_github_flag_off_publishes_unmarked():
     assert "pr-agent-dedup" not in published[0]["body"]
 
 
+def test_github_comment_reads_include_existing_and_only_successful_new_bodies():
+    provider = _gh_provider(["existing inline body", "existing inline body", ""])
+    assert provider.get_persistent_comment_bodies() == ["existing inline body"]
+    assert provider.get_recent_inline_comment_bodies() == []
+
+    settings_patch = _patch_flag(False)
+    try:
+        provider.publish_inline_comments([{"path": "a.py", "line": 10, "body": "new inline body"}])
+    finally:
+        settings_patch.stop()
+
+    assert provider.get_recent_inline_comment_bodies() == ["new inline body"]
+    assert provider.get_persistent_comment_bodies() == ["new inline body", "existing inline body"]
+
+
+def test_github_failed_inline_publish_does_not_report_recent_body():
+    provider = _gh_provider([])
+    provider.pr.create_review.side_effect = RuntimeError("API unavailable")
+    settings_patch = _patch_flag(False)
+    try:
+        with pytest.raises(RuntimeError, match="API unavailable"):
+            provider.publish_inline_comments([{"path": "a.py", "line": 10, "body": "not posted"}])
+    finally:
+        settings_patch.stop()
+
+    assert provider.get_recent_inline_comment_bodies() == []
+
+
+def test_github_recent_inline_bodies_do_not_cross_prs():
+    provider = _gh_provider([])
+    provider.repo = "owner/repo"
+    provider.pr_num = 1
+    provider._published_inline_comment_bodies = ["from first PR"]
+    provider._inline_comment_store = object()
+    provider._get_pr = MagicMock(return_value=MagicMock())
+
+    provider.set_pr("https://github.com/owner/repo/pull/2")
+
+    assert provider.get_recent_inline_comment_bodies() == []
+    assert provider._inline_comment_store is None
+
+
 # --------------------------------------------------------------------------- #
 # GitLab provider integration
 # --------------------------------------------------------------------------- #
@@ -314,6 +378,204 @@ def test_gitlab_flag_off_posts_unmarked():
         assert "pr-agent-dedup" not in body
     finally:
         gs.stop()
+
+
+def test_gitlab_recent_inline_bodies_start_empty():
+    p = _gl_provider([])
+
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def test_gitlab_recent_inline_bodies_record_successful_posts():
+    p = _gl_provider([])
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(False)
+    try:
+        # a repeated in-memory post is recalled only once
+        _send(p, "inline finding")
+        _send(p, "inline finding")
+    finally:
+        gs.stop()
+
+    assert p.get_recent_inline_comment_bodies() == ["inline finding"]
+
+
+def test_gitlab_recent_inline_bodies_include_marked_posts():
+    p = _gl_provider([])
+    gs = _flag_on_gitlab()
+    try:
+        _send(p, "**Suggestion:** fix it [possible issue, importance: 7]")
+    finally:
+        gs.stop()
+
+    bodies = p.get_recent_inline_comment_bodies()
+    assert len(bodies) == 1
+    assert "**Suggestion:** fix it [possible issue, importance: 7]" in bodies[0]
+    assert "<!-- pr-agent-dedup:" in bodies[0]
+
+
+def test_gitlab_failed_create_does_not_record_a_recent_body():
+    p = _gl_provider([])
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.mr.notes.create.side_effect = GitlabCreateError("note rejected")
+    p.get_line_link = MagicMock(return_value="http://link")
+    original = {
+        "relevant_lines_start": 10, "relevant_lines_end": 11,
+        "existing_code": "a = 1", "improved_code": "a = 2",
+        "suggestion_content": "fix it", "label": "possible issue", "score": 7,
+    }
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _flag_side_effect(False)
+    try:
+        p.send_inline_comment(
+            body="inline finding", edit_type="addition", found=True,
+            relevant_file="a.py", relevant_line_in_file="+a = 2",
+            source_line_no=10, target_file=_FakeTargetFile(), target_line_no=10,
+            original_suggestion=original,
+        )
+    finally:
+        gs.stop()
+
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def test_gitlab_recent_inline_bodies_exclude_unpublished_drafts():
+    p = _gl_provider([])
+    gs = _flag_on_gitlab()
+    try:
+        p.send_inline_comment(
+            body="draft finding", edit_type="addition", found=True,
+            relevant_file="a.py", relevant_line_in_file="+x = 1",
+            source_line_no=10, target_file=_FakeTargetFile(), target_line_no=10,
+            original_suggestion=None, as_draft=True,
+        )
+    finally:
+        gs.stop()
+
+    assert p.mr.draft_notes.create.called
+    # pending drafts are not visible to reviewers yet, so they must not count as published
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def _gitlab_settings_get(key, default=None):
+    if key == "gitlab.publish_code_suggestions_as_review":
+        return True
+    if key == "config.persistent_inline_comments":
+        return False
+    return default
+
+
+@pytest.fixture
+def _gl_review_provider():
+    p = _gl_provider([])
+    p.resolve_outdated_inline_threads = MagicMock(return_value=0)
+    p.reconcile_code_suggestion_threads = MagicMock(return_value=None)
+    return p
+
+
+def test_gitlab_recent_inline_bodies_record_drafts_after_bulk_publish(_gl_review_provider):
+    p = _gl_review_provider
+    published_draft = MagicMock()
+    published_draft.note = "draft finding"
+    p.mr.draft_notes.list.return_value = [published_draft]
+
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _gitlab_settings_get
+    try:
+        assert p.publish_code_suggestions([]) is True
+    finally:
+        gs.stop()
+
+    assert p.mr.draft_notes.bulk_publish.called
+    assert p.get_recent_inline_comment_bodies() == ["draft finding"]
+
+
+def test_gitlab_failed_bulk_publish_does_not_record_drafts(_gl_review_provider):
+    p = _gl_review_provider
+    pending_draft = MagicMock()
+    pending_draft.note = "unpublished finding"
+    p.mr.draft_notes.list.return_value = [pending_draft]
+    p.mr.draft_notes.bulk_publish.side_effect = GitlabCreateError("cannot publish")
+
+    gs = patch("pr_agent.git_providers.gitlab_provider.get_settings")
+    m = gs.start()
+    m.return_value.get.side_effect = _gitlab_settings_get
+    try:
+        assert p.publish_code_suggestions([]) is True
+    finally:
+        gs.stop()
+
+    assert p.get_recent_inline_comment_bodies() == []
+
+
+def test_gitlab_persistent_bodies_list_existing_mr_notes_without_duplicates():
+    p = _gl_provider(["discussion finding", "discussion finding"])
+    note = MagicMock()
+    note.body = "plain note finding"
+    draft = MagicMock()
+    draft.note = "pending draft finding"
+    p.mr.notes.list.return_value = [note, note]
+    p.mr.draft_notes.list.return_value = [draft]
+
+    bodies = p.get_persistent_comment_bodies()
+
+    assert bodies == ["discussion finding", "plain note finding", "pending draft finding"]
+
+
+def test_gitlab_persistent_bodies_include_recent_posts_only_once():
+    p = _gl_provider([])
+    p._published_inline_comment_bodies = ["just posted"]
+
+    bodies = p.get_persistent_comment_bodies()
+
+    assert "just posted" in bodies
+    assert bodies.count("just posted") == 1
+
+
+def test_gitlab_persistent_bodies_survive_draft_listing_failure():
+    p = _gl_provider(["discussion finding"])
+    p.mr.draft_notes.list.side_effect = GitlabCreateError("draft notes unavailable")
+
+    bodies = p.get_persistent_comment_bodies()
+
+    assert "discussion finding" in bodies
+
+
+def test_gitlab_fallback_leaves_reduced_key_issue_in_summary():
+    p = _gl_provider([])
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    p.get_line_link = MagicMock(return_value="http://link")
+    body = "**Possible Issue**\n\nfinding text"
+    fingerprint = d.key_issue_fingerprint("a.py", body)
+    location_fingerprint = d.key_issue_location_fingerprint(fingerprint, 2, 3)
+    marked_body = d.key_issue_body_with_markers(body, fingerprint, location_fingerprint)
+    gs = _flag_on_gitlab()
+    try:
+        published = p.send_inline_comment(
+            body=marked_body, edit_type="addition", found=True,
+            relevant_file="a.py", relevant_line_in_file="+x = 1",
+            source_line_no=10, target_file=_FakeTargetFile(), target_line_no=10,
+            original_suggestion={
+                "relevant_file": "a.py",
+                "relevant_lines_start": 2,
+                "relevant_lines_end": 3,
+                "body": body,
+                "fallback_to_pr_comment": False,
+            },
+        )
+    finally:
+        gs.stop()
+
+    # Reduced key-issue shapes carry no existing_code/improved_code/label, so the
+    # general-note fallback cannot rebuild a suggestion from them: it fails and the
+    # finding stays in the review summary (as the docs describe) instead of being
+    # published with a misleading "Cannot implement directly" footer.
+    assert published is False
+    assert not p.mr.notes.create.called
+    assert p.get_recent_inline_comment_bodies() == []
 
 
 # --------------------------------------------------------------------------- #
@@ -440,7 +702,7 @@ def test_gitlab_skips_when_existing_discussion_has_marker():
 
 def test_gitlab_fallback_note_carries_marker_and_records():
     p = _gl_provider([])
-    p.mr.discussions.create.side_effect = RuntimeError("position rejected")
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
     p.get_line_link = MagicMock(return_value="http://link")
     original = {
         "relevant_lines_start": 10, "relevant_lines_end": 11,
@@ -566,6 +828,42 @@ def test_github_fallback_republish_marks_and_does_not_filter():
     published = p.pr.create_review.call_args.kwargs["comments"]
     assert len(published) == 1
     assert "<!-- pr-agent-dedup:" in published[0]["body"]
+
+
+def test_github_truncated_fallback_keeps_the_original_dedup_markers():
+    # The 422 fallback truncates a suggestion at its code fence; the dedup markers
+    # appended after the block must survive so the next run still recognises the
+    # full suggestion instead of posting a one-line duplicate on every run.
+    original = "**Suggestion:** use the helper\n```suggestion\nx = 1\n```"
+    body_fp = d.body_fingerprint("a.py", 1, original)
+    code_fp = d.code_fingerprint("a.py", 1, original)
+    marked = d.body_with_markers(original, body_fp, code_fp)
+    provider = GithubProvider.__new__(GithubProvider)
+
+    fixed = provider._try_fix_invalid_inline_comments([{"path": "a.py", "line": 1, "body": marked}])
+
+    assert len(fixed) == 1
+    assert "```suggestion" not in fixed[0]["body"]
+    assert "x = 1" not in fixed[0]["body"]
+    fps = d.marker_fingerprints(fixed[0]["body"])
+    assert body_fp in fps
+    assert code_fp in fps
+
+
+def test_github_truncated_fallback_comment_suppresses_the_next_run():
+    # Simulate the next run scanning a posted one-liner: the preserved markers
+    # must make the store treat the full original suggestion as already posted.
+    original = "**Suggestion:** use the helper\n```suggestion\nx = 1\n```"
+    body_fp = d.body_fingerprint("a.py", 1, original)
+    code_fp = d.code_fingerprint("a.py", 1, original)
+    marked = d.body_with_markers(original, body_fp, code_fp)
+    provider = GithubProvider.__new__(GithubProvider)
+    fixed = provider._try_fix_invalid_inline_comments([{"path": "a.py", "line": 1, "body": marked}])[0]
+
+    store = d.InlineCommentStore(_gh_provider([]))
+    store.add_body(fixed["body"])  # scan of the existing comment on the next run
+    assert store.seen(body_fp)
+    assert store.seen(code_fp)
 
 
 def test_code_fingerprint_is_case_sensitive():

@@ -145,6 +145,52 @@ async def _post_gitlab_webhook(app, data):
         )
 
 
+async def _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, note, note_type):
+    calls = []
+
+    async def record_request(url, body, log_context, sender_id, notify=None):
+        calls.append((url, body))
+
+    monkeypatch.setattr(gitlab_webhook_module, "handle_request", record_request)
+    monkeypatch.setattr(
+        gitlab_webhook_module,
+        "get_git_provider_with_context",
+        lambda **_: SimpleNamespace(add_eyes_reaction=lambda *_: None),
+    )
+    monkeypatch.setattr(
+        gitlab_webhook_module,
+        "get_fork_safe_secret_provider",
+        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token"}'),
+    )
+    data = _gitlab_payload(note=note, discussion_id="discussion-42", id=99, type=note_type)
+    data.update({"object_kind": "note", "event_type": "note",
+                 "merge_request": {"url": "https://gitlab.com/org/repo/-/merge_requests/1"}})
+
+    response = await _post_gitlab_webhook(gitlab_webhook_module.app, data)
+
+    assert response.status_code == 200
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/review", "/Review_pr", "/improve", "/improve_code"])
+async def test_gitlab_note_command_passes_discussion_id_to_agent(gitlab_webhook_module, monkeypatch, command):
+    calls = await _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, f"{command} inspect this", None)
+
+    assert calls == [(
+        "https://gitlab.com/org/repo/-/merge_requests/1",
+        f"{command} inspect this --comment_id=discussion-42",
+    )]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("note_type", ["DiscussionNote", "DiffNote"])
+async def test_gitlab_threaded_note_command_keeps_discussion_id_out(gitlab_webhook_module, monkeypatch, note_type):
+    calls = await _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, "/review", note_type)
+
+    assert calls == [("https://gitlab.com/org/repo/-/merge_requests/1", "/review")]
+
+
 def test_bitbucket_server_should_process_pr_logic_ignores_author_title_and_branch():
     settings = get_settings()
     original = {
@@ -1244,3 +1290,200 @@ async def test_gitlab_push_only_update_still_takes_the_push_branch(
         handle_push_trigger=True,
     )
     assert commands == [["/describe"]]
+
+
+def test_shared_should_process_pr_logic_rules():
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original = {
+        "ignore_repositories": settings.get("CONFIG.IGNORE_REPOSITORIES", []),
+        "ignore_pr_authors": settings.get("CONFIG.IGNORE_PR_AUTHORS", []),
+        "ignore_pr_title": settings.get("CONFIG.IGNORE_PR_TITLE", []),
+        "ignore_pr_labels": settings.get("CONFIG.IGNORE_PR_LABELS", []),
+        "ignore_pr_source_branches": settings.get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []),
+        "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
+    }
+    try:
+        # Verify the default permits processing
+        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
+        settings.set("CONFIG.IGNORE_PR_TITLE", [])
+        settings.set("CONFIG.IGNORE_PR_LABELS", [])
+        settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
+        settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
+
+        assert should_process_pr_logic(
+            title="feat: add feature",
+            sender="alice",
+            repo_full_name="org/repo",
+            labels=["enhancement"],
+            source_branch="feat/add-feature",
+            target_branch="main",
+        ) is True
+
+        # Verify repository ignore rules
+        settings.set("CONFIG.IGNORE_REPOSITORIES", ["^org/ignored-.*$"])
+        assert should_process_pr_logic(repo_full_name="org/ignored-repo") is False
+        assert should_process_pr_logic(repo_full_name="org/allowed-repo") is True
+        settings.set("CONFIG.IGNORE_REPOSITORIES", [])
+
+        # Verify author ignore rules
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^bot-.*$", "renovate"])
+        assert should_process_pr_logic(sender="bot-service") is False
+        assert should_process_pr_logic(sender="renovate") is False
+        assert should_process_pr_logic(sender="alice") is True
+        settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
+
+        # Verify title ignore rules for both string and list formats
+        settings.set("CONFIG.IGNORE_PR_TITLE", "^WIP:")  # as single string
+        assert should_process_pr_logic(title="WIP: something") is False
+        assert should_process_pr_logic(title="feat: done") is True
+        settings.set("CONFIG.IGNORE_PR_TITLE", ["^WIP:", "^Draft:"])  # as list
+        assert should_process_pr_logic(title="Draft: something") is False
+        assert should_process_pr_logic(title="feat: done") is True
+        settings.set("CONFIG.IGNORE_PR_TITLE", [])
+
+        # Verify label ignore rules
+        settings.set("CONFIG.IGNORE_PR_LABELS", ["skip-review", "do-not-merge"])
+        assert should_process_pr_logic(labels=["skip-review", "bug"]) is False
+        assert should_process_pr_logic(labels=["bug"]) is True
+        settings.set("CONFIG.IGNORE_PR_LABELS", [])
+
+        # Verify source and target branch ignore rules
+        settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^release/.*$"])
+        settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^production$"])
+        assert should_process_pr_logic(source_branch="release/1.0", target_branch="main") is False
+        assert should_process_pr_logic(source_branch="feature/test", target_branch="production") is False
+        assert should_process_pr_logic(source_branch="feature/test", target_branch="main") is True
+    finally:
+        for k, v in original.items():
+            settings.set(f"CONFIG.{k.upper()}", v)
+
+
+def test_shared_should_process_pr_logic_payload_parsing():
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original_repos = settings.get("CONFIG.IGNORE_REPOSITORIES", [])
+    settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
+    try:
+        # Verify GitHub payload parsing
+        gh_payload = {
+            "pull_request": {"title": "GH PR", "head": {"ref": "feat"}, "base": {"ref": "main"}},
+            "repository": {"full_name": "ignore-org/repo"},
+            "sender": {"login": "gh-user"},
+        }
+        assert should_process_pr_logic(gh_payload) is False
+
+        # Verify GitLab payload parsing
+        gl_payload = {
+            "object_attributes": {"title": "GL MR", "source_branch": "feat", "target_branch": "main"},
+            "project": {"path_with_namespace": "ignore-org/repo"},
+            "user": {"username": "gl-user"},
+        }
+        assert should_process_pr_logic(gl_payload) is False
+
+        # Verify a GitLab non-merge payload is rejected
+        assert should_process_pr_logic({}, provider="gitlab") is False
+
+        # Verify Bitbucket Cloud payload parsing
+        bb_cloud_payload = {
+            "data": {
+                "pullrequest": {
+                    "title": "BB PR",
+                    "destination": {"repository": {"full_name": "ignore-org/repo"}},
+                }
+            }
+        }
+        assert should_process_pr_logic(bb_cloud_payload) is False
+
+        # Verify Bitbucket Server payload parsing
+        bb_server_payload = {
+            "pullRequest": {
+                "title": "BBS PR",
+                "toRef": {"repository": {"project": {"key": "ignore-org"}, "slug": "repo"}},
+            }
+        }
+        assert should_process_pr_logic(bb_server_payload) is False
+    finally:
+        settings.set("CONFIG.IGNORE_REPOSITORIES", original_repos)
+
+
+def test_shared_should_process_pr_logic_explicit_empty_overrides_payload():
+    """Verify that explicitly passing empty metadata overrides nonempty payload values."""
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = get_settings()
+    original = {
+        "ignore_repositories": settings.get("CONFIG.IGNORE_REPOSITORIES", []),
+        "ignore_pr_authors": settings.get("CONFIG.IGNORE_PR_AUTHORS", []),
+        "ignore_pr_title": settings.get("CONFIG.IGNORE_PR_TITLE", []),
+        "ignore_pr_labels": settings.get("CONFIG.IGNORE_PR_LABELS", []),
+        "ignore_pr_source_branches": settings.get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", []),
+        "ignore_pr_target_branches": settings.get("CONFIG.IGNORE_PR_TARGET_BRANCHES", []),
+    }
+    settings.set("CONFIG.IGNORE_REPOSITORIES", ["^ignore-org/.*$"])
+    settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^ignore-bot$"])
+    settings.set("CONFIG.IGNORE_PR_TITLE", ["\\[WIP\\].*"])
+    settings.set("CONFIG.IGNORE_PR_LABELS", ["do-not-merge"])
+    settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^ignore-source$"])
+    settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^ignore-target$"])
+
+    try:
+        # Construct a payload that matches all ignore criteria
+        payload = {
+            "pull_request": {
+                "title": "[WIP] Feature",
+                "head": {"ref": "ignore-source"},
+                "base": {"ref": "ignore-target"},
+                "labels": [{"name": "do-not-merge"}],
+            },
+            "repository": {"full_name": "ignore-org/repo"},
+            "sender": {"login": "ignore-bot"},
+        }
+        # Verify the raw payload is rejected by ignore filters
+        assert should_process_pr_logic(payload) is False
+
+        # Verify overriding ignored fields with empty values permits processing
+        assert (
+            should_process_pr_logic(
+                payload,
+                repo_full_name="",
+                sender="",
+                title="",
+                labels=[],
+                source_branch="",
+                target_branch="",
+            )
+            is True
+        )
+    finally:
+        for k, v in original.items():
+            settings.set(f"CONFIG.{k.upper()}", v)
+
+
+def test_bitbucket_server_should_process_pr_logic_fails_open_on_filter_exception(monkeypatch):
+    """Verify a malformed filter regex fails open without reaching the folder filter."""
+    settings = get_settings()
+    original_title = settings.get("CONFIG.IGNORE_PR_TITLE", [])
+    original_folders = settings.config.get("allow_only_specific_folders", [])
+    settings.set("CONFIG.IGNORE_PR_TITLE", ["[unclosed"])
+    settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", ["allowed_dir"])
+
+    class _RejectingProvider:
+        def __init__(self, pr_url=None):
+            pass
+
+        def get_files(self):
+            return ["docs/readme.md"]
+
+    monkeypatch.setattr(
+        "pr_agent.git_providers.bitbucket_server_provider.BitbucketServerProvider", _RejectingProvider
+    )
+
+    try:
+        assert bitbucket_server_webhook.should_process_pr_logic(_bitbucket_server_payload(title="Test PR")) is True
+    finally:
+        settings.set("CONFIG.IGNORE_PR_TITLE", original_title)
+        settings.set("CONFIG.ALLOW_ONLY_SPECIFIC_FOLDERS", original_folders)

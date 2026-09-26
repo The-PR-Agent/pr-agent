@@ -3,8 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from pr_agent.algo import utils
-from pr_agent.algo.utils import get_settings, push_outputs
+from pr_agent.algo import run_output
+from pr_agent.algo.run_output import push_outputs
+from pr_agent.config_loader import get_settings
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +70,7 @@ class TestPushOutputs:
             captured['json'] = json
             return SimpleNamespace(status_code=200)
 
-        monkeypatch.setattr(utils.requests, 'post', fake_post)
+        monkeypatch.setattr(run_output.requests, 'post', fake_post)
 
         push_outputs("review", payload={"a": 1}, markdown="a markdown review")
 
@@ -111,7 +112,7 @@ class TestPushOutputs:
         def boom(*args, **kwargs):
             raise ConnectionError("no network")
 
-        monkeypatch.setattr(utils.requests, 'post', boom)
+        monkeypatch.setattr(run_output.requests, 'post', boom)
 
         # Must not raise.
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -130,7 +131,7 @@ class TestPushOutputs:
         get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', bad_url)
 
         posts = []
-        monkeypatch.setattr(utils.requests, 'post',
+        monkeypatch.setattr(run_output.requests, 'post',
                             lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -143,7 +144,7 @@ class TestPushOutputs:
         get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://example.test/hook')
 
         posts = []
-        monkeypatch.setattr(utils.requests, 'post',
+        monkeypatch.setattr(run_output.requests, 'post',
                             lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -156,8 +157,8 @@ class TestPushOutputs:
         def fail_settings():
             raise RuntimeError("secret setup marker")
 
-        monkeypatch.setattr(utils, 'get_settings', fail_settings)
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output, 'get_settings', fail_settings)
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"payload-secret": 1}, markdown="markdown-secret")
@@ -181,8 +182,8 @@ class TestPushOutputs:
                 raise ConnectionError("transport-secret")
             return SimpleNamespace(status_code=200)
 
-        monkeypatch.setattr(utils.requests, 'post', fake_post)
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output.requests, 'post', fake_post)
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"payload-secret": 1}, markdown="markdown-secret")
@@ -213,8 +214,8 @@ class TestPushOutputs:
                 return SimpleNamespace(status_code=status_code, text="response-secret")
             return SimpleNamespace(status_code=204)
 
-        monkeypatch.setattr(utils.requests, 'post', fake_post)
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output.requests, 'post', fake_post)
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -230,9 +231,9 @@ class TestPushOutputs:
         get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', 'https://example.test/webhook')
         get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
         warnings = []
-        monkeypatch.setattr(utils.requests, 'post',
+        monkeypatch.setattr(run_output.requests, 'post',
                             lambda *args, **kwargs: SimpleNamespace(status_code=status_code))
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -247,9 +248,9 @@ class TestPushOutputs:
         get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', slack_url)
         posts = []
         warnings = []
-        monkeypatch.setattr(utils.requests, 'post',
+        monkeypatch.setattr(run_output.requests, 'post',
                             lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -272,9 +273,9 @@ class TestPushOutputs:
             raise OSError("stdout-secret")
 
         monkeypatch.setattr('builtins.print', fail_print)
-        monkeypatch.setattr(utils.requests, 'post',
+        monkeypatch.setattr(run_output.requests, 'post',
                             lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -291,9 +292,9 @@ class TestPushOutputs:
         get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
         posts = []
         warnings = []
-        monkeypatch.setattr(utils.requests, 'post',
+        monkeypatch.setattr(run_output.requests, 'post',
                             lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -314,8 +315,8 @@ class TestPushOutputs:
                 raise TimeoutError("slack-timeout-secret")
             return SimpleNamespace(status_code=200)
 
-        monkeypatch.setattr(utils.requests, 'post', fake_post)
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output.requests, 'post', fake_post)
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -329,9 +330,9 @@ class TestPushOutputs:
         get_settings().set('PUSH_OUTPUTS.CHANNELS', ['slack'])
         get_settings().set('PUSH_OUTPUTS.SLACK_WEBHOOK_URL', 'https://example.test/slack')
         warnings = []
-        monkeypatch.setattr(utils.requests, 'post',
+        monkeypatch.setattr(run_output.requests, 'post',
                             lambda *args, **kwargs: SimpleNamespace(status_code=429, text="response-secret"))
-        monkeypatch.setattr(utils, 'get_logger',
+        monkeypatch.setattr(run_output, 'get_logger',
                             lambda: SimpleNamespace(warning=warnings.append))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")
@@ -345,7 +346,7 @@ class TestPushOutputs:
         webhook_url = 'https://example.test/webhook'
         get_settings().set('PUSH_OUTPUTS.WEBHOOK_URL', webhook_url)
         posts = []
-        monkeypatch.setattr(utils.requests, 'post',
+        monkeypatch.setattr(run_output.requests, 'post',
                             lambda url, **kwargs: posts.append(url) or SimpleNamespace(status_code=200))
 
         push_outputs("review", payload={"a": 1}, markdown="hi")

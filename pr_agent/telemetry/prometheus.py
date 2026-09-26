@@ -68,11 +68,6 @@ def prometheus_metrics_enabled() -> bool:
     )
 
 
-def prometheus_registry():
-    """The registry metric objects are created on (single-process view)."""
-    return _registry()
-
-
 def _registry():
     global _prometheus_registry
     if _prometheus_registry is None:

@@ -37,6 +37,7 @@ def test_init_returns_fresh_instance_with_zeroed_counters():
     assert details.model_costs_usd == {}
     assert details.cost_status == "unavailable"
     assert details.has_token_usage is False
+    assert details.has_cache_usage is False
     assert details.duration_seconds >= 0
 
 
@@ -106,6 +107,95 @@ def test_add_token_usage_ignores_none_and_partial_objects():
     details = get_run_details()
     assert details.total_tokens == 0
     assert details.has_token_usage is False
+
+
+def test_add_token_usage_accumulates_cache_tokens_from_dict():
+    init_run_details()
+
+    add_token_usage({
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "cache_read_input_tokens": 40,
+        "cache_creation_input_tokens": 60,
+    })
+
+    details = get_run_details()
+    assert details.cache_read_tokens == 40
+    assert details.cache_creation_tokens == 60
+    assert details.has_cache_usage is True
+
+
+def test_add_token_usage_reads_cache_tokens_from_usage_private_attrs():
+    class _CachedUsage:
+        def __init__(self):
+            self.prompt_tokens = 100
+            self.completion_tokens = 10
+            self.total_tokens = 110
+            self._cache_read_input_tokens = 40
+            self._cache_creation_input_tokens = 60
+
+    init_run_details()
+    add_token_usage(_CachedUsage())
+
+    details = get_run_details()
+    assert details.cache_read_tokens == 40
+    assert details.cache_creation_tokens == 60
+    assert details.has_cache_usage is True
+
+
+def test_add_token_usage_reads_cache_read_via_prompt_tokens_details():
+    class _CachedUsage:
+        prompt_tokens = 100
+        completion_tokens = 10
+        total_tokens = 110
+        prompt_tokens_details = type("Details", (), {"cached_tokens": 40})()
+
+    init_run_details()
+    add_token_usage(_CachedUsage())
+
+    assert get_run_details().cache_read_tokens == 40
+    assert get_run_details().cache_creation_tokens == 0
+
+
+def test_add_token_usage_ignores_bool_like_cache_values():
+    init_run_details()
+
+    add_token_usage({"cache_read_input_tokens": True, "cache_creation_input_tokens": 0})
+
+    details = get_run_details()
+    assert details.has_cache_usage is False
+
+
+def test_add_token_usage_tolerates_null_prompt_tokens_details():
+    # Raw OpenAI payloads can carry prompt_tokens_details: null; the cache lookup must not
+    # chain attribute access off it after a completion already succeeded.
+    init_run_details()
+
+    add_token_usage({
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "prompt_tokens_details": None,
+    })
+
+    assert get_run_details().cache_read_tokens == 0
+
+
+def test_add_token_usage_reads_deepseek_cache_hits_as_cache_reads():
+    init_run_details()
+
+    add_token_usage({"prompt_tokens": 7, "prompt_cache_hit_tokens": 3})
+
+    assert get_run_details().cache_read_tokens == 3
+
+    class _DeepSeekUsage:
+        prompt_tokens = 7
+        completion_tokens = 1
+        prompt_cache_hit_tokens = 5
+
+    init_run_details()
+    add_token_usage(_DeepSeekUsage())
+
+    assert get_run_details().cache_read_tokens == 5
 
 
 def test_record_ai_call_counts_calls_even_without_usage():

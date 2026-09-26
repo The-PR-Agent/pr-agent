@@ -5,9 +5,10 @@ from typing import List, Optional
 
 from unidiff.errors import UnidiffParseError
 
+from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import format_pr_code_suggestions_header, show_run_details
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file, to_hunk_only_patch
 from pr_agent.git_providers.git_provider import GitProvider
@@ -121,6 +122,9 @@ class PlainDiffGitProvider(GitProvider):
             return  # don't emit "Preparing review..." placeholders to stdout
         self._write_output(pr_comment)
 
+    def supports_comment_publish_confirmation(self) -> bool:
+        return False
+
     def publish_structured_review(self, review: dict):
         if not self.json_output_path:
             return
@@ -179,11 +183,6 @@ class PlainDiffGitProvider(GitProvider):
         return ""
 
     # ---- code suggestions: rendered to stdout/--output (no hosting platform) ----
-    def publish_code_suggestion(self, body: str, relevant_file: str,
-                                relevant_lines_start: int, relevant_lines_end: int):
-        location = f"{relevant_file}:{relevant_lines_start}-{relevant_lines_end}"
-        self._write_output(f"### {location}\n\n{body}")
-
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         # The 'improve' tool calls this unconditionally; render the suggestions
         # as a single markdown document to stdout/--output instead of pushing

@@ -78,9 +78,10 @@ def build_app():
     """Build the Starlette app: A2A card + JSONRPC routes + /health, with
     RawContextMiddleware on the same app (A2A 1.0)."""
     card = build_agent_card()
+    task_store = InMemoryTaskStore()
     handler = DefaultRequestHandler(
-        agent_executor=PRAgentExecutor(),
-        task_store=InMemoryTaskStore(),
+        agent_executor=PRAgentExecutor(task_store=task_store),
+        task_store=task_store,
         agent_card=card,
     )
     routes = [

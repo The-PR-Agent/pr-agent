@@ -1,5 +1,6 @@
 """Validate and read the labels list inside each model attempt."""
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -15,6 +16,7 @@ _TRACKED_KEYS = (
     "config.publish_output",
     "config.propagate_tool_errors",
     "config.enable_custom_labels",
+    "config.custom_model_max_tokens",
     "custom_labels",
     "model_routing.enable",
     "openai.deployment_id",
@@ -33,6 +35,7 @@ def fallback_models():
     settings.set("config.publish_output", True)
     settings.set("config.propagate_tool_errors", False)
     settings.set("config.enable_custom_labels", False)
+    settings.set("config.custom_model_max_tokens", 10_000)
     settings.set("custom_labels", [])
     settings.set("model_routing.enable", False)
     settings.set("openai.deployment_id", None)
@@ -59,6 +62,18 @@ def label_tool(git_provider=None):
     tool.prediction = None
     tool.data = None
     tool.variables = {}
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {
+        "title": "Title",
+        "branch": "feature",
+        "description": "Description",
+        "language": "Python",
+        "diff": "",
+        "extra_instructions": "",
+        "commit_messages_str": "",
+        "enable_custom_labels": False,
+        "custom_labels_class": "",
+    }
     return tool
 
 

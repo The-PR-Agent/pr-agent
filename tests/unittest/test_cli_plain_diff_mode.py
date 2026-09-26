@@ -171,10 +171,16 @@ def test_misplaced_output_abbreviation_must_be_unambiguous():
     assert _resolve_output_option(parser, "--output=value") == "--output"
 
 
-def test_missing_diff_file_fails_fast(tmp_path, capsys):
+def test_missing_diff_file_fails_fast(tmp_path, monkeypatch, capsys):
     """A non-existent --diff-file must exit cleanly via parser.error (SystemExit)
     with a clear message, not crash with an uncaught OSError traceback."""
     missing = tmp_path / "does-not-exist.diff"
+
+    def fail_if_entered():
+        pytest.fail("missing diff-file errors must not enter the settings scope")
+
+    monkeypatch.setattr("pr_agent.cli._cli_settings_scope", fail_if_entered)
+
     with pytest.raises(SystemExit):
         run(inargs=["--diff-file", str(missing), "review"])
     err = capsys.readouterr().err
@@ -439,3 +445,28 @@ def test_diff_mode_sets_json_output_path(cfg, monkeypatch, tmp_path):
     run(inargs=["--stdin", "--json-output", str(output), "review"])
 
     assert captured["json_output_path"] == str(output)
+
+
+def test_plain_diff_fake_handler_sees_eager_artifact_without_new_keyword(monkeypatch, tmp_path):
+    """Keep the three-argument fake-handler contract while CLI owns the scope."""
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_text("PLAIN_DIFF_ARTIFACT", encoding="utf-8")
+    captured = {}
+
+    class FakeAgent:
+        async def handle_request(self, target, request, notify=None):
+            captured["target"] = target
+            captured["request"] = request
+            captured["instructions"] = str(get_settings().pr_reviewer.extra_instructions)
+            return True
+
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setenv("ARTIFACT_PATH", str(artifact))
+    monkeypatch.setattr("pr_agent.cli.PRAgent", FakeAgent)
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+
+    run(inargs=["--stdin", "review"])
+
+    assert captured["target"] == "local_diff"
+    assert captured["request"] == ["review"]
+    assert captured["instructions"].count("PLAIN_DIFF_ARTIFACT") == 1

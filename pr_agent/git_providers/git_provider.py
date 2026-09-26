@@ -9,20 +9,37 @@ from collections.abc import Iterable
 from typing import Optional, Tuple
 from urllib.parse import urlsplit
 
-from pr_agent.algo.language_handler import numeric_languages
-from pr_agent.algo.types import FilePatchInfo
-from pr_agent.algo.utils import (
-    Range,
+from pr_agent.algo.comment_identity import (
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
-    process_description,
     render_hidden_marker,
 )
+from pr_agent.algo.language_handler import numeric_languages
+from pr_agent.algo.types import FilePatchInfo
+from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
+
+def get_config_branch() -> str:
+    """Return the branch to read the repo `.pr_agent.toml` from, or "" for the provider default branch.
+
+    Prefer CONFIG.CONFIG_BRANCH (set by the CLI `--config-branch` flag) over the
+    PR_AGENT_CONFIG_BRANCH environment variable and ignore whitespace-only values.
+    """
+    settings_branch = get_settings().get("CONFIG.CONFIG_BRANCH", None)
+    settings_branch = settings_branch.strip() if isinstance(settings_branch, str) else ""
+    env_branch = (os.environ.get("PR_AGENT_CONFIG_BRANCH") or "").strip()
+    return settings_branch or env_branch
+
+
 MAX_FILES_ALLOWED_FULL = 50
+
+
+class IncompletePullRequestFilesError(RuntimeError):
+    """Represent an incomplete or inconsistent pull-request file set."""
+
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
@@ -129,10 +146,12 @@ def get_git_ssl_env() -> dict[str, str]:
                                   artifact={"ssl_cert_file": ssl_cert_file, "requests_ca_bundle": requests_ca_bundle,
                                             'git_ssl_ca_info': git_ssl_ca_info})
             else:
-                get_logger().info("Using SSL certificate bundle for git operations", artifact={"ssl_cert_file": ssl_cert_file})
+                get_logger().info("Using SSL certificate bundle for git operations",
+                                  artifact={"ssl_cert_file": ssl_cert_file})
             chosen_cert_file = ssl_cert_file
         else:
-            get_logger().warning("SSL certificate bundle not found for git operations", artifact={"ssl_cert_file": ssl_cert_file})
+            get_logger().warning("SSL certificate bundle not found for git operations",
+                                 artifact={"ssl_cert_file": ssl_cert_file})
 
     # Fallback to REQUESTS_CA_BUNDLE
     elif requests_ca_bundle:
@@ -146,7 +165,8 @@ def get_git_ssl_env() -> dict[str, str]:
                                   artifact={"requests_ca_bundle": requests_ca_bundle})
             chosen_cert_file = requests_ca_bundle
         else:
-            get_logger().warning("requests CA bundle not found for git operations", artifact={"requests_ca_bundle": requests_ca_bundle})
+            get_logger().warning("requests CA bundle not found for git operations",
+                                 artifact={"requests_ca_bundle": requests_ca_bundle})
 
     #Fallback to GIT CA:
     elif git_ssl_ca_info:
@@ -155,10 +175,12 @@ def get_git_ssl_env() -> dict[str, str]:
                               artifact={"git_ssl_ca_info": git_ssl_ca_info})
             chosen_cert_file = git_ssl_ca_info
         else:
-            get_logger().warning("git SSL CA info not found for git operations", artifact={"git_ssl_ca_info": git_ssl_ca_info})
+            get_logger().warning("git SSL CA info not found for git operations",
+                                 artifact={"git_ssl_ca_info": git_ssl_ca_info})
 
     else:
-        get_logger().warning("Neither SSL_CERT_FILE nor REQUESTS_CA_BUNDLE nor GIT_SSL_CAINFO are defined, or they are defined but not found. Returning environment without SSL configuration")
+        get_logger().warning("Neither SSL_CERT_FILE nor REQUESTS_CA_BUNDLE nor GIT_SSL_CAINFO are defined, "
+                             "or they are defined but not found. Returning environment without SSL configuration")
 
     returned_env = os.environ.copy()
     if chosen_cert_file:
@@ -181,6 +203,16 @@ class GitProvider(ABC):
     def supports_code_suggestions_artifact(self) -> bool:
         """Return whether `publish_code_suggestions()` writes a standalone output artifact."""
         return False
+
+    def supports_comment_publish_confirmation(self) -> bool:
+        """Return whether `publish_comment()` returns a comment object on success.
+
+        Providers that return a comment object on success and `None` on a permanent
+        publication failure report `True`. Providers that publish to local sinks
+        (e.g. gerrit, local git, plain-diff) return `None` even after a successful
+        publish and report `False`, so callers normalize a `None` return accordingly.
+        """
+        return True
 
     def publish_code_suggestions_artifact(
             self, code_suggestions: list, artifact_footer: str = "",
@@ -263,14 +295,19 @@ class GitProvider(ABC):
         """Tickets come from work items the platform links to the PR itself."""
         return False
 
-    #Given a url (issues or PR/MR) - get the .git repo url to which they belong. Needs to be implemented by the provider.
+    #Given a url (issues or PR/MR) - get the .git repo url to which they belong.
+    #Needs to be implemented by the provider.
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         get_logger().warning("Not implemented! Returning empty url")
         return ""
 
-    # Given a git repo url, return prefix and suffix of the provider in order to view a given file belonging to that repo. Needs to be implemented by the provider.
-    # For example: For a git: https://git_provider.com/MY_PROJECT/MY_REPO.git and desired branch: <MY_BRANCH> then it should return ('https://git_provider.com/projects/MY_PROJECT/repos/MY_REPO/.../<MY_BRANCH>', '?=<SOME HEADER>')
-    # so that to properly view the file: docs/readme.md -> <PREFIX>/docs/readme.md<SUFFIX> -> https://git_provider.com/projects/MY_PROJECT/repos/MY_REPO/<MY_BRANCH>/docs/readme.md?=<SOME HEADER>)
+    # Given a git repo url, return prefix and suffix of the provider in order to view a given
+    # file belonging to that repo. Needs to be implemented by the provider.
+    # For example: For a git: https://git_provider.com/MY_PROJECT/MY_REPO.git and desired branch:
+    # <MY_BRANCH> then it should return
+    # ('https://git_provider.com/projects/MY_PROJECT/repos/MY_REPO/.../<MY_BRANCH>', '?=<SOME HEADER>')
+    # so that to properly view the file: docs/readme.md -> <PREFIX>/docs/readme.md<SUFFIX> ->
+    # https://git_provider.com/projects/MY_PROJECT/repos/MY_REPO/<MY_BRANCH>/docs/readme.md?=<SOME HEADER>)
     def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> Tuple[str, str]:
         get_logger().warning("Not implemented! Returning empty prefix and suffix")
         return ("", "")
@@ -280,7 +317,8 @@ class GitProvider(ABC):
     #An object which ensures deletion of a cloned repo, once it becomes out of scope.
     # Example usage:
     #    with TemporaryDirectory() as tmp_dir:
-    #            returned_obj: GitProvider.ScopedClonedRepo = self.git_provider.clone(self.repo_url, tmp_dir, remove_dest_folder=False)
+    #            returned_obj: GitProvider.ScopedClonedRepo = self.git_provider.clone(
+    #                self.repo_url, tmp_dir, remove_dest_folder=False)
     #            print(returned_obj.path) #Use returned_obj.path.
     #    #From this point, returned_obj.path may be deleted at any point and therefore must not be used.
     class ScopedClonedRepo(object):
@@ -291,7 +329,8 @@ class GitProvider(ABC):
             if self.path and os.path.exists(self.path):
                 shutil.rmtree(self.path, ignore_errors=True)
 
-    #Method to allow implementors to manipulate the repo url to clone (such as embedding tokens in the url string). Needs to be implemented by the provider.
+    #Method to allow implementors to manipulate the repo url to clone (such as embedding tokens
+    #in the url string). Needs to be implemented by the provider.
     def _prepare_clone_url_with_token(self, repo_url_to_clone: str) -> str | None:
         get_logger().warning("Not implemented! Returning None")
         return None
@@ -419,17 +458,11 @@ class GitProvider(ABC):
     def edit_comment(self, comment, body: str):
         pass
 
-    def edit_comment_from_comment_id(self, comment_id: int, body: str):
-        pass
-
-    def get_comment_body_from_comment_id(self, comment_id: int) -> str:
-        pass
-
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         pass
 
     def get_pr_description(self, full: bool = True, split_changes_walkthrough=False) -> str | tuple:
-        from pr_agent.algo.utils import clip_tokens
+        from pr_agent.algo.token_budget import clip_tokens
         from pr_agent.config_loader import get_settings
         max_tokens_description = get_settings().get("CONFIG.MAX_DESCRIPTION_TOKENS", None)
         description = self.get_pr_description_full() if full else self.get_user_description()
@@ -461,11 +494,13 @@ class GitProvider(ABC):
         # return nothing (empty string) because it means there is no user description
         user_description_header = "### **user description**"
         if user_description_header not in description_lowercase:
-            get_logger().info("Existing description was generated by the pr-agent, but it doesn't contain a user description")
+            get_logger().info("Existing description was generated by the pr-agent, "
+                              "but it doesn't contain a user description")
             return ""
 
         # otherwise, extract the original user description from the existing pr-agent description and return it
-        # user_description_start_position = description_lowercase.find(user_description_header) + len(user_description_header)
+        # user_description_start_position = description_lowercase.find(user_description_header)
+        #     + len(user_description_header)
         # return description[user_description_start_position:].split("\n", 1)[-1].strip()
 
         # the 'user description' is in the beginning. extract and return it
@@ -490,8 +525,14 @@ class GitProvider(ABC):
         return original_user_description
 
     def _possible_headers(self):
-        return ("### **user description**", "### **pr type**", "### **pr description**", "### **pr labels**", "### **type**", "### **description**",
-                "### **labels**", "### 🤖 generated by pr agent")
+        return ("### **user description**",
+                "### **pr type**",
+                "### **pr description**",
+                "### **pr labels**",
+                "### **type**",
+                "### **description**",
+                "### **labels**",
+                "### 🤖 generated by pr agent")
 
     # Headers that are unique to pr-agent output; humans never write these
     # naturally, so they can safely be matched anywhere in the body.
@@ -521,7 +562,8 @@ class GitProvider(ABC):
         # For generic headers (type, description, labels), require startswith
         # to avoid misclassifying human descriptions that happen to contain
         # one of these common markdown headings.
-        return any(description_lowercase.startswith(header) for header in possible_headers if header not in self._UNIQUE_PR_AGENT_HEADERS)
+        return any(description_lowercase.startswith(header) for header in possible_headers
+                   if header not in self._UNIQUE_PR_AGENT_HEADERS)
 
     @abstractmethod
     def get_repo_settings(self):
@@ -634,9 +676,6 @@ class GitProvider(ABC):
         """
         return None
 
-    def get_workspace_name(self):
-        return ""
-
     def get_pr_id(self):
         return ""
 
@@ -671,6 +710,9 @@ class GitProvider(ABC):
     def supports_html_comment_markers(self) -> bool:
         """Return whether HTML comment identity markers render invisibly."""
         return True
+
+    def should_reply_to_trigger_comment(self) -> bool:
+        return False
 
     def supports_review_comment_identity(self) -> bool:
         return False
@@ -828,7 +870,8 @@ class GitProvider(ABC):
         return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
 
     @abstractmethod
-    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         pass
 
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
@@ -865,9 +908,6 @@ class GitProvider(ABC):
 
     @abstractmethod
     def get_pr_labels(self, update=False):
-        pass
-
-    def get_repo_labels(self):
         pass
 
     def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
@@ -935,6 +975,19 @@ class GitProvider(ABC):
         return ""
 
     def get_latest_commit_url(self) -> str:
+        return ""
+
+    def get_pr_head_sha(self) -> str:
+        """Return the commit SHA the pull request currently points at.
+
+        The reviewer records this in the persistent finding marker so a later run can
+        tell whether the head moved. It stays empty when a provider cannot resolve a
+        head, which makes the reconciliation guard refuse to resolve findings rather
+        than resolve them against the wrong revision.
+
+        Returns:
+            str: the head commit SHA, or an empty string when unavailable.
+        """
         return ""
 
     def auto_approve(self) -> bool:

@@ -1,9 +1,8 @@
 import copy
 import os
-import re
 import time
 import uuid
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
@@ -13,13 +12,20 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
-from pr_agent.servers.utils import DefaultDictWithTimeout, get_pr_commands, push_trigger_slot, verify_signature
+from pr_agent.servers.utils import (
+    DefaultDictWithTimeout,
+    get_pr_commands,
+    push_trigger_slot,
+    shared_should_process_pr_logic,
+    verify_signature,
+)
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -104,6 +110,16 @@ async def get_body(request):
     return body
 
 
+def _reformat_quote_ask_command(comment_body: str) -> Optional[str]:
+    """Move a /ask command buried in a quoted Golf/mobile reply to the front so it
+    is dispatched, preserving the whole question text. Returns None when the
+    comment is not an image-quote reply carrying a /ask."""
+    if '/ask' not in comment_body or not comment_body.strip().startswith('> ![image]'):
+        return None
+    before, _, after = comment_body.partition('/ask')
+    return '/ask' + after + ' \n' + before.strip().lstrip('>')
+
+
 async def handle_comments_on_pr(body: Dict[str, Any],
                                 event: str,
                                 sender: str,
@@ -115,9 +131,9 @@ async def handle_comments_on_pr(body: Dict[str, Any],
         return {}
     comment_body = body.get("comment", {}).get("body")
     if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
-        if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
-            comment_body_split = comment_body.split('/ask')
-            comment_body = '/ask' + comment_body_split[1] +' \n' +comment_body_split[0].strip().lstrip('>')
+        reformatted = _reformat_quote_ask_command(comment_body) if '/ask' in comment_body else None
+        if reformatted is not None:
+            comment_body = reformatted
             get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
         else:
             get_logger().info("Ignoring comment not starting with /")
@@ -176,6 +192,54 @@ async def handle_new_pr_opened(body: Dict[str, Any],
             return await _perform_auto_commands_github("pr_commands", agent, body, api_url, log_context)
         else:
             get_logger().info(f"User {sender=} is not eligible to process PR {api_url=}")
+
+
+# The check run each automatic command publishes its output to when `github.publish_as_check_run`
+# is on, keyed by command and valued by the `name` the tool passes to `_publish_check_run`.
+_AUTO_COMMAND_CHECK_RUNS = {"describe": "describe", "review": "review", "improve": "suggestions"}
+
+
+def _check_run_provider(api_url: str):
+    """The provider whose check runs the automatic commands complete, or None when they publish none."""
+    if not get_settings().get("github.publish_as_check_run", False):
+        return None
+    try:
+        provider = get_git_provider_with_context(pr_url=api_url)
+    except Exception as e:
+        get_logger().warning(f"Cannot open check runs for {api_url=}: {e}")
+        return None
+    return provider if callable(getattr(provider, "start_check_run", None)) else None
+
+
+def _auto_command_check_run(command) -> tuple[str, str | None]:
+    """The command's leading token and the check run its tool publishes to, if any."""
+    tokens = command if isinstance(command, list) else str(command).split()
+    action = tokens[0] if tokens else ""
+    return action, _AUTO_COMMAND_CHECK_RUNS.get(action.lstrip("/").lower())
+
+
+def _start_auto_command_check_run(provider, command) -> str | None:
+    """Open the command's check run as in_progress: the first sign the pull request was picked up."""
+    action, name = _auto_command_check_run(command)
+    if provider is None or name is None:
+        return None
+    try:
+        provider.start_check_run(name, f"PR-Agent is running {action}")
+    except Exception as e:
+        get_logger().warning(f"Failed to open the {name} check run: {e}")
+    return name
+
+
+def _finish_auto_command_check_run(provider, name: str | None, command, succeeded: bool) -> None:
+    """Complete the command's check run when its tool did not, so it cannot stay in_progress."""
+    if provider is None or name is None:
+        return
+    action, _ = _auto_command_check_run(command)
+    summary = f"PR-Agent ran {action}" if succeeded else f"PR-Agent could not finish {action}"
+    try:
+        provider.finish_check_run(name, "success" if succeeded else "failure", summary)
+    except Exception as e:
+        get_logger().warning(f"Failed to complete the {name} check run: {e}")
 
 
 def _normalise_setting_list(value):
@@ -261,7 +325,9 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
     if not (pull_request and api_url):
         return {}
 
-    apply_repo_settings(api_url) # we need to apply the repo settings to get the correct settings for the PR. This is quite expensive - a call to the git provider is made for each PR event.
+    # we need to apply the repo settings to get the correct settings for the PR.
+    # This is quite expensive - a call to the git provider is made for each PR event.
+    apply_repo_settings(api_url)
     if not get_settings().github_app.handle_push_trigger:
         return {}
 
@@ -334,62 +400,7 @@ def is_bot_user(sender, sender_type):
 
 
 def should_process_pr_logic(body) -> bool:
-    try:
-        pull_request = body.get("pull_request", {})
-        title = pull_request.get("title", "")
-        pr_labels = pull_request.get("labels", [])
-        source_branch = pull_request.get("head", {}).get("ref", "")
-        target_branch = pull_request.get("base", {}).get("ref", "")
-        sender = body.get("sender", {}).get("login")
-        repo_full_name = body.get("repository", {}).get("full_name", "")
-
-        # logic to ignore PRs from specific repositories
-        ignore_repos = get_settings().get("CONFIG.IGNORE_REPOSITORIES", [])
-        if ignore_repos and repo_full_name:
-            if any(re.search(regex, repo_full_name) for regex in ignore_repos):
-                get_logger().info(f"Ignoring PR from repository '{repo_full_name}' due to 'config.ignore_repositories' setting")
-                return False
-
-        # logic to ignore PRs from specific users
-        ignore_pr_users = get_settings().get("CONFIG.IGNORE_PR_AUTHORS", [])
-        if ignore_pr_users and sender:
-            if any(re.search(regex, sender) for regex in ignore_pr_users):
-                get_logger().info(f"Ignoring PR from user '{sender}' due to 'config.ignore_pr_authors' setting")
-                return False
-
-        # logic to ignore PRs with specific titles
-        if title:
-            ignore_pr_title_re = get_settings().get("CONFIG.IGNORE_PR_TITLE", [])
-            if not isinstance(ignore_pr_title_re, list):
-                ignore_pr_title_re = [ignore_pr_title_re]
-            if ignore_pr_title_re and any(re.search(regex, title) for regex in ignore_pr_title_re):
-                get_logger().info(f"Ignoring PR with title '{title}' due to config.ignore_pr_title setting")
-                return False
-
-        # logic to ignore PRs with specific labels or source branches or target branches.
-        ignore_pr_labels = get_settings().get("CONFIG.IGNORE_PR_LABELS", [])
-        if pr_labels and ignore_pr_labels:
-            labels = [label['name'] for label in pr_labels]
-            if any(label in ignore_pr_labels for label in labels):
-                labels_str = ", ".join(labels)
-                get_logger().info(f"Ignoring PR with labels '{labels_str}' due to config.ignore_pr_labels settings")
-                return False
-
-        # logic to ignore PRs with specific source or target branches
-        ignore_pr_source_branches = get_settings().get("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
-        ignore_pr_target_branches = get_settings().get("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
-        if pull_request and (ignore_pr_source_branches or ignore_pr_target_branches):
-            if any(re.search(regex, source_branch) for regex in ignore_pr_source_branches):
-                get_logger().info(
-                    f"Ignoring PR with source branch '{source_branch}' due to config.ignore_pr_source_branches settings")
-                return False
-            if any(re.search(regex, target_branch) for regex in ignore_pr_target_branches):
-                get_logger().info(
-                    f"Ignoring PR with target branch '{target_branch}' due to config.ignore_pr_target_branches settings")
-                return False
-    except Exception as e:
-        get_logger().error(f"Failed 'should_process_pr_logic': {e}")
-    return True
+    return shared_should_process_pr_logic(body, provider="github")
 
 
 async def _dispatch_request(body: Dict[str, Any], event: str, action: str):
@@ -445,7 +456,7 @@ async def handle_request(body: Dict[str, Any], event: str, delivery_id: str | No
         event: The GitHub event type (e.g. "pull_request", "issue_comment", etc.).
         delivery_id: GitHub's stable identifier for this webhook delivery and its redeliveries.
     """
-    action = body.get("action")  # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
+    action = body.get("action") # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
     get_logger().debug(f"Handling request with event: {event}, action: {action}")
     if not action:
         get_logger().debug("No action found in request body, exiting handle_request")
@@ -512,7 +523,8 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
     log_context["api_url"] = api_url
     if pull_request.get("state") != "open":
         return invalid_result
-    if action in ("review_requested", "synchronize") and pull_request.get("created_at") == pull_request.get("updated_at"):
+    if (action in ("review_requested", "synchronize")
+            and pull_request.get("created_at") == pull_request.get("updated_at")):
         # avoid double reviews when opening a PR for the first time
         return invalid_result
     return pull_request, api_url
@@ -543,16 +555,31 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         get_logger().info(f"No {commands_conf} configured, skipping auto commands")
         return
     get_settings().set("config.is_auto_command", True)
+    provider = _check_run_provider(api_url)
     succeeded = True
     for command in commands:
+        check_run = None
+        command_succeeded = True
         try:
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
+            check_run = _start_auto_command_check_run(provider, new_command)
+            # Install a fresh collector so `command_failed()` below cannot read a verdict left
+            # behind by the previous command; the tool replaces it with its own on entry.
+            init_run_details()
             if await agent.handle_request(api_url, new_command) is False:
-                succeeded = False
+                command_succeeded = False
+            elif command_failed():
+                # `propagate_tool_errors` is false by default, so a tool that failed internally
+                # still returns normally. Reporting that as success would put a green tick on a
+                # pull request that never got its review.
+                get_logger().warning(f"Command '{command}' reported success but recorded a failure")
+                command_succeeded = False
         except Exception as e:
+            command_succeeded = False
             get_logger().error(f"Failed to perform command {command}: {e}")
-            succeeded = False
+        _finish_auto_command_check_run(provider, check_run, command, command_succeeded)
+        succeeded = succeeded and command_succeeded
     return succeeded
 
 

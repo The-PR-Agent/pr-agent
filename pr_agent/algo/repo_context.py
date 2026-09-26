@@ -1,3 +1,4 @@
+import re
 import time
 from collections import OrderedDict
 from html import escape
@@ -60,10 +61,12 @@ _repo_context_process_cache = _RepoContextCache()
 
 
 def _get_markdown_fence(content: str) -> str:
-    fence = MARKDOWN_FENCE
-    while fence in content:
-        fence += "`"
-    return fence
+    if MARKDOWN_FENCE not in content:
+        return MARKDOWN_FENCE
+    min_fence_length = len(MARKDOWN_FENCE)
+    pattern = rf"`{{{min_fence_length},}}"
+    longest_run = max(match.end() - match.start() for match in re.finditer(pattern, content))
+    return "`" * (longest_run + 1)
 
 
 def _get_repo_context_cache_key(

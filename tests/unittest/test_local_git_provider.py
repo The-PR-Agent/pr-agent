@@ -69,6 +69,22 @@ def test_get_languages_preserves_case_sensitive_extensions(tmp_path):
     assert provider.get_languages() == {"C": 50.0, "C++": 50.0}
 
 
+def test_get_files_returns_new_path_for_renamed_file(tmp_path):
+    repo = _make_repo(tmp_path, ["old.py"])
+    target_branch_name = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    (tmp_path / "old.py").rename(tmp_path / "new.py")
+    repo.index.remove(["old.py"])
+    repo.index.add(["new.py"])
+    repo.index.commit("rename old.py to new.py")
+
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+    provider.target_branch_name = target_branch_name
+
+    assert provider.get_files() == ["new.py"]
+
+
 def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
     # A plain deletion has no "new side": GitPython sets diff_item.b_path to None.
     # The filename must fall back to a_path (the old path) instead of None, or
