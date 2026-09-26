@@ -56,9 +56,9 @@ See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_
 
 #### Using with pull_request_target (fork/contribution support)
 
-By default, the `pull_request` event does not have access to repository secrets when the PR originates from a forked repository, which means PR-Agent won't be able to access your `OPENAI_KEY` and `GITHUB_TOKEN` secrets.
+By default, the `pull_request` event does not have access to repository or organization secrets when the PR originates from a forked repository, which means PR-Agent won't be able to access secrets such as `OPENAI_KEY`. The workflow still receives a `GITHUB_TOKEN`, but it has read-only permissions for fork pull requests by default. For private repositories, administrators can enable **Send secrets to workflows from pull requests** to make secrets available, but doing so exposes those secrets to workflows triggered by fork pull requests.
 
-To support PRs from external contributors (forks), use the `pull_request_target` event instead. This event runs in the context of the base repository and has access to secrets, while the PR code is checked out manually with `actions/checkout`.
+To support PRs from external contributors (forks), use the `pull_request_target` event instead. This event runs in the context of the base repository and has access to its secrets and `GITHUB_TOKEN` permissions. PR-Agent uses the GitHub API to fetch PR data and does not require a local checkout of the PR code.
 
 ```yaml
 name: PR Agent
@@ -87,7 +87,7 @@ jobs:
     PR-Agent uses the GitHub API to fetch PR data directly from the event payload — it does not require a local checkout of the PR code. This means you can safely omit the `actions/checkout` step entirely, avoiding common pitfalls with `pull_request_target` like the `issue_comment` event lacking a `pull_request.head.sha` ref.
 
 !!! warning "Security considerations"
-    Using `pull_request_target` gives the workflow access to repository secrets. Unlike the `pull_request` event, the PR code is not automatically checked out, which is a security feature. Avoid adding an `actions/checkout` step unless you have a specific need for the local files — if you do add one, review the [GitHub security guide on pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
+    Using `pull_request_target` gives the workflow access to repository secrets. Neither event checks out code on its own, but under `pull_request_target` a plain `actions/checkout` fetches the default branch rather than the pull request, which is a security feature. Checking out the pull request head alone does not execute untrusted code, but do not build, test, install, or otherwise execute that content in the same job with secrets or elevated token permissions. If local files are required, review the [GitHub security guide on pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target) before checking out the pull request head.
 
 ### Configuration Examples
 
