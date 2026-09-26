@@ -3,7 +3,6 @@ import pytest
 
 from pr_agent.agent.pr_agent import prepare_command
 from pr_agent.algo.cli_args import CliArgs
-from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -12,6 +11,7 @@ FORBIDDEN = [
     "--config.extra_config_url=http://example.com/evil.toml",
     "--config.review_path=/etc/cron.d/x",
     "--openai.key=sk-leaked",
+    "--qdrant={url:https://example.com}",
 ]
 
 
@@ -34,21 +34,22 @@ def test_a_forbidden_argument_is_not_applied(settings, argument):
     key = argument[2:].split("=", 1)[0]
     original = settings.get(key, None)
     try:
-        prepare_command(f"/review {argument}")
+        command = prepare_command(f"/review {argument}")
 
+        assert command == ["/review"]
         assert settings.get(key, None) == original
     finally:
         settings.set(key, original)
 
 
-def test_an_allowed_argument_is_retained_without_applying_it(settings):
-    """Apply accepted overrides only when the command is dispatched."""
+def test_an_allowed_argument_is_applied_and_retained(settings):
+    """Keep accepted overrides available both before loading and at dispatch."""
     original = settings.get("pr_reviewer.extra_instructions", "")
     try:
         command = prepare_command('/review --pr_reviewer.extra_instructions="focus on tests"')
 
         assert command == ["/review", '--pr_reviewer.extra_instructions="focus on tests"']
-        assert settings.get("pr_reviewer.extra_instructions") == original
+        assert settings.get("pr_reviewer.extra_instructions") == "focus on tests"
     finally:
         settings.set("pr_reviewer.extra_instructions", original)
 
@@ -81,8 +82,7 @@ def test_an_instruction_that_mentions_a_forbidden_key_is_still_applied(settings,
     try:
         command = prepare_command(f'/review --pr_reviewer.extra_instructions="{instruction}"')
 
-        assert settings.get("pr_reviewer.extra_instructions") == original
-        assert update_settings_from_args(command[1:]) == []
+        assert len(command) == 2
         assert settings.get("pr_reviewer.extra_instructions") == instruction
     finally:
         settings.set("pr_reviewer.extra_instructions", original)
@@ -122,8 +122,6 @@ def test_a_forbidden_and_an_allowed_argument_are_separated(settings):
                                   '--pr_reviewer.extra_instructions="focus on retries"')
 
         assert command == ["/review", '--pr_reviewer.extra_instructions="focus on retries"']
-        assert settings.get("pr_reviewer.extra_instructions") == original
-        assert update_settings_from_args(command[1:]) == []
         assert settings.get("pr_reviewer.extra_instructions") == "focus on retries"
     finally:
         settings.set("pr_reviewer.extra_instructions", original)

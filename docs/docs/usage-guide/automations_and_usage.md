@@ -147,7 +147,7 @@ Every time you run the `describe` tool (including automatic runs) the PR title w
 **Parameters for automated runs:**
 
 You can customize configurations specifically for automated runs by using the `--config_path=<value>` parameter.
-These command parameters are applied after repository settings, so the command uses the supplied value when both set the same key.
+These command parameters apply before repository loading, so they can control that loading, and again afterward so command values take precedence over repository settings.
 For instance, to modify the `review` tool settings only for newly opened PRs, use:
 
 ```toml

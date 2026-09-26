@@ -239,10 +239,11 @@ def _validation_args(args: list[str]) -> list[str]:
 
 
 def prepare_command(command: str) -> list[str]:
-    """Validate configured argv without applying settings before repository defaults.
+    """Apply validated automatic overrides and retain them for dispatch.
 
-    Return argv so ``PRAgent`` applies overrides after repository settings without
-    parsing the command again. Quoted setting values retain their string type.
+    Apply settings now so they can control repository loading. Return the same
+    argv so ``PRAgent`` reapplies overrides after repository settings are loaded.
+    Quoted setting values retain their string type.
     """
     command_args = parse_command(command)
     if not command_args:
@@ -261,6 +262,7 @@ def prepare_command(command: str) -> list[str]:
         get_logger().error(
             "Dropping auto-command argument(s) targeting forbidden param(s): "
             + ", ".join(f"'{param}'" for param in rejected))
+    update_settings_from_args(kept)
     return [action] + kept
 
 
