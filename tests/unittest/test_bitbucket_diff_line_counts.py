@@ -27,7 +27,8 @@ def _format_delta(num_plus_lines: int, num_minus_lines: int) -> str:
 
 
 def _cloud_diff_file(raw_diff, status="modified", lines_added=0, lines_removed=0,
-                     filename="src/example.py", old_filename=None, drop_diffstat_counts=False):
+                     filename="src/example.py", old_filename=None, drop_diffstat_counts=False,
+                     drop_diffstat_removed=False):
     provider = BitbucketProvider.__new__(BitbucketProvider)
     provider.diff_files = None
     provider.pr = MagicMock()
@@ -38,7 +39,8 @@ def _cloud_diff_file(raw_diff, status="modified", lines_added=0, lines_removed=0
     diffstat.data = {"status": status}
     if not drop_diffstat_counts:
         diffstat.data["lines_added"] = lines_added
-        diffstat.data["lines_removed"] = lines_removed
+        if not drop_diffstat_removed:
+            diffstat.data["lines_removed"] = lines_removed
     provider.pr.diffstat.return_value = [diffstat]
     provider.pr.diff.return_value = raw_diff
 
@@ -155,6 +157,26 @@ index 1111111..2222222 100644
 
         assert diff_file.num_plus_lines == 2
         assert diff_file.num_minus_lines == 1
+
+    def test_a_partially_populated_diffstat_falls_back_per_side(self):
+        # `lines_added` is present and authoritative; `lines_removed` is absent, so only that
+        # side falls back to the patch. The reported side must not collapse to 0.
+        diff_file = _cloud_diff_file(MODIFIED_RAW_DIFF, lines_added=2, drop_diffstat_removed=True)
+
+        assert diff_file.num_plus_lines == 2
+        assert diff_file.num_minus_lines == 1
+
+    def test_a_partially_populated_diffstat_falls_back_against_an_empty_patch(self):
+        # With no hunk to count, the absent side has nothing to fall back to and stays 0,
+        # while the reported side keeps the diffstat value.
+        raw_diff = """diff --git a/src/example.py b/src/example.py
+index 1111111..2222222 100644
+Binary files /dev/null and b/src/example.py differ
+"""
+        diff_file = _cloud_diff_file(raw_diff, lines_added=7, drop_diffstat_removed=True)
+
+        assert diff_file.num_plus_lines == 7
+        assert diff_file.num_minus_lines == 0
 
     def test_non_numeric_diffstat_counts_fall_back_to_the_patch(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
