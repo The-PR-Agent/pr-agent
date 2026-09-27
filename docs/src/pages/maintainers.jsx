@@ -36,8 +36,9 @@ export default function Maintainers() {
           <h1 className={styles.title}>Maintainers</h1>
           <p className={styles.lede}>
             PR-Agent was started at <Link to="https://www.qodo.ai/">Qodo</Link> in July 2023. In April
-            2026 Qodo donated it to the open-source community, and it now lives in the PR-Agent
-            organization on GitHub, maintained by the people below.
+            2026 Qodo donated it to the open-source community, and it now lives in the{' '}
+            <Link to="https://github.com/the-pr-agent">PR-Agent organization on GitHub</Link>, maintained
+            by the people below.
           </p>
           <p className={styles.join}>
             The project is open to new contributors and maintainers.{' '}
