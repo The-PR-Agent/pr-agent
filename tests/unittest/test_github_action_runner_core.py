@@ -748,10 +748,10 @@ def test_fresh_collector_per_command_and_sticky_status_when_gate_on(monkeypatch,
     assert len(collectors) == 2
     assert collectors[0] is not collectors[1]
     assert collectors[0].command_failed is True
-    # The clean second command is judged on its own fresh collector...
+    # Judge the clean second command on its own fresh collector...
     assert collectors[1].command_failed is False
     assert command_failed() is False
-    # ...while the overall Action failure status stays sticky.
+    # ...and keep the overall Action failure status sticky.
     assert captured["status"].failed is True
 
 
@@ -778,7 +778,7 @@ def test_fresh_collector_per_command_when_gate_off(monkeypatch, tmp_path, restor
     assert len(collectors) == 2
     assert collectors[0] is not collectors[1]
     assert collectors[0].command_failed is True
-    # The second command must not be failed by the first command's stale collector.
+    # Keep the first command's collector from failing the second command.
     assert collectors[1].command_failed is False
     assert command_failed() is False
 
@@ -802,6 +802,43 @@ def test_recorded_command_failure_fails_action_with_default_gate(monkeypatch, tm
         github_action_runner.main()
 
     assert exc_info.value.code == 1
+
+
+def test_comment_argument_cannot_disable_recorded_failure_check(monkeypatch, tmp_path, restore_github_settings):
+    ran = []
+
+    class FailingReviewer:
+        def __init__(self, _pr_url, ai_handler=None, args=None):
+            pass
+
+        async def run(self):
+            ran.append(True)
+            record_command_failure()
+
+    class FakeProvider:
+        def __init__(self, pr_url=None):
+            self.pr_url = pr_url
+
+        def add_eyes_reaction(self, comment_id, disable_eyes=False):
+            return None
+
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
+    monkeypatch.setattr(github_action_runner, "get_git_provider", lambda: FakeProvider)
+    monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
+    monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReviewer)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    event_path = _write_issue_comment_event_with_body(
+        tmp_path, "/review --github_action_config.fail_on_tool_errors=false"
+    )
+    _install_action_env(monkeypatch, tmp_path, event_path, event_name="issue_comment")
+
+    with pytest.raises(SystemExit) as exc_info:
+        github_action_runner.main()
+
+    assert exc_info.value.code == 1
+    # Reject the override before the tool runs.
+    assert ran == []
 
 
 def test_command_returning_false_fails_action_even_with_gate_off(monkeypatch, tmp_path, restore_github_settings):

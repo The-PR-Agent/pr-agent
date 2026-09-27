@@ -67,8 +67,13 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # by the repo's maintainers in .pr_agent.toml stay accepted (apply_repo_settings does not consult
 # this map); only CliArgs.validate_user_args enforces it, so repo settings and comment args do
 # not drift.
+# github_action_config.fail_on_tool_errors decides whether a tool's recorded failure fails the
+# GitHub Action. The runner reads it after the command has applied its arguments, so a comment
+# such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
+# into a green workflow; the workflow's operator sets it instead.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({"repo_context_files"}),
+    "github_action_config": frozenset({"fail_on_tool_errors"}),
 }
 
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is

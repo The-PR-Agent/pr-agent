@@ -98,10 +98,9 @@ def _mark_action_failed():
 
 
 def _fail_on_recorded_tool_error():
-    # `propagate_tool_errors` is false by default, so a tool that failed internally still
-    # returns normally. Reporting that as success would put a green tick on a pull request
-    # that never got its review (issue #3705). Set GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS
-    # to false to restore the previous green-on-recorded-failure behavior.
+    # Fail the Action on a failure the tool recorded but swallowed (propagate_tool_errors=false),
+    # so a PR that got no review is not reported green (#3705). The operator opts out with
+    # GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false; comment arguments cannot change it.
     if not is_true(get_setting_or_env("GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS", True)):
         return
     if command_failed():
