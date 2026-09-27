@@ -468,7 +468,8 @@ html {
 
 /* ---------------------------------------------------------------- images */
 
-.markdown img {
+/* Frame doc images; add `no-frame` to opt an image out (it also skips zoom). */
+.markdown img:not(.no-frame) {
   border-radius: 8px;
   box-shadow: 0 0 0 1px var(--pra-line);
   max-width: 100%;
@@ -602,17 +603,6 @@ mark {
   transform: translateX(2px);
 }
 
-.pra-landing-note {
-  margin-top: 3.5rem;
-  padding-top: 1.25rem;
-  border-top: 1px solid var(--pra-line);
-}
-
-.pra-landing-note p {
-  margin: 0;
-  font-size: 0.82rem;
-  color: var(--pra-muted);
-}
 
 @media (prefers-reduced-motion: reduce) {
   *,

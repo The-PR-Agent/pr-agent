@@ -35,6 +35,7 @@
   color: var(--pra-muted);
 }
 
+.lede a,
 .join a {
   color: var(--pra-text);
   text-decoration: underline;
@@ -42,6 +43,7 @@
   text-underline-offset: 0.2em;
 }
 
+.lede a:hover,
 .join a:hover {
   text-decoration-color: var(--pra-accent);
 }
