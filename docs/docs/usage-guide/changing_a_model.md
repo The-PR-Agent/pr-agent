@@ -510,15 +510,21 @@ reasoning_effort = "high"
 additional_reasoning_effort_models = ["compactifai/glm-5-3", "compactifai/glm-5-2"]
 ```
 
-Set `config.custom_model_max_tokens` to a positive input-token budget within the
-limits of your CompactifAI deployment. This is required until the selected model's
-input limit is available in PR-Agent's registry or the installed LiteLLM metadata.
+Set `config.custom_model_max_tokens` to a positive limit for PR-Agent's
+context-window budgeting, within the verified limits of your CompactifAI
+deployment. This is required until the selected model's input limit is available
+in PR-Agent's registry or the installed LiteLLM metadata.
 CompactifAI's public model pages do not currently specify those limits.
 
 PR-Agent also caps the effective budget with `config.max_model_tokens`, which
 defaults to 32,000. To use a larger verified budget, raise both
 `config.custom_model_max_tokens` and `config.max_model_tokens`; the effective limit
 is the smaller of the two values.
+
+This budgeting limit is not the amount of space available for the changed-code diff.
+PR-Agent reserves output tokens and subtracts fixed prompt tokens before fitting
+the diff, so its usable capacity is lower. Account for these reservations when
+choosing your verified limits.
 
 Provide your API key in `.secrets.toml`:
 
