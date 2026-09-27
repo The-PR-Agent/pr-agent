@@ -185,6 +185,8 @@ async def _validate_time_from_last_commit_to_pr_update(data: dict) -> bool:
 
 async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict, data: dict):
     apply_repo_settings(api_url)
+    if not should_process_pr_logic(data):
+        return
     # auto commands for PR, and auto feedback is disabled
     if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
@@ -193,9 +195,6 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
         if not get_settings().get("bitbucket_app.handle_push_trigger"):
             get_logger().info(
                 "Bitbucket push trigger handling disabled via config; skipping push commands")
-            return
-    if data.get("event", "") == "pullrequest:created":
-        if not should_process_pr_logic(data):
             return
     commands = (
         get_pr_commands("bitbucket_app")
