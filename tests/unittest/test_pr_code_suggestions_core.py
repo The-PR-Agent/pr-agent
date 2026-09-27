@@ -247,13 +247,41 @@ async def test_convert_to_decoupled_uses_fallback_model_budget_and_tokenizer(mon
 
     result = await tool.convert_to_decoupled_with_line_numbers([patch_prompt], "fallback-model")
 
-    assert len(result) == 1
-    assert result[0]
-    assert len(result[0]) <= 90
-    assert "replacement " * 40 not in result[0]
+    assert result == []
     assert counted_models and set(counted_models) == {"fallback-model"}
     assert reserve_calls == [("fallback-model", 2_000)]
     assert window_calls == [("fallback-model", True)]
+
+
+@pytest.mark.asyncio
+async def test_convert_to_decoupled_falls_back_when_numbering_exceeds_multifile_budget():
+    tool = _make_tool()
+    chunks = [
+        f"## File: '{name}.py'\n\n@@ -0,0 +1,8 @@\n"
+        + "\n".join(f"+{name}_{line}" for line in range(8))
+        for name in ("first", "second")
+    ]
+    patch_prompt = "\n\n".join(chunks)
+    max_input_tokens = len(patch_prompt) + 1
+    counted = []
+
+    def count_tokens(text):
+        counted.append(text)
+        return len(text)
+
+    attempt_budget = SimpleNamespace(
+        available_tokens=MagicMock(return_value=max_input_tokens),
+        count_tokens=count_tokens,
+    )
+
+    result = await tool.convert_to_decoupled_with_line_numbers(
+        [patch_prompt], "model", attempt_budget=attempt_budget
+    )
+
+    assert len(patch_prompt) < max_input_tokens
+    assert len(counted[0]) > max_input_tokens
+    assert "8 +second_7" in counted[0]
+    assert result == []
 
 
 @pytest.mark.asyncio
@@ -730,7 +758,9 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
             pr_code_suggestions_module,
             "get_pr_multi_diffs",
             side_effect=[(["stale unnumbered chunk"], ["stale.py"]),
-                         (["1 fallback-a", "2 fallback-b"], ["fallback-left-out.py"])],
+                         (["## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n1 +first",
+                           "## File: 'second.py'\n@@ -0,0 +8 @@\n__new hunk__\n8 +second"],
+                          ["fallback-left-out.py"])],
         ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
@@ -740,8 +770,10 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         settings.pr_code_suggestions.parallel_calls = original_parallel_calls
 
     assert chunk_pairs == [
-        ("1 fallback-a", "fallback-a"),
-        ("2 fallback-b", "fallback-b"),
+        ("## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n1 +first",
+         "## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n+first"),
+        ("## File: 'second.py'\n@@ -0,0 +8 @@\n__new hunk__\n8 +second",
+         "## File: 'second.py'\n@@ -0,0 +8 @@\n__new hunk__\n+second"),
     ]
     assert tool.total_chunk_count == 2
     assert len(data["code_suggestions"]) == 2

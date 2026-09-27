@@ -36,7 +36,7 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_command_failure, record_model_used
 from pr_agent.algo.run_output import push_outputs, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
@@ -2051,20 +2051,10 @@ class PRCodeSuggestions:
                     token_count = attempt_budget.count_tokens(patch_final)
                     if token_count > max_input_tokens:
                         get_logger().warning(
-                            f"Token count {token_count} exceeds the limit {max_input_tokens}. clipping the tokens")
-                        add_truncation_marker = True
-                        while patch_final and token_count > max_input_tokens:
-                            clipped_patch = clip_tokens(
-                                patch_final,
-                                max_input_tokens,
-                                add_three_dots=add_truncation_marker,
-                                num_input_tokens=token_count,
-                            )
-                            add_truncation_marker = False
-                            if len(clipped_patch) >= len(patch_final):
-                                clipped_patch = patch_final[:len(patch_final) // 2]
-                            patch_final = clipped_patch
-                            token_count = attempt_budget.count_tokens(patch_final)
+                            f"Token count {token_count} exceeds the limit {max_input_tokens}. "
+                            "Repacking numbered chunks to preserve matching generation and reflection inputs."
+                        )
+                        return []
                     patches_diff_list.append(patch_final)
                 return patches_diff_list
             except Exception:
