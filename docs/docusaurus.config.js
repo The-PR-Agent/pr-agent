@@ -3,7 +3,7 @@
 const {themes: prismThemes} = require('prism-react-renderer');
 
 /**
- * One code surface in both colour modes, on the brand's ink (#0f172a).
+ * One code surface in both colour modes, on the site's graphite (#11141a).
  *
  * Every popular *light* Prism theme fails WCAG AA on a light ground -- in
  * oneLight, comments are 2.40:1 and strings 2.93:1 -- and repainting most of
@@ -13,10 +13,10 @@ const {themes: prismThemes} = require('prism-react-renderer');
  * is lifted, because our TOML samples carry real documentation in comments.
  */
 const codeTheme = {
-  plain: {color: '#c8d3e2', backgroundColor: '#0f172a'},
+  plain: {color: '#d5d9e1', backgroundColor: '#11141a'},
   styles: [
     ...prismThemes.oneDark.styles,
-    {types: ['comment', 'prolog', 'cdata'], style: {color: '#7d8da6', fontStyle: 'italic'}},
+    {types: ['comment', 'prolog', 'cdata'], style: {color: '#8a93a4', fontStyle: 'italic'}},
   ],
 };
 
@@ -54,11 +54,16 @@ const config = {
         },
         blog: false,
         theme: {
-          customCss: require.resolve('./src/css/custom.css'),
+          customCss: [
+            require.resolve('./src/css/custom.css'),
+            require.resolve('./src/css/provider-logos.css'),
+          ],
         },
       }),
     ],
   ],
+
+  clientModules: [require.resolve('./src/fonts.js')],
 
   plugins: [
     [
@@ -67,6 +72,8 @@ const config = {
         redirects: [
           // '/summary/' was the GitBook table of contents, published by the MkDocs site.
           { from: '/summary', to: '/' },
+          // A page of links that duplicated the Installation index.
+          { from: '/installation/pr_agent', to: '/installation/' },
         ],
       },
     ],
@@ -115,6 +122,12 @@ const config = {
           },
           {
             type: 'docSidebar',
+            sidebarId: 'guides',
+            label: 'Guides',
+            position: 'left',
+          },
+          {
+            type: 'docSidebar',
             sidebarId: 'tools',
             label: 'Tools',
             position: 'left',
@@ -126,30 +139,18 @@ const config = {
             position: 'left',
           },
           {
-            type: 'docSidebar',
-            sidebarId: 'faq',
-            label: 'FAQ',
-            position: 'left',
-          },
-          {
             href: 'https://github.com/the-pr-agent/pr-agent',
             label: 'GitHub',
             position: 'right',
           },
         ],
       },
-      announcementBar: {
-        id: 'announcement',
-        content:
-          'Open source PR Agent documentation. For the Qodo free version for open-source projects, visit: <a href="https://www.qodo.ai/solutions/open-source/">https://www.qodo.ai/solutions/open-source/</a>',
-        isCloseable: true,
-      },
       colorMode: {
-        defaultMode: 'light',
+        defaultMode: 'dark',
         respectPrefersColorScheme: true,
       },
       footer: {
-        style: 'dark',
+        style: 'light',
         links: [
           {
             title: 'Links',
@@ -161,7 +162,7 @@ const config = {
             ],
           },
         ],
-        copyright: `\u00a9 ${new Date().getFullYear()} PR-Agent Contributors`,
+        copyright: `Copyright \u00a9 ${new Date().getFullYear()} PR-Agent. Built with Docusaurus.`,
       },
       prism: {
         theme: codeTheme,

@@ -5,12 +5,16 @@ sidebar_position: 1
 
 There are several ways to use PR-Agent:
 
-- [Locally](./locally.md)
-- [GitHub integration](./github.md)
-- [GitLab integration](./gitlab.md)
-- [BitBucket integration](./bitbucket.md)
-- [Azure DevOps integration](./azure.md)
-- [Gitea integration](./gitea.md)
+<div class="pra-provider-grid">
+
+- <span class="pra-logo pra-logo--terminal" aria-hidden="true"></span> [Locally](./locally.md)
+- <span class="pra-logo pra-logo--github" aria-hidden="true"></span> [GitHub](./github.md)
+- <span class="pra-logo pra-logo--gitlab" aria-hidden="true"></span> [GitLab](./gitlab.md)
+- <span class="pra-logo pra-logo--bitbucket" aria-hidden="true"></span> [Bitbucket](./bitbucket.md)
+- <span class="pra-logo pra-logo--azuredevops" aria-hidden="true"></span> [Azure DevOps](./azure.md)
+- <span class="pra-logo pra-logo--gitea" aria-hidden="true"></span> [Gitea](./gitea.md)
+
+</div>
 
 ## GitHub polling HTTP requests
 

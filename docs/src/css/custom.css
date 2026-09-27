@@ -1,615 +1,624 @@
 /* ==========================================================================
    PR-Agent documentation theme
 
-   Ported from the MkDocs Material stylesheet, with one correction that the
-   mechanical port got wrong: Material's `--md-primary-fg-color` was the
-   *header background* (near-black), but Infima's `--ifm-color-primary` drives
-   links, buttons, active sidebar items, the TOC marker and focus rings.
-   Copying the value across left the site with no accent at all. Here primary
-   is the brand blue, and the dark header surface has its own token.
+   Graphite surfaces, one signal blue, Geist for text and Geist Mono for
+   anything you type. Diff green/red appear only where they mean a diff.
+   Everything else stays out of the way of the content.
 
-   Brand tokens are `--pra-*`; Infima tokens map onto them. Every colour is
-   defined for both themes, and the contrast of each pairing is noted inline.
+   Brand tokens are `--pra-*`; Infima tokens map onto them. Contrast of every
+   text pairing is WCAG AA or better in both themes.
    ========================================================================== */
 
-/* -------------------------------------------------------- tokens: light */
+/* ------------------------------------------------------------ tokens: dark */
+
+/* `html[...]` matches Infima's own dark selector, so these win on source order. */
+html[data-theme='dark'] {
+  --pra-bg: #0a0c10;
+  --pra-surface: #11141a;
+  --pra-surface-2: #171b23;
+  --pra-line: #222733;
+  --pra-line-strong: #2e3442;
+  --pra-text: #e8eaef;          /* 16.26:1 on bg */
+  --pra-muted: #8e96a6;         /*  6.58:1 on bg */
+  --pra-accent: #5ea8ff;        /*  7.94:1 on bg */
+  --pra-accent-soft: rgba(94, 168, 255, 0.12);
+  --pra-on-accent: #04101f;     /*  7.75:1 on accent */
+  --pra-add: #3fc27f;
+  --pra-del: #f0646f;
+  --pra-warn: #e2a336;
+
+  --ifm-color-primary: #5ea8ff;
+  --ifm-color-primary-dark: #3b95ff;
+  --ifm-color-primary-darker: #2a8cff;
+  --ifm-color-primary-darkest: #0070f4;
+  --ifm-color-primary-light: #81bbff;
+  --ifm-color-primary-lighter: #92c4ff;
+  --ifm-color-primary-lightest: #c7e1ff;
+}
+
+/* ----------------------------------------------------------- tokens: light */
 
 :root {
-  /* Surfaces */
-  --pra-surface: #ffffff;
-  --pra-surface-2: #f8fafc;
-  --pra-surface-3: #f1f5f9;
-  --pra-ink: #0f172a;              /* navbar + code surface */
-  --pra-border: #e2e8f0;
-  --pra-border-strong: #cbd5e1;
+  --pra-bg: #ffffff;
+  --pra-surface: #f5f6f8;
+  --pra-surface-2: #eceef2;
+  --pra-line: #e3e6eb;
+  --pra-line-strong: #cfd4dc;
+  --pra-text: #11141a;          /* 18.44:1 on bg */
+  --pra-muted: #5a6376;         /*  6.03:1 on bg */
+  --pra-accent: #2459db;        /*  5.95:1 on bg */
+  --pra-accent-soft: rgba(36, 89, 219, 0.08);
+  --pra-on-accent: #ffffff;
+  --pra-add: #1a7f45;
+  --pra-del: #c62f3c;
+  --pra-warn: #9a6200;
 
-  /* Ink */
-  --pra-text: #1e293b;             /* 14.63:1 on white */
-  --pra-text-muted: #475569;       /*  7.58:1 */
-  --pra-text-faint: #64748b;       /*  4.76:1 — decorative labels only */
-  --pra-heading: #0f172a;
+  --ifm-color-primary: #2459db;
+  --ifm-color-primary-dark: #2050c5;
+  --ifm-color-primary-darker: #1f4cba;
+  --ifm-color-primary-darkest: #193e99;
+  --ifm-color-primary-light: #3a6adf;
+  --ifm-color-primary-lighter: #4572e0;
+  --ifm-color-primary-lightest: #668be6;
+}
 
-  /* Brand */
-  --pra-accent: #1d4ed8;           /* 6.70:1 on white */
-  --pra-link: #1e40af;             /* 8.72:1 on white */
-  --pra-on-accent: #ffffff;        /* 6.70:1 on #1d4ed8 */
-  --pra-accent-soft: rgba(29, 78, 216, 0.08);
-  --pra-accent-ring: rgba(29, 78, 216, 0.28);
+/* ------------------------------------------------- Infima, both themes */
 
-  /* Code. Dark in both themes — see the note above §code. */
-  --pra-inline-code-bg: #f1f5f9;
-  --pra-inline-code-fg: #0f172a;   /* 16.3:1 */
-  --pra-inline-code-border: #e2e8f0;
-  --pra-code-shadow: 0 1px 2px rgba(15, 23, 42, 0.1),
-    0 12px 28px -18px rgba(15, 23, 42, 0.55);
-
-  /* Chrome */
-  --pra-announce-bg: #1d4ed8;
-  --pra-footer-bg: #1a202c;
-  --pra-image-ring: rgba(15, 23, 42, 0.22);
-
-  /* ---- Infima: primary ramp (HSL lightness x .9/.85/.7 and x1.1/1.15/1.3) */
-  --ifm-color-primary: #1d4ed8;
-  --ifm-color-primary-dark: #1a46c2;
-  --ifm-color-primary-darker: #1942b8;
-  --ifm-color-primary-darkest: #143797;
-  --ifm-color-primary-light: #2b5be3;
-  --ifm-color-primary-lighter: #3663e4;
-  --ifm-color-primary-lightest: #567ce8;
-
-  /* ---- Infima: base ---- */
-  --ifm-background-color: var(--pra-surface);
-  --ifm-background-surface-color: var(--pra-surface);
-  --ifm-color-content: var(--pra-text);
-  --ifm-color-content-secondary: var(--pra-text-muted);
-  --ifm-heading-color: var(--pra-heading);
-  --ifm-link-color: var(--pra-link);
+:root,
+html[data-theme] {
+  --ifm-background-color: var(--pra-bg);
+  --ifm-background-surface-color: var(--pra-bg);
+  --ifm-font-color-base: var(--pra-text);
+  --ifm-heading-color: var(--pra-text);
+  --ifm-color-content-secondary: var(--pra-muted);
+  --ifm-link-color: var(--pra-accent);
   --ifm-link-hover-color: var(--pra-accent);
-  --ifm-hover-overlay: rgba(15, 23, 42, 0.05);
-  --ifm-global-radius: 0.5rem;
-  --ifm-toc-border-color: var(--pra-border);
-  --ifm-toc-link-color: var(--pra-text-muted);
+  --ifm-link-hover-decoration: none;
+  --ifm-hover-overlay: var(--pra-surface);
+  --ifm-color-emphasis-300: var(--pra-line);
+  --ifm-toc-border-color: var(--pra-line);
+  --ifm-hr-background-color: var(--pra-line);
+  --ifm-global-radius: 8px;
 
-  /* ---- Typography. System stack, deliberately: no webfont request means no
-     FOUT and no layout shift, on a site that is mostly dense technical prose
-     and very wide configuration tables. ---- */
-  --ifm-font-family-base: system-ui, -apple-system, BlinkMacSystemFont,
-    'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif,
-    'Apple Color Emoji', 'Segoe UI Emoji';
-  --ifm-font-family-monospace: ui-monospace, SFMono-Regular, 'SF Mono',
-    'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, 'Liberation Mono',
-    monospace;
-
-  --ifm-font-size-base: 16px;
-  --ifm-line-height-base: 1.65;
-  --ifm-list-item-margin: 0.3rem;
-
-  --ifm-heading-font-weight: 650;
-  --ifm-heading-line-height: 1.22;
-  --ifm-heading-margin-bottom: 0.75rem;
-
-  /* Infima's h4/h5/h6 (1 / .875 / .85rem) are indistinguishable from body. */
-  --ifm-h1-font-size: 2.25rem;
+  --ifm-font-family-base: 'Geist Variable', 'Geist', system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+  --ifm-font-family-monospace: 'Geist Mono Variable', 'Geist Mono', ui-monospace,
+    SFMono-Regular, Menlo, monospace;
+  --ifm-font-size-base: 15.5px;
+  --ifm-line-height-base: 1.7;
+  --ifm-heading-font-weight: 600;
+  --ifm-heading-line-height: 1.2;
+  --ifm-h1-font-size: 2.5rem;
   --ifm-h2-font-size: 1.5rem;
-  --ifm-h3-font-size: 1.1875rem;
-  --ifm-h4-font-size: 1.0625rem;
-  --ifm-h5-font-size: 0.9375rem;
-  --ifm-h6-font-size: 0.8125rem;
+  --ifm-h3-font-size: 1.15rem;
+  --ifm-h4-font-size: 1rem;
 
-  /* ---- Code ---- */
-  --ifm-code-font-size: 87.5%;
-  --ifm-code-background: var(--pra-inline-code-bg);
-  --ifm-code-border-radius: 0.375rem;
-  --ifm-code-padding-horizontal: 0.34em;
-  --ifm-code-padding-vertical: 0.16em;
-  --ifm-pre-border-radius: 0.625rem;
-  --docusaurus-highlighted-code-line-bg: rgba(56, 189, 248, 0.14);
+  --ifm-code-font-size: 86%;
+  --ifm-code-background: var(--pra-surface);
+  --ifm-code-border-radius: 5px;
+  --ifm-code-padding-horizontal: 0.35em;
+  --ifm-code-padding-vertical: 0.12em;
+  --ifm-pre-border-radius: 10px;
+  --ifm-pre-line-height: 1.65;
+  --docusaurus-highlighted-code-line-bg: rgba(94, 168, 255, 0.12);
 
-  /* ---- Navbar: the brand ink surface, as in the MkDocs original ---- */
-  --ifm-navbar-height: 4rem;
-  --ifm-navbar-background-color: var(--pra-ink);
-  --ifm-navbar-link-color: #cbd5e1;          /* 12.01:1 on #0f172a */
-  --ifm-navbar-link-hover-color: #ffffff;
-  --ifm-navbar-link-active-color: #ffffff;
-  --ifm-navbar-shadow: 0 1px 0 rgba(148, 163, 184, 0.18);
-  --ifm-navbar-search-input-background-color: rgba(148, 163, 184, 0.16);
-  --ifm-navbar-search-input-color: #e2e8f0;
-  --ifm-navbar-search-input-placeholder-color: rgba(203, 213, 225, 0.65);
+  --ifm-navbar-height: 3.75rem;
+  --ifm-navbar-background-color: color-mix(in srgb, var(--pra-bg) 82%, transparent);
+  --ifm-navbar-shadow: none;
+  --ifm-navbar-link-color: var(--pra-muted);
+  --ifm-navbar-link-hover-color: var(--pra-text);
+  --ifm-navbar-link-active-color: var(--pra-text);
+  --ifm-navbar-search-input-background-color: var(--pra-surface);
+  --ifm-navbar-search-input-color: var(--pra-text);
+  --ifm-navbar-search-input-placeholder-color: var(--pra-muted);
 
-  /* ---- Sidebar ---- */
-  --ifm-menu-color: var(--pra-text-muted);
-  --ifm-menu-color-active: var(--pra-accent);
-  --ifm-menu-color-background-active: var(--pra-accent-soft);
-  --ifm-menu-color-background-hover: rgba(15, 23, 42, 0.04);
-  --ifm-menu-link-padding-vertical: 0.375rem;
-  --ifm-menu-link-padding-horizontal: 0.7rem;
+  --ifm-menu-color: var(--pra-muted);
+  --ifm-menu-color-active: var(--pra-text);
+  --ifm-menu-color-background-active: var(--pra-surface-2);
+  --ifm-menu-color-background-hover: var(--pra-surface);
+  --ifm-menu-link-padding-vertical: 0.35rem;
+  --ifm-menu-link-padding-horizontal: 0.75rem;
 
-  /* ---- Tables ---- */
-  --ifm-table-border-color: var(--pra-border);
-  --ifm-table-head-background: var(--pra-surface-2);
+  --ifm-table-border-color: var(--pra-line);
+  --ifm-table-head-background: var(--pra-surface);
   --ifm-table-head-color: var(--pra-text);
-  --ifm-table-stripe-background: rgba(15, 23, 42, 0.022);
-  --ifm-table-cell-padding: 0.6rem 0.8rem;
+  --ifm-table-stripe-background: transparent;
+  --ifm-table-cell-padding: 0.6rem 0.85rem;
 
-  /* ---- Footer ---- */
-  --ifm-footer-background-color: var(--pra-footer-bg);
-  --ifm-footer-color: #cbd5e1;               /* 10.98:1 */
-  --ifm-footer-title-color: #f1f5f9;
-  --ifm-footer-link-color: #93c5fd;          /*  9.05:1 */
-  --ifm-footer-link-hover-color: #ffffff;
+  --ifm-footer-background-color: var(--pra-bg);
+  --ifm-footer-color: var(--pra-muted);
+  --ifm-footer-link-color: var(--pra-muted);
+  --ifm-footer-link-hover-color: var(--pra-text);
+  --ifm-footer-title-color: var(--pra-text);
 
-  /* ---- Quotes and rules ---- */
-  --ifm-blockquote-color: var(--pra-text-muted);
-  --ifm-blockquote-border-color: var(--pra-border-strong);
-  --ifm-blockquote-border-left-width: 3px;
-  --ifm-hr-background-color: var(--pra-border);
+  --ifm-blockquote-color: var(--pra-muted);
+  --ifm-blockquote-border-color: var(--pra-line-strong);
 
-  /* ---- @easyops-cn/docusaurus-search-local ---- */
-  --search-local-modal-background: var(--pra-surface);
-  --search-local-modal-shadow: 0 0 0 1px var(--pra-border),
-    0 16px 40px -12px rgba(15, 23, 42, 0.3);
-  --search-local-hit-background: var(--pra-surface-2);
-  --search-local-hit-shadow: inset 0 0 0 1px var(--pra-border);
+  --search-local-modal-background: var(--pra-bg);
+  --search-local-modal-shadow: 0 0 0 1px var(--pra-line), 0 24px 60px -20px rgba(0, 0, 0, 0.5);
+  --search-local-hit-background: var(--pra-surface);
+  --search-local-hit-shadow: none;
   --search-local-hit-color: var(--pra-text);
   --search-local-highlight-color: var(--pra-accent);
   --search-local-hit-active-color: var(--pra-on-accent);
-  --search-local-muted-color: var(--pra-text-muted);
+  --search-local-muted-color: var(--pra-muted);
   --search-local-input-active-border-color: var(--pra-accent);
 }
 
-/* --------------------------------------------------------- tokens: dark */
-
-[data-theme='dark'] {
-  --pra-surface: #0b1220;
-  --pra-surface-2: #0f172a;
-  --pra-surface-3: #16203a;
-  --pra-ink: #0d1b36;
-  --pra-border: #22304a;
-  --pra-border-strong: #334155;
-
-  --pra-text: #e5e7eb;             /* 15.12:1 on #0b1220 */
-  --pra-text-muted: #94a3b8;       /*  7.30:1 */
-  --pra-text-faint: #8494a8;       /*  6.05:1 */
-  --pra-heading: #f1f5f9;
-
-  --pra-accent: #38bdf8;           /* 8.74:1 */
-  --pra-link: #7dd3fc;             /* 11.23:1 */
-  /* Never white on the dark accent: #ffffff on #38bdf8 is 2.14:1. */
-  --pra-on-accent: #04121f;        /* 8.82:1 on #38bdf8 */
-  --pra-accent-soft: rgba(56, 189, 248, 0.12);
-  --pra-accent-ring: rgba(56, 189, 248, 0.4);
-
-  --pra-inline-code-bg: #18243d;
-  --pra-inline-code-fg: #e2e8f0;   /* 12.54:1 */
-  --pra-inline-code-border: #2b3a55;
-  --pra-code-shadow: none;
-
-  --pra-announce-bg: #2563eb;      /* white on this is 5.17:1 (AA) */
-  --pra-footer-bg: #080e1a;
-  --pra-image-ring: rgba(226, 232, 240, 0.24);
-
-  --ifm-color-primary: #38bdf8;
-  --ifm-color-primary-dark: #1bb3f7;
-  --ifm-color-primary-darker: #0caef6;
-  --ifm-color-primary-darkest: #0791ce;
-  --ifm-color-primary-light: #55c7f9;
-  --ifm-color-primary-lighter: #64ccfa;
-  --ifm-color-primary-lightest: #90dafb;
-
-  --ifm-background-color: var(--pra-surface);
-  --ifm-background-surface-color: var(--pra-surface-2);
-  --ifm-color-content: var(--pra-text);
-  --ifm-color-content-secondary: var(--pra-text-muted);
-  --ifm-heading-color: var(--pra-heading);
-  --ifm-link-color: var(--pra-link);
-  --ifm-link-hover-color: var(--pra-accent);
-  --ifm-hover-overlay: rgba(148, 163, 184, 0.08);
-  --ifm-toc-border-color: var(--pra-border);
-  --ifm-toc-link-color: var(--pra-text-muted);
-
-  --ifm-code-background: var(--pra-inline-code-bg);
-
-  --ifm-navbar-background-color: var(--pra-ink);
-  --ifm-navbar-shadow: 0 1px 0 rgba(148, 163, 184, 0.16);
-
-  --ifm-menu-color: #a9b4c4;
-
-  --ifm-table-head-background: #111c30;
-  --ifm-table-head-color: #cbd5e1;
-  --ifm-table-stripe-background: rgba(148, 163, 184, 0.045);
-
-  --ifm-footer-background-color: var(--pra-footer-bg);
-
-  --search-local-modal-background: var(--pra-surface-2);
-  --search-local-modal-shadow: 0 0 0 1px var(--pra-border),
-    0 20px 48px -12px rgba(0, 0, 0, 0.75);
-  --search-local-hit-background: var(--pra-surface-3);
-  --search-local-hit-color: var(--pra-text);
-  /* The plugin hard-codes white on the highlight colour: 2.14:1 here. */
-  --search-local-hit-active-color: var(--pra-on-accent);
-  --search-local-muted-color: var(--pra-text-faint);
-}
-
-/* --------------------------------------------------------------- base */
+/* ------------------------------------------------------------------ base */
 
 html {
-  /* Without this, every in-page anchor — including the README's /#features —
-     scrolls its heading underneath the sticky navbar. */
+  /* Anchors land below the sticky navbar, including the README's /#features. */
   scroll-padding-top: calc(var(--ifm-navbar-height) + 1.25rem);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-.markdown h1 { font-weight: 700; letter-spacing: -0.021em; }
-.markdown h2 { font-weight: 650; letter-spacing: -0.016em; }
-.markdown h3 { font-weight: 600; letter-spacing: -0.011em; }
-.markdown h6 {
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--pra-text-muted);
+::selection {
+  background: var(--pra-accent-soft);
 }
-
-/* Vertical rhythm. configuration_reference has 41 h2s; the hairline turns an
-   undifferentiated wall of tables into readable sections. */
-.markdown > h2 {
-  margin-top: 3rem;
-  padding-top: 1.25rem;
-  border-top: 1px solid var(--pra-border);
-}
-.markdown > h2:first-of-type { margin-top: 1rem; }
-.markdown > h3 { margin-top: 2.1rem; }
-
-.hash-link { opacity: 0; transition: opacity var(--ifm-transition-fast); }
-:is(h1, h2, h3, h4, h5, h6):hover > .hash-link,
-.hash-link:focus-visible { opacity: 1; }
 
 :focus-visible {
-  outline: 2px solid var(--ifm-color-primary);
+  outline: 2px solid var(--pra-accent);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
-::selection { background: var(--pra-accent-soft); color: var(--pra-heading); }
+.markdown h1 {
+  letter-spacing: -0.035em;
+  font-weight: 650;
+}
 
-/* --------------------------------------------------------------- code */
+.markdown h2 {
+  letter-spacing: -0.025em;
+  margin-top: 2.75rem;
+}
 
-/* One code surface in both themes. Every popular *light* Prism theme fails AA
-   on a light ground (oneLight's comment is 2.40:1, string 2.93:1, github's
-   teal 2.51:1), and repainting five of seven token colours destroys the
-   theme's internal harmony. A single dark surface is both accessible and what
-   most developer docs do. */
-.markdown :not(pre) > code,
-.menu code,
-.table-of-contents code {
-  background-color: var(--pra-inline-code-bg);
-  color: var(--pra-inline-code-fg);
-  border: 1px solid var(--pra-inline-code-border);
+.markdown h3 {
+  letter-spacing: -0.015em;
+  margin-top: 2rem;
+}
+
+.markdown a {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--pra-accent) 35%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  transition: text-decoration-color 120ms ease;
+}
+
+.markdown a:hover {
+  text-decoration-color: var(--pra-accent);
+}
+
+.hash-link {
+  opacity: 0;
+  text-decoration: none !important;
+}
+
+:is(h1, h2, h3, h4):hover > .hash-link,
+.hash-link:focus-visible {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- navbar */
+
+.navbar {
+  border-bottom: 1px solid var(--pra-line);
+  backdrop-filter: saturate(160%) blur(12px);
+  -webkit-backdrop-filter: saturate(160%) blur(12px);
+}
+
+.navbar__brand {
+  gap: 0.15rem;
+}
+
+.navbar__logo {
+  height: 1.4rem;
+}
+
+.navbar__title {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--pra-text);
+}
+
+.navbar__link {
+  font-size: 0.9rem;
   font-weight: 500;
-  font-variant-ligatures: none;
+}
+
+.navbar__link--active {
+  color: var(--pra-text);
+}
+
+.navbar__search-input {
+  border: 1px solid var(--pra-line);
+  font-size: 0.875rem;
+}
+
+.navbar-sidebar {
+  background: var(--pra-bg);
+}
+
+/* --------------------------------------------------------------- sidebar */
+
+.theme-doc-sidebar-container {
+  border-right: 1px solid var(--pra-line) !important;
+}
+
+.menu {
+  padding: 1rem 0.75rem !important;
+  font-size: 0.9rem;
+}
+
+.menu__link {
+  border-radius: 6px;
+  line-height: 1.45;
+}
+
+.menu__link--active:not(.menu__link--sublist) {
+  color: var(--pra-accent);
+  background: var(--pra-accent-soft);
+  font-weight: 500;
+}
+
+.menu__list-item-collapsible:hover {
+  background: var(--pra-surface);
+}
+
+/* Category rows read as headings of their group. */
+.menu__link--sublist,
+.menu__list-item-collapsible .menu__link {
+  color: var(--pra-text);
+  font-weight: 550;
+}
+
+/* Groups without a page of their own (e.g. "Other ways to run") are labels,
+   not links: no hover state, no pointer. */
+.menu__list-item-collapsible:has(> .menu__link:not([href])):hover,
+.menu__list-item-collapsible > .menu__link:not([href]):hover {
+  background: none;
+}
+
+.menu__list-item-collapsible > .menu__link:not([href]) {
+  cursor: default;
+}
+
+/* Breathing room between groups. */
+.theme-doc-sidebar-item-category-level-1 {
+  margin-top: 0.6rem;
+}
+
+/* ------------------------------------------------------------------- TOC */
+
+.table-of-contents {
+  font-size: 0.8rem;
+}
+
+.table-of-contents__link {
+  color: var(--pra-muted);
+}
+
+.table-of-contents__link:hover,
+.table-of-contents__link--active {
+  color: var(--pra-text);
+}
+
+.table-of-contents__link--active {
+  font-weight: 500;
+}
+
+/* ----------------------------------------------------------- breadcrumbs */
+
+.breadcrumbs__link {
+  font-size: 0.8rem;
+  color: var(--pra-muted);
+  background: none !important;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.breadcrumbs__item--active .breadcrumbs__link {
+  color: var(--pra-text);
+}
+
+/* ------------------------------------------------------------------ code */
+
+.markdown :not(pre) > code {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  border: 1px solid var(--pra-line);
+  color: var(--pra-text);
+  font-weight: 450;
 }
 
 .markdown a > code {
-  color: var(--ifm-link-color);
-  border-color: var(--pra-accent-ring);
+  color: var(--pra-accent);
 }
 
+/* One graphite code surface in both themes: no popular light Prism theme
+   passes AA on a light background, and these docs are mostly TOML and YAML. */
 .theme-code-block {
   border-radius: var(--ifm-pre-border-radius);
-  box-shadow: var(--pra-code-shadow);
-  margin-bottom: 1.35rem;
+  box-shadow: none;
+  margin-bottom: 1.4rem;
 }
-[data-theme='dark'] .theme-code-block { border: 1px solid var(--pra-border); }
+
+[data-theme='dark'] .theme-code-block {
+  box-shadow: 0 0 0 1px var(--pra-line);
+}
 
 .theme-code-block pre {
-  font-size: 0.875rem;
+  font-size: 0.84rem;
   font-variant-ligatures: none;
-  tab-size: 2;
-}
-.theme-code-block pre code { border: 0; background: none; }
-
-.theme-code-block-highlighted-line {
-  box-shadow: inset 2px 0 0 0 var(--ifm-color-primary);
 }
 
-/* Code blocks are dark in light mode too, so these controls need light ink. */
-.theme-code-block button[class*='copyButton'],
-.theme-code-block button[class*='wordWrapButton'] {
-  background: rgba(148, 163, 184, 0.14) !important;
-  border: 1px solid rgba(148, 163, 184, 0.2) !important;
-  color: #c8d3e2 !important;
+.theme-code-block pre code {
+  border: 0;
 }
 
-/* -------------------------------------------------------- admonitions */
+.theme-code-block button {
+  color: #aab2c0;
+}
 
-/* 43 uses: 22 note, 14 tip, 5 warning, 2 danger. Docusaurus maps note to
-   alert--secondary, tip to alert--success, warning to alert--warning and
-   danger to alert--danger, so overriding the four alert variables per type is
-   more precise than reskinning Infima's whole colour system. */
+/* ----------------------------------------------------------- admonitions */
+
 .theme-admonition {
-  --ifm-alert-border-left-width: 3px;
-  --ifm-alert-border-width: 1px;
-  --ifm-alert-shadow: none;
-  --ifm-alert-border-radius: 0.5rem;
-  --ifm-alert-padding-vertical: 0.9rem;
-  --ifm-alert-padding-horizontal: 1.1rem;
-  border-left-width: var(--ifm-alert-border-left-width);
-  border-left-style: solid;
-  border-left-color: var(--ifm-alert-border-color);
-  margin-bottom: 1.35rem;
+  --pra-tone: var(--pra-muted);
+  background: var(--pra-surface);
+  border: 1px solid var(--pra-line);
+  border-left: 2px solid var(--pra-tone);
+  border-radius: 8px;
+  box-shadow: none;
+  color: var(--pra-text);
+  padding: 0.9rem 1.1rem;
+}
+
+.theme-admonition-tip {
+  --pra-tone: var(--pra-add);
+}
+
+.theme-admonition-info {
+  --pra-tone: var(--pra-accent);
+}
+
+.theme-admonition-warning,
+.theme-admonition-caution {
+  --pra-tone: var(--pra-warn);
+}
+
+.theme-admonition-danger {
+  --pra-tone: var(--pra-del);
 }
 
 .theme-admonition > div:first-child {
-  color: var(--ifm-alert-foreground-color);
-  font-size: 0.75rem;
-  font-weight: 650;
-  letter-spacing: 0.085em;
+  color: var(--pra-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
-.theme-admonition > div:first-child svg { fill: var(--ifm-alert-foreground-color); }
 
-.theme-admonition-note { --ifm-alert-background-color: #f1f5f9; --ifm-alert-border-color: #94a3b8; --ifm-alert-foreground-color: #334155; }
-.theme-admonition-tip { --ifm-alert-background-color: #ecfdf5; --ifm-alert-border-color: #059669; --ifm-alert-foreground-color: #065f46; }
-.theme-admonition-info { --ifm-alert-background-color: #eff6ff; --ifm-alert-border-color: #2563eb; --ifm-alert-foreground-color: #1e40af; }
-.theme-admonition-warning,
-.theme-admonition-caution { --ifm-alert-background-color: #fffbeb; --ifm-alert-border-color: #d97706; --ifm-alert-foreground-color: #92400e; }
-.theme-admonition-danger { --ifm-alert-background-color: #fef2f2; --ifm-alert-border-color: #dc2626; --ifm-alert-foreground-color: #991b1b; }
+.theme-admonition > div:first-child svg {
+  fill: var(--pra-tone);
+}
 
-[data-theme='dark'] .theme-admonition-note { --ifm-alert-background-color: #111c30; --ifm-alert-border-color: #64748b; --ifm-alert-foreground-color: #cbd5e1; }
-[data-theme='dark'] .theme-admonition-tip { --ifm-alert-background-color: #0b2420; --ifm-alert-border-color: #34d399; --ifm-alert-foreground-color: #a7f3d0; }
-[data-theme='dark'] .theme-admonition-info { --ifm-alert-background-color: #0d1e3a; --ifm-alert-border-color: #60a5fa; --ifm-alert-foreground-color: #bfdbfe; }
-[data-theme='dark'] .theme-admonition-warning,
-[data-theme='dark'] .theme-admonition-caution { --ifm-alert-background-color: #251c08; --ifm-alert-border-color: #fbbf24; --ifm-alert-foreground-color: #fde68a; }
-[data-theme='dark'] .theme-admonition-danger { --ifm-alert-background-color: #2a1114; --ifm-alert-border-color: #f87171; --ifm-alert-foreground-color: #fecaca; }
+.theme-admonition a {
+  color: var(--pra-accent);
+}
 
-/* ------------------------------------------------------------ details */
+/* --------------------------------------------------------------- details */
 
-/* Docusaurus renders <details> as `alert alert--info`, which would tint all
-   17 collapsible config sections blue. Neutralise them into plain cards. */
 .markdown details.alert {
-  --ifm-alert-background-color: var(--pra-surface-2);
+  --ifm-alert-background-color: var(--pra-surface);
   --ifm-alert-background-color-highlight: transparent;
   --ifm-alert-foreground-color: var(--pra-text);
-  --ifm-alert-border-color: var(--pra-border);
-  --ifm-alert-shadow: none;
-  --docusaurus-details-decoration-color: #94a3b8;
-  border: 1px solid var(--pra-border);
-  border-radius: 0.5rem;
-  padding: 0.85rem 1.1rem;
-  margin-bottom: 1.35rem;
-  transition: border-color var(--ifm-transition-fast);
+  --ifm-alert-border-color: var(--pra-line);
+  --docusaurus-details-decoration-color: var(--pra-muted);
+  border: 1px solid var(--pra-line);
+  border-radius: 8px;
+  box-shadow: none;
+  padding: 0.8rem 1.1rem;
 }
-[data-theme='dark'] .markdown details.alert {
-  --docusaurus-details-decoration-color: #64748b;
-}
-.markdown details.alert:hover { border-color: var(--pra-border-strong); }
-.markdown details.alert[open] { border-color: var(--pra-border-strong); }
+
 .markdown details.alert > summary {
-  font-weight: 600;
-  font-size: 0.9375rem;
-  color: var(--pra-heading);
+  font-weight: 550;
 }
-.markdown details.alert > summary:hover { color: var(--ifm-color-primary); }
-.markdown details.alert .theme-code-block { box-shadow: none; }
 
-/* ------------------------------------------------------------- tables */
+/* ---------------------------------------------------------------- tables */
 
-/* `usage-guide/configuration_reference` is a 400-row, 3-column table. Keeping
-   `display: block` preserves Infima's self-contained horizontal scroll, so a
-   wide table never makes the whole page scroll sideways. */
+/* configuration_reference is a 400-row table: it scrolls inside itself on
+   narrow screens instead of pushing the whole page sideways. */
 .markdown table {
   display: block;
   width: 100%;
   overflow-x: auto;
-  overscroll-behavior-x: contain;
   font-size: 0.875rem;
-  line-height: 1.5;
-  border: 1px solid var(--ifm-table-border-color);
-  border-radius: 0.5rem;
+  line-height: 1.55;
+  border: 1px solid var(--pra-line);
+  border-radius: 8px;
   border-collapse: separate;
   border-spacing: 0;
-  margin-bottom: 1.5rem;
 }
-.markdown table thead tr { border-bottom: 0; }
+
+.markdown table thead tr {
+  border: 0;
+}
+
 .markdown table th,
 .markdown table td {
   border: 0;
-  border-bottom: 1px solid var(--ifm-table-border-color);
+  border-bottom: 1px solid var(--pra-line);
   vertical-align: top;
 }
-/* Sticky header: on a 400-row table the column meanings scroll away instantly. */
+
 .markdown table thead th {
   position: sticky;
   top: 0;
-  z-index: 1;
-  background-color: var(--ifm-table-head-background);
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--pra-text-muted);
+  background: var(--pra-surface);
+  font-weight: 600;
+  text-align: left;
   white-space: nowrap;
-  border-bottom: 2px solid var(--ifm-table-border-color);
-}
-.markdown table tbody tr:last-child td { border-bottom: 0; }
-.markdown table tbody tr:hover { background-color: var(--ifm-hover-overlay); }
-
-/* -------------------------------------------------------------- navbar */
-
-.navbar {
-  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
-  box-shadow: none;
-}
-.navbar__title { font-size: 1.0625rem; font-weight: 650; letter-spacing: -0.01em; }
-.navbar__link { font-size: 0.9375rem; font-weight: 500; }
-
-/* The navbar is dark in both themes, so these controls must not inherit the
-   light-mode body ink — they would be invisible against it. */
-.navbar__toggle,
-.navbar .clean-btn,
-.navbar [class*='toggleButton'] { color: var(--ifm-navbar-link-color); }
-.navbar [class*='toggleButton']:hover { background: rgba(148, 163, 184, 0.16); }
-
-/* The light-mode primary blue is only 2.66:1 on #0f172a: use white + a rail. */
-.navbar__link--active { color: #ffffff; position: relative; }
-.navbar__link--active::after {
-  content: '';
-  position: absolute;
-  left: var(--ifm-navbar-item-padding-horizontal);
-  right: var(--ifm-navbar-item-padding-horizontal);
-  bottom: -0.55rem;
-  height: 2px;
-  border-radius: 2px;
-  background: #38bdf8;
 }
 
-.navbar__search-input {
-  border: 1px solid rgba(148, 163, 184, 0.28);
+.markdown table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ---------------------------------------------------------------- images */
+
+.markdown img {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--pra-line);
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown img.medium-zoom-image {
+  cursor: zoom-in;
+}
+
+/* ---------------------------------------------------------------- footer */
+
+.footer {
+  border-top: 1px solid var(--pra-line);
+  padding: 2rem 0;
+  font-size: 0.85rem;
+}
+
+.footer__links {
+  margin-bottom: 0.5rem;
+  text-align: center;
+}
+
+.footer__col {
+  flex-basis: 100%;
+}
+
+.footer__title {
+  display: none;
+}
+
+/* ------------------------------------------------------------ pagination */
+
+.pagination-nav__link {
+  border: 1px solid var(--pra-line);
+  border-radius: 8px;
+  transition: border-color 120ms ease;
+}
+
+.pagination-nav__link:hover {
+  border-color: var(--pra-accent);
+}
+
+.pagination-nav__sublabel {
+  color: var(--pra-muted);
+  font-size: 0.8rem;
+}
+
+/* ---------------------------------------------------------------- search */
+
+/* The search results page draws its dividers in a fixed light grey. */
+article[class*='searchResultItem'] {
+  border-bottom-color: var(--pra-line);
+}
+
+mark {
+  background: var(--pra-accent-soft);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 0.1em;
+}
+
+/* ------------------------------------------------ landing page (/ only) */
+
+/* The Overview doc is the site root and renders without a sidebar or TOC.
+   Below the hero there is only a quick start. The hero keeps the only filled
+   buttons; the quick start's are outlined so the hierarchy stays clear. */
+.pra-landing-body {
+  max-width: 52rem;
+  margin: 0 auto;
+}
+
+.pra-landing-body > h2 {
+  margin: 3.25rem 0 0.35rem;
+  font-size: 1.2rem;
+  letter-spacing: -0.02em;
+}
+
+.pra-landing-body > h2:first-child {
+  margin-top: 0;
+}
+
+.pra-landing-body > p {
+  color: var(--pra-muted);
+}
+
+.pra-landing-body > h2 + p {
+  margin-bottom: 1.1rem;
+}
+
+.pra-landing-body > p:last-of-type {
   font-size: 0.875rem;
 }
 
-@media (max-width: 996px) {
-  .navbar-sidebar { background-color: var(--pra-surface); }
-  .navbar-sidebar__brand {
-    background-color: var(--ifm-navbar-background-color);
-    box-shadow: none;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-  }
-  .navbar-sidebar__brand .clean-btn { color: var(--ifm-navbar-link-color); }
-  .navbar-sidebar__back { color: var(--pra-text-muted); }
-}
-[data-theme='dark'] .navbar-sidebar { background-color: var(--pra-surface-2); }
-
-/* ------------------------------------------------------------- sidebar */
-
-.menu { padding: 1rem 0.65rem !important; font-weight: 450; }
-.menu__link { font-size: 0.9rem; line-height: 1.4; border-radius: 0.375rem; }
-.menu__link--active:not(.menu__link--sublist) {
-  font-weight: 600;
-  box-shadow: inset 2px 0 0 0 var(--ifm-color-primary);
-}
-.theme-doc-sidebar-item-category-level-1 > .menu__list-item-collapsible > .menu__link {
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.075em;
-  text-transform: uppercase;
-  color: var(--pra-text-faint);
-}
-.theme-doc-sidebar-container { border-right: 1px solid var(--pra-border) !important; }
-
-/* ----------------------------------------------------------------- TOC */
-
-.table-of-contents { font-size: 0.8125rem; }
-.table-of-contents__left-border { border-left-color: var(--pra-border); }
-.table-of-contents__link { padding: 0.12rem 0; }
-.table-of-contents__link--active { font-weight: 600; color: var(--ifm-color-primary); }
-.theme-doc-toc-desktop > .table-of-contents::before {
-  content: 'On this page';
-  display: block;
-  padding: 0 var(--ifm-toc-padding-horizontal) 0.55rem;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--pra-text-faint);
+/* Calls to action under the quick start. */
+.pra-cta-row p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1.1rem 0 1.4rem;
 }
 
-/* --------------------------------------------------- announcement bar */
-
-div[class*='announcementBar_'] {
-  background-color: var(--pra-announce-bg);
-  color: #ffffff;
-  border-bottom: 0;
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
-div[class*='announcementBar_'] a {
-  color: currentColor;
-  text-decoration: underline;
-  text-underline-offset: 0.18em;
-}
-div[class*='announcementBar_'] .clean-btn { color: #ffffff; opacity: 0.85; }
-div[class*='announcementBar_'] .clean-btn:hover { opacity: 1; }
-
-/* ------------------------------------------------------------ buttons */
-
-.button { font-weight: 600; }
-/* Infima's button ink is white, which is 2.14:1 on the dark-mode accent. */
-[data-theme='dark'] .button--primary {
-  --ifm-button-color: var(--pra-on-accent);
-  --ifm-button-background-color: var(--ifm-color-primary);
-  --ifm-button-border-color: var(--ifm-color-primary);
+.pra-cta-row a {
+  display: inline-flex;
+  align-items: center;
+  height: 2.35rem;
+  padding: 0 0.95rem;
+  border: 1px solid var(--pra-line-strong);
+  border-radius: 8px;
+  color: var(--pra-text);
+  font-size: 0.875rem;
+  font-weight: 550;
+  text-decoration: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
 }
 
-/* ------------------------------------------------------------- images */
-
-/* Carried over from the MkDocs stylesheet, as a ring rather than
-   border + outline so it follows the corner radius. */
-.markdown img:not(.no-frame) {
-  border-radius: 0.5rem;
-  max-width: 100%;
-  height: auto;
-  box-shadow: 0 0 0 1px var(--pra-image-ring),
-    0 8px 24px -16px rgba(15, 23, 42, 0.5);
-}
-[data-theme='dark'] .markdown img:not(.no-frame) {
-  box-shadow: 0 0 0 1px var(--pra-image-ring);
-}
-/* medium-zoom (docusaurus-plugin-image-zoom) tags images with this class. */
-.markdown img.medium-zoom-image { cursor: zoom-in; }
-
-/* -------------------------------------------------------------- misc */
-
-.footer { border-top: 1px solid rgba(148, 163, 184, 0.14); font-size: 0.875rem; }
-.footer__title { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; }
-
-/* `.footer--dark` sets the background variable on the element itself, which
-   beats the value declared on :root. Override it where it is actually set. */
-.footer--dark {
-  --ifm-footer-background-color: var(--pra-footer-bg);
-  --ifm-footer-color: #cbd5e1;
-  --ifm-footer-title-color: #f1f5f9;
-  --ifm-footer-link-color: #93c5fd;
-  --ifm-footer-link-hover-color: #ffffff;
+.pra-cta-row a::after {
+  content: '→';
+  margin-left: 0.45rem;
+  color: var(--pra-muted);
+  transition: transform 140ms ease, color 140ms ease;
 }
 
-/* Search-result highlights. The local-search plugin ships browser-default
-   yellow, which is loud in light mode and alien in dark. */
-mark {
-  background-color: var(--pra-accent-soft);
-  color: inherit;
-  border-radius: 3px;
-  padding: 0 0.15em;
-  box-shadow: inset 0 -0.42em 0 var(--pra-accent-soft);
-  font-weight: 600;
+.pra-cta-row a:hover {
+  border-color: var(--pra-muted);
+  background: var(--pra-surface);
 }
 
-.pagination-nav__link {
-  border-color: var(--pra-border);
-  border-radius: 0.5rem;
-  transition: border-color var(--ifm-transition-fast),
-    background-color var(--ifm-transition-fast);
-}
-.pagination-nav__link:hover {
-  border-color: var(--ifm-color-primary);
-  background-color: var(--pra-accent-soft);
-}
-.pagination-nav__sublabel { color: var(--pra-text-faint); }
-
-.breadcrumbs__item--active .breadcrumbs__link {
-  background: var(--pra-accent-soft);
-  color: var(--ifm-color-primary);
+.pra-cta-row a:hover::after {
+  color: var(--pra-accent);
+  transform: translateX(2px);
 }
 
-hr { border: 0; height: 1px; background: var(--ifm-hr-background-color); }
+.pra-landing-note {
+  margin-top: 3.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--pra-line);
+}
+
+.pra-landing-note p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--pra-muted);
+}
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
+  *,
+  *::before,
+  *::after {
     transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
   }
-}
-
-@media print {
-  .markdown details.alert { border-color: #999; }
-  .theme-code-block { box-shadow: none; border: 1px solid #999; }
-  .markdown table thead th { position: static; }
 }

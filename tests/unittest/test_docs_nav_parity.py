@@ -16,7 +16,10 @@ PAGES = DOCS / "docs"
 SIDEBARS = DOCS / "sidebars.js"
 
 # Pages that are deliberately outside the navigation.
-NOT_IN_NAV: set[str] = set()
+NOT_IN_NAV: set[str] = {
+    # The landing page at `/`, reached from the navbar logo rather than the sidebar.
+    "index",
+}
 
 
 def _sidebar_ids() -> set[str]:
