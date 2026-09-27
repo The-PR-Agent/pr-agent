@@ -27,7 +27,7 @@ def _format_delta(num_plus_lines: int, num_minus_lines: int) -> str:
 
 
 def _cloud_diff_file(raw_diff, status="modified", lines_added=0, lines_removed=0,
-                     filename="src/example.py", old_filename=None):
+                     filename="src/example.py", old_filename=None, drop_diffstat_counts=False):
     provider = BitbucketProvider.__new__(BitbucketProvider)
     provider.diff_files = None
     provider.pr = MagicMock()
@@ -35,7 +35,10 @@ def _cloud_diff_file(raw_diff, status="modified", lines_added=0, lines_removed=0
     diffstat = MagicMock()
     diffstat.new.path = None if status == "removed" else filename
     diffstat.old.path = None if status == "added" else old_filename or filename
-    diffstat.data = {"status": status, "lines_added": lines_added, "lines_removed": lines_removed}
+    diffstat.data = {"status": status}
+    if not drop_diffstat_counts:
+        diffstat.data["lines_added"] = lines_added
+        diffstat.data["lines_removed"] = lines_removed
     provider.pr.diffstat.return_value = [diffstat]
     provider.pr.diff.return_value = raw_diff
 
@@ -117,6 +120,64 @@ rename to src/new.py
 
         assert diff_file.num_plus_lines == 0
         assert diff_file.num_minus_lines == 0
+
+    def test_diffstat_counts_survive_a_diff_without_any_hunk(self):
+        # Bitbucket's diffstat is authoritative: when the raw diff carries no textual hunk the
+        # counts must come from the diffstat, not from the empty patch.
+        raw_diff = """diff --git a/src/example.py b/src/example.py
+index 1111111..2222222 100644
+Binary files /dev/null and b/src/example.py differ
+"""
+        diff_file = _cloud_diff_file(raw_diff, lines_added=1, lines_removed=1)
+
+        assert diff_file.patch == ""
+        assert diff_file.num_plus_lines == 1
+        assert diff_file.num_minus_lines == 1
+
+    def test_diffstat_counts_win_over_a_truncated_patch(self):
+        # A truncated raw diff under-reports, so the diffstat stays the source of truth.
+        raw_diff = """diff --git a/src/example.py b/src/example.py
+index 1111111..2222222 100644
+--- a/src/example.py
++++ b/src/example.py
+@@ -1,3 +1,3 @@
+ keep
+-drop
++add
+"""
+        diff_file = _cloud_diff_file(raw_diff, lines_added=40, lines_removed=12)
+
+        assert diff_file.num_plus_lines == 40
+        assert diff_file.num_minus_lines == 12
+
+    def test_falls_back_to_counting_the_patch_when_the_diffstat_omits_counts(self):
+        diff_file = _cloud_diff_file(MODIFIED_RAW_DIFF, drop_diffstat_counts=True)
+
+        assert diff_file.num_plus_lines == 2
+        assert diff_file.num_minus_lines == 1
+
+    def test_non_numeric_diffstat_counts_fall_back_to_the_patch(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.diff_files = None
+        provider.pr = MagicMock()
+
+        diffstat = MagicMock()
+        diffstat.new.path = "src/example.py"
+        diffstat.old.path = "src/example.py"
+        diffstat.data = {"status": "modified", "lines_added": "two", "lines_removed": "one"}
+        provider.pr.diffstat.return_value = [diffstat]
+        provider.pr.diff.return_value = MODIFIED_RAW_DIFF
+
+        settings = MagicMock()
+        settings.get.return_value = True
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=[diffstat]),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
+        ):
+            diff_file = provider.get_diff_files()[0]
+
+        assert diff_file.num_plus_lines == 2
+        assert diff_file.num_minus_lines == 1
 
     @pytest.mark.parametrize(
         ("num_plus_lines", "num_minus_lines", "expected"),

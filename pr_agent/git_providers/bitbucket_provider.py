@@ -30,6 +30,19 @@ def _split_raw_diff(raw_diff: str) -> list[str]:
     return [part for part in re.split(r"(?m)(?=^diff --git )", raw_diff) if part.startswith("diff --git ")]
 
 
+def _diffstat_line_counts(diff) -> Optional[tuple]:
+    """Return Bitbucket's own per-file (added, removed) counts, or None when absent."""
+    data = getattr(diff, "data", None) or {}
+    added, removed = data.get("lines_added"), data.get("lines_removed")
+    if added is None and removed is None:
+        return None
+    try:
+        return int(added or 0), int(removed or 0)
+    except (TypeError, ValueError):
+        get_logger().warning(f"Bitbucket diffstat reported a non-numeric line count for file {_gef_filename(diff)}")
+        return None
+
+
 class BitbucketProvider(GitProvider):
     def __init__(
         self, pr_url: Optional[str] = None, incremental: Optional[bool] = False
@@ -352,14 +365,24 @@ class BitbucketProvider(GitProvider):
                 original_file_content_str = ""
                 new_file_content_str = ""
 
-            patch_lines = diff_split[index].splitlines(keepends=True)
+            # Bitbucket's diffstat carries the authoritative per-file counts, so prefer it over
+            # counting the patch: the raw diff can carry no textual hunk even when the diffstat
+            # reports real additions and removals (binary, truncated, or otherwise unrendered diffs).
+            diffstat_counts = _diffstat_line_counts(diff)
+            if diffstat_counts is None:
+                patch_lines = diff_split[index].splitlines(keepends=True)
+                lines_added = len([line for line in patch_lines if line.startswith('+')])
+                lines_removed = len([line for line in patch_lines if line.startswith('-')])
+            else:
+                lines_added, lines_removed = diffstat_counts
+
             file_patch_canonic_structure = FilePatchInfo(
                 original_file_content_str,
                 new_file_content_str,
                 diff_split[index],
                 file_path,
-                num_plus_lines=len([line for line in patch_lines if line.startswith('+')]),
-                num_minus_lines=len([line for line in patch_lines if line.startswith('-')]),
+                num_plus_lines=lines_added,
+                num_minus_lines=lines_removed,
             )
 
             if diff.data['status'] == 'added':
