@@ -17,7 +17,7 @@ import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from pr_agent.tools.pr_help_message import _is_help_doc_included
+from pr_agent.tools.pr_help_message import HELP_DOCS_SUFFIXES, _is_help_doc_included
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 RESOURCE_PREFIX = "pr_agent/_help_docs/"
@@ -83,7 +83,7 @@ def walk(directory, prefix=""):
         relative = f"{prefix}/{child.name}" if prefix else child.name
         if child.is_dir():
             documents.extend(walk(child, relative))
-        elif child.is_file() and child.name.endswith(".md"):
+        elif child.is_file() and child.name.endswith((".md", ".mdx")):
             assert child.read_text(encoding="utf-8") is not None
             documents.append(relative)
     return documents
@@ -113,7 +113,8 @@ def _source_documents(repository: Path) -> set[str]:
     docs_root = repository / "docs" / "docs"
     return {
         document.relative_to(docs_root).as_posix()
-        for document in docs_root.rglob("*.md")
+        for suffix in HELP_DOCS_SUFFIXES
+        for document in docs_root.rglob(f"*{suffix}")
         if document.is_file()
     }
 
@@ -123,7 +124,7 @@ def _sdist_documents(sdist: Path) -> set[str]:
         return {
             name.split("/docs/docs/", 1)[1]
             for name in archive.getnames()
-            if "/docs/docs/" in name and name.endswith(".md")
+            if "/docs/docs/" in name and name.endswith(HELP_DOCS_SUFFIXES)
         }
 
 
@@ -132,7 +133,7 @@ def _wheel_documents(wheel: Path) -> set[str]:
         return {
             name.removeprefix(RESOURCE_PREFIX)
             for name in archive.namelist()
-            if name.startswith(RESOURCE_PREFIX) and name.endswith(".md")
+            if name.startswith(RESOURCE_PREFIX) and name.endswith(HELP_DOCS_SUFFIXES)
         }
 
 
@@ -263,7 +264,8 @@ def test_help_docs_distribution_contract(tmp_path):
     strict_resource_root = strict_tree / RESOURCE_PREFIX.removesuffix("/")
     assert {
         document.relative_to(strict_resource_root).as_posix()
-        for document in strict_resource_root.rglob("*.md")
+        for document in strict_resource_root.rglob("*")
+        if document.is_file() and document.name.endswith(HELP_DOCS_SUFFIXES)
     } == expected_documents
 
     _replace_symlinks_with_hardlinks(strict_tree)
@@ -282,11 +284,12 @@ def test_help_docs_distribution_contract(tmp_path):
     first_direct_wheel = _build_wheel(uv, source_copy, tmp_path / "first-direct-wheel", build_env)
     assert _wheel_documents(first_direct_wheel) == expected_documents
 
-    removed_document = source_copy / "docs" / "docs" / "summary.md"
+    removed_name = "tools/improve.mdx"
+    removed_document = source_copy / "docs" / "docs" / removed_name
     assert removed_document.exists()
     removed_document.unlink()
     rebuilt_wheel = _build_wheel(uv, source_copy, tmp_path / "rebuilt-wheel", build_env)
-    assert _wheel_documents(rebuilt_wheel) == expected_documents - {"summary.md"}
+    assert _wheel_documents(rebuilt_wheel) == expected_documents - {removed_name}
 
 
 def test_lambda_image_materializes_only_help_markdown_in_shared_base():
@@ -297,10 +300,10 @@ def test_lambda_image_materializes_only_help_markdown_in_shared_base():
     assert f"{mount},rw" not in dockerfile
     assert f"{mount},readwrite" not in dockerfile
     assert "COPY docs/docs" not in dockerfile
-    assert "find /tmp/help-docs-source -type f -name '*.md'" in dockerfile
+    assert "find /tmp/help-docs-source -type f \\( -name '*.md' -o -name '*.mdx' \\)" in dockerfile
     assert 'test "$source_count" -gt 0' in dockerfile
     assert 'test "$destination_count" -eq "$source_count"' in dockerfile
-    assert "-type f ! -name '*.md' -print -quit" in dockerfile
+    assert "-type f ! -name '*.md' ! -name '*.mdx' -print -quit" in dockerfile
     assert "FROM base AS github_lambda" in dockerfile
     assert "FROM base AS gitlab_lambda" in dockerfile
 
