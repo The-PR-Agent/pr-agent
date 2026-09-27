@@ -1153,6 +1153,61 @@ class TestCodeCommitProvider:
         assert result is False
         assert provider.codecommit_client.publish_comment.called
 
+    def test_publish_code_suggestions_prepares_markdown_and_html(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": "<details><summary>Suggestion</summary>\nLine 1\nLine 2</details>",
+                "relevant_file": "one.py",
+                "relevant_lines_start": 10,
+            }
+        ])
+
+        assert result is True
+        provider.codecommit_client.publish_comment.assert_called_once_with(
+            repo_name="source-repository",
+            pr_number=321,
+            destination_commit="destination-commit-1",
+            source_commit="source-commit-1",
+            comment="Suggestion\n\nLine 1\n\nLine 2",
+            annotation_file="one.py",
+            annotation_line=10,
+        )
+
+    def test_publish_code_suggestions_sends_capped_body(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": "\n".join(["x" * 100] * 120),
+                "relevant_file": "one.py",
+                "relevant_lines_start": 5,
+            }
+        ])
+
+        assert result is True
+        sent = provider.codecommit_client.publish_comment.call_args.kwargs["comment"]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
+        assert "\n\n" in sent
+
     def test_get_title(self):
         # Test that the get_title() function returns the PR title
         with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):

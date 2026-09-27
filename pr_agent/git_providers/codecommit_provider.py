@@ -331,6 +331,7 @@ class CodeCommitProvider(GitProvider):
                 continue
 
             publishable_count += 1
+            prepared_body = self._prepare_comment_body(suggestion["body"])
             target_contexts = self._get_target_contexts_for_file(suggestion["relevant_file"])
             for target in target_contexts:
                 try:
@@ -343,7 +344,7 @@ class CodeCommitProvider(GitProvider):
                         pr_number=self.pr_num,
                         destination_commit=target["destination_commit"],
                         source_commit=target["source_commit"],
-                        comment=suggestion["body"],
+                        comment=prepared_body,
                         annotation_file=suggestion["relevant_file"],
                         annotation_line=suggestion["relevant_lines_start"],
                     )
