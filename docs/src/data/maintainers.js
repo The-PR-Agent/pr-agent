@@ -8,4 +8,5 @@ export const maintainers = [
   {login: 'naorpeled', name: 'Naor Peled', role: 'Maintainer'},
   {login: 'ofir-frd', name: 'ofir-frd', role: 'Maintainer'},
   {login: 'IsmaelMartinez', name: 'IsmaelMartinez', role: 'Maintainer'},
+  {login: 'DanaFineTLV', name: 'Dana Fine', role: 'Community Manager'},
 ];
