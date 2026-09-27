@@ -14,6 +14,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     litellm_callbacks_registered,
 )
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
@@ -69,11 +70,13 @@ def get_list_setting_or_env(key, fallback=None):
 
 
 async def _handle_request(url, body, notify=None):
+    # Install a fresh collector so `command_failed()` below cannot read a verdict left
+    # behind by a previous command; the tool replaces it with its own on entry.
+    init_run_details()
     result = await PRAgent().handle_request(url, body, notify=notify)
     if result is False:
-        status = _action_status.get()
-        if status is not None:
-            status.failed = True
+        _mark_action_failed()
+    _fail_on_recorded_tool_error()
 
 
 async def _handle_configured_command(url, command):
@@ -83,20 +86,42 @@ async def _handle_configured_command(url, command):
             raise ValueError("Empty configured command")
     except ValueError:
         get_logger().error("Failed to parse a configured command; skipping it.")
-        status = _action_status.get()
-        if status is not None:
-            status.failed = True
+        _mark_action_failed()
         return
     await _handle_request(url, command_args)
 
 
+def _mark_action_failed():
+    status = _action_status.get()
+    if status is not None:
+        status.failed = True
+
+
+def _fail_on_recorded_tool_error():
+    # `propagate_tool_errors` is false by default, so a tool that failed internally still
+    # returns normally. Reporting that as success would put a green tick on a pull request
+    # that never got its review (issue #3705). Set GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS
+    # to false to restore the previous green-on-recorded-failure behavior.
+    if not is_true(get_setting_or_env("GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS", True)):
+        return
+    if command_failed():
+        get_logger().warning("Tool reported success but recorded a failure; failing the action")
+        _mark_action_failed()
+
+
 async def _run_auto_tool(tool_class, pr_url):
     """Run a direct auto tool while preserving GitHub Action failure semantics."""
+    # Install a fresh collector so `command_failed()` below cannot read a verdict left
+    # behind by a previous tool; the tool replaces it with its own on entry.
+    init_run_details()
     try:
-        await tool_class(pr_url).run()
+        result = await tool_class(pr_url).run()
     except IncompletePullRequestFilesError:
         publish_incomplete_github_files_comment(pr_url)
         raise
+    if result is False:
+        _mark_action_failed()
+    _fail_on_recorded_tool_error()
 
 async def _run_review_commands(event_payload):
     action = event_payload.get("action")
