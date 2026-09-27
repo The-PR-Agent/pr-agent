@@ -348,6 +348,7 @@ class BitbucketServerProvider(GitProvider):
 
             patch = load_large_diff(file_path, new_file_content_str, original_file_content_str, show_warning=False)
 
+            patch_lines = patch.splitlines(keepends=True)
             diff_files.append(
                 FilePatchInfo(
                     original_file_content_str,
@@ -356,6 +357,8 @@ class BitbucketServerProvider(GitProvider):
                     file_path,
                     edit_type=edit_type,
                     old_filename=old_filename,
+                    num_plus_lines=len([line for line in patch_lines if line.startswith('+')]),
+                    num_minus_lines=len([line for line in patch_lines if line.startswith('-')]),
                 )
             )
 

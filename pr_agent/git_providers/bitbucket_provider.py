@@ -352,11 +352,14 @@ class BitbucketProvider(GitProvider):
                 original_file_content_str = ""
                 new_file_content_str = ""
 
+            patch_lines = diff_split[index].splitlines(keepends=True)
             file_patch_canonic_structure = FilePatchInfo(
                 original_file_content_str,
                 new_file_content_str,
                 diff_split[index],
                 file_path,
+                num_plus_lines=len([line for line in patch_lines if line.startswith('+')]),
+                num_minus_lines=len([line for line in patch_lines if line.startswith('-')]),
             )
 
             if diff.data['status'] == 'added':
