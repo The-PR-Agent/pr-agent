@@ -323,6 +323,10 @@ class PRAgent:
             lexer.whitespace_split = True
             # Keep apostrophes literal without adding backslashes inside double quotes.
             lexer.quotes = '"'
+            # Treat "#" as ordinary text. shlex drops it and everything after it as a shell
+            # comment, which silently truncated questions such as "/ask what does #123 do?".
+            # This input is a single already-parsed command, never a shell script.
+            lexer.commenters = ''
             action, *args = list(lexer)
         else:
             action, *args = request
