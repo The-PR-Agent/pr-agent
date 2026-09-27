@@ -378,6 +378,7 @@ async def test_a_clean_run_still_reports_success(check_runs_enabled, auto_comman
     ],
 )
 @pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.asyncio
 async def test_swallowed_tool_failures_are_recorded(
     tool_name, module, propagate_tool_errors, monkeypatch, restored_config
 ):
