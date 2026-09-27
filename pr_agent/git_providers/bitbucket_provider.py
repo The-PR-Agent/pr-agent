@@ -91,8 +91,9 @@ class BitbucketProvider(GitProvider):
         if global_settings:
             settings_files.append(("global", global_settings))
         try:
+            destination_commit = self.pr.data["destination"]["commit"]["hash"]
             url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
-                   f"{self.pr.destination_branch}/.pr_agent.toml")
+                   f"{destination_commit}/.pr_agent.toml")
             response = requests.request("GET", url, headers=self.headers)
             if response.status_code == 200:  # found
                 settings_files.append(("local", response.text.encode('utf-8')))
@@ -117,8 +118,16 @@ class BitbucketProvider(GitProvider):
         main_branch = (repo_resp.json().get('mainbranch') or {}).get('name')
         if not main_branch:
             return ""
+        ref_resp = requests.request(
+            "GET", f"{repo_url}/refs/branches/{quote(main_branch, safe='')}", headers=self.headers)
+        if ref_resp.status_code in (403, 404):  # missing branch or no access -> expected, cacheable
+            return ""
+        ref_resp.raise_for_status()
+        main_branch_hash = ((ref_resp.json().get('target') or {}).get('hash'))
+        if not main_branch_hash:
+            raise ValueError("Bitbucket default branch response did not include a target hash")
         file_resp = requests.request(
-            "GET", f"{repo_url}/src/{main_branch}/.pr_agent.toml", headers=self.headers)
+            "GET", f"{repo_url}/src/{main_branch_hash}/.pr_agent.toml", headers=self.headers)
         if file_resp.status_code in (403, 404):  # missing file or no access -> expected, cacheable
             return ""
         file_resp.raise_for_status()

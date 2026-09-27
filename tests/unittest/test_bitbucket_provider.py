@@ -1997,18 +1997,49 @@ class TestBitbucketGlobalSettings:
     def test_loads_workspace_pr_agent_settings(self):
         provider = self._provider()
         repo_resp = MagicMock(status_code=200)
-        repo_resp.json.return_value = {"mainbranch": {"name": "main"}}
+        repo_resp.json.return_value = {"mainbranch": {"name": "release/1.0"}}
+        ref_resp = MagicMock(status_code=200)
+        ref_resp.json.return_value = {"target": {"hash": "settings-sha"}}
         file_resp = MagicMock(status_code=200)
         file_resp.text = "[pr_reviewer]\nnum_max_findings = 5\n"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
-                   side_effect=[repo_resp, file_resp]) as rq, \
+                   side_effect=[repo_resp, ref_resp, file_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
             result = provider._get_global_repo_settings()
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
-        assert rq.call_count == 2  # repo info + file
+        assert rq.call_count == 3  # repo info + default-branch ref + file
         assert "myws/pr-agent-settings" in rq.call_args_list[0].args[1]
-        assert "src/main/.pr_agent.toml" in rq.call_args_list[1].args[1]
+        assert "refs/branches/release%2F1.0" in rq.call_args_list[1].args[1]
+        assert "src/settings-sha/.pr_agent.toml" in rq.call_args_list[2].args[1]
+
+    @pytest.mark.parametrize("status_code", [403, 404])
+    def test_missing_or_inaccessible_default_branch_ref_returns_empty_and_caches(self, status_code):
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=200)
+        repo_resp.json.return_value = {"mainbranch": {"name": "release/1.0"}}
+        ref_resp = MagicMock(status_code=status_code)
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=[repo_resp, ref_resp]) as rq, \
+             patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == ""
+            assert provider._get_global_repo_settings() == ""  # served from cache
+        assert rq.call_count == 2
+
+    def test_malformed_default_branch_ref_is_not_cached(self):
+        provider = self._provider()
+        repo_resp = MagicMock(status_code=200)
+        repo_resp.json.return_value = {"mainbranch": {"name": "main"}}
+        ref_resp = MagicMock(status_code=200)
+        ref_resp.json.return_value = {"target": {}}
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=[repo_resp, ref_resp, repo_resp, ref_resp]) as rq, \
+             patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            assert provider._get_global_repo_settings() == ""
+            assert provider._get_global_repo_settings() == ""
+        assert rq.call_count == 4
 
     def test_no_access_403_returns_empty_and_caches(self):
         # A 403 (no access) is a stable/expected condition like 404: return "" AND cache it.
@@ -2042,26 +2073,49 @@ class TestBitbucketGlobalSettings:
         provider = self._provider()
         repo_resp = MagicMock(status_code=200)
         repo_resp.json.return_value = {"mainbranch": {"name": "main"}}
+        ref_resp = MagicMock(status_code=200)
+        ref_resp.json.return_value = {"target": {"hash": "settings-sha"}}
         file_resp = MagicMock(status_code=200)
         file_resp.text = "[pr_reviewer]\nx = 1\n"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
-                   side_effect=[repo_resp, file_resp]) as rq, \
+                   side_effect=[repo_resp, ref_resp, file_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
             provider._get_global_repo_settings()
             provider._get_global_repo_settings()
-        # Two HTTP calls total (first fetch), none on the cached second call.
-        assert rq.call_count == 2
+        # Three HTTP calls total (first fetch), none on the cached second call.
+        assert rq.call_count == 3
 
 
 class TestBitbucketLocalSettingsRobustness:
+    def test_get_repo_settings_reads_local_file_by_destination_commit(self):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.workspace_slug = "myws"
+        provider.repo_slug = "myrepo"
+        provider.headers = {"Authorization": "Bearer x"}
+        provider.pr = MagicMock(
+            destination_branch="release/1.0",
+            data={"destination": {"commit": {"hash": "destination-sha"}}},
+        )
+        resp = MagicMock(status_code=200)
+        resp.text = "[pr_reviewer]\nnum_max_findings = 5\n"
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=resp) as rq, \
+             patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            result = provider.get_repo_settings()
+        assert result == [("local", b"[pr_reviewer]\nnum_max_findings = 5\n")]
+        assert "src/destination-sha/.pr_agent.toml" in rq.call_args.args[1]
+
     def test_get_repo_settings_ignores_error_response_for_local(self):
         # A non-200/404 response (e.g. 500 error page) must NOT be treated as local TOML content.
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.workspace_slug = "myws"
         provider.repo_slug = "myrepo"
         provider.headers = {"Authorization": "Bearer x"}
-        provider.pr = MagicMock(destination_branch="main")
+        provider.pr = MagicMock(
+            destination_branch="main",
+            data={"destination": {"commit": {"hash": "destination-sha"}}},
+        )
         resp = MagicMock(status_code=500)
         resp.text = "<html>internal error</html>"
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=resp), \
