@@ -321,7 +321,7 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
     else:
         patch_lines = patch.splitlines()
         patch_new = omit_deletion_hunks(patch_lines)
-        if patch != patch_new:
+        if patch_new and patch != patch_new:
             if get_verbosity_level() > 0:
                 get_logger().info(f"Processing file: {file_name}, hunks were deleted")
             patch = patch_new
