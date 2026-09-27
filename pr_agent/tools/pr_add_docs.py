@@ -12,6 +12,7 @@ from pr_agent.algo.pr_processing import (
     retry_with_fallback_models,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import load_yaml
@@ -79,6 +80,7 @@ class PRAddDocs:
                 self.push_inline_docs(data)
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
+            record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         finally:

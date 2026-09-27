@@ -13,6 +13,7 @@ from pr_agent.algo.pr_processing import (
     get_pr_diff,
     retry_with_fallback_models,
 )
+from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_user_labels, load_yaml, set_custom_labels
@@ -104,6 +105,7 @@ class PRGenerateLabels:
                     self.git_provider.publish_comment(pr_labels_text, is_temporary=False)
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")
+            record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         finally:

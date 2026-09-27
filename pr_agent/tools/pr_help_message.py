@@ -12,6 +12,7 @@ from litellm import token_counter
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
+from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.token_budget import get_max_tokens
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.utils import ModelType, load_yaml
@@ -584,6 +585,7 @@ class PRHelpMessage:
                     self.git_provider.publish_comment(pr_comment)
         except Exception as e:
             get_logger().exception(f"Error while running PRHelpMessage: {e}")
+            record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         return ""
