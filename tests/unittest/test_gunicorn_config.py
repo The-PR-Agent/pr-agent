@@ -1,8 +1,9 @@
-import pytest
 import runpy
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock
+
+import pytest
 
 from pr_agent.servers import gunicorn_config
 
