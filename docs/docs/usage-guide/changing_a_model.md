@@ -515,6 +515,11 @@ limits of your CompactifAI deployment. This is required until the selected model
 input limit is available in PR-Agent's registry or the installed LiteLLM metadata.
 CompactifAI's public model pages do not currently specify those limits.
 
+PR-Agent also caps the effective budget with `config.max_model_tokens`, which
+defaults to 32,000. To use a larger verified budget, raise both
+`config.custom_model_max_tokens` and `config.max_model_tokens`; the effective limit
+is the smaller of the two values.
+
 Provide your API key in `.secrets.toml`:
 
 ```toml
