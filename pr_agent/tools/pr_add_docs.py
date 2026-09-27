@@ -189,6 +189,15 @@ class PRAddDocs:
             for doc_suggestion in docs:
                 self.git_provider.publish_code_suggestions([doc_suggestion])
 
+    @staticmethod
+    def _indent_reference_line(file_lines, index, step):
+        """Return the closest non-blank line to index, searching in the direction of step."""
+        while 0 <= index < len(file_lines):
+            if file_lines[index].strip():
+                return file_lines[index]
+            index += step
+        return None
+
     def dedent_code(self, relevant_file, relevant_lines_start, new_code_snippet, doc_placement='after',
                     add_original_line=False):
         try:  # dedent code snippet
@@ -208,12 +217,22 @@ class PRAddDocs:
                         return new_code_snippet
                     original_initial_line = file_lines[relevant_lines_start - 1]
                     break
-            if original_initial_line:
-                if doc_placement == 'after' and relevant_lines_start < len(file_lines):
-                    line = file_lines[relevant_lines_start]
+            if original_initial_line is not None:
+                if doc_placement == 'after' or not original_initial_line.strip():
+                    # A docstring placed after a "def" line belongs to the function body, so a
+                    # following line supplies the indentation. A blank target line has no
+                    # indentation of its own, and the next line reveals the block holding it.
+                    # Skip blank lines either way: anchoring on one indents the docstring to
+                    # column 0, which drops it out of the enclosing block.
+                    line = self._indent_reference_line(file_lines, relevant_lines_start, 1)
                 else:
                     line = original_initial_line
-                suggested_initial_line = new_code_snippet.splitlines()[0]
+                if line is None:
+                    line = self._indent_reference_line(file_lines, relevant_lines_start - 1, -1)
+                if line is None:
+                    return new_code_snippet
+                suggested_initial_line = next(
+                    (snippet_line for snippet_line in new_code_snippet.splitlines() if snippet_line.strip()), "")
                 original_initial_spaces = len(line) - len(line.lstrip())
                 suggested_initial_spaces = len(suggested_initial_line) - len(suggested_initial_line.lstrip())
                 delta_spaces = original_initial_spaces - suggested_initial_spaces
