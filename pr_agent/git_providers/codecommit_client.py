@@ -53,9 +53,10 @@ class CodeCommitClient:
     CodeCommitClient is a wrapper around the AWS boto3 SDK for the CodeCommit client
     """
 
-    def __init__(self):
+    def __init__(self, region_name: str | None = None):
         self.boto_client = None
         self.comments_page_size = 100
+        self.region_name = region_name
 
     def is_supported(self, capability: str) -> bool:
         if capability in ["gfm_markdown"]:
@@ -64,7 +65,10 @@ class CodeCommitClient:
 
     def _connect_boto_client(self):
         try:
-            self.boto_client = boto3.client("codecommit")
+            if self.region_name is None:
+                self.boto_client = boto3.client("codecommit")
+            else:
+                self.boto_client = boto3.client("codecommit", region_name=self.region_name)
         except Exception as e:
             raise ValueError(f"Failed to connect to AWS CodeCommit: {e}") from e
 

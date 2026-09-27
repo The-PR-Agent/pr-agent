@@ -89,7 +89,7 @@ class CodeCommitProvider(GitProvider):
         self.pr = None
         self.diff_files = None
         self.git_files = None
-        self.pr_url = pr_url
+        self.pr_url = None
         if pr_url:
             self.set_pr(pr_url)
 
@@ -108,8 +108,18 @@ class CodeCommitProvider(GitProvider):
         return True
 
     def set_pr(self, pr_url: str):
-        self.repo_name, self.pr_num = self._parse_pr_url(pr_url)
-        self.pr = self._get_pr()
+        repo_name, pr_num = self._parse_pr_url(pr_url)
+        region_name = self._region_from_valid_pr_url(pr_url)
+        codecommit_client = CodeCommitClient(region_name=region_name)
+        pr = self._get_pr_from_client(codecommit_client, repo_name, pr_num, None)
+
+        self.codecommit_client = codecommit_client
+        self.pr_url = pr_url
+        self.repo_name = repo_name
+        self.pr_num = pr_num
+        self.pr = pr
+        self.diff_files = None
+        self.git_files = None
 
     def get_files(self) -> list[CodeCommitFile]:
         # bring files from CodeCommit only once
@@ -512,15 +522,23 @@ class CodeCommitProvider(GitProvider):
         """
         return re.match(r"^[a-z]{2}-(gov-)?[a-z]+-\d\.console\.aws\.amazon\.com$", hostname) is not None
 
+    @staticmethod
+    def _region_from_valid_pr_url(pr_url: str) -> str:
+        return urlparse(pr_url).netloc.split(".", 1)[0]
+
     def _get_pr(self):
-        response = self.codecommit_client.get_pr(self.repo_name, self.pr_num)
+        return self._get_pr_from_client(self.codecommit_client, self.repo_name, self.pr_num, self.diff_files)
+
+    @staticmethod
+    def _get_pr_from_client(codecommit_client, repo_name: str, pr_num: int, diff_files):
+        response = codecommit_client.get_pr(repo_name, pr_num)
 
         if len(response.targets) == 0:
-            raise ValueError(f"No files found in CodeCommit PR: {self.pr_num}")
+            raise ValueError(f"No files found in CodeCommit PR: {pr_num}")
 
         # Return our object that mimics PullRequest class from the PyGithub library
         # (This strategy was copied from the LocalGitProvider)
-        mimic = PullRequestCCMimic(response.title, self.diff_files, targets=response.targets)
+        mimic = PullRequestCCMimic(response.title, diff_files, targets=response.targets)
         mimic.description = response.description
         mimic.source_commit = response.targets[0].source_commit
         mimic.source_branch = response.targets[0].source_branch

@@ -1,9 +1,23 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
 
 
 class TestCodeCommitProvider:
+    def test_connect_boto_client_uses_ambient_region_when_unset(self):
+        with patch("pr_agent.git_providers.codecommit_client.boto3.client") as boto_client:
+            api = CodeCommitClient()
+            api._connect_boto_client()
+
+        boto_client.assert_called_once_with("codecommit")
+
+    def test_connect_boto_client_uses_explicit_region(self):
+        with patch("pr_agent.git_providers.codecommit_client.boto3.client") as boto_client:
+            api = CodeCommitClient(region_name="us-west-2")
+            api._connect_boto_client()
+
+        boto_client.assert_called_once_with("codecommit", region_name="us-west-2")
+
     def test_get_differences(self):
         # Create a mock CodeCommitClient instance and codecommit_client member
         api = CodeCommitClient()
