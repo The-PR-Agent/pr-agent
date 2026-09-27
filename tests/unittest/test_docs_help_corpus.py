@@ -79,3 +79,26 @@ def test_declared_exclusions_still_exist():
         for page in (DOCS_PATH / directory).rglob("*.md"):
             relative = PurePosixPath(page.relative_to(DOCS_PATH).as_posix())
             assert not _is_help_doc_included(relative)
+
+
+REPO_ROOT = DOCS_PATH.parents[1]
+
+
+def test_every_packaging_path_ships_every_page_suffix():
+    """Keep the four places that build the /help corpus in agreement on suffixes.
+
+    `python -m build` makes the wheel from the sdist, so a suffix missing from
+    MANIFEST.in never reaches setup.py's build step and the published package
+    silently answers /help without those pages.
+    """
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    docs_rules = [line.split()[2:] for line in manifest.splitlines() if line.startswith("recursive-include docs/docs")]
+    manifest_patterns = {pattern for rule in docs_rules for pattern in rule}
+    setup_py = (REPO_ROOT / "setup.py").read_text(encoding="utf-8")
+    lambda_dockerfile = (REPO_ROOT / "docker" / "Dockerfile.lambda").read_text(encoding="utf-8")
+
+    for suffix in HELP_DOCS_SUFFIXES:
+        pattern = f"*{suffix}"
+        assert pattern in manifest_patterns, f"MANIFEST.in does not include docs/docs {pattern}"
+        assert f'"{pattern}"' in setup_py, f"setup.py does not package {pattern}"
+        assert f"-name '{pattern}'" in lambda_dockerfile, f"Dockerfile.lambda does not copy {pattern}"

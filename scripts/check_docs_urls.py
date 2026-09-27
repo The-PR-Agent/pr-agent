@@ -48,10 +48,9 @@ def collect_referenced_urls() -> dict[str, list[str]]:
     """Map each referenced URL to the files that reference it."""
     found: dict[str, list[str]] = {}
     for path in _iter_source_files():
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
+        # Deliberately not guarded: every searched file is text, and skipping one we
+        # cannot read would silently check fewer URLs. A read error should fail the run.
+        text = path.read_text(encoding="utf-8")
         for match in URL_RE.findall(text):
             url = match.rstrip(".,;:")
             found.setdefault(url, []).append(path.relative_to(ROOT).as_posix())
@@ -75,7 +74,7 @@ ASSET_SUFFIXES = {
 
 
 def check_asset_links(build_dir: Path) -> list[str]:
-    """Every in-page link to a static file must resolve to a file in the build.
+    """Check that every in-page link to a static file resolves to a file in the build.
 
     `trailingSlash: true` appends a slash to asset links that go through the
     asset pipeline, which turns them into 404s. Docusaurus' own broken-link pass
