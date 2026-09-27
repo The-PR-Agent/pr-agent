@@ -485,7 +485,10 @@ def handle_line_comments(body: Dict, comment_body: [str, Any]):
     start_line = body["comment"]["start_line"] or body["comment"].get("original_start_line")
     end_line = body["comment"]["line"] or body["comment"].get("original_line")
     start_line = end_line if not start_line else start_line
-    question = comment_body.replace('/ask', '').strip()
+    # Strip only the leading command. str.replace() would also remove "/ask" from
+    # inside the question, mangling text such as "/ask how do I call /ask_line?".
+    # gitlab_webhook.handle_ask_line() is the reference for this contract.
+    question = comment_body.strip().removeprefix('/ask').strip()
     diff_hunk = body["comment"]["diff_hunk"]
     get_settings().set("ask_diff_hunk", diff_hunk)
     path = body["comment"]["path"]
