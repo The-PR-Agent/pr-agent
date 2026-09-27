@@ -37,7 +37,7 @@ PR-Agent is a community-maintained open-source project, with its ongoing develop
 
 <p align="center">
   <a target="_blank" href="https://www.qodo.ai/">
-    <img alt="Qodo — Gold sponsor" src="https://www.qodo.ai/wp-content/uploads/2025/03/qodo-logo.svg" width="300">
+    <img alt="Qodo — Gold sponsor" src="https://www.qodo.ai/wp-content/uploads/2025/03/qodo-logo.svg" width="150">
   </a>
 </p>
 
