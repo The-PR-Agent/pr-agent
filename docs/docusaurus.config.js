@@ -138,6 +138,7 @@ const config = {
             label: 'Core Abilities',
             position: 'left',
           },
+          {to: '/maintainers', label: 'Maintainers', position: 'left'},
           {
             href: 'https://github.com/the-pr-agent/pr-agent',
             label: 'GitHub',
