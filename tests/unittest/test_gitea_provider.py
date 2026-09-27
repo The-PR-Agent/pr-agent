@@ -1487,3 +1487,66 @@ class TestGiteaRepoIgnoreRules:
         ]
         assert head_calls == ["generated/client.py"]
         assert [file.head_file for file in diff_files] == ["file content", "", ""]
+
+
+class TestGiteaCommitMessages:
+    """Commit messages must stay separable.
+
+    ``get_commit_messages`` feeds seven tools. Gitea previously joined the list with
+    ``""``, so two commits reached the prompt as one fused run of text. GitHub
+    (``github_provider.py:1879``) and GitLab (``gitlab_provider.py:2286``) both
+    number each message and join with newlines, and that is the format Gitea
+    should produce too.
+    """
+
+    @staticmethod
+    def _commit_messages(messages, max_commits_tokens=500):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 1
+        provider.logger = MagicMock()
+        provider.repo_api = MagicMock()
+        provider.repo_api.get_pr_commits.return_value = [
+            {"commit": {"message": message}} for message in messages
+        ]
+
+        settings = MagicMock()
+        settings.get.return_value = max_commits_tokens
+        with patch("pr_agent.git_providers.gitea_provider.get_settings", return_value=settings):
+            return provider.get_commit_messages()
+
+    def test_consecutive_commits_are_not_fused_together(self):
+        result = self._commit_messages(["Fix the parser", "Handle the edge case"])
+
+        assert "parserHandle" not in result
+        assert result == "1. Fix the parser\n2. Handle the edge case"
+
+    def test_single_commit_is_numbered(self):
+        assert self._commit_messages(["Only commit"]) == "1. Only commit"
+
+    def test_three_commits_stay_on_their_own_lines(self):
+        result = self._commit_messages(["alpha", "beta", "gamma"])
+
+        assert result.splitlines() == ["1. alpha", "2. beta", "3. gamma"]
+
+    def test_multiline_messages_keep_their_own_body(self):
+        result = self._commit_messages(["subject\n\nbody line", "second"])
+
+        assert result == "1. subject\n\nbody line\n2. second"
+
+    def test_format_matches_github_and_gitlab(self):
+        messages = ["first", "second", "third"]
+        expected = "\n".join(f"{i + 1}. {m}" for i, m in enumerate(messages))
+
+        assert self._commit_messages(messages) == expected
+
+    def test_no_commits_returns_empty_string(self):
+        assert self._commit_messages([]) == ""
+
+    def test_token_budget_still_truncates(self):
+        long_message = "x" * 5000
+        result = self._commit_messages([long_message], max_commits_tokens=50)
+
+        assert result
+        assert len(result) < len(long_message)
