@@ -339,13 +339,10 @@ def _merge_comment_tail(previous_comments: list, last_comments: list) -> list | 
 
 def _is_adjacent_previous_page(last_page: int, comments: list, pages: dict[str, int]) -> bool:
     """Return whether a predecessor snapshot still leads to the fetched terminal page."""
-    if "next" in pages and "last" in pages and pages["last"] < pages["next"]:
+    if (("next" in pages and pages["next"] != last_page)
+            or ("last" in pages and pages["last"] != last_page)):
         raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
-    return (
-        bool(comments)
-        and pages.get("next") == last_page
-        and ("last" not in pages or pages["last"] == last_page)
-    )
+    return bool(comments) and pages.get("next") == last_page
 
 
 async def _fetch_comment_history_scan(session, url, headers, deadline: float,

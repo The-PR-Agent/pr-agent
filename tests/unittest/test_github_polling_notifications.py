@@ -726,6 +726,34 @@ async def test_contradictory_predecessor_pagination_remains_invalid():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "predecessor_link",
+    [
+        _page_link("https://example.test", 4, "last"),
+        _links(
+            _page_link("https://example.test", 4, "next"),
+            _page_link("https://example.test", 4, "last"),
+        ),
+    ],
+    ids=["mismatched-last", "mismatched-next-and-last"],
+)
+async def test_supplied_predecessor_relationship_mismatch_remains_invalid(predecessor_link):
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    session = _FakeSession(
+        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse([_comment(9), _comment(10)], link=_page_link(base_url, 2, "prev")),
+        _FakeResponse([_comment(7), _comment(8)], link=predecessor_link),
+    )
+
+    with pytest.raises(ValueError, match="Inconsistent pagination metadata"):
+        await github_polling._fetch_comment_history(session, url, {})
+
+    assert len(session.calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_comment_history_retries_overlapping_page_snapshots_only_once():
     base_url = "https://example.test"
     url = f"{base_url}/repos/owner/repo/issues/1/comments"
