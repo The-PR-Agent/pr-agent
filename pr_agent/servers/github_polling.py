@@ -337,6 +337,11 @@ def _merge_comment_tail(previous_comments: list, last_comments: list) -> list | 
     return (previous_comments + last_comments)[-POLLING_COMMENT_SCAN_LIMIT:]
 
 
+def _comment_id_sequence(comments: list) -> tuple:
+    """Return comment IDs in response order for bounded snapshot comparisons."""
+    return tuple(comment.get("id") if isinstance(comment, dict) else None for comment in comments)
+
+
 def _is_adjacent_previous_page(last_page: int, comments: list, pages: dict[str, int]) -> bool:
     """Return whether a predecessor snapshot still leads to the fetched terminal page."""
     if (("next" in pages and pages["next"] != last_page)
@@ -367,11 +372,11 @@ async def _fetch_comment_history_scan(session, url, headers, deadline: float,
     )
     if page_disappeared:
         return None
-    previous_page = None
-    previous_comments = None
+    cached_previous_page = None
+    cached_previous_comments = None
     if next_last_page is not None:
-        previous_page = last_page
-        previous_comments = last_comments
+        cached_previous_page = last_page
+        cached_previous_comments = last_comments
         last_page = next_last_page
         last_comments, last_link_headers = await _fetch_comment_page(
             session, url, headers, deadline, page=last_page, allow_redirects=False
@@ -390,23 +395,54 @@ async def _fetch_comment_history_scan(session, url, headers, deadline: float,
     if expected_previous is None:
         return last_comments[-POLLING_COMMENT_SCAN_LIMIT:]
 
-    if previous_page != expected_previous:
-        previous_comments, previous_link_headers = await _fetch_comment_page(
-            session, url, headers, deadline, page=expected_previous, allow_redirects=False
-        )
-        previous_pages = _validated_pagination_pages(previous_link_headers, resource)
-        _remaining_polling_timeout(deadline)
-        if not _is_adjacent_previous_page(last_page, previous_comments, previous_pages):
-            return None
-    return _merge_comment_tail(previous_comments, last_comments)
+    previous_comments, previous_link_headers = await _fetch_comment_page(
+        session, url, headers, deadline, page=expected_previous, allow_redirects=False
+    )
+    previous_pages = _validated_pagination_pages(previous_link_headers, resource)
+    _remaining_polling_timeout(deadline)
+    if not _is_adjacent_previous_page(last_page, previous_comments, previous_pages):
+        return None
+    if (
+        cached_previous_page == expected_previous
+        and _comment_id_sequence(cached_previous_comments) != _comment_id_sequence(previous_comments)
+    ):
+        return None
+
+    refreshed_last_comments, refreshed_last_link_headers = await _fetch_comment_page(
+        session, url, headers, deadline, page=last_page, allow_redirects=False
+    )
+    refreshed_last_pages = _validated_pagination_pages(refreshed_last_link_headers, resource)
+    _remaining_polling_timeout(deadline)
+    page_disappeared, next_last_page = _select_next_last_page(
+        last_page, refreshed_last_comments, refreshed_last_pages
+    )
+    if page_disappeared or next_last_page is not None:
+        return None
+    refreshed_previous = _select_previous_tail_page(
+        last_page, refreshed_last_comments, refreshed_last_pages
+    )
+    if (
+        refreshed_previous != expected_previous
+        or _comment_id_sequence(refreshed_last_comments) != _comment_id_sequence(last_comments)
+        or refreshed_last_pages != last_pages
+    ):
+        return None
+    return _merge_comment_tail(previous_comments, refreshed_last_comments)
 
 
 async def _fetch_comment_history(session, url, headers) -> list:
     """Fetch the newest bounded fallback tail without trusting Link targets."""
     resource = _comment_resource(url)
     deadline = asyncio.get_running_loop().time() + _get_polling_request_timeout()
-    for _ in range(2):
-        comments = await _fetch_comment_history_scan(session, url, headers, deadline, resource)
+    for scan_number in range(2):
+        try:
+            comments = await _fetch_comment_history_scan(session, url, headers, deadline, resource)
+        except asyncio.TimeoutError as error:
+            if scan_number == 1:
+                raise _CommentPaginationDrift(
+                    "Comment pagination changed before the bounded retry completed"
+                ) from error
+            raise
         if comments is not None:
             return comments
     raise _CommentPaginationDrift("Comment pagination changed during the bounded scan")

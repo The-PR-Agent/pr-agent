@@ -320,18 +320,20 @@ async def test_comment_history_combines_previous_and_short_last_page_with_numeri
         _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
         _FakeResponse([_comment(10), _comment(11)], link=last_link),
         _FakeResponse([_comment(comment_id) for comment_id in range(5, 10)], link=previous_link),
+        _FakeResponse([_comment(10), _comment(11)], link=last_link),
     )
 
     comments = await github_polling._fetch_comment_history(session, url, {})
 
     assert [comment["id"] for comment in comments] == [8, 9, 10, 11]
-    assert [call[0] for call in session.calls] == [url, url, url]
+    assert [call[0] for call in session.calls] == [url, url, url, url]
     assert [call[1]["params"] for call in session.calls] == [
         {"per_page": 4},
         {"per_page": 4, "page": 3},
         {"per_page": 4, "page": 2},
+        {"per_page": 4, "page": 3},
     ]
-    assert [call[1]["allow_redirects"] for call in session.calls] == [True, False, False]
+    assert [call[1]["allow_redirects"] for call in session.calls] == [True, False, False, False]
 
 
 @pytest.mark.asyncio
@@ -397,6 +399,8 @@ async def test_comment_history_refetches_last_page_when_pagination_advances():
         _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
         _FakeResponse([_comment(comment_id) for comment_id in range(9, 13)], link=advanced_link),
         _FakeResponse([_comment(13)], link=_page_link(base_url, 3, "prev")),
+        _FakeResponse([_comment(comment_id) for comment_id in range(9, 13)], link=advanced_link),
+        _FakeResponse([_comment(13)], link=_page_link(base_url, 3, "prev")),
     )
 
     comments = await github_polling._fetch_comment_history(session, url, {})
@@ -406,7 +410,70 @@ async def test_comment_history_refetches_last_page_when_pagination_advances():
         {"per_page": 4},
         {"per_page": 4, "page": 3},
         {"per_page": 4, "page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 4},
     ]
+
+
+@pytest.mark.asyncio
+async def test_notification_retries_when_reused_predecessor_changes():
+    base_url = "https://example.test"
+    initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    advanced_link = _links(
+        _page_link(base_url, 2, "prev"),
+        _page_link(base_url, 4, "next"),
+        _page_link(base_url, 4, "last"),
+    )
+    current_initial_link = _links(
+        _page_link(base_url, 2, "next"), _page_link(base_url, 4, "last")
+    )
+    predecessor_link = _links(
+        _page_link(base_url, 4, "next"), _page_link(base_url, 4, "last")
+    )
+    selected = _comment(13)
+    session = _FakeSession(
+        _FakeResponse(_comment(99, "Other discussion")),
+        _FakeResponse([_comment(comment_id, "No mention") for comment_id in range(1, 5)],
+                      link=initial_link, delay=0.01),
+        _FakeResponse([_comment(comment_id, "No mention") for comment_id in range(9, 13)],
+                      link=advanced_link),
+        _FakeResponse([_comment(14, "No mention")], link=_page_link(base_url, 3, "prev")),
+        _FakeResponse([
+            _comment(9, "No mention"),
+            _comment(10, "No mention"),
+            _comment(12, "No mention"),
+            selected,
+        ], link=predecessor_link, delay=0.01),
+        _FakeResponse([_comment(comment_id, "No mention") for comment_id in range(1, 5)],
+                      link=current_initial_link),
+        _FakeResponse([_comment(14, "No mention")], link=_page_link(base_url, 3, "prev")),
+        _FakeResponse([
+            _comment(9, "No mention"),
+            _comment(10, "No mention"),
+            _comment(12, "No mention"),
+            selected,
+        ], link=predecessor_link),
+        _FakeResponse([_comment(14, "No mention")], link=_page_link(base_url, 3, "prev")),
+    )
+
+    result = await github_polling.is_valid_notification(
+        _notification(base_url), {}, set(), session, "bot"
+    )
+
+    assert result[0] is True
+    assert result[2] == selected
+    assert [call[1].get("params") for call in session.calls] == [
+        None,
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4},
+        {"per_page": 4, "page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 4},
+    ]
+    assert session.calls[5][1]["timeout"].total < session.calls[1][1]["timeout"].total
 
 
 @pytest.mark.asyncio
@@ -425,6 +492,7 @@ async def test_comment_history_fetches_new_previous_page_when_last_page_jumps():
         _FakeResponse([_comment(comment_id) for comment_id in range(9, 13)], link=advanced_link),
         _FakeResponse([_comment(17)], link=_page_link(base_url, 4, "prev")),
         _FakeResponse([_comment(comment_id) for comment_id in range(13, 17)], link=previous_link),
+        _FakeResponse([_comment(17)], link=_page_link(base_url, 4, "prev")),
     )
 
     comments = await github_polling._fetch_comment_history(session, url, {})
@@ -435,6 +503,7 @@ async def test_comment_history_fetches_new_previous_page_when_last_page_jumps():
         {"per_page": 4, "page": 3},
         {"per_page": 4, "page": 5},
         {"per_page": 4, "page": 4},
+        {"per_page": 4, "page": 5},
     ]
 
 
@@ -576,6 +645,7 @@ async def test_notification_retries_when_deletion_overlaps_adjacent_page_snapsho
             _comment(8, "No mention"),
             _comment(9, "No mention"),
         ], link=previous_link, delay=0.01),
+        _FakeResponse([_comment(9, "No mention"), _comment(10, "No mention")], link=last_link),
         _FakeResponse(
             [_comment(comment_id, "No mention") for comment_id in range(1, 5)],
             link=initial_link,
@@ -587,6 +657,7 @@ async def test_notification_retries_when_deletion_overlaps_adjacent_page_snapsho
             _comment(7, "No mention"),
             _comment(9, "No mention"),
         ], link=previous_link),
+        _FakeResponse([_comment(10, "No mention")], link=last_link),
     )
 
     result = await github_polling.is_valid_notification(
@@ -604,17 +675,65 @@ async def test_notification_retries_when_deletion_overlaps_adjacent_page_snapsho
         comments_url,
         comments_url,
         comments_url,
+        comments_url,
+        comments_url,
     ]
     assert [call[1].get("params") for call in session.calls] == [
         None,
         {"per_page": 4},
         {"per_page": 4, "page": 3},
         {"per_page": 4, "page": 2},
+        {"per_page": 4, "page": 3},
         {"per_page": 4},
         {"per_page": 4, "page": 3},
         {"per_page": 4, "page": 2},
+        {"per_page": 4, "page": 3},
     ]
     assert session.calls[4][1]["timeout"].total < session.calls[1][1]["timeout"].total
+
+
+@pytest.mark.asyncio
+async def test_notification_retries_when_short_terminal_changes_after_predecessor_fetch():
+    base_url = "https://example.test"
+    initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    last_link = _page_link(base_url, 2, "prev")
+    previous_link = _links(_page_link(base_url, 3, "next"), _page_link(base_url, 3, "last"))
+    selected = _comment(6)
+    session = _FakeSession(
+        _FakeResponse(_comment(99, "Other discussion")),
+        _FakeResponse([_comment(comment_id, "No mention") for comment_id in range(1, 5)],
+                      link=initial_link, delay=0.01),
+        _FakeResponse([_comment(9, "No mention"), _comment(10, "No mention")], link=last_link),
+        _FakeResponse([
+            _comment(5, "No mention"),
+            selected,
+            _comment(7, "No mention"),
+            _comment(8, "No mention"),
+        ], link=previous_link),
+        _FakeResponse([_comment(9, "No mention")], link=last_link, delay=0.01),
+        _FakeResponse([
+            selected,
+            _comment(7, "No mention"),
+            _comment(8, "No mention"),
+            _comment(9, "No mention"),
+        ]),
+    )
+
+    result = await github_polling.is_valid_notification(
+        _notification(base_url), {}, set(), session, "bot"
+    )
+
+    assert result[0] is True
+    assert result[2] == selected
+    assert [call[1].get("params") for call in session.calls] == [
+        None,
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 2},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4},
+    ]
+    assert session.calls[5][1]["timeout"].total < session.calls[1][1]["timeout"].total
 
 
 @pytest.mark.asyncio
@@ -763,6 +882,31 @@ async def test_supplied_predecessor_relationship_mismatch_remains_invalid(predec
 
 
 @pytest.mark.asyncio
+async def test_refreshed_terminal_relationship_mismatch_remains_invalid():
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    last_link = _page_link(base_url, 2, "prev")
+    previous_link = _links(_page_link(base_url, 3, "next"), _page_link(base_url, 3, "last"))
+    session = _FakeSession(
+        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse([_comment(9), _comment(10)], link=last_link),
+        _FakeResponse([_comment(comment_id) for comment_id in range(5, 9)], link=previous_link),
+        _FakeResponse([_comment(9), _comment(10)], link=_page_link(base_url, 4, "last")),
+    )
+
+    with pytest.raises(ValueError, match="Inconsistent pagination metadata"):
+        await github_polling._fetch_comment_history(session, url, {})
+
+    assert [call[1]["params"] for call in session.calls] == [
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 2},
+        {"per_page": 4, "page": 3},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_comment_history_retries_overlapping_page_snapshots_only_once():
     base_url = "https://example.test"
     url = f"{base_url}/repos/owner/repo/issues/1/comments"
@@ -775,20 +919,23 @@ async def test_comment_history_retries_overlapping_page_snapshots_only_once():
             _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
             _FakeResponse([_comment(9), _comment(10)], link=last_link),
             _FakeResponse([_comment(comment_id) for comment_id in range(6, 10)], link=previous_link),
+            _FakeResponse([_comment(9), _comment(10)], link=last_link),
         ])
     session = _FakeSession(*responses)
 
     with pytest.raises(github_polling._CommentPaginationDrift, match="changed during the bounded scan"):
         await github_polling._fetch_comment_history(session, url, {})
 
-    assert [call[0] for call in session.calls] == [url] * 6
+    assert [call[0] for call in session.calls] == [url] * 8
     assert [call[1]["params"] for call in session.calls] == [
         {"per_page": 4},
         {"per_page": 4, "page": 3},
         {"per_page": 4, "page": 2},
+        {"per_page": 4, "page": 3},
         {"per_page": 4},
         {"per_page": 4, "page": 3},
         {"per_page": 4, "page": 2},
+        {"per_page": 4, "page": 3},
     ]
 
 
@@ -804,6 +951,7 @@ async def test_repeated_page_overlap_leaves_notification_eligible_for_retry():
             _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
             _FakeResponse([_comment(9), _comment(10)], link=last_link),
             _FakeResponse([_comment(comment_id) for comment_id in range(6, 10)], link=previous_link),
+            _FakeResponse([_comment(9), _comment(10)], link=last_link),
         ])
     session = _FakeSession(*responses)
     handled = set()
@@ -1050,6 +1198,47 @@ async def test_comment_history_detects_deadline_exhaustion_during_link_parsing(m
         await github_polling._fetch_comment_history(session, url, {})
 
     assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_notification_defers_when_second_scan_times_out_after_drift(monkeypatch):
+    scan_calls = 0
+
+    async def scan(*args, **kwargs):
+        nonlocal scan_calls
+        scan_calls += 1
+        if scan_calls == 1:
+            return None
+        raise asyncio.TimeoutError("retry deadline exhausted")
+
+    monkeypatch.setattr(github_polling, "_fetch_comment_history_scan", scan)
+    session = _FakeSession(_FakeResponse(_comment(99, "Other discussion")))
+    handled = set()
+    added_handled = set()
+
+    result = await github_polling.is_valid_notification(
+        _notification("https://example.test"), {}, handled, session, "bot", added_handled
+    )
+
+    assert result == (False, handled, github_polling._RETRY_POLLING_NOTIFICATION)
+    assert scan_calls == 2
+    assert handled == set()
+    assert added_handled == set()
+
+
+@pytest.mark.asyncio
+async def test_notification_keeps_first_scan_timeout_semantics(monkeypatch):
+    async def scan(*args, **kwargs):
+        raise asyncio.TimeoutError("initial deadline exhausted")
+
+    monkeypatch.setattr(github_polling, "_fetch_comment_history_scan", scan)
+    session = _FakeSession(_FakeResponse(_comment(99, "Other discussion")))
+    handled = set()
+
+    assert await github_polling.is_valid_notification(
+        _notification("https://example.test"), {}, handled, session, "bot"
+    ) == (False, handled)
+    assert handled == {99}
 
 
 @pytest.mark.parametrize(
