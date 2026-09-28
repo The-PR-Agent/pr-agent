@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -752,6 +753,53 @@ async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_rev
     git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.remove_initial_comment.assert_not_called()
+    git_provider.publish_persistent_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_repropagates_deferred_sink_cancellation_after_quiet_finalization(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    async def prepare_review():
+        reviewer._output_sink_cancelled = True
+        return "No major issues detected"
+
+    reviewer._prepare_pr_review = prepare_review
+
+    async def fake_retry(prepare_fn, model_type=None, git_provider=None):
+        reviewer.prediction = "prediction"
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "publish_output_no_suggestions": settings.pr_reviewer.publish_output_no_suggestions,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.pr_reviewer.publish_output_no_suggestions = False
+
+        with pytest.raises(asyncio.CancelledError):
+            await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.pr_reviewer.publish_output_no_suggestions = original["publish_output_no_suggestions"]
+
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.publish_persistent_comment.assert_not_called()
 
 
@@ -1696,5 +1744,32 @@ async def test_prepare_pr_review_waits_for_sink_before_applying_labels():
             await reviewer._prepare_pr_review()
         push.assert_awaited_once()
         labels.assert_called_once()
+    finally:
+        settings.config.publish_output = original_publish_output
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_records_deferred_sink_cancellation_after_labels():
+    reviewer = _make_prediction_reviewer()
+    reviewer.prediction = "review: {}"
+    reviewer.remaining_files_list = []
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    labels = MagicMock()
+    reviewer.set_review_labels = labels
+
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    try:
+        settings.config.publish_output = True
+        with (
+            patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
+            patch("pr_agent.tools.pr_reviewer.github_action_output"),
+            patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+            patch("pr_agent.tools.pr_reviewer.async_push_outputs", new=AsyncMock(return_value=True)),
+        ):
+            await reviewer._prepare_pr_review()
+        labels.assert_called_once()
+        assert reviewer._output_sink_cancelled is True
     finally:
         settings.config.publish_output = original_publish_output

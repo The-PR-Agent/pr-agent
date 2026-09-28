@@ -354,6 +354,8 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
+                if getattr(self, "_output_sink_cancelled", False) is True:
+                    raise asyncio.CancelledError
                 return
 
             # publish the review
@@ -453,6 +455,8 @@ class PRReviewer:
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+            if getattr(self, "_output_sink_cancelled", False) is True:
+                raise asyncio.CancelledError
         except Exception as e:
             review_error = e
             review_failed = True
@@ -1248,8 +1252,11 @@ class PRReviewer:
         # Emit the review to optional external sinks (stdout/file/webhook/slack); no-op unless enabled.
         # publish_output gates it so a dry run makes no external calls. The "no major issues"
         # suppression deliberately does not: that only silences the PR comment.
+        self._output_sink_cancelled = False
         if get_settings().config.publish_output:
-            await async_push_outputs("review", payload=data.get('review', {}), markdown=markdown_text)
+            self._output_sink_cancelled = await async_push_outputs(
+                "review", payload=data.get('review', {}), markdown=markdown_text
+            )
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)

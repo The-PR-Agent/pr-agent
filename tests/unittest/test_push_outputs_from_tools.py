@@ -91,6 +91,44 @@ async def test_describe_waits_for_one_sink_emission_before_labels_and_descriptio
     )
 
 
+@pytest.mark.asyncio
+async def test_describe_repropagates_deferred_sink_cancellation_after_provider_output(monkeypatch):
+    tool = PRDescription.__new__(PRDescription)
+    tool.pr_id = "1"
+    tool.git_provider = MagicMock()
+    tool.git_provider.is_supported.side_effect = lambda feature: feature == "get_labels"
+    tool.git_provider.get_pr_labels.return_value = []
+    tool.vars = {}
+    tool.prediction = "generated"
+    tool.data = {"title": "AI title", "description": "Description"}
+    tool._prepare_data = MagicMock()
+    tool._prepare_labels = MagicMock(return_value=["enhancement"])
+    tool._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", "Walkthrough"))
+    monkeypatch.setattr("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr("pr_agent.tools.pr_description.retry_with_fallback_models", AsyncMock())
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_description.async_push_outputs", AsyncMock(return_value=True)
+    )
+    for key, value in {
+        "publish_output": True, "is_auto_command": True,
+        "output_relevant_configurations": False, "output_run_details": False,
+    }.items():
+        monkeypatch.setattr(get_settings().config, key, value)
+    for key, value in {
+        "enable_semantic_files_types": False, "publish_labels": True,
+        "use_description_markers": False, "enable_help_text": False,
+        "enable_help_comment": False, "publish_description_as_comment": False,
+        "generate_ai_title": True, "final_update_message": False,
+    }.items():
+        monkeypatch.setattr(get_settings().pr_description, key, value)
+
+    with pytest.raises(asyncio.CancelledError):
+        await tool.run()
+
+    tool.git_provider.publish_labels.assert_called_once_with(["enhancement"])
+    tool.git_provider.publish_description.assert_called_once()
+
+
 def test_improve_emits_from_its_publish_path():
     assert "async_push_outputs" in PRCodeSuggestions.run.__code__.co_names
 
@@ -287,12 +325,49 @@ async def test_improve_cancellation_during_sink_still_finalizes_provider_output(
     try:
         await asyncio.wait_for(started.wait(), timeout=2)
         running.cancel()
+        running.cancel()
         await asyncio.sleep(0)
         assert not running.done()
         tool.git_provider.remove_initial_comment.assert_not_called()
     finally:
         release.set()
+        get_settings().set("PUSH_OUTPUTS.ENABLE", False)
+
+    with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(running, timeout=2)
+    tool.git_provider.remove_initial_comment.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_improve_timeout_waits_for_provider_finalization_then_expires(monkeypatch):
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = MagicMock()
+    tool.git_provider.get_files.return_value = ["src/foo.py"]
+    tool.git_provider.is_supported.return_value = False
+    tool.pr_url = "https://github.com/org/repo/pull/1"
+    tool.progress_response = None
+    tool._output_published = False
+    tool.is_extended = False
+    monkeypatch.setattr(get_settings().config, "publish_output", True)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+        AsyncMock(return_value={"code_suggestions": [SUGGESTION]}),
+    )
+    get_settings().set("PUSH_OUTPUTS.ENABLE", True)
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def blocking_push(*_args):
+        assert release.wait(timeout=5)
+
+    monkeypatch.setattr(run_output, "push_outputs", blocking_push)
+    loop.call_later(0.05, release.set)
+    try:
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.01):
+                await tool.run()
+    finally:
+        release.set()
         get_settings().set("PUSH_OUTPUTS.ENABLE", False)
 
     tool.git_provider.remove_initial_comment.assert_called_once()

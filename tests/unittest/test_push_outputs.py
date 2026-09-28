@@ -76,8 +76,34 @@ class TestPushOutputs:
         finally:
             release.set()
             await asyncio.wait_for(finished.wait(), timeout=2)
-            await asyncio.wait_for(delivery, timeout=2)
+            cancellation_deferred = await asyncio.wait_for(delivery, timeout=2)
         assert delivered == ["completed"]
+        assert cancellation_deferred is True
+
+    @pytest.mark.asyncio
+    async def test_cancelling_async_adapter_before_worker_start_aborts_delivery(self, monkeypatch):
+        get_settings().set("PUSH_OUTPUTS.ENABLE", True)
+        submitted = asyncio.Event()
+        release = asyncio.Event()
+        delivered = []
+
+        async def queued_to_thread(function):
+            submitted.set()
+            await release.wait()
+            function()
+
+        monkeypatch.setattr(run_output.asyncio, "to_thread", queued_to_thread)
+        monkeypatch.setattr(run_output, "push_outputs", lambda *_args: delivered.append("completed"))
+        delivery = asyncio.create_task(async_push_outputs("review", {"score": 1}, "review markdown"))
+        await asyncio.wait_for(submitted.wait(), timeout=2)
+        delivery.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await delivery
+
+        release.set()
+        await asyncio.sleep(0)
+        assert delivered == []
 
     @pytest.mark.asyncio
     async def test_async_adapter_uses_request_settings_and_preserves_channel_order(self, monkeypatch):

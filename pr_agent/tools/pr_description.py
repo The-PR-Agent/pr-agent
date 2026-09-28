@@ -213,7 +213,9 @@ class PRDescription:
             if get_settings().config.publish_output:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the description if publishing it to the PR fails.
-                await async_push_outputs("describe", payload=self.data or {}, markdown=pr_body)
+                sink_cancelled = await async_push_outputs(
+                    "describe", payload=self.data or {}, markdown=pr_body
+                )
 
                 # publish labels
                 if (
@@ -275,6 +277,8 @@ class PRDescription:
                                 f"updated to latest commit ({latest_commit_url})"
                             )
                             self.git_provider.publish_comment(update_comment)
+                if sink_cancelled is True:
+                    raise asyncio.CancelledError
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
                 get_settings().data = {"artifact": pr_body}

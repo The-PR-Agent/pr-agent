@@ -130,22 +130,49 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
 
 
-async def async_push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
-    """Run synchronous sinks without blocking and finish started delivery before caller finalization."""
+async def async_push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> bool:
+    """Run synchronous sinks without blocking and report deferred cancellation.
+
+    Cancellation before the worker starts prevents sink delivery and propagates immediately.
+    Once delivery starts, it is allowed to finish and ``True`` tells the caller to complete the
+    matching provider publication before re-raising ``CancelledError``.
+    """
     try:
         if not _push_outputs_enabled(get_settings().get("push_outputs", {}) or {}):
-            return
-        delivery = asyncio.create_task(asyncio.to_thread(push_outputs, message_type, payload, markdown))
+            return False
+
+        state_lock = threading.Lock()
+        started = False
+        aborted = False
+
+        def deliver() -> None:
+            nonlocal started
+            with state_lock:
+                if aborted:
+                    return
+                started = True
+            push_outputs(message_type, payload, markdown)
+
+        delivery = asyncio.create_task(asyncio.to_thread(deliver))
+        cancellation_deferred = False
         while not delivery.done():
             try:
                 await asyncio.shield(delivery)
             except asyncio.CancelledError:
-                # Once a completed result starts reaching a sink, let the caller continue to the
-                # matching provider publication instead of reporting the command as cancelled.
-                continue
-        delivery.result()
+                with state_lock:
+                    if not started:
+                        aborted = True
+                        delivery.cancel()
+                        raise
+                cancellation_deferred = True
+        try:
+            delivery.result()
+        except Exception as e:
+            get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+        return cancellation_deferred
     except Exception as e:
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+        return False
 
 
 def _render_setting_value(value) -> str:

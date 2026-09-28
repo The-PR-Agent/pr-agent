@@ -330,7 +330,9 @@ class PRCodeSuggestions:
 
             # Handle the case where the PR has no suggestions
             if (data is None or 'code_suggestions' not in data or not data['code_suggestions']):
-                await self.publish_no_suggestions()
+                sink_cancelled = await self.publish_no_suggestions()
+                if sink_cancelled is True:
+                    raise asyncio.CancelledError
                 return
 
             # publish the suggestions
@@ -346,13 +348,15 @@ class PRCodeSuggestions:
                         if self._is_suggestion_line_range_valid(suggestion)
                     ]
                     if not data['code_suggestions']:
-                        await self.publish_no_suggestions()
+                        sink_cancelled = await self.publish_no_suggestions()
+                        if sink_cancelled is True:
+                            raise asyncio.CancelledError
                         return
 
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the suggestions if publishing them to the PR fails.
                 markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
-                await async_push_outputs("improve", payload=data, markdown=markdown)
+                sink_cancelled = await async_push_outputs("improve", payload=data, markdown=markdown)
                 # If a temporary comment was published, remove it
                 self.git_provider.remove_initial_comment()
 
@@ -436,6 +440,8 @@ class PRCodeSuggestions:
                     await self.push_inline_code_suggestions(data)
                     if self.progress_response:
                         self.git_provider.remove_comment(self.progress_response)
+                if sink_cancelled is True:
+                    raise asyncio.CancelledError
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
@@ -512,22 +518,26 @@ class PRCodeSuggestions:
                            f"maximum chunk calls: {file_list}.")
         return "\n\n⚠️ **Suggestion coverage:** " + " ".join(details)
 
-    async def publish_no_suggestions(self):
+    async def publish_no_suggestions(self) -> bool:
         coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
         no_suggestions_message = ("No code suggestions found in the successfully analyzed chunks."
                                   if coverage_footer else "No code suggestions found for the PR.")
         pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
+        sink_cancelled = False
         if get_settings().config.publish_output:
             markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
-            await async_push_outputs("improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
-                                     markdown=markdown)
+            sink_cancelled = await async_push_outputs(
+                "improve",
+                payload=getattr(self, "data", None) or {"code_suggestions": []},
+                markdown=markdown,
+            )
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")
             if self.git_provider.supports_code_suggestions_artifact() is True:
                 self.git_provider.publish_code_suggestions_artifact(
                     [], artifact_footer=coverage_footer, no_suggestions_message=no_suggestions_message)
-                return
+                return sink_cancelled
             pr_body = add_comment_identity(
                 pr_body,
                 PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
@@ -568,6 +578,7 @@ class PRCodeSuggestions:
             get_settings().data = {"artifact": pr_body if coverage_footer else ""}
             if self.progress_response:
                 self.git_provider.remove_comment(self.progress_response)
+        return sink_cancelled
 
     async def dual_publishing(self, data):
         data_above_threshold = {'code_suggestions': []}
