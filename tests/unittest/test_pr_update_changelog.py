@@ -57,7 +57,7 @@ class TestPRUpdateChangelog:
             tool = PRUpdateChangelog(
                 "https://gitlab.com/test/repo/-/merge_requests/1", ai_handler=lambda: mock_ai_handler
             )
-            # Direct write-helper tests supply the snapshot captured by an enabled push.
+            # Supply the snapshot captured by an enabled push for direct write-helper tests.
             tool.changelog_snapshot = FileContentSnapshot("old", True, "captured-revision")
             return tool
 
