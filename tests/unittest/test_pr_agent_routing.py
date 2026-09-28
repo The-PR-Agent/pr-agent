@@ -320,6 +320,7 @@ async def test_incomplete_github_files_constructor_error_publishes_sanitized_not
 async def test_incomplete_bitbucket_constructor_error_keeps_provider_specific_failure(monkeypatch, outcome):
     secret = "private/repository patch mismatch with secret request details"
     provider = _incomplete_files_provider()
+    provider.supports_html_comment_markers.return_value = False
     provider_factory = Mock(return_value=provider)
     if outcome == "provider_failure":
         provider_factory.side_effect = RuntimeError("secondary provider failure")
@@ -338,23 +339,67 @@ async def test_incomplete_bitbucket_constructor_error_keeps_provider_specific_fa
     handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/describe")
 
     assert handled is False
-    provider.get_issue_comments_newest_first.assert_not_called()
-    provider.is_comment_authored_by_pr_agent.assert_not_called()
     if outcome == "disabled":
         provider_factory.assert_not_called()
     else:
         provider_factory.assert_called_once_with("https://example/pr/1")
     if outcome in {"disabled", "provider_failure"}:
+        provider.get_issue_comments_newest_first.assert_not_called()
+        provider.is_comment_authored_by_pr_agent.assert_not_called()
         provider.publish_comment.assert_not_called()
     else:
+        provider.get_issue_comments_newest_first.assert_called_once()
+        provider.is_comment_authored_by_pr_agent.assert_not_called()
         provider.publish_comment.assert_called_once()
         published = provider.publish_comment.call_args.args[0]
-        assert published == pr_agent_module.INCOMPLETE_BITBUCKET_FILES_COMMENT
+        assert pr_agent_module.INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER not in published
+        assert (
+            "[pr-agent:bitbucket-incomplete-files]: https://github.com/The-PR-Agent/pr-agent"
+            in published
+        )
         assert "Bitbucket returned an incomplete or inconsistent pull-request diff" in published
         assert "command was not run" in published
         assert "GitHub" not in published
         assert "3,000" not in published
         assert secret not in published
+
+
+def test_incomplete_bitbucket_files_notice_deduplicates_trusted_agent_comment(monkeypatch):
+    marker = pr_agent_module.INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER
+    existing = {"body": f"## Existing notice\n\n{marker}\n\nDetails"}
+    provider = _incomplete_files_provider([existing])
+    provider.is_comment_authored_by_pr_agent.return_value = True
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+
+    pr_agent_module.publish_incomplete_bitbucket_files_comment("https://example/pr/1")
+
+    provider.publish_comment.assert_not_called()
+
+
+def test_foreign_incomplete_bitbucket_files_marker_does_not_suppress_notice(monkeypatch):
+    marker = pr_agent_module.INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER
+    existing = {"body": f"## Spoofed notice\n\n{marker}\n\nDetails"}
+    provider = _incomplete_files_provider([existing])
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+
+    pr_agent_module.publish_incomplete_bitbucket_files_comment("https://example/pr/1")
+
+    provider.publish_comment.assert_called_once()
+
+
+def test_unverifiable_incomplete_bitbucket_files_marker_does_not_suppress_notice(monkeypatch):
+    marker = pr_agent_module.INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER
+    existing = {"body": f"## Existing notice\n\n{marker}\n\nDetails"}
+    provider = _incomplete_files_provider([existing])
+    provider.is_comment_authored_by_pr_agent.side_effect = RuntimeError("identity unavailable")
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+
+    pr_agent_module.publish_incomplete_bitbucket_files_comment("https://example/pr/1")
+
+    provider.publish_comment.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,11 @@ from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import reapply_artifact_context
 from pr_agent.algo.cli_args import CliArgs
-from pr_agent.algo.comment_identity import add_comment_identity, comment_matches_identity
+from pr_agent.algo.comment_identity import (
+    PRCommandNoticeIdentity,
+    add_comment_identity,
+    comment_matches_identity,
+)
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -135,6 +139,7 @@ INCOMPLETE_BITBUCKET_FILES_COMMENT = (
     "instead of treating it as an empty change.\n\n"
     "Retry the command and check the pull request's diff in Bitbucket if the problem persists."
 )
+INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER = PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value
 
 
 def publish_incomplete_bitbucket_files_comment(pr_url: str) -> None:
@@ -143,7 +148,31 @@ def publish_incomplete_bitbucket_files_comment(pr_url: str) -> None:
         if not get_settings().get("CONFIG.PUBLISH_OUTPUT", True):
             return
         provider = get_git_provider_with_context(pr_url)
-        provider.publish_comment(INCOMPLETE_BITBUCKET_FILES_COMMENT)
+        try:
+            comments = provider.get_issue_comments_newest_first()
+        except Exception:
+            get_logger().exception("Failed to inspect existing Bitbucket incomplete-files notices")
+            comments = []
+        for comment in comments:
+            try:
+                body = provider._get_comment_body(comment)
+            except Exception:
+                get_logger().warning("Failed to read an existing Bitbucket incomplete-files notice; continuing")
+                continue
+            if not comment_matches_identity(body, INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER):
+                continue
+            try:
+                if provider.is_comment_authored_by_pr_agent(comment):
+                    return
+            except Exception:
+                get_logger().exception("Failed to verify the author of a Bitbucket incomplete-files notice")
+        provider.publish_comment(
+            add_comment_identity(
+                INCOMPLETE_BITBUCKET_FILES_COMMENT,
+                INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER,
+                provider,
+            )
+        )
     except Exception:
         get_logger().exception("Failed to publish the Bitbucket incomplete-files notice")
 

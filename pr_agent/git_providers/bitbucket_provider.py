@@ -580,6 +580,29 @@ class BitbucketProvider(GitProvider):
     def get_user_id(self):
         return 0
 
+    def is_comment_authored_by_pr_agent(self, comment) -> bool:
+        """Verify a Bitbucket Cloud comment belongs to this authenticated account."""
+        cloud_comment = self._get_cloud_comment(comment)
+        comment_data = cloud_comment if isinstance(cloud_comment, dict) else getattr(cloud_comment, "data", None)
+        if not isinstance(comment_data, dict):
+            raise RuntimeError("Bitbucket comment author cannot be verified")
+        author = comment_data.get("user") or comment_data.get("author")
+        comment_account_id = author.get("account_id") if isinstance(author, dict) else None
+        if not isinstance(comment_account_id, str) or not comment_account_id.strip():
+            raise RuntimeError("Bitbucket comment author cannot be verified")
+
+        agent_account_id = getattr(self, "_agent_account_id", None)
+        if not isinstance(agent_account_id, str) or not agent_account_id.strip():
+            response = requests.request("GET", "https://api.bitbucket.org/2.0/user", headers=self.headers)
+            response.raise_for_status()
+            account_data = response.json()
+            agent_account_id = account_data.get("account_id") if isinstance(account_data, dict) else None
+            if not isinstance(agent_account_id, str) or not agent_account_id.strip():
+                raise RuntimeError("Bitbucket authenticated account cannot be verified")
+            self._agent_account_id = agent_account_id
+
+        return comment_account_id.casefold() == agent_account_id.casefold()
+
     def get_issue_comments(self):
         comments = []
 
