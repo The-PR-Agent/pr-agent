@@ -46,8 +46,8 @@ from pr_agent.algo.review_finding_state import (
 from pr_agent.algo.review_merge import merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
 from pr_agent.algo.run_output import (
+    async_push_outputs,
     github_action_output,
-    push_outputs,
     show_relevant_configurations,
     show_run_details,
 )
@@ -333,7 +333,7 @@ class PRReviewer:
             if not self.prediction:
                 return None
 
-            pr_review = self._prepare_pr_review()
+            pr_review = await self._prepare_pr_review()
             get_logger().debug("PR output", artifact=pr_review)
 
             if not pr_review:
@@ -1120,7 +1120,7 @@ class PRReviewer:
             raise FallbackEligibleError(f"{source} did not contain a non-empty review mapping")
         return data
 
-    def _prepare_pr_review(self) -> str:
+    async def _prepare_pr_review(self) -> str:
         """
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
         the feedback.
@@ -1249,7 +1249,7 @@ class PRReviewer:
         # publish_output gates it so a dry run makes no external calls. The "no major issues"
         # suppression deliberately does not: that only silences the PR comment.
         if get_settings().config.publish_output:
-            push_outputs("review", payload=data.get('review', {}), markdown=markdown_text)
+            await async_push_outputs("review", payload=data.get('review', {}), markdown=markdown_text)
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)

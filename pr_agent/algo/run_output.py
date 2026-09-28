@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -119,6 +120,11 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+
+
+async def async_push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
+    """Run synchronous sinks without blocking; cancellation cannot stop a sink already running in a worker."""
+    await asyncio.to_thread(push_outputs, message_type, payload, markdown)
 
 
 def _render_setting_value(value) -> str:

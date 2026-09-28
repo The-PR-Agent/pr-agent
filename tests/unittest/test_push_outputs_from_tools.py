@@ -5,7 +5,8 @@ automatic commands received one of the three results. The two questions worth pi
 whether each tool emits at all, and what it sends: a sink is not a git provider, so the GFM
 table `/improve` publishes to GitHub is not what should arrive in Slack.
 """
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -30,15 +31,66 @@ SUGGESTION = {
 # --------------------------------------------------------------------------------------
 def test_review_still_emits():
     """Control: the tool that already emitted keeps doing so."""
-    assert "push_outputs" in PRReviewer._prepare_pr_review.__code__.co_names
+    assert "async_push_outputs" in PRReviewer._prepare_pr_review.__code__.co_names
 
 
-def test_describe_emits_from_its_publish_path():
-    assert "push_outputs" in PRDescription.run.__code__.co_names
+@pytest.mark.asyncio
+async def test_describe_waits_for_one_sink_emission_before_labels_and_description(monkeypatch):
+    tool = PRDescription.__new__(PRDescription)
+    tool.pr_id = "1"
+    tool.git_provider = MagicMock()
+    tool.git_provider.is_supported.side_effect = lambda feature: feature == "get_labels"
+    tool.git_provider.get_pr_labels.return_value = []
+    tool.vars = {}
+    tool.prediction = "generated"
+    tool.data = {"title": "AI title", "description": "Description"}
+    tool._prepare_data = MagicMock()
+    tool._prepare_labels = MagicMock(return_value=["enhancement"])
+    tool._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", "Walkthrough"))
+    monkeypatch.setattr("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr("pr_agent.tools.pr_description.retry_with_fallback_models", AsyncMock())
+    for key, value in {
+        "publish_output": True, "is_auto_command": True,
+        "output_relevant_configurations": False, "output_run_details": False,
+    }.items():
+        monkeypatch.setattr(get_settings().config, key, value)
+    for key, value in {
+        "enable_semantic_files_types": False, "publish_labels": True,
+        "use_description_markers": False, "enable_help_text": False,
+        "enable_help_comment": False, "publish_description_as_comment": False,
+        "generate_ai_title": True, "final_update_message": False,
+    }.items():
+        monkeypatch.setattr(get_settings().pr_description, key, value)
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def emit(*args, **kwargs):
+        started.set()
+        await release.wait()
+
+    sink = AsyncMock(side_effect=emit)
+    monkeypatch.setattr("pr_agent.tools.pr_description.async_push_outputs", sink)
+    running = asyncio.create_task(tool.run())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert not running.done()
+        tool.git_provider.publish_labels.assert_not_called()
+        tool.git_provider.publish_description.assert_not_called()
+    finally:
+        release.set()
+        await asyncio.wait_for(running, timeout=1)
+
+    markdown = "Description\n\nWalkthrough___\n\n"
+    sink.assert_awaited_once_with("describe", payload=tool.data, markdown=markdown)
+    tool.git_provider.publish_labels.assert_called_once_with(["enhancement"])
+    tool.git_provider.publish_description.assert_called_once_with(
+        "AI title", "<!-- pr-agent-generated -->\n" + markdown,
+    )
 
 
 def test_improve_emits_from_its_publish_path():
-    assert "push_outputs" in PRCodeSuggestions.run.__code__.co_names
+    assert "async_push_outputs" in PRCodeSuggestions.run.__code__.co_names
 
 
 # --------------------------------------------------------------------------------------
@@ -126,10 +178,12 @@ def test_a_suggestion_without_a_file_is_still_rendered():
 @pytest.fixture
 def emitted(monkeypatch):
     calls = []
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.push_outputs",
-                        lambda *args, **kwargs: calls.append((args, kwargs)))
-    monkeypatch.setattr("pr_agent.tools.pr_description.push_outputs",
-                        lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    async def emit(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.async_push_outputs", emit)
+    monkeypatch.setattr("pr_agent.tools.pr_description.async_push_outputs", emit)
     monkeypatch.setattr(get_settings().config, "publish_output", True)
     return calls
 
@@ -161,22 +215,46 @@ def _awaitable(value):
     return _coro()
 
 
-async def test_improve_still_publishes_to_the_provider(emitted, monkeypatch):
-    """Control: emitting to a sink is additional, not instead of the pull request comment."""
+@pytest.mark.parametrize("suggestions", [[SUGGESTION], []], ids=["suggestions", "no-suggestions"])
+async def test_improve_waits_for_sink_before_provider_output(monkeypatch, suggestions):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
     tool.git_provider = MagicMock()
     tool.git_provider.get_files.return_value = ["src/foo.py"]
     tool.git_provider.is_supported.return_value = False
+    tool.git_provider.supports_code_suggestions_artifact.return_value = not bool(suggestions)
     tool.pr_url = "https://github.com/org/repo/pull/1"
     tool.progress_response = None
     tool._output_published = False
     tool.is_extended = False
+    monkeypatch.setattr(get_settings().config, "publish_output", True)
     monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
-                        MagicMock(return_value=_awaitable({"code_suggestions": [SUGGESTION]})))
+                        AsyncMock(return_value={"code_suggestions": suggestions}))
+    started = asyncio.Event()
+    release = asyncio.Event()
 
-    await tool.run()
+    async def emit(*args, **kwargs):
+        started.set()
+        await release.wait()
 
-    tool.git_provider.remove_initial_comment.assert_called_once()
+    sink = AsyncMock(side_effect=emit)
+    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.async_push_outputs", sink)
+    running = asyncio.create_task(tool.run())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert not running.done()
+        tool.git_provider.remove_initial_comment.assert_not_called()
+        tool.git_provider.publish_code_suggestions_artifact.assert_not_called()
+    finally:
+        release.set()
+        await asyncio.wait_for(running, timeout=2)
+
+    sink.assert_awaited_once()
+    assert sink.await_args.args == ("improve",)
+    assert sink.await_args.kwargs["payload"] == {"code_suggestions": suggestions}
+    if suggestions:
+        tool.git_provider.remove_initial_comment.assert_called_once()
+    else:
+        tool.git_provider.publish_code_suggestions_artifact.assert_called_once()
 
 
 @pytest.mark.asyncio

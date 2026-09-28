@@ -34,7 +34,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_command_failure, record_model_used
-from pr_agent.algo.run_output import push_outputs, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import async_push_outputs, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
@@ -352,7 +352,7 @@ class PRCodeSuggestions:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the suggestions if publishing them to the PR fails.
                 markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
-                push_outputs("improve", payload=data, markdown=markdown)
+                await async_push_outputs("improve", payload=data, markdown=markdown)
                 # If a temporary comment was published, remove it
                 self.git_provider.remove_initial_comment()
 
@@ -519,8 +519,8 @@ class PRCodeSuggestions:
         pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
         if get_settings().config.publish_output:
             markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
-            push_outputs("improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
-                         markdown=markdown)
+            await async_push_outputs("improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
+                                     markdown=markdown)
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")

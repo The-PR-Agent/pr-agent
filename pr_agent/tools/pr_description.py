@@ -22,7 +22,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_command_failure
-from pr_agent.algo.run_output import push_outputs, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import async_push_outputs, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
@@ -213,7 +213,7 @@ class PRDescription:
             if get_settings().config.publish_output:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the description if publishing it to the PR fails.
-                push_outputs("describe", payload=self.data or {}, markdown=pr_body)
+                await async_push_outputs("describe", payload=self.data or {}, markdown=pr_body)
 
                 # publish labels
                 if (

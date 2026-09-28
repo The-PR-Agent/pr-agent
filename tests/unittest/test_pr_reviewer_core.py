@@ -164,7 +164,7 @@ async def test_final_review_fit_rejects_untracked_diff_clipping():
     reviewer.ai_handler.chat_completion.assert_not_awaited()
 
 
-def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
+async def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
     reviewer.prediction = "review:\n  summary: test"
     reviewer.remaining_files_list = remaining_files
     reviewer.git_provider.get_diff_files.return_value = []
@@ -176,17 +176,18 @@ def _render_review(reviewer, remaining_files, supports_gfm_markdown=False):
         patch("pr_agent.tools.pr_reviewer.github_action_output"),
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
     ):
-        return reviewer._prepare_pr_review()
+        return await reviewer._prepare_pr_review()
 
 
-def test_prepare_pr_review_appends_complete_coverage_footer():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_appends_complete_coverage_footer():
     reviewer = _make_prediction_reviewer()
     settings = get_settings()
     original_enable_review_coverage_footer = settings.pr_reviewer.enable_review_coverage_footer
 
     try:
         settings.pr_reviewer.enable_review_coverage_footer = True
-        review = _render_review(reviewer, ["src/one.py", "nested/two.md"])
+        review = await _render_review(reviewer, ["src/one.py", "nested/two.md"])
     finally:
         settings.pr_reviewer.enable_review_coverage_footer = original_enable_review_coverage_footer
 
@@ -198,14 +199,15 @@ def test_prepare_pr_review_appends_complete_coverage_footer():
     assert "\n\n---\n\n" not in review
 
 
-def test_prepare_pr_review_hides_coverage_footer_when_disabled():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_hides_coverage_footer_when_disabled():
     reviewer = _make_prediction_reviewer()
     settings = get_settings()
     original_enable_review_coverage_footer = settings.pr_reviewer.enable_review_coverage_footer
 
     try:
         settings.pr_reviewer.enable_review_coverage_footer = False
-        review = _render_review(reviewer, ["skipped.py"])
+        review = await _render_review(reviewer, ["skipped.py"])
     finally:
         settings.pr_reviewer.enable_review_coverage_footer = original_enable_review_coverage_footer
 
@@ -213,7 +215,8 @@ def test_prepare_pr_review_hides_coverage_footer_when_disabled():
     assert "Review coverage" not in review
 
 
-def test_prepare_pr_review_places_coverage_footer_before_help_text():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_places_coverage_footer_before_help_text():
     reviewer = _make_prediction_reviewer()
     settings = get_settings()
     original_enable_review_coverage_footer = settings.pr_reviewer.enable_review_coverage_footer
@@ -223,7 +226,7 @@ def test_prepare_pr_review_places_coverage_footer_before_help_text():
         settings.pr_reviewer.enable_review_coverage_footer = True
         settings.pr_reviewer.enable_help_text = True
         with patch("pr_agent.tools.pr_reviewer.HelpMessage.get_review_usage_guide", return_value="help text"):
-            review = _render_review(reviewer, ["skipped.py"], supports_gfm_markdown=True)
+            review = await _render_review(reviewer, ["skipped.py"], supports_gfm_markdown=True)
     finally:
         settings.pr_reviewer.enable_review_coverage_footer = original_enable_review_coverage_footer
         settings.pr_reviewer.enable_help_text = original_enable_help_text
@@ -231,16 +234,18 @@ def test_prepare_pr_review_places_coverage_footer_before_help_text():
     assert review.index("⚠️ **Review coverage:**") < review.index("help text")
 
 
-def test_prepare_pr_review_leaves_original_content_unchanged_without_remaining_files():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_leaves_original_content_unchanged_without_remaining_files():
     reviewer = _make_prediction_reviewer()
 
-    review = _render_review(reviewer, [])
+    review = await _render_review(reviewer, [])
 
     assert review == "original review"
     assert "Review coverage" not in review
 
 
-def test_prepare_pr_review_warns_on_invalid_model_output_without_changing_markdown():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_warns_on_invalid_model_output_without_changing_markdown():
     reviewer = _make_prediction_reviewer()
     reviewer.prediction = "review:\n  key_issues_to_review: wrong"
     reviewer.git_provider.get_diff_files.return_value = []
@@ -253,7 +258,7 @@ def test_prepare_pr_review_warns_on_invalid_model_output_without_changing_markdo
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
         patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
     ):
-        review = reviewer._prepare_pr_review()
+        review = await reviewer._prepare_pr_review()
 
     assert review == "original review"
     get_logger.return_value.warning.assert_called_once()
@@ -261,7 +266,8 @@ def test_prepare_pr_review_warns_on_invalid_model_output_without_changing_markdo
     assert warning["artifact"] == {"field": "review.key_issues_to_review", "value": "wrong"}
 
 
-def test_prepare_pr_review_does_not_warn_for_valid_model_output():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_does_not_warn_for_valid_model_output():
     reviewer = _make_prediction_reviewer()
     reviewer.prediction = "review:\n  key_issues_to_review: []"
     reviewer.git_provider.get_diff_files.return_value = []
@@ -274,7 +280,7 @@ def test_prepare_pr_review_does_not_warn_for_valid_model_output():
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
         patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
     ):
-        review = reviewer._prepare_pr_review()
+        review = await reviewer._prepare_pr_review()
 
     assert review == "original review"
     get_logger.return_value.warning.assert_not_called()
@@ -305,11 +311,12 @@ def test_review_schema_reports_none_for_missing_fields():
     assert warning["artifact"]["value"] is None
 
 
-def test_prepare_pr_review_limits_coverage_footer_to_50_files():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_limits_coverage_footer_to_50_files():
     reviewer = _make_prediction_reviewer()
     remaining_files = [f"file_{index}.py" for index in range(51)]
 
-    review = _render_review(reviewer, remaining_files)
+    review = await _render_review(reviewer, remaining_files)
 
     assert review.count("- `file_") == 50
     assert "- `file_0.py`" in review
@@ -317,11 +324,12 @@ def test_prepare_pr_review_limits_coverage_footer_to_50_files():
     assert "- `file_50.py`" not in review
 
 
-def test_prepare_pr_review_reports_number_of_files_beyond_coverage_limit():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_reports_number_of_files_beyond_coverage_limit():
     reviewer = _make_prediction_reviewer()
     remaining_files = [f"file_{index}.py" for index in range(53)]
 
-    review = _render_review(reviewer, remaining_files)
+    review = await _render_review(reviewer, remaining_files)
 
     assert "... and 3 more" in review
     assert "- `file_50.py`" not in review
@@ -403,16 +411,18 @@ def test_github_key_issue_is_published_inline_and_removed_from_summary():
     assert "key_issues_to_review" not in result["review"]
 
 
-def test_prepare_pr_review_does_not_publish_key_issues_inline_by_default():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_does_not_publish_key_issues_inline_by_default():
     reviewer = _make_prediction_reviewer()
 
-    review = _render_review(reviewer, [])
+    review = await _render_review(reviewer, [])
 
     assert review == "original review"
     reviewer.git_provider.publish_code_suggestions.assert_not_called()
 
 
-def test_prepare_pr_review_publishes_key_issues_inline_when_enabled():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_publishes_key_issues_inline_when_enabled():
     reviewer = _make_prediction_reviewer()
     settings = get_settings()
     original_inline_key_issues = settings.pr_reviewer.get("inline_key_issues", False)
@@ -420,7 +430,7 @@ def test_prepare_pr_review_publishes_key_issues_inline_when_enabled():
 
     try:
         settings.pr_reviewer.inline_key_issues = True
-        _render_review(reviewer, [])
+        await _render_review(reviewer, [])
     finally:
         settings.pr_reviewer.inline_key_issues = original_inline_key_issues
 
@@ -714,7 +724,7 @@ async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_rev
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.vars = {}
     reviewer.prediction = None
-    reviewer._prepare_pr_review = lambda: "No major issues detected"
+    reviewer._prepare_pr_review = AsyncMock(return_value="No major issues detected")
 
     async def fake_retry(prepare_fn, model_type=None, git_provider=None):
         reviewer.prediction = "prediction"
@@ -891,7 +901,7 @@ async def test_run_does_not_publish_an_empty_review(
     action_output = MagicMock()
     push_output = MagicMock()
     monkeypatch.setattr(pr_reviewer_module, "github_action_output", action_output)
-    monkeypatch.setattr(pr_reviewer_module, "push_outputs", push_output)
+    monkeypatch.setattr(pr_reviewer_module, "async_push_outputs", AsyncMock())
 
     settings = get_settings()
     original = {
@@ -1157,7 +1167,8 @@ async def test_run_failure_result_publication_does_not_mask_review_error(
     git_provider.remove_comment.assert_called_once_with(progress_comment)
 
 
-def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
+@pytest.mark.asyncio
+async def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
     git_provider = MagicMock()
     git_provider.is_supported.return_value = False
     git_provider.get_diff_files.return_value = []
@@ -1178,7 +1189,7 @@ def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
     init_run_details()
     add_token_usage({"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42})
 
-    reviewer._prepare_pr_review()
+    await reviewer._prepare_pr_review()
 
     git_provider.publish_structured_review.assert_called_once_with({
         "review": {
@@ -1387,7 +1398,7 @@ async def test_run_threads_only_the_final_review_comment(monkeypatch, persistent
     reviewer.vars = {}
     reviewer.prediction = None
     review_text = "## PR Reviewer Guide 🔍\n\nsome findings"
-    reviewer._prepare_pr_review = lambda: review_text
+    reviewer._prepare_pr_review = AsyncMock(return_value=review_text)
 
     async def fake_extract_tickets(git_provider, vars):
         return None
@@ -1462,7 +1473,7 @@ async def test_nonpersistent_review_adds_identity_for_incremental_capable_provid
         reviewer._can_run_incremental_review = lambda: True
     reviewer.vars = {}
     reviewer.prediction = None
-    reviewer._prepare_pr_review = lambda: "## Team Review 🔍\n\nsome findings"
+    reviewer._prepare_pr_review = AsyncMock(return_value="## Team Review 🔍\n\nsome findings")
 
     async def fake_extract_tickets(git_provider, vars):
         return None
@@ -1619,7 +1630,7 @@ def test_answer_mode_prefers_the_newest_question_and_answer(monkeypatch):
     assert reviewer.vars["answer_str"] == "/answer Current answer."
 
 
-def _render_review_capturing_push(reviewer, publish_output):
+async def _render_review_capturing_push(reviewer, publish_output):
     reviewer.prediction = "review: {}"
     reviewer.remaining_files_list = []
     reviewer.git_provider.get_diff_files.return_value = []
@@ -1634,24 +1645,56 @@ def _render_review_capturing_push(reviewer, publish_output):
             patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
             patch("pr_agent.tools.pr_reviewer.github_action_output"),
             patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
-            patch("pr_agent.tools.pr_reviewer.push_outputs") as push,
+            patch("pr_agent.tools.pr_reviewer.async_push_outputs", new_callable=AsyncMock) as push,
         ):
-            reviewer._prepare_pr_review()
+            await reviewer._prepare_pr_review()
         return push
     finally:
         settings.config.publish_output = original_publish_output
 
 
-def test_prepare_pr_review_does_not_push_outputs_on_a_dry_run():
+@pytest.mark.asyncio
+async def test_prepare_pr_review_does_not_push_outputs_on_a_dry_run():
     # publish_output=false is used by the CLI and by mosaico's dispatch to render a review
     # without touching the PR; it must not reach an external sink either.
-    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=False)
-    push.assert_not_called()
+    push = await _render_review_capturing_push(_make_prediction_reviewer(), publish_output=False)
+    push.assert_not_awaited()
 
 
-def test_prepare_pr_review_pushes_outputs_when_publishing():
-    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=True)
-    push.assert_called_once()
+@pytest.mark.asyncio
+async def test_prepare_pr_review_pushes_outputs_when_publishing():
+    push = await _render_review_capturing_push(_make_prediction_reviewer(), publish_output=True)
+    push.assert_awaited_once()
     assert push.call_args.args[0] == "review"
     assert push.call_args.kwargs["payload"] == {"score": "1"}
     assert push.call_args.kwargs["markdown"] == "original review"
+
+
+@pytest.mark.asyncio
+async def test_prepare_pr_review_waits_for_sink_before_applying_labels():
+    reviewer = _make_prediction_reviewer()
+    reviewer.prediction = "review: {}"
+    reviewer.remaining_files_list = []
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    labels = MagicMock()
+    reviewer.set_review_labels = labels
+
+    async def emit(*_args, **_kwargs):
+        labels.assert_not_called()
+
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    try:
+        settings.config.publish_output = True
+        with (
+            patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
+            patch("pr_agent.tools.pr_reviewer.github_action_output"),
+            patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
+            patch("pr_agent.tools.pr_reviewer.async_push_outputs", side_effect=emit) as push,
+        ):
+            await reviewer._prepare_pr_review()
+        push.assert_awaited_once()
+        labels.assert_called_once()
+    finally:
+        settings.config.publish_output = original_publish_output

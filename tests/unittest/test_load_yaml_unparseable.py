@@ -27,14 +27,15 @@ def test_get_does_not_raise():
     assert load_yaml(UNPARSEABLE).get("pr_files", []) == []
 
 
-def test_reviewer_reports_the_parse_failure_instead_of_crashing():
+@pytest.mark.asyncio
+async def test_reviewer_reports_the_parse_failure_instead_of_crashing():
     """Reach pr_reviewer's own 'Failed to parse review data' path."""
     from pr_agent.tools.pr_reviewer import PRReviewer
 
     reviewer = PRReviewer.__new__(PRReviewer)
     reviewer.prediction = UNPARSEABLE
 
-    assert reviewer._prepare_pr_review() == ""
+    assert await reviewer._prepare_pr_review() == ""
 
 
 def test_code_suggestions_returns_an_empty_list_instead_of_crashing():

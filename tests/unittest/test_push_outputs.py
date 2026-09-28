@@ -1,10 +1,13 @@
+import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
+from starlette_context import request_cycle_context
 
 from pr_agent.algo import run_output
-from pr_agent.algo.run_output import push_outputs
+from pr_agent.algo.run_output import async_push_outputs, push_outputs
 from pr_agent.config_loader import get_settings
 
 
@@ -22,6 +25,83 @@ def _reset_push_outputs():
 
 
 class TestPushOutputs:
+    @pytest.mark.asyncio
+    async def test_async_adapter_keeps_the_event_loop_responsive_and_waits_for_delivery(self, monkeypatch):
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        release = threading.Event()
+        delivered = []
+
+        def blocking_push(message_type, payload, markdown):
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(timeout=5)
+            delivered.append((message_type, payload, markdown))
+
+        monkeypatch.setattr(run_output, "push_outputs", blocking_push)
+        delivery = asyncio.create_task(async_push_outputs("review", {"score": 1}, "review markdown"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            assert not delivery.done()
+            assert not delivered
+        finally:
+            release.set()
+            await asyncio.wait_for(delivery, timeout=2)
+        assert delivered == [("review", {"score": 1}, "review markdown")]
+
+    @pytest.mark.asyncio
+    async def test_cancelling_async_adapter_does_not_cancel_a_started_sink_thread(self, monkeypatch):
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        finished = asyncio.Event()
+        release = threading.Event()
+        delivered = []
+
+        def blocking_push(*_args):
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(timeout=5)
+            delivered.append("completed")
+            loop.call_soon_threadsafe(finished.set)
+
+        monkeypatch.setattr(run_output, "push_outputs", blocking_push)
+        delivery = asyncio.create_task(async_push_outputs("review", {"score": 1}, "review markdown"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            delivery.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await delivery
+            assert not delivered
+        finally:
+            release.set()
+            await asyncio.wait_for(finished.wait(), timeout=2)
+            if not delivery.done():
+                await asyncio.wait_for(delivery, timeout=2)
+        assert delivered == ["completed"]
+
+    @pytest.mark.asyncio
+    async def test_async_adapter_uses_request_settings_and_preserves_channel_order(self, monkeypatch):
+        get_settings().set("PUSH_OUTPUTS.ENABLE", False)
+        settings = {"push_outputs": {
+            "enable": True, "channels": ["slack", "webhook"],
+            "webhook_url": "https://example.test/hook", "slack_webhook_url": "https://example.test/slack",
+        }}
+        payload = {"score": 1}
+        calls = []
+        loop_thread = threading.get_ident()
+
+        def post(url, **kwargs):
+            calls.append((url, kwargs, get_settings(), threading.get_ident()))
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr(run_output.requests, "post", post)
+        with request_cycle_context({"settings": settings}):
+            await async_push_outputs("review", payload, "review markdown")
+
+        assert [call[0] for call in calls] == ["https://example.test/hook", "https://example.test/slack"]
+        assert all(call[2] is settings and call[3] != loop_thread for call in calls)
+        assert all(call[1]["timeout"] == 5 and call[1]["allow_redirects"] is False for call in calls)
+        assert calls[0][1]["json"]["payload"] is payload
+        assert calls[1][1]["json"] == {"text": "review markdown"}
+
     def test_disabled_by_default_is_noop(self, monkeypatch, tmp_path):
         get_settings().set('PUSH_OUTPUTS.ENABLE', False)
         get_settings().set('PUSH_OUTPUTS.CHANNELS', ['file'])

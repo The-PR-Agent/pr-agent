@@ -111,7 +111,7 @@ async def test_malformed_primary_then_valid_fallback_publishes_review_without_fa
     git_provider.supports_review_comment_identity.return_value = False
     reviewer = _make_reviewer(git_provider)
     reviewer._get_prediction = AsyncMock(side_effect=["not yaml", _VALID_REVIEW])
-    reviewer._prepare_pr_review = MagicMock(return_value="rendered fallback review")
+    reviewer._prepare_pr_review = AsyncMock(return_value="rendered fallback review")
 
     settings = get_settings()
     settings.set("config.publish_output", True)
