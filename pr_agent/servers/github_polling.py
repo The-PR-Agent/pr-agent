@@ -337,6 +337,17 @@ def _merge_comment_tail(previous_comments: list, last_comments: list) -> list | 
     return (previous_comments + last_comments)[-POLLING_COMMENT_SCAN_LIMIT:]
 
 
+def _is_adjacent_previous_page(last_page: int, comments: list, pages: dict[str, int]) -> bool:
+    """Return whether a predecessor snapshot still leads to the fetched terminal page."""
+    if "next" in pages and "last" in pages and pages["last"] < pages["next"]:
+        raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+    return (
+        bool(comments)
+        and pages.get("next") == last_page
+        and ("last" not in pages or pages["last"] == last_page)
+    )
+
+
 async def _fetch_comment_history_scan(session, url, headers, deadline: float,
                                       resource: tuple) -> list | None:
     """Fetch one validated tail snapshot, returning None when concurrent changes require a retry."""
@@ -388,9 +399,8 @@ async def _fetch_comment_history_scan(session, url, headers, deadline: float,
         )
         previous_pages = _validated_pagination_pages(previous_link_headers, resource)
         _remaining_polling_timeout(deadline)
-        if (("next" in previous_pages and previous_pages["next"] != last_page)
-                or ("last" in previous_pages and previous_pages["last"] != last_page)):
-            raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+        if not _is_adjacent_previous_page(last_page, previous_comments, previous_pages):
+            return None
     return _merge_comment_tail(previous_comments, last_comments)
 
 
