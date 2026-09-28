@@ -16,6 +16,7 @@ from pr_agent.algo.comment_identity import (
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 
@@ -486,6 +487,56 @@ index 1111111..2222222 100644
         assert [diff_file.filename for diff_file in diff_files] == ["src/first.py", "src/second.py"]
         assert diff_files[0].patch.startswith("@@ -1 +1 @@\r\n-old first")
         assert diff_files[1].patch.startswith("@@ -1 +1 @@\r\n-old second")
+
+    @staticmethod
+    def _aggregate_diff_provider(patch_paths):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.diff_files = None
+        provider.pr = MagicMock()
+        provider._get_pr_file_content = MagicMock()
+        diffstats = []
+        for filename in ["src/first.py", "src/second.py"]:
+            diffstat = MagicMock()
+            diffstat.new.path = diffstat.old.path = filename
+            diffstat.data = {"status": "modified", "lines_added": 1, "lines_removed": 1}
+            diffstats.append(diffstat)
+        provider.pr.diffstat.return_value = diffstats
+        provider.pr.diff.return_value = "".join(
+            f"diff --git a/{filename} b/{filename}\n"
+            f"--- a/{filename}\n+++ b/{filename}\n@@ -1 +1 @@\n-old\n+new\n"
+            for filename in patch_paths
+        )
+        return provider, diffstats
+
+    @pytest.mark.parametrize("patch_paths", [[], ["src/first.py"],
+                                             ["src/first.py", "src/second.py", "src/third.py"]])
+    def test_get_diff_files_rejects_inconsistent_aggregate_without_recovery_or_cache(self, patch_paths):
+        provider, diffstats = self._aggregate_diff_provider(patch_paths)
+        with patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats):
+            with pytest.raises(IncompleteBitbucketPullRequestFilesError, match="changed-file inventory"):
+                provider.get_diff_files()
+
+        provider.pr.diff.assert_called_once_with()
+        provider.pr.diffstat.assert_called_once_with()
+        provider._get_pr_file_content.assert_not_called()
+        assert provider.diff_files is None
+
+    def test_get_diff_files_aligns_ignored_files_before_completeness_check(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        settings = MagicMock()
+        settings.get.return_value = True
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=[diffstats[1]]),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
+        ):
+            result = provider.get_diff_files()
+
+        assert len(result) == 1
+        assert result[0].filename == "src/second.py"
+        assert result[0].patch == "@@ -1 +1 @@\n-old\n+new\n"
+        assert provider.diff_files is result
+        provider.pr.diff.assert_called_once_with()
+        provider._get_pr_file_content.assert_not_called()
 
     def test_get_repo_file_content_reads_from_target_branch(self):
         # Repo-context files must be read from the PR destination (target) branch,

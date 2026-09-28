@@ -76,6 +76,10 @@ class IncompletePullRequestFilesError(RuntimeError):
     """Represent an incomplete or inconsistent pull-request file set."""
 
 
+class IncompleteBitbucketPullRequestFilesError(IncompletePullRequestFilesError):
+    """Represent Bitbucket aggregate patches that cannot align with its changed-file inventory."""
+
+
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
 

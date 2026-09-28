@@ -316,6 +316,48 @@ async def test_incomplete_github_files_constructor_error_publishes_sanitized_not
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["published", "disabled", "provider_failure", "publication_failure"])
+async def test_incomplete_bitbucket_constructor_error_keeps_provider_specific_failure(monkeypatch, outcome):
+    secret = "private/repository patch mismatch with secret request details"
+    provider = _incomplete_files_provider()
+    provider_factory = Mock(return_value=provider)
+    if outcome == "provider_failure":
+        provider_factory.side_effect = RuntimeError("secondary provider failure")
+    elif outcome == "publication_failure":
+        provider.publish_comment.side_effect = RuntimeError("secondary publication failure")
+
+    class IncompleteTool:
+        def __init__(self, pr_url, ai_handler, args):
+            raise pr_agent_module.IncompleteBitbucketPullRequestFilesError(secret)
+
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setattr(get_settings().config, "publish_output", outcome != "disabled", raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", provider_factory)
+    monkeypatch.setitem(pr_agent_module.command2class, "describe", IncompleteTool)
+
+    handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/describe")
+
+    assert handled is False
+    provider.get_issue_comments_newest_first.assert_not_called()
+    provider.is_comment_authored_by_pr_agent.assert_not_called()
+    if outcome == "disabled":
+        provider_factory.assert_not_called()
+    else:
+        provider_factory.assert_called_once_with("https://example/pr/1")
+    if outcome in {"disabled", "provider_failure"}:
+        provider.publish_comment.assert_not_called()
+    else:
+        provider.publish_comment.assert_called_once()
+        published = provider.publish_comment.call_args.args[0]
+        assert published == pr_agent_module.INCOMPLETE_BITBUCKET_FILES_COMMENT
+        assert "Bitbucket returned an incomplete or inconsistent pull-request diff" in published
+        assert "command was not run" in published
+        assert "GitHub" not in published
+        assert "3,000" not in published
+        assert secret not in published
+
+
+@pytest.mark.asyncio
 async def test_unexpected_constructor_error_does_not_publish_incomplete_files_notice(monkeypatch):
     provider_factory = Mock()
 

@@ -17,7 +17,12 @@ from ..algo.utils import find_line_number_of_relevant_line_in_file
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .diff_parsing import to_hunk_only_patch
-from .git_provider import MAX_FILES_ALLOWED_FULL, GitProvider, redact_credentials
+from .git_provider import (
+    MAX_FILES_ALLOWED_FULL,
+    GitProvider,
+    IncompleteBitbucketPullRequestFilesError,
+    redact_credentials,
+)
 
 
 def _gef_filename(diff):
@@ -309,7 +314,9 @@ class BitbucketProvider(GitProvider):
             diff_split = [diff_split[i] for i in range(len(diff_split)) if diffs_original[i] in diffs]
         if len(diff_split) != len(diffs):
             get_logger().error(f"Error - failed to split the diff into {len(diffs)} parts")
-            return []
+            raise IncompleteBitbucketPullRequestFilesError(
+                "Bitbucket aggregate diff does not match its changed-file inventory"
+            )
         # Bitbucket headers vary by change type and may include mode or rename
         # metadata. Keep only the unified-diff hunks consumed downstream.
         for i, patch in enumerate(diff_split):
