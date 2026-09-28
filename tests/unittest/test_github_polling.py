@@ -284,6 +284,68 @@ async def test_polling_loop_reaps_workers_on_idle_and_failed_polls(workers, monk
 
 
 @pytest.mark.asyncio
+async def test_polling_loop_keeps_drifted_notification_unread_for_unconditional_retry(monkeypatch):
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling,
+        "get_git_provider",
+        lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot"),
+    )
+    mark_read = AsyncMock()
+    monkeypatch.setattr(github_polling, "mark_notification_as_read", mark_read)
+    monkeypatch.setattr(
+        github_polling,
+        "is_valid_notification",
+        AsyncMock(side_effect=[
+            (False, set(), github_polling._RETRY_POLLING_NOTIFICATION),
+            (False, set()),
+        ]),
+    )
+    notification = {"id": 1}
+    requests = []
+    finished = asyncio.Event()
+
+    class Session:
+        status = 200
+        headers = {"Last-Modified": "retry-test"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, *args, **kwargs):
+            requests.append(kwargs)
+            return self
+
+        async def json(self):
+            return [notification]
+
+    async def sleep(_delay):
+        if len(requests) >= 2:
+            finished.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(sleep=sleep))
+    task = asyncio.create_task(github_polling.polling_loop())
+    try:
+        await asyncio.wait_for(finished.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    mark_read.assert_awaited_once()
+    assert mark_read.await_args.args[1] == notification
+    assert len(requests) == 2
+    assert "If-Modified-Since" not in requests[1]["headers"]
+
+
+@pytest.mark.asyncio
 async def test_reap_real_spawned_worker(monkeypatch):
     ctx = multiprocessing.get_context("spawn")
     monkeypatch.setattr(github_polling, "multiprocessing", SimpleNamespace(Process=ctx.Process))

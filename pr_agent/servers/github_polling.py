@@ -38,6 +38,13 @@ class _InvalidPaginationMetadata(ValueError):
     """Reject untrusted pagination metadata without retaining its contents."""
 
 
+class _CommentPaginationDrift(_InvalidPaginationMetadata):
+    """Keep a notification retryable when bounded scans cannot obtain one stable tail."""
+
+
+_RETRY_POLLING_NOTIFICATION = object()
+
+
 def _get_polling_request_timeout() -> float:
     """Bound the timeout for notification fallback requests."""
     value = global_settings.get("github.polling_request_timeout", DEFAULT_POLLING_REQUEST_TIMEOUT)
@@ -263,94 +270,139 @@ async def _fetch_comment_page(session, url, headers, deadline: float, *, page: i
     return comments, link_headers
 
 
-async def _fetch_comment_history_scan(session, url, headers, deadline: float, resource: tuple,
-                                      *, retry_on_contraction: bool) -> list:
-    """Fetch one validated tail, restarting once if its declared last page disappeared."""
+def _validated_pagination_pages(link_headers: list[str], resource: tuple) -> dict[str, int]:
+    """Parse and validate page relationships without performing a request."""
     initial_parts, initial_origin, issue_number, api_prefix = resource
-    comments, link_headers = await _fetch_comment_page(
-        session, url, headers, deadline, page=None, allow_redirects=True
+    relationships = _parse_link_headers(link_headers) if link_headers else {}
+    return _pagination_pages(
+        relationships, initial_parts, initial_origin, issue_number, api_prefix
     )
-    if not link_headers:
-        return comments[-POLLING_COMMENT_SCAN_LIMIT:]
 
-    relationships = _parse_link_headers(link_headers)
-    pages = _pagination_pages(relationships, initial_parts, initial_origin, issue_number, api_prefix)
-    _remaining_polling_timeout(deadline)
+
+def _select_initial_comment_tail(comments: list, pages: dict[str, int]) -> tuple[list | None, int | None]:
+    """Return an unpaginated tail or the validated page number to fetch."""
     if "next" not in pages:
         if "prev" in pages or ("last" in pages and pages["last"] != 1):
             raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
-        return comments[-POLLING_COMMENT_SCAN_LIMIT:]
+        return comments[-POLLING_COMMENT_SCAN_LIMIT:], None
     if "last" not in pages or pages["next"] != 2 or pages["last"] < pages["next"] or "prev" in pages:
         raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+    return None, pages["last"]
 
-    last_page = pages["last"]
+
+def _select_next_last_page(last_page: int, comments: list,
+                           pages: dict[str, int]) -> tuple[bool, int | None]:
+    """Classify a fetched last page as disappeared, advanced, or terminal."""
+    page_disappeared = (
+        not comments
+        and "prev" not in pages
+        and "next" not in pages
+        and ("last" not in pages or pages["last"] < last_page)
+    )
+    if page_disappeared:
+        return True, None
+    if "next" in pages:
+        if ("last" not in pages or pages["next"] != last_page + 1
+                or pages["last"] < pages["next"]):
+            raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+        return False, pages["last"]
+    if "last" in pages and pages["last"] != last_page:
+        raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+    return False, None
+
+
+def _select_previous_tail_page(last_page: int, comments: list,
+                               pages: dict[str, int]) -> int | None:
+    """Return the previous page needed to complete a short terminal tail."""
+    if len(comments) >= POLLING_COMMENT_SCAN_LIMIT:
+        return None
+    previous_page = last_page - 1
+    if previous_page < 1 or pages.get("prev") != previous_page:
+        raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+    return previous_page
+
+
+def _merge_comment_tail(previous_comments: list, last_comments: list) -> list | None:
+    """Merge adjacent snapshots, returning None when their comment IDs overlap."""
+    previous_ids = {
+        comment.get("id") for comment in previous_comments
+        if isinstance(comment, dict) and comment.get("id") is not None
+    }
+    last_ids = {
+        comment.get("id") for comment in last_comments
+        if isinstance(comment, dict) and comment.get("id") is not None
+    }
+    if previous_ids & last_ids:
+        return None
+    return (previous_comments + last_comments)[-POLLING_COMMENT_SCAN_LIMIT:]
+
+
+async def _fetch_comment_history_scan(session, url, headers, deadline: float,
+                                      resource: tuple) -> list | None:
+    """Fetch one validated tail snapshot, returning None when concurrent changes require a retry."""
+    comments, link_headers = await _fetch_comment_page(
+        session, url, headers, deadline, page=None, allow_redirects=True
+    )
+    pages = _validated_pagination_pages(link_headers, resource)
+    _remaining_polling_timeout(deadline)
+    tail, last_page = _select_initial_comment_tail(comments, pages)
+    if tail is not None:
+        return tail
+
     last_comments, last_link_headers = await _fetch_comment_page(
         session, url, headers, deadline, page=last_page, allow_redirects=False
     )
-    last_relationships = _parse_link_headers(last_link_headers) if last_link_headers else {}
-    last_pages = _pagination_pages(
-        last_relationships, initial_parts, initial_origin, issue_number, api_prefix
-    )
+    last_pages = _validated_pagination_pages(last_link_headers, resource)
     _remaining_polling_timeout(deadline)
-    page_disappeared = (
-        not last_comments
-        and "prev" not in last_pages
-        and "next" not in last_pages
-        and ("last" not in last_pages or last_pages["last"] < last_page)
+    page_disappeared, next_last_page = _select_next_last_page(
+        last_page, last_comments, last_pages
     )
     if page_disappeared:
-        if retry_on_contraction:
-            return await _fetch_comment_history_scan(
-                session, url, headers, deadline, resource, retry_on_contraction=False
-            )
-        raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+        return None
     previous_page = None
     previous_comments = None
-    if "next" in last_pages:
-        if ("last" not in last_pages or last_pages["next"] != last_page + 1
-                or last_pages["last"] < last_pages["next"]):
-            raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+    if next_last_page is not None:
         previous_page = last_page
         previous_comments = last_comments
-        last_page = last_pages["last"]
+        last_page = next_last_page
         last_comments, last_link_headers = await _fetch_comment_page(
             session, url, headers, deadline, page=last_page, allow_redirects=False
         )
-        last_relationships = _parse_link_headers(last_link_headers) if last_link_headers else {}
-        last_pages = _pagination_pages(
-            last_relationships, initial_parts, initial_origin, issue_number, api_prefix
-        )
+        last_pages = _validated_pagination_pages(last_link_headers, resource)
         _remaining_polling_timeout(deadline)
-    if "next" in last_pages or ("last" in last_pages and last_pages["last"] != last_page):
-        raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
-    if len(last_comments) >= POLLING_COMMENT_SCAN_LIMIT:
+        page_disappeared, next_last_page = _select_next_last_page(
+            last_page, last_comments, last_pages
+        )
+        if page_disappeared:
+            return None
+        if next_last_page is not None:
+            raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+
+    expected_previous = _select_previous_tail_page(last_page, last_comments, last_pages)
+    if expected_previous is None:
         return last_comments[-POLLING_COMMENT_SCAN_LIMIT:]
 
-    expected_previous = last_page - 1
-    if expected_previous < 1 or last_pages.get("prev") != expected_previous:
-        raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
     if previous_page != expected_previous:
         previous_comments, previous_link_headers = await _fetch_comment_page(
             session, url, headers, deadline, page=expected_previous, allow_redirects=False
         )
-        previous_relationships = _parse_link_headers(previous_link_headers) if previous_link_headers else {}
-        previous_pages = _pagination_pages(
-            previous_relationships, initial_parts, initial_origin, issue_number, api_prefix
-        )
+        previous_pages = _validated_pagination_pages(previous_link_headers, resource)
         _remaining_polling_timeout(deadline)
         if (("next" in previous_pages and previous_pages["next"] != last_page)
                 or ("last" in previous_pages and previous_pages["last"] != last_page)):
             raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
-    return (previous_comments + last_comments)[-POLLING_COMMENT_SCAN_LIMIT:]
+    return _merge_comment_tail(previous_comments, last_comments)
 
 
 async def _fetch_comment_history(session, url, headers) -> list:
     """Fetch the newest bounded fallback tail without trusting Link targets."""
     resource = _comment_resource(url)
     deadline = asyncio.get_running_loop().time() + _get_polling_request_timeout()
-    return await _fetch_comment_history_scan(
-        session, url, headers, deadline, resource, retry_on_contraction=True
-    )
+    for _ in range(2):
+        comments = await _fetch_comment_history_scan(session, url, headers, deadline, resource)
+        if comments is not None:
+            return comments
+    raise _CommentPaginationDrift("Comment pagination changed during the bounded scan")
 
 
 async def mark_notification_as_read(headers, notification, session):
@@ -500,6 +552,14 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                             requests_url = f"{pr_url}/comments".replace("pulls", "issues")
                             try:
                                 comments = (await _fetch_comment_history(session, requests_url, headers))[::-1]
+                            except _CommentPaginationDrift:
+                                if 'id' in comment:
+                                    handled_ids.discard(comment['id'])
+                                get_logger().warning(
+                                    f"Deferring polling notification after concurrent comment changes for PR: "
+                                    f"{pr_url}"
+                                )
+                                return False, handled_ids, _RETRY_POLLING_NOTIFICATION
                             except _InvalidPaginationMetadata:
                                 get_logger().warning(
                                     f"Ignoring invalid comment pagination metadata for PR: {pr_url}"
@@ -635,11 +695,19 @@ async def polling_loop():
                         for notification in notifications:
                             if not notification:
                                 continue
-                            # mark notification as read
-                            await mark_notification_as_read(headers, notification, session)
-
-                            handled_ids.add(notification['id'])
                             output = await is_valid_notification(notification, headers, handled_ids, session, user_id)
+                            if (
+                                len(output) > 2
+                                and output[0] is False
+                                and output[2] is _RETRY_POLLING_NOTIFICATION
+                            ):
+                                # Force an unconditional notification fetch next iteration. The
+                                # unread notification itself may not update GitHub's Last-Modified.
+                                last_modified[0] = None
+                                continue
+
+                            await mark_notification_as_read(headers, notification, session)
+                            handled_ids.add(notification['id'])
                             if output[0]:
                                 _, handled_ids, comment, comment_body, pr_url, user_tag = output
                                 rest_of_comment = comment_body.split(user_tag)[1].strip()
