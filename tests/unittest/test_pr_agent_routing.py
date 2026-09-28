@@ -364,6 +364,32 @@ async def test_incomplete_bitbucket_constructor_error_keeps_provider_specific_fa
         assert secret not in published
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["add_docs", "generate_labels"])
+async def test_incomplete_bitbucket_tool_error_returns_failure_and_publishes_notice(monkeypatch, action):
+    provider = _incomplete_files_provider()
+    provider.supports_html_comment_markers.return_value = False
+
+    class IncompleteTool:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self):
+            raise pr_agent_module.IncompleteBitbucketPullRequestFilesError("internal diff details")
+
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+    monkeypatch.setitem(pr_agent_module.command2class, action, IncompleteTool)
+
+    handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", f"/{action}")
+
+    assert handled is False
+    provider.publish_comment.assert_called_once()
+    published = provider.publish_comment.call_args.args[0]
+    assert "Bitbucket returned an incomplete or inconsistent pull-request diff" in published
+
+
 def test_incomplete_bitbucket_files_notice_deduplicates_trusted_agent_comment(monkeypatch):
     marker = pr_agent_module.INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER
     existing = {"body": f"## Existing notice\n\n{marker}\n\nDetails"}

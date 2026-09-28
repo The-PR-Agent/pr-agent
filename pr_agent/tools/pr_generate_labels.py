@@ -19,7 +19,7 @@ from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
-from pr_agent.git_providers.git_provider import get_main_pr_language
+from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
 
 
@@ -106,7 +106,10 @@ class PRGenerateLabels:
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")
             record_command_failure()
-            if get_settings().config.get("propagate_tool_errors", False):
+            if (
+                isinstance(e, IncompleteBitbucketPullRequestFilesError)
+                or get_settings().config.get("propagate_tool_errors", False)
+            ):
                 raise
         finally:
             if progress_comment is not None:
