@@ -126,8 +126,8 @@ def test_create_inline_comment_returns_line_payload(monkeypatch):
     assert payload == {"body": "LGTM", "path": "src/foo.py", "position": 5}
 
 
-def test_create_inline_comment_returns_empty_when_position_unresolved(monkeypatch):
-    """If no position can be resolved (position == -1) current behavior returns {}."""
+def test_create_inline_comment_returns_file_payload_when_position_unresolved(monkeypatch):
+    """Unresolved findings remain visible as file-level review comments."""
     provider = _make_provider()
 
     monkeypatch.setattr(
@@ -137,7 +137,31 @@ def test_create_inline_comment_returns_empty_when_position_unresolved(monkeypatc
     )
 
     payload = provider.create_inline_comment("body", "src/foo.py", "x = 1")
-    assert payload == {}
+    assert payload == {
+        "body": "body",
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }
+
+
+def test_publish_inline_comment_uses_file_level_review_when_position_unresolved(monkeypatch):
+    """An unresolved finding must be published instead of entering the empty-payload fallback."""
+    fake_pr = _FakePR()
+    provider = _make_provider(pr=fake_pr)
+    monkeypatch.setattr(
+        gh_module,
+        "find_line_number_of_relevant_line_in_file",
+        lambda *a, **kw: (-1, -1),
+    )
+
+    provider.publish_inline_comment("body", "src/foo.py", "x = 1")
+
+    assert len(fake_pr.create_review_calls) == 1
+    assert fake_pr.create_review_calls[0]["comments"] == [{
+        "body": "body",
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }]
 
 
 def test_create_inline_comment_lookup_strips_backticks_but_payload_preserves_them(monkeypatch):

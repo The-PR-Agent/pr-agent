@@ -810,13 +810,14 @@ class GithubProvider(GitProvider):
                                                                                 relevant_file.strip('`'),
                                                                                 relevant_line_in_file,
                                                                                 absolute_position)
+        path = relevant_file.strip()
         if position == -1:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
-            subject_type = "FILE"
-        else:
-            subject_type = "LINE"
-        path = relevant_file.strip()
-        return dict(body=body, path=path, position=position) if subject_type == "LINE" else {}
+            # GitHub supports file-level review comments when a finding cannot be
+            # anchored to a line in the current diff. Returning an empty payload
+            # here causes the later 422 fallback to lose the finding entirely.
+            return dict(body=body, path=path, subject_type="file")
+        return dict(body=body, path=path, position=position)
 
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
         store = None
