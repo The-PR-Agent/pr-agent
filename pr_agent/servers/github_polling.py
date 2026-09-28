@@ -2,10 +2,12 @@ import asyncio
 import copy
 import math
 import multiprocessing
+import re
 import traceback
 from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlsplit
 
 import aiohttp
 from starlette_context import request_cycle_context
@@ -25,6 +27,7 @@ NOTIFICATION_URL = "https://api.github.com/notifications"
 DEFAULT_POLLING_REQUEST_TIMEOUT = 10
 MAX_POLLING_REQUEST_TIMEOUT = 60
 POLLING_CAPACITY_CHECK_INTERVAL = 0.25
+POLLING_COMMENT_SCAN_LIMIT = 4
 
 
 class _PollingWorkerStartError(RuntimeError):
@@ -48,20 +51,217 @@ def _get_polling_request_timeout() -> float:
     return min(timeout, float(MAX_POLLING_REQUEST_TIMEOUT))
 
 
-async def _fetch_comment_history(session, url, headers) -> list:
-    """Fetch fallback comments without retaining a response or blocking the event loop."""
+def _split_link_header(value: str, separator: str) -> list[str]:
+    """Split a Link header outside URI references and quoted strings."""
+    parts = []
+    start = 0
+    in_uri = False
+    in_quote = False
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+        elif in_quote and character == "\\":
+            escaped = True
+        elif character == '"':
+            in_quote = not in_quote
+        elif not in_quote and character == "<":
+            if in_uri:
+                raise ValueError("Invalid pagination metadata")
+            in_uri = True
+        elif not in_quote and character == ">":
+            if not in_uri:
+                raise ValueError("Invalid pagination metadata")
+            in_uri = False
+        elif character == separator and not in_uri and not in_quote:
+            part = value[start:index].strip()
+            if not part:
+                raise ValueError("Invalid pagination metadata")
+            parts.append(part)
+            start = index + 1
+    if escaped or in_uri or in_quote:
+        raise ValueError("Invalid pagination metadata")
+    part = value[start:].strip()
+    if not part:
+        raise ValueError("Invalid pagination metadata")
+    parts.append(part)
+    return parts
+
+
+def _parse_link_headers(values: list[str]) -> dict[str, str]:
+    """Parse Link relationships strictly without exposing supplied targets."""
+    relationships = {}
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Invalid pagination metadata")
+        for entry in _split_link_header(value, ","):
+            if not entry.startswith("<"):
+                raise ValueError("Invalid pagination metadata")
+            closing = entry.find(">")
+            if closing <= 1:
+                raise ValueError("Invalid pagination metadata")
+            target = entry[1:closing]
+            remainder = entry[closing + 1:].strip()
+            if not remainder.startswith(";"):
+                raise ValueError("Invalid pagination metadata")
+            parameters = _split_link_header(remainder[1:], ";")
+            rel_values = []
+            for parameter in parameters:
+                if "=" not in parameter:
+                    raise ValueError("Invalid pagination metadata")
+                name, raw_value = (part.strip() for part in parameter.split("=", 1))
+                if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+                    raise ValueError("Invalid pagination metadata")
+                if raw_value.startswith('"'):
+                    if len(raw_value) < 2 or not raw_value.endswith('"'):
+                        raise ValueError("Invalid pagination metadata")
+                    parameter_value = re.sub(r"\\(.)", r"\1", raw_value[1:-1])
+                elif re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", raw_value):
+                    parameter_value = raw_value
+                else:
+                    raise ValueError("Invalid pagination metadata")
+                if name.lower() == "rel":
+                    rel_values.extend(parameter_value.split())
+            if not rel_values:
+                raise ValueError("Invalid pagination metadata")
+            for relationship in rel_values:
+                relationship = relationship.lower()
+                if relationship in relationships:
+                    raise ValueError("Invalid pagination metadata")
+                relationships[relationship] = target
+    return relationships
+
+
+def _response_link_headers(response) -> list[str]:
+    headers = response.headers
+    getall = getattr(headers, "getall", None)
+    if getall is not None:
+        return list(getall("Link", []))
+    value = headers.get("Link")
+    return [] if value is None else [value]
+
+
+def _effective_port(parts) -> int | None:
+    try:
+        if parts.port is not None:
+            return parts.port
+    except ValueError as error:
+        raise ValueError("Invalid pagination metadata") from error
+    return {"http": 80, "https": 443}.get(parts.scheme.lower())
+
+
+def _comment_resource(url: str) -> tuple:
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.hostname or parts.username or parts.password or parts.fragment:
+        raise ValueError("Invalid comment history URL")
+    issue_match = re.fullmatch(r"/repos/[^/]+/[^/]+/issues/([1-9][0-9]*)/comments", parts.path)
+    if issue_match is None:
+        issue_match = re.fullmatch(r"/repositories/[1-9][0-9]*/issues/([1-9][0-9]*)/comments", parts.path)
+    if issue_match is None:
+        raise ValueError("Invalid comment history URL")
+    origin = (parts.scheme.lower(), parts.hostname.lower(), _effective_port(parts))
+    return parts, origin, issue_match.group(1)
+
+
+def _pagination_page(target: str, initial_parts, initial_origin: tuple, issue_number: str) -> int:
+    parts = urlsplit(target)
+    if (not parts.scheme or not parts.hostname or parts.username or parts.password or parts.fragment
+            or (parts.scheme.lower(), parts.hostname.lower(), _effective_port(parts)) != initial_origin):
+        raise ValueError("Invalid pagination metadata")
+    numeric_alias = re.fullmatch(
+        rf"/repositories/[1-9][0-9]*/issues/{re.escape(issue_number)}/comments", parts.path
+    )
+    if parts.path != initial_parts.path and numeric_alias is None:
+        raise ValueError("Invalid pagination metadata")
+    try:
+        page_values = [value for name, value in parse_qsl(parts.query, keep_blank_values=True) if name == "page"]
+    except ValueError as error:
+        raise ValueError("Invalid pagination metadata") from error
+    if len(page_values) != 1 or re.fullmatch(r"[1-9][0-9]*", page_values[0]) is None:
+        raise ValueError("Invalid pagination metadata")
+    return int(page_values[0])
+
+
+def _pagination_pages(relationships: dict[str, str], initial_parts, initial_origin: tuple,
+                      issue_number: str) -> dict[str, int]:
+    return {
+        relationship: _pagination_page(relationships[relationship], initial_parts, initial_origin, issue_number)
+        for relationship in ("next", "last", "prev")
+        if relationship in relationships
+    }
+
+
+def _remaining_polling_timeout(deadline: float) -> float:
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise asyncio.TimeoutError("Comment history request timed out")
+    return remaining
+
+
+async def _fetch_comment_page(session, url, headers, deadline: float, *, page: int | None,
+                              allow_redirects: bool) -> tuple[list, list[str]]:
+    params = {"per_page": POLLING_COMMENT_SCAN_LIMIT}
+    if page is not None:
+        params["page"] = page
     async with session.get(
         url,
         headers=headers,
-        timeout=aiohttp.ClientTimeout(total=_get_polling_request_timeout()),
-        allow_redirects=True,
+        params=params,
+        timeout=aiohttp.ClientTimeout(total=_remaining_polling_timeout(deadline)),
+        allow_redirects=allow_redirects,
         max_redirects=30,
     ) as response:
         response.raise_for_status()
         comments = await response.json(content_type=None)
+        link_headers = _response_link_headers(response)
+        _remaining_polling_timeout(deadline)
     if not isinstance(comments, list):
         raise ValueError("Expected a list of pull request comments")
-    return comments
+    return comments, link_headers
+
+
+async def _fetch_comment_history(session, url, headers) -> list:
+    """Fetch the newest bounded fallback tail without trusting Link targets."""
+    initial_parts, initial_origin, issue_number = _comment_resource(url)
+    deadline = asyncio.get_running_loop().time() + _get_polling_request_timeout()
+    comments, link_headers = await _fetch_comment_page(
+        session, url, headers, deadline, page=None, allow_redirects=True
+    )
+    if not link_headers:
+        return comments[-POLLING_COMMENT_SCAN_LIMIT:]
+
+    relationships = _parse_link_headers(link_headers)
+    pages = _pagination_pages(relationships, initial_parts, initial_origin, issue_number)
+    if "next" not in pages:
+        if "prev" in pages or ("last" in pages and pages["last"] != 1):
+            raise ValueError("Inconsistent pagination metadata")
+        return comments[-POLLING_COMMENT_SCAN_LIMIT:]
+    if "last" not in pages or pages["next"] != 2 or pages["last"] < pages["next"] or "prev" in pages:
+        raise ValueError("Inconsistent pagination metadata")
+
+    last_page = pages["last"]
+    last_comments, last_link_headers = await _fetch_comment_page(
+        session, url, headers, deadline, page=last_page, allow_redirects=False
+    )
+    last_relationships = _parse_link_headers(last_link_headers) if last_link_headers else {}
+    last_pages = _pagination_pages(last_relationships, initial_parts, initial_origin, issue_number)
+    if "next" in last_pages or ("last" in last_pages and last_pages["last"] != last_page):
+        raise ValueError("Inconsistent pagination metadata")
+    if len(last_comments) >= POLLING_COMMENT_SCAN_LIMIT:
+        return last_comments[-POLLING_COMMENT_SCAN_LIMIT:]
+
+    expected_previous = last_page - 1
+    if expected_previous < 1 or last_pages.get("prev") != expected_previous:
+        raise ValueError("Inconsistent pagination metadata")
+    previous_comments, previous_link_headers = await _fetch_comment_page(
+        session, url, headers, deadline, page=expected_previous, allow_redirects=False
+    )
+    previous_relationships = _parse_link_headers(previous_link_headers) if previous_link_headers else {}
+    previous_pages = _pagination_pages(previous_relationships, initial_parts, initial_origin, issue_number)
+    if (("next" in previous_pages and previous_pages["next"] != last_page)
+            or ("last" in previous_pages and previous_pages["last"] != last_page)):
+        raise ValueError("Inconsistent pagination metadata")
+    return (previous_comments + last_comments)[-POLLING_COMMENT_SCAN_LIMIT:]
 
 
 async def mark_notification_as_read(headers, notification, session):
@@ -210,8 +410,7 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                             # get all comments in the PR
                             requests_url = f"{pr_url}/comments".replace("pulls", "issues")
                             comments = (await _fetch_comment_history(session, requests_url, headers))[::-1]
-                            max_comment_to_scan = 4
-                            for comment in comments[:max_comment_to_scan]:
+                            for comment in comments[:POLLING_COMMENT_SCAN_LIMIT]:
                                 if 'user' in comment and 'login' in comment['user']:
                                     if comment['user']['login'] == user_id:
                                         continue

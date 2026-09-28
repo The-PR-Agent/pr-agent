@@ -42,6 +42,45 @@ def _notification(base_url):
     }
 
 
+def _page_link(base_url, page, relationship, *, numeric_alias=False):
+    if numeric_alias:
+        path = "/repositories/123/issues/1/comments"
+    else:
+        path = "/repos/owner/repo/issues/1/comments"
+    return f'<{base_url}{path}?per_page=4&page={page}>; rel="{relationship}"'
+
+
+class _FakeResponse:
+    def __init__(self, body, *, link=None, delay=0):
+        self.body = body
+        self.headers = {} if link is None else {"Link": link}
+        self.delay = delay
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    async def json(self, **kwargs):
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        return self.body
+
+
+class _FakeSession:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.responses.pop(0)
+
+
 @asynccontextmanager
 async def _server(fallback, latest=None):
     async def latest_handler(request):
@@ -175,6 +214,7 @@ async def test_fallback_has_explicit_timeout_and_redirect_limit(monkeypatch):
 
     class Response:
         status = 200
+        headers = {}
 
         async def __aenter__(self):
             return self
@@ -198,9 +238,168 @@ async def test_fallback_has_explicit_timeout_and_redirect_limit(monkeypatch):
     )
     assert result[0] is True
     kwargs = calls[1][1]
-    assert kwargs["timeout"].total == 10
+    assert 0 < kwargs["timeout"].total <= 10
     assert kwargs["allow_redirects"] is True
     assert kwargs["max_redirects"] == 30
+    assert kwargs["params"] == {"per_page": github_polling.POLLING_COMMENT_SCAN_LIMIT}
+
+
+@pytest.mark.asyncio
+async def test_comment_history_without_link_returns_only_ascending_tail():
+    session = _FakeSession(_FakeResponse([_comment(comment_id) for comment_id in range(1, 7)]))
+    url = "https://example.test/repos/owner/repo/issues/1/comments"
+
+    comments = await github_polling._fetch_comment_history(session, url, {"Authorization": "test"})
+
+    assert [comment["id"] for comment in comments] == [3, 4, 5, 6]
+    assert session.calls == [
+        (
+            url,
+            {
+                "headers": {"Authorization": "test"},
+                "params": {"per_page": 4},
+                "timeout": session.calls[0][1]["timeout"],
+                "allow_redirects": True,
+                "max_redirects": 30,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_comment_history_fetches_declared_full_last_page_without_following_link_url():
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = ", ".join([
+        _page_link(base_url, 2, "next"),
+        _page_link(base_url, 3, "last"),
+    ])
+    last_link = _page_link(base_url, 2, "prev")
+    session = _FakeSession(
+        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse([_comment(comment_id) for comment_id in range(9, 13)], link=last_link),
+    )
+
+    comments = await github_polling._fetch_comment_history(session, url, {})
+
+    assert [comment["id"] for comment in comments] == [9, 10, 11, 12]
+    assert [call[0] for call in session.calls] == [url, url]
+    assert [call[1]["params"] for call in session.calls] == [{"per_page": 4}, {"per_page": 4, "page": 3}]
+    assert [call[1]["allow_redirects"] for call in session.calls] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_comment_history_combines_previous_and_short_last_page_with_numeric_alias():
+    base_url = "http://127.0.0.1:8123"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = ", ".join([
+        _page_link(base_url, 2, "next", numeric_alias=True),
+        _page_link(base_url, 3, "last", numeric_alias=True),
+    ])
+    last_link = _page_link(base_url, 2, "prev", numeric_alias=True)
+    previous_link = ", ".join([
+        _page_link(base_url, 3, "next", numeric_alias=True),
+        _page_link(base_url, 3, "last", numeric_alias=True),
+    ])
+    session = _FakeSession(
+        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse([_comment(10), _comment(11)], link=last_link),
+        _FakeResponse([_comment(comment_id) for comment_id in range(5, 10)], link=previous_link),
+    )
+
+    comments = await github_polling._fetch_comment_history(session, url, {})
+
+    assert [comment["id"] for comment in comments] == [8, 9, 10, 11]
+    assert [call[0] for call in session.calls] == [url, url, url]
+    assert [call[1]["params"] for call in session.calls] == [
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 2},
+    ]
+    assert [call[1]["allow_redirects"] for call in session.calls] == [True, False, False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "link",
+    [
+        '<https://evil.test/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://user@example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=2#secret>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://example.test/repos/owner/repo/issues/2/comments?page=2>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://example.test/repos/owner/other/issues/1/comments?page=2>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=2&page=3>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=two>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=0>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=-1>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next" garbage',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next"',
+    ],
+)
+async def test_invalid_pagination_metadata_fails_before_any_followup_request(link):
+    url = "https://example.test/repos/owner/repo/issues/1/comments"
+    session = _FakeSession(_FakeResponse([_comment()], link=link))
+
+    with pytest.raises(ValueError) as error:
+        await github_polling._fetch_comment_history(session, url, {})
+
+    assert len(session.calls) == 1
+    assert "example.test" not in str(error.value)
+    assert "evil.test" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_short_last_page_requires_immediately_previous_page():
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = ", ".join([_page_link(base_url, 2, "next"), _page_link(base_url, 4, "last")])
+    inconsistent_last_link = _page_link(base_url, 2, "prev")
+    session = _FakeSession(
+        _FakeResponse([_comment()], link=initial_link),
+        _FakeResponse([_comment(13)], link=inconsistent_last_link),
+    )
+
+    with pytest.raises(ValueError, match="Inconsistent pagination metadata"):
+        await github_polling._fetch_comment_history(session, url, {})
+
+    assert len(session.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_comment_history_uses_one_decreasing_monotonic_deadline(monkeypatch):
+    monkeypatch.setattr(github_polling, "_get_polling_request_timeout", lambda: 2)
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = ", ".join([_page_link(base_url, 2, "next"), _page_link(base_url, 2, "last")])
+    session = _FakeSession(
+        _FakeResponse([_comment()], link=initial_link, delay=0.01),
+        _FakeResponse([_comment(comment_id) for comment_id in range(2, 6)], delay=0.01),
+    )
+
+    await github_polling._fetch_comment_history(session, url, {})
+
+    assert session.calls[1][1]["timeout"].total < session.calls[0][1]["timeout"].total
+
+
+@pytest.mark.asyncio
+async def test_comment_history_detects_deadline_exhaustion_during_body_read(monkeypatch):
+    monkeypatch.setattr(github_polling, "_get_polling_request_timeout", lambda: 0.01)
+    url = "https://example.test/repos/owner/repo/issues/1/comments"
+    session = _FakeSession(_FakeResponse([_comment()], delay=0.02))
+
+    with pytest.raises(asyncio.TimeoutError):
+        await github_polling._fetch_comment_history(session, url, {})
+
+    assert len(session.calls) == 1
 
 
 @pytest.mark.parametrize(
