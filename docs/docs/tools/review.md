@@ -93,6 +93,10 @@ for the authoritative default values.
 
   </tr>
   <tr>
+    <td><b>max_previous_findings_chars</b></td>
+    <td>Character budget for the findings stored by earlier reviews (requires <code>persistent_finding_state</code>). They are given to the model so it repeats a still-valid finding with its earlier wording instead of re-raising it reworded, and does not re-raise a resolved one unless the code reintroduces it. Set to 0 to disable. Default is 8000.</td>
+  </tr>
+  <tr>
   <td><b>final_update_message</b></td>
   <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request.</td>
   </tr>

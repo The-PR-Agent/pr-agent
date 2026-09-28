@@ -42,6 +42,7 @@ from pr_agent.algo.review_finding_state import (
     append_review_state,
     parse_review_state,
     reconcile_review_findings,
+    render_previous_findings,
 )
 from pr_agent.algo.review_merge import merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
@@ -203,6 +204,7 @@ class PRReviewer:
         self._review_state_block_reason = None
         self._review_finding_previous_state = None
         self._review_state_preserved = False
+        previous_findings = self._load_previous_findings_context()
         question_str, answer_str = self._get_user_answers()
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
@@ -240,6 +242,7 @@ class PRReviewer:
             "extra_instructions": get_settings().pr_reviewer.extra_instructions,
             "skills_context": get_skills_context(),
             "repo_context": build_repo_context(self.git_provider),
+            "previous_findings": previous_findings,
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "custom_labels": "",
             "enable_custom_labels": get_settings().config.enable_custom_labels,
@@ -631,6 +634,21 @@ class PRReviewer:
         self._review_state_blocked = False
         self._review_state_block_reason = None
         return parse_review_state("")
+
+    def _load_previous_findings_context(self) -> str:
+        """Return the findings stored by earlier reviews as a JSON block for the prompt, or ""."""
+        value = get_settings().pr_reviewer.get("max_previous_findings_chars", 8000)
+        try:
+            max_chars = int(value)
+        except (TypeError, ValueError, OverflowError):
+            get_logger().warning(f"Invalid pr_reviewer.max_previous_findings_chars: {value!r}")
+            return ""
+        if max_chars <= 0 or not self._review_finding_state_enabled():
+            return ""
+        parsed = self._load_review_finding_state()
+        if parsed is None or not parsed.valid:
+            return ""
+        return render_previous_findings(parsed.state, max_chars)
 
     @staticmethod
     def _review_finding_from_issue(issue: dict) -> Optional[dict]:

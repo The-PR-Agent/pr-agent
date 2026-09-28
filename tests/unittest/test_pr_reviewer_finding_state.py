@@ -1,4 +1,5 @@
 import inspect
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1552,3 +1553,41 @@ async def test_persistent_publish_exception_is_visible_for_auto_review(monkeypat
     assert [body for body, temporary, _ in provider.published if not temporary] == [
         "Failed to review PR",
     ]
+
+
+def test_previous_findings_context_gives_the_model_its_earlier_wording(monkeypatch):
+    settings = _settings(monkeypatch)
+    issue = {"relevant_file": "app.py", "issue_header": "Possible Bug",
+             "issue_content": "The lock is never released.", "start_line": 2, "end_line": 3}
+    fixed = {"relevant_file": "db.py", "issue_header": "Performance",
+             "issue_content": "The query runs once per row.", "start_line": 7, "end_line": 7}
+    first = reconcile_review_findings(
+        None,
+        [PRReviewer._review_finding_from_issue(issue), PRReviewer._review_finding_from_issue(fixed)],
+        allow_resolution=False,
+        head_sha="head-1",
+    ).state
+    state = reconcile_review_findings(
+        first, [PRReviewer._review_finding_from_issue(issue)], allow_resolution=True, head_sha="head-2",
+    ).state
+    body = f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n{serialize_review_state(state)}"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [SimpleNamespace(body=body)]
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    reviewer = _reviewer(provider)
+
+    context = json.loads(reviewer._load_previous_findings_context())
+
+    # Repeating the header and content verbatim keeps the finding id, so the state and inline dedup match it.
+    assert context == [
+        {"state": "active", "relevant_file": "app.py", "start_line": 2, "end_line": 3,
+         "issue_header": "Possible Issue", "issue_content": "The lock is never released."},
+        {"state": "resolved", "relevant_file": "db.py", "start_line": 7, "end_line": 7,
+         "issue_header": "Performance", "issue_content": "The query runs once per row."},
+    ]
+    repeated = dict(issue, issue_header=context[0]["issue_header"], start_line=20, end_line=21)
+    assert (normalize_finding(PRReviewer._review_finding_from_issue(repeated))["finding_id"]
+            == normalize_finding(PRReviewer._review_finding_from_issue(issue))["finding_id"])
+
+    monkeypatch.setattr(settings.pr_reviewer, "max_previous_findings_chars", 0, raising=False)
+    assert reviewer._load_previous_findings_context() == ""

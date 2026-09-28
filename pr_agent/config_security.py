@@ -97,7 +97,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "enable_large_pr_chunking", "max_number_of_calls",
         "inline_key_issues", "enable_review_labels_security",
         "enable_review_labels_effort", "require_estimate_effort_to_review",
-        "require_security_review", "require_ticket_analysis_review",
+        "require_security_review", "require_ticket_analysis_review", "max_previous_findings_chars",
     }),
     "pr_description": frozenset({
         "publish_labels", "enable_large_pr_handling", "max_ai_calls", "async_ai_calls",
