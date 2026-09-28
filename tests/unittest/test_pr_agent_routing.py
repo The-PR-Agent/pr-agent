@@ -365,7 +365,9 @@ async def test_incomplete_bitbucket_constructor_error_keeps_provider_specific_fa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["add_docs", "generate_labels"])
+@pytest.mark.parametrize(
+    "action", ["add_docs", "generate_labels", "describe", "review", "improve"]
+)
 async def test_incomplete_bitbucket_tool_error_returns_failure_and_publishes_notice(monkeypatch, action):
     provider = _incomplete_files_provider()
     provider.supports_html_comment_markers.return_value = False
