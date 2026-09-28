@@ -92,7 +92,10 @@ async def test_describe_waits_for_one_sink_emission_before_labels_and_descriptio
 
 
 @pytest.mark.asyncio
-async def test_describe_repropagates_deferred_sink_cancellation_after_provider_output(monkeypatch):
+@pytest.mark.parametrize("provider_fails", [False, True], ids=["published", "publication-failure"])
+async def test_describe_repropagates_deferred_sink_cancellation_after_provider_output(
+        monkeypatch, provider_fails
+):
     tool = PRDescription.__new__(PRDescription)
     tool.pr_id = "1"
     tool.git_provider = MagicMock()
@@ -109,6 +112,8 @@ async def test_describe_repropagates_deferred_sink_cancellation_after_provider_o
     monkeypatch.setattr(
         "pr_agent.tools.pr_description.async_push_outputs", AsyncMock(return_value=True)
     )
+    if provider_fails:
+        tool.git_provider.publish_description.side_effect = RuntimeError("provider unavailable")
     for key, value in {
         "publish_output": True, "is_auto_command": True,
         "output_relevant_configurations": False, "output_run_details": False,
@@ -127,6 +132,33 @@ async def test_describe_repropagates_deferred_sink_cancellation_after_provider_o
 
     tool.git_provider.publish_labels.assert_called_once_with(["enhancement"])
     tool.git_provider.publish_description.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_improve_repropagates_deferred_sink_cancellation_when_provider_finalization_fails(monkeypatch):
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = MagicMock()
+    tool.git_provider.get_files.return_value = ["src/foo.py"]
+    tool.git_provider.is_supported.return_value = False
+    tool.git_provider.remove_initial_comment.side_effect = RuntimeError("provider unavailable")
+    tool.pr_url = "https://github.com/org/repo/pull/1"
+    tool.progress_response = None
+    tool._output_published = False
+    tool.is_extended = False
+    monkeypatch.setattr(get_settings().config, "publish_output", True)
+    monkeypatch.setattr(get_settings().config, "publish_output_progress", False)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+        AsyncMock(return_value={"code_suggestions": [SUGGESTION]}),
+    )
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_code_suggestions.async_push_outputs", AsyncMock(return_value=True)
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await tool.run()
+
+    tool.git_provider.remove_initial_comment.assert_called_once()
 
 
 def test_improve_emits_from_its_publish_path():

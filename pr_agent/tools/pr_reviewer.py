@@ -458,6 +458,8 @@ class PRReviewer:
             if getattr(self, "_output_sink_cancelled", False) is True:
                 raise asyncio.CancelledError
         except Exception as e:
+            if getattr(self, "_output_sink_cancelled", False):
+                raise asyncio.CancelledError from e
             review_error = e
             review_failed = True
             get_logger().error(f"Failed to review PR: {e}")

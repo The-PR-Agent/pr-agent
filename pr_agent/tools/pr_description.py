@@ -133,6 +133,7 @@ class PRDescription:
     async def run(self):
         init_run_details()
         progress_response = None
+        sink_cancelled = False
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
@@ -284,6 +285,8 @@ class PRDescription:
                 get_settings().data = {"artifact": pr_body}
                 return
         except Exception as e:
+            if sink_cancelled:
+                raise asyncio.CancelledError from e
             get_logger().error(f"Error generating PR description {self.pr_id}: {e}",
                                artifact={"traceback": traceback.format_exc()})
             # The status of the whole run must not read as success just because the error stopped here.
