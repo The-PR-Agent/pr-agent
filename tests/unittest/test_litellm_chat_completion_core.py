@@ -497,6 +497,38 @@ async def test_chat_completion_strips_temperature_for_config_no_temperature_mode
 
 
 @pytest.mark.asyncio
+async def test_chat_completion_strips_temperature_for_bedrock_kimi_k3_and_glm5_by_default(monkeypatch):
+    """Verify the shipped defaults drop temperature for every Kimi K3 and GLM-5 inference-profile
+    and Converse spelling, since Bedrock rejects temperature for both."""
+    import tomllib
+    from pathlib import Path
+
+    import pr_agent
+
+    with open(Path(pr_agent.__file__).parent / "settings" / "configuration.toml", "rb") as config_file:
+        defaults = tomllib.load(config_file)["config"]["no_temperature_models"]
+    monkeypatch.setattr(
+        litellm_handler, "get_settings", lambda: FakeSettings(config_values={"no_temperature_models": defaults})
+    )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
+    models = [f"bedrock/{route}{profile}{bare}"
+              for route in ("", "converse/") for profile in ("", "us.", "global.")
+              for bare in ("moonshotai.kimi-k3", "zai.glm-5")]
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        for model in models:
+            await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert all("temperature" not in call.kwargs for call in mock_call.call_args_list)
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_strips_temperature_when_probe_reports_unsupported(monkeypatch):
     """A model whose litellm metadata omits temperature must not receive it."""
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)

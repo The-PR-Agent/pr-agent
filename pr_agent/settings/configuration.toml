@@ -116,8 +116,9 @@ additional_reasoning_effort_models = []
 # Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature.
 # Model IDs match exactly or through any provider prefix. The defaults below preserve
 # the former static registry entries that litellm's metadata still marks
-# temperature-capable; the probe diff for this change is posted on the issue.
-no_temperature_models = ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"]
+# temperature-capable; the probe diff for this change is posted on the issue. Bedrock
+# rejects temperature for Kimi K3 and GLM-5 ("This model doesn't support the temperature field").
+no_temperature_models = ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini", "moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3", "zai.glm-5", "us.zai.glm-5", "global.zai.glm-5"]
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
 extended_thinking_budget_tokens = 2048
