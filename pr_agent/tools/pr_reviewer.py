@@ -293,6 +293,15 @@ class PRReviewer:
                 # If the gate disabled incremental (e.g., commits_range is None), fall through to full review.
                 if not can_run and self.incremental.is_incremental:
                     return None
+                if not self.incremental.is_incremental:
+                    # The fallback full review can use the findings the incremental mode left out.
+                    self.vars["previous_findings"] = self._load_previous_findings_context()
+                    self.token_handler = TokenHandler(
+                        self.git_provider.pr,
+                        self.vars,
+                        get_settings().pr_review_prompt.system,
+                        get_settings().pr_review_prompt.user
+                    )
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')

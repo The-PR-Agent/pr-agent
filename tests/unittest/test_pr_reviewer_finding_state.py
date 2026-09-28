@@ -17,6 +17,7 @@ from pr_agent.algo.review_finding_state import (
     normalize_finding,
     parse_review_state,
     reconcile_review_findings,
+    render_previous_findings,
     serialize_review_state,
 )
 from pr_agent.config_loader import get_settings
@@ -1578,7 +1579,6 @@ def test_previous_findings_context_gives_the_model_its_earlier_wording(monkeypat
 
     context = json.loads(reviewer._load_previous_findings_context())
 
-    # Repeating the header and content verbatim keeps the finding id, so the state and inline dedup match it.
     assert context == [
         {"state": "active", "relevant_file": "app.py", "start_line": 2, "end_line": 3,
          "issue_header": "Possible Issue", "issue_content": "The lock is never released."},
@@ -1591,3 +1591,31 @@ def test_previous_findings_context_gives_the_model_its_earlier_wording(monkeypat
 
     monkeypatch.setattr(settings.pr_reviewer, "max_previous_findings_chars", 0, raising=False)
     assert reviewer._load_previous_findings_context() == ""
+
+
+def test_render_previous_findings_skips_an_entry_larger_than_the_budget():
+    state = {"findings": [
+        {"state": "ACTIVE", "path": "big.py", "body": "x" * 500},
+        {"state": "ACTIVE", "path": "small.py", "body": "**Possible Issue**\n\nThe lock is never released."},
+    ]}
+
+    context = json.loads(render_previous_findings(state, 300))
+
+    assert [entry["relevant_file"] for entry in context] == ["small.py"]
+
+
+async def test_incremental_fallback_to_full_review_loads_previous_findings(monkeypatch):
+    _settings(monkeypatch)
+    provider = MagicMock()
+    reviewer = _reviewer_for_run(provider)
+    reviewer.is_auto = False
+    reviewer.incremental = SimpleNamespace(is_incremental=True, commits_range=None)
+    reviewer._load_previous_findings_context = MagicMock(return_value="[stored findings]")
+    token_handler = MagicMock()
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.TokenHandler", token_handler)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    assert reviewer.incremental.is_incremental is False
+    assert token_handler.call_args.args[1]["previous_findings"] == "[stored findings]"

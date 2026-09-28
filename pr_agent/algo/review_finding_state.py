@@ -328,7 +328,7 @@ def render_previous_findings(state: Mapping[str, Any] | None, max_chars: int) ->
         }
         candidate = json.dumps(entries + [entry], ensure_ascii=False, indent=2)
         if len(candidate) > max_chars:
-            break
+            continue
         entries.append(entry)
         context = candidate
     return context
