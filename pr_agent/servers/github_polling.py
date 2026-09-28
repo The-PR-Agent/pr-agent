@@ -376,7 +376,7 @@ async def _fetch_comment_history_scan(session, url, headers, deadline: float,
         if page_disappeared:
             return None
         if next_last_page is not None:
-            raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+            return None
 
     expected_previous = _select_previous_tail_page(last_page, last_comments, last_pages)
     if expected_previous is None:
@@ -695,6 +695,7 @@ async def polling_loop():
                         for notification in notifications:
                             if not notification:
                                 continue
+                            handled_ids_before_validation = handled_ids.copy()
                             output = await is_valid_notification(notification, headers, handled_ids, session, user_id)
                             if (
                                 len(output) > 2
@@ -706,7 +707,13 @@ async def polling_loop():
                                 last_modified[0] = None
                                 continue
 
-                            await mark_notification_as_read(headers, notification, session)
+                            try:
+                                await mark_notification_as_read(headers, notification, session)
+                            except Exception:
+                                handled_ids.difference_update(handled_ids - handled_ids_before_validation)
+                                # An unread notification may retain the same Last-Modified value.
+                                last_modified[0] = None
+                                raise
                             handled_ids.add(notification['id'])
                             if output[0]:
                                 _, handled_ids, comment, comment_body, pr_url, user_tag = output

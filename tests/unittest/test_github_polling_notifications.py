@@ -432,12 +432,15 @@ async def test_comment_history_fetches_new_previous_page_when_last_page_jumps():
 
 
 @pytest.mark.asyncio
-async def test_comment_history_stops_when_refetched_last_page_advances_again():
+async def test_comment_history_retries_when_refetched_last_page_advances_again():
     base_url = "https://example.test"
     url = f"{base_url}/repos/owner/repo/issues/1/comments"
     initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    refreshed_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 5, "last"))
     session = _FakeSession(
-        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse(
+            [_comment(comment_id) for comment_id in range(1, 5)], link=initial_link, delay=0.01
+        ),
         _FakeResponse(
             [_comment(comment_id) for comment_id in range(9, 13)],
             link=_links(_page_link(base_url, 4, "next"), _page_link(base_url, 4, "last")),
@@ -446,12 +449,58 @@ async def test_comment_history_stops_when_refetched_last_page_advances_again():
             [_comment(comment_id) for comment_id in range(13, 17)],
             link=_links(_page_link(base_url, 5, "next"), _page_link(base_url, 5, "last")),
         ),
+        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=refreshed_link),
+        _FakeResponse([_comment(comment_id) for comment_id in range(17, 21)]),
     )
 
-    with pytest.raises(ValueError, match="Inconsistent pagination metadata"):
-        await github_polling._fetch_comment_history(session, url, {})
+    comments = await github_polling._fetch_comment_history(session, url, {})
 
-    assert len(session.calls) == 3
+    assert [comment["id"] for comment in comments] == [17, 18, 19, 20]
+    assert [call[1]["params"] for call in session.calls] == [
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 4},
+        {"per_page": 4},
+        {"per_page": 4, "page": 5},
+    ]
+    assert session.calls[3][1]["timeout"].total < session.calls[0][1]["timeout"].total
+
+
+@pytest.mark.asyncio
+async def test_notification_defers_when_terminal_page_advances_twice_per_scan():
+    base_url = "https://example.test"
+    initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    scan_responses = []
+    for _ in range(2):
+        scan_responses.extend([
+            _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+            _FakeResponse(
+                [_comment(comment_id) for comment_id in range(9, 13)],
+                link=_links(_page_link(base_url, 4, "next"), _page_link(base_url, 4, "last")),
+            ),
+            _FakeResponse(
+                [_comment(comment_id) for comment_id in range(13, 17)],
+                link=_links(_page_link(base_url, 5, "next"), _page_link(base_url, 5, "last")),
+            ),
+        ])
+    session = _FakeSession(_FakeResponse(_comment(99, "Other discussion")), *scan_responses)
+    handled = set()
+
+    result = await github_polling.is_valid_notification(
+        _notification(base_url), {}, handled, session, "bot"
+    )
+
+    assert result == (False, handled, github_polling._RETRY_POLLING_NOTIFICATION)
+    assert handled == set()
+    assert [call[1].get("params") for call in session.calls] == [
+        None,
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 4},
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 4},
+    ]
 
 
 @pytest.mark.asyncio
