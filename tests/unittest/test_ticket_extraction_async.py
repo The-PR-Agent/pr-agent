@@ -290,6 +290,25 @@ class TestGithubExtractionMerging:
         # come first in the merge order, so the cap drops the trailing entry.
         assert ids == [10, 11, 12]
 
+    def test_branch_candidates_fill_remaining_slots_in_first_seen_order(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({
+            10: _FakeIssue(10),
+            11: _FakeIssue(11),
+            123: _FakeIssue(123),
+            456: _FakeIssue(456),
+        })
+        repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+        provider = _make_github_provider(
+            user_description="Fixes #10 and #11",
+            branch="feature/123-fix/456-followup",
+            repo_obj=repo_obj,
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["ticket_id"] for ticket in result] == [10, 11, 123]
+        assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == [10, 11, 123]
+
 
 # ---------------------------------------------------------------------------
 # Scenario 1b: tickets are fetched from the repository that owns them

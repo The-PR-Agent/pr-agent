@@ -106,15 +106,16 @@ class TestExtractTicketsLinkFromBranchName:
         result = extract_ticket_links_from_branch_name("feature/1-test", "", "https://github.com")
         assert result == []
 
-    def test_multiple_matches_deduplicated(self):
-        """Branch with multiple segments with numbers yields unique issue URLs"""
+    def test_multiple_matches_preserve_first_seen_order(self):
+        """Branch matches keep first-seen order while de-duplicating issue URLs."""
         result = extract_ticket_links_from_branch_name(
-            "feature/1-test/2-other", "org/repo", "https://github.com"
+            "feature/2-test/1-other/2-again/3-final", "org/repo", "https://github.com"
         )
-        assert set(result) == {
-            "https://github.com/org/repo/issues/1",
+        assert result == [
             "https://github.com/org/repo/issues/2",
-        }
+            "https://github.com/org/repo/issues/1",
+            "https://github.com/org/repo/issues/3",
+        ]
 
 
 class TestExtractTicketLinksFromPrDescription:

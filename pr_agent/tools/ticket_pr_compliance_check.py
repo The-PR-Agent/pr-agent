@@ -754,7 +754,8 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
     settings = get_settings()
     if not settings.get("extract_issue_from_branch", settings.get("config.extract_issue_from_branch", True)):
         return []
-    github_tickets = set()
+    seen = set()
+    github_tickets = []
     custom_regex_str = settings.get("branch_issue_regex") or settings.get("config.branch_issue_regex", "") or ""
     if custom_regex_str:
         try:
@@ -776,10 +777,11 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
         except IndexError:
             continue
         if issue_number and issue_number.isdigit():
-            github_tickets.add(
-                f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"
-            )
-    return list(github_tickets)
+            ticket_url = f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"
+            if ticket_url not in seen:
+                seen.add(ticket_url)
+                github_tickets.append(ticket_url)
+    return github_tickets
 
 
 def _normalize_github_host(url):
