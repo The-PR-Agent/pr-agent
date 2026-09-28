@@ -234,6 +234,51 @@ async def test_run_does_not_clean_up_removed_inline_progress_after_deferred_canc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sink_cancelled", [False, True])
+async def test_run_records_provider_failure_before_repropagating_deferred_sink_cancellation(
+        monkeypatch, sink_cancelled):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = False
+        provider.remove_initial_comment.side_effect = RuntimeError("initial comment unavailable")
+        tool = _make_tool(provider)
+        tool.push_inline_code_suggestions = AsyncMock()
+        sink = AsyncMock(return_value=sink_cancelled)
+        logger = MagicMock()
+        record_failure = MagicMock()
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
+        )
+        monkeypatch.setattr(pr_code_suggestions_module, "async_push_outputs", sink)
+        monkeypatch.setattr(pr_code_suggestions_module, "get_logger", lambda: logger)
+        monkeypatch.setattr(pr_code_suggestions_module, "record_command_failure", record_failure)
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.publish_output_progress = False
+        settings.pr_code_suggestions.commitable_code_suggestions = True
+
+        if sink_cancelled:
+            with pytest.raises(asyncio.CancelledError) as cancellation:
+                await tool.run()
+            assert isinstance(cancellation.value.__cause__, RuntimeError)
+        else:
+            await tool.run()
+        sink.assert_awaited_once()
+        logger.error.assert_called_once()
+        assert "initial comment unavailable" in logger.error.call_args.args[0]
+        assert "traceback" in logger.error.call_args.kwargs["artifact"]
+        record_failure.assert_called_once()
+        tool.push_inline_code_suggestions.assert_not_awaited()
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 async def test_publish_no_suggestions_clears_removed_quiet_progress_comment():
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:

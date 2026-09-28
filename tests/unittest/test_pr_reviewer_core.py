@@ -804,7 +804,9 @@ async def test_run_repropagates_deferred_sink_cancellation_after_quiet_finalizat
 
 
 @pytest.mark.asyncio
-async def test_run_repropagates_deferred_sink_cancellation_when_final_publication_fails(monkeypatch):
+@pytest.mark.parametrize("sink_cancelled", [False, True])
+async def test_run_repropagates_deferred_sink_cancellation_when_final_publication_fails(
+        monkeypatch, sink_cancelled):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
@@ -816,9 +818,12 @@ async def test_run_repropagates_deferred_sink_cancellation_when_final_publicatio
     reviewer.vars = {}
     reviewer.prediction = None
     reviewer._should_publish_review_no_suggestions = MagicMock(return_value=True)
+    sink = AsyncMock(return_value=sink_cancelled)
+    logger = MagicMock()
+    record_failure = MagicMock()
 
     async def prepare_review():
-        reviewer._output_sink_cancelled = True
+        reviewer._output_sink_cancelled = await sink("review", payload={}, markdown="review output")
         return "review output"
 
     reviewer._prepare_pr_review = prepare_review
@@ -828,6 +833,8 @@ async def test_run_repropagates_deferred_sink_cancellation_when_final_publicatio
 
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+    monkeypatch.setattr(pr_reviewer_module, "get_logger", lambda: logger)
+    monkeypatch.setattr(pr_reviewer_module, "record_command_failure", record_failure)
 
     settings = get_settings()
     original = {
@@ -840,7 +847,11 @@ async def test_run_repropagates_deferred_sink_cancellation_when_final_publicatio
         settings.config.is_auto_command = False
         settings.pr_reviewer.persistent_comment = False
 
-        with pytest.raises(asyncio.CancelledError):
+        if sink_cancelled:
+            with pytest.raises(asyncio.CancelledError) as cancellation:
+                await reviewer.run()
+            assert isinstance(cancellation.value.__cause__, RuntimeError)
+        else:
             await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]
@@ -848,7 +859,12 @@ async def test_run_repropagates_deferred_sink_cancellation_when_final_publicatio
         settings.pr_reviewer.persistent_comment = original["persistent_comment"]
 
     git_provider.remove_comment.assert_called_once_with(progress_comment)
-    assert git_provider.publish_comment.call_count == 2
+    assert git_provider.publish_comment.call_count == (2 if sink_cancelled else 3)
+    sink.assert_awaited_once_with("review", payload={}, markdown="review output")
+    logger.error.assert_called_once()
+    assert "provider unavailable" in logger.error.call_args.args[0]
+    assert "traceback" in logger.error.call_args.kwargs["artifact"]
+    record_failure.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1075,9 +1091,9 @@ async def test_run_does_not_publish_an_empty_review(
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
     action_output = MagicMock()
-    push_output = MagicMock()
     monkeypatch.setattr(pr_reviewer_module, "github_action_output", action_output)
-    monkeypatch.setattr(pr_reviewer_module, "async_push_outputs", AsyncMock())
+    sink = AsyncMock()
+    monkeypatch.setattr(pr_reviewer_module, "async_push_outputs", sink)
 
     settings = get_settings()
     original = {
@@ -1110,7 +1126,7 @@ async def test_run_does_not_publish_an_empty_review(
     git_provider.publish_persistent_comment.assert_not_called()
     git_provider.publish_structured_review.assert_not_called()
     action_output.assert_called_once_with(expected_action_data, "review")
-    push_output.assert_not_called()
+    sink.assert_not_awaited()
     git_provider.remove_comment.assert_called_once_with(progress_comment)
 
 

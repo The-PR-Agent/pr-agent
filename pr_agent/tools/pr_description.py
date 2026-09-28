@@ -285,12 +285,12 @@ class PRDescription:
                 get_settings().data = {"artifact": pr_body}
                 return
         except Exception as e:
-            if sink_cancelled:
-                raise asyncio.CancelledError from e
             get_logger().error(f"Error generating PR description {self.pr_id}: {e}",
                                artifact={"traceback": traceback.format_exc()})
             # The status of the whole run must not read as success just because the error stopped here.
             record_command_failure()
+            if sink_cancelled:
+                raise asyncio.CancelledError from e
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         finally:

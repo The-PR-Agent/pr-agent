@@ -455,11 +455,13 @@ class PRCodeSuggestions:
             self._cleanup_cancelled_progress_comment()
             raise
         except Exception as e:
+            get_logger().error(f"Failed to generate code suggestions for PR, error: {e}",
+                               artifact={"traceback": traceback.format_exc()})
+            # The status of the whole run must not read as success just because the error stopped here.
+            record_command_failure()
             if self._output_sink_cancelled:
                 self._cleanup_cancelled_progress_comment()
                 raise asyncio.CancelledError from e
-            get_logger().error(f"Failed to generate code suggestions for PR, error: {e}",
-                               artifact={"traceback": traceback.format_exc()})
             if get_settings().config.publish_output:
                 if self.progress_response:
                     self.git_provider.remove_comment(self.progress_response)
@@ -470,8 +472,6 @@ class PRCodeSuggestions:
                         self.git_provider.publish_comment("Failed to generate code suggestions for PR")
                     except Exception as e:
                         get_logger().exception(f"Failed to update persistent review, error: {e}")
-            # The status of the whole run must not read as success just because the error stopped here.
-            record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
 

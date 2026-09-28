@@ -228,6 +228,54 @@ async def test_run_reports_description_publication_failure(monkeypatch, propagat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sink_cancelled", [False, True])
+async def test_run_records_provider_failure_before_repropagating_deferred_sink_cancellation(
+        monkeypatch, sink_cancelled):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.is_supported.return_value = False
+        provider.publish_description.side_effect = RuntimeError("description unavailable")
+        description = _make_description(provider)
+        description.prediction = "generated"
+        description._prepare_data = MagicMock()
+        description._prepare_pr_answer = MagicMock(return_value=("AI title", "Description", ""))
+        sink = AsyncMock(return_value=sink_cancelled)
+        logger = MagicMock()
+        record_failure = MagicMock()
+
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
+        monkeypatch.setattr(pr_description_module, "async_push_outputs", sink)
+        monkeypatch.setattr(pr_description_module, "get_logger", lambda: logger)
+        monkeypatch.setattr(pr_description_module, "record_command_failure", record_failure)
+        _configure_published_run()
+        settings = get_settings()
+        settings.pr_description.enable_help_comment = False
+        settings.pr_description.enable_help_text = False
+        settings.pr_description.enable_semantic_files_types = False
+        settings.pr_description.final_update_message = False
+        settings.pr_description.generate_ai_title = True
+        settings.pr_description.publish_description_as_comment = False
+        settings.pr_description.publish_labels = False
+        settings.pr_description.use_description_markers = False
+
+        if sink_cancelled:
+            with pytest.raises(asyncio.CancelledError) as cancellation:
+                await description.run()
+            assert isinstance(cancellation.value.__cause__, RuntimeError)
+        else:
+            assert await description.run() == ""
+        sink.assert_awaited_once()
+        logger.error.assert_called_once()
+        assert "description unavailable" in logger.error.call_args.args[0]
+        assert "traceback" in logger.error.call_args.kwargs["artifact"]
+        record_failure.assert_called_once()
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 async def test_run_always_includes_walkthrough_in_the_description_body(monkeypatch):
     # Regression guard for #3116: a provider advertising inline-comment capability support used
     # to strip the File Walkthrough from the description body and publish nothing in its place.

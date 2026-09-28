@@ -2,6 +2,7 @@ import asyncio
 import copy
 import datetime
 import re
+import traceback
 from functools import partial
 from typing import List, Optional, Tuple
 
@@ -459,13 +460,13 @@ class PRReviewer:
             if getattr(self, "_output_sink_cancelled", False) is True:
                 raise asyncio.CancelledError
         except Exception as e:
+            get_logger().error(f"Failed to review PR: {e}", artifact={"traceback": traceback.format_exc()})
+            # The status of the whole run must not read as success just because the error stopped here.
+            record_command_failure()
             if getattr(self, "_output_sink_cancelled", False):
                 raise asyncio.CancelledError from e
             review_error = e
             review_failed = True
-            get_logger().error(f"Failed to review PR: {e}")
-            # The status of the whole run must not read as success just because the error stopped here.
-            record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         finally:
