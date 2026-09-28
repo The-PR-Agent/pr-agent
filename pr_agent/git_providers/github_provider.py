@@ -1811,11 +1811,11 @@ class GithubProvider(GitProvider):
                 repo.get_contents(file_path, ref=branch)
             except GithubException as e:
                 if e.status != 404 or not self._pr_head_in_base_repo():
-                    # A bare fork branch resolves against the base repository. Keep
-                    # missing-file writes disabled when the head is not in that repo.
+                    # Keep missing-file writes disabled for bare fork branches: the
+                    # contents API resolves them against the base repository.
                     raise
-                # GitHub also rejects a file created after this preliminary absence
-                # check. Propagate that final conflict without retrying as an update.
+                # Do not retry the final creation conflict as an update; GitHub
+                # rejects a file created after the preliminary absence check.
                 response = repo.create_file(
                     path=file_path, message=message, content=contents, branch=branch
                 )

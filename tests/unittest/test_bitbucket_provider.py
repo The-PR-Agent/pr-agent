@@ -227,7 +227,7 @@ class TestBitbucketProvider:
             "POST",
             "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/",
         )
-        # The endpoint can recreate a deleted branch; parents guards an existing branch only.
+        # Assert the parent guard only for an existing branch; Bitbucket can recreate a deleted branch.
         assert request.call_args.kwargs["data"] == {
             "message": "Update changelog", "branch": "feature", "parents": "captured-source-commit"
         }

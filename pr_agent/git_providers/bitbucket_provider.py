@@ -690,8 +690,8 @@ class BitbucketProvider(GitProvider):
         data = {
             "message": message,
             "branch": branch,
-            # Assert the current HEAD of an existing branch. A deleted branch can
-            # still be recreated by this endpoint; this does not guard that lifecycle.
+            # Assert the current HEAD of an existing branch; do not rely on this to
+            # guard a deleted branch's lifecycle because this endpoint can recreate it.
             "parents": expected_snapshot.revision,
         }
         headers = {'Authorization': self.headers['Authorization']} if 'Authorization' in self.headers else {}
