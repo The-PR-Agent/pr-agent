@@ -390,6 +390,8 @@ async def test_incomplete_bitbucket_tool_error_returns_failure_and_publishes_not
     provider.publish_comment.assert_called_once()
     published = provider.publish_comment.call_args.args[0]
     assert "Bitbucket returned an incomplete or inconsistent pull-request diff" in published
+    assert "Failed to review PR" not in published
+    assert "Failed to generate code suggestions for PR" not in published
 
 
 def test_incomplete_bitbucket_files_notice_deduplicates_trusted_agent_comment(monkeypatch):

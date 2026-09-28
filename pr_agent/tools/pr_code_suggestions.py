@@ -468,7 +468,10 @@ class PRCodeSuggestions:
             if get_settings().config.publish_output:
                 if self.progress_response:
                     self.git_provider.remove_comment(self.progress_response)
-                if not self._output_published:
+                if (
+                    not isinstance(e, IncompleteBitbucketPullRequestFilesError)
+                    and not self._output_published
+                ):
                     try:
                         if not self.progress_response:
                             self.git_provider.remove_initial_comment()

@@ -477,6 +477,7 @@ class PRReviewer:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
             if (
                 review_failed
+                and not isinstance(review_error, IncompleteBitbucketPullRequestFilesError)
                 and get_settings().config.publish_output
                 and (
                     persistent_write_failed

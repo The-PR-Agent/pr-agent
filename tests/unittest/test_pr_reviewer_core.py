@@ -840,6 +840,7 @@ async def test_run_re_raises_incomplete_bitbucket_diff_after_progress_cleanup(mo
 
     assert exc_info.value is incomplete_diff_error
     git_provider.remove_comment.assert_called_once_with(progress_comment)
+    git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
 
 
 @pytest.mark.asyncio
