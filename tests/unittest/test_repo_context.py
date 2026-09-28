@@ -44,6 +44,11 @@ class FakeProvider:
         # stable name, and the target/base branch uses a commit-derived value.
         return "default" if from_default_branch else "target-sha"
 
+    def supports_immutable_repo_context_ref(self) -> bool:
+        # Model a provider that resolves its ref to an immutable revision, which is what
+        # keeps build_repo_context's cache enabled.
+        return True
+
 
 class UnsupportedProvider:
     get_repo_file_content = GitProvider.get_repo_file_content

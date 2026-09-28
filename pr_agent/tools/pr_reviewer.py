@@ -1534,6 +1534,13 @@ class PRReviewer:
                             review_labels.append('Possible security concern')
 
                 current_labels = self.git_provider.get_pr_labels(update=True)
+                if current_labels is None:
+                    # The read failed with no snapshot to fall back on. publish_labels
+                    # replaces the whole set, so publishing would delete human labels.
+                    get_logger().error(
+                        "Skipping review label publish: existing labels could not be read, "
+                        "and publishing would remove them")
+                    return
                 if not current_labels:
                     current_labels = []
                 get_logger().debug(f"Current labels:\n{current_labels}")

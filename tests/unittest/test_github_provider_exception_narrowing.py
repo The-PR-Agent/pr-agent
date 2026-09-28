@@ -85,9 +85,25 @@ def test_add_reaction_propagates_unexpected_errors(error):
 
 
 @pytest.mark.parametrize("error", API_ERRORS)
-def test_get_pr_labels_returns_empty_list_on_api_failure(error):
+def test_get_pr_labels_returns_none_when_nothing_was_ever_read(error):
+    """A failed read must not look like an unlabeled PR.
+
+    ``publish_labels`` issues a PUT that replaces the whole label set, so reporting an empty
+    list here would let one API blip delete every label a human added. With no earlier
+    snapshot to fall back on, report None so callers skip publishing instead.
+    """
     provider = _make_provider(_Requester(error=error))
-    assert provider.get_pr_labels(update=True) == []
+    assert provider.get_pr_labels(update=True) is None
+
+
+@pytest.mark.parametrize("error", API_ERRORS)
+def test_get_pr_labels_falls_back_to_last_good_read(error):
+    """A failed refresh keeps the previous snapshot, the way the GitLab provider does."""
+    provider = _make_provider(_Requester(response=({}, [{"name": "bug"}])))
+    assert provider.get_pr_labels(update=True) == ["bug"]
+
+    provider.pr._requester = _Requester(error=error)
+    assert provider.get_pr_labels(update=True) == ["bug"]
 
 
 def test_get_pr_labels_propagates_unexpected_errors():
@@ -241,17 +257,21 @@ def test_get_user_id_tolerates_a_payload_without_raw_data():
 
 
 def test_get_pr_labels_tolerates_a_payload_of_non_objects():
-    """`label["name"]` on a string raises TypeError; the fetch above still propagates it."""
+    """`label["name"]` on a string raises TypeError; the fetch above still propagates it.
+
+    A shape problem is not the same as a failed read, so it must not masquerade as an
+    unlabeled PR either: with no snapshot the caller gets None and skips publishing.
+    """
     provider = _make_provider(_Requester(response=({}, ["not-an-object"])))
 
-    assert provider.get_pr_labels(update=True) == []
+    assert provider.get_pr_labels(update=True) is None
 
 
 def test_get_pr_labels_tolerates_labels_without_a_name():
     """The cached path reads `label.name`, so an entry without one is a shape problem too."""
     provider = _make_provider(pr_extra={"labels": [SimpleNamespace()]})
 
-    assert provider.get_pr_labels() == []
+    assert provider.get_pr_labels() is None
 
 
 def test_upsert_check_run_returns_false_on_an_empty_response_body(monkeypatch):

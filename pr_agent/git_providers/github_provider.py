@@ -68,6 +68,11 @@ def _next_page_url(headers: dict) -> str:
 
 
 class GithubProvider(GitProvider):
+    # Last successfully read label set, used when a later read fails so that a transient API
+    # error cannot be mistaken for "no labels" and wipe the PR's labels. None means nothing has
+    # been read yet, which tells callers to skip publishing instead of guessing.
+    _labels_snapshot: Optional[list] = None
+
     def __init__(self, pr_url: Optional[str] = None):
         self.repo_obj = None
         try:
@@ -1838,6 +1843,10 @@ class GithubProvider(GitProvider):
             get_logger().warning(f"Failed to publish labels, error: {e}")
 
     def get_pr_labels(self, update=False):
+        # A failed read must never look like "this PR has no labels": publish_labels issues a PUT
+        # that replaces the whole set, so an empty result would wipe every label a human added.
+        # Fall back to the last good read, as the GitLab provider does, and report None when
+        # nothing was ever read so callers can skip publishing rather than clobber.
         # Fetch and read under separate handlers: the response-shape errors below would otherwise
         # also swallow the same types raised by the fetch, where they mean a programming error.
         if not update:
@@ -1845,12 +1854,14 @@ class GithubProvider(GitProvider):
                 labels = self.pr.labels
             except (GithubException, RequestException) as e:
                 get_logger().exception(f"Failed to get labels, error: {e}")
-                return []
+                return self._labels_snapshot
             try:
-                return [label.name for label in labels]
+                names = [label.name for label in labels]
             except (TypeError, AttributeError) as e:
                 get_logger().exception(f"Failed to read the labels payload, error: {e}")
-                return []
+                return self._labels_snapshot
+            self._labels_snapshot = names
+            return names
 
         # obtain the latest labels. Maybe they changed while the AI was running
         try:
@@ -1858,12 +1869,14 @@ class GithubProvider(GitProvider):
                 "GET", f"{self.pr.issue_url}/labels")
         except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to get labels, error: {e}")
-            return []
+            return self._labels_snapshot
         try:
-            return [label['name'] for label in labels]
+            names = [label['name'] for label in labels]
         except (KeyError, TypeError) as e:
             get_logger().exception(f"Failed to read the labels payload, error: {e}")
-            return []
+            return self._labels_snapshot
+        self._labels_snapshot = names
+        return names
 
     def get_commit_messages(self) -> str:
         """
@@ -1924,6 +1937,11 @@ class GithubProvider(GitProvider):
                 f"#L{line_start}-L{line_end}")
 
         return link
+
+    def supports_immutable_repo_context_ref(self) -> bool:
+        # get_repo_context_ref resolves both the PR base and the default branch to a commit
+        # SHA, so a push to either invalidates the cached repo context.
+        return True
 
     def get_pr_id(self):
         try:
