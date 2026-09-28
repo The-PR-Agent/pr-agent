@@ -1113,8 +1113,9 @@ def get_main_pr_language(languages, files) -> str:
                 file = FilePatchInfo(base_file=None, head_file=None, patch=None, filename=file)
             extension_list.append(file.filename.rsplit('.')[-1])
 
-        # get the most common extension
-        most_common_extension = '.' + max(set(extension_list), key=extension_list.count)
+        # get the most common extension. Pick from the list rather than a set, so that a tie is
+        # broken by file order instead of by hash-randomized set iteration order.
+        most_common_extension = '.' + max(extension_list, key=extension_list.count)
         try:
             language_extension_map_org = get_settings().language_extension_map_org
             language_extension_map = {k.lower(): v for k, v in language_extension_map_org.items()}
