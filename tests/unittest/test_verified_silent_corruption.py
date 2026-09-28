@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from github import GithubException
 
-from pr_agent.algo.repo_context import build_repo_context
+from pr_agent.algo import repo_context as repo_context_module
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
@@ -117,6 +117,42 @@ def test_azure_failed_fetch_reports_no_line_counts():
     assert diff_file.num_minus_lines == 0
 
 
+def test_azure_failed_fetch_is_flagged_on_the_diff_entry():
+    """The empty patch alone is not enough: downstream would drop the file without complaint."""
+    diff_file = _diff_for(_azure_change(), Exception("head fetch failed"),
+                          SimpleNamespace(content="old content\n"))[0]
+
+    assert diff_file.content_fetch_failed is True
+
+
+def test_azure_healthy_fetch_is_not_flagged():
+    diff_file = _diff_for(_azure_change(), SimpleNamespace(content="new content\n"),
+                          SimpleNamespace(content="old content\n"))[0]
+
+    assert diff_file.content_fetch_failed is False
+
+
+def test_unreadable_file_reaches_the_model_instead_of_being_dropped():
+    """Regression: an empty patch is skipped by diff generation, so the file vanished silently."""
+    from pr_agent.algo.pr_processing import pr_generate_extended_diff
+
+    unreadable = FilePatchInfo("old\n", "", patch="", filename="/src/app.py",
+                               edit_type=EDIT_TYPE.MODIFIED, content_fetch_failed=True)
+    healthy = FilePatchInfo("old\n", "new\n", patch="@@ -1 +1 @@\n-old\n+new\n",
+                            filename="/src/ok.py", edit_type=EDIT_TYPE.MODIFIED)
+    token_handler = MagicMock()
+    token_handler.count_tokens.return_value = 10
+
+    patches, _, _ = pr_generate_extended_diff(
+        [{"files": [unreadable, healthy]}], token_handler, add_line_numbers_to_hunks=False)
+
+    rendered = "\n".join(patches)
+    assert "could not be read" in rendered
+    assert "/src/app.py" in rendered
+    # The healthy file must still render as a real diff.
+    assert "-old" in rendered
+
+
 def test_azure_healthy_fetch_still_emits_a_real_patch():
     diff_file = _diff_for(_azure_change(), SimpleNamespace(content="new content\n"),
                           SimpleNamespace(content="old content\n"))[0]
@@ -171,7 +207,12 @@ def test_label_read_failure_is_not_reported_as_no_labels():
     assert provider.get_pr_labels(update=True) is None
 
 
-def test_label_read_failure_falls_back_to_the_last_good_read():
+def test_label_read_failure_does_not_reuse_a_stale_previous_read():
+    """Regression: the earlier snapshot could be missing a label added since that read.
+
+    Callers publish a whole set replacement, so serving a stale set would drop exactly the
+    labels this guard exists to protect.
+    """
     provider = _label_provider(response=[{"name": "bug"}, {"name": "priority/high"}])
     assert provider.get_pr_labels(update=True) == ["bug", "priority/high"]
 
@@ -179,7 +220,7 @@ def test_label_read_failure_falls_back_to_the_last_good_read():
         requestJsonAndCheck=lambda *a, **kw: (_ for _ in ()).throw(
             GithubException(500, {"message": "boom"}, {}))
     )
-    assert provider.get_pr_labels(update=True) == ["bug", "priority/high"]
+    assert provider.get_pr_labels(update=True) is None
 
 
 def test_a_genuinely_unlabeled_pr_still_reads_as_empty():
@@ -349,10 +390,9 @@ class _ShaProvider(_BranchNameProvider):
 
 def _enable_repo_context(monkeypatch, files=("AGENTS.md",)):
     """Point build_repo_context at a fixed file list with an empty process level cache."""
-    import pr_agent.algo.repo_context as repo_context
-
-    monkeypatch.setattr(repo_context, "_get_repo_context_config", lambda: (list(files), 5000))
-    monkeypatch.setattr(repo_context, "_REPO_CONTEXT_CACHE", {}, raising=False)
+    monkeypatch.setattr(repo_context_module, "_get_repo_context_config",
+                        lambda: (list(files), 5000))
+    monkeypatch.setattr(repo_context_module, "_REPO_CONTEXT_CACHE", {}, raising=False)
 
 
 def test_branch_name_ref_does_not_serve_stale_repo_context(monkeypatch):
@@ -360,12 +400,12 @@ def test_branch_name_ref_does_not_serve_stale_repo_context(monkeypatch):
     _enable_repo_context(monkeypatch)
 
     provider = _BranchNameProvider({"AGENTS.md": "version one"})
-    assert "version one" in build_repo_context(provider)
+    assert "version one" in repo_context_module.build_repo_context(provider)
 
     # Someone pushes an update to the default branch.
     provider.files = {"AGENTS.md": "version two"}
 
-    assert "version two" in build_repo_context(provider), \
+    assert "version two" in repo_context_module.build_repo_context(provider), \
         "a mutable ref must not serve pre push content"
 
 
@@ -374,10 +414,10 @@ def test_sha_ref_still_reuses_the_cache(monkeypatch):
     _enable_repo_context(monkeypatch)
 
     provider = _ShaProvider({"AGENTS.md": "version one"})
-    build_repo_context(provider)
+    repo_context_module.build_repo_context(provider)
     reads_after_first = provider.reads
 
-    build_repo_context(provider)
+    repo_context_module.build_repo_context(provider)
 
     assert provider.reads == reads_after_first, "an immutable ref should hit the cache"
 

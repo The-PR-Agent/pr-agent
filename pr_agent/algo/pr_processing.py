@@ -471,6 +471,22 @@ def _get_pr_multi_diffs_from_prepared(prepared_diff: PreparedPRDiff,
     )
 
 
+def _unreadable_file_notice(file) -> str:
+    """Render the placeholder for a file whose content the provider could not read.
+
+    A fetch failure leaves the file with no trustworthy patch. Omitting it would make the gap
+    invisible: the model would report on the pull request while quietly skipping a changed
+    file, and the result is indistinguishable from a file that is clean. Telling the model
+    explicitly keeps the failure visible so it can flag the file for manual review.
+    """
+    return (
+        f"\n\n## File: '{file.filename.strip()}'\n\n"
+        f"> **This file could not be read.** PR-Agent failed to fetch its contents, so no diff "
+        f"is available and nothing in it was reviewed. Do not assume this file is correct, "
+        f"unchanged, or free of issues: flag it for manual review.\n"
+    )
+
+
 def pr_generate_extended_diff(pr_languages: list,
                               token_handler: TokenHandler,
                               add_line_numbers_to_hunks: bool,
@@ -485,6 +501,14 @@ def pr_generate_extended_diff(pr_languages: list,
             new_file_content_str = file.head_file
             patch = file.patch
             if not patch:
+                if not getattr(file, "content_fetch_failed", False):
+                    continue
+                # See _unreadable_file_notice: the file is kept, but as a notice rather than a
+                # fabricated diff, so the model knows this part of the PR was not reviewed.
+                full_extended_patch = _unreadable_file_notice(file)
+                file.tokens = token_handler.count_tokens(full_extended_patch)
+                patches_extended_tokens.append(file.tokens)
+                patches_extended.append(full_extended_patch)
                 continue
 
             # extend each patch with extra lines of context
@@ -540,6 +564,14 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler,
         new_file_content_str = file.head_file
         patch = file.patch
         if not patch:
+            if not getattr(file, "content_fetch_failed", False):
+                continue
+            note = _unreadable_file_notice(file)
+            file_dict[file.filename] = {
+                'patch': note,
+                'tokens': token_handler.count_tokens(note),
+                'edit_type': file.edit_type,
+            }
             continue
 
         # removing delete-only hunks

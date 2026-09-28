@@ -1108,6 +1108,7 @@ class AzureDevopsProvider(GitProvider):
                         old_filename=old_filename,
                         num_plus_lines=num_plus_lines,
                         num_minus_lines=num_minus_lines,
+                        content_fetch_failed=content_fetch_failed,
                     )
                 )
             get_logger().info(f"Invalid files: {invalid_files_names}")
