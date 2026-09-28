@@ -1,9 +1,11 @@
 import inspect
 import json
+from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jinja2 import Environment
 
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
@@ -1604,6 +1606,7 @@ def test_render_previous_findings_skips_an_entry_larger_than_the_budget():
     assert [entry["relevant_file"] for entry in context] == ["small.py"]
 
 
+@pytest.mark.asyncio
 async def test_incremental_fallback_to_full_review_loads_previous_findings(monkeypatch):
     _settings(monkeypatch)
     provider = MagicMock()
@@ -1631,3 +1634,11 @@ def test_render_previous_findings_keeps_the_most_recent_active_finding_within_th
     context = json.loads(render_previous_findings(state, one_entry))
 
     assert [entry["relevant_file"] for entry in context] == ["new.py"]
+
+
+def test_previous_findings_render_in_the_user_prompt_only():
+    prompts = get_settings().pr_review_prompt
+    variables = defaultdict(str, previous_findings='[{"issue_content": "stored finding"}]', num_max_findings=3)
+
+    assert "stored finding" not in Environment().from_string(prompts.system).render(variables)
+    assert "stored finding" in Environment().from_string(prompts.user).render(variables)
