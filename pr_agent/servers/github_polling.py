@@ -516,7 +516,9 @@ async def process_comment(pr_url, rest_of_comment, comment_id):
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
-async def is_valid_notification(notification, headers, handled_ids, session, user_id):
+async def is_valid_notification(
+    notification, headers, handled_ids, session, user_id, added_handled_ids=None
+):
     try:
         if 'reason' in notification and notification['reason'] == 'mention':
             if 'subject' in notification and notification['subject']['type'] == 'PullRequest':
@@ -536,6 +538,8 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                                 return False, handled_ids
                             else:
                                 handled_ids.add(comment['id'])
+                                if added_handled_ids is not None:
+                                    added_handled_ids.add(comment['id'])
                         if 'user' in comment and 'login' in comment['user']:
                             if comment['user']['login'] == user_id:
                                 get_logger().debug("comment['user']['login'] == user_id")
@@ -562,6 +566,8 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                             except _CommentPaginationDrift:
                                 if 'id' in comment:
                                     handled_ids.discard(comment['id'])
+                                    if added_handled_ids is not None:
+                                        added_handled_ids.discard(comment['id'])
                                 get_logger().warning(
                                     f"Deferring polling notification after concurrent comment changes for PR: "
                                     f"{pr_url}"
@@ -702,23 +708,31 @@ async def polling_loop():
                         for notification in notifications:
                             if not notification:
                                 continue
-                            handled_ids_before_validation = handled_ids.copy()
-                            output = await is_valid_notification(notification, headers, handled_ids, session, user_id)
+                            added_handled_ids = set()
+                            output = await is_valid_notification(
+                                notification,
+                                headers,
+                                handled_ids,
+                                session,
+                                user_id,
+                                added_handled_ids,
+                            )
                             if (
                                 len(output) > 2
                                 and output[0] is False
                                 and output[2] is _RETRY_POLLING_NOTIFICATION
                             ):
-                                # Force an unconditional notification fetch next iteration. The
-                                # unread notification itself may not update GitHub's Last-Modified.
+                                # Force an unconditional notification fetch next iteration because
+                                # unread notifications may not update GitHub's Last-Modified.
                                 last_modified[0] = None
                                 continue
 
                             try:
                                 await mark_notification_as_read(headers, notification, session)
                             except Exception:
-                                handled_ids.difference_update(handled_ids - handled_ids_before_validation)
-                                # An unread notification may retain the same Last-Modified value.
+                                handled_ids.difference_update(added_handled_ids)
+                                # Reset conditional-fetch state because an unread notification may
+                                # retain its modification timestamp.
                                 last_modified[0] = None
                                 raise
                             handled_ids.add(notification['id'])

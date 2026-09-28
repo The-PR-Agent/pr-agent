@@ -125,11 +125,18 @@ async def test_fallback_reuses_session_and_preserves_selection():
         # Check that the consumed latest-comment response releases the only
         # connection before fallback.
         handled = set()
+        added_handled = set()
         result = await github_polling.is_valid_notification(
-            _notification(url), {"Authorization": "Bearer test-token"}, handled, session, "bot"
+            _notification(url),
+            {"Authorization": "Bearer test-token"},
+            handled,
+            session,
+            "bot",
+            added_handled,
         )
     assert result == (True, handled, selected, "@bot /review", f"{url}/repos/owner/repo/pulls/1", "@bot")
     assert handled == {99}
+    assert added_handled == {99}
     assert seen == ["Bearer test-token"]
 
 
@@ -689,13 +696,15 @@ async def test_repeated_missing_predecessor_leaves_notification_eligible_for_ret
         ])
     session = _FakeSession(*responses)
     handled = set()
+    added_handled = set()
 
     result = await github_polling.is_valid_notification(
-        _notification(base_url), {}, handled, session, "bot"
+        _notification(base_url), {}, handled, session, "bot", added_handled
     )
 
     assert result == (False, handled, github_polling._RETRY_POLLING_NOTIFICATION)
     assert handled == set()
+    assert added_handled == set()
     assert [call[1].get("params") for call in session.calls] == [
         None,
         {"per_page": 4},

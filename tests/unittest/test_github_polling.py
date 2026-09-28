@@ -361,16 +361,27 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
     preexisting_notification = {"id": 42}
     notification = {"id": 1}
     comment = {"id": 99}
+    large_preexisting_ids = set(range(10_000, 20_000))
     handled_at_validation = []
     handled_references = []
 
-    async def validate(_notification, _headers, handled_ids, _session, _user_id):
+    class NonCopyingSet(set):
+        def copy(self):
+            raise AssertionError("polling must not copy the full handled-ID history")
+
+    monkeypatch.setattr(github_polling, "set", NonCopyingSet, raising=False)
+
+    async def validate(
+        _notification, _headers, handled_ids, _session, _user_id, added_handled_ids=None
+    ):
         if _notification is preexisting_notification:
+            handled_ids.update(large_preexisting_ids)
             return False, handled_ids
-        handled_at_validation.append(set(handled_ids))
+        handled_at_validation.append((len(handled_ids), large_preexisting_ids <= handled_ids))
         handled_references.append(handled_ids)
         assert comment["id"] not in handled_ids
         handled_ids.add(comment["id"])
+        added_handled_ids.add(comment["id"])
         if valid_command:
             return True, handled_ids, comment, "@bot /review", "https://example.test/pull/1", "@bot"
         return False, handled_ids
@@ -437,14 +448,13 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    assert handled_at_validation == [{preexisting_notification["id"]}] * 2
+    assert handled_at_validation == [(len(large_preexisting_ids) + 1, True)] * 2
     assert mark_attempts == 3
     assert len(requests) == 2
     assert "If-Modified-Since" not in requests[1]["headers"]
     assert len(dispatched) == int(valid_command)
-    assert handled_references[-1] == {
-        preexisting_notification["id"], notification["id"], comment["id"]
-    }
+    assert large_preexisting_ids <= handled_references[-1]
+    assert {preexisting_notification["id"], notification["id"], comment["id"]} <= handled_references[-1]
 
 
 @pytest.mark.asyncio
