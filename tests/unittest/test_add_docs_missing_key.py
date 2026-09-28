@@ -1,9 +1,12 @@
 """Clear the progress comment when an /add_docs response carries no documentation."""
 import asyncio
+from unittest.mock import Mock
 
 import pytest
+from opentelemetry.trace import StatusCode
 
-from pr_agent.algo.run_details import command_failed, init_run_details
+import pr_agent.agent.pr_agent as pr_agent_module
+from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_add_docs import PRAddDocs
 
@@ -94,6 +97,50 @@ def run(prediction, monkeypatch, provider=None):
 
 def results(provider):
     return [c for c in provider.comments if "Generating Documentation" not in c]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suggestion_results, comment_error, expected_result", [
+    ([False, False, False], None, False),
+    ([False, False, False], "Failed to publish code documentation", False),
+    ([True], None, True),
+    ([False, False, True], None, True),
+    ([False, None, False], None, True),
+])
+async def test_routed_publication_outcome_without_run_details(
+        publish_output, monkeypatch, suggestion_results, comment_error, expected_result):
+    provider = FakeGitProvider(suggestion_results=suggestion_results, comment_error=comment_error)
+    tool = PRAddDocs.__new__(PRAddDocs)
+    tool.git_provider = provider
+    tool.prediction = DOCUMENTED_TWICE
+
+    async def fake_retry(*_args, **_kwargs):
+        return DOCUMENTED_TWICE
+
+    monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fake_retry)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
+    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
+    monkeypatch.setitem(pr_agent_module.command2class, "add_docs", lambda *_args, **_kwargs: tool)
+    assert get_run_details() is None
+    span = Mock()
+    settings = get_settings()
+    previous = settings.get("config.propagate_tool_errors", False)
+    settings.set("config.propagate_tool_errors", False)
+    try:
+        result = await pr_agent_module.PRAgent(ai_handler="fake-ai")._run_command(
+            "https://example/pr/1", "/add_docs", None, span
+        )
+    finally:
+        settings.set("config.propagate_tool_errors", previous)
+
+    assert result is expected_result
+    span.set_status.assert_called_once_with(StatusCode.OK if expected_result else StatusCode.ERROR)
+    assert provider.initial_comment_removed
+    assert len(provider.suggestions) == (1 if suggestion_results == [True] else 3)
+    assert get_run_details() is None
+    if not expected_result:
+        assert results(provider) == ["Failed to publish code documentation for this PR."]
+        span.set_attribute.assert_any_call("error.type", "documentation_publication_failed")
 
 
 def test_publish_the_documented_response(publish_output, monkeypatch):

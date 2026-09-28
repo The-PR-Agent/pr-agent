@@ -59,6 +59,7 @@ class PRAddDocs:
 
     async def run(self):
         temporary_comment_published = False
+        publication_failed = False
         try:
             get_logger().info('Generating code Docs for PR...')
             if get_settings().config.publish_output:
@@ -79,6 +80,7 @@ class PRAddDocs:
                 get_logger().info('Pushing inline code documentation...')
                 publication_result = self.push_inline_docs(data)
                 if publication_result is False:
+                    publication_failed = True
                     self.git_provider.publish_comment("Failed to publish code documentation for this PR.")
                     raise RuntimeError("Failed to publish code documentation after individual retries")
         except Exception as e:
@@ -86,6 +88,8 @@ class PRAddDocs:
             record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
+            if publication_failed:
+                return False
         finally:
             if temporary_comment_published:
                 try:

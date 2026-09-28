@@ -97,6 +97,24 @@ async def test_handle_request_routes_list_request_without_string_parsing(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action, tool_result", [("custom", False), ("add_docs", None), ("add_docs", 0)])
+async def test_legacy_tool_results_keep_success_acknowledgement(monkeypatch, action, tool_result):
+    class FakeTool:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self):
+            return tool_result
+
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setitem(pr_agent_module.command2class, action, FakeTool)
+
+    assert await pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
+        "https://example/pr/1", f"/{action}"
+    ) is True
+
+
+@pytest.mark.asyncio
 async def test_prepared_override_wins_after_repo_settings_and_next_command_reloads_defaults(monkeypatch):
     observed = []
     provider = SimpleNamespace(

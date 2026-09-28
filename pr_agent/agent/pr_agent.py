@@ -408,7 +408,11 @@ class PRAgent:
                     if notify:
                         notify()
 
-                    await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                    result = await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                    if action == "add_docs" and result is False:
+                        span.set_status(StatusCode.ERROR)
+                        span.set_attribute("error.type", "documentation_publication_failed")
+                        return False
 
                 span.set_status(StatusCode.OK)
                 return True
