@@ -129,6 +129,31 @@ class TestPushOutputs:
         dispatch.assert_not_awaited()
         assert warnings == ["push_outputs failed: RuntimeError"]
 
+    def test_async_executor_shutdown_is_non_fatal(self, monkeypatch):
+        get_settings().set("PUSH_OUTPUTS.ENABLE", True)
+        warnings = []
+        monkeypatch.setattr(run_output, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
+
+        async def deliver_after_shutdown():
+            await asyncio.get_running_loop().shutdown_default_executor()
+            await async_push_outputs("review", {"score": 1})
+
+        asyncio.run(deliver_after_shutdown())
+        assert warnings == ["push_outputs failed: RuntimeError"]
+
+    @pytest.mark.asyncio
+    async def test_async_dispatch_failure_logs_only_exception_type(self, monkeypatch):
+        get_settings().set("PUSH_OUTPUTS.ENABLE", True)
+        warnings = []
+        dispatch = AsyncMock(side_effect=RuntimeError("secret dispatch marker"))
+        monkeypatch.setattr(run_output, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
+        monkeypatch.setattr(run_output.asyncio, "to_thread", dispatch)
+
+        await async_push_outputs("review", {"payload-secret": 1}, "markdown-secret")
+
+        dispatch.assert_awaited_once()
+        assert warnings == ["push_outputs failed: RuntimeError"]
+
     @pytest.mark.asyncio
     async def test_concurrent_async_stdout_records_remain_separate_json_lines(self, monkeypatch):
         chunks = []

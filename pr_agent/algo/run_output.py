@@ -56,7 +56,7 @@ def _push_outputs_sink_url(cfg: dict, key: str) -> str:
 
 def _push_outputs_enabled(cfg: dict) -> bool:
     enable = cfg.get("enable", False)
-    # Environment-variable strings must use the same normalization at both entry points.
+    # Normalize environment-variable strings for both output entry points.
     if isinstance(enable, str):
         enable = enable.lower().strip() not in ("false", "0", "no", "")
     return bool(enable)
@@ -135,10 +135,9 @@ async def async_push_outputs(message_type: str, payload: dict | None = None, mar
     try:
         if not _push_outputs_enabled(get_settings().get("push_outputs", {}) or {}):
             return
+        await asyncio.to_thread(push_outputs, message_type, payload, markdown)
     except Exception as e:
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
-        return
-    await asyncio.to_thread(push_outputs, message_type, payload, markdown)
 
 
 def _render_setting_value(value) -> str:
