@@ -1619,3 +1619,15 @@ async def test_incremental_fallback_to_full_review_loads_previous_findings(monke
 
     assert reviewer.incremental.is_incremental is False
     assert token_handler.call_args.args[1]["previous_findings"] == "[stored findings]"
+
+
+def test_render_previous_findings_keeps_the_most_recent_active_finding_within_the_budget():
+    state = {"findings": [
+        {"state": "ACTIVE", "path": "old.py", "body": "Stale finding.", "last_seen": "2026-01-01T00:00:00Z"},
+        {"state": "ACTIVE", "path": "new.py", "body": "Fresh finding.", "last_seen": "2026-02-01T00:00:00Z"},
+    ]}
+    one_entry = len(render_previous_findings({"findings": state["findings"][1:]}, 10_000))
+
+    context = json.loads(render_previous_findings(state, one_entry))
+
+    assert [entry["relevant_file"] for entry in context] == ["new.py"]

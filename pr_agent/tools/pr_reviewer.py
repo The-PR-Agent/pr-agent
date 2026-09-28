@@ -294,7 +294,7 @@ class PRReviewer:
                 if not can_run and self.incremental.is_incremental:
                     return None
                 if not self.incremental.is_incremental:
-                    # The fallback full review can use the findings the incremental mode left out.
+                    # Reload the findings the incremental mode left out, for the fallback full review.
                     self.vars["previous_findings"] = self._load_previous_findings_context()
                     self.token_handler = TokenHandler(
                         self.git_provider.pr,

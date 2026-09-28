@@ -129,8 +129,9 @@ def _is_valid_state(state: Any) -> bool:
         reopened_count = finding.get("reopened_count", 0)
         if type(reopened_count) is not int or reopened_count < 0:
             return False
-        if not finding.get("path") or not finding.get("body"):
-            return False
+        for key in ("path", "body"):
+            if not isinstance(finding.get(key), str) or not finding[key]:
+                return False
     return True
 
 
@@ -305,7 +306,7 @@ def reconcile_review_findings(
 def render_previous_findings(state: Mapping[str, Any] | None, max_chars: int) -> str:
     """Return the stored findings as a JSON block for the /review prompt, empty when none fit.
 
-    Active findings come first, then resolved ones, newest first. Each finding is split back into the
+    Active findings come first, then resolved ones, each newest first. Each finding is split back into the
     `issue_header` and `issue_content` the model emitted, so it can repeat a still-valid finding verbatim
     and keep its identity across runs. The block stays within `max_chars` (0 disables it).
     """
@@ -313,6 +314,7 @@ def render_previous_findings(state: Mapping[str, Any] | None, max_chars: int) ->
         return ""
     findings = list(state.get("findings", []))
     active = [finding for finding in findings if finding.get("state") == "ACTIVE"]
+    active.sort(key=lambda finding: str(finding.get("last_seen") or ""), reverse=True)
     resolved = [finding for finding in findings if finding.get("state") == "RESOLVED"]
     resolved.sort(key=lambda finding: str(finding.get("resolved_at") or ""), reverse=True)
     entries, context = [], ""
