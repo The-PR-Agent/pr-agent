@@ -561,11 +561,13 @@ class PRCodeSuggestions:
             if self.progress_response:
                 progress_response = self.progress_response
                 if _edit_comment_safely(self.git_provider, progress_response, pr_body):
+                    # Retire the progress handle before any optional thread finalization so
+                    # cancellation cleanup cannot remove the completed output after a failure.
+                    self.progress_response = None
                     if self._improve_thread_kwargs():
                         # A mere status message isn't actionable; resolve the thread instead of
                         # leaving it open for the user to close manually.
                         self.git_provider.resolve_comment_thread(progress_response.id)
-                    self.progress_response = None
                 else:
                     try:
                         comment = self.git_provider.publish_comment(
