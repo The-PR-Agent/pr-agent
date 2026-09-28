@@ -105,7 +105,10 @@ class TestBitbucketProvider:
     def test_is_comment_authored_by_pr_agent_uses_authenticated_account_id(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.headers = {"Authorization": "Bearer token"}
-        comment = {"user": {"account_id": "agent-account"}}
+        comment = SimpleNamespace(
+            body="notice",
+            _cloud_comment=SimpleNamespace(data={"user": {"account_id": "agent-account"}}),
+        )
         response = MagicMock()
         response.json.return_value = {"account_id": "agent-account"}
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
