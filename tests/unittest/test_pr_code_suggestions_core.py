@@ -1376,11 +1376,13 @@ async def test_publish_no_suggestions_removes_the_progress_comment_when_quiet(pu
     publish_output_no_suggestions(False)
     git_provider = MagicMock()
     tool = _make_tool(git_provider)
-    tool.progress_response = MagicMock()
+    progress_comment = MagicMock()
+    tool.progress_response = progress_comment
 
     await tool.publish_no_suggestions()
 
-    git_provider.remove_comment.assert_called_once_with(tool.progress_response)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+    assert tool.progress_response is None
     git_provider.edit_comment.assert_not_called()
     git_provider.publish_comment.assert_not_called()
 
