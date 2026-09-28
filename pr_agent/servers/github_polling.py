@@ -263,10 +263,10 @@ async def _fetch_comment_page(session, url, headers, deadline: float, *, page: i
     return comments, link_headers
 
 
-async def _fetch_comment_history(session, url, headers) -> list:
-    """Fetch the newest bounded fallback tail without trusting Link targets."""
-    initial_parts, initial_origin, issue_number, api_prefix = _comment_resource(url)
-    deadline = asyncio.get_running_loop().time() + _get_polling_request_timeout()
+async def _fetch_comment_history_scan(session, url, headers, deadline: float, resource: tuple,
+                                      *, retry_on_contraction: bool) -> list:
+    """Fetch one validated tail, restarting once if its declared last page disappeared."""
+    initial_parts, initial_origin, issue_number, api_prefix = resource
     comments, link_headers = await _fetch_comment_page(
         session, url, headers, deadline, page=None, allow_redirects=True
     )
@@ -292,6 +292,18 @@ async def _fetch_comment_history(session, url, headers) -> list:
         last_relationships, initial_parts, initial_origin, issue_number, api_prefix
     )
     _remaining_polling_timeout(deadline)
+    page_disappeared = (
+        not last_comments
+        and "prev" not in last_pages
+        and "next" not in last_pages
+        and ("last" not in last_pages or last_pages["last"] < last_page)
+    )
+    if page_disappeared:
+        if retry_on_contraction:
+            return await _fetch_comment_history_scan(
+                session, url, headers, deadline, resource, retry_on_contraction=False
+            )
+        raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
     previous_page = None
     previous_comments = None
     if "next" in last_pages:
@@ -330,6 +342,15 @@ async def _fetch_comment_history(session, url, headers) -> list:
                 or ("last" in previous_pages and previous_pages["last"] != last_page)):
             raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
     return (previous_comments + last_comments)[-POLLING_COMMENT_SCAN_LIMIT:]
+
+
+async def _fetch_comment_history(session, url, headers) -> list:
+    """Fetch the newest bounded fallback tail without trusting Link targets."""
+    resource = _comment_resource(url)
+    deadline = asyncio.get_running_loop().time() + _get_polling_request_timeout()
+    return await _fetch_comment_history_scan(
+        session, url, headers, deadline, resource, retry_on_contraction=True
+    )
 
 
 async def mark_notification_as_read(headers, notification, session):
