@@ -8,6 +8,22 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 MAX_TICKETS = 3
 
 
+class _ReverseIterationSet(set):
+    """Set double whose iteration order cannot accidentally match insertion order."""
+
+    def __init__(self):
+        super().__init__()
+        self._insertion_order = []
+
+    def add(self, item):
+        if item not in self:
+            self._insertion_order.append(item)
+        super().add(item)
+
+    def __iter__(self):
+        return iter(reversed(self._insertion_order))
+
+
 class TestExtractTicketsLinkFromBranchName:
     """Unit tests for branch-name issue extraction (option A: number at start of segment)."""
 
@@ -106,8 +122,11 @@ class TestExtractTicketsLinkFromBranchName:
         result = extract_ticket_links_from_branch_name("feature/1-test", "", "https://github.com")
         assert result == []
 
-    def test_multiple_matches_preserve_first_seen_order(self):
+    def test_multiple_matches_preserve_first_seen_order(self, monkeypatch):
         """Branch matches keep first-seen order while de-duplicating issue URLs."""
+        import pr_agent.tools.ticket_pr_compliance_check as m
+
+        monkeypatch.setattr(m, "set", _ReverseIterationSet, raising=False)
         result = extract_ticket_links_from_branch_name(
             "feature/2-test/1-other/2-again/3-final", "org/repo", "https://github.com"
         )

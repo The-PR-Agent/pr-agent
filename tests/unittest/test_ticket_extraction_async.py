@@ -21,6 +21,23 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 )
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
+
+class _ReverseIterationSet(set):
+    """Set double whose iteration order cannot accidentally match insertion order."""
+
+    def __init__(self):
+        super().__init__()
+        self._insertion_order = []
+
+    def add(self, item):
+        if item not in self:
+            self._insertion_order.append(item)
+        super().add(item)
+
+    def __iter__(self):
+        return iter(reversed(self._insertion_order))
+
+
 # ---------------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------------
@@ -290,7 +307,7 @@ class TestGithubExtractionMerging:
         # come first in the merge order, so the cap drops the trailing entry.
         assert ids == [10, 11, 12]
 
-    def test_branch_candidates_fill_remaining_slots_in_first_seen_order(self, settings_snapshot):
+    def test_branch_candidates_fill_remaining_slots_in_first_seen_order(self, settings_snapshot, monkeypatch):
         repo_obj = _FakeRepoObj({
             10: _FakeIssue(10),
             11: _FakeIssue(11),
@@ -303,6 +320,7 @@ class TestGithubExtractionMerging:
             branch="feature/123-fix/456-followup",
             repo_obj=repo_obj,
         )
+        monkeypatch.setattr(tpc, "set", _ReverseIterationSet, raising=False)
 
         result = asyncio.run(extract_tickets(provider))
 
