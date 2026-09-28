@@ -51,7 +51,6 @@ class Action(str, Enum):
     describe = "describe"
     ask = "ask"
     improve = "improve"
-    reflect = "reflect"
     answer = "answer"
 
 
