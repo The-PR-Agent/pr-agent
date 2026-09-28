@@ -198,6 +198,60 @@ async def test_run_keeps_final_no_suggestions_comment_when_thread_resolution_fai
 
 
 @pytest.mark.asyncio
+async def test_run_does_not_clean_up_removed_inline_progress_after_deferred_cancellation(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = False
+        provider.publish_comment.return_value = progress_comment
+        tool = _make_tool(provider)
+        tool.progress = "Preparing suggestions..."
+        tool.push_inline_code_suggestions = AsyncMock()
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
+        )
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "async_push_outputs",
+            AsyncMock(return_value=True),
+        )
+        _configure_published_run()
+        get_settings().pr_code_suggestions.commitable_code_suggestions = False
+
+        with pytest.raises(asyncio.CancelledError):
+            await tool.run()
+
+        provider.remove_comment.assert_called_once_with(progress_comment)
+        provider.edit_comment.assert_not_called()
+        assert tool.progress_response is None
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_clears_removed_quiet_progress_comment():
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        tool = _make_tool(provider)
+        tool.progress_response = progress_comment
+        get_settings().config.publish_output = False
+
+        assert await tool.publish_no_suggestions() is False
+
+        provider.remove_comment.assert_called_once_with(progress_comment)
+        assert tool.progress_response is None
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publishing(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:

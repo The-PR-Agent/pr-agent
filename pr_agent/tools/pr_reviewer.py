@@ -272,6 +272,7 @@ class PRReviewer:
 
     async def run(self) -> None:
         init_run_details()
+        self._output_sink_cancelled = False
         for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_results",
                      "_chunked_primary_model"):
             self.__dict__.pop(name, None)
@@ -486,6 +487,7 @@ class PRReviewer:
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
             if (partial_review_error is not None and not review_failed
+                    and not self._output_sink_cancelled
                     and get_settings().config.get("propagate_tool_errors", False)):
                 raise partial_review_error
 

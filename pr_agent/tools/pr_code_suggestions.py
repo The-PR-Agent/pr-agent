@@ -442,6 +442,7 @@ class PRCodeSuggestions:
                     await self.push_inline_code_suggestions(data)
                     if self.progress_response:
                         self.git_provider.remove_comment(self.progress_response)
+                        self.progress_response = None
                 if sink_cancelled is True:
                     raise asyncio.CancelledError
             else:
@@ -591,6 +592,7 @@ class PRCodeSuggestions:
             get_settings().data = {"artifact": pr_body if coverage_footer else ""}
             if self.progress_response:
                 self.git_provider.remove_comment(self.progress_response)
+                self.progress_response = None
         return sink_cancelled
 
     async def dual_publishing(self, data):

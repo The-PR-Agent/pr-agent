@@ -852,6 +852,86 @@ async def test_run_repropagates_deferred_sink_cancellation_when_final_publicatio
 
 
 @pytest.mark.asyncio
+async def test_run_resets_deferred_sink_cancellation_before_reused_reviewer_fails_early(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    git_provider = MagicMock()
+    early_error = RuntimeError("files unavailable")
+    git_provider.get_files.side_effect = early_error
+    reviewer = _make_reviewer(git_provider)
+    reviewer._output_sink_cancelled = True
+
+    monkeypatch.setattr(pr_reviewer_module, "record_command_failure", MagicMock())
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = False
+        settings.config.propagate_tool_errors = False
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    assert reviewer._output_sink_cancelled is False
+    git_provider.get_files.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_run_preserves_deferred_cancellation_over_partial_review_error(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = "partial prediction"
+    partial_error = RuntimeError("fallback models exhausted")
+    reviewer._merge_cached_review_chunks = MagicMock(return_value=True)
+
+    async def prepare_review():
+        reviewer._output_sink_cancelled = True
+        return "No major issues detected"
+
+    reviewer._prepare_pr_review = prepare_review
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "retry_with_fallback_models",
+        AsyncMock(side_effect=partial_error),
+    )
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+        "publish_output_no_suggestions": settings.pr_reviewer.publish_output_no_suggestions,
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+        settings.pr_reviewer.publish_output_no_suggestions = False
+        settings.config.propagate_tool_errors = True
+
+        with pytest.raises(asyncio.CancelledError):
+            await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+        settings.pr_reviewer.publish_output_no_suggestions = original["publish_output_no_suggestions"]
+        settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("propagate_tool_errors", [False, True])
 async def test_run_removes_its_progress_comment_when_review_generation_fails(
         monkeypatch, propagate_tool_errors):
