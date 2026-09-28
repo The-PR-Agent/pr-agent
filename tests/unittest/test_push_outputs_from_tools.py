@@ -6,10 +6,12 @@ whether each tool emits at all, and what it sends: a sink is not a git provider,
 table `/improve` publishes to GitHub is not what should arrive in Slack.
 """
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.algo import run_output
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions, render_suggestions_markdown
 from pr_agent.tools.pr_description import PRDescription
@@ -256,6 +258,44 @@ async def test_improve_waits_for_sink_before_provider_output(monkeypatch, sugges
         tool.git_provider.remove_initial_comment.assert_called_once()
     else:
         tool.git_provider.publish_code_suggestions_artifact.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_improve_cancellation_during_sink_still_finalizes_provider_output(monkeypatch):
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = MagicMock()
+    tool.git_provider.get_files.return_value = ["src/foo.py"]
+    tool.git_provider.is_supported.return_value = False
+    tool.pr_url = "https://github.com/org/repo/pull/1"
+    tool.progress_response = None
+    tool._output_published = False
+    tool.is_extended = False
+    monkeypatch.setattr(get_settings().config, "publish_output", True)
+    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models",
+                        AsyncMock(return_value={"code_suggestions": [SUGGESTION]}))
+    get_settings().set("PUSH_OUTPUTS.ENABLE", True)
+    started = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def blocking_push(*_args):
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=5)
+
+    monkeypatch.setattr(run_output, "push_outputs", blocking_push)
+    running = asyncio.create_task(tool.run())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        running.cancel()
+        await asyncio.sleep(0)
+        assert not running.done()
+        tool.git_provider.remove_initial_comment.assert_not_called()
+    finally:
+        release.set()
+        await asyncio.wait_for(running, timeout=2)
+        get_settings().set("PUSH_OUTPUTS.ENABLE", False)
+
+    tool.git_provider.remove_initial_comment.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -131,11 +131,19 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
 
 
 async def async_push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
-    """Run synchronous sinks without blocking; cancellation cannot stop a sink already running in a worker."""
+    """Run synchronous sinks without blocking and finish started delivery before caller finalization."""
     try:
         if not _push_outputs_enabled(get_settings().get("push_outputs", {}) or {}):
             return
-        await asyncio.to_thread(push_outputs, message_type, payload, markdown)
+        delivery = asyncio.create_task(asyncio.to_thread(push_outputs, message_type, payload, markdown))
+        while not delivery.done():
+            try:
+                await asyncio.shield(delivery)
+            except asyncio.CancelledError:
+                # Once a completed result starts reaching a sink, let the caller continue to the
+                # matching provider publication instead of reporting the command as cancelled.
+                continue
+        delivery.result()
     except Exception as e:
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
 

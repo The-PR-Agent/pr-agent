@@ -51,7 +51,7 @@ class TestPushOutputs:
         assert delivered == [("review", {"score": 1}, "review markdown")]
 
     @pytest.mark.asyncio
-    async def test_cancelling_async_adapter_does_not_cancel_a_started_sink_thread(self, monkeypatch):
+    async def test_cancelling_async_adapter_waits_for_a_started_sink_thread(self, monkeypatch):
         get_settings().set("PUSH_OUTPUTS.ENABLE", True)
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
@@ -70,14 +70,13 @@ class TestPushOutputs:
         try:
             await asyncio.wait_for(started.wait(), timeout=2)
             delivery.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await delivery
+            await asyncio.sleep(0)
+            assert not delivery.done()
             assert not delivered
         finally:
             release.set()
             await asyncio.wait_for(finished.wait(), timeout=2)
-            if not delivery.done():
-                await asyncio.wait_for(delivery, timeout=2)
+            await asyncio.wait_for(delivery, timeout=2)
         assert delivered == ["completed"]
 
     @pytest.mark.asyncio
