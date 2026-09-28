@@ -51,6 +51,10 @@ def _page_link(base_url, page, relationship, *, numeric_alias=False):
     return f'<{base_url}{path}?per_page=4&page={page}>; rel="{relationship}"'
 
 
+def _links(*values):
+    return ", ".join(values)
+
+
 class _FakeResponse:
     def __init__(self, body, *, link=None, delay=0, status=200):
         self.body = body
@@ -349,29 +353,151 @@ async def test_notification_selects_mention_from_declared_newest_page():
 
 
 @pytest.mark.asyncio
+async def test_enterprise_notification_fetches_prefixed_comment_history():
+    base_url = "https://example.test/api/v3"
+    initial_link = _links(
+        _page_link(base_url, 2, "next", numeric_alias=True),
+        _page_link(base_url, 2, "last", numeric_alias=True),
+    )
+    selected = _comment(8)
+    session = _FakeSession(
+        _FakeResponse(_comment(99, "Other discussion")),
+        _FakeResponse([_comment(comment_id, "No mention") for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse([_comment(5, "No mention"), _comment(6, "No mention"),
+                       _comment(7, "No mention"), selected]),
+    )
+
+    result = await github_polling.is_valid_notification(
+        _notification(base_url), {"Authorization": "test"}, set(), session, "bot"
+    )
+
+    assert result[0] is True
+    assert result[2] == selected
+    assert session.calls[1][0] == f"{base_url}/repos/owner/repo/issues/1/comments"
+
+
+@pytest.mark.asyncio
+async def test_comment_history_refetches_last_page_when_pagination_advances():
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    advanced_link = _links(
+        _page_link(base_url, 2, "prev"),
+        _page_link(base_url, 4, "next"),
+        _page_link(base_url, 4, "last"),
+    )
+    session = _FakeSession(
+        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse([_comment(comment_id) for comment_id in range(9, 13)], link=advanced_link),
+        _FakeResponse([_comment(13)], link=_page_link(base_url, 3, "prev")),
+    )
+
+    comments = await github_polling._fetch_comment_history(session, url, {})
+
+    assert [comment["id"] for comment in comments] == [10, 11, 12, 13]
+    assert [call[1]["params"] for call in session.calls] == [
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 4},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_comment_history_fetches_new_previous_page_when_last_page_jumps():
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    advanced_link = _links(
+        _page_link(base_url, 2, "prev"),
+        _page_link(base_url, 4, "next"),
+        _page_link(base_url, 5, "last"),
+    )
+    previous_link = _links(_page_link(base_url, 5, "next"), _page_link(base_url, 5, "last"))
+    session = _FakeSession(
+        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse([_comment(comment_id) for comment_id in range(9, 13)], link=advanced_link),
+        _FakeResponse([_comment(17)], link=_page_link(base_url, 4, "prev")),
+        _FakeResponse([_comment(comment_id) for comment_id in range(13, 17)], link=previous_link),
+    )
+
+    comments = await github_polling._fetch_comment_history(session, url, {})
+
+    assert [comment["id"] for comment in comments] == [14, 15, 16, 17]
+    assert [call[1]["params"] for call in session.calls] == [
+        {"per_page": 4},
+        {"per_page": 4, "page": 3},
+        {"per_page": 4, "page": 5},
+        {"per_page": 4, "page": 4},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_comment_history_stops_when_refetched_last_page_advances_again():
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = _links(_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last"))
+    session = _FakeSession(
+        _FakeResponse([_comment(comment_id) for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse(
+            [_comment(comment_id) for comment_id in range(9, 13)],
+            link=_links(_page_link(base_url, 4, "next"), _page_link(base_url, 4, "last")),
+        ),
+        _FakeResponse(
+            [_comment(comment_id) for comment_id in range(13, 17)],
+            link=_links(_page_link(base_url, 5, "next"), _page_link(base_url, 5, "last")),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Inconsistent pagination metadata"):
+        await github_polling._fetch_comment_history(session, url, {})
+
+    assert len(session.calls) == 3
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "link",
     [
-        '<https://evil.test/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://user@example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://@example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=2#secret>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://example.test/repos/owner/repo/issues/2/comments?page=2>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://example.test/repos/owner/other/issues/1/comments?page=2>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=2&page=3>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=two>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=0>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=-1>; rel="next", '
-        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        _links(
+            '<https://evil.test/repos/owner/repo/issues/1/comments?page=2>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://user@example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://@example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=2#secret>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://example.test/repos/owner/repo/issues/2/comments?page=2>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://example.test/repos/owner/other/issues/1/comments?page=2>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=2&page=3>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=two>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=0>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
+        _links(
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=-1>; rel="next"',
+            '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        ),
         '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next" garbage',
         '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next" "last"',
         '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="ne""xt"',

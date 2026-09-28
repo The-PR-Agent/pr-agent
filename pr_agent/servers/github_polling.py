@@ -177,15 +177,18 @@ def _comment_resource(url: str) -> tuple:
         raise ValueError("Invalid comment history URL") from None
     if not parts.scheme or not parts.hostname or has_userinfo or parts.fragment:
         raise ValueError("Invalid comment history URL")
-    issue_match = re.fullmatch(r"/repos/[^/]+/[^/]+/issues/([1-9][0-9]*)/comments", parts.path)
-    if issue_match is None:
-        issue_match = re.fullmatch(r"/repositories/[1-9][0-9]*/issues/([1-9][0-9]*)/comments", parts.path)
+    issue_match = re.fullmatch(
+        r"(?P<api_prefix>/api/v3)?/(?:repos/[^/]+/[^/]+|repositories/[1-9][0-9]*)/issues/"
+        r"(?P<issue_number>[1-9][0-9]*)/comments",
+        parts.path,
+    )
     if issue_match is None:
         raise ValueError("Invalid comment history URL")
-    return parts, origin, issue_match.group(1)
+    return parts, origin, issue_match.group("issue_number"), issue_match.group("api_prefix") or ""
 
 
-def _pagination_page(target: str, initial_parts, initial_origin: tuple, issue_number: str) -> int:
+def _pagination_page(target: str, initial_parts, initial_origin: tuple, issue_number: str,
+                     api_prefix: str) -> int:
     try:
         parts = urlsplit(target)
         has_userinfo = parts.username is not None or parts.password is not None
@@ -195,7 +198,8 @@ def _pagination_page(target: str, initial_parts, initial_origin: tuple, issue_nu
     if (not parts.scheme or not parts.hostname or has_userinfo or parts.fragment or origin != initial_origin):
         raise _InvalidPaginationMetadata("Invalid pagination metadata")
     numeric_alias = re.fullmatch(
-        rf"/repositories/[1-9][0-9]*/issues/{re.escape(issue_number)}/comments", parts.path
+        rf"{re.escape(api_prefix)}/repositories/[1-9][0-9]*/issues/{re.escape(issue_number)}/comments",
+        parts.path,
     )
     if parts.path != initial_parts.path and numeric_alias is None:
         raise _InvalidPaginationMetadata("Invalid pagination metadata")
@@ -212,9 +216,11 @@ def _pagination_page(target: str, initial_parts, initial_origin: tuple, issue_nu
 
 
 def _pagination_pages(relationships: dict[str, str], initial_parts, initial_origin: tuple,
-                      issue_number: str) -> dict[str, int]:
+                      issue_number: str, api_prefix: str) -> dict[str, int]:
     return {
-        relationship: _pagination_page(relationships[relationship], initial_parts, initial_origin, issue_number)
+        relationship: _pagination_page(
+            relationships[relationship], initial_parts, initial_origin, issue_number, api_prefix
+        )
         for relationship in ("next", "last", "prev")
         if relationship in relationships
     }
@@ -259,7 +265,7 @@ async def _fetch_comment_page(session, url, headers, deadline: float, *, page: i
 
 async def _fetch_comment_history(session, url, headers) -> list:
     """Fetch the newest bounded fallback tail without trusting Link targets."""
-    initial_parts, initial_origin, issue_number = _comment_resource(url)
+    initial_parts, initial_origin, issue_number, api_prefix = _comment_resource(url)
     deadline = asyncio.get_running_loop().time() + _get_polling_request_timeout()
     comments, link_headers = await _fetch_comment_page(
         session, url, headers, deadline, page=None, allow_redirects=True
@@ -268,7 +274,7 @@ async def _fetch_comment_history(session, url, headers) -> list:
         return comments[-POLLING_COMMENT_SCAN_LIMIT:]
 
     relationships = _parse_link_headers(link_headers)
-    pages = _pagination_pages(relationships, initial_parts, initial_origin, issue_number)
+    pages = _pagination_pages(relationships, initial_parts, initial_origin, issue_number, api_prefix)
     _remaining_polling_timeout(deadline)
     if "next" not in pages:
         if "prev" in pages or ("last" in pages and pages["last"] != 1):
@@ -282,8 +288,27 @@ async def _fetch_comment_history(session, url, headers) -> list:
         session, url, headers, deadline, page=last_page, allow_redirects=False
     )
     last_relationships = _parse_link_headers(last_link_headers) if last_link_headers else {}
-    last_pages = _pagination_pages(last_relationships, initial_parts, initial_origin, issue_number)
+    last_pages = _pagination_pages(
+        last_relationships, initial_parts, initial_origin, issue_number, api_prefix
+    )
     _remaining_polling_timeout(deadline)
+    previous_page = None
+    previous_comments = None
+    if "next" in last_pages:
+        if ("last" not in last_pages or last_pages["next"] != last_page + 1
+                or last_pages["last"] < last_pages["next"]):
+            raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+        previous_page = last_page
+        previous_comments = last_comments
+        last_page = last_pages["last"]
+        last_comments, last_link_headers = await _fetch_comment_page(
+            session, url, headers, deadline, page=last_page, allow_redirects=False
+        )
+        last_relationships = _parse_link_headers(last_link_headers) if last_link_headers else {}
+        last_pages = _pagination_pages(
+            last_relationships, initial_parts, initial_origin, issue_number, api_prefix
+        )
+        _remaining_polling_timeout(deadline)
     if "next" in last_pages or ("last" in last_pages and last_pages["last"] != last_page):
         raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
     if len(last_comments) >= POLLING_COMMENT_SCAN_LIMIT:
@@ -292,15 +317,18 @@ async def _fetch_comment_history(session, url, headers) -> list:
     expected_previous = last_page - 1
     if expected_previous < 1 or last_pages.get("prev") != expected_previous:
         raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
-    previous_comments, previous_link_headers = await _fetch_comment_page(
-        session, url, headers, deadline, page=expected_previous, allow_redirects=False
-    )
-    previous_relationships = _parse_link_headers(previous_link_headers) if previous_link_headers else {}
-    previous_pages = _pagination_pages(previous_relationships, initial_parts, initial_origin, issue_number)
-    _remaining_polling_timeout(deadline)
-    if (("next" in previous_pages and previous_pages["next"] != last_page)
-            or ("last" in previous_pages and previous_pages["last"] != last_page)):
-        raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
+    if previous_page != expected_previous:
+        previous_comments, previous_link_headers = await _fetch_comment_page(
+            session, url, headers, deadline, page=expected_previous, allow_redirects=False
+        )
+        previous_relationships = _parse_link_headers(previous_link_headers) if previous_link_headers else {}
+        previous_pages = _pagination_pages(
+            previous_relationships, initial_parts, initial_origin, issue_number, api_prefix
+        )
+        _remaining_polling_timeout(deadline)
+        if (("next" in previous_pages and previous_pages["next"] != last_page)
+                or ("last" in previous_pages and previous_pages["last"] != last_page)):
+            raise _InvalidPaginationMetadata("Inconsistent pagination metadata")
     return (previous_comments + last_comments)[-POLLING_COMMENT_SCAN_LIMIT:]
 
 
