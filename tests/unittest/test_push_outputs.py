@@ -2,6 +2,7 @@ import asyncio
 import json
 import threading
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from starlette_context import request_cycle_context
@@ -27,6 +28,7 @@ def _reset_push_outputs():
 class TestPushOutputs:
     @pytest.mark.asyncio
     async def test_async_adapter_keeps_the_event_loop_responsive_and_waits_for_delivery(self, monkeypatch):
+        get_settings().set("PUSH_OUTPUTS.ENABLE", True)
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
         release = threading.Event()
@@ -50,6 +52,7 @@ class TestPushOutputs:
 
     @pytest.mark.asyncio
     async def test_cancelling_async_adapter_does_not_cancel_a_started_sink_thread(self, monkeypatch):
+        get_settings().set("PUSH_OUTPUTS.ENABLE", True)
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
         finished = asyncio.Event()
@@ -101,6 +104,60 @@ class TestPushOutputs:
         assert all(call[1]["timeout"] == 5 and call[1]["allow_redirects"] is False for call in calls)
         assert calls[0][1]["json"]["payload"] is payload
         assert calls[1][1]["json"] == {"text": "review markdown"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enable", [False, "false", "  FALSE  ", "0", "no", "", None])
+    async def test_disabled_async_outputs_do_not_submit_executor_work(self, monkeypatch, enable):
+        dispatch = AsyncMock()
+        monkeypatch.setattr(run_output.asyncio, "to_thread", dispatch)
+        with request_cycle_context({"settings": {"push_outputs": {"enable": enable}}}):
+            await async_push_outputs("review", {"score": 1})
+        dispatch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_async_setup_failure_is_non_fatal_and_does_not_submit_work(self, monkeypatch):
+        warnings = []
+        dispatch = AsyncMock()
+
+        def fail_settings():
+            raise RuntimeError("secret setup marker")
+
+        monkeypatch.setattr(run_output, "get_settings", fail_settings)
+        monkeypatch.setattr(run_output, "get_logger", lambda: SimpleNamespace(warning=warnings.append))
+        monkeypatch.setattr(run_output.asyncio, "to_thread", dispatch)
+        await async_push_outputs("review", {"payload-secret": 1}, "markdown-secret")
+        dispatch.assert_not_awaited()
+        assert warnings == ["push_outputs failed: RuntimeError"]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_async_stdout_records_remain_separate_json_lines(self, monkeypatch):
+        chunks = []
+        start = threading.Barrier(2)
+        second_body = threading.Event()
+        original = run_output.push_outputs
+
+        def synchronized_push(*args):
+            start.wait(timeout=5)
+            original(*args)
+
+        class InterleavedStdout:
+            def write(self, text):
+                chunks.append(text)
+                if text.startswith("{"):
+                    if len(chunks) == 1:
+                        # Let a second worker expose print's separate body/newline writes.
+                        second_body.wait(timeout=1)
+                    else:
+                        second_body.set()
+                return len(text)
+
+        monkeypatch.setattr(run_output, "push_outputs", synchronized_push)
+        monkeypatch.setattr(run_output.sys, "stdout", InterleavedStdout())
+        with request_cycle_context({"settings": {"push_outputs": {"enable": True, "channels": ["stdout"]}}}):
+            await asyncio.gather(async_push_outputs("review", {"id": 1}),
+                                 async_push_outputs("review", {"id": 2}))
+        records = [json.loads(line) for line in "".join(chunks).splitlines()]
+        assert sorted(record["payload"]["id"] for record in records) == [1, 2]
 
     def test_disabled_by_default_is_noop(self, monkeypatch, tmp_path):
         get_settings().set('PUSH_OUTPUTS.ENABLE', False)

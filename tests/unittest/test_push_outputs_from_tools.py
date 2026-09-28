@@ -216,6 +216,7 @@ def _awaitable(value):
 
 
 @pytest.mark.parametrize("suggestions", [[SUGGESTION], []], ids=["suggestions", "no-suggestions"])
+@pytest.mark.asyncio
 async def test_improve_waits_for_sink_before_provider_output(monkeypatch, suggestions):
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
     tool.git_provider = MagicMock()

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from importlib.metadata import PackageNotFoundError, version
@@ -15,6 +16,8 @@ import yaml
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+_stdout_lock = threading.Lock()
 
 
 def github_action_output(output_data: dict, key_name: str):
@@ -51,6 +54,14 @@ def _push_outputs_sink_url(cfg: dict, key: str) -> str:
     return url
 
 
+def _push_outputs_enabled(cfg: dict) -> bool:
+    enable = cfg.get("enable", False)
+    # Environment-variable strings must use the same normalization at both entry points.
+    if isinstance(enable, str):
+        enable = enable.lower().strip() not in ("false", "0", "no", "")
+    return bool(enable)
+
+
 def push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
     """Emit a tool's output to external sinks, without calling any git-provider API.
 
@@ -60,11 +71,7 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
     """
     try:
         cfg = get_settings().get("push_outputs", {}) or {}
-        enable = cfg.get("enable", False)
-        # Treat environment-variable strings "false", "0", "no", and "" as disabled.
-        if isinstance(enable, str):
-            enable = enable.lower().strip() not in ("false", "0", "no", "")
-        if not enable:
+        if not _push_outputs_enabled(cfg):
             return
 
         channels = cfg.get("channels", []) or []
@@ -78,7 +85,8 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
 
         if "stdout" in channels:
             try:
-                print(json.dumps(record, ensure_ascii=False))
+                with _stdout_lock:
+                    print(json.dumps(record, ensure_ascii=False))
             except Exception as e:
                 get_logger().warning(f"push_outputs: stdout failed: {type(e).__name__}")
 
@@ -124,6 +132,12 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
 
 async def async_push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
     """Run synchronous sinks without blocking; cancellation cannot stop a sink already running in a worker."""
+    try:
+        if not _push_outputs_enabled(get_settings().get("push_outputs", {}) or {}):
+            return
+    except Exception as e:
+        get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+        return
     await asyncio.to_thread(push_outputs, message_type, payload, markdown)
 
 
