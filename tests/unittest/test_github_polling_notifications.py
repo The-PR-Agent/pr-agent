@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import tomllib
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -51,10 +52,13 @@ def _page_link(base_url, page, relationship, *, numeric_alias=False):
 
 
 class _FakeResponse:
-    def __init__(self, body, *, link=None, delay=0):
+    def __init__(self, body, *, link=None, delay=0, status=200):
         self.body = body
         self.headers = {} if link is None else {"Link": link}
         self.delay = delay
+        self.status = status
+        self.request_info = SimpleNamespace(real_url="https://example.test/comments")
+        self.history = ()
 
     async def __aenter__(self):
         return self
@@ -320,12 +324,39 @@ async def test_comment_history_combines_previous_and_short_last_page_with_numeri
 
 
 @pytest.mark.asyncio
+async def test_notification_selects_mention_from_declared_newest_page():
+    base_url = "https://example.test"
+    initial_link = ", ".join([_page_link(base_url, 2, "next"), _page_link(base_url, 3, "last")])
+    selected = _comment(12)
+    session = _FakeSession(
+        _FakeResponse(_comment(99, "Other discussion")),
+        _FakeResponse([_comment(comment_id, "No mention") for comment_id in range(1, 5)], link=initial_link),
+        _FakeResponse([_comment(9, "No mention"), _comment(10, "No mention"),
+                       _comment(11, "No mention"), selected]),
+    )
+    handled = set()
+
+    result = await github_polling.is_valid_notification(
+        _notification(base_url), {"Authorization": "test"}, handled, session, "bot"
+    )
+
+    assert result == (
+        True, handled, selected, "@bot /review", f"{base_url}/repos/owner/repo/pulls/1", "@bot"
+    )
+    assert handled == {99}
+    assert [call[1].get("params") for call in session.calls] == [None, {"per_page": 4},
+                                                                  {"per_page": 4, "page": 3}]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "link",
     [
         '<https://evil.test/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
         '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
         '<https://user@example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
+        '<https://@example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
         '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
         '<https://example.test/repos/owner/repo/issues/1/comments?page=2#secret>; rel="next", '
         '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
@@ -342,6 +373,8 @@ async def test_comment_history_combines_previous_and_short_last_page_with_numeri
         '<https://example.test/repos/owner/repo/issues/1/comments?page=-1>; rel="next", '
         '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"',
         '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next" garbage',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next" "last"',
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="ne""xt"',
         '<https://example.test/repos/owner/repo/issues/1/comments?page=2>; rel="next"',
     ],
 )
@@ -355,6 +388,49 @@ async def test_invalid_pagination_metadata_fails_before_any_followup_request(lin
     assert len(session.calls) == 1
     assert "example.test" not in str(error.value)
     assert "evil.test" not in str(error.value)
+
+
+@pytest.mark.asyncio
+async def test_invalid_pagination_metadata_is_logged_without_secret_or_traceback(monkeypatch):
+    marker = "SYNTHETIC_SECRET"
+    link = (
+        f'<https://alice:{marker}@example.test／.evil/repos/owner/repo/issues/1/comments?page=2>; rel="next", '
+        '<https://example.test/repos/owner/repo/issues/1/comments?page=3>; rel="last"'
+    )
+    logger = MagicMock()
+    monkeypatch.setattr(github_polling, "get_logger", lambda: logger)
+    session = _FakeSession(
+        _FakeResponse(_comment(99, "Other discussion")),
+        _FakeResponse([_comment()], link=link),
+    )
+
+    result = await github_polling.is_valid_notification(
+        _notification("https://example.test"), {}, set(), session, "bot"
+    )
+
+    assert result == (False, {99})
+    logger.exception.assert_not_called()
+    assert marker not in repr(logger.method_calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("followup", [False, True])
+async def test_comment_history_rejects_redirect_statuses(followup):
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    initial_link = ", ".join([_page_link(base_url, 2, "next"), _page_link(base_url, 2, "last")])
+    if followup:
+        session = _FakeSession(
+            _FakeResponse([_comment()], link=initial_link),
+            _FakeResponse([_comment(2)], status=302),
+        )
+    else:
+        session = _FakeSession(_FakeResponse([_comment()], status=302))
+
+    with pytest.raises(aiohttp.ClientResponseError, match="302"):
+        await github_polling._fetch_comment_history(session, url, {})
+
+    assert len(session.calls) == (2 if followup else 1)
 
 
 @pytest.mark.asyncio
@@ -395,6 +471,27 @@ async def test_comment_history_detects_deadline_exhaustion_during_body_read(monk
     monkeypatch.setattr(github_polling, "_get_polling_request_timeout", lambda: 0.01)
     url = "https://example.test/repos/owner/repo/issues/1/comments"
     session = _FakeSession(_FakeResponse([_comment()], delay=0.02))
+
+    with pytest.raises(asyncio.TimeoutError):
+        await github_polling._fetch_comment_history(session, url, {})
+
+    assert len(session.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_comment_history_detects_deadline_exhaustion_during_link_parsing(monkeypatch):
+    monkeypatch.setattr(github_polling, "_get_polling_request_timeout", lambda: 0.01)
+    original_parse = github_polling._parse_link_headers
+
+    def slow_parse(values):
+        time.sleep(0.02)
+        return original_parse(values)
+
+    monkeypatch.setattr(github_polling, "_parse_link_headers", slow_parse)
+    base_url = "https://example.test"
+    url = f"{base_url}/repos/owner/repo/issues/1/comments"
+    link = ", ".join([_page_link(base_url, 2, "next"), _page_link(base_url, 2, "last")])
+    session = _FakeSession(_FakeResponse([_comment()], link=link))
 
     with pytest.raises(asyncio.TimeoutError):
         await github_polling._fetch_comment_history(session, url, {})
