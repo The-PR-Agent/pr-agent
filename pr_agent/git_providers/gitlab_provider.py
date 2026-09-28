@@ -61,6 +61,13 @@ class IncompleteGitLabDiffError(DiffNotFoundError):
     """Represent an incomplete GitLab merge-request diff response."""
 
 
+def _is_stale_file_update_error(error: GitlabUpdateError) -> bool:
+    message = str(getattr(error, "error_message", error)).lower()
+    return getattr(error, "response_code", None) == 400 and (
+        "file has been changed" in message or "file changed since" in message
+    )
+
+
 def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
     """Parse a GitLab ISO 8601 datetime string into a naive UTC datetime.
 
@@ -1001,7 +1008,17 @@ class GitLabProvider(GitProvider):
                     raise ConcurrentFileUpdateError("The file appeared after the changelog snapshot")
                 existing_file.content = contents
                 existing_file.last_commit_id = expected_snapshot.revision
-                existing_file.save(branch=branch, commit_message=message)
+                try:
+                    existing_file.save(branch=branch, commit_message=message)
+                except GitlabUpdateError as e:
+                    if _is_stale_file_update_error(e):
+                        get_logger().warning(
+                            f"Concurrent changelog edit rejected for file {file_path} in branch {branch}: {e}"
+                        )
+                        raise ConcurrentFileUpdateError(
+                            "The file changed after the changelog snapshot"
+                        ) from e
+                    raise
                 get_logger().debug(f"Updated file {file_path} in branch {branch}")
         except GitlabAuthenticationError as e:
             get_logger().error(f"Authentication failed while creating/updating file {file_path} "

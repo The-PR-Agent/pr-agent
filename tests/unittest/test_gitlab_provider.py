@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from gitlab import Gitlab
-from gitlab.exceptions import GitlabAuthenticationError, GitlabError, GitlabGetError
+from gitlab.exceptions import GitlabAuthenticationError, GitlabError, GitlabGetError, GitlabUpdateError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 from requests.exceptions import RequestException
 
@@ -314,6 +314,44 @@ class TestGitLabProvider:
         sent = manager.update.call_args.args[1]
         assert sent["content"] == "replacement"
         assert sent["last_commit_id"] == "captured-commit"
+
+    def test_guarded_write_converts_stale_file_rejection_to_concurrent_update(self, gitlab_provider, mock_project):
+        file_obj = MagicMock()
+        error = GitlabUpdateError("The file has been changed", response_code=400)
+        file_obj.save.side_effect = error
+        mock_project.files.get.return_value = file_obj
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger:
+            with pytest.raises(ConcurrentFileUpdateError) as raised:
+                gitlab_provider.create_or_update_pr_file(
+                    "CHANGELOG.md",
+                    "feature",
+                    "new contents",
+                    expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
+                )
+
+        assert raised.value.__cause__ is error
+        logger.return_value.warning.assert_called_once()
+        logger.return_value.error.assert_not_called()
+
+    def test_guarded_write_preserves_nonconcurrent_update_rejection(self, gitlab_provider, mock_project):
+        file_obj = MagicMock()
+        error = GitlabUpdateError("Commit failed", response_code=400)
+        file_obj.save.side_effect = error
+        mock_project.files.get.return_value = file_obj
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger:
+            with pytest.raises(GitlabUpdateError) as raised:
+                gitlab_provider.create_or_update_pr_file(
+                    "CHANGELOG.md",
+                    "feature",
+                    "new contents",
+                    expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
+                )
+
+        assert raised.value is error
+        logger.return_value.warning.assert_not_called()
+        logger.return_value.error.assert_called_once()
 
     def test_create_or_update_pr_file_create_new(self, gitlab_provider, mock_project):
         mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)

@@ -78,7 +78,7 @@ class IncompletePullRequestFilesError(RuntimeError):
 
 @dataclass(frozen=True)
 class FileContentSnapshot:
-    """File contents and existence at one revision, returned unchanged for a guarded write.
+    """Capture file contents and existence at one revision for a guarded write.
 
     The revision is opaque and provider-owned; consumers must not interpret or refresh it.
     """
@@ -88,7 +88,7 @@ class FileContentSnapshot:
 
 
 class ConcurrentFileUpdateError(RuntimeError):
-    """The file no longer matches the snapshot used to prepare its replacement."""
+    """Signal that a file no longer matches the snapshot used to prepare its replacement."""
 
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
