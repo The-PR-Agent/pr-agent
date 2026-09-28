@@ -20,7 +20,8 @@ There are several ways to use PR-Agent:
 
 When GitHub polling needs to look back through PR comments, it reuses the polling
 HTTP session rather than blocking the event loop with a synchronous request.
-`github.polling_request_timeout` sets the total timeout for this fallback request
+`github.polling_request_timeout` sets the total timeout for the entire fallback
+comment-history scan, including any follow-up page requests
 (default: 10 seconds; positive values are capped at 60). Invalid values use the
 default with a warning. Set it in the host configuration or through
 `GITHUB__POLLING_REQUEST_TIMEOUT`; repository settings do not control this limit.
