@@ -47,6 +47,8 @@ from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
+    ConcurrentFileUpdateError,
+    FileContentSnapshot,
     FilePatchInfo,
     GitProvider,
     IncompletePullRequestFilesError,
@@ -1778,35 +1780,47 @@ class GithubProvider(GitProvider):
             file_content_str = ""
         return file_content_str
 
-    def create_or_update_pr_file(
-        self, file_path: str, branch: str, contents="", message=""
-    ) -> Commit:
-        repo = self._get_repo()
+    def get_pr_file_content_snapshot(self, file_path: str, branch: str) -> FileContentSnapshot:
         try:
-            file_obj = repo.get_contents(file_path, ref=branch)
+            file_obj = self._get_repo().get_contents(file_path, ref=branch)
         except GithubException as e:
             if e.status != 404:
                 raise
-            if not self._pr_head_in_base_repo():
-                # A fork pull request resolves the bare branch name against the base
-                # repository, so creating the file here would write to the base
-                # repository's same-named branch (e.g. its main). Keep the previous
-                # fork behavior instead: the missing file fails the push.
-                raise
-            response = repo.create_file(
-                path=file_path,
-                message=message,
-                content=contents,
-                branch=branch,
-            )
-        else:
+            return FileContentSnapshot("", False, None)
+        contents = file_obj.decoded_content.decode()
+        if not isinstance(file_obj.sha, str) or not file_obj.sha:
+            raise ValueError("GitHub file snapshot is missing its blob SHA")
+        return FileContentSnapshot(contents, True, file_obj.sha)
+
+    def create_or_update_pr_file(
+        self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
+    ) -> Commit:
+        repo = self._get_repo()
+        if expected_snapshot.exists:
+            if not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision:
+                raise ValueError("GitHub file update requires the captured blob SHA")
             response = repo.update_file(
                 path=file_path,
                 message=message,
                 content=contents,
-                sha=file_obj.sha,
+                sha=expected_snapshot.revision,
                 branch=branch,
             )
+        else:
+            try:
+                repo.get_contents(file_path, ref=branch)
+            except GithubException as e:
+                if e.status != 404 or not self._pr_head_in_base_repo():
+                    # A bare fork branch resolves against the base repository. Keep
+                    # missing-file writes disabled when the head is not in that repo.
+                    raise
+                # GitHub also rejects a file created after this preliminary absence
+                # check. Propagate that final conflict without retrying as an update.
+                response = repo.create_file(
+                    path=file_path, message=message, content=contents, branch=branch
+                )
+            else:
+                raise ConcurrentFileUpdateError("The file appeared after the changelog snapshot")
         return response["commit"]
 
     def _pr_head_in_base_repo(self) -> bool:

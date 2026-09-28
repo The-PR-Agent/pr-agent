@@ -16,6 +16,7 @@ from pr_agent.algo.comment_identity import (
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from pr_agent.git_providers.git_provider import FileContentSnapshot
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 
@@ -158,6 +159,45 @@ class TestBitbucketProvider:
         ):
             provider.publish_description("AI title", "Updated description")
 
+    @pytest.mark.parametrize("status_code,content", [(200, "old content"), (200, ""), (404, "not found")])
+    def test_file_snapshot_reads_immutable_source_commit(self, status_code, content):
+        provider = self._source_write_provider()
+        provider.pr = MagicMock()
+        provider.pr.source_branch = "feature"
+        provider.pr.data = {"source": {"commit": {"hash": "captured-source-commit"}}}
+        response = self._source_write_response(status_code)
+        response._content = content.encode("utf-8")
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
+            snapshot = provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+        assert snapshot == FileContentSnapshot(content if status_code != 404 else "", status_code != 404,
+                                               "captured-source-commit")
+        request.assert_called_once_with(
+            "GET", "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/"
+            "captured-source-commit/CHANGELOG.md", headers=provider.headers,
+        )
+
+    def test_file_snapshot_propagates_server_failure(self):
+        provider = self._source_write_provider()
+        provider.pr = MagicMock()
+        provider.pr.source_branch = "feature"
+        provider.pr.data = {"source": {"commit": {"hash": "captured-source-commit"}}}
+        response = self._source_write_response(500)
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            with pytest.raises(HTTPError) as raised:
+                provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+        assert raised.value.response is response
+
+    @pytest.mark.parametrize("revision", [None, ""])
+    def test_file_snapshot_rejects_missing_source_commit(self, revision):
+        provider = self._source_write_provider()
+        provider.pr = MagicMock()
+        provider.pr.source_branch = "feature"
+        provider.pr.data = {"source": {"commit": {"hash": revision}}}
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as request:
+            with pytest.raises(ValueError):
+                provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+        request.assert_not_called()
+
     @pytest.mark.parametrize("status_code", [200, 201, 204])
     def test_publish_description_accepts_success_response(self, status_code):
         provider = BitbucketProvider.__new__(BitbucketProvider)
@@ -177,7 +217,8 @@ class TestBitbucketProvider:
             "pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response
         ) as request:
             result = provider.create_or_update_pr_file(
-                "CHANGELOG.md", "feature", "new content", "Update changelog"
+                "CHANGELOG.md", "feature", "new content", "Update changelog",
+                expected_snapshot=FileContentSnapshot("old", True, "captured-source-commit"),
             )
 
         assert result is None
@@ -186,7 +227,10 @@ class TestBitbucketProvider:
             "POST",
             "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/",
         )
-        assert request.call_args.kwargs["data"] == {"message": "Update changelog", "branch": "feature"}
+        # The endpoint can recreate a deleted branch; parents guards an existing branch only.
+        assert request.call_args.kwargs["data"] == {
+            "message": "Update changelog", "branch": "feature", "parents": "captured-source-commit"
+        }
         assert request.call_args.kwargs["files"] == {"CHANGELOG.md": "new content"}
         assert set(request.call_args.kwargs["headers"]) == {"Authorization"}
 
@@ -201,7 +245,8 @@ class TestBitbucketProvider:
             pytest.raises(HTTPError) as raised,
         ):
             provider.create_or_update_pr_file(
-                "CHANGELOG.md", "feature", "new content", "Update changelog"
+                "CHANGELOG.md", "feature", "new content", "Update changelog",
+                expected_snapshot=FileContentSnapshot("old", True, "captured-source-commit"),
             )
 
         assert raised.value.response is response
@@ -219,7 +264,8 @@ class TestBitbucketProvider:
             pytest.raises(error_type) as raised,
         ):
             provider.create_or_update_pr_file(
-                "CHANGELOG.md", "feature", "new content", "Update changelog"
+                "CHANGELOG.md", "feature", "new content", "Update changelog",
+                expected_snapshot=FileContentSnapshot("old", True, "captured-source-commit"),
             )
 
         assert raised.value is error

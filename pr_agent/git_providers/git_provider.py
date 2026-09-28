@@ -76,6 +76,21 @@ class IncompletePullRequestFilesError(RuntimeError):
     """Represent an incomplete or inconsistent pull-request file set."""
 
 
+@dataclass(frozen=True)
+class FileContentSnapshot:
+    """File contents and existence at one revision, returned unchanged for a guarded write.
+
+    The revision is opaque and provider-owned; consumers must not interpret or refresh it.
+    """
+    contents: str
+    exists: bool
+    revision: str | None
+
+
+class ConcurrentFileUpdateError(RuntimeError):
+    """The file no longer matches the snapshot used to prepare its replacement."""
+
+
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
 
