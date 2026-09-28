@@ -235,6 +235,8 @@ def check_if_hunk_lines_matches_to_file(i, original_lines, patch_lines, start1):
                         )
                             return False # we still want to avoid extending the hunk. But we don't want to log an error
                     except (UnicodeError, LookupError):
+                        # this encoding cannot represent the line, so it is not a match.
+                        # Fall through and try the next candidate encoding.
                         pass
 
                 is_valid_hunk = False

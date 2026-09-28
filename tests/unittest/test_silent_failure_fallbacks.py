@@ -176,7 +176,10 @@ def test_tied_extension_counts_resolve_identically_across_processes():
         results.add(completed.stdout.strip())
 
     assert len(results) == 1, f"language detection is not deterministic: {results}"
-    assert results.pop()  # a language was resolved
+
+    # a language was resolved, not an empty string
+    (resolved,) = results
+    assert resolved
 
 
 def test_unequivocal_majority_is_unaffected():
