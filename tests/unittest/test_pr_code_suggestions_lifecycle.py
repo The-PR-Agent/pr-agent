@@ -16,7 +16,7 @@ _TRACKED_SETTINGS = (
     "config.publish_output_progress",
     "config.is_auto_command",
     "config.propagate_tool_errors",
-    "pr_code_suggestions.commitable_code_suggestions",
+    "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.dual_publishing_score_threshold",
     "pr_code_suggestions.persistent_comment",
     "github.publish_as_check_run",
@@ -135,7 +135,7 @@ async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publ
         )
         _configure_published_run()
         settings = get_settings()
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.dual_publishing_score_threshold = 1
         settings.pr_code_suggestions.persistent_comment = False
 
@@ -175,7 +175,7 @@ async def test_run_does_not_publish_failure_after_successful_summary(monkeypatch
         )
         _configure_published_run()
         settings = get_settings()
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.dual_publishing_score_threshold = "invalid"
         settings.pr_code_suggestions.persistent_comment = persistent_comment
 
@@ -241,7 +241,7 @@ async def test_run_does_not_publish_failure_after_successful_inline_suggestions(
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.committable_code_suggestions = True
         settings.pr_code_suggestions.dual_publishing_score_threshold = 0
 
         await tool.run()
@@ -276,7 +276,7 @@ async def test_run_publishes_failure_when_inline_suggestions_never_publish(monke
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.committable_code_suggestions = True
 
         await tool.run()
 
@@ -309,7 +309,7 @@ async def test_run_does_not_remove_persistent_summary_when_cancelled_during_dual
         )
         _configure_published_run()
         settings = get_settings()
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.dual_publishing_score_threshold = 1
         settings.pr_code_suggestions.persistent_comment = True
 
@@ -379,7 +379,7 @@ async def test_run_cleans_up_progress_comment_on_check_run_publish(monkeypatch):
         _configure_published_run()
         settings = get_settings()
         settings.github.publish_as_check_run = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = True
 
         await tool.run()
@@ -418,7 +418,7 @@ async def test_run_retains_progress_handle_when_check_run_cleanup_fails(monkeypa
         _configure_published_run()
         settings = get_settings()
         settings.github.publish_as_check_run = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = True
 
         await tool.run()
@@ -473,7 +473,7 @@ async def test_run_reports_exhausted_inline_publication_retries(
         settings = get_settings()
         settings.config.publish_output_progress = show_progress
         settings.config.propagate_tool_errors = propagate_errors
-        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.committable_code_suggestions = True
 
         await tool.run()
 
@@ -536,7 +536,7 @@ async def test_failed_inline_retries_preserve_fallback_output(
         _configure_published_run()
         settings = get_settings()
         settings.config.propagate_tool_errors = propagate_errors
-        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.committable_code_suggestions = True
 
         if propagate_errors:
             with pytest.raises(RuntimeError, match="Failed to publish code suggestions"):
@@ -584,7 +584,7 @@ async def test_run_routes_all_invalid_ranges_through_publish_no_suggestions(
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = False
         settings.pr_code_suggestions.publish_output_no_suggestions = publish_output_no_suggestions
 
@@ -625,7 +625,7 @@ async def test_run_all_invalid_ranges_honors_quiet_gate_via_real_publish(
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = False
         settings.pr_code_suggestions.publish_output_no_suggestions = publish_output_no_suggestions
 
@@ -679,7 +679,7 @@ async def test_run_plain_diff_leaks_no_progress_when_all_ranges_invalid(monkeypa
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = False
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = False
 
         await tool.run()
@@ -720,7 +720,7 @@ async def test_run_valid_ranges_skip_no_suggestions_comment(monkeypatch, publish
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = False
         settings.pr_code_suggestions.publish_output_no_suggestions = publish_no_suggestions
 

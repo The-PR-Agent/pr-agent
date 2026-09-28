@@ -669,7 +669,7 @@ class GitLabProvider(GitProvider):
     _SUGGESTIONS_STABLE_ANCHORS = (
         PRCodeSuggestionsIdentity.SUMMARY.value,
         PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
-        "**Suggestion:**",  # commitable-suggestions inline mode
+        "**Suggestion:**",  # committable-suggestions inline mode
     )
     _SUGGESTIONS_LEGACY_ANCHORS = (PRCodeSuggestionsHeader.SUMMARY.value,)
     _INCREMENTAL_ANCHOR_PREFIXES = {

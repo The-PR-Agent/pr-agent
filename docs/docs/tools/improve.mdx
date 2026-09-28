@@ -47,7 +47,7 @@ To edit [configurations](#configuration-options) related to the `improve` tool, 
 For example, you can present suggestions with verified replacement ranges as committable code comments by running:
 
 ```toml
-/improve --pr_code_suggestions.commitable_code_suggestions=true
+/improve --pr_code_suggestions.committable_code_suggestions=true
 ```
 
 Suggestions whose replacement ranges cannot be verified remain regular comments without an apply action.
@@ -239,7 +239,7 @@ In such cases, we recommend prioritizing the suggestion's detailed description, 
 
 ### Dual publishing mode
 
-Our recommended approach for presenting code suggestions is through a [table](./improve.mdx#overview) (`--pr_code_suggestions.commitable_code_suggestions=false`).
+Our recommended approach for presenting code suggestions is through a [table](./improve.mdx#overview) (`--pr_code_suggestions.committable_code_suggestions=false`).
 This method significantly reduces the PR footprint and allows for quick and easy digestion of multiple suggestions.
 
 We also offer a complementary **dual publishing mode**. When enabled, suggestions exceeding a certain score threshold are not only displayed in the table, but also presented as committable PR comments.
@@ -285,7 +285,7 @@ persistent_inline_comments = true
 
 `Platforms supported: GitLab`
 
-By default, when `commitable_code_suggestions` is enabled, GitLab posts each suggestion as its own live discussion as soon as it's created - which means a separate notification (and email, if configured) per suggestion. To instead queue all suggestions and publish them together in a single batch, similar to using "start a review" in the GitLab UI, enable:
+By default, when `committable_code_suggestions` is enabled, GitLab posts each suggestion as its own live discussion as soon as it's created - which means a separate notification (and email, if configured) per suggestion. To instead queue all suggestions and publish them together in a single batch, similar to using "start a review" in the GitLab UI, enable:
 
 ```toml
 [gitlab]
@@ -371,7 +371,7 @@ for the authoritative default values.
     </td>
   </tr>
   <tr>
-    <td><b>commitable_code_suggestions</b></td>
+    <td><b>committable_code_suggestions</b></td>
     <td>If set to true, the tool will display the suggestions as committable code comments.</td>
   </tr>
   <tr>

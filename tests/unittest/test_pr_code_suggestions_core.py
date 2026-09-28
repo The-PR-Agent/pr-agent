@@ -296,14 +296,14 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
         "pr_code_suggestions.decouple_hunks",
         "pr_code_suggestions.parallel_calls",
         "pr_code_suggestions.max_suggestions_per_file",
-        "pr_code_suggestions.commitable_code_suggestions",
+        "pr_code_suggestions.committable_code_suggestions",
         "config.publish_output",
     ))
     settings = get_settings()
     settings.pr_code_suggestions.decouple_hunks = True
     settings.pr_code_suggestions.parallel_calls = False
     settings.set("pr_code_suggestions.max_suggestions_per_file", 1)
-    settings.set("pr_code_suggestions.commitable_code_suggestions", committable)
+    settings.set("pr_code_suggestions.committable_code_suggestions", committable)
     settings.set("config.publish_output", publish_output)
     tool = _make_tool()
     tool.token_handler = MagicMock()

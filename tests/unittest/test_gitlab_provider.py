@@ -2131,7 +2131,7 @@ class TestGitLabIncrementalReview:
         assert mock_project.repository_compare.call_count == 2
 
     def test_incremental_suggestions_anchor_advances_with_in_place_edits(self, gitlab_provider, mock_project):
-        # Default /improve config (persistent_comment=true, commitable_code_suggestions=false)
+        # Default /improve config (persistent_comment=true, committable_code_suggestions=false)
         # EDITS the "## PR Code Suggestions ✨" summary note in place on every run, so its
         # created_at stays frozen at the first run. The incremental window must anchor on
         # updated_at (the latest run), otherwise it grows from the first run and keeps

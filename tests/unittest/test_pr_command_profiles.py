@@ -40,12 +40,12 @@ DEFAULT_PR_COMMANDS = {
     "bitbucket_app": [
         "/describe --pr_description.final_update_message=false",
         "/review",
-        "/improve --pr_code_suggestions.commitable_code_suggestions=true",
+        "/improve --pr_code_suggestions.committable_code_suggestions=true",
     ],
     "bitbucket_server": [
         "/describe --pr_description.final_update_message=false",
         "/review",
-        "/improve --pr_code_suggestions.commitable_code_suggestions=true",
+        "/improve --pr_code_suggestions.committable_code_suggestions=true",
     ],
 }
 

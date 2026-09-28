@@ -1038,7 +1038,7 @@ class PRCodeSuggestions:
                             f"edited improved suggestion {i + 1}, because equal to existing code: "
                             f"{suggestion['existing_code']}"
                         )
-                        if get_settings().pr_code_suggestions.commitable_code_suggestions:
+                        if get_settings().pr_code_suggestions.committable_code_suggestions:
                             suggestion['improved_code'] = ""  # we need 'existing_code' to locate the code in the PR
                         else:
                             suggestion['existing_code'] = ""
@@ -1212,7 +1212,7 @@ class PRCodeSuggestions:
 
     def _uses_summarized_output(self) -> bool:
         return not get_settings().config.publish_output or (
-            not get_settings().pr_code_suggestions.commitable_code_suggestions
+            not get_settings().pr_code_suggestions.committable_code_suggestions
             and self.git_provider.is_supported("gfm_markdown")
         )
 
