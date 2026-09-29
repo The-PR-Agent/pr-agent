@@ -1754,6 +1754,13 @@ class GitLabProvider(GitProvider):
         return True
 
     def search_line(self, relevant_file, relevant_line_in_file):
+        # A relevant_file that is absent from the diff (filtered out by [ignore]/bad-extension
+        # rules, renamed or deleted upstream, or simply hallucinated by the model) leaves the
+        # loop body unentered. Seed every return value with find_in_file's "not found" defaults
+        # so the caller degrades to a skipped inline comment instead of UnboundLocalError.
+        found = False
+        source_line_no = 0
+        target_line_no = 0
         target_file = None
 
         edit_type = self.get_edit_type(relevant_line_in_file)
@@ -1761,6 +1768,7 @@ class GitLabProvider(GitProvider):
             if file.filename == relevant_file:
                 edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(file,
                                                                                                   relevant_line_in_file)
+                break
         return edit_type, found, source_line_no, target_file, target_line_no
 
     def find_in_file(self, file, relevant_line_in_file):
