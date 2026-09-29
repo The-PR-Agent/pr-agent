@@ -156,7 +156,7 @@ class PRQuestions:
             # strip sentence punctuation that a user typed right after the link
             candidate = candidate.rstrip('.,;:?!')
             path = urlparse(candidate).path.lower()
-            if re.search(r'\.(?:png|jpe?g|gif|webp|bmp|svg|avif)$', path):
+            if re.search(r'\.(?:png|jpe?g|gif|webp)$', path):
                 return candidate
         return ''
 

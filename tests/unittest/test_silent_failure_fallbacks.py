@@ -16,10 +16,12 @@
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
 from pr_agent.algo.git_patch_processing import check_if_hunk_lines_matches_to_file, extend_patch
+from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.tools.pr_questions import PRQuestions
 
 # ---------------------------------------------------------------------------
@@ -72,7 +74,7 @@ def test_mentioning_an_image_extension_without_an_image_url_is_not_treated_as_an
         ("https://cdn.example.com/x.jpeg?token=1", "https://cdn.example.com/x.jpeg?token=1"),
         ("https://cdn.example.com/y.gif", "https://cdn.example.com/y.gif"),
         ("https://cdn.example.com/z.webp", "https://cdn.example.com/z.webp"),
-        ("https://cdn.example.com/s.svg", "https://cdn.example.com/s.svg"),
+        ("https://cdn.example.com/s.svg", ""),
     ],
 )
 def test_image_extensions_and_query_strings(url, expected):
@@ -164,13 +166,14 @@ _TIE_SNIPPET = textwrap.dedent(
 
 def test_tied_extension_counts_resolve_identically_across_processes():
     """Regression: a 3-vs-3 tie used to resolve by set iteration order, varying per process."""
+    repo_root = str(Path(__file__).resolve().parents[2])
     results = set()
     for seed in ("0", "1", "2", "3", "4", "5"):
         completed = subprocess.run(
             [sys.executable, "-c", _TIE_SNIPPET],
             capture_output=True,
             text=True,
-            env={"PYTHONHASHSEED": seed, "PYTHONPATH": ".", "PATH": "/usr/bin:/bin"},
+            env={"PYTHONHASHSEED": seed, "PYTHONPATH": repo_root, "PATH": "/usr/bin:/bin"},
         )
         assert completed.returncode == 0, completed.stderr
         results.add(completed.stdout.strip())
@@ -183,5 +186,5 @@ def test_tied_extension_counts_resolve_identically_across_processes():
 
 
 def test_unequivocal_majority_is_unaffected():
-    files = ["a.py", "b.py", "c.py", "d.js"]
-    assert max([f.rsplit(".")[-1] for f in files], key=[f.rsplit(".")[-1] for f in files].count) == "py"
+    files = ["a.js", "b.py", "c.py", "d.py"]
+    assert get_main_pr_language({"Python": 75, "JavaScript": 25}, files) == "python"
