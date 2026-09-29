@@ -806,16 +806,14 @@ class GithubProvider(GitProvider):
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
                               absolute_position: int = None):
         body = self.limit_output_characters(body, self.max_comment_chars)
+        path = relevant_file.strip().strip('`').strip()
         position, absolute_position = find_line_number_of_relevant_line_in_file(self.diff_files,
-                                                                                relevant_file.strip('`'),
+                                                                                path,
                                                                                 relevant_line_in_file,
                                                                                 absolute_position)
-        path = relevant_file.strip()
         if position == -1:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
-            # GitHub supports file-level review comments when a finding cannot be
-            # anchored to a line in the current diff. Returning an empty payload
-            # here causes the later 422 fallback to lose the finding entirely.
+            # Preserve the finding as a file-level review comment when no line can be anchored.
             return dict(body=body, path=path, subject_type="file")
         return dict(body=body, path=path, position=position)
 

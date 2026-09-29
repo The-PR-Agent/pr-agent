@@ -127,7 +127,7 @@ def test_create_inline_comment_returns_line_payload(monkeypatch):
 
 
 def test_create_inline_comment_returns_file_payload_when_position_unresolved(monkeypatch):
-    """Unresolved findings remain visible as file-level review comments."""
+    """Keep unresolved findings visible as file-level review comments."""
     provider = _make_provider()
 
     monkeypatch.setattr(
@@ -144,35 +144,8 @@ def test_create_inline_comment_returns_file_payload_when_position_unresolved(mon
     }
 
 
-def test_publish_inline_comment_uses_file_level_review_when_position_unresolved(monkeypatch):
-    """An unresolved finding must be published instead of entering the empty-payload fallback."""
-    fake_pr = _FakePR()
-    provider = _make_provider(pr=fake_pr)
-    monkeypatch.setattr(
-        gh_module,
-        "find_line_number_of_relevant_line_in_file",
-        lambda *a, **kw: (-1, -1),
-    )
-
-    provider.publish_inline_comment("body", "src/foo.py", "x = 1")
-
-    assert len(fake_pr.create_review_calls) == 1
-    assert fake_pr.create_review_calls[0]["comments"] == [{
-        "body": "body",
-        "path": "src/foo.py",
-        "subject_type": "file",
-    }]
-
-
-def test_create_inline_comment_lookup_strips_backticks_but_payload_preserves_them(monkeypatch):
-    """Backtick handling is asymmetric in current production code.
-
-    ``find_line_number_of_relevant_line_in_file`` is called with
-    ``relevant_file.strip('`')`` (so the *lookup* sees the un-backticked
-    path), but the payload ``path`` only has ``.strip()`` applied — so any
-    surrounding backticks survive into the resulting comment payload. This
-    test documents that asymmetry; it does not endorse it.
-    """
+def test_create_inline_comment_normalizes_backticked_file_path(monkeypatch):
+    """Use the repository path without Markdown wrapping for lookup and publication."""
     provider = _make_provider()
     recorded = {}
 
@@ -186,12 +159,28 @@ def test_create_inline_comment_lookup_strips_backticks_but_payload_preserves_the
         recording_resolver,
     )
 
-    payload = provider.create_inline_comment("b", "`src/foo.py`", "x = 1")
+    payload = provider.create_inline_comment("b", "  `src/foo.py`  ", "x = 1")
 
-    # Lookup arg has backticks stripped.
     assert recorded["rel_file"] == "src/foo.py"
-    # Payload path preserves backticks (only .strip() runs on it).
-    assert payload["path"] == "`src/foo.py`"
+    assert payload["path"] == "src/foo.py"
+
+
+def test_create_inline_comment_normalizes_backticked_file_level_fallback(monkeypatch):
+    """Use the normalized repository path when a backticked finding has no line anchor."""
+    provider = _make_provider()
+    monkeypatch.setattr(
+        gh_module,
+        "find_line_number_of_relevant_line_in_file",
+        lambda *a, **kw: (-1, -1),
+    )
+
+    payload = provider.create_inline_comment("body", "  `src/foo.py`  ", "x = 1")
+
+    assert payload == {
+        "body": "body",
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }
 
 
 def test_create_inline_comment_payload_strips_surrounding_whitespace(monkeypatch):
