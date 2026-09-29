@@ -376,6 +376,10 @@ class PRAgent:
             lexer.whitespace_split = True
             # Keep apostrophes literal without adding backslashes inside double quotes.
             lexer.quotes = '"'
+            # Treat "#" as ordinary text. shlex drops it and everything after it as a shell
+            # comment, which silently truncated questions such as "/ask what does #123 do?".
+            # This input is a single already-parsed command, never a shell script.
+            lexer.commenters = ''
             action, *args = list(lexer)
         else:
             action, *args = request
@@ -461,7 +465,11 @@ class PRAgent:
                     if notify:
                         notify()
 
-                    await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                    result = await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                    if action == "add_docs" and result is False:
+                        span.set_status(StatusCode.ERROR)
+                        span.set_attribute("error.type", "documentation_publication_failed")
+                        return False
 
                 span.set_status(StatusCode.OK)
                 return True

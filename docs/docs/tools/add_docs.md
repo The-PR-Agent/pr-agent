@@ -67,3 +67,11 @@ You can pass configuration options directly in the command:
 1. The tool analyzes the PR diff to identify code components (functions, classes, methods) that lack documentation
 2. It uses AI to generate appropriate documentation based on the code context and language
 3. Documentation suggestions are published as inline code suggestions that can be applied with a single click
+
+### Publication failures
+
+With `CONFIG.PUBLISH_OUTPUT` enabled, PR-Agent retries unsuccessful batch
+publication one suggestion at a time. If the batch and every individual retry
+explicitly report failure, it attempts to post **Failed to publish code
+documentation for this PR.** and records the command as failed. Partial success
+or an unconfirmed provider result does not trigger this all-failed outcome.

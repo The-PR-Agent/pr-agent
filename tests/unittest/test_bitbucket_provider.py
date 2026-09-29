@@ -1789,6 +1789,8 @@ class TestBitbucketServerProvider:
                 '@@ -5,5 +5,5 @@\n to\n emulate\n a\n-real\n+fake\n file\n',
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
+                num_plus_lines=1,
+                num_minus_lines=1,
             )
         ]
 
@@ -1849,6 +1851,8 @@ class TestBitbucketServerProvider:
                 '@@ -5,5 +5,5 @@\n to\n emulate\n a\n-real\n-file\n+fake\n+test\n',
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
+                num_plus_lines=2,
+                num_minus_lines=2,
             )
         ]
 
@@ -1929,6 +1933,8 @@ class TestBitbucketServerProvider:
                 ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
+                num_plus_lines=4,
+                num_minus_lines=4,
             )
         ]
 
@@ -1954,6 +1960,8 @@ class TestBitbucketServerProvider:
                 ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
+                num_plus_lines=3,
+                num_minus_lines=3,
             )
         ]
 
@@ -1979,6 +1987,8 @@ class TestBitbucketServerProvider:
                 ),
                 'Readme.md',
                 edit_type=EDIT_TYPE.MODIFIED,
+                num_plus_lines=3,
+                num_minus_lines=3,
             )
         ]
 

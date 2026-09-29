@@ -3,6 +3,7 @@ import os
 
 # Sample Gunicorn configuration file.
 
+
 #
 # Server socket
 #
@@ -21,8 +22,9 @@ import os
 #       range.
 #
 
+
 # bind = '0.0.0.0:5000'
-bind = '0.0.0.0:3000'
+bind = f"0.0.0.0:{os.getenv('PORT') or 3000}"
 backlog = 2048
 
 #
@@ -316,7 +318,7 @@ def post_fork(server, worker):
     # The webhook apps call setup_logger() at import, which under `preload_app` now runs
     # in the master. When CONFIG.ANALYTICS_FOLDER is set that opens `pr-agent.<pid>.log`
     # named for the *master*, and every worker inherits the same descriptor. Re-running it
-    # here gives each worker its own file again. All three apps that use this config call
+    # here gives each worker its own file again. All four apps that use this config call
     # setup_logger identically, so repeating that call is enough.
     from pr_agent.config_loader import get_settings
     from pr_agent.log import LoggingFormat, setup_logger

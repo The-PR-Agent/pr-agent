@@ -89,6 +89,12 @@ FORBIDDEN_ARGS = [
     "--config.description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
     "--config__description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
     '--config={"description_issue_regex": "(?:[A-Za-z ]+)+X(d+)"}',
+    # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
+    # commenter must not be able to turn it off for their own command.
+    "--github_action_config.fail_on_tool_errors=false",
+    "--GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false",
+    "--github_action_config__fail_on_tool_errors=false",
+    '--github_action_config={"fail_on_tool_errors": false}',
     # section-level mapping values on sections that are not host-only themselves:
     # the dotted keys below are all rejected, so their {key: value} forms must be too
     '--qdrant={url: "https://evil.example", api_key: "x"}',

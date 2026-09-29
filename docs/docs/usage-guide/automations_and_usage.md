@@ -221,6 +221,8 @@ Adding `"synchronize"` to this list enables auto tools on new commits pushed to 
 
 `github_action_config.push_trigger_ignore_bot_commits` (default `true`) skips processing when the push author is a bot, avoiding redundant runs on automated commits.
 
+`github_action_config.fail_on_tool_errors` (default `true`) makes the Action exit non-zero when a tool recorded a swallowed failure (the default `propagate_tool_errors = false` case), instead of finishing green on a pull request that got no review. Set it to `false` to restore the previous behavior of ignoring recorded tool failures. Set it in the workflow configuration; comment arguments such as `/review --github_action_config.fail_on_tool_errors=false` are rejected.
+
 #### Automatic tools after a submitted GitHub review
 
 The GitHub App can run configured tools after a human reviewer submits a native GitHub review. This is opt-in: `review_commands` is empty by default. By default, only reviews submitted with the `changes_requested` state by a `User` review author trigger the commands. This conservative default avoids running on the repository's high-volume `commented` reviews; set `review_states` or `review_author_types` explicitly when a different workflow is needed.

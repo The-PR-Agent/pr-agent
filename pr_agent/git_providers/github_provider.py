@@ -123,11 +123,18 @@ class GithubProvider(GitProvider):
                                    f"belonging to owner/repo: {repo_name}")
             return None
 
+    def reset_diff_cache_for_command(self) -> None:
+        self.diff_files = None
+        if context.exists():
+            context.pop("diff_files", None)
+        self.incremental = IncrementalPR(False)
+
     def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None):
         # Constructed per call: a default in the signature is one object shared by every provider that omits it.
-        # Invalidate a completed empty diff when the file scope is being reconfigured.
-        if getattr(self, "diff_files", None) == []:
-            self.diff_files = None
+        # Invalidate completed diffs when the file scope is being reconfigured.
+        self.diff_files = None
+        if context.exists():
+            context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
         if self.incremental.is_incremental:
             self.unreviewed_files_map = dict()
@@ -1165,59 +1172,36 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"Failed to fix inline comment, error: {e}")
         return fixed_comments
 
-    def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        """
-        Publishes code suggestions as comments on the PR.
-        """
-        post_parameters_list = []
+    _code_suggestion_publish_exceptions = (GithubException, RequestException)
 
+    def _prepare_code_suggestions(self, code_suggestions: list) -> list:
         code_suggestions_with_fingerprints = copy.deepcopy(code_suggestions)
         for suggestion in code_suggestions_with_fingerprints:
             suggestion["_dedup_code_fp"] = code_fingerprint(
                 suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
-        code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
+        return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
-        for suggestion in code_suggestions_validated:
-            body = suggestion['body']
-            relevant_file = suggestion['relevant_file']
-            relevant_lines_start = suggestion['relevant_lines_start']
-            relevant_lines_end = suggestion['relevant_lines_end']
-
-            if not relevant_lines_start or relevant_lines_start == -1:
-                get_logger().exception(
-                    f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
-                continue
-
-            if relevant_lines_end < relevant_lines_start:
-                get_logger().exception(f"Failed to publish code suggestion, "
-                                  f"relevant_lines_end is {relevant_lines_end} and "
-                                  f"relevant_lines_start is {relevant_lines_start}")
-                continue
-
-            if relevant_lines_end > relevant_lines_start:
-                post_parameters = {
-                    "body": body,
-                    "path": relevant_file,
-                    "line": relevant_lines_end,
-                    "start_line": relevant_lines_start,
-                    "start_side": "RIGHT",
-                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
-                }
-            else:  # API is different for single line comments
-                post_parameters = {
-                    "body": body,
-                    "path": relevant_file,
-                    "line": relevant_lines_start,
-                    "side": "RIGHT",
-                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
-                }
-            post_parameters_list.append(post_parameters)
-
-        try:
-            return bool(self.publish_inline_comments(post_parameters_list))
-        except (GithubException, RequestException) as e:
-            get_logger().error(f"Failed to publish code suggestion, error: {e}")
-            return False
+    def _build_code_suggestion_payload(self, suggestion: dict) -> dict:
+        body = suggestion["body"]
+        relevant_file = suggestion["relevant_file"]
+        relevant_lines_start = suggestion["relevant_lines_start"]
+        relevant_lines_end = suggestion["relevant_lines_end"]
+        if relevant_lines_end > relevant_lines_start:
+            return {
+                "body": body,
+                "path": relevant_file,
+                "line": relevant_lines_end,
+                "start_line": relevant_lines_start,
+                "start_side": "RIGHT",
+                "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
+            }
+        return {
+            "body": body,
+            "path": relevant_file,
+            "line": relevant_lines_start,
+            "side": "RIGHT",
+            "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
+        }
 
     def edit_comment(self, comment, body: str):
         try:
@@ -1977,7 +1961,7 @@ class GithubProvider(GitProvider):
             query {{
                 node(id: "{issue_id}") {{
                     ... on Issue {{
-                        subIssues(first: 10) {{
+                        subIssues(first: 100) {{
                             nodes {{
                                 url
                             }}

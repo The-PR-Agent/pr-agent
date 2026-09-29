@@ -450,6 +450,92 @@ class TestOpenRouterControls:
         assert "temperature" not in kwargs
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        (
+            "model",
+            "custom_llm_provider",
+            "expected_capability_model",
+            "expected_metadata_lookup",
+            "expected_output_param",
+        ),
+        [
+            (
+                "openrouter/openai/gpt-6-astra:nitro",
+                "",
+                "openrouter/openai/gpt-6-astra",
+                None,
+                "max_completion_tokens",
+            ),
+            (
+                "openai/gpt-5.1:floor",
+                "openrouter",
+                "openrouter/openai/gpt-5.1",
+                "gpt-5.1",
+                "max_tokens",
+            ),
+            (
+                "openrouter/openai/gpt-6-astra:batch",
+                "",
+                "openrouter/openai/gpt-6-astra:batch",
+                None,
+                "max_tokens",
+            ),
+            (
+                "openrouter/openai/gpt-5.1:batch",
+                "",
+                "openrouter/openai/gpt-5.1:batch",
+                "gpt-5.1",
+                "max_tokens",
+            ),
+        ],
+    )
+    async def test_openrouter_variant_separates_family_and_capability_identity(
+        self,
+        monkeypatch,
+        model,
+        custom_llm_provider,
+        expected_capability_model,
+        expected_metadata_lookup,
+        expected_output_param,
+    ):
+        probed_models = []
+        metadata_lookups = []
+
+        def supports_temperature(model, custom_llm_provider=None):
+            probed_models.append(model)
+            return True
+
+        def get_model_info(model):
+            metadata_lookups.append(model)
+            return {"supports_minimal_reasoning_effort": False}
+
+        monkeypatch.setattr(
+            litellm_handler.LiteLLMAIHandler,
+            "_litellm_supports_temperature",
+            staticmethod(supports_temperature),
+        )
+        monkeypatch.setattr(
+            litellm_handler.LiteLLMAIHandler,
+            "_litellm_supports_reasoning",
+            staticmethod(lambda model: False),
+        )
+        monkeypatch.setattr(litellm, "get_model_info", get_model_info)
+        kwargs = await _run(
+            monkeypatch,
+            model,
+            {"max_tokens": 4096},
+            reasoning_effort="minimal",
+            custom_llm_provider=custom_llm_provider,
+        )
+
+        assert kwargs["model"] == model
+        assert probed_models == [expected_capability_model]
+        assert metadata_lookups == ([] if expected_metadata_lookup is None else [expected_metadata_lookup])
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+        assert kwargs[expected_output_param] == 4096
+        assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
     async def test_openrouter_effort_overrides_global_effort(self, monkeypatch):
         kwargs = await _run(
             monkeypatch,
@@ -473,6 +559,29 @@ class TestOpenRouterControls:
     async def test_registered_model_inherits_default_global_effort(self, monkeypatch):
         kwargs = await _run(monkeypatch, "openrouter/google/gemini-2.5-pro", {})
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+
+    @pytest.mark.asyncio
+    async def test_non_gpt_batch_variant_uses_base_for_reasoning_detection(self, monkeypatch):
+        probed_models = []
+
+        def supports_reasoning(model):
+            probed_models.append(model)
+            return True
+
+        monkeypatch.setattr(
+            litellm_handler.LiteLLMAIHandler,
+            "_litellm_supports_reasoning",
+            staticmethod(supports_reasoning),
+        )
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-3.1-flash-lite:batch",
+            {},
+            reasoning_effort="low",
+        )
+
+        assert probed_models == ["openrouter/google/gemini-3.1-flash-lite"]
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
 
     @pytest.mark.asyncio
     async def test_global_none_disables_reasoning(self, monkeypatch):

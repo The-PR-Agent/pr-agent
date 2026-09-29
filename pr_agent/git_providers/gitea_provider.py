@@ -529,7 +529,7 @@ class GiteaProvider(GitProvider):
                 self.logger.error("No commit messages found")
                 return ""
 
-            commit_message = "".join(commit_messages)
+            commit_message = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
             if max_tokens:
                 commit_message = clip_tokens(commit_message, max_tokens)
 

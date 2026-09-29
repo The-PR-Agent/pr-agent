@@ -232,6 +232,11 @@ class GitProvider(ABC):
     def is_supported(self, capability: str) -> bool:
         pass
 
+    def reset_diff_cache_for_command(self) -> None:
+        """Reset diff state that should not survive an automatic command boundary."""
+        if getattr(self, "diff_files", None) == []:
+            self.diff_files = None
+
     def supports_incremental_kind(self, kind: str) -> bool:
         """Whether `get_incremental_commits()` can scope an incremental run to `kind`
         (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
@@ -512,9 +517,58 @@ class GitProvider(ABC):
         # title in that case.
         pass
 
-    @abstractmethod
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        pass
+        """Publish code suggestions through provider-specific preparation and payload hooks."""
+        post_parameters_list = []
+        for suggestion in self._prepare_code_suggestions(code_suggestions):
+            suggestion = self._prepare_code_suggestion(suggestion)
+            if not suggestion:
+                continue
+            if not self._is_valid_code_suggestion(suggestion):
+                continue
+            post_parameters = self._build_code_suggestion_payload(suggestion)
+            if not post_parameters:
+                continue
+            post_parameters_list.append(post_parameters)
+
+        try:
+            return bool(self.publish_inline_comments(post_parameters_list))
+        except self._code_suggestion_publish_exceptions as e:
+            self._log_code_suggestion_publish_error(e)
+            return False
+
+    _code_suggestion_publish_exceptions = (Exception,)
+
+    def _prepare_code_suggestions(self, code_suggestions: list) -> list:
+        return code_suggestions
+
+    def _prepare_code_suggestion(self, suggestion: dict) -> dict | None:
+        return suggestion
+
+    def _is_valid_code_suggestion(self, suggestion: dict) -> bool:
+        relevant_lines_start = suggestion["relevant_lines_start"]
+        relevant_lines_end = suggestion["relevant_lines_end"]
+        if not relevant_lines_start or relevant_lines_start == -1:
+            self._log_invalid_code_suggestion(
+                f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}"
+            )
+            return False
+        if relevant_lines_end < relevant_lines_start:
+            self._log_invalid_code_suggestion(
+                f"Failed to publish code suggestion, relevant_lines_end is {relevant_lines_end} and "
+                f"relevant_lines_start is {relevant_lines_start}"
+            )
+            return False
+        return True
+
+    def _build_code_suggestion_payload(self, suggestion: dict) -> dict | None:
+        raise NotImplementedError
+
+    def _log_invalid_code_suggestion(self, message: str) -> None:
+        get_logger().exception(message)
+
+    def _log_code_suggestion_publish_error(self, error: Exception) -> None:
+        get_logger().error(f"Failed to publish code suggestion, error: {error}")
 
     @abstractmethod
     def get_languages(self):

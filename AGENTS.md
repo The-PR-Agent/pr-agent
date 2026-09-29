@@ -67,7 +67,7 @@ Sensitive values should stay in environment variables or the gitignored `.secret
 - Run the full unit suite: `PYTHONPATH=. uv run pytest tests/unittest -v`.
 - Execute the CLI locally once dependencies and API keys are available: `uv run pr-agent --pr_url <https://host/org/repo/pull/123> review`.
 - Build the test Docker target mirror of CI when containerizing: `docker build -f docker/Dockerfile --target test .` (loads dev dependencies and copies `tests/`).
-- Build the documentation the same way CI does (Node.js 20): `npm ci` then `npm run build` from `docs/`; `npm start` serves a live preview. The `docs-ci` workflow publishes `docs/build` to GitHub Pages.
+- Build the documentation the same way CI does (Node.js 22): `npm ci` then `npm run build` from `docs/`; `npm start` serves a live preview. The `docs-ci` workflow publishes `docs/build` to GitHub Pages.
 
 ## Coding Style and Existing Tooling
 

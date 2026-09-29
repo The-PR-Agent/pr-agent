@@ -950,20 +950,23 @@ class TestFetchSubIssuesNullGraphQLFields:
         assert "Invalid sub-issues response structure" in logs
 
     def test_sub_issues_are_returned_when_present(self):
-        """Happy path stays intact."""
+        """The complete supported direct-child set is requested and returned."""
+        sub_issue_urls = {
+            f"https://github.com/org/repo/issues/{number}"
+            for number in range(1, 12)
+        }
         responses = [
             {"data": {"repository": {"issue": {"id": "I_kwDO_fake"}}}},
             {"data": {"node": {"subIssues": {"nodes": [
-                {"url": "https://github.com/org/repo/issues/1"},
-                {"url": "https://github.com/org/repo/issues/2"},
+                {"url": url} for url in sub_issue_urls
             ]}}}},
         ]
         provider = _provider_with_graphql(responses)
 
         result, logs = _capture_logs(lambda: provider.fetch_sub_issues(ISSUE_URL))
 
-        assert result == {
-            "https://github.com/org/repo/issues/1",
-            "https://github.com/org/repo/issues/2",
-        }
+        assert result == sub_issue_urls
         assert "Failed to fetch sub-issues" not in logs
+        queries = provider.github_client._Github__requester.queries
+        assert len(queries) == 2
+        assert "subIssues(first: 100)" in queries[1]

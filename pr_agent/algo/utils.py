@@ -1327,12 +1327,14 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                                      artifact={"relevant_file": relevant_file})
                 continue
             else:
-                # try to find the line in the patch using difflib, with some margin of error
+                # Skip fuzzy normalization when the raw patch line matches exactly.
                 fuzzy_match_candidates = [line for line in patch_lines if line != NO_NEWLINE_AT_EOF_MARKER]
-                matches_difflib: list[str | Any] = difflib.get_close_matches(relevant_line_in_file,
-                                                                             fuzzy_match_candidates, n=3, cutoff=0.93)
-                if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
-                    relevant_line_in_file = matches_difflib[0]
+                if relevant_line_in_file not in fuzzy_match_candidates:
+                    matches_difflib: list[str | Any] = difflib.get_close_matches(
+                        relevant_line_in_file, fuzzy_match_candidates, n=3, cutoff=0.93
+                    )
+                    if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
+                        relevant_line_in_file = matches_difflib[0]
 
 
                 def scan_patch_lines(is_match):
