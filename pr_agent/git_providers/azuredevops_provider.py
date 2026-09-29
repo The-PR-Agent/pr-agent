@@ -951,6 +951,21 @@ class AzureDevopsProvider(GitProvider):
                 and self.incremental.last_seen_commit_sha
             )
             if incremental_active:
+                # Both sides of an incremental diff have to come from the source branch. head_sha
+                # is the merge commit, i.e. the source branch already merged with the target, while
+                # the old side below is read from the source-side last_seen_commit_sha. Diffing
+                # those two mixes histories: any target-branch commit that touched a file the new
+                # commits also touch is reported as the PR author's work. github_provider reads the
+                # new side from pr.head.sha and gitlab_provider from diff_refs head_sha, so both
+                # stay on the source branch here too.
+                source_head = getattr(self.pr, "last_merge_source_commit", None)
+                if source_head is not None:
+                    head_sha = source_head
+                else:
+                    get_logger().warning(
+                        f"PR {self.pr_num} has no last_merge_source_commit; the incremental diff keeps "
+                        f"the merge commit and may report target-branch changes as the author's"
+                    )
                 diffs = [f for f in diffs if f in self.unreviewed_files_map]
 
             invalid_files_names = []
