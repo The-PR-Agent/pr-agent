@@ -19,6 +19,7 @@ from ..log import get_logger
 from .diff_parsing import to_hunk_only_patch
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
+    FileContentSnapshot,
     GitProvider,
     IncompleteBitbucketPullRequestFilesError,
     redact_credentials,
@@ -723,7 +724,25 @@ class BitbucketProvider(GitProvider):
                 raise
             return ""
 
-    def create_or_update_pr_file(self, file_path: str, branch: str, contents="", message="") -> None:
+    def get_pr_file_content_snapshot(self, file_path: str, branch: str) -> FileContentSnapshot:
+        if branch != self.pr.source_branch:
+            raise ValueError("Bitbucket file snapshots require the PR source branch")
+        revision = self.pr.data["source"]["commit"]["hash"]
+        if not isinstance(revision, str) or not revision:
+            raise ValueError("Bitbucket file snapshot is missing its source commit")
+        url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
+               f"{revision}/{file_path}")
+        response = requests.request("GET", url, headers=self.headers)
+        if response.status_code == 404:
+            return FileContentSnapshot("", False, revision)
+        response.raise_for_status()
+        return FileContentSnapshot(response.text, True, revision)
+
+    def create_or_update_pr_file(
+        self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
+    ) -> None:
+        if not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision:
+            raise ValueError("Bitbucket file write requires the captured source commit")
         url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/")
         if not message:
             if contents:
@@ -733,7 +752,10 @@ class BitbucketProvider(GitProvider):
         files = {file_path: contents}
         data = {
             "message": message,
-            "branch": branch
+            "branch": branch,
+            # Assert the current HEAD of an existing branch; do not rely on this to
+            # guard a deleted branch's lifecycle because this endpoint can recreate it.
+            "parents": expected_snapshot.revision,
         }
         headers = {'Authorization': self.headers['Authorization']} if 'Authorization' in self.headers else {}
         response = requests.request("POST", url, headers=headers, data=data, files=files)

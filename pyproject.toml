@@ -69,9 +69,9 @@ dependencies = [
   "langfuse==3.14.5",
   "gunicorn==23.0.0",
   "pydantic==2.13.3",
-  # litellm 1.103.0 declares pydantic-settings as a base dependency and imports it unconditionally from
+  # LiteLLM declares pydantic-settings as a base dependency and imports it unconditionally from
   # litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
-  # Version matches litellm's own constraint (>=2.14.1,<3.0); the existing observability guard covers the callback import.
+  # Recheck LiteLLM's declared constraint on upgrade; the observability guard covers callback imports.
   "pydantic-settings==2.14.2",
   "html2text==2024.2.26",
   "giteapy==1.0.8",

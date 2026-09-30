@@ -882,9 +882,13 @@ class TestGetMaxTokens:
 
         assert get_max_tokens("fake-provider/fake-model-xyz") == 8000
 
-    def test_litellm_fallback_uses_real_registry(self, monkeypatch):
-        """Unknown model resolved against the real installed LiteLLM model registry."""
-        model = "cohere/command-r-plus"
+    @pytest.mark.parametrize("model, documented_input_tokens", [
+        ("cohere/command-r-plus", None),
+        ("github_copilot/gpt-4o", 64000),
+        ("github_copilot/gpt-4.1", 128000),
+    ])
+    def test_litellm_fallback_uses_real_registry(self, monkeypatch, model, documented_input_tokens):
+        """Verify registry fallback and Copilot input limits in changing_a_model.md."""
 
         assert model not in MAX_TOKENS
 
@@ -893,6 +897,10 @@ class TestGetMaxTokens:
 
         assert isinstance(expected_max_input_tokens, int)
         assert expected_max_input_tokens > 0
+        if documented_input_tokens is not None:
+            assert expected_max_input_tokens == documented_input_tokens, (
+                f"Review {model} input limits in docs/docs/usage-guide/changing_a_model.md"
+            )
 
         fake_settings = type("", (), {
             "config": type("", (), {

@@ -2226,8 +2226,13 @@ class PRCodeSuggestions:
             pr_body += """</tr></tbody></table>"""
             return pr_body
         except Exception as e:
-            get_logger().info(f"Failed to publish summarized code suggestions, error: {e}")
-            return ""
+            # Returning "" here is not a safe "no suggestions" answer: the caller appends the
+            # coverage footer and then overwrites the persistent review, so a swallowed
+            # rendering error would replace the existing suggestion table with a footer-only
+            # body and demote the real table into history. Fail loudly instead, the way
+            # PRReviewer._prepare_pr_review does, so the run reports a failure.
+            get_logger().exception(f"Failed to publish summarized code suggestions, error: {e}")
+            raise ValueError("Failed to generate summarized code suggestions") from e
 
     def get_score_str(self, score: int) -> str:
         th_high = get_settings().pr_code_suggestions.get('new_score_mechanism_th_high', 9)

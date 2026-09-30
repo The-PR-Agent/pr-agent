@@ -1153,6 +1153,110 @@ class TestCodeCommitProvider:
         assert result is False
         assert provider.codecommit_client.publish_comment.called
 
+    def test_publish_code_suggestions_prepares_markdown_and_html(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": "<details><summary>Suggestion</summary>\nLine 1\nLine 2</details>",
+                "relevant_file": "one.py",
+                "relevant_lines_start": 10,
+            }
+        ])
+
+        assert result is True
+        provider.codecommit_client.publish_comment.assert_called_once_with(
+            repo_name="source-repository",
+            pr_number=321,
+            destination_commit="destination-commit-1",
+            source_commit="source-commit-1",
+            comment="Suggestion\n\nLine 1\n\nLine 2",
+            annotation_file="one.py",
+            annotation_line=10,
+        )
+
+    def test_publish_code_suggestions_preserves_multiline_code_fence(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": (
+                    "<details><summary>Suggestion</summary>\n"
+                    "```suggestion\n"
+                    "def calculate(a, b):\n"
+                    "    res = a + b\n"
+                    "    return res\n"
+                    "```\n"
+                    "Explanation line 1\n"
+                    "Explanation line 2</details>"
+                ),
+                "relevant_file": "math_ops.py",
+                "relevant_lines_start": 42,
+            }
+        ])
+
+        assert result is True
+        expected_comment = (
+            "Suggestion\n\n"
+            "```suggestion\n"
+            "def calculate(a, b):\n"
+            "    res = a + b\n"
+            "    return res\n"
+            "```\n\n"
+            "Explanation line 1\n\n"
+            "Explanation line 2"
+        )
+        provider.codecommit_client.publish_comment.assert_called_once_with(
+            repo_name="source-repository",
+            pr_number=321,
+            destination_commit="destination-commit-1",
+            source_commit="source-commit-1",
+            comment=expected_comment,
+            annotation_file="math_ops.py",
+            annotation_line=42,
+        )
+
+    def test_publish_code_suggestions_sends_capped_body(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": "\n".join(["x" * 100] * 120),
+                "relevant_file": "one.py",
+                "relevant_lines_start": 5,
+            }
+        ])
+
+        assert result is True
+        sent = provider.codecommit_client.publish_comment.call_args.kwargs["comment"]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
+        assert "\n\n" in sent
+
     def test_get_title(self):
         # Test that the get_title() function returns the PR title
         with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):
@@ -1372,6 +1476,34 @@ class TestCodeCommitProvider:
             "`bar`: The bar script has been updated to list stopped servers.\n\n"
         )
         assert CodeCommitProvider._add_additional_newlines(input) == expect
+
+        # Fenced code block (e.g. suggestion) preserves internal newlines verbatim
+        code_suggestion = (
+            "**Suggestion:** Use helper\n"
+            "```suggestion\n"
+            "def foo():\n"
+            "    x = 1\n"
+            "    return x\n"
+            "```\n"
+            "Follow-up note line 1\n"
+            "Follow-up note line 2"
+        )
+        expected_suggestion = (
+            "**Suggestion:** Use helper\n\n"
+            "```suggestion\n"
+            "def foo():\n"
+            "    x = 1\n"
+            "    return x\n"
+            "```\n\n"
+            "Follow-up note line 1\n\n"
+            "Follow-up note line 2"
+        )
+        assert CodeCommitProvider._add_additional_newlines(code_suggestion) == expected_suggestion
+
+        # Tilde-fenced code block also preserved verbatim
+        tilde_fence = "Intro:\n~~~python\na = 1\nb = 2\n~~~\nOutro"
+        expected_tilde = "Intro:\n\n~~~python\na = 1\nb = 2\n~~~\n\nOutro"
+        assert CodeCommitProvider._add_additional_newlines(tilde_fence) == expected_tilde
 
     def test_remove_markdown_html(self):
         input = "## PR Feedback\n<details><summary>Code feedback:</summary>\nfile foo\n</summary>\n"

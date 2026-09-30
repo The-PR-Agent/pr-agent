@@ -21,6 +21,26 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 )
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
+
+class _ReverseIterationSet(set):
+    """Use a set double whose iteration order cannot accidentally match insertion order."""
+
+    def __init__(self):
+        super().__init__()
+        self._insertion_order = []
+
+    def add(self, item):
+        if item not in self:
+            self._insertion_order.append(item)
+        super().add(item)
+
+    def __iter__(self):
+        return iter(reversed(self._insertion_order))
+
+    def __eq__(self, other):
+        return set.__eq__(self, other)
+
+
 # ---------------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------------
@@ -289,6 +309,26 @@ class TestGithubExtractionMerging:
         # The branch-derived #13 must be the one dropped: description tickets
         # come first in the merge order, so the cap drops the trailing entry.
         assert ids == [10, 11, 12]
+
+    def test_branch_candidates_fill_remaining_slots_in_first_seen_order(self, settings_snapshot, monkeypatch):
+        repo_obj = _FakeRepoObj({
+            10: _FakeIssue(10),
+            11: _FakeIssue(11),
+            123: _FakeIssue(123),
+            456: _FakeIssue(456),
+        })
+        repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+        provider = _make_github_provider(
+            user_description="Fixes #10 and #11",
+            branch="feature/123-fix/456-followup",
+            repo_obj=repo_obj,
+        )
+        monkeypatch.setattr(tpc, "set", _ReverseIterationSet, raising=False)
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["ticket_id"] for ticket in result] == [10, 11, 123]
+        assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == [10, 11, 123]
 
 
 # ---------------------------------------------------------------------------

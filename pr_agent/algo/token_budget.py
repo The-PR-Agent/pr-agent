@@ -302,6 +302,7 @@ class AttemptTokenBudget:
             system_template,
             user_template,
             model=model,
+            count_prompt_tokens=False,
         )
         budget = cls.for_attempt(
             model,

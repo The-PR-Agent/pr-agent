@@ -4,12 +4,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from gitlab import Gitlab
-from gitlab.exceptions import GitlabAuthenticationError, GitlabError, GitlabGetError
+from gitlab.exceptions import GitlabAuthenticationError, GitlabError, GitlabGetError, GitlabUpdateError
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 from requests.exceptions import RequestException
 
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
-from pr_agent.git_providers.git_provider import DEFAULT_DISCUSSION_CONTEXT_CHARS, IncrementalPR
+from pr_agent.git_providers.git_provider import (
+    DEFAULT_DISCUSSION_CONTEXT_CHARS,
+    ConcurrentFileUpdateError,
+    FileContentSnapshot,
+    IncrementalPR,
+)
 from pr_agent.git_providers.gitlab_provider import (
     GitLabProvider,
     _GitLabIncrementalCommit,
@@ -124,7 +129,7 @@ class TestGitLabProvider:
         mock_project.files.get.assert_called_once_with("CHANGELOG.md", "main")
 
     def test_get_pr_file_content_file_not_found(self, gitlab_provider, mock_project):
-        mock_project.files.get.side_effect = GitlabGetError("404 Not Found")
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
 
         content = gitlab_provider.get_pr_file_content("CHANGELOG.md", "main")
 
@@ -223,8 +228,135 @@ class TestGitLabProvider:
         with pytest.raises(GitlabGetError, match="500 Server Error"):
             gitlab_provider.get_repo_file_content("AGENTS.md")
 
+    @pytest.mark.parametrize("content", [b"", b"old contents"])
+    def test_file_snapshot_binds_content_to_last_commit(self, gitlab_provider, mock_project, content):
+        file_obj = MagicMock()
+        file_obj.decode.return_value = content
+        file_obj.last_commit_id = "captured-commit"
+        mock_project.files.get.return_value = file_obj
+
+        snapshot = gitlab_provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+
+        assert snapshot == FileContentSnapshot(content.decode(), True, "captured-commit")
+        mock_project.files.get.assert_called_once_with("CHANGELOG.md", "feature")
+
+    def test_file_snapshot_missing_is_distinct_from_empty(self, gitlab_provider, mock_project):
+        mock_project.files.get.side_effect = GitlabGetError("missing", response_code=404)
+        assert gitlab_provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature") == FileContentSnapshot(
+            "", False, None
+        )
+
+    @pytest.mark.parametrize("status", [401, 500])
+    def test_file_snapshot_propagates_nonmissing_errors(self, gitlab_provider, mock_project, status):
+        error = GitlabGetError("read failed", response_code=status)
+        mock_project.files.get.side_effect = error
+        with pytest.raises(GitlabGetError) as raised:
+            gitlab_provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+        assert raised.value is error
+
+    def test_file_snapshot_propagates_decode_failure(self, gitlab_provider, mock_project):
+        error = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+        mock_project.files.get.return_value.decode.side_effect = error
+        with pytest.raises(UnicodeDecodeError) as raised:
+            gitlab_provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+        assert raised.value is error
+
+    @pytest.mark.parametrize("contents", [None, 42])
+    def test_file_snapshot_rejects_malformed_content(self, gitlab_provider, mock_project, contents):
+        mock_project.files.get.return_value.decode.return_value = contents
+        mock_project.files.get.return_value.last_commit_id = "captured-commit"
+        with pytest.raises(TypeError, match="must contain text"):
+            gitlab_provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+
+    @pytest.mark.parametrize("expected_exists", [False, True])
+    def test_guarded_write_rejects_existence_transition(self, gitlab_provider, mock_project, expected_exists):
+        file_obj = MagicMock()
+        mock_project.files.get.return_value = file_obj
+        if expected_exists:
+            mock_project.files.get.side_effect = GitlabGetError("missing", response_code=404)
+        snapshot = FileContentSnapshot("old" if expected_exists else "", expected_exists,
+                                       "captured-commit" if expected_exists else None)
+        with pytest.raises(ConcurrentFileUpdateError):
+            gitlab_provider.create_or_update_pr_file(
+                "CHANGELOG.md", "feature", "new contents", expected_snapshot=snapshot
+            )
+        mock_project.files.create.assert_not_called()
+        file_obj.save.assert_not_called()
+
+    def test_guarded_write_never_creates_after_server_read_error(self, gitlab_provider, mock_project):
+        error = GitlabGetError("read failed", response_code=500)
+        mock_project.files.get.side_effect = error
+        with pytest.raises(GitlabGetError) as raised:
+            gitlab_provider.create_or_update_pr_file(
+                "CHANGELOG.md", "feature", "new contents", expected_snapshot=FileContentSnapshot("", False, None)
+            )
+        assert raised.value is error
+        mock_project.files.create.assert_not_called()
+
+    def test_guarded_write_serializes_captured_commit_through_real_sdk(self, gitlab_provider, mock_project):
+        from gitlab.v4.objects.files import ProjectFileManager
+
+        manager = MagicMock()
+        manager.parent_attrs = {}
+        manager._update_attrs = ProjectFileManager._update_attrs
+        manager.update.return_value = {"file_path": "CHANGELOG.md"}
+        file_obj = ProjectFile(manager, {"file_path": "CHANGELOG.md", "branch": "feature",
+                                       "content": "newer contents", "commit_message": "message",
+                                       "last_commit_id": "newer-commit"})
+        mock_project.files.get.return_value = file_obj
+
+        gitlab_provider.create_or_update_pr_file(
+            "CHANGELOG.md", "feature", "replacement", "message",
+            expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
+        )
+
+        manager.update.assert_called_once()
+        sent = manager.update.call_args.args[1]
+        assert sent["content"] == "replacement"
+        assert sent["last_commit_id"] == "captured-commit"
+
+    def test_guarded_write_converts_stale_file_rejection_to_concurrent_update(self, gitlab_provider, mock_project):
+        file_obj = MagicMock()
+        error = GitlabUpdateError(
+            "You are attempting to update a file that has changed since you started editing it.", response_code=400
+        )
+        file_obj.save.side_effect = error
+        mock_project.files.get.return_value = file_obj
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger:
+            with pytest.raises(ConcurrentFileUpdateError) as raised:
+                gitlab_provider.create_or_update_pr_file(
+                    "CHANGELOG.md",
+                    "feature",
+                    "new contents",
+                    expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
+                )
+
+        assert raised.value.__cause__ is error
+        logger.return_value.warning.assert_called_once()
+        logger.return_value.error.assert_not_called()
+
+    def test_guarded_write_preserves_nonconcurrent_update_rejection(self, gitlab_provider, mock_project):
+        file_obj = MagicMock()
+        error = GitlabUpdateError("Commit failed", response_code=400)
+        file_obj.save.side_effect = error
+        mock_project.files.get.return_value = file_obj
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger:
+            with pytest.raises(GitlabUpdateError) as raised:
+                gitlab_provider.create_or_update_pr_file(
+                    "CHANGELOG.md",
+                    "feature",
+                    "new contents",
+                    expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
+                )
+
+        assert raised.value is error
+        logger.return_value.warning.assert_not_called()
+        logger.return_value.error.assert_called_once()
+
     def test_create_or_update_pr_file_create_new(self, gitlab_provider, mock_project):
-        mock_project.files.get.side_effect = GitlabGetError("404 Not Found")
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
         mock_file = MagicMock()
         mock_project.files.create.return_value = mock_file
 
@@ -232,7 +364,8 @@ class TestGitLabProvider:
         commit_message = "Add CHANGELOG.md"
 
         gitlab_provider.create_or_update_pr_file(
-            "CHANGELOG.md", "feature-branch", new_content, commit_message
+            "CHANGELOG.md", "feature-branch", new_content, commit_message,
+            expected_snapshot=FileContentSnapshot("", False, None),
         )
 
         mock_project.files.get.assert_called_once_with("CHANGELOG.md", "feature-branch")
@@ -246,17 +379,20 @@ class TestGitLabProvider:
     def test_create_or_update_pr_file_update_existing(self, gitlab_provider, mock_project):
         mock_file = MagicMock(ProjectFile)
         mock_file.content = "# Old changelog content"
+        mock_file.last_commit_id = "newer-commit"
         mock_project.files.get.return_value = mock_file
 
         new_content = "# New changelog content"
         commit_message = "Update CHANGELOG.md"
 
         gitlab_provider.create_or_update_pr_file(
-            "CHANGELOG.md", "feature-branch", new_content, commit_message
+            "CHANGELOG.md", "feature-branch", new_content, commit_message,
+            expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
         )
 
         mock_project.files.get.assert_called_once_with("CHANGELOG.md", "feature-branch")
         assert mock_file.content == new_content
+        assert mock_file.last_commit_id == "captured-commit"
         mock_file.save.assert_called_once_with(branch="feature-branch", commit_message=commit_message)
         mock_project.files.create.assert_not_called()
 
@@ -265,7 +401,8 @@ class TestGitLabProvider:
 
         with pytest.raises(Exception):
             gitlab_provider.create_or_update_pr_file(
-                "CHANGELOG.md", "feature-branch", "content", "message"
+                "CHANGELOG.md", "feature-branch", "content", "message",
+                expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
             )
 
     def test_has_create_or_update_pr_file_method(self, gitlab_provider):
@@ -278,8 +415,10 @@ class TestGitLabProvider:
         sig = inspect.signature(gitlab_provider.create_or_update_pr_file)
         params = list(sig.parameters.keys())
 
-        expected_params = ['file_path', 'branch', 'contents', 'message']
+        expected_params = ['file_path', 'branch', 'contents', 'message', 'expected_snapshot']
         assert params == expected_params
+        assert sig.parameters["expected_snapshot"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert sig.parameters["expected_snapshot"].default is inspect.Parameter.empty
 
     @pytest.mark.parametrize("content,expected", [
         ("simple text", "simple text"),
@@ -1130,7 +1269,7 @@ class TestGitLabProvider:
         assert discussions == [
             {
                 "thread_id": "bot-resolved",
-                "status": "resolved",
+                "status": "auto_resolved",
                 "file": "src/app.py",
                 "start_line": 12,
                 "end_line": 12,
@@ -1155,6 +1294,69 @@ class TestGitLabProvider:
                 "suggestion": _AGENT_BODY,
                 "replies": [],
             },
+        ]
+
+    def test_get_code_suggestion_thread_context_reports_applied_suggestions(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        applied = _thread_note(resolved=True, resolved_by={'id': _BOT_USER_ID, 'name': 'GitLab Bot'})
+        applied['suggestions'] = [{'id': 1, 'applied': True}]
+        not_applied = _thread_note()
+        not_applied['suggestions'] = [{'id': 2, 'applied': False}]
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [
+            _thread([applied], discussion_id='applied'),
+            _thread([not_applied], discussion_id='pending'),
+        ]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert [(d["thread_id"], d["status"]) for d in discussions] == [("pending", "open"), ("applied", "applied")]
+
+    def test_get_code_suggestion_thread_context_treats_bot_resolution_as_resolved_when_identity_is_unknown(
+            self, gitlab_provider):
+        gitlab_provider._own_user_id = None
+        note = _thread_note(resolved=True, resolved_by={'id': _BOT_USER_ID, 'name': 'GitLab Bot'})
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [_thread([note], discussion_id='d1')]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert discussions[0]["status"] == "resolved"
+
+    def test_get_code_suggestion_thread_context_uses_the_multi_line_range(self, gitlab_provider):
+        gitlab_provider._own_user_id = _BOT_USER_ID
+        note = _thread_note()
+        note['position']['line_range'] = {
+            'start': {'new_line': 10, 'old_line': None},
+            'end': {'new_line': 14, 'old_line': None},
+        }
+        deletion = _thread_note(line_key='old_line')
+        deletion['position']['line_range'] = {
+            'start': {'new_line': None, 'old_line': 3},
+            'end': {'new_line': None, 'old_line': 5},
+        }
+        renamed = _thread_note(line_key=None)
+        renamed['position'].update({'old_path': 'src/old_name.py', 'new_path': 'src/new_name.py'})
+        renamed['position']['line_range'] = {
+            'start': {'new_line': 7, 'old_line': None},
+            'end': {'new_line': 8, 'old_line': None},
+        }
+
+        gitlab_provider.mr = MagicMock()
+        gitlab_provider.mr.discussions.list.return_value = [
+            _thread([note], discussion_id='range'),
+            _thread([deletion], discussion_id='deleted'),
+            _thread([renamed], discussion_id='renamed'),
+        ]
+
+        discussions = json.loads(gitlab_provider.get_code_suggestion_thread_context())
+
+        assert [(d["thread_id"], d["file"], d["start_line"], d["end_line"]) for d in discussions] == [
+            ("renamed", "src/new_name.py", 7, 8),
+            ("deleted", "src/app.py", 3, 5),
+            ("range", "src/app.py", 10, 14),
         ]
 
     def test_get_code_suggestion_thread_context_truncates_messages_and_replies(self, gitlab_provider):

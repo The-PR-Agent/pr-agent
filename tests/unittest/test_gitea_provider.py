@@ -1550,3 +1550,58 @@ class TestGiteaCommitMessages:
 
         assert result
         assert len(result) < len(long_message)
+
+
+def _gitea_provider_with_temp_comments(count: int) -> GiteaProvider:
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.logger = MagicMock()
+    provider.comments_list = [
+        {"comment_id": i, "comment": f"working {i}", "is_temporary": True}
+        for i in range(1, count + 1)
+    ]
+    return provider
+
+
+def test_remove_initial_comment_deletes_every_temporary_comment():
+    provider = _gitea_provider_with_temp_comments(4)
+
+    provider.remove_initial_comment()
+
+    deleted = [
+        call.kwargs["comment_id"]
+        for call in provider.repo_api.remove_comment.call_args_list
+    ]
+    assert deleted == [1, 2, 3, 4]
+    assert provider.comments_list == []
+
+
+def test_remove_initial_comment_keeps_non_temporary_comments():
+    provider = _gitea_provider_with_temp_comments(2)
+    permanent = {"comment_id": 99, "comment": "final review", "is_temporary": False}
+    provider.comments_list.insert(0, permanent)
+
+    provider.remove_initial_comment()
+
+    assert provider.comments_list == [permanent]
+
+
+def test_remove_initial_comment_continues_after_a_failing_comment():
+    provider = _gitea_provider_with_temp_comments(3)
+    provider.repo_api.remove_comment.side_effect = [
+        ApiException(status=500, reason="boom"),
+        None,
+        None,
+    ]
+
+    provider.remove_initial_comment()
+
+    deleted = [
+        call.kwargs["comment_id"]
+        for call in provider.repo_api.remove_comment.call_args_list
+    ]
+    assert deleted == [1, 2, 3]
+    # The comment that failed to delete is kept so a later retry can clean it up.
+    assert [c["comment_id"] for c in provider.comments_list] == [1]

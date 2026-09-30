@@ -43,6 +43,8 @@ from ..log import get_logger
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
     CodeSuggestionThread,
+    ConcurrentFileUpdateError,
+    FileContentSnapshot,
     GitProvider,
     IncrementalPR,
     get_config_branch,
@@ -57,6 +59,11 @@ class DiffNotFoundError(Exception):
 
 class IncompleteGitLabDiffError(DiffNotFoundError):
     """Represent an incomplete GitLab merge-request diff response."""
+
+
+def _is_stale_file_update_error(error: GitlabUpdateError) -> bool:
+    message = str(getattr(error, "error_message", error)).lower()
+    return getattr(error, "response_code", None) == 400 and "changed since you started editing" in message
 
 
 def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
@@ -128,6 +135,28 @@ def _eligible_own_inline_thread(discussion, own_user_id: int):
         if author_id != own_user_id:
             return None
     return position
+
+
+def _suggestion_thread_location(position: dict) -> tuple:
+    """Return (path, start, end) of an inline note, or (None, None, None) when it is not anchored to a line.
+
+    Use the multi-line `line_range` when GitLab reports one, else the single anchored line. Prefer new-file
+    coordinates over old-file ones and pick the path from the same side, so renamed files map correctly.
+    """
+    line_range = position.get('line_range') if isinstance(position.get('line_range'), dict) else {}
+    for side, path_key in (('new_line', 'new_path'), ('old_line', 'old_path')):
+        edges = []
+        for key in ('start', 'end'):
+            edge = line_range.get(key) if isinstance(line_range.get(key), dict) else {}
+            edges.append(edge.get(side))
+        start, end = edges
+        if isinstance(start, int) and isinstance(end, int):
+            return position.get(path_key), min(start, end), max(start, end)
+    for side, path_key in (('new_line', 'new_path'), ('old_line', 'old_path')):
+        line = position.get(side)
+        if isinstance(line, int):
+            return position.get(path_key), line, line
+    return None, None, None
 
 
 def _flagged_line_removed(position: dict, removed_lines: dict) -> bool:
@@ -951,9 +980,29 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Error retrieving file {file_path} from branch {branch}: {e}")
             return ''
 
-    def create_or_update_pr_file(self, file_path: str, branch: str, contents="", message="") -> None:
-        """Create or update a file in the GitLab repository."""
+    def get_pr_file_content_snapshot(self, file_path: str, branch: str) -> FileContentSnapshot:
         try:
+            file_obj = self.gl.projects.get(self.id_project, lazy=True).files.get(file_path, branch)
+        except GitlabGetError as e:
+            if getattr(e, "response_code", None) != 404:
+                raise
+            return FileContentSnapshot("", False, None)
+        contents = decode_if_bytes(file_obj.decode())
+        if not isinstance(contents, str):
+            raise TypeError("GitLab file snapshot must contain text")
+        if not isinstance(file_obj.last_commit_id, str) or not file_obj.last_commit_id:
+            raise ValueError("GitLab file snapshot is missing its last commit ID")
+        return FileContentSnapshot(contents, True, file_obj.last_commit_id)
+
+    def create_or_update_pr_file(
+        self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
+    ) -> None:
+        """Create or replace a file only against the captured file state."""
+        try:
+            if expected_snapshot.exists and (
+                not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision
+            ):
+                raise ValueError("GitLab file update requires the captured last commit ID")
             project = self.gl.projects.get(self.id_project)
 
             if not message:
@@ -962,10 +1011,11 @@ class GitLabProvider(GitProvider):
 
             try:
                 existing_file = project.files.get(file_path, branch)
-                existing_file.content = contents
-                existing_file.save(branch=branch, commit_message=message)
-                get_logger().debug(f"Updated file {file_path} in branch {branch}")
-            except GitlabGetError:
+            except GitlabGetError as e:
+                if getattr(e, "response_code", None) != 404:
+                    raise
+                if expected_snapshot.exists:
+                    raise ConcurrentFileUpdateError("The file disappeared after the changelog snapshot") from e
                 project.files.create({
                     'file_path': file_path,
                     'branch': branch,
@@ -973,6 +1023,23 @@ class GitLabProvider(GitProvider):
                     'commit_message': message
                 })
                 get_logger().debug(f"Created file {file_path} in branch {branch}")
+            else:
+                if not expected_snapshot.exists:
+                    raise ConcurrentFileUpdateError("The file appeared after the changelog snapshot")
+                existing_file.content = contents
+                existing_file.last_commit_id = expected_snapshot.revision
+                try:
+                    existing_file.save(branch=branch, commit_message=message)
+                except GitlabUpdateError as e:
+                    if _is_stale_file_update_error(e):
+                        get_logger().warning(
+                            f"Concurrent changelog edit rejected for file {file_path} in branch {branch}: {e}"
+                        )
+                        raise ConcurrentFileUpdateError(
+                            "The file changed after the changelog snapshot"
+                        ) from e
+                    raise
+                get_logger().debug(f"Updated file {file_path} in branch {branch}")
         except GitlabAuthenticationError as e:
             get_logger().error(f"Authentication failed while creating/updating file {file_path} "
                                f"in branch {branch}: {e}")
@@ -1044,8 +1111,16 @@ class GitLabProvider(GitProvider):
             # allow only a limited number of files to be fully loaded. We can manage the rest with diffs only
             counter_valid += 1
             if counter_valid < MAX_FILES_ALLOWED_FULL or not diff['diff']:
-                original_file_content_str = self.get_pr_file_content(diff['old_path'], base_sha_for_content)
-                new_file_content_str = self.get_pr_file_content(diff['new_path'], head_sha_for_content)
+                original_file_content_str = (
+                    ''
+                    if not incremental_active and diff['new_file']
+                    else self.get_pr_file_content(diff['old_path'], base_sha_for_content)
+                )
+                new_file_content_str = (
+                    ''
+                    if not incremental_active and diff['deleted_file']
+                    else self.get_pr_file_content(diff['new_path'], head_sha_for_content)
+                )
             else:
                 if counter_valid == MAX_FILES_ALLOWED_FULL:
                     get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
@@ -1171,8 +1246,8 @@ class GitLabProvider(GitProvider):
             opener = notes[0] if notes and isinstance(notes[0], dict) else {}
             body = opener.get('body')
             position = opener.get('position') if isinstance(opener.get('position'), dict) else {}
-            line = position.get('new_line') or position.get('old_line')
-            if not isinstance(body, str) or not is_agent_inline_comment(body) or not isinstance(line, int):
+            path, start_line, end_line = _suggestion_thread_location(position)
+            if not isinstance(body, str) or not is_agent_inline_comment(body) or start_line is None:
                 continue
             try:
                 authored_by_agent = self.is_comment_authored_by_pr_agent(opener)
@@ -1186,14 +1261,30 @@ class GitLabProvider(GitProvider):
                 replies.append((author.get('name') or author.get('username'), note.get('body')))
             yield CodeSuggestionThread(
                 thread_id=discussion.id,
-                status="resolved" if opener.get('resolved') is True else "open",
-                file=position.get('new_path') if position.get('new_line') else position.get('old_path'),
-                start_line=line,
-                end_line=line,
+                status=self._code_suggestion_thread_status(opener),
+                file=path,
+                start_line=start_line,
+                end_line=end_line,
                 suggestion=body,
                 replies=replies,
                 authored_by_agent=authored_by_agent,
             )
+
+    def _code_suggestion_thread_status(self, opener: dict) -> str:
+        """Return `applied` (suggestion applied through the GitLab UI), `auto_resolved` (closed by the verified
+        PR-Agent user, e.g. the outdated/fixed thread sweeps), `resolved` (closed by anyone else, or by an
+        unverifiable user) or `open`."""
+        suggestions = opener.get('suggestions') or []
+        if any(isinstance(suggestion, dict) and suggestion.get('applied') for suggestion in suggestions):
+            return "applied"
+        if opener.get('resolved') is not True:
+            return "open"
+        resolved_by = opener.get('resolved_by') if isinstance(opener.get('resolved_by'), dict) else {}
+        own_user_id = self._get_own_user_id()
+        if own_user_id is not None and resolved_by.get('id') is not None \
+                and str(resolved_by.get('id')) == str(own_user_id):
+            return "auto_resolved"
+        return "resolved"
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
         if isinstance(comment, dict):

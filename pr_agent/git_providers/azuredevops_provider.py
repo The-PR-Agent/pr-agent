@@ -977,6 +977,8 @@ class AzureDevopsProvider(GitProvider):
                 version = GitVersionDescriptor(
                     version=head_sha.commit_id, version_type="commit"
                 )
+                new_fetch_failed = False
+                original_fetch_failed = False
                 try:
                     new_file_content_str = self.azure_devops_client.get_item(
                         repository_id=self.repo_slug,
@@ -996,6 +998,7 @@ class AzureDevopsProvider(GitProvider):
                         error=error,
                     )
                     new_file_content_str = ""
+                    new_fetch_failed = True
 
                 edit_type = EDIT_TYPE.MODIFIED
                 if diff_types[file] == "add":
@@ -1050,12 +1053,14 @@ class AzureDevopsProvider(GitProvider):
                                     f"retry at {file} also failed: {retry_error}"
                                 )
                                 original_file_content_str = ""
+                                original_fetch_failed = True
                         else:
                             get_logger().warning(
                                 f"Failed to retrieve original of {old_filename or file} "
                                 f"at {self.incremental.last_seen_commit_sha}: {error}"
                             )
                             original_file_content_str = ""
+                            original_fetch_failed = True
                 else:
                     base_version = GitVersionDescriptor(
                         version=base_sha.commit_id, version_type="commit"
@@ -1078,10 +1083,28 @@ class AzureDevopsProvider(GitProvider):
                             error=error,
                         )
                         original_file_content_str = ""
+                        original_fetch_failed = True
 
-                patch = load_large_diff(
-                    file, new_file_content_str, original_file_content_str, show_warning=False
-                ).rstrip("\r\n")
+                # An empty side only renders as a whole-file add or delete when the edit type
+                # does not already imply it, so a deletion keeps its legitimately empty head
+                # side and an addition keeps its legitimately empty base side.
+                content_fetch_failed = (
+                    (new_fetch_failed and edit_type != EDIT_TYPE.DELETED)
+                    or original_fetch_failed
+                )
+                if content_fetch_failed:
+                    # A fetch failure leaves one side empty, and load_large_diff turns an empty
+                    # side into a whole-file addition or deletion. Keep the file in the diff (a
+                    # missing file is also a blind spot) but publish no patch, so the model is
+                    # never handed invented changes.
+                    patch = ""
+                    get_logger().error(
+                        f"Not emitting a patch for {file}: one side of the content could not be "
+                        f"read, and the partial read would render as a whole-file change")
+                else:
+                    patch = load_large_diff(
+                        file, new_file_content_str, original_file_content_str, show_warning=False
+                    ).rstrip("\r\n")
                 if incremental_active:
                     self.unreviewed_files_map[file] = patch
 
@@ -1100,6 +1123,7 @@ class AzureDevopsProvider(GitProvider):
                         old_filename=old_filename,
                         num_plus_lines=num_plus_lines,
                         num_minus_lines=num_minus_lines,
+                        content_fetch_failed=content_fetch_failed,
                     )
                 )
             get_logger().info(f"Invalid files: {invalid_files_names}")

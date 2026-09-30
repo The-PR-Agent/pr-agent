@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 from github import GithubException
 
+from pr_agent.git_providers.git_provider import ConcurrentFileUpdateError, FileContentSnapshot
 from pr_agent.git_providers.github_provider import GithubProvider
 
 
@@ -62,9 +63,11 @@ def test_create_or_update_pr_file_returns_written_commit():
         branch="feature-branch",
         contents="new content",
         message="Update CHANGELOG.md",
+        expected_snapshot=FileContentSnapshot("old", True, "file-sha"),
     )
 
     assert result is written_commit
+    provider.repo_obj.get_contents.assert_not_called()
     provider.repo_obj.update_file.assert_called_once_with(
         path="CHANGELOG.md",
         message="Update CHANGELOG.md",
@@ -91,6 +94,7 @@ def test_create_or_update_pr_file_creates_missing_file():
         branch="feature-branch",
         contents="new content",
         message="Add CHANGELOG.md",
+        expected_snapshot=FileContentSnapshot("", False, None),
     )
 
     assert result is written_commit
@@ -122,6 +126,7 @@ def test_create_or_update_pr_file_does_not_create_for_fork_pr():
             branch="main",
             contents="new content",
             message="Add CHANGELOG.md",
+            expected_snapshot=FileContentSnapshot("", False, None),
         )
 
     assert exc_info.value is read_error
@@ -147,6 +152,7 @@ def test_create_or_update_pr_file_does_not_create_for_deleted_fork():
             branch="main",
             contents="new content",
             message="Add CHANGELOG.md",
+            expected_snapshot=FileContentSnapshot("", False, None),
         )
 
     assert exc_info.value is read_error
@@ -167,8 +173,83 @@ def test_create_or_update_pr_file_does_not_write_after_read_failure():
             branch="feature-branch",
             contents="new content",
             message="Update CHANGELOG.md",
+            expected_snapshot=FileContentSnapshot("", False, None),
         )
 
     assert exc_info.value is read_error
     provider.repo_obj.create_file.assert_not_called()
     provider.repo_obj.update_file.assert_not_called()
+
+
+@pytest.mark.parametrize("content", [b"", b"existing content"])
+def test_file_snapshot_keeps_content_and_sha_from_one_response(content):
+    provider = _provider_with_result(result=content)
+    provider._get_repo().get_contents.return_value.sha = "captured-blob"
+
+    snapshot = provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+
+    assert snapshot == FileContentSnapshot(content.decode(), True, "captured-blob")
+    provider._get_repo().get_contents.assert_called_once_with("CHANGELOG.md", ref="feature")
+
+
+def test_file_snapshot_distinguishes_missing_from_empty():
+    provider = _provider_with_result(error=GithubException(404, {}, {}))
+    assert provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature") == FileContentSnapshot("", False, None)
+
+
+@pytest.mark.parametrize("error", [GithubException(500, {}, {}), RuntimeError("transport failed")])
+def test_file_snapshot_propagates_read_errors(error):
+    provider = _provider_with_result(error=error)
+    with pytest.raises(type(error)) as raised:
+        provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+    assert raised.value is error
+
+
+def test_file_snapshot_propagates_invalid_content():
+    provider = _provider_with_result(result=b"\xff")
+    with pytest.raises(UnicodeDecodeError):
+        provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+
+
+def test_guarded_create_does_not_overwrite_a_file_that_appeared():
+    provider = _provider_with_result(result=b"concurrent contents")
+    with pytest.raises(ConcurrentFileUpdateError):
+        provider.create_or_update_pr_file(
+            "CHANGELOG.md", "feature", "stale contents", expected_snapshot=FileContentSnapshot("", False, None)
+        )
+    provider._get_repo().create_file.assert_not_called()
+    provider._get_repo().update_file.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [409, 422])
+def test_guarded_create_propagates_final_race_without_retry(status):
+    provider = _provider_with_result(error=GithubException(404, {}, {}))
+    provider._pr_head_in_base_repo = MagicMock(return_value=True)
+    failure = GithubException(status, {"message": "file created concurrently"}, {})
+    provider._get_repo().create_file.side_effect = failure
+    with pytest.raises(GithubException) as raised:
+        provider.create_or_update_pr_file(
+            "CHANGELOG.md", "feature", "stale contents", expected_snapshot=FileContentSnapshot("", False, None)
+        )
+    assert raised.value is failure
+    provider._get_repo().get_contents.assert_called_once_with("CHANGELOG.md", ref="feature")
+    provider._get_repo().create_file.assert_called_once()
+    provider._get_repo().update_file.assert_not_called()
+
+
+@pytest.mark.parametrize("status", [404, 409, 422])
+def test_guarded_update_keeps_captured_sha_and_never_switches_to_create(status):
+    provider = _provider_with_result(result=b"newer contents")
+    provider._get_repo().get_contents.return_value.sha = "newer-blob"
+    failure = GithubException(status, {}, {})
+    provider._get_repo().update_file.side_effect = failure
+    with pytest.raises(GithubException) as raised:
+        provider.create_or_update_pr_file(
+            "CHANGELOG.md", "feature", "stale contents", expected_snapshot=FileContentSnapshot("old", True, "old-blob")
+        )
+    assert raised.value is failure
+    provider._get_repo().get_contents.assert_not_called()
+    provider._get_repo().update_file.assert_called_once_with(
+        path="CHANGELOG.md", branch="feature", content="stale contents", message="", sha="old-blob"
+    )
+    provider._get_repo().create_file.assert_not_called()

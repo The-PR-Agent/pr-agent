@@ -20,7 +20,7 @@ from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
-from pr_agent.git_providers.git_provider import get_main_pr_language
+from pr_agent.git_providers.git_provider import FileContentSnapshot, get_main_pr_language
 from pr_agent.log import get_logger
 
 CHANGELOG_LINES = 50
@@ -56,6 +56,8 @@ class PRUpdateChangelog:
         if self.push_changelog_changes:
             if not hasattr(self.git_provider, "create_or_update_pr_file"):
                 self.push_skipped_reason = "not supported for this git provider"
+            elif not hasattr(self.git_provider, "get_pr_file_content_snapshot"):
+                self.push_skipped_reason = "guarded file writes are not supported for this git provider"
             elif not self.git_provider.is_supported("push_code"):
                 self.push_skipped_reason = "restricted by configuration (restricted_mode)"
         # Push only when it was requested AND is possible; otherwise fall back to a comment.
@@ -285,11 +287,14 @@ class PRUpdateChangelog:
         else:
             commit_message = "Update CHANGELOG.md"
         try:
+            if self.changelog_snapshot is None:
+                raise ValueError("Changelog write requires the command-start file snapshot")
             written_commit = self.git_provider.create_or_update_pr_file(
                 file_path="CHANGELOG.md",
                 branch=self.git_provider.get_pr_branch(),
                 contents=new_file_content,
                 message=commit_message,
+                expected_snapshot=self.changelog_snapshot,
             )
         except Exception:
             self._publish_changelog_write_error_fallback(answer)
@@ -340,17 +345,22 @@ Example:
 
     def _get_changelog_file(self):
         strict_read = self.commit_changelog and get_settings().config.publish_output
+        self.changelog_snapshot = None
         try:
             if strict_read:
-                self.changelog_file = self.git_provider.get_pr_file_content(
-                    "CHANGELOG.md", self.git_provider.get_pr_branch(), propagate_errors=True
+                snapshot = self.git_provider.get_pr_file_content_snapshot(
+                    "CHANGELOG.md", self.git_provider.get_pr_branch()
                 )
+                if not isinstance(snapshot, FileContentSnapshot) or not isinstance(snapshot.contents, str):
+                    raise TypeError("Changelog snapshot must contain text")
+                self.changelog_snapshot = snapshot
+                self.changelog_file = snapshot.contents
             else:
                 self.changelog_file = self.git_provider.get_pr_file_content(
                     "CHANGELOG.md", self.git_provider.get_pr_branch()
                 )
 
-            if isinstance(self.changelog_file, bytes):
+            if not strict_read and isinstance(self.changelog_file, bytes):
                 self.changelog_file = self.changelog_file.decode('utf-8')
 
             changelog_file_lines = self.changelog_file.splitlines()
