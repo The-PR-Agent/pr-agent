@@ -124,6 +124,7 @@ class TestBitbucketProvider:
             headers=provider.headers,
             timeout=BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS,
         )
+        response.raise_for_status.assert_called_once_with()
 
     def test_is_comment_authored_by_pr_agent_rejects_foreign_or_unverifiable_comment(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)

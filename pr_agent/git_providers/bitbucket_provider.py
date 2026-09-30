@@ -590,6 +590,25 @@ class BitbucketProvider(GitProvider):
     def get_user_id(self):
         return 0
 
+    def _get_authenticated_account_id(self) -> str:
+        agent_account_id = getattr(self, "_agent_account_id", None)
+        if isinstance(agent_account_id, str) and agent_account_id.strip():
+            return agent_account_id
+
+        response = requests.request(
+            "GET",
+            "https://api.bitbucket.org/2.0/user",
+            headers=self.headers,
+            timeout=BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        account_data = response.json()
+        agent_account_id = account_data.get("account_id") if isinstance(account_data, dict) else None
+        if not isinstance(agent_account_id, str) or not agent_account_id.strip():
+            raise RuntimeError("Bitbucket authenticated account cannot be verified")
+        self._agent_account_id = agent_account_id
+        return agent_account_id
+
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
         """Verify a Bitbucket Cloud comment belongs to this authenticated account."""
         cloud_comment = self._get_cloud_comment(comment)
@@ -601,21 +620,7 @@ class BitbucketProvider(GitProvider):
         if not isinstance(comment_account_id, str) or not comment_account_id.strip():
             raise RuntimeError("Bitbucket comment author cannot be verified")
 
-        agent_account_id = getattr(self, "_agent_account_id", None)
-        if not isinstance(agent_account_id, str) or not agent_account_id.strip():
-            response = requests.request(
-                "GET",
-                "https://api.bitbucket.org/2.0/user",
-                headers=self.headers,
-                timeout=BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            account_data = response.json()
-            agent_account_id = account_data.get("account_id") if isinstance(account_data, dict) else None
-            if not isinstance(agent_account_id, str) or not agent_account_id.strip():
-                raise RuntimeError("Bitbucket authenticated account cannot be verified")
-            self._agent_account_id = agent_account_id
-
+        agent_account_id = self._get_authenticated_account_id()
         return comment_account_id.casefold() == agent_account_id.casefold()
 
     def get_issue_comments(self):
