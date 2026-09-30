@@ -800,7 +800,15 @@ class GithubProvider(GitProvider):
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
                                original_suggestion=None):
         body = self.limit_output_characters(body, self.max_comment_chars)
-        self.publish_inline_comments([self.create_inline_comment(body, relevant_file, relevant_line_in_file)])
+        comment = self.create_inline_comment(body, relevant_file, relevant_line_in_file)
+        if comment.get("subject_type") == "file":
+            # File-level comments use the single review-comment endpoint. The
+            # create_review endpoint does not accept subject_type in its payload.
+            self.pr.create_review_comment(
+                comment["body"], self.last_commit_id, comment["path"], subject_type="file"
+            )
+            return
+        self.publish_inline_comments([comment])
 
 
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,

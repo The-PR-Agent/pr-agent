@@ -30,8 +30,18 @@ class _FakePR:
 
     def __init__(self, raise_on_first=None):
         self.create_review_calls = []
+        self.create_review_comment_calls = []
         self._raise_on_first = raise_on_first
         self._calls = 0
+
+    def create_review_comment(self, body, commit, path, subject_type=None):
+        self.create_review_comment_calls.append({
+            "body": body,
+            "commit": commit,
+            "path": path,
+            "subject_type": subject_type,
+        })
+        return SimpleNamespace(id=2)
 
     def create_review(self, commit=None, event=None, comments=None):
         self._calls += 1
@@ -142,6 +152,28 @@ def test_create_inline_comment_returns_file_payload_when_position_unresolved(mon
         "path": "src/foo.py",
         "subject_type": "file",
     }
+
+
+def test_publish_inline_comment_uses_file_comment_endpoint_for_unresolved_position(monkeypatch):
+    """File-level fallbacks must not be sent through create_review."""
+    fake_pr = _FakePR()
+    provider = _make_provider(pr=fake_pr)
+
+    monkeypatch.setattr(
+        gh_module,
+        "find_line_number_of_relevant_line_in_file",
+        lambda *args, **kwargs: (-1, -1),
+    )
+
+    provider.publish_inline_comment("body", "src/foo.py", "x = 1")
+
+    assert fake_pr.create_review_calls == []
+    assert fake_pr.create_review_comment_calls == [{
+        "body": "body",
+        "commit": provider.last_commit_id,
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }]
 
 
 def test_create_inline_comment_normalizes_backticked_file_path(monkeypatch):
