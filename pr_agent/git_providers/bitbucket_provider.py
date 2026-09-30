@@ -9,10 +9,9 @@ import requests
 from atlassian.bitbucket import Cloud
 from starlette_context import context
 
-from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
-
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
+from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
@@ -23,6 +22,8 @@ from .git_provider import (
     IncompleteBitbucketPullRequestFilesError,
     redact_credentials,
 )
+
+BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS = 30
 
 
 def _gef_filename(diff):
@@ -602,7 +603,12 @@ class BitbucketProvider(GitProvider):
 
         agent_account_id = getattr(self, "_agent_account_id", None)
         if not isinstance(agent_account_id, str) or not agent_account_id.strip():
-            response = requests.request("GET", "https://api.bitbucket.org/2.0/user", headers=self.headers)
+            response = requests.request(
+                "GET",
+                "https://api.bitbucket.org/2.0/user",
+                headers=self.headers,
+                timeout=BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS,
+            )
             response.raise_for_status()
             account_data = response.json()
             agent_account_id = account_data.get("account_id") if isinstance(account_data, dict) else None

@@ -7,7 +7,7 @@ from typing import Optional, Union
 
 import dynaconf
 
-from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_github_files_comment
+from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -115,8 +115,8 @@ async def _run_auto_tool(tool_class, pr_url):
     init_run_details()
     try:
         result = await tool_class(pr_url).run()
-    except IncompletePullRequestFilesError:
-        publish_incomplete_github_files_comment(pr_url)
+    except IncompletePullRequestFilesError as error:
+        await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
         raise
     if result is False:
         _mark_action_failed()

@@ -39,13 +39,13 @@ async def test_direct_auto_tool_notifies_and_reraises_incomplete_constructor_err
         def __init__(self, _pr_url):
             raise error
 
-    monkeypatch.setattr(github_action_runner, "publish_incomplete_github_files_comment", notify)
+    monkeypatch.setattr(github_action_runner, "publish_incomplete_files_comment", notify)
 
     with pytest.raises(IncompletePullRequestFilesError) as raised:
         await github_action_runner._run_auto_tool(IncompleteTool, "https://example/pr/1")
 
     assert raised.value is error
-    notify.assert_called_once_with("https://example/pr/1")
+    notify.assert_called_once_with("https://example/pr/1", error)
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_direct_auto_tool_leaves_unexpected_constructor_error_unchanged(mo
         def __init__(self, _pr_url):
             raise error
 
-    monkeypatch.setattr(github_action_runner, "publish_incomplete_github_files_comment", notify)
+    monkeypatch.setattr(github_action_runner, "publish_incomplete_files_comment", notify)
 
     with pytest.raises(RuntimeError) as raised:
         await github_action_runner._run_auto_tool(BrokenTool, "https://example/pr/1")

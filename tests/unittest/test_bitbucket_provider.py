@@ -15,7 +15,10 @@ from pr_agent.algo.comment_identity import (
 )
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import BitbucketServerProvider
-from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+from pr_agent.git_providers.bitbucket_provider import (
+    BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS,
+    BitbucketProvider,
+)
 from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
@@ -116,7 +119,10 @@ class TestBitbucketProvider:
             assert provider.is_comment_authored_by_pr_agent(comment) is True
 
         request.assert_called_once_with(
-            "GET", "https://api.bitbucket.org/2.0/user", headers=provider.headers
+            "GET",
+            "https://api.bitbucket.org/2.0/user",
+            headers=provider.headers,
+            timeout=BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS,
         )
 
     def test_is_comment_authored_by_pr_agent_rejects_foreign_or_unverifiable_comment(self):

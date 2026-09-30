@@ -13,7 +13,6 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import reapply_artifact_context
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.algo.comment_identity import (
-    PRCommandNoticeIdentity,
     add_comment_identity,
     comment_matches_identity,
 )
@@ -21,12 +20,16 @@ from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
-    IncompleteBitbucketPullRequestFilesError,
-    IncompletePullRequestFilesError,
+    IncompleteBitbucketPullRequestFilesError as _IncompleteBitbucketPullRequestFilesError,
 )
+from pr_agent.git_providers.git_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
+
+# Keep the established import path available to integrations and tests while the
+# shared handler works against the provider-neutral base exception.
+IncompleteBitbucketPullRequestFilesError = _IncompleteBitbucketPullRequestFilesError
 from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
 from pr_agent.tools.pr_add_docs import PRAddDocs
@@ -67,34 +70,28 @@ command2class = {
 
 commands = list(command2class.keys())
 
-INCOMPLETE_GITHUB_FILES_COMMENT_MARKER = "<!-- pr-agent:github-incomplete-files -->"
-INCOMPLETE_GITHUB_FILES_COMMENT = (
-    "## PR-Agent command was not run\n\n"
-    "GitHub returned an incomplete or inconsistent changed-file set for this pull request, so PR-Agent stopped "
-    "instead of analyzing only part of it.\n\n"
-    "GitHub limits changed-file responses to 3,000 files. If this pull request changes more than 3,000 files, "
-    "split it into smaller pull requests and run the command again. Otherwise, retry the command."
-)
-
-
-def publish_incomplete_github_files_comment(pr_url: str) -> None:
-    """Publish one trusted, sanitized PR-level notice without replacing the primary failure."""
+def publish_incomplete_files_comment(
+    pr_url: str, error: IncompletePullRequestFilesError
+) -> None:
+    """Publish one trusted, sanitized provider notice without replacing the primary failure."""
     try:
-        _publish_incomplete_github_files_comment(pr_url)
+        _publish_incomplete_files_comment(pr_url, error)
     except Exception:
         # Preserve the original completeness failure by containing every
         # ordinary provider or rendering failure from this secondary notice.
         get_logger().exception("Failed to prepare the incomplete-files notice")
 
 
-def _publish_incomplete_github_files_comment(pr_url: str) -> None:
+def _publish_incomplete_files_comment(
+    pr_url: str, error: IncompletePullRequestFilesError
+) -> None:
     if not get_settings().get("CONFIG.PUBLISH_OUTPUT", True):
         return
 
     try:
         provider = get_git_provider_with_context(pr_url)
     except Exception:
-        get_logger().exception("Failed to get a GitHub provider for the incomplete-files notice")
+        get_logger().exception("Failed to get a provider for the incomplete-files notice")
         return
 
     try:
@@ -114,7 +111,7 @@ def _publish_incomplete_github_files_comment(pr_url: str) -> None:
                 "Failed to read an existing incomplete-files notice; continuing"
             )
             continue
-        if not comment_matches_identity(body, INCOMPLETE_GITHUB_FILES_COMMENT_MARKER):
+        if not comment_matches_identity(body, error.notice_marker):
             continue
         try:
             if provider.is_comment_authored_by_pr_agent(comment):
@@ -123,59 +120,14 @@ def _publish_incomplete_github_files_comment(pr_url: str) -> None:
             get_logger().exception("Failed to verify the author of an incomplete-files notice")
 
     body = add_comment_identity(
-        INCOMPLETE_GITHUB_FILES_COMMENT,
-        INCOMPLETE_GITHUB_FILES_COMMENT_MARKER,
+        error.notice,
+        error.notice_marker,
         provider,
     )
     try:
         provider.publish_comment(body)
     except Exception:
         get_logger().exception("Failed to publish the incomplete-files notice")
-
-
-INCOMPLETE_BITBUCKET_FILES_COMMENT = (
-    "## PR-Agent command was not run\n\n"
-    "Bitbucket returned an incomplete or inconsistent pull-request diff, so PR-Agent stopped "
-    "instead of treating it as an empty change.\n\n"
-    "Retry the command and check the pull request's diff in Bitbucket if the problem persists."
-)
-INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER = PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value
-
-
-def publish_incomplete_bitbucket_files_comment(pr_url: str) -> None:
-    """Publish fixed provider-specific guidance without replacing the primary failure."""
-    try:
-        if not get_settings().get("CONFIG.PUBLISH_OUTPUT", True):
-            return
-        provider = get_git_provider_with_context(pr_url)
-        try:
-            comments = provider.get_issue_comments_newest_first()
-        except Exception:
-            get_logger().exception("Failed to inspect existing Bitbucket incomplete-files notices")
-            comments = []
-        for comment in comments:
-            try:
-                body = provider._get_comment_body(comment)
-            except Exception:
-                get_logger().warning("Failed to read an existing Bitbucket incomplete-files notice; continuing")
-                continue
-            if not comment_matches_identity(body, INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER):
-                continue
-            try:
-                if provider.is_comment_authored_by_pr_agent(comment):
-                    return
-            except Exception:
-                get_logger().exception("Failed to verify the author of a Bitbucket incomplete-files notice")
-        provider.publish_comment(
-            add_comment_identity(
-                INCOMPLETE_BITBUCKET_FILES_COMMENT,
-                INCOMPLETE_BITBUCKET_FILES_COMMENT_MARKER,
-                provider,
-            )
-        )
-    except Exception:
-        get_logger().exception("Failed to publish the Bitbucket incomplete-files notice")
-
 
 def _split_command(command: str) -> list[tuple[str, bool]]:
     """Split an auto command and retain whether each token was quoted.
@@ -351,10 +303,8 @@ class PRAgent:
                 )
             except Exception as e:
                 get_logger().exception("Failed to process the command.")
-                if isinstance(e, IncompleteBitbucketPullRequestFilesError):
-                    publish_incomplete_bitbucket_files_comment(pr_url)
-                elif isinstance(e, IncompletePullRequestFilesError):
-                    publish_incomplete_github_files_comment(pr_url)
+                if isinstance(e, IncompletePullRequestFilesError):
+                    await asyncio.to_thread(publish_incomplete_files_comment, pr_url, e)
                 # Status carries no description: it is free text, and the exception
                 # message can embed PR URLs, repo names, or other request content.
                 span.set_status(StatusCode.ERROR)
