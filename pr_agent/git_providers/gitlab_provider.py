@@ -63,9 +63,7 @@ class IncompleteGitLabDiffError(DiffNotFoundError):
 
 def _is_stale_file_update_error(error: GitlabUpdateError) -> bool:
     message = str(getattr(error, "error_message", error)).lower()
-    return getattr(error, "response_code", None) == 400 and (
-        "file has been changed" in message or "file changed since" in message
-    )
+    return getattr(error, "response_code", None) == 400 and "changed since you started editing" in message
 
 
 def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:

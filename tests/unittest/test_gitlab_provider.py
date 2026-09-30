@@ -317,7 +317,9 @@ class TestGitLabProvider:
 
     def test_guarded_write_converts_stale_file_rejection_to_concurrent_update(self, gitlab_provider, mock_project):
         file_obj = MagicMock()
-        error = GitlabUpdateError("The file has been changed", response_code=400)
+        error = GitlabUpdateError(
+            "You are attempting to update a file that has changed since you started editing it.", response_code=400
+        )
         file_obj.save.side_effect = error
         mock_project.files.get.return_value = file_obj
 
