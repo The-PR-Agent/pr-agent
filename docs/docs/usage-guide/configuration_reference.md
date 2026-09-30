@@ -386,6 +386,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `push_commands` | ["/describe", "/review"] |  |
 
 
+## `[bitbucket]` {#bitbucket}
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `identity_request_timeout` | 30 | positive seconds for authenticated-account verification requests |
+
+
 ## `[bitbucket_app]` {#bitbucket_app}
 
 | Key | Default | Description |
