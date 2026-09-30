@@ -353,6 +353,35 @@ async def test_run_publishes_failure_when_inline_suggestions_never_publish(monke
 
 
 @pytest.mark.asyncio
+async def test_run_preserves_original_error_when_failure_comment_publish_fails(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [object()]
+        provider.publish_comment.side_effect = RuntimeError("failure comment rejected")
+        tool = _make_tool(provider)
+        original_error = RuntimeError("generation failed")
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(side_effect=original_error),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.is_auto_command = True
+        settings.config.propagate_tool_errors = True
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await tool.run()
+
+        assert exc_info.value is original_error
+        provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 async def test_run_does_not_remove_persistent_summary_when_cancelled_during_dual_publishing(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:

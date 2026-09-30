@@ -482,8 +482,8 @@ class PRCodeSuggestions:
                         if not self.progress_response:
                             self.git_provider.remove_initial_comment()
                         self.git_provider.publish_comment("Failed to generate code suggestions for PR")
-                    except Exception as e:
-                        get_logger().exception(f"Failed to update persistent review, error: {e}")
+                    except Exception as publish_error:
+                        get_logger().exception(f"Failed to update persistent review, error: {publish_error}")
             # The status of the whole run must not read as success just because the error stopped here.
             record_command_failure()
             if (
