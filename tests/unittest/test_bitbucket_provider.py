@@ -164,16 +164,16 @@ class TestBitbucketProvider:
         provider = self._source_write_provider()
         provider.pr = MagicMock()
         provider.pr.source_branch = "feature"
-        provider.pr.data = {"source": {"commit": {"hash": "captured-source-commit"}}}
+        provider.pr.data = {"source": {"commit": {"hash": "a1b2c3d4e5f6"}}}
         response = self._source_write_response(status_code)
         response._content = content.encode("utf-8")
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
             snapshot = provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
         assert snapshot == FileContentSnapshot(content if status_code != 404 else "", status_code != 404,
-                                               "captured-source-commit")
+                                               "a1b2c3d4e5f6")
         request.assert_called_once_with(
             "GET", "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/"
-            "captured-source-commit/CHANGELOG.md", headers=provider.headers,
+            "a1b2c3d4e5f6/CHANGELOG.md", headers=provider.headers,
         )
 
     def test_file_snapshot_propagates_server_failure(self):
@@ -218,7 +218,7 @@ class TestBitbucketProvider:
         ) as request:
             result = provider.create_or_update_pr_file(
                 "CHANGELOG.md", "feature", "new content", "Update changelog",
-                expected_snapshot=FileContentSnapshot("old", True, "captured-source-commit"),
+                expected_snapshot=FileContentSnapshot("old", True, "a1b2c3d4e5f6"),
             )
 
         assert result is None
@@ -229,7 +229,7 @@ class TestBitbucketProvider:
         )
         # Assert the parent guard only for an existing branch; Bitbucket can recreate a deleted branch.
         assert request.call_args.kwargs["data"] == {
-            "message": "Update changelog", "branch": "feature", "parents": "captured-source-commit"
+            "message": "Update changelog", "branch": "feature", "parents": "a1b2c3d4e5f6"
         }
         assert request.call_args.kwargs["files"] == {"CHANGELOG.md": "new content"}
         assert set(request.call_args.kwargs["headers"]) == {"Authorization"}
