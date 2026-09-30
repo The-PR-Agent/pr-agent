@@ -22,7 +22,8 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError as _IncompleteBitbucketPullRequestFilesError,
 )
-from pr_agent.git_providers.git_provider import IncompletePullRequestFilesError
+from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError
+from pr_agent.git_providers.git_provider import IncompletePullRequestFilesError as _IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
@@ -30,6 +31,7 @@ from pr_agent.telemetry.meter import get_commands_counter
 # Keep the established import path available to integrations and tests while the
 # shared handler works against the provider-neutral base exception.
 IncompleteBitbucketPullRequestFilesError = _IncompleteBitbucketPullRequestFilesError
+IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
 from pr_agent.tools.pr_add_docs import PRAddDocs
@@ -71,7 +73,7 @@ command2class = {
 commands = list(command2class.keys())
 
 def publish_incomplete_files_comment(
-    pr_url: str, error: IncompletePullRequestFilesError
+    pr_url: str, error: IncompleteProviderPullRequestFilesError
 ) -> None:
     """Publish one trusted, sanitized provider notice without replacing the primary failure."""
     try:
@@ -83,7 +85,7 @@ def publish_incomplete_files_comment(
 
 
 def _publish_incomplete_files_comment(
-    pr_url: str, error: IncompletePullRequestFilesError
+    pr_url: str, error: IncompleteProviderPullRequestFilesError
 ) -> None:
     if not get_settings().get("CONFIG.PUBLISH_OUTPUT", True):
         return
@@ -303,7 +305,7 @@ class PRAgent:
                 )
             except Exception as e:
                 get_logger().exception("Failed to process the command.")
-                if isinstance(e, IncompletePullRequestFilesError):
+                if isinstance(e, IncompleteProviderPullRequestFilesError):
                     await asyncio.to_thread(publish_incomplete_files_comment, pr_url, e)
                 # Status carries no description: it is free text, and the exception
                 # message can embed PR URLs, repo names, or other request content.

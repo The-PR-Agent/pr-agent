@@ -10,10 +10,21 @@ import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as provider_utils
+from pr_agent.git_providers.git_provider import (
+    IncompleteBitbucketPullRequestFilesError,
+    IncompleteProviderPullRequestFilesError,
+    IncompletePullRequestFilesError,
+)
 
 
 def _identity_args(args):
     return args
+
+
+def test_incomplete_file_errors_share_only_provider_neutral_base():
+    assert issubclass(IncompletePullRequestFilesError, IncompleteProviderPullRequestFilesError)
+    assert issubclass(IncompleteBitbucketPullRequestFilesError, IncompleteProviderPullRequestFilesError)
+    assert not issubclass(IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError)
 
 
 @pytest.fixture(autouse=True)

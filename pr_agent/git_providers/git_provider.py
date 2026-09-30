@@ -73,8 +73,15 @@ def _discussion_context_budget() -> int:
         return DEFAULT_DISCUSSION_CONTEXT_CHARS
 
 
-class IncompletePullRequestFilesError(RuntimeError):
-    """Represent an incomplete or inconsistent pull-request file set."""
+class IncompleteProviderPullRequestFilesError(RuntimeError):
+    """Provider-neutral base for incomplete-file failures with public notices."""
+
+    notice: str
+    notice_marker: str
+
+
+class IncompletePullRequestFilesError(IncompleteProviderPullRequestFilesError):
+    """Represent an incomplete or inconsistent GitHub pull-request file set."""
 
     notice = (
         "## PR-Agent command was not run\n\n"
@@ -86,7 +93,7 @@ class IncompletePullRequestFilesError(RuntimeError):
     notice_marker = "<!-- pr-agent:github-incomplete-files -->"
 
 
-class IncompleteBitbucketPullRequestFilesError(IncompletePullRequestFilesError):
+class IncompleteBitbucketPullRequestFilesError(IncompleteProviderPullRequestFilesError):
     """Represent Bitbucket aggregate patches that cannot align with its changed-file inventory."""
 
     notice = (
