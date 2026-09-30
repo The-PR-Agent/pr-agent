@@ -153,6 +153,29 @@ def test_unreadable_file_reaches_the_model_instead_of_being_dropped():
     assert "-old" in rendered
 
 
+def test_unreadable_file_notice_has_no_duplicate_file_header():
+    """Regression: without line numbers generate_full_patch writes the header itself, so the
+    notice must not carry a second one."""
+    from pr_agent.algo.pr_processing import pr_generate_compressed_diff
+
+    unreadable = FilePatchInfo("old\n", "", patch="", filename="/src/app.py",
+                               edit_type=EDIT_TYPE.MODIFIED, content_fetch_failed=True)
+    unreadable.tokens = 10
+    langs = [{"language": "Python", "files": [unreadable]}]
+    token_handler = MagicMock()
+    token_handler.count_tokens.return_value = 10
+    token_handler.prompt_tokens = 0
+
+    patches_list, _, _, _, _, _ = pr_generate_compressed_diff(
+        langs, token_handler, soft_token_budget=10000, hard_token_budget=10000,
+        convert_hunks_to_line_numbers=False, large_pr_handling=False,
+    )
+
+    rendered = "".join(patches_list[0])
+    assert "could not be read" in rendered
+    assert rendered.count("## File:") == 1, f"duplicated header:\n{rendered}"
+
+
 def test_azure_healthy_fetch_still_emits_a_real_patch():
     diff_file = _diff_for(_azure_change(), SimpleNamespace(content="new content\n"),
                           SimpleNamespace(content="old content\n"))[0]

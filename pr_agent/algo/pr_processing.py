@@ -567,6 +567,8 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler,
             if not getattr(file, "content_fetch_failed", False):
                 continue
             note = _unreadable_file_notice(file)
+            if not convert_hunks_to_line_numbers:
+                note = note.split("\n\n", 2)[-1]
             file_dict[file.filename] = {
                 'patch': note,
                 'tokens': token_handler.count_tokens(note),
