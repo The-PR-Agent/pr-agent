@@ -394,6 +394,9 @@ push_commands = [
     "/review",
 ]
 
+[bitbucket]
+identity_request_timeout = 30 # positive seconds for authenticated-account verification requests
+
 [bitbucket_app]
 avoid_full_files = false
 request_timeout = 30 # positive seconds for connection and response-read inactivity timeouts

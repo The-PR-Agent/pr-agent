@@ -14,10 +14,11 @@ from pr_agent.algo.comment_identity import (
     PRReviewIdentity,
 )
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.config_loader import global_settings
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import (
-    BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS,
     BitbucketProvider,
+    _get_identity_request_timeout,
 )
 from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -122,9 +123,48 @@ class TestBitbucketProvider:
             "GET",
             "https://api.bitbucket.org/2.0/user",
             headers=provider.headers,
-            timeout=BITBUCKET_IDENTITY_REQUEST_TIMEOUT_SECONDS,
+            timeout=global_settings.get("bitbucket.identity_request_timeout"),
         )
         response.raise_for_status.assert_called_once_with()
+
+    @pytest.mark.parametrize("configured_timeout", [12, "12.5"])
+    def test_authenticated_account_lookup_uses_configured_timeout(self, configured_timeout):
+        provider = BitbucketProvider.__new__(BitbucketProvider)
+        provider.headers = {"Authorization": "Bearer token"}
+        response = MagicMock()
+        response.json.return_value = {"account_id": "agent-account"}
+        settings = MagicMock()
+        settings.get.return_value = configured_timeout
+
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.global_settings", settings),
+            patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request,
+        ):
+            assert provider._get_authenticated_account_id() == "agent-account"
+
+        request.assert_called_once_with(
+            "GET",
+            "https://api.bitbucket.org/2.0/user",
+            headers=provider.headers,
+            timeout=float(configured_timeout),
+        )
+        settings.get.assert_called_once_with("bitbucket.identity_request_timeout")
+
+    @pytest.mark.parametrize("configured_timeout", [None, "", False, True, 0, -1, float("inf"), float("nan")])
+    def test_identity_request_timeout_rejects_invalid_values(self, configured_timeout):
+        settings = MagicMock()
+        settings.get.return_value = configured_timeout
+
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.global_settings", settings),
+            pytest.raises(ValueError, match="positive finite number"),
+        ):
+            _get_identity_request_timeout()
+        settings.get.assert_called_once_with("bitbucket.identity_request_timeout")
+
+    def test_identity_request_timeout_default_is_wired_to_configuration(self):
+        assert global_settings.get("bitbucket.identity_request_timeout") == 30
+        assert _get_identity_request_timeout() == 30
 
     def test_is_comment_authored_by_pr_agent_rejects_foreign_or_unverifiable_comment(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
