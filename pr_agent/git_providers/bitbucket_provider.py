@@ -14,7 +14,7 @@ from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file
-from ..config_loader import get_settings, get_verbosity_level, global_settings
+from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .diff_parsing import to_hunk_only_patch
 from .git_provider import (
@@ -26,7 +26,7 @@ from .git_provider import (
 
 
 def _get_identity_request_timeout() -> float:
-    timeout = global_settings.get("bitbucket.identity_request_timeout")
+    timeout = get_settings().get("bitbucket.identity_request_timeout")
     if isinstance(timeout, bool):
         raise ValueError("bitbucket.identity_request_timeout must be a positive finite number")
     try:

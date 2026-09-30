@@ -27,11 +27,6 @@ from pr_agent.git_providers.git_provider import IncompletePullRequestFilesError 
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
 from pr_agent.telemetry.meter import get_commands_counter
-
-# Keep the established import path available to integrations and tests while the
-# shared handler works against the provider-neutral base exception.
-IncompleteBitbucketPullRequestFilesError = _IncompleteBitbucketPullRequestFilesError
-IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
 from pr_agent.tools.pr_add_docs import PRAddDocs
@@ -45,6 +40,11 @@ from pr_agent.tools.pr_questions import PRQuestions
 from pr_agent.tools.pr_reviewer import PRReviewer
 from pr_agent.tools.pr_similar_issue import PRSimilarIssue
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
+
+# Keep the established import path available to integrations and tests while the
+# shared handler works against the provider-neutral base exception.
+IncompleteBitbucketPullRequestFilesError = _IncompleteBitbucketPullRequestFilesError
+IncompletePullRequestFilesError = _IncompletePullRequestFilesError
 
 command2class = {
     "auto_review": PRReviewer,

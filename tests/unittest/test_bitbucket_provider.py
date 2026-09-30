@@ -137,7 +137,7 @@ class TestBitbucketProvider:
         settings.get.return_value = configured_timeout
 
         with (
-            patch("pr_agent.git_providers.bitbucket_provider.global_settings", settings),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
             patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request,
         ):
             assert provider._get_authenticated_account_id() == "agent-account"
@@ -156,7 +156,7 @@ class TestBitbucketProvider:
         settings.get.return_value = configured_timeout
 
         with (
-            patch("pr_agent.git_providers.bitbucket_provider.global_settings", settings),
+            patch("pr_agent.git_providers.bitbucket_provider.get_settings", return_value=settings),
             pytest.raises(ValueError, match="positive finite number"),
         ):
             _get_identity_request_timeout()
