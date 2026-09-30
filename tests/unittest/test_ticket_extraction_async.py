@@ -23,7 +23,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 
 class _ReverseIterationSet(set):
-    """Set double whose iteration order cannot accidentally match insertion order."""
+    """Use a set double whose iteration order cannot accidentally match insertion order."""
 
     def __init__(self):
         super().__init__()
