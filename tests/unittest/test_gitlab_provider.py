@@ -4,7 +4,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from gitlab import Gitlab
-from gitlab.exceptions import GitlabAuthenticationError, GitlabError, GitlabGetError, GitlabUpdateError
+from gitlab.exceptions import (
+    GitlabAuthenticationError,
+    GitlabCreateError,
+    GitlabError,
+    GitlabGetError,
+    GitlabUpdateError,
+)
 from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequestManager
 from requests.exceptions import RequestException
 
@@ -352,6 +358,51 @@ class TestGitLabProvider:
                 )
 
         assert raised.value is error
+        logger.return_value.warning.assert_not_called()
+        logger.return_value.error.assert_called_once()
+
+    def test_guarded_write_converts_concurrent_creation_to_concurrent_update(self, gitlab_provider, mock_project):
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
+        error = GitlabCreateError("A file with this name already exists", response_code=400)
+        mock_project.files.create.side_effect = error
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger:
+            with pytest.raises(ConcurrentFileUpdateError, match="file appeared") as raised:
+                gitlab_provider.create_or_update_pr_file(
+                    "CHANGELOG.md", "feature", "new contents", expected_snapshot=FileContentSnapshot("", False, None)
+                )
+
+        assert raised.value.__cause__ is error
+        mock_project.files.get.assert_called_once_with("CHANGELOG.md", "feature")
+        mock_project.files.create.assert_called_once()
+        mock_project.files.update.assert_not_called()
+        logger.return_value.warning.assert_called_once()
+        logger.return_value.error.assert_not_called()
+        logger.return_value.debug.assert_not_called()
+
+    @pytest.mark.parametrize("message, status", [
+        ("Commit failed", 400),
+        ("A file with this name already exists", 409),
+        ("A file with this name already exists", 403),
+        ("Validation failed: A file with this name already exists", 400),
+    ])
+    def test_guarded_write_preserves_nonconcurrent_create_rejection(
+        self, gitlab_provider, mock_project, message, status
+    ):
+        mock_project.files.get.side_effect = GitlabGetError("404 Not Found", response_code=404)
+        error = GitlabCreateError(message, response_code=status)
+        mock_project.files.create.side_effect = error
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_logger") as logger:
+            with pytest.raises(GitlabCreateError) as raised:
+                gitlab_provider.create_or_update_pr_file(
+                    "CHANGELOG.md", "feature", "new contents", expected_snapshot=FileContentSnapshot("", False, None)
+                )
+
+        assert raised.value is error
+        mock_project.files.get.assert_called_once_with("CHANGELOG.md", "feature")
+        mock_project.files.create.assert_called_once()
+        mock_project.files.update.assert_not_called()
         logger.return_value.warning.assert_not_called()
         logger.return_value.error.assert_called_once()
 

@@ -1016,12 +1016,24 @@ class GitLabProvider(GitProvider):
                     raise
                 if expected_snapshot.exists:
                     raise ConcurrentFileUpdateError("The file disappeared after the changelog snapshot") from e
-                project.files.create({
-                    'file_path': file_path,
-                    'branch': branch,
-                    'content': contents,
-                    'commit_message': message
-                })
+                try:
+                    project.files.create({
+                        'file_path': file_path,
+                        'branch': branch,
+                        'content': contents,
+                        'commit_message': message
+                    })
+                except GitlabCreateError as create_error:
+                    error_message = str(getattr(create_error, "error_message", create_error)).strip().lower()
+                    if (getattr(create_error, "response_code", None) == 400
+                            and error_message == "a file with this name already exists"):
+                        get_logger().warning(
+                            f"Concurrent changelog creation rejected for file {file_path} in branch {branch}"
+                        )
+                        raise ConcurrentFileUpdateError(
+                            "The file appeared after the changelog snapshot"
+                        ) from create_error
+                    raise
                 get_logger().debug(f"Created file {file_path} in branch {branch}")
             else:
                 if not expected_snapshot.exists:
