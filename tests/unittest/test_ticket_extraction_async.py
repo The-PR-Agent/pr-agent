@@ -37,6 +37,9 @@ class _ReverseIterationSet(set):
     def __iter__(self):
         return iter(reversed(self._insertion_order))
 
+    def __eq__(self, other):
+        return set.__eq__(self, other)
+
 
 # ---------------------------------------------------------------------------
 # Test doubles

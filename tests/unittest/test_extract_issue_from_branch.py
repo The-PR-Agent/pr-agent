@@ -1,8 +1,5 @@
 
-from pr_agent.tools.ticket_pr_compliance_check import (
-    extract_ticket_links_from_branch_name,
-    extract_ticket_links_from_pr_description,
-)
+from pr_agent.tools import ticket_pr_compliance_check as tpc
 
 # The PR-description extractor caps results at 3 (hardcoded in the function).
 MAX_TICKETS = 3
@@ -23,51 +20,54 @@ class _ReverseIterationSet(set):
     def __iter__(self):
         return iter(reversed(self._insertion_order))
 
+    def __eq__(self, other):
+        return set.__eq__(self, other)
+
 
 class TestExtractTicketsLinkFromBranchName:
     """Unit tests for branch-name issue extraction (option A: number at start of segment)."""
 
     def test_feature_slash_number_suffix(self):
         """feature/1-test-issue -> issue #1"""
-        result = extract_ticket_links_from_branch_name(
+        result = tpc.extract_ticket_links_from_branch_name(
             "feature/1-test-issue", "org/repo", "https://github.com"
         )
         assert result == ["https://github.com/org/repo/issues/1"]
 
     def test_fix_slash_number_suffix(self):
         """fix/123-bug -> issue #123"""
-        result = extract_ticket_links_from_branch_name(
+        result = tpc.extract_ticket_links_from_branch_name(
             "fix/123-bug", "owner/repo", "https://github.com"
         )
         assert result == ["https://github.com/owner/repo/issues/123"]
 
     def test_number_at_start_no_slash(self):
         """123-fix -> issue #123"""
-        result = extract_ticket_links_from_branch_name(
+        result = tpc.extract_ticket_links_from_branch_name(
             "123-fix", "org/repo", "https://github.com"
         )
         assert result == ["https://github.com/org/repo/issues/123"]
 
     def test_empty_branch_returns_empty(self):
         """Empty branch name -> []"""
-        result = extract_ticket_links_from_branch_name("", "org/repo")
+        result = tpc.extract_ticket_links_from_branch_name("", "org/repo")
         assert result == []
 
     def test_none_branch_returns_empty(self):
         """None branch name -> []"""
-        result = extract_ticket_links_from_branch_name(None, "org/repo")
+        result = tpc.extract_ticket_links_from_branch_name(None, "org/repo")
         assert result == []
 
     def test_no_digits_in_segment_returns_empty(self):
         """feature/no-issue -> []"""
-        result = extract_ticket_links_from_branch_name(
+        result = tpc.extract_ticket_links_from_branch_name(
             "feature/no-issue", "org/repo", "https://github.com"
         )
         assert result == []
 
     def test_base_url_no_trailing_slash(self):
         """base_url_html without trailing slash is normalized"""
-        result = extract_ticket_links_from_branch_name(
+        result = tpc.extract_ticket_links_from_branch_name(
             "feature/1-test", "org/repo", "https://github.com/"
         )
         assert result == ["https://github.com/org/repo/issues/1"]
@@ -80,9 +80,8 @@ class TestExtractTicketsLinkFromBranchName:
                 "" if key in ("branch_issue_regex", "config.branch_issue_regex") else default
             )
         )
-        import pr_agent.tools.ticket_pr_compliance_check as m
-        monkeypatch.setattr(m, "get_settings", lambda: fake_settings)
-        result = extract_ticket_links_from_branch_name(
+        monkeypatch.setattr(tpc, "get_settings", lambda: fake_settings)
+        result = tpc.extract_ticket_links_from_branch_name(
             "feature/1-test", "org/repo", "https://github.com"
         )
         assert result == []
@@ -95,9 +94,8 @@ class TestExtractTicketsLinkFromBranchName:
                 "[" if key in ("branch_issue_regex", "config.branch_issue_regex") else default
             )
         )
-        import pr_agent.tools.ticket_pr_compliance_check as m
-        monkeypatch.setattr(m, "get_settings", lambda: fake_settings)
-        result = extract_ticket_links_from_branch_name(
+        monkeypatch.setattr(tpc, "get_settings", lambda: fake_settings)
+        result = tpc.extract_ticket_links_from_branch_name(
             "feature/1-test", "org/repo", "https://github.com"
         )
         assert result == []
@@ -110,24 +108,23 @@ class TestExtractTicketsLinkFromBranchName:
                 r"\d+" if key in ("branch_issue_regex", "config.branch_issue_regex") else default
             )
         )
-        import pr_agent.tools.ticket_pr_compliance_check as m
-        monkeypatch.setattr(m, "get_settings", lambda: fake_settings)
-        result = extract_ticket_links_from_branch_name(
+        monkeypatch.setattr(tpc, "get_settings", lambda: fake_settings)
+        result = tpc.extract_ticket_links_from_branch_name(
             "feature/1-test", "org/repo", "https://github.com"
         )
         assert result == ["https://github.com/org/repo/issues/1"]
 
     def test_empty_repo_path_returns_empty(self):
         """Empty repo_path -> [] (guard in function)"""
-        result = extract_ticket_links_from_branch_name("feature/1-test", "", "https://github.com")
+        result = tpc.extract_ticket_links_from_branch_name(
+            "feature/1-test", "", "https://github.com"
+        )
         assert result == []
 
     def test_multiple_matches_preserve_first_seen_order(self, monkeypatch):
-        """Branch matches keep first-seen order while de-duplicating issue URLs."""
-        import pr_agent.tools.ticket_pr_compliance_check as m
-
-        monkeypatch.setattr(m, "set", _ReverseIterationSet, raising=False)
-        result = extract_ticket_links_from_branch_name(
+        """Verify that branch matches retain first-seen order and remove duplicate URLs."""
+        monkeypatch.setattr(tpc, "set", _ReverseIterationSet, raising=False)
+        result = tpc.extract_ticket_links_from_branch_name(
             "feature/2-test/1-other/2-again/3-final", "org/repo", "https://github.com"
         )
         assert result == [
@@ -149,7 +146,9 @@ class TestExtractTicketLinksFromPrDescription:
         small input. test_cap_selects_deterministic_first_seen_subset is the reliable
         regression guard (see its note)."""
         desc = "Fixes #3, relates to #1, also #3 again and #2"
-        result = extract_ticket_links_from_pr_description(desc, "org/repo", "https://github.com")
+        result = tpc.extract_ticket_links_from_pr_description(
+            desc, "org/repo", "https://github.com"
+        )
         assert result == [
             "https://github.com/org/repo/issues/3",
             "https://github.com/org/repo/issues/1",
@@ -165,6 +164,8 @@ class TestExtractTicketLinksFromPrDescription:
         that (essentially) never equals the first-seen subset, on any hash seed."""
         nums = list(range(1, MAX_TICKETS + 4))
         desc = " ".join(f"#{n}" for n in nums)
-        result = extract_ticket_links_from_pr_description(desc, "org/repo", "https://github.com")
+        result = tpc.extract_ticket_links_from_pr_description(
+            desc, "org/repo", "https://github.com"
+        )
         expected = [f"https://github.com/org/repo/issues/{n}" for n in nums[:MAX_TICKETS]]
         assert result == expected
