@@ -173,11 +173,9 @@ lint.exclude = ["api/code_completions"]
 # violation deferred so ruff runs green on adoption — fix the code and drop
 # the entry. TODO: burn this list down.
 lint.ignore = [
-  "E402", # import not at top of file
   "E722", # bare `except`
   "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
-  "B027", # empty method without @abstractmethod
   "B904", # raise without `from` inside `except`
 ]
 
