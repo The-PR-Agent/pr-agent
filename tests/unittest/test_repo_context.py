@@ -1755,9 +1755,9 @@ def test_prompt_templates_render_configured_repo_context(prompt_name, variables)
 class RefishProvider(FakeProvider):
     """A provider whose repo-context revision can move between calls, like a rebased base branch."""
 
-    def __init__(self, files, pr_url=None):
+    def __init__(self, files, pr_url=None, context_ref="sha-1"):
         super().__init__(files, pr_url)
-        self.context_ref = "sha-1"
+        self.context_ref = context_ref
 
     def get_repo_context_ref(self, from_default_branch: bool = False):
         return self.context_ref
@@ -1767,8 +1767,7 @@ class BranchNameProvider(RefishProvider):
     """A provider whose repo-context ref is a branch name, so it cannot detect a move."""
 
     def __init__(self, files, pr_url=None):
-        super().__init__(files, pr_url)
-        self.context_ref = "main"
+        super().__init__(files, pr_url, context_ref="main")
 
     def supports_immutable_repo_context_ref(self) -> bool:
         # RefishProvider (via FakeProvider) models a SHA-resolving provider; this one
