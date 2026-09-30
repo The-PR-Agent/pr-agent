@@ -27,6 +27,7 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
 from pr_agent.servers.utils import (
     get_pr_commands,
+    is_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
 )
@@ -361,6 +362,9 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                 log_context["api_url"] = pr_url
                 log_context["event"] = "comment"
                 comment_body = data["data"]["comment"]["content"]["raw"]
+                if not is_command_comment(comment_body):
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
                 with get_logger().contextualize(**log_context):
                     if get_identity_provider().verify_eligibility("bitbucket",
                                                                      sender_id, pr_url) is not Eligibility.NOT_ELIGIBLE:

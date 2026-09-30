@@ -38,6 +38,17 @@ _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
 _MISSING = object()
 
 
+def is_command_comment(body) -> bool:
+    """Return True when a comment body is a slash-command comment.
+
+    A command comment must start with '/' after leading whitespace, matching the
+    check the GitHub app and action already apply. Plain sentences that merely
+    begin with a command word ("review looks good to me") must not dispatch a
+    tool, because the dispatcher strips an optional leading slash.
+    """
+    return isinstance(body, str) and body.lstrip().startswith("/")
+
+
 def get_pr_commands(provider: str) -> Sequence[str]:
     """Return an explicit provider override or a fresh copy of its default profile."""
     configured = get_settings().get(f"{provider}.pr_commands", _MISSING)
