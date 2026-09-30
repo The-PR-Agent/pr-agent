@@ -1,4 +1,4 @@
-"""Regression tests for four defects that silently produced wrong output.
+"""Regression tests for three defects that silently produced wrong output.
 
 Each was found by running the affected code, and each is reproduced here against the real
 implementation rather than a stub, so the test fails on the pre fix code.
@@ -9,10 +9,7 @@ implementation rather than a stub, so the test fails on the pre fix code.
 2. ``github_provider.get_pr_labels`` reported a failed read as an empty list, which callers
    could not tell apart from an unlabeled PR. Because ``publish_labels`` replaces the entire
    label set, one API error deleted every label a human had added.
-3. ``build_repo_context`` keyed its cache on ``get_repo_context_ref`` to avoid serving content
-   from a commit that has moved. Providers that return a mutable branch name cannot deliver
-   that, so a pushed change to an instruction file stayed invisible for the whole TTL.
-4. ``generate_summarized_suggestions`` swallowed every rendering error and returned an empty
+3. ``generate_summarized_suggestions`` swallowed every rendering error and returned an empty
    string, which the caller then used to overwrite the persistent review.
 """
 
@@ -381,7 +378,8 @@ async def test_describe_survives_an_unreadable_label_set(monkeypatch):
     provider.publish_labels.assert_not_called()
 
 
-# 4. A rendering error must not overwrite the persistent review
+# ---------------------------------------------------------------------------
+# 3. A rendering error must not overwrite the persistent review
 # ---------------------------------------------------------------------------
 
 

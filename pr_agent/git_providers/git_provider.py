@@ -744,7 +744,7 @@ class GitProvider(ABC):
         The repo-context cache key (pr_agent/algo/repo_context.py) includes this ref so a
         rebase or a push to the base branch invalidates cached file content instead of serving
         it from a commit that has since moved. Providers that override get_repo_file_content
-should return the same ref they fetch from; the default None covers providers with no
+        should return the same ref they fetch from; the default None covers providers with no
         repo-context support at all.
         """
         return None
