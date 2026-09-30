@@ -6,7 +6,7 @@ import re
 from collections import Counter
 from types import SimpleNamespace
 from typing import Iterator, Optional, Tuple
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlencode, urlparse
 
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
@@ -1791,7 +1791,8 @@ class AzureDevopsProvider(GitProvider):
             return ""
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
-        return self.pr_url+f"?_a=files&path={relevant_file}"
+        query = urlencode((("_a", "files"), ("path", relevant_file)))
+        return f"{self.pr_url}?{query}"
 
     def get_comment_url(self, comment) -> str:
         return self.pr_url + "?discussionId=" + str(comment.thread_id)

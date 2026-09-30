@@ -638,7 +638,8 @@ class GiteaProvider(GitProvider):
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{relevant_file}"
+        encoded_file = quote(relevant_file, safe="/")
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )

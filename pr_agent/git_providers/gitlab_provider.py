@@ -2338,19 +2338,20 @@ class GitLabProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         project_web_url = self._get_project_web_url()
+        encoded_file = quote(relevant_file, safe="/")
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
         if relevant_line_start == -1:
-            link = f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{relevant_file}?ref_type=heads"
+            link = f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
         elif relevant_line_end:
             link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{relevant_file}?ref_type=heads"
+                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
                 f"#L{relevant_line_start}-{relevant_line_end}"
             )
         else:
             link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{relevant_file}?ref_type=heads"
+                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
                 f"#L{relevant_line_start}"
             )
         return link
