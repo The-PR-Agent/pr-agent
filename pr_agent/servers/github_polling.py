@@ -68,10 +68,12 @@ def _remaining_polling_timeout(deadline: float) -> float:
 
 
 def _comment_page_number(response, relation: str) -> int | None:
-    link = response.links.get(relation)
-    if link is None:
+    links = response.links.getall(relation, [])
+    if not links:
         return None
-    values = link["url"].query.getall("page", [])
+    if len(links) != 1:
+        raise _InvalidPaginationMetadata("Ambiguous comment page relation")
+    values = links[0]["url"].query.getall("page", [])
     if (len(values) != 1 or not values[0].isascii() or not values[0].isdecimal()
             or int(values[0]) < 1):
         raise _InvalidPaginationMetadata("Invalid comment page number")
@@ -104,6 +106,8 @@ async def _fetch_comment_history_scan(session, url, headers, deadline: float) ->
     """Return a tail, or retry if the requested pages changed during the scan."""
     comments, last_page, next_page = await _fetch_comment_page(session, url, headers, deadline)
     if next_page is None:
+        if last_page not in (None, 1):
+            raise _InvalidPaginationMetadata("Missing next comment page")
         return comments[-POLLING_COMMENT_SCAN_LIMIT:]
     if last_page is None or next_page != 2 or last_page < next_page:
         raise _InvalidPaginationMetadata("Missing or invalid last comment page")

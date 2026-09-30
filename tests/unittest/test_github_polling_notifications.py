@@ -10,6 +10,7 @@ import aiohttp
 import pytest
 import requests
 from aiohttp import web
+from multidict import MultiDict
 
 from pr_agent.servers import github_polling
 
@@ -231,7 +232,7 @@ async def test_fallback_has_explicit_timeout_and_redirect_limit(monkeypatch):
 
     class Response:
         status = 200
-        links = {}
+        links = MultiDict()
 
         async def __aenter__(self):
             return self
@@ -354,9 +355,23 @@ async def test_comment_history_rejects_invalid_last_page(page):
 
 
 @pytest.mark.asyncio
-async def test_comment_history_requires_last_page_when_next_exists():
+@pytest.mark.parametrize("relation", ["next", "last"])
+async def test_comment_history_rejects_duplicate_pagination_relations(relation):
     async def fallback(request):
-        return web.json_response([_comment()], headers={"Link": f'<{request.path}?page=2>; rel="next"'})
+        return web.json_response([_comment()], headers={"Link":
+            f'<{request.path}?page=2>; rel="next", <{request.path}?page=2>; rel="last", '
+            f'<{request.path}?page=3>; rel="{relation}"'})
+
+    async with _server(fallback) as url, aiohttp.ClientSession() as session:
+        with pytest.raises(github_polling._InvalidPaginationMetadata):
+            await github_polling._fetch_comment_history(session, f"{url}/repos/owner/repo/issues/1/comments", {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relation", ["next", "last"])
+async def test_comment_history_rejects_incomplete_pagination_links(relation):
+    async def fallback(request):
+        return web.json_response([_comment()], headers={"Link": f'<{request.path}?page=2>; rel="{relation}"'})
 
     async with _server(fallback) as url, aiohttp.ClientSession() as session:
         with pytest.raises(github_polling._InvalidPaginationMetadata):
