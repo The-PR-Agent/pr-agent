@@ -194,9 +194,11 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
             get_logger().info(
                 "Bitbucket push trigger handling disabled via config; skipping push commands")
             return
-    if data.get("event", "") == "pullrequest:created":
-        if not should_process_pr_logic(data):
-            return
+    # Filter both command types here, after apply_repo_settings, so repository-level
+    # ignore rules (ignore_pr_authors, ignore_pr_title, branch filters) also cover
+    # push commands on 'pullrequest:updated', like the other servers already do.
+    if not should_process_pr_logic(data):
+        return
     commands = (
         get_pr_commands("bitbucket_app")
         if commands_conf == "pr_commands"
