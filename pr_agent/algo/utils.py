@@ -1211,17 +1211,26 @@ def try_fix_yaml(response_text: str,
 
 
 
+_DEFAULT_CUSTOM_LABELS = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
+
+
 def set_custom_labels(variables, git_provider=None):
     if not get_settings().config.enable_custom_labels:
         return
 
     labels = get_settings().get('custom_labels', {})
     if not labels:
-        # set default labels
-        labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
-        labels_list = "\n      - ".join(labels) if labels else ""
-        labels_list = f"      - {labels_list}" if labels_list else ""
-        variables["custom_labels"] = labels_list
+        # No [custom_labels] section is configured, so fall back to the default set. The
+        # templates read custom_labels_class, so the enum has to be built here; writing a
+        # bullet list to an unused key left the prompt declaring `List[Label]` with no
+        # `Label` class at all.
+        variables["custom_labels_class"] = "class Label(str, Enum):"
+        labels_minimal_to_labels_dict = {}
+        for label in _DEFAULT_CUSTOM_LABELS:
+            key = label.lower().replace(' ', '_')
+            variables["custom_labels_class"] += f"\n    {key} = \"{label}\""
+            labels_minimal_to_labels_dict[key] = label
+        variables["labels_minimal_to_labels_dict"] = labels_minimal_to_labels_dict
         return
 
     # Set custom labels
@@ -1247,8 +1256,9 @@ def get_user_labels(current_labels: List[str] = None):
         if current_labels is None:
             current_labels = []
         user_labels = []
+        bot_labels = {label.lower() for label in _DEFAULT_CUSTOM_LABELS}
         for label in current_labels:
-            if label.lower() in ['bug fix', 'tests', 'enhancement', 'documentation', 'other']:
+            if label.lower() in bot_labels:
                 continue
             if enable_custom_labels:
                 if label in custom_labels:
