@@ -18,7 +18,7 @@ from pr_agent.algo.comment_identity import (
     render_hidden_marker,
 )
 from pr_agent.algo.inline_comment_dedup import strip_markers
-from pr_agent.algo.language_handler import numeric_languages
+from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
@@ -1158,28 +1158,42 @@ def get_main_pr_language(languages, files) -> str:
             return main_language_str
         top_language = max(languages, key=languages.get).lower()
 
-        # validate that the specific commit uses the main language
-        extension_list = []
-        for file in files:
-            if not file:
-                continue
-            if isinstance(file, str):
-                file = FilePatchInfo(base_file=None, head_file=None, patch=None, filename=file)
-            extension_list.append(file.filename.rsplit('.')[-1])
-
-        # get the most common extension; dict.fromkeys keeps file order, so a tie resolves the same way every run
-        most_common_extension = '.' + max(dict.fromkeys(extension_list), key=extension_list.count)
+        # Validate that the specific commit uses the main language. Resolve every
+        # filename through the shared classifier instead of its last suffix: a bare
+        # rsplit('.') turned "Config.cmake.in" into ".in", "module.bsl" into ".bsl"
+        # (the map stores the wildcard "*.bsl") and "handler.PY" into ".PY", so none of
+        # them matched and the function returned an empty language.
         try:
             language_extension_map_org = get_settings().language_extension_map_org
-            language_extension_map = {k.lower(): v for k, v in language_extension_map_org.items()}
+            get_language = build_language_file_matcher(language_extension_map_org)
 
-            if top_language in language_extension_map and most_common_extension in language_extension_map[top_language]:
+            language_list = []
+            for file in files:
+                if not file:
+                    continue
+                if isinstance(file, str):
+                    file = FilePatchInfo(base_file=None, head_file=None, patch=None, filename=file)
+                language = get_language(file.filename)
+                if language:
+                    language_list.append(language.lower())
+
+            if not language_list:
+                return main_language_str
+
+            # Count languages rather than suffixes so a stray README does not outvote
+            # the code. dict.fromkeys keeps file order, so a tie resolves the same way
+            # every run.
+            languages_in_diff = dict.fromkeys(language_list)
+            most_common_language = max(
+                languages_in_diff, key=lambda language: language_list.count(language)
+            )
+
+            # Keep the provider's spelling when it agrees with what the diff contains,
+            # and otherwise trust the diff.
+            if most_common_language == top_language:
                 main_language_str = top_language
             else:
-                for language, extensions in language_extension_map.items():
-                    if most_common_extension in extensions:
-                        main_language_str = language
-                        break
+                main_language_str = most_common_language
         except Exception as e:
             get_logger().exception(f"Failed to get main language: {e}")
 
