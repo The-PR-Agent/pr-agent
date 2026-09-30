@@ -44,6 +44,11 @@ class FakeProvider:
         # stable name, and the target/base branch uses a commit-derived value.
         return "default" if from_default_branch else "target-sha"
 
+    def supports_immutable_repo_context_ref(self) -> bool:
+        # Model a provider that resolves its ref to an immutable revision, which is what
+        # keeps build_repo_context's cache enabled.
+        return True
+
 
 class UnsupportedProvider:
     get_repo_file_content = GitProvider.get_repo_file_content
@@ -1758,6 +1763,26 @@ class RefishProvider(FakeProvider):
         return self.context_ref
 
 
+class BranchNameProvider(RefishProvider):
+    """A provider whose repo-context ref is a branch name, so it cannot detect a move."""
+
+    def __init__(self, files, pr_url=None):
+        super().__init__(files, pr_url)
+        self.context_ref = "main"
+
+    def supports_immutable_repo_context_ref(self) -> bool:
+        # RefishProvider (via FakeProvider) models a SHA-resolving provider; this one
+        # deliberately does not, because a branch name is a mutable pointer.
+        return False
+
+
+class ShaRefProvider(RefishProvider):
+    """A provider that resolves its ref to an immutable commit SHA."""
+
+    def supports_immutable_repo_context_ref(self) -> bool:
+        return True
+
+
 def test_build_repo_context_process_cache_refreshes_when_revision_changes(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
@@ -1794,6 +1819,63 @@ def test_build_repo_context_provider_cache_refreshes_when_revision_changes(repo_
 
     assert "after push" in second_context
     assert provider.requested_paths == ["AGENTS.md", "AGENTS.md"]
+
+
+def test_build_repo_context_skips_cache_for_a_mutable_ref(repo_context_settings):
+    """A branch name is a mutable pointer: the cache key stays the same while the commit it
+    points at moves, so serving the cached entry hides a push for the whole TTL."""
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = BranchNameProvider({"AGENTS.md": "version one"})
+
+    first_context = build_repo_context(provider)
+    assert "version one" in first_context
+
+    # Someone pushes to the branch. The ref itself is unchanged.
+    provider.files["AGENTS.md"] = "version two"
+
+    second_context = build_repo_context(provider)
+
+    assert "version two" in second_context
+    assert "version one" not in second_context
+
+
+def test_build_repo_context_reuses_cache_for_an_immutable_ref(repo_context_settings):
+    """Providers that resolve their ref to a commit SHA keep the cache, so gating on the
+    capability is not a blanket loss of caching."""
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = ShaRefProvider({"AGENTS.md": "version one"})
+
+    build_repo_context(provider)
+    reads_after_first = len(provider.requested_paths)
+
+    build_repo_context(provider)
+
+    assert len(provider.requested_paths) == reads_after_first
+
+
+def test_default_capability_is_conservative():
+    assert GitProvider.supports_immutable_repo_context_ref(object()) is False
+    assert GithubProvider.supports_immutable_repo_context_ref(object()) is True
+
+
+def test_providers_returning_a_branch_name_do_not_claim_immutability():
+    """Only providers that resolve both the base and the default branch to a commit SHA may
+    opt into caching; a provider that returns a branch name must not claim it by accident."""
+    from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
+    from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
+    from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
+    from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
+    from pr_agent.git_providers.gitea_provider import GiteaProvider
+    from pr_agent.git_providers.gitlab_provider import GitLabProvider
+
+    for provider_cls in (AzureDevopsProvider, BitbucketProvider, BitbucketServerProvider,
+                         CodeCommitProvider, GiteaProvider, GitLabProvider):
+        assert provider_cls.supports_immutable_repo_context_ref(object()) is False, (
+            f"{provider_cls.__name__} returns a branch name from get_repo_context_ref and must "
+            "not opt into repo-context caching"
+        )
 
 
 def test_get_repo_context_ref_github_returns_base_sha():

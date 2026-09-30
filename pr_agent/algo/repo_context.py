@@ -142,6 +142,20 @@ def _provider_supports_sibling_repo_context(git_provider) -> bool:
     return provider_method is not None and provider_method is not GitProvider.get_sibling_repo_file_content
 
 
+def _supports_immutable_context_ref(git_provider) -> bool:
+    """Whether the provider can prove its repo-context ref is an immutable commit SHA.
+
+    Providers that predate the capability method fall back to the base implementation, which
+    reports no support, so they keep serving fresh content instead of a cached revision.
+    """
+    try:
+        return bool(git_provider.supports_immutable_repo_context_ref())
+    except Exception as e:
+        get_logger().warning(
+            f"Could not determine repo-context ref immutability, leaving the cache off: {e}")
+        return False
+
+
 def _sibling_repo_context_entries(context_files: list) -> list[tuple[str, str]]:
     """Return the (repo_id, file_path) pairs that parse as sibling entries.
 
@@ -436,17 +450,23 @@ def build_repo_context(git_provider) -> str:
 
     from_default_branch = _read_bool_setting("repo_context_from_default_branch", default=True)
     context_ref = None
+    cacheable_ref = False
     if not has_sibling_entries:
         # Resolve the revision being read once and key the cache on it: within the TTL a rebase
         # or a push to the base branch must not serve file content from a commit that has moved.
+        # A branch name is a mutable pointer, so it cannot deliver that: keying on one keeps
+        # serving the pre-push content for the rest of the TTL. Only cache when the provider
+        # resolves the ref to an immutable SHA.
         # A sibling-only build never needs this lookup, whose failure would otherwise abort the
         # whole context build before any cross-repository file is loaded.
         context_ref = git_provider.get_repo_context_ref(from_default_branch)
-        cached_repo_context = _get_cached_repo_context(
-            git_provider, context_files, max_lines, context_ref
-        )
-        if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
-            return cached_repo_context
+        cacheable_ref = context_ref is not None and _supports_immutable_context_ref(git_provider)
+        if cacheable_ref:
+            cached_repo_context = _get_cached_repo_context(
+                git_provider, context_files, max_lines, context_ref
+            )
+            if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
+                return cached_repo_context
 
     files, had_fetch_error = _load_repo_context_files(git_provider, context_files, from_default_branch)
 
@@ -454,6 +474,6 @@ def build_repo_context(git_provider) -> str:
 
     # Only cache when every file was fetched successfully. A transient/unexpected fetch error must
     # not be cached as a real result, so it is retried instead of being served until the TTL expires.
-    if not had_fetch_error and not has_sibling_entries:
+    if not had_fetch_error and not has_sibling_entries and cacheable_ref:
         _store_repo_context(git_provider, context_files, max_lines, context_ref, repo_context)
     return repo_context
