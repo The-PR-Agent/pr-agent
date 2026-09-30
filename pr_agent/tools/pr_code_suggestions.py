@@ -34,7 +34,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_command_failure, record_model_used
-from pr_agent.algo.run_output import push_outputs, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import async_push_outputs, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
@@ -270,6 +270,7 @@ class PRCodeSuggestions:
     async def run(self):
         init_run_details()
         self._output_published = False
+        self._output_sink_cancelled = False
         try:
             if _supports_code_suggestion_state(self.git_provider):
                 try:
@@ -330,7 +331,9 @@ class PRCodeSuggestions:
 
             # Handle the case where the PR has no suggestions
             if (data is None or 'code_suggestions' not in data or not data['code_suggestions']):
-                await self.publish_no_suggestions()
+                sink_cancelled = await self.publish_no_suggestions()
+                if sink_cancelled is True:
+                    raise asyncio.CancelledError
                 return
 
             # publish the suggestions
@@ -346,13 +349,16 @@ class PRCodeSuggestions:
                         if self._is_suggestion_line_range_valid(suggestion)
                     ]
                     if not data['code_suggestions']:
-                        await self.publish_no_suggestions()
+                        sink_cancelled = await self.publish_no_suggestions()
+                        if sink_cancelled is True:
+                            raise asyncio.CancelledError
                         return
 
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the suggestions if publishing them to the PR fails.
                 markdown = render_suggestions_markdown(data) + self._get_suggestions_coverage_footer()
-                push_outputs("improve", payload=data, markdown=markdown)
+                sink_cancelled = await async_push_outputs("improve", payload=data, markdown=markdown)
+                self._output_sink_cancelled = sink_cancelled
                 # If a temporary comment was published, remove it
                 self.git_provider.remove_initial_comment()
 
@@ -436,6 +442,9 @@ class PRCodeSuggestions:
                     await self.push_inline_code_suggestions(data)
                     if self.progress_response:
                         self.git_provider.remove_comment(self.progress_response)
+                        self.progress_response = None
+                if sink_cancelled is True:
+                    raise asyncio.CancelledError
             else:
                 get_logger().info('Code suggestions generated for PR, but not published since publish_output is False.')
                 pr_body = self.generate_summarized_suggestions(data)
@@ -443,23 +452,16 @@ class PRCodeSuggestions:
                 get_settings().data = {"artifact": pr_body}
                 return
         except asyncio.CancelledError:
-            if self.progress_response is not None:
-                _edit_comment_safely(
-                    self.git_provider,
-                    self.progress_response,
-                    "Code suggestions generation cancelled.",
-                )
-                try:
-                    self.git_provider.remove_comment(self.progress_response)
-                except Exception as cleanup_error:
-                    get_logger().exception(
-                        f"Failed to remove code suggestions progress comment after cancellation, "
-                        f"error: {cleanup_error}"
-                    )
+            self._cleanup_cancelled_progress_comment()
             raise
         except Exception as e:
             get_logger().error(f"Failed to generate code suggestions for PR, error: {e}",
                                artifact={"traceback": traceback.format_exc()})
+            # The status of the whole run must not read as success just because the error stopped here.
+            record_command_failure()
+            if self._output_sink_cancelled:
+                self._cleanup_cancelled_progress_comment()
+                raise asyncio.CancelledError from e
             if get_settings().config.publish_output:
                 if self.progress_response:
                     self.git_provider.remove_comment(self.progress_response)
@@ -470,10 +472,24 @@ class PRCodeSuggestions:
                         self.git_provider.publish_comment("Failed to generate code suggestions for PR")
                     except Exception as e:
                         get_logger().exception(f"Failed to update persistent review, error: {e}")
-            # The status of the whole run must not read as success just because the error stopped here.
-            record_command_failure()
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
+
+    def _cleanup_cancelled_progress_comment(self) -> None:
+        if self.progress_response is None:
+            return
+        _edit_comment_safely(
+            self.git_provider,
+            self.progress_response,
+            "Code suggestions generation cancelled.",
+        )
+        try:
+            self.git_provider.remove_comment(self.progress_response)
+        except Exception as cleanup_error:
+            get_logger().exception(
+                f"Failed to remove code suggestions progress comment after cancellation, "
+                f"error: {cleanup_error}"
+            )
 
     async def add_self_review_text(self, pr_body):
         text = get_settings().pr_code_suggestions.code_suggestions_self_review_text
@@ -512,22 +528,27 @@ class PRCodeSuggestions:
                            f"maximum chunk calls: {file_list}.")
         return "\n\n⚠️ **Suggestion coverage:** " + " ".join(details)
 
-    async def publish_no_suggestions(self):
+    async def publish_no_suggestions(self) -> bool:
         coverage_footer = self._get_suggestions_coverage_footer(suggestions_present=False)
         no_suggestions_message = ("No code suggestions found in the successfully analyzed chunks."
                                   if coverage_footer else "No code suggestions found for the PR.")
         pr_body = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{coverage_footer}"
+        sink_cancelled = False
         if get_settings().config.publish_output:
             markdown = f"## PR Code Suggestions\n\n{no_suggestions_message}{coverage_footer}"
-            push_outputs("improve", payload=getattr(self, "data", None) or {"code_suggestions": []},
-                         markdown=markdown)
+            sink_cancelled = await async_push_outputs(
+                "improve",
+                payload=getattr(self, "data", None) or {"code_suggestions": []},
+                markdown=markdown,
+            )
+            self._output_sink_cancelled = sink_cancelled
         if (get_settings().config.publish_output and
                 get_settings().pr_code_suggestions.get('publish_output_no_suggestions', True)):
             get_logger().warning("No code suggestions found for the PR.")
             if self.git_provider.supports_code_suggestions_artifact() is True:
                 self.git_provider.publish_code_suggestions_artifact(
                     [], artifact_footer=coverage_footer, no_suggestions_message=no_suggestions_message)
-                return
+                return sink_cancelled
             pr_body = add_comment_identity(
                 pr_body,
                 PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
@@ -541,6 +562,9 @@ class PRCodeSuggestions:
             if self.progress_response:
                 progress_response = self.progress_response
                 if _edit_comment_safely(self.git_provider, progress_response, pr_body):
+                    # Retire the progress handle before any optional thread finalization so
+                    # cancellation cleanup cannot remove the completed output after a failure.
+                    self.progress_response = None
                     if self._improve_thread_kwargs():
                         # A mere status message isn't actionable; resolve the thread instead of
                         # leaving it open for the user to close manually.
@@ -568,6 +592,8 @@ class PRCodeSuggestions:
             get_settings().data = {"artifact": pr_body if coverage_footer else ""}
             if self.progress_response:
                 self.git_provider.remove_comment(self.progress_response)
+                self.progress_response = None
+        return sink_cancelled
 
     async def dual_publishing(self, data):
         data_above_threshold = {'code_suggestions': []}

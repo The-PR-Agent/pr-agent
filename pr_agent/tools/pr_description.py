@@ -22,7 +22,7 @@ from pr_agent.algo.pr_processing import (
 )
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_command_failure
-from pr_agent.algo.run_output import push_outputs, show_relevant_configurations, show_run_details
+from pr_agent.algo.run_output import async_push_outputs, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
@@ -133,6 +133,7 @@ class PRDescription:
     async def run(self):
         init_run_details()
         progress_response = None
+        sink_cancelled = False
         try:
             get_logger().info(f"Generating a PR description for pr_id: {self.pr_id}")
             relevant_configs = {'pr_description': dict(get_settings().pr_description),
@@ -213,7 +214,9 @@ class PRDescription:
             if get_settings().config.publish_output:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the description if publishing it to the PR fails.
-                push_outputs("describe", payload=self.data or {}, markdown=pr_body)
+                sink_cancelled = await async_push_outputs(
+                    "describe", payload=self.data or {}, markdown=pr_body
+                )
 
                 # publish labels
                 if (
@@ -275,6 +278,8 @@ class PRDescription:
                                 f"updated to latest commit ({latest_commit_url})"
                             )
                             self.git_provider.publish_comment(update_comment)
+                if sink_cancelled is True:
+                    raise asyncio.CancelledError
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
                 get_settings().data = {"artifact": pr_body}
@@ -284,6 +289,8 @@ class PRDescription:
                                artifact={"traceback": traceback.format_exc()})
             # The status of the whole run must not read as success just because the error stopped here.
             record_command_failure()
+            if sink_cancelled:
+                raise asyncio.CancelledError from e
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         finally:

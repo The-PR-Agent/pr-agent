@@ -2,6 +2,7 @@ import asyncio
 import copy
 import datetime
 import re
+import traceback
 from functools import partial
 from typing import List, Optional, Tuple
 
@@ -46,8 +47,8 @@ from pr_agent.algo.review_finding_state import (
 from pr_agent.algo.review_merge import merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
 from pr_agent.algo.run_output import (
+    async_push_outputs,
     github_action_output,
-    push_outputs,
     show_relevant_configurations,
     show_run_details,
 )
@@ -272,6 +273,7 @@ class PRReviewer:
 
     async def run(self) -> None:
         init_run_details()
+        self._output_sink_cancelled = False
         for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_results",
                      "_chunked_primary_model"):
             self.__dict__.pop(name, None)
@@ -333,7 +335,7 @@ class PRReviewer:
             if not self.prediction:
                 return None
 
-            pr_review = self._prepare_pr_review()
+            pr_review = await self._prepare_pr_review()
             get_logger().debug("PR output", artifact=pr_review)
 
             if not pr_review:
@@ -354,6 +356,8 @@ class PRReviewer:
                     reason += ": no major issues detected."
                 get_logger().info(reason)
                 get_settings().data = {"artifact": pr_review}
+                if getattr(self, "_output_sink_cancelled", False) is True:
+                    raise asyncio.CancelledError
                 return
 
             # publish the review
@@ -453,12 +457,16 @@ class PRReviewer:
                     )
                     pr_review = add_pr_review_identity(pr_review, identity_marker, self.git_provider)
                 self.git_provider.publish_comment(pr_review, **review_thread_kwargs)
+            if getattr(self, "_output_sink_cancelled", False) is True:
+                raise asyncio.CancelledError
         except Exception as e:
-            review_error = e
-            review_failed = True
-            get_logger().error(f"Failed to review PR: {e}")
+            get_logger().error(f"Failed to review PR: {e}", artifact={"traceback": traceback.format_exc()})
             # The status of the whole run must not read as success just because the error stopped here.
             record_command_failure()
+            if getattr(self, "_output_sink_cancelled", False):
+                raise asyncio.CancelledError from e
+            review_error = e
+            review_failed = True
             if get_settings().config.get("propagate_tool_errors", False):
                 raise
         finally:
@@ -480,6 +488,7 @@ class PRReviewer:
                 except Exception as e:
                     get_logger().exception(f"Failed to publish review failure result, error: {e}")
             if (partial_review_error is not None and not review_failed
+                    and not self._output_sink_cancelled
                     and get_settings().config.get("propagate_tool_errors", False)):
                 raise partial_review_error
 
@@ -1120,7 +1129,7 @@ class PRReviewer:
             raise FallbackEligibleError(f"{source} did not contain a non-empty review mapping")
         return data
 
-    def _prepare_pr_review(self) -> str:
+    async def _prepare_pr_review(self) -> str:
         """
         Prepare the PR review by processing the AI prediction and generating a markdown-formatted text that summarizes
         the feedback.
@@ -1248,8 +1257,11 @@ class PRReviewer:
         # Emit the review to optional external sinks (stdout/file/webhook/slack); no-op unless enabled.
         # publish_output gates it so a dry run makes no external calls. The "no major issues"
         # suppression deliberately does not: that only silences the PR comment.
+        self._output_sink_cancelled = False
         if get_settings().config.publish_output:
-            push_outputs("review", payload=data.get('review', {}), markdown=markdown_text)
+            self._output_sink_cancelled = await async_push_outputs(
+                "review", payload=data.get('review', {}), markdown=markdown_text
+            )
 
         # Add custom labels from the review prediction (effort, security)
         self.set_review_labels(data)

@@ -119,7 +119,8 @@ def test_review_finding_state_is_disabled_without_a_provider(monkeypatch):
     assert reviewer._review_finding_state_enabled() is False
 
 
-def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(monkeypatch):
+@pytest.mark.asyncio
+async def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(monkeypatch):
     settings = _settings(monkeypatch)
     previous = reconcile_review_findings(
         None,
@@ -144,7 +145,7 @@ def test_prepare_review_reconciles_previous_state_and_renders_resolved_section(m
         patch("pr_agent.tools.pr_reviewer.github_action_output"),
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="No major issues detected"),
     ):
-        review = reviewer._prepare_pr_review()
+        review = await reviewer._prepare_pr_review()
 
     assert "<summary>✅ Resolved findings</summary>" in review
     assert "The lock is never released." in review
@@ -185,7 +186,8 @@ def test_prepare_review_same_head_absence_preserves_active_finding(monkeypatch):
     assert "resolved_head_sha" not in finding
 
 
-def test_prepare_review_pushes_final_markdown_with_lifecycle_state(monkeypatch):
+@pytest.mark.asyncio
+async def test_prepare_review_pushes_final_markdown_with_lifecycle_state(monkeypatch):
     _settings(monkeypatch)
     previous = reconcile_review_findings(
         None,
@@ -208,12 +210,12 @@ def test_prepare_review_pushes_final_markdown_with_lifecycle_state(monkeypatch):
         patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"key_issues_to_review": []}}),
         patch("pr_agent.tools.pr_reviewer.github_action_output"),
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="No major issues detected"),
-        patch("pr_agent.tools.pr_reviewer.push_outputs") as push_outputs,
+        patch("pr_agent.tools.pr_reviewer.async_push_outputs", new_callable=AsyncMock) as push_outputs,
     ):
-        review = reviewer._prepare_pr_review()
+        review = await reviewer._prepare_pr_review()
 
     assert "<summary>✅ Resolved findings</summary>" in review
-    push_outputs.assert_called_once()
+    push_outputs.assert_awaited_once()
     assert push_outputs.call_args.kwargs["markdown"] == review
     assert "<summary>✅ Resolved findings</summary>" in push_outputs.call_args.kwargs["markdown"]
 
@@ -475,7 +477,8 @@ def test_load_review_finding_state_skips_newer_comment_without_marker():
     assert parsed.state == previous
 
 
-def test_malformed_marker_self_heals_with_valid_marker(monkeypatch):
+@pytest.mark.asyncio
+async def test_malformed_marker_self_heals_with_valid_marker(monkeypatch):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 3)
     header = f"{PRReviewHeader.REGULAR.value} 🔍"
@@ -514,7 +517,7 @@ def test_malformed_marker_self_heals_with_valid_marker(monkeypatch):
             return_value=f"{header}\n\nclean review",
         ),
     ):
-        review = reviewer._prepare_pr_review()
+        review = await reviewer._prepare_pr_review()
 
     result = GitProvider.publish_persistent_comment_full(
         provider,
@@ -534,7 +537,8 @@ def test_malformed_marker_self_heals_with_valid_marker(monkeypatch):
     provider.publish_comment.assert_not_called()
 
 
-def test_prepare_and_persisted_state_round_trip_preserves_marker_and_history(monkeypatch):
+@pytest.mark.asyncio
+async def test_prepare_and_persisted_state_round_trip_preserves_marker_and_history(monkeypatch):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 3)
     header = f"{PRReviewHeader.REGULAR.value} 🔍"
@@ -586,7 +590,7 @@ def test_prepare_and_persisted_state_round_trip_preserves_marker_and_history(mon
             return_value=f"{header}\n\n" + ("long human review " * 1000),
         ),
     ):
-        review = reviewer._prepare_pr_review()
+        review = await reviewer._prepare_pr_review()
 
     result = GitProvider.publish_persistent_comment_full(
         provider,
@@ -777,7 +781,7 @@ async def test_run_publishes_state_transition_even_when_review_has_no_suggestion
     reviewer = _reviewer(provider)
     reviewer.vars = {}
     reviewer._prepare_prediction = AsyncMock()
-    reviewer._prepare_pr_review = MagicMock(return_value="No major issues detected")
+    reviewer._prepare_pr_review = AsyncMock(return_value="No major issues detected")
     reviewer._review_state_result = SimpleNamespace(changed=True)
     reviewer._review_state_blocked = False
 
@@ -809,7 +813,7 @@ async def test_invalid_history_updates_persistent_comment_without_fallback(monke
     reviewer = _reviewer(provider)
     reviewer.vars = {}
     reviewer._prepare_prediction = AsyncMock()
-    reviewer._prepare_pr_review = MagicMock(return_value="No major issues detected")
+    reviewer._prepare_pr_review = AsyncMock(return_value="No major issues detected")
     reviewer._review_state_result = None
     reviewer._review_state_blocked = True
     provider.get_issue_comments.return_value = [
@@ -849,7 +853,7 @@ async def test_non_marker_state_block_publishes_without_overwriting_state(monkey
     reviewer.vars = {}
     reviewer._prepare_prediction = AsyncMock()
     review_body = f"{PRReviewHeader.REGULAR.value} {chr(0x1F50D)}\n\nreview output"
-    reviewer._prepare_pr_review = MagicMock(return_value=review_body)
+    reviewer._prepare_pr_review = AsyncMock(return_value=review_body)
     reviewer._review_state_result = None
     reviewer._review_state_blocked = True
     reviewer._review_state_block_reason = block_reason
@@ -970,7 +974,8 @@ def _large_review_issues(count=10):
     ]
 
 
-def test_oversized_new_state_keeps_review_publishable_without_marker(monkeypatch):
+@pytest.mark.asyncio
+async def test_oversized_new_state_keeps_review_publishable_without_marker(monkeypatch):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 100)
     provider = MagicMock()
@@ -988,19 +993,20 @@ def test_oversized_new_state_keeps_review_publishable_without_marker(monkeypatch
             "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
             return_value=PRReviewHeader.REGULAR.value + " " + chr(0x1F50D) + "\n\nhuman review",
         ),
-        patch("pr_agent.tools.pr_reviewer.push_outputs") as push_outputs,
+        patch("pr_agent.tools.pr_reviewer.async_push_outputs", new_callable=AsyncMock) as push_outputs,
     ):
-        review = reviewer._prepare_pr_review()
+        review = await reviewer._prepare_pr_review()
 
     assert "human review" in review
     assert parse_review_state(review).present is False
     assert reviewer._review_state_result is None
     assert reviewer._review_state_block_reason == "state_size"
-    push_outputs.assert_called_once()
+    push_outputs.assert_awaited_once()
     assert push_outputs.call_args.kwargs["markdown"] == review
 
 
-def test_oversized_new_state_preserves_previous_valid_marker(monkeypatch):
+@pytest.mark.asyncio
+async def test_oversized_new_state_preserves_previous_valid_marker(monkeypatch):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 100)
     previous = reconcile_review_findings(
@@ -1029,9 +1035,9 @@ def test_oversized_new_state_preserves_previous_valid_marker(monkeypatch):
             "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
             return_value=header + "\n\n" + ("human review " * 100),
         ),
-        patch("pr_agent.tools.pr_reviewer.push_outputs"),
+        patch("pr_agent.tools.pr_reviewer.async_push_outputs", new_callable=AsyncMock),
     ):
-        review = reviewer._prepare_pr_review()
+        review = await reviewer._prepare_pr_review()
 
     parsed = parse_review_state(review)
     assert parsed.valid is True
@@ -1067,7 +1073,7 @@ async def test_review_publish_uses_shared_full_signature_for_authorship(monkeypa
     reviewer._review_state_blocked = False
     reviewer._review_state_block_reason = None
     reviewer._review_state_preserved = False
-    reviewer._prepare_pr_review = MagicMock(return_value="review output")
+    reviewer._prepare_pr_review = AsyncMock(return_value="review output")
     reviewer._should_publish_review_no_suggestions = lambda _review: True
 
     async def fake_extract_tickets(git_provider, vars):
@@ -1123,7 +1129,8 @@ def test_providers_without_override_inherit_persistent_comment_implementation():
     assert LocalGitProvider.publish_persistent_comment is GitProvider.publish_persistent_comment
 
 
-def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):
+@pytest.mark.asyncio
+async def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 100)
     previous = reconcile_review_findings(
@@ -1145,7 +1152,7 @@ def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):
 
     data = {"review": {"key_issues_to_review": _large_review_issues()}}
 
-    def run_review(reviewer):
+    async def run_review(reviewer):
         with (
             patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
             patch("pr_agent.tools.pr_reviewer.github_action_output"),
@@ -1153,14 +1160,14 @@ def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):
                 "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
                 return_value=header + "\n\n" + ("human review " * 100),
             ),
-            patch("pr_agent.tools.pr_reviewer.push_outputs") as push_outputs,
+            patch("pr_agent.tools.pr_reviewer.async_push_outputs", new_callable=AsyncMock) as push_outputs,
         ):
-            review = reviewer._prepare_pr_review()
-        push_outputs.assert_called_once()
+            review = await reviewer._prepare_pr_review()
+        push_outputs.assert_awaited_once()
         return review
 
     first_reviewer = _reviewer(provider)
-    first_review = run_review(first_reviewer)
+    first_review = await run_review(first_reviewer)
     first_state = parse_review_state(first_review)
     assert first_state.valid is True
     assert first_state.state["findings"][0]["state"] == "ACTIVE"
@@ -1170,7 +1177,7 @@ def test_oversized_state_degradation_is_safe_on_the_next_run(monkeypatch):
         SimpleNamespace(body=first_review, user=SimpleNamespace(login="agent"))
     ]
     second_reviewer = _reviewer(provider)
-    second_review = run_review(second_reviewer)
+    second_review = await run_review(second_reviewer)
     second_state = parse_review_state(second_review)
 
     assert second_state.valid is True
@@ -1280,7 +1287,7 @@ def _reviewer_for_run(provider):
     reviewer._review_state_preserved = False
     reviewer._prepare_prediction = AsyncMock()
     review_body = f"{PRReviewHeader.REGULAR.value} {chr(0x1F50D)}\n\nreview output"
-    reviewer._prepare_pr_review = MagicMock(return_value=review_body)
+    reviewer._prepare_pr_review = AsyncMock(return_value=review_body)
     reviewer._should_publish_review_no_suggestions = lambda _review: True
     return reviewer
 

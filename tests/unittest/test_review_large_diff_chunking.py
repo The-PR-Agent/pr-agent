@@ -339,6 +339,10 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
         "pr_reviewer.publish_error_details": False,
     }
     snapshot = snapshot_settings(settings_values)
+
+    async def render_review():
+        return await _render_review(reviewer)
+
     try:
         for key, value in settings_values.items():
             get_settings().set(key, value)
@@ -351,7 +355,7 @@ async def test_exhausted_fallbacks_publish_partial_review_only_when_chunks_succe
             patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
             patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
                   return_value=(["chunk-a", "chunk-b", "chunk-c"], [])),
-            patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
+            patch.object(reviewer, "_prepare_pr_review", side_effect=render_review) as render,
         ):
             # Exercise the real fallback chain and run()'s terminal publication path.
             await reviewer.run()
@@ -412,6 +416,10 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
         "pr_reviewer.publish_error_details": False,
     }
     snapshot = snapshot_settings(settings_values)
+
+    async def render_review():
+        return await _render_review(reviewer)
+
     try:
         for key, value in settings_values.items():
             get_settings().set(key, value)
@@ -424,7 +432,7 @@ async def test_exhausted_fallbacks_propagate_partial_review_failure_when_configu
             patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
             patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
                   return_value=(["chunk-a", "chunk-b", "chunk-c"], [])),
-            patch.object(reviewer, "_prepare_pr_review", side_effect=lambda: _render_review(reviewer)) as render,
+            patch.object(reviewer, "_prepare_pr_review", side_effect=render_review) as render,
         ):
             if propagate_tool_errors:
                 with pytest.raises(Exception, match="Failed to generate prediction with any model"):
@@ -589,7 +597,7 @@ async def test_invalid_chunk_emits_one_schema_warning_before_rendering(chunking_
         patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger,
     ):
         await reviewer._prepare_prediction("model")
-        reviewer._prepare_pr_review()
+        await reviewer._prepare_pr_review()
 
     warnings = get_logger.return_value.warning.call_args_list
     schema_warnings = [call for call in warnings if call.args == ("Review output failed schema validation",)]
@@ -602,7 +610,7 @@ async def test_invalid_chunk_emits_one_schema_warning_before_rendering(chunking_
     assert reviewer.prediction_data["review"]["score"] == 40
 
 
-def _render_review(reviewer):
+async def _render_review(reviewer):
     reviewer.prediction = "review:\n  summary: test"
     reviewer.git_provider.get_diff_files.return_value = []
     reviewer.git_provider.is_supported.return_value = False
@@ -613,14 +621,15 @@ def _render_review(reviewer):
         patch("pr_agent.tools.pr_reviewer.github_action_output"),
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
     ):
-        return PRReviewer._prepare_pr_review(reviewer)
+        return await PRReviewer._prepare_pr_review(reviewer)
 
 
-def test_a_chunked_review_says_how_many_chunks_it_was_built_from():
+@pytest.mark.asyncio
+async def test_a_chunked_review_says_how_many_chunks_it_was_built_from():
     reviewer = _make_reviewer()
     reviewer.review_chunk_count = 3
 
-    review = _render_review(reviewer)
+    review = await _render_review(reviewer)
 
     assert review.startswith("original review")
     assert "ℹ️ **Chunked review:**" in review
@@ -628,30 +637,33 @@ def test_a_chunked_review_says_how_many_chunks_it_was_built_from():
     assert "failed" not in review
 
 
-def test_a_chunked_review_reports_the_chunks_that_failed():
+@pytest.mark.asyncio
+async def test_a_chunked_review_reports_the_chunks_that_failed():
     reviewer = _make_reviewer()
     reviewer.review_chunk_count = 3
     reviewer.review_failed_chunk_count = 1
 
-    review = _render_review(reviewer)
+    review = await _render_review(reviewer)
 
     assert "1 chunk(s) failed and are not covered by this review." in review
 
 
-def test_a_single_call_review_says_nothing_about_chunks():
-    review = _render_review(_make_reviewer())
+@pytest.mark.asyncio
+async def test_a_single_call_review_says_nothing_about_chunks():
+    review = await _render_review(_make_reviewer())
 
     assert review == "original review"
 
 
-def test_the_chunk_note_comes_before_the_review_coverage_footer():
+@pytest.mark.asyncio
+async def test_the_chunk_note_comes_before_the_review_coverage_footer():
     reviewer = _make_reviewer()
     reviewer.review_chunk_count = 2
     reviewer.remaining_files_list = ["left_out.py"]
     snapshot = snapshot_settings(("pr_reviewer.enable_review_coverage_footer",))
     try:
         get_settings().set("pr_reviewer.enable_review_coverage_footer", True)
-        review = _render_review(reviewer)
+        review = await _render_review(reviewer)
     finally:
         restore_settings(snapshot)
 

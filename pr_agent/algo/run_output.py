@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
+import threading
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from importlib.metadata import PackageNotFoundError, version
@@ -14,6 +16,8 @@ import yaml
 from pr_agent.algo.run_details import get_run_details
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+_stdout_lock = threading.Lock()
 
 
 def github_action_output(output_data: dict, key_name: str):
@@ -50,6 +54,14 @@ def _push_outputs_sink_url(cfg: dict, key: str) -> str:
     return url
 
 
+def _push_outputs_enabled(cfg: dict) -> bool:
+    enable = cfg.get("enable", False)
+    # Normalize environment-variable strings for both output entry points.
+    if isinstance(enable, str):
+        enable = enable.lower().strip() not in ("false", "0", "no", "")
+    return bool(enable)
+
+
 def push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
     """Emit a tool's output to external sinks, without calling any git-provider API.
 
@@ -59,11 +71,7 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
     """
     try:
         cfg = get_settings().get("push_outputs", {}) or {}
-        enable = cfg.get("enable", False)
-        # Treat environment-variable strings "false", "0", "no", and "" as disabled.
-        if isinstance(enable, str):
-            enable = enable.lower().strip() not in ("false", "0", "no", "")
-        if not enable:
+        if not _push_outputs_enabled(cfg):
             return
 
         channels = cfg.get("channels", []) or []
@@ -77,7 +85,8 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
 
         if "stdout" in channels:
             try:
-                print(json.dumps(record, ensure_ascii=False))
+                with _stdout_lock:
+                    print(json.dumps(record, ensure_ascii=False))
             except Exception as e:
                 get_logger().warning(f"push_outputs: stdout failed: {type(e).__name__}")
 
@@ -119,6 +128,51 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+
+
+async def async_push_outputs(message_type: str, payload: dict | None = None, markdown: str | None = None) -> bool:
+    """Run synchronous sinks without blocking and report deferred cancellation.
+
+    Cancellation before the worker starts prevents sink delivery and propagates immediately.
+    Once delivery starts, it is allowed to finish and ``True`` tells the caller to complete the
+    matching provider publication before re-raising ``CancelledError``.
+    """
+    try:
+        if not _push_outputs_enabled(get_settings().get("push_outputs", {}) or {}):
+            return False
+
+        state_lock = threading.Lock()
+        started = False
+        aborted = False
+
+        def deliver() -> None:
+            nonlocal started
+            with state_lock:
+                if aborted:
+                    return
+                started = True
+            push_outputs(message_type, payload, markdown)
+
+        delivery = asyncio.create_task(asyncio.to_thread(deliver))
+        cancellation_deferred = False
+        while not delivery.done():
+            try:
+                await asyncio.shield(delivery)
+            except asyncio.CancelledError:
+                with state_lock:
+                    if not started:
+                        aborted = True
+                        delivery.cancel()
+                        raise
+                cancellation_deferred = True
+        try:
+            delivery.result()
+        except Exception as e:
+            get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+        return cancellation_deferred
+    except Exception as e:
+        get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+        return False
 
 
 def _render_setting_value(value) -> str:

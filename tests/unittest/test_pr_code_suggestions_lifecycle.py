@@ -115,6 +115,188 @@ async def test_run_removes_progress_comment_when_cancelled(
 
 
 @pytest.mark.asyncio
+async def test_run_keeps_final_no_suggestions_comment_when_deferred_sink_cancellation_arrives(monkeypatch):
+    settings_snapshot = snapshot_settings(
+        _TRACKED_SETTINGS + ("pr_code_suggestions.publish_output_no_suggestions",)
+    )
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = False
+        provider.supports_code_suggestions_artifact.return_value = False
+        provider.publish_comment.return_value = progress_comment
+        tool = _make_tool(provider)
+        tool.progress = "Preparing suggestions..."
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": []}),
+        )
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "async_push_outputs",
+            AsyncMock(return_value=True),
+        )
+        _configure_published_run()
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+
+        with pytest.raises(asyncio.CancelledError):
+            await tool.run()
+
+        provider.edit_comment.assert_called_once()
+        assert provider.edit_comment.call_args.args[0] is progress_comment
+        assert "No code suggestions found" in provider.edit_comment.call_args.args[1]
+        provider.remove_comment.assert_not_called()
+        assert tool.progress_response is None
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_keeps_final_no_suggestions_comment_when_thread_resolution_fails_after_edit(monkeypatch):
+    settings_snapshot = snapshot_settings(
+        _TRACKED_SETTINGS + ("pr_code_suggestions.publish_output_no_suggestions",)
+    )
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = False
+        provider.supports_code_suggestions_artifact.return_value = False
+        provider.publish_comment.return_value = progress_comment
+        provider.resolve_comment_thread.side_effect = RuntimeError("thread resolution unavailable")
+        tool = _make_tool(provider)
+        provider.should_publish_improve_as_thread.return_value = True
+        tool.progress = "Preparing suggestions..."
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": []}),
+        )
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "async_push_outputs",
+            AsyncMock(return_value=True),
+        )
+        _configure_published_run()
+        get_settings().pr_code_suggestions.publish_output_no_suggestions = True
+
+        with pytest.raises(asyncio.CancelledError):
+            await tool.run()
+
+        provider.edit_comment.assert_called_once()
+        assert provider.edit_comment.call_args.args[0] is progress_comment
+        assert "No code suggestions found" in provider.edit_comment.call_args.args[1]
+        provider.resolve_comment_thread.assert_called_once_with(progress_comment.id)
+        provider.remove_comment.assert_not_called()
+        assert tool.progress_response is None
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_does_not_clean_up_removed_inline_progress_after_deferred_cancellation(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = False
+        provider.publish_comment.return_value = progress_comment
+        tool = _make_tool(provider)
+        tool.progress = "Preparing suggestions..."
+        tool.push_inline_code_suggestions = AsyncMock()
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
+        )
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "async_push_outputs",
+            AsyncMock(return_value=True),
+        )
+        _configure_published_run()
+        get_settings().pr_code_suggestions.commitable_code_suggestions = False
+
+        with pytest.raises(asyncio.CancelledError):
+            await tool.run()
+
+        provider.remove_comment.assert_called_once_with(progress_comment)
+        provider.edit_comment.assert_not_called()
+        assert tool.progress_response is None
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sink_cancelled", [False, True])
+async def test_run_records_provider_failure_before_repropagating_deferred_sink_cancellation(
+        monkeypatch, sink_cancelled):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = False
+        provider.remove_initial_comment.side_effect = RuntimeError("initial comment unavailable")
+        tool = _make_tool(provider)
+        tool.push_inline_code_suggestions = AsyncMock()
+        sink = AsyncMock(return_value=sink_cancelled)
+        logger = MagicMock()
+        record_failure = MagicMock()
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
+        )
+        monkeypatch.setattr(pr_code_suggestions_module, "async_push_outputs", sink)
+        monkeypatch.setattr(pr_code_suggestions_module, "get_logger", lambda: logger)
+        monkeypatch.setattr(pr_code_suggestions_module, "record_command_failure", record_failure)
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.publish_output_progress = False
+        settings.pr_code_suggestions.commitable_code_suggestions = True
+
+        if sink_cancelled:
+            with pytest.raises(asyncio.CancelledError) as cancellation:
+                await tool.run()
+            assert isinstance(cancellation.value.__cause__, RuntimeError)
+        else:
+            await tool.run()
+        sink.assert_awaited_once()
+        logger.error.assert_called_once()
+        assert "initial comment unavailable" in logger.error.call_args.args[0]
+        assert "traceback" in logger.error.call_args.kwargs["artifact"]
+        record_failure.assert_called_once()
+        tool.push_inline_code_suggestions.assert_not_awaited()
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_publish_no_suggestions_clears_removed_quiet_progress_comment():
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        tool = _make_tool(provider)
+        tool.progress_response = progress_comment
+        get_settings().config.publish_output = False
+
+        assert await tool.publish_no_suggestions() is False
+
+        provider.remove_comment.assert_called_once_with(progress_comment)
+        assert tool.progress_response is None
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publishing(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
