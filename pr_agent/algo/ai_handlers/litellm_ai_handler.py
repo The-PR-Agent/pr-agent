@@ -3012,8 +3012,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                 kwargs["custom_llm_provider"] = custom_llm_provider
             if self._bedrock_model_id and request_provider == "bedrock":
                 kwargs["model_id"] = self._bedrock_model_id
+            streaming = self._requires_streaming(kwargs["model"]) or self._force_streaming_for_request(
+                custom_llm_provider, kwargs.get("api_base")
+            )
+            if streaming:
+                kwargs["stream"] = True
+                kwargs["stream_options"] = {"include_usage": True}
             kwargs["model"] = normalize_litellm_model(kwargs["model"], custom_llm_provider)
-            await self._acompletion(_completion=_completion, **kwargs)
+            response = await self._acompletion(_completion=_completion, **kwargs)
+            if streaming or hasattr(response, "__aiter__"):
+                async for _ in response:
+                    pass
 
     async def _get_completion(self, **kwargs):
         """
