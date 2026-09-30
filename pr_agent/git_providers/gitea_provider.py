@@ -861,7 +861,10 @@ class GiteaProvider(GitProvider):
 
     def remove_initial_comment(self) -> None:
         """Remove the initial comment"""
-        for comment in self.comments_list:
+        # Iterate over a snapshot: remove_comment() drops the comment from
+        # comments_list, so mutating it mid-iteration skips the next element
+        # and leaves every other temporary comment behind.
+        for comment in list(self.comments_list):
             try:
                 if not comment.get("is_temporary"):
                     continue
