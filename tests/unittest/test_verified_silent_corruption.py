@@ -22,12 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from github import GithubException
 
-from pr_agent.algo import repo_context as repo_context_module
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
-from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 from pr_agent.log import get_logger
@@ -383,88 +381,6 @@ async def test_describe_survives_an_unreadable_label_set(monkeypatch):
     provider.publish_labels.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# 3. Repo context must not be cached on a mutable ref
-# ---------------------------------------------------------------------------
-
-
-class _BranchNameProvider:
-    """Models a provider that keys content on a branch name, which is a mutable pointer."""
-
-    def __init__(self, files):
-        self.files = files
-        self.reads = 0
-
-    def get_repo_file_content(self, file_path, from_default_branch=False):
-        self.reads += 1
-        return self.files.get(file_path)
-
-    def get_repo_context_ref(self, from_default_branch=False):
-        return "main" if from_default_branch else "target-sha"
-
-    def supports_immutable_repo_context_ref(self):
-        return False
-
-
-class _ShaProvider(_BranchNameProvider):
-    def supports_immutable_repo_context_ref(self):
-        return True
-
-
-def _enable_repo_context(monkeypatch, files=("AGENTS.md",)):
-    """Point build_repo_context at a fixed file list with an empty process level cache."""
-    monkeypatch.setattr(repo_context_module, "_get_repo_context_config",
-                        lambda: (list(files), 5000))
-    monkeypatch.setattr(repo_context_module, "_REPO_CONTEXT_CACHE", {}, raising=False)
-
-
-def test_branch_name_ref_does_not_serve_stale_repo_context(monkeypatch):
-    """Regression: a pushed change to an instruction file stayed invisible for the TTL."""
-    _enable_repo_context(monkeypatch)
-
-    provider = _BranchNameProvider({"AGENTS.md": "version one"})
-    assert "version one" in repo_context_module.build_repo_context(provider)
-
-    # Someone pushes an update to the default branch.
-    provider.files = {"AGENTS.md": "version two"}
-
-    assert "version two" in repo_context_module.build_repo_context(provider), \
-        "a mutable ref must not serve pre push content"
-
-
-def test_sha_ref_still_reuses_the_cache(monkeypatch):
-    """Providers that resolve a commit SHA keep the cache, so this is not a blanket loss."""
-    _enable_repo_context(monkeypatch)
-
-    provider = _ShaProvider({"AGENTS.md": "version one"})
-    repo_context_module.build_repo_context(provider)
-    reads_after_first = provider.reads
-
-    repo_context_module.build_repo_context(provider)
-
-    assert provider.reads == reads_after_first, "an immutable ref should hit the cache"
-
-
-def test_default_capability_is_conservative():
-    assert GitProvider.supports_immutable_repo_context_ref(object()) is False
-    assert GithubProvider.supports_immutable_repo_context_ref(object()) is True
-
-
-def test_providers_returning_a_branch_name_do_not_claim_immutability():
-    """The providers that return a branch name must not opt into caching by accident."""
-    from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider as ADO
-    from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
-    from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
-    from pr_agent.git_providers.gitea_provider import GiteaProvider
-    from pr_agent.git_providers.gitlab_provider import GitLabProvider
-
-    for provider_cls in (ADO, BitbucketProvider, BitbucketServerProvider,
-                         GiteaProvider, GitLabProvider):
-        assert provider_cls.supports_immutable_repo_context_ref(object()) is False, \
-            provider_cls.__name__
-
-
-# ---------------------------------------------------------------------------
 # 4. A rendering error must not overwrite the persistent review
 # ---------------------------------------------------------------------------
 

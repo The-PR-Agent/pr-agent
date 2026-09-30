@@ -744,25 +744,10 @@ class GitProvider(ABC):
         The repo-context cache key (pr_agent/algo/repo_context.py) includes this ref so a
         rebase or a push to the base branch invalidates cached file content instead of serving
         it from a commit that has since moved. Providers that override get_repo_file_content
-        should return the same ref they fetch from; the default None covers providers with no
+should return the same ref they fetch from; the default None covers providers with no
         repo-context support at all.
-
-        A branch name is a mutable pointer, so it cannot satisfy the invalidation goal on its
-        own. Providers that resolve the ref to a commit SHA must also override
-        supports_immutable_repo_context_ref.
         """
         return None
-
-    def supports_immutable_repo_context_ref(self) -> bool:
-        """Whether get_repo_context_ref() always returns an immutable commit SHA.
-
-        A branch name stays constant while the commit it points at moves, so keying a cache on
-        one serves file content from a revision the reader never asked for. The default is
-        False, which makes the repo-context cache skip providers that cannot prove the ref is
-        immutable. Providers that resolve the default branch or base to a SHA override this
-        to keep caching.
-        """
-        return False
 
     def get_pr_id(self):
         return ""

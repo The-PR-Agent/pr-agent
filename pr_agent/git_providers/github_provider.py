@@ -1930,11 +1930,6 @@ class GithubProvider(GitProvider):
 
         return link
 
-    def supports_immutable_repo_context_ref(self) -> bool:
-        # get_repo_context_ref resolves both the PR base and the default branch to a commit
-        # SHA, so a push to either invalidates the cached repo context.
-        return True
-
     def get_pr_id(self):
         try:
             pr_id = f"{self.repo}/{self.pr_num}"
