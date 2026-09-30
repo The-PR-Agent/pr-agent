@@ -1212,6 +1212,8 @@ def try_fix_yaml(response_text: str,
 
 
 _DEFAULT_CUSTOM_LABELS = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
+# Mirrors the hardcoded enum the prompts render when custom labels are disabled.
+_BUILTIN_LABELS = ['Bug fix', 'Tests', 'Enhancement', 'Documentation', 'Other']
 
 
 def set_custom_labels(variables, git_provider=None):
@@ -1256,13 +1258,21 @@ def get_user_labels(current_labels: List[str] = None):
         if current_labels is None:
             current_labels = []
         user_labels = []
-        bot_labels = {label.lower() for label in _DEFAULT_CUSTOM_LABELS}
+        if enable_custom_labels:
+            # The bot can only produce what the active configuration allows: the
+            # configured names, or the fallback set when nothing is configured. Anything
+            # else on the PR was put there by a human and has to survive the run.
+            if custom_labels:
+                bot_labels = {str(label).lower() for label in custom_labels}
+            else:
+                bot_labels = {label.lower() for label in _DEFAULT_CUSTOM_LABELS}
+        else:
+            # With the switch off the prompt renders its own five-label enum, so only
+            # those are bot-owned. "Bug fix with tests" is not among them.
+            bot_labels = {label.lower() for label in _BUILTIN_LABELS}
         for label in current_labels:
             if label.lower() in bot_labels:
                 continue
-            if enable_custom_labels:
-                if label in custom_labels:
-                    continue
             user_labels.append(label)
         if user_labels:
             get_logger().debug(f"Keeping user labels: {user_labels}")

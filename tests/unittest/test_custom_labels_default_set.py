@@ -49,7 +49,9 @@ def settings():
 
 
 def _render(template, variables):
-    return Environment(undefined=StrictUndefined).from_string(template).render(**variables)
+    return Environment(undefined=StrictUndefined, autoescape=True).from_string(template).render(
+        **variables
+    )
 
 
 def test_fallback_defines_the_label_enum(settings):
@@ -125,12 +127,29 @@ def test_disabled_switch_writes_nothing(settings):
 
 
 def test_get_user_labels_drops_every_default_bot_label(settings):
+    """The unconfigured fallback is the full six, so all six are bot-owned."""
     settings.set("config.enable_custom_labels", True)
     settings.set("custom_labels", {})
 
     result = get_user_labels(_DEFAULT_LABELS + ["P0", "needs design review"])
 
     assert result == ["P0", "needs design review"]
+
+
+def test_get_user_labels_keeps_bug_fix_with_tests_when_custom_labels_disabled(settings):
+    """With the switch off the prompt only offers five labels, so the sixth is a user label."""
+    settings.set("config.enable_custom_labels", False)
+    settings.set("custom_labels", {})
+
+    assert get_user_labels(["Bug fix with tests", "P0"]) == ["Bug fix with tests", "P0"]
+
+
+def test_get_user_labels_keeps_labels_excluded_by_a_configured_set(settings):
+    """A configured set that omits a label leaves it user-owned, not bot-owned."""
+    settings.set("config.enable_custom_labels", True)
+    settings.set("custom_labels", {"Feature": {"description": "new feature"}})
+
+    assert get_user_labels(["Bug fix with tests", "Feature", "P0"]) == ["Bug fix with tests", "P0"]
 
 
 def test_get_user_labels_ignores_case(settings):
