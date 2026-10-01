@@ -29,7 +29,16 @@ CHANGELOG_LINES = 50
 # answer with a closing fence and no opening one.
 _WRAPPING_CODE_FENCE_RE = re.compile(r"\A\s*```[^\n]*\n(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
 _DANGLING_FENCE_RE = re.compile(r"\A(?P<body>.*?)\n?```[^\S\n]*\Z", re.DOTALL)
-_FENCE_OPEN_RE = re.compile(r"(?m)^[^\S\n]*```")
+_FENCE_LINE_RE = re.compile(r"(?m)^[^\S\n]*```")
+
+
+def _has_balanced_fences(text: str) -> bool:
+    """True when every code block the text opens is also closed.
+
+    An odd number of fence lines means one block is still open, so a trailing fence closes that
+    block rather than wrapping the answer.
+    """
+    return len(_FENCE_LINE_RE.findall(text)) % 2 == 0
 
 
 def strip_wrapping_code_fence(text: str) -> str:
@@ -40,17 +49,17 @@ def strip_wrapping_code_fence(text: str) -> str:
     corrupted line is committed to CHANGELOG.md.
 
     The function is idempotent, because the answer is stripped once when the model replies and
-    again before the changelog is built. A bare trailing fence is only a wrapper when nothing
-    else in the text opens a fence: an entry that ends in a code block has balanced fences of
-    its own, and stripping the closing one leaves it unterminated, which then swallows the rest
-    of CHANGELOG.md when the file is committed.
+    again before the changelog is built. Whether a trailing fence is a wrapper or the closer of a
+    code block the entry ends with comes down to whether the rest of the text is balanced: a
+    leftover fence either unterminates the block, or leaves a wrapper behind that then swallows
+    the rest of CHANGELOG.md when the file is committed.
     """
     match = _WRAPPING_CODE_FENCE_RE.match(text)
     if match:
         return match.group("body")
 
     match = _DANGLING_FENCE_RE.match(text)
-    if match and not _FENCE_OPEN_RE.search(match.group("body")):
+    if match and _has_balanced_fences(match.group("body")):
         return match.group("body")
 
     return text

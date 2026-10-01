@@ -100,6 +100,33 @@ def test_an_entry_ending_in_a_code_block_is_committed_verbatim():
     assert new_file_content == f"{entry}\n\n{EXISTING}"
 
 
+# --------------------------------------------------------------------------------------
+# A complete internal code block followed by the wrapper close
+# --------------------------------------------------------------------------------------
+_ENTRY_WITH_CODE_BLOCK = "## 2026-09-06\n\n### Added\n- New CLI flag\n\n```python\nflags.add('--x')\n```"
+
+
+def test_a_wrapper_close_after_a_complete_code_block_is_removed():
+    """No opening wrapper, a closed internal block, then a trailing wrapper close.
+
+    The trailing fence is a wrapper here: the internal block is already balanced. Keeping it
+    left a dangling fence that rendered every older entry as code.
+    """
+    fenced = f"{_ENTRY_WITH_CODE_BLOCK}\n```"
+
+    assert strip_wrapping_code_fence(fenced) == _ENTRY_WITH_CODE_BLOCK
+    assert strip_wrapping_code_fence(strip_wrapping_code_fence(fenced).strip()) == _ENTRY_WITH_CODE_BLOCK
+
+
+def test_a_leftover_wrapper_fence_is_not_committed():
+    """The prepared changelog must not put the existing entries inside a code block."""
+    new_file_content, _answer = _prepared(f"{_ENTRY_WITH_CODE_BLOCK}\n```")
+
+    assert new_file_content == f"{_ENTRY_WITH_CODE_BLOCK}\n\n{EXISTING}"
+    # Every fence in the new entry pairs up, so the existing changelog renders as itself.
+    assert new_file_content.split(EXISTING)[0].count("\n```") % 2 == 0
+
+
 def test_the_commit_hint_is_appended_when_not_committing():
     """Control: the non-committing branch still explains how to commit."""
     _new_file_content, answer = _prepared("## 2026-09-06\n- Handle `None`", commit=False)
