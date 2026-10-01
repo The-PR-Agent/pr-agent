@@ -95,7 +95,7 @@ def test_an_entry_ending_in_a_code_block_is_committed_verbatim():
     """A second strip used to eat the closing fence, unterminating the code block."""
     entry = "## 2026-09-06\n\n### Added\n- New CLI flag\n\n```python\nflags.add('--x')\n```"
 
-    new_file_content, _answer = _prepared(f"```markdown\n{entry}\n```")
+    new_file_content, _answer = _prepared(strip_wrapping_code_fence(f"```markdown\n{entry}\n```"))
 
     assert new_file_content == f"{entry}\n\n{EXISTING}"
 
@@ -120,7 +120,7 @@ def test_a_wrapper_close_after_a_complete_code_block_is_removed():
 
 def test_a_leftover_wrapper_fence_is_not_committed():
     """The prepared changelog must not put the existing entries inside a code block."""
-    new_file_content, _answer = _prepared(f"{_ENTRY_WITH_CODE_BLOCK}\n```")
+    new_file_content, _answer = _prepared(strip_wrapping_code_fence(f"{_ENTRY_WITH_CODE_BLOCK}\n```"))
 
     assert new_file_content == f"{_ENTRY_WITH_CODE_BLOCK}\n\n{EXISTING}"
     # Every fence in the new entry pairs up, so the existing changelog renders as itself.

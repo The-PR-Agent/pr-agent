@@ -27,18 +27,8 @@ CHANGELOG_LINES = 50
 # A whole answer wrapped in one fenced block, e.g. "```markdown\n...\n```". The opening fence
 # is optional: the prompt ends with a dangling open "```markdown", which primes the model to
 # answer with a closing fence and no opening one.
-_WRAPPING_CODE_FENCE_RE = re.compile(r"\A\s*```[^\n]*\n(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
-_DANGLING_FENCE_RE = re.compile(r"\A(?P<body>.*?)\n?```[^\S\n]*\Z", re.DOTALL)
+_WRAPPING_CODE_FENCE_RE = re.compile(r"\A(?:\s*(?P<open>```[^\n]*\n))?(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
 _FENCE_LINE_RE = re.compile(r"(?m)^[^\S\n]*```")
-
-
-def _has_balanced_fences(text: str) -> bool:
-    """True when every code block the text opens is also closed.
-
-    An odd number of fence lines means one block is still open, so a trailing fence closes that
-    block rather than wrapping the answer.
-    """
-    return len(_FENCE_LINE_RE.findall(text)) % 2 == 0
 
 
 def strip_wrapping_code_fence(text: str) -> str:
@@ -55,13 +45,8 @@ def strip_wrapping_code_fence(text: str) -> str:
     the rest of CHANGELOG.md when the file is committed.
     """
     match = _WRAPPING_CODE_FENCE_RE.match(text)
-    if match:
+    if match and (match.group("open") or len(_FENCE_LINE_RE.findall(match.group("body"))) % 2 == 0):
         return match.group("body")
-
-    match = _DANGLING_FENCE_RE.match(text)
-    if match and _has_balanced_fences(match.group("body")):
-        return match.group("body")
-
     return text
 
 
