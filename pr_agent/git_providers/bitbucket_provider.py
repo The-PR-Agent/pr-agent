@@ -542,6 +542,7 @@ class BitbucketProvider(GitProvider):
         return True
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        relevant_file = quote(relevant_file, safe="/")
         if relevant_line_start == -1:
             link = f"{self.pr_url}/#L{relevant_file}"
         else:
