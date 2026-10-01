@@ -107,6 +107,13 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_questions": frozenset({"resolve_threads", "use_conversation_history"}),
     "pr_code_suggestions": frozenset({
         "committable_code_suggestions",
+        # The deprecated pre-1.0 spelling stays host-only for the same reason: a nested file
+        # must not be able to flip /improve to inline publishing through the alias that
+        # get_committable_code_suggestions() still accepts. This layer works by subtraction
+        # (the whole section is overridable in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS), and
+        # an unrecognized key survives the merge, so leaving the alias out of this set would
+        # hand a nested file the very control the canonical name is denied.
+        "commitable_code_suggestions",
         "max_number_of_calls", "parallel_calls", "max_discussion_context_chars",
         "approve_pr_on_self_review", "demand_code_suggestions_self_review",
     }),

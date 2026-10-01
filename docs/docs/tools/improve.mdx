@@ -52,6 +52,12 @@ For example, you can present suggestions with verified replacement ranges as com
 
 Suggestions whose replacement ranges cannot be verified remain regular comments without an apply action.
 
+:::note
+The key was spelled `commitable_code_suggestions` until the pre-1.0 typo fix. That spelling keeps
+working but is deprecated: it logs a warning and will be removed in 1.0. Rename it to
+`committable_code_suggestions`.
+:::
+
 If batch publication fails, `/improve` retries each suggestion individually. If every retry fails,
 it reports a failure instead of silently removing the progress comment. With
 `config.propagate_tool_errors=true`, the publication error is also raised to the caller.
@@ -372,7 +378,9 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>committable_code_suggestions</b></td>
-    <td>If set to true, the tool will display the suggestions as committable code comments.</td>
+    <td>If set to true, the tool will display the suggestions as committable code comments. The
+    deprecated spelling <code>commitable_code_suggestions</code> is still accepted and logs a
+    warning; it will be removed in 1.0, so rename it.</td>
   </tr>
   <tr>
     <td><b>dual_publishing_score_threshold</b></td>
