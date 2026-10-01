@@ -54,7 +54,7 @@ _MARKER_RES = (BODY_MARKER_RE, CODE_MARKER_RE, KEY_ISSUE_LOCATION_MARKER_RE)
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
-_CODE_BLOCK_RE = re.compile(r"```suggestion[^\n]*\n(.*?)```", re.DOTALL)
+_CODE_BLOCK_RE = re.compile(r"(`{3,})suggestion[^\n]*\n(.*?)\1", re.DOTALL)
 _DIFF_BLOCK_RE = re.compile(r"```diff[^\n]*\n(.*?)```", re.DOTALL)
 
 
@@ -137,7 +137,7 @@ def extract_suggestion_code(body: str) -> Optional[str]:
     body = _strip_markers(body)
     match = _CODE_BLOCK_RE.search(body)
     if match:
-        return match.group(1).strip("\n")
+        return match.group(2).strip("\n")
     diff_match = _DIFF_BLOCK_RE.search(body)
     if diff_match:
         return _reconstruct_improved_code(diff_match.group(1))

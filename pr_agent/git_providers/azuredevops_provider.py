@@ -270,7 +270,7 @@ class AzureDevopsProvider(GitProvider):
             if not patch.strip():
                 return body
             diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-            return re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
+            return re.sub(r'(`{3,})suggestion.*?\1', lambda _: diff_code, body, flags=re.DOTALL)
         except Exception as e:
             get_logger().exception(f"Azure failed to render a code suggestion as a diff, error: {e}")
             return body
