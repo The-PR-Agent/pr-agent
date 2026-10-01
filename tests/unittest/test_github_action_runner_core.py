@@ -246,17 +246,7 @@ def _write_synchronize_event(tmp_path, before_sha="abc", after_sha="def", merge_
 
 
 def _write_issue_comment_event(tmp_path, sender_type):
-    event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps({
-        "action": "created",
-        "comment": {"body": "/review", "id": 123},
-        "issue": {
-            "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"},
-            "url": "https://api.github.com/repos/org/repo/issues/1",
-        },
-        "sender": {"type": sender_type},
-    }))
-    return event_path
+    return _write_issue_comment_event_with_body(tmp_path, "/review", sender_type)
 
 
 def _write_review_event(
@@ -514,6 +504,23 @@ async def test_issue_comment_calls_inject_artifact_context(monkeypatch, tmp_path
     await github_action_runner.run_action()
 
     assert inject_calls, "_inject_artifact_context was not called for issue_comment event"
+
+
+@pytest.mark.asyncio
+async def test_action_keeps_the_whole_question_in_a_quote_reply_with_two_asks(
+        monkeypatch, tmp_path, restore_github_settings):
+    """Apply the #3670 quote-reply fix in the Action too, keeping the text after a second /ask."""
+    body = "> ![image][image-1]\n\n/review please\n\n/ask why does /ask appear twice here?"
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_issue_comment_event_with_body(tmp_path, body)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled[0][1].startswith("/ask")
+    assert "why does /ask appear twice here?" in handled[0][1]
 
 
 def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True):
@@ -1287,7 +1294,7 @@ async def test_workflow_run_does_not_inject_ci_conclusion_when_absent(monkeypatc
     assert "CI status" not in str(get_settings().pr_reviewer.extra_instructions)
 
 
-def _write_issue_comment_event_with_body(tmp_path, body):
+def _write_issue_comment_event_with_body(tmp_path, body, sender_type="User"):
     event_path = tmp_path / "event.json"
     event_path.write_text(json.dumps({
         "action": "created",
@@ -1296,7 +1303,7 @@ def _write_issue_comment_event_with_body(tmp_path, body):
             "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"},
             "url": "https://api.github.com/repos/org/repo/issues/1",
         },
-        "sender": {"type": "User"},
+        "sender": {"type": sender_type},
     }))
     return event_path
 
