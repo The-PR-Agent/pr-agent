@@ -143,10 +143,11 @@ def _provider_supports_sibling_repo_context(git_provider) -> bool:
 
 
 def _supports_immutable_context_ref(git_provider) -> bool:
-    """Whether the provider can prove its repo-context ref is an immutable commit SHA.
+    """Report whether the provider proves its repo-context ref is an immutable commit SHA.
 
-    Providers that predate the capability method fall back to the base implementation, which
-    reports no support, so they keep serving fresh content instead of a cached revision.
+    Treat a missing or failing capability check as no support: providers that predate the method
+    fall back to the base implementation, so they keep serving fresh content instead of a cached
+    revision.
     """
     try:
         return bool(git_provider.supports_immutable_repo_context_ref())
@@ -454,9 +455,9 @@ def build_repo_context(git_provider) -> str:
     if not has_sibling_entries:
         # Resolve the revision being read once and key the cache on it: within the TTL a rebase
         # or a push to the base branch must not serve file content from a commit that has moved.
-        # A branch name is a mutable pointer, so it cannot deliver that: keying on one keeps
-        # serving the pre-push content for the rest of the TTL. Only cache when the provider
-        # resolves the ref to an immutable SHA.
+        # Cache only when the provider resolves the ref to an immutable SHA, because a branch
+        # name is a mutable pointer and keying on one keeps serving the pre-push content for the
+        # rest of the TTL.
         # A sibling-only build never needs this lookup, whose failure would otherwise abort the
         # whole context build before any cross-repository file is loaded.
         context_ref = git_provider.get_repo_context_ref(from_default_branch)

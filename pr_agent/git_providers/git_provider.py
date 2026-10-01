@@ -801,20 +801,19 @@ class GitProvider(ABC):
         should return the same ref they fetch from; the default None covers providers with no
         repo-context support at all.
 
-        A branch name is a mutable pointer, so it cannot satisfy the invalidation goal on its
-        own. Providers that resolve the ref to a commit SHA must also override
-        supports_immutable_repo_context_ref.
+        Treat a branch name as a mutable pointer: it cannot satisfy the invalidation goal on its
+        own. Override supports_immutable_repo_context_ref as well whenever the ref resolves to a
+        commit SHA.
         """
         return None
 
     def supports_immutable_repo_context_ref(self) -> bool:
-        """Whether get_repo_context_ref() always returns an immutable commit SHA.
+        """Report whether get_repo_context_ref() always returns an immutable commit SHA.
 
-        A branch name stays constant while the commit it points at moves, so keying a cache on
-        one serves file content from a revision the reader never asked for. The default is
-        False, which makes the repo-context cache skip providers that cannot prove the ref is
-        immutable. Providers that resolve the default branch and base to a SHA override this
-        to keep caching.
+        Keep the default False: a branch name stays constant while the commit it points at
+        moves, so keying a cache on one serves file content from a revision the reader never
+        asked for. Override this to keep caching only where the default branch and the PR base
+        both resolve to a SHA.
         """
         return False
 

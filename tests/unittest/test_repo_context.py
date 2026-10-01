@@ -1821,8 +1821,8 @@ def test_build_repo_context_provider_cache_refreshes_when_revision_changes(repo_
 
 
 def test_build_repo_context_skips_cache_for_a_mutable_ref(repo_context_settings):
-    """A branch name is a mutable pointer: the cache key stays the same while the commit it
-    points at moves, so serving the cached entry hides a push for the whole TTL."""
+    """Skip the cache when the ref is a branch name: the key stays the same while the commit it
+    points at moves, so a cached entry would hide a push for the whole TTL."""
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = BranchNameProvider({"AGENTS.md": "version one"})
@@ -1840,8 +1840,8 @@ def test_build_repo_context_skips_cache_for_a_mutable_ref(repo_context_settings)
 
 
 def test_build_repo_context_reuses_cache_for_an_immutable_ref(repo_context_settings):
-    """Providers that resolve their ref to a commit SHA keep the cache, so gating on the
-    capability is not a blanket loss of caching."""
+    """Reuse the cache when the ref is a commit SHA, so gating on the capability is not a blanket
+    loss of caching."""
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = ShaRefProvider({"AGENTS.md": "version one"})
@@ -1860,15 +1860,8 @@ def test_default_capability_is_conservative():
 
 
 def test_providers_returning_a_branch_name_do_not_claim_immutability():
-    """Only providers that resolve both the base and the default branch to a commit SHA may
-    opt into caching; a provider that returns a branch name must not claim it by accident."""
-    from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
-    from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
-    from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
-    from pr_agent.git_providers.codecommit_provider import CodeCommitProvider
-    from pr_agent.git_providers.gitea_provider import GiteaProvider
-    from pr_agent.git_providers.gitlab_provider import GitLabProvider
-
+    """Keep branch-name providers out of the cache: only a provider that resolves both the base
+    and the default branch to a commit SHA may opt into caching."""
     for provider_cls in (AzureDevopsProvider, BitbucketProvider, BitbucketServerProvider,
                          CodeCommitProvider, GiteaProvider, GitLabProvider):
         assert provider_cls.supports_immutable_repo_context_ref(object()) is False, (

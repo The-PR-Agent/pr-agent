@@ -1594,8 +1594,8 @@ class GithubProvider(GitProvider):
             return None
 
     def supports_immutable_repo_context_ref(self) -> bool:
-        # get_repo_context_ref resolves both the PR base and the default branch to a commit
-        # SHA, so a push to either invalidates the cached repo context.
+        # Keep the cache on: get_repo_context_ref resolves both the PR base and the default
+        # branch to a commit SHA, so a push to either invalidates the cached repo context.
         return True
 
     # The reaction API accepts only this closed set; anything else is rejected with 422.
