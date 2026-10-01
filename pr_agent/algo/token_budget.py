@@ -583,18 +583,9 @@ class AttemptTokenBudget:
             # A multi-byte character can span several BPE tokens, so cutting the
             # token list can end mid-character; drop the dangling bytes instead
             # of decoding them into U+FFFD replacement characters in the prompt.
-            try:
-                decode([], errors="ignore")
-            except TypeError:
-                # Duck-typed decoders without an errors parameter: strip the
-                # replacement characters a dangling multi-byte token leaves.
-                def retain(count: int) -> str:
-                    retained = encoded[-count:] if keep == "suffix" else encoded[:count]
-                    return decode(retained).strip("\ufffd")
-            else:
-                def retain(count: int) -> str:
-                    retained = encoded[-count:] if keep == "suffix" else encoded[:count]
-                    return decode(retained, errors="ignore")
+            def retain(count: int) -> str:
+                retained = encoded[-count:] if keep == "suffix" else encoded[:count]
+                return decode(retained, errors="ignore")
         else:
             encoded = list(optional_text)
 

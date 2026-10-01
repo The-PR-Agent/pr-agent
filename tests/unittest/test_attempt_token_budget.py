@@ -37,7 +37,7 @@ def token_settings(monkeypatch):
         lambda model=None: SimpleNamespace(
             model=model,
             encode=lambda text, disallowed_special=(): list(text),
-            decode=lambda tokens: "".join(tokens),
+            decode=lambda tokens, errors="replace": "".join(tokens),
         ),
     )
     return settings
@@ -436,7 +436,7 @@ def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatc
     handler = FakeTokenHandler()
     handler.encoder = SimpleNamespace(
         encode=lambda text, disallowed_special=(): text.split("|"),
-        decode=lambda tokens: "|".join(tokens),
+        decode=lambda tokens, errors="replace": "|".join(tokens),
     )
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 75)
 
