@@ -1593,11 +1593,6 @@ class GithubProvider(GitProvider):
             get_logger().debug(f"Could not resolve the default branch revision for repo context: {e}")
             return None
 
-    def supports_immutable_repo_context_ref(self) -> bool:
-        # Keep the cache on: get_repo_context_ref resolves both the PR base and the default
-        # branch to a commit SHA, so a push to either invalidates the cached repo context.
-        return True
-
     # The reaction API accepts only this closed set; anything else is rejected with 422.
     SUPPORTED_REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 

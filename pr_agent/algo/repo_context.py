@@ -23,6 +23,7 @@ _DEFAULT_MAX_SIBLING_CONTEXT_FILES = 5
 _HARD_MAX_SIBLING_CONTEXT_FILES = 20
 _SIBLING_REPO_SEPARATOR = ":"
 _REPO_CONTEXT_CACHE_MISS = object()
+_COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _unsupported_repo_context_provider_classes = set()
 
 
@@ -87,7 +88,9 @@ def _get_repo_context_process_cache_key(
     except Exception:
         pr_url = getattr(git_provider, "pr_url", None)
 
-    if not pr_url:
+    # A branch name keeps its value while the branch moves, so only a commit SHA may key an
+    # entry that outlives this provider instance.
+    if not pr_url or not (isinstance(context_ref, str) and _COMMIT_SHA_PATTERN.fullmatch(context_ref)):
         return None
 
     return type(git_provider).__name__, pr_url, _get_repo_context_cache_key(
@@ -140,21 +143,6 @@ def _provider_supports_repo_context(git_provider) -> bool:
 def _provider_supports_sibling_repo_context(git_provider) -> bool:
     provider_method = getattr(type(git_provider), "get_sibling_repo_file_content", None)
     return provider_method is not None and provider_method is not GitProvider.get_sibling_repo_file_content
-
-
-def _supports_immutable_context_ref(git_provider) -> bool:
-    """Report whether the provider proves its repo-context ref is an immutable commit SHA.
-
-    Treat a missing or failing capability check as no support: providers that predate the method
-    fall back to the base implementation, so they keep serving fresh content instead of a cached
-    revision.
-    """
-    try:
-        return bool(git_provider.supports_immutable_repo_context_ref())
-    except Exception as e:
-        get_logger().warning(
-            f"Could not determine repo-context ref immutability, leaving the cache off: {e}")
-        return False
 
 
 def _sibling_repo_context_entries(context_files: list) -> list[tuple[str, str]]:
@@ -451,23 +439,17 @@ def build_repo_context(git_provider) -> str:
 
     from_default_branch = _read_bool_setting("repo_context_from_default_branch", default=True)
     context_ref = None
-    cacheable_ref = False
     if not has_sibling_entries:
         # Resolve the revision being read once and key the cache on it: within the TTL a rebase
         # or a push to the base branch must not serve file content from a commit that has moved.
-        # Cache only when the provider resolves the ref to an immutable SHA, because a branch
-        # name is a mutable pointer and keying on one keeps serving the pre-push content for the
-        # rest of the TTL.
         # A sibling-only build never needs this lookup, whose failure would otherwise abort the
         # whole context build before any cross-repository file is loaded.
         context_ref = git_provider.get_repo_context_ref(from_default_branch)
-        cacheable_ref = context_ref is not None and _supports_immutable_context_ref(git_provider)
-        if cacheable_ref:
-            cached_repo_context = _get_cached_repo_context(
-                git_provider, context_files, max_lines, context_ref
-            )
-            if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
-                return cached_repo_context
+        cached_repo_context = _get_cached_repo_context(
+            git_provider, context_files, max_lines, context_ref
+        )
+        if cached_repo_context is not _REPO_CONTEXT_CACHE_MISS:
+            return cached_repo_context
 
     files, had_fetch_error = _load_repo_context_files(git_provider, context_files, from_default_branch)
 
@@ -475,6 +457,6 @@ def build_repo_context(git_provider) -> str:
 
     # Only cache when every file was fetched successfully. A transient/unexpected fetch error must
     # not be cached as a real result, so it is retried instead of being served until the TTL expires.
-    if not had_fetch_error and not has_sibling_entries and cacheable_ref:
+    if not had_fetch_error and not has_sibling_entries:
         _store_repo_context(git_provider, context_files, max_lines, context_ref, repo_context)
     return repo_context
