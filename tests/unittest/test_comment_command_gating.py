@@ -5,6 +5,7 @@ import pytest
 from starlette.background import BackgroundTasks
 from starlette_context import request_cycle_context
 
+import pr_agent.servers.gitea_app as gitea_app
 import pr_agent.servers.gitlab_webhook as gitlab_webhook
 from pr_agent.config_loader import global_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
@@ -215,3 +216,42 @@ async def test_bitbucket_server_slash_command_dispatches(monkeypatch):
 
     assert response.status_code == 200
     assert recorded == ["/review focus on tests"]
+
+
+async def _run_gitea_comment_event(comment_body):
+    dispatched = []
+
+    class FakeAgent:
+        async def handle_request(self, pr_url, command, notify=None):
+            dispatched.append((pr_url, command))
+
+    body = {
+        "comment": {"body": comment_body},
+        "pull_request": {"url": "https://example.test/api/v1/repos/o/r/pulls/1"},
+    }
+    await gitea_app.handle_comment_event(body, "comment", "created", FakeAgent())
+    return dispatched
+
+
+async def test_gitea_slash_command_dispatches():
+    assert await _run_gitea_comment_event("/review focus on tests") == [
+        ("https://example.test/api/v1/repos/o/r/pulls/1", "/review focus on tests")
+    ]
+
+
+async def test_gitea_indented_slash_command_dispatches():
+    """A command that is not flush left was dropped before, unlike every other provider."""
+    assert await _run_gitea_comment_event("  /review  ") == [
+        ("https://example.test/api/v1/repos/o/r/pulls/1", "  /review  ")
+    ]
+
+
+@pytest.mark.parametrize("comment_body", [
+    "review looks good to me",
+    "nice catch, /ask about this later",
+    "",
+    "   ",
+    None,
+])
+async def test_gitea_plain_comment_does_not_dispatch(comment_body):
+    assert await _run_gitea_comment_event(comment_body) == []

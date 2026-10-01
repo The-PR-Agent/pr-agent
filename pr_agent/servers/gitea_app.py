@@ -14,6 +14,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import (
     get_pr_commands,
+    is_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
     verify_signature,
@@ -133,7 +134,8 @@ async def handle_comment_event(body: Dict[str, Any], event: str, action: str, ag
         return
 
     comment_body = comment.get("body", "")
-    if not comment_body or not comment_body.startswith("/"):
+    if not is_command_comment(comment_body):
+        get_logger().info("Ignoring comment not starting with /")
         return
 
     pr_url = body.get("pull_request", {}).get("url")
