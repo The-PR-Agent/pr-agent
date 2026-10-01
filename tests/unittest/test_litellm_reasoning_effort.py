@@ -1381,11 +1381,11 @@ class TestLiteLLMReasoningEffortGrok:
     @pytest.mark.parametrize(
         ("model", "configured", "expected"),
         [
-            ("gemini/gemini-3.7-flash", "none", "low"),
+            ("gemini/gemini-3.7-flash", "none", "none"),
             ("gemini/gemini-3.7-flash", "minimal", "low"),
             ("vertex_ai/gemini-3.7-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.7-flash", "minimal", "low"),
-            ("gemini/gemini-3.8-flash", "none", "low"),
+            ("gemini/gemini-3.8-flash", "none", "none"),
             ("gemini/gemini-3.8-flash", "minimal", "low"),
             ("vertex_ai/gemini-3.8-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.8-flash", "minimal", "low"),

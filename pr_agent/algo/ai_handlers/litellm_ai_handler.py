@@ -1921,8 +1921,15 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @classmethod
     def _clamp_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
-        """Map unsupported Gemini 3.x efforts to the nearest level."""
-        if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort in ("none", "minimal"):
+        """Map unsupported Gemini 3.x ``minimal`` effort to the nearest level."""
+        if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort == "minimal":
+            return "low"
+        return reasoning_effort
+
+    @classmethod
+    def _clamp_openrouter_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
+        """Map unsupported OpenRouter Gemini disablement to the nearest level."""
+        if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort == "none":
             return "low"
         return reasoning_effort
 
@@ -2041,7 +2048,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 effective_reasoning_effort = clamped_effort
 
         if effective_reasoning_effort == "none":
-            clamped_effort = self._clamp_gemini_reasoning_effort(model, effective_reasoning_effort)
+            clamped_effort = self._clamp_openrouter_gemini_reasoning_effort(model, effective_reasoning_effort)
             if clamped_effort != effective_reasoning_effort:
                 get_logger().info(
                     f"Gemini model {model} does not support reasoning_effort="
@@ -2192,7 +2199,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             openrouter_model, reasoning_effort
         )
         if reasoning_effort == "none":
-            reasoning_effort = self._clamp_gemini_reasoning_effort(
+            reasoning_effort = self._clamp_openrouter_gemini_reasoning_effort(
                 openrouter_model, reasoning_effort
             )
         reasoning_tokens = self._coerce_token_value(
