@@ -23,6 +23,7 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
 from pr_agent.servers.utils import (
     get_pr_commands,
+    is_ask_command_comment,
     is_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
@@ -420,7 +421,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                         and command in ("/review", "/review_pr", "/improve", "/improve_code")):
                     body = f"{body} --comment_id={discussion_id}"
                 if (data.get('object_attributes', {}).get('type') == 'DiffNote'
-                        and isinstance(body, str) and '/ask' in body):  # /ask_line
+                        and is_ask_command_comment(body)):  # /ask_line
                     body = handle_ask_line(body, data)
 
                 await handle_request(

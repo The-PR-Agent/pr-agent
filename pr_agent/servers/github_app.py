@@ -28,6 +28,7 @@ from pr_agent.servers.github_common import matches_review_state as matches_revie
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     get_pr_commands,
+    is_ask_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
     verify_signature,
@@ -140,7 +141,7 @@ async def handle_comments_on_pr(body: Dict[str, Any],
     elif "comment" in body and "pull_request_url" in body["comment"]:
         api_url = body["comment"]["pull_request_url"]
         try:
-            if ('/ask' in comment_body and
+            if (is_ask_command_comment(comment_body) and
                     'subject_type' in body["comment"] and body["comment"]["subject_type"] == "line"):
                 # comment on a code line in the "files changed" tab
                 comment_body = handle_line_comments(body, comment_body)

@@ -49,6 +49,11 @@ def is_command_comment(body) -> bool:
     return isinstance(body, str) and body.lstrip().startswith("/")
 
 
+def is_ask_command_comment(body) -> bool:
+    """Return True when a comment body starts with the /ask command."""
+    return isinstance(body, str) and body.lstrip().startswith("/ask")
+
+
 def get_pr_commands(provider: str) -> Sequence[str]:
     """Return an explicit provider override or a fresh copy of its default profile."""
     configured = get_settings().get(f"{provider}.pr_commands", _MISSING)

@@ -266,6 +266,26 @@ def _write_review_event(
     return event_path
 
 
+def _write_review_comment_event_with_body(tmp_path, body):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "created",
+        "comment": {
+            "body": body,
+            "id": 123,
+            "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+            "subject_type": "line",
+            "start_line": 10,
+            "line": 12,
+            "diff_hunk": "@@ -1,3 +1,4 @@\n+new line",
+            "path": "src/app.py",
+            "side": "RIGHT",
+        },
+        "sender": {"type": "User"},
+    }))
+    return event_path
+
+
 def _patch_issue_comment_deps(monkeypatch, handled):
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
 
@@ -521,6 +541,27 @@ async def test_action_keeps_the_whole_question_in_a_quote_reply_with_two_asks(
 
     assert handled[0][1].startswith("/ask")
     assert "why does /ask appear twice here?" in handled[0][1]
+
+
+@pytest.mark.asyncio
+async def test_review_comment_with_review_command_mentioning_ask_stays_review(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_review_comment")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_review_comment_event_with_body(tmp_path, "/review please, I will /ask later")),
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [(
+        "https://api.github.com/repos/org/repo/pulls/1",
+        "/review please, I will /ask later",
+    )]
 
 
 def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True):

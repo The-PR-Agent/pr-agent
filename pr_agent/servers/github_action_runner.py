@@ -25,6 +25,7 @@ from pr_agent.servers.github_common import (
     handle_line_comments,
     matches_review_state,
 )
+from pr_agent.servers.utils import is_ask_command_comment
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -397,7 +398,7 @@ async def run_action():
                     return
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
-                    if '/ask' in comment_body:
+                    if is_ask_command_comment(comment_body):
                         comment_body = handle_line_comments(event_payload, comment_body)
             except Exception as e:
                 get_logger().error(f"Failed to handle line comments: {e}")

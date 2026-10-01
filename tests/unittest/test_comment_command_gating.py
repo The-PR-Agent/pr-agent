@@ -8,8 +8,8 @@ from starlette_context import request_cycle_context
 import pr_agent.servers.gitlab_webhook as gitlab_webhook
 from pr_agent.config_loader import global_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
-from pr_agent.servers import bitbucket_app, bitbucket_server_webhook
-from pr_agent.servers.utils import is_command_comment
+from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, github_app
+from pr_agent.servers.utils import is_ask_command_comment, is_command_comment
 
 
 class _Request:
@@ -44,6 +44,22 @@ class _Request:
 )
 def test_is_command_comment(body, expected):
     assert is_command_comment(body) is expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("/ask why this line changed?", True),
+        ("  /ask why this line changed?", True),
+        ("/ask_line --line_start=1", True),
+        ("/review please, I will /ask later", False),
+        ("can you /ask about this line?", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_ask_command_comment(body, expected):
+    assert is_ask_command_comment(body) is expected
 
 
 async def _run_gitlab_note_webhook(monkeypatch, note_body, note_type=None):
@@ -105,6 +121,16 @@ async def test_gitlab_diffnote_with_embedded_ask_is_ignored(monkeypatch):
     assert dispatched == []
 
 
+async def test_gitlab_diffnote_review_mentioning_ask_stays_review(monkeypatch):
+    dispatched = await _run_gitlab_note_webhook(
+        monkeypatch, "/review please, I will /ask later", note_type="DiffNote")
+
+    assert dispatched == [(
+        "https://gitlab.example.com/group/repo/-/merge_requests/1",
+        "/review please, I will /ask later",
+    )]
+
+
 async def test_gitlab_diffnote_starting_with_ask_still_routes_to_ask_line(monkeypatch):
     dispatched = await _run_gitlab_note_webhook(monkeypatch, "/ask why is this null?", note_type="DiffNote")
 
@@ -113,6 +139,52 @@ async def test_gitlab_diffnote_starting_with_ask_still_routes_to_ask_line(monkey
     assert body[0] == "/ask_line"
     assert "--file_name=src/app.py" in body
     assert "why is this null?" in body
+
+
+async def test_github_line_review_mentioning_ask_stays_review(monkeypatch):
+    handled = []
+
+    class FakeAgent:
+        async def handle_request(self, api_url, body, notify=None, propagate_tool_errors=False):
+            handled.append((api_url, body))
+            return True
+
+    class FakeProvider:
+        def add_eyes_reaction(self, comment_id, disable_eyes=False):
+            return None
+
+        def react_to_outcome(self, comment_id, succeeded):
+            return None
+
+    class EligibleIdentityProvider:
+        def verify_eligibility(self, *_args):
+            return Eligibility.ELIGIBLE
+
+    body = {
+        "action": "created",
+        "comment": {
+            "body": "/review please, I will /ask later",
+            "id": 123,
+            "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+            "subject_type": "line",
+            "start_line": 10,
+            "line": 12,
+            "diff_hunk": "@@ -1,3 +1,4 @@\n+new line",
+            "path": "src/app.py",
+            "side": "RIGHT",
+        },
+    }
+
+    monkeypatch.setattr(github_app, "get_git_provider_with_context", lambda **_kwargs: FakeProvider())
+    monkeypatch.setattr(github_app, "get_identity_provider", EligibleIdentityProvider)
+
+    await github_app.handle_comments_on_pr(
+        body, "pull_request_review_comment", "human-user", "42", "created", {}, FakeAgent())
+
+    assert handled == [(
+        "https://api.github.com/repos/org/repo/pulls/1",
+        "/review please, I will /ask later",
+    )]
 
 
 async def _run_bitbucket_comment_webhook(monkeypatch, comment_body):
