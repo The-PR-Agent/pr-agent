@@ -582,7 +582,7 @@ class GitProvider(ABC):
     def get_pr_description_full(self) -> str:
         pass
 
-    def edit_comment(self, comment, body: str) -> None:
+    def edit_comment(self, comment, body: str):
         return None
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str) -> None:
