@@ -69,9 +69,35 @@ def test_a_wrapping_fence_is_removed(fenced, expected):
     "- A line with ``` inside it",
     "```\nunterminated fence",
     "- one\n\n```python\nx = 1\n```\n\n- two",
+    # Balanced fences of the entry's own: the trailing fence closes them, it is not a wrapper.
+    "- one\n\n```python\nx = 1\n```",
 ])
 def test_text_without_a_wrapping_fence_is_untouched(text):
     assert strip_wrapping_code_fence(text) == text
+
+
+@pytest.mark.parametrize("fenced, expected", [
+    ("```markdown\n- one\n```", "- one"),
+    # The dangling-closing-fence answer the prompt usually produces.
+    ("- one\n- two\n```", "- one\n- two"),
+    # A whole answer wrapping an entry that itself ends in a code block.
+    ("```markdown\n- one\n\n```python\nx = 1\n```\n```", "- one\n\n```python\nx = 1\n```"),
+])
+def test_stripping_twice_is_the_same_as_once(fenced, expected):
+    """The answer is stripped on the reply and again before the changelog is built."""
+    once = strip_wrapping_code_fence(fenced)
+
+    assert once == expected
+    assert strip_wrapping_code_fence(once.strip()) == expected
+
+
+def test_an_entry_ending_in_a_code_block_is_committed_verbatim():
+    """A second strip used to eat the closing fence, unterminating the code block."""
+    entry = "## 2026-09-06\n\n### Added\n- New CLI flag\n\n```python\nflags.add('--x')\n```"
+
+    new_file_content, _answer = _prepared(f"```markdown\n{entry}\n```")
+
+    assert new_file_content == f"{entry}\n\n{EXISTING}"
 
 
 def test_the_commit_hint_is_appended_when_not_committing():
