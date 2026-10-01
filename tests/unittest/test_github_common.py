@@ -61,3 +61,39 @@ def test_import_action_runner_without_github_app():
     result = subprocess.run([sys.executable, "-c", _IMPORT_WITHOUT_GITHUB_APP],
                             capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, f"importing the action runner pulled in github_app:\n{result.stderr}"
+
+
+def test_handle_line_comments_ignores_embedded_ask():
+    body = {
+        "comment": {
+            "start_line": 5,
+            "line": 10,
+            "diff_hunk": "@@ -1,5 +1,10 @@",
+            "path": "src/main.py",
+            "side": "RIGHT",
+            "id": 1234,
+        }
+    }
+    comment = "/review please, I will /ask later"
+    assert github_common.handle_line_comments(body, comment) == comment
+
+
+def test_handle_line_comments_dispatches_leading_ask():
+    body = {
+        "comment": {
+            "start_line": 5,
+            "line": 10,
+            "diff_hunk": "@@ -1,5 +1,10 @@",
+            "path": "src/main.py",
+            "side": "RIGHT",
+            "id": 1234,
+        }
+    }
+    result = github_common.handle_line_comments(body, "/ask why is this here?")
+    assert isinstance(result, list)
+    assert result[0] == "/ask_line"
+    assert "--line_start=5" in result
+    assert "--line_end=10" in result
+    assert "--file_name=src/main.py" in result
+    assert result[-1] == "why is this here?"
+

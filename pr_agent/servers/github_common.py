@@ -60,7 +60,7 @@ def handle_line_comments(body: Dict, comment_body: [str, Any]):
     path = body["comment"]["path"]
     side = body["comment"]["side"]
     comment_id = body["comment"]["id"]
-    if '/ask' in comment_body:
+    if isinstance(comment_body, str) and comment_body.lstrip().startswith('/ask'):
         # Build an argv list rather than concatenating into a shell-style
         # command string. PRAgent._handle_request() tokenises string requests
         # with single quotes treated literally, which neutralises any

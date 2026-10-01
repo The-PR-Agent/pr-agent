@@ -397,7 +397,7 @@ async def run_action():
                     return
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
-                    if '/ask' in comment_body:
+                    if isinstance(comment_body, str) and comment_body.lstrip().startswith('/ask'):
                         comment_body = handle_line_comments(event_payload, comment_body)
             except Exception as e:
                 get_logger().error(f"Failed to handle line comments: {e}")

@@ -115,6 +115,18 @@ async def test_gitlab_diffnote_starting_with_ask_still_routes_to_ask_line(monkey
     assert "why is this null?" in body
 
 
+async def test_gitlab_diffnote_slash_command_with_embedded_ask_not_routed_to_ask_line(monkeypatch):
+    dispatched = await _run_gitlab_note_webhook(
+        monkeypatch, "/review please, I will /ask about this later", note_type="DiffNote"
+    )
+
+    assert dispatched == [
+        ("https://gitlab.example.com/group/repo/-/merge_requests/1",
+         "/review please, I will /ask about this later")
+    ]
+
+
+
 async def _run_bitbucket_comment_webhook(monkeypatch, comment_body):
     dispatched = []
     payload = {

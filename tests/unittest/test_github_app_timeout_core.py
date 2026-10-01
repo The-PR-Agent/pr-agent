@@ -378,6 +378,20 @@ class TestHandleLineComments:
         result = github_app.handle_line_comments(body, "just a comment")
         assert result == "just a comment"
 
+    def test_command_with_embedded_ask_not_routed_to_ask_line(self):
+        body = self._payload()
+        comment = "/review please, I will /ask later"
+        result = github_app.handle_line_comments(body, comment)
+        assert result == comment
+
+    def test_ask_command_with_leading_whitespace_routed_to_ask_line(self):
+        body = self._payload()
+        result = github_app.handle_line_comments(body, "  /ask why is this here?")
+        assert isinstance(result, list)
+        assert result[0] == "/ask_line"
+        assert result[-1] == "why is this here?"
+
+
 
 # ---------------------------------------------------------------------------
 # _check_pull_request_event

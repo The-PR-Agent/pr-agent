@@ -420,7 +420,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                         and command in ("/review", "/review_pr", "/improve", "/improve_code")):
                     body = f"{body} --comment_id={discussion_id}"
                 if (data.get('object_attributes', {}).get('type') == 'DiffNote'
-                        and isinstance(body, str) and '/ask' in body):  # /ask_line
+                        and isinstance(body, str) and body.lstrip().startswith('/ask')):  # /ask_line
                     body = handle_ask_line(body, data)
 
                 await handle_request(
