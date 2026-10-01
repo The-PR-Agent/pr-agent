@@ -585,7 +585,7 @@ class GitProvider(ABC):
     def edit_comment(self, comment, body: str):
         return None
 
-    def reply_to_comment_from_comment_id(self, comment_id: int, body: str) -> None:
+    def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         return None
 
     def get_pr_description(self, full: bool = True, split_changes_walkthrough=False) -> str | tuple:
