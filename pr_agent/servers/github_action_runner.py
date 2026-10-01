@@ -19,8 +19,12 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
-from pr_agent.log import get_logger
-from pr_agent.servers.github_app import handle_line_comments, matches_review_state
+from pr_agent.log import get_logger, setup_logger
+from pr_agent.servers.github_common import (
+    _reformat_quote_ask_command,
+    handle_line_comments,
+    matches_review_state,
+)
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -384,9 +388,9 @@ async def run_action():
             # in github_app.py. Otherwise a plain comment is lexed as an unknown
             # command, PRAgent.handle_request returns False and the action exits 1.
             if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
-                if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
-                    comment_body_split = comment_body.split('/ask')
-                    comment_body = '/ask' + comment_body_split[1] + ' \n' + comment_body_split[0].strip().lstrip('>')
+                reformatted = _reformat_quote_ask_command(comment_body) if '/ask' in comment_body else None
+                if reformatted is not None:
+                    comment_body = reformatted
                     get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
                 else:
                     get_logger().info("Ignoring comment not starting with /")
@@ -558,6 +562,9 @@ async def _run_action_and_drain():
 
 
 def main():
+    # github_app is no longer imported here, so its JSON logging setup does not
+    # run; configure logging explicitly so the level and analytics filter work.
+    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
     asyncio.run(_run_action_and_drain())
 
 
