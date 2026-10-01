@@ -114,12 +114,11 @@ additional_reasoning_effort_models = []
 # here when litellm reports temperature as supported but the provider rejects it, or
 # when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking
 # Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature.
-# Model IDs match exactly or through any provider prefix. For OpenRouter `:nitro`
-# and `:floor` routing shortcuts, the suffix-free base ID also matches (for example,
-# `future-model` matches `openrouter/vendor/future-model:nitro`), while other model
-# variants keep their full ID. The defaults below preserve the former static registry
-# entries that litellm's metadata still marks temperature-capable; the probe diff for
-# this change is posted on the issue.
+# Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro`
+# and `:floor` routing shortcuts, also match the suffix-free base ID (for example,
+# match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model
+# variants at their full ID. Preserve the former static registry entries below when
+# litellm's metadata still marks them temperature-capable; see the issue for the probe diff.
 no_temperature_models = ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"]
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
@@ -494,11 +493,11 @@ allow_fallbacks = true # when provider_order is set, allow routing beyond the li
 # OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility.
 # Model-specific support varies; mandatory reasoning models reject "none".
 reasoning_effort = ""
-# A positive value overrides global effort and non-none OpenRouter-specific efforts.
-# Explicit openrouter.reasoning_effort = "none" keeps reasoning disabled, except on
-# Grok 4.5/4.6 and Gemini 3.7/3.8 Flash: there "none" is clamped to the lowest supported
-# effort first, so a positive budget wins over it.
-# Some providers require max_tokens to be greater than the reasoning budget.
+# Use a positive value to override global effort and non-none OpenRouter-specific efforts.
+# Keep reasoning disabled for explicit openrouter.reasoning_effort = "none", except on
+# Grok 4.5/4.6 and Gemini 3.7/3.8 Flash. Clamp "none" to the lowest supported effort
+# there before applying the budget, so a positive budget wins.
+# Keep max_tokens greater than the reasoning budget where the provider requires it.
 reasoning_max_tokens = 0
 max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 
