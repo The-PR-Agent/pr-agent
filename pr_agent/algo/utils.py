@@ -1225,15 +1225,9 @@ def set_custom_labels(variables, git_provider=None):
         # No [custom_labels] section is configured, so fall back to the default set. The
         # templates read custom_labels_class, so the enum has to be built here; writing a
         # bullet list to an unused key left the prompt declaring `List[Label]` with no
-        # `Label` class at all.
-        variables["custom_labels_class"] = "class Label(str, Enum):"
-        labels_minimal_to_labels_dict = {}
-        for label in _DEFAULT_CUSTOM_LABELS:
-            key = label.lower().replace(' ', '_')
-            variables["custom_labels_class"] += f"\n    {key} = \"{label}\""
-            labels_minimal_to_labels_dict[key] = label
-        variables["labels_minimal_to_labels_dict"] = labels_minimal_to_labels_dict
-        return
+        # `Label` class at all. The loop below builds the same structure from a description
+        # map, so reuse it.
+        labels = {label: label for label in _DEFAULT_CUSTOM_LABELS}
 
     # Set custom labels
     variables["custom_labels_class"] = "class Label(str, Enum):"
@@ -1258,18 +1252,12 @@ def get_user_labels(current_labels: List[str] = None):
         if current_labels is None:
             current_labels = []
         user_labels = []
+        # /describe publishes the built-in PRType whatever the configuration, so those are
+        # always bot-owned. A configured set adds to them rather than replacing them, else a
+        # stale "Bug fix" would survive every /describe re-run.
+        bot_labels = {label.lower() for label in _BUILTIN_LABELS}
         if enable_custom_labels:
-            # The bot can only produce what the active configuration allows: the
-            # configured names, or the fallback set when nothing is configured. Anything
-            # else on the PR was put there by a human and has to survive the run.
-            if custom_labels:
-                bot_labels = {str(label).lower() for label in custom_labels}
-            else:
-                bot_labels = {label.lower() for label in _DEFAULT_CUSTOM_LABELS}
-        else:
-            # With the switch off the prompt renders its own five-label enum, so only
-            # those are bot-owned. "Bug fix with tests" is not among them.
-            bot_labels = {label.lower() for label in _BUILTIN_LABELS}
+            bot_labels |= {str(label).lower() for label in custom_labels or _DEFAULT_CUSTOM_LABELS}
         for label in current_labels:
             if label.lower() in bot_labels:
                 continue

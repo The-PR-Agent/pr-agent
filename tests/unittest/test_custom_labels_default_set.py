@@ -64,7 +64,7 @@ def test_fallback_defines_the_label_enum(settings):
     assert variables["custom_labels_class"].startswith("class Label(str, Enum):")
     for label in _DEFAULT_LABELS:
         key = label.lower().replace(" ", "_")
-        assert f'{key} = "{label}"' in variables["custom_labels_class"]
+        assert f"{key} = '{label}'" in variables["custom_labels_class"]
 
 
 def test_fallback_maps_keys_back_to_label_names(settings):
@@ -157,3 +157,11 @@ def test_get_user_labels_ignores_case(settings):
     settings.set("custom_labels", {})
 
     assert get_user_labels(["bug fix WITH tests", "P1"]) == ["P1"]
+
+
+def test_get_user_labels_drops_describe_types_with_a_configured_set(settings):
+    """/describe still publishes the built-in PR types when a custom set is configured."""
+    settings.set("config.enable_custom_labels", True)
+    settings.set("custom_labels", {"Feature": {"description": "new feature"}})
+
+    assert get_user_labels(["Bug fix", "Enhancement", "Feature", "P0"]) == ["P0"]
