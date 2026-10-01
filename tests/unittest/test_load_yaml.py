@@ -5,8 +5,10 @@ import pytest
 import yaml
 from yaml.scanner import ScannerError
 
-from pr_agent.algo.utils import load_yaml
+import pr_agent.algo.utils as utils
 from pr_agent.log import get_logger
+
+load_yaml = utils.load_yaml
 
 
 class TestLoadYaml:
@@ -15,6 +17,275 @@ class TestLoadYaml:
         yaml_str = 'name: John Smith\nage: 35'
         expected_output = {'name': 'John Smith', 'age': 35}
         assert load_yaml(yaml_str) == expected_output
+
+    def test_initial_parse_uses_c_safe_loader(self, monkeypatch):
+        loader = object()
+        calls = []
+
+        def fake_load(text, Loader):
+            calls.append((text, Loader))
+            return {"name": "John"}
+
+        def fail_safe_load(*args, **kwargs):
+            pytest.fail("Python SafeLoader should not run on the successful C-loader path")
+
+        monkeypatch.setattr(utils, "_YAML_C_SAFE_LOADER", loader)
+        monkeypatch.setattr(utils.yaml, "load", fake_load)
+        monkeypatch.setattr(utils.yaml, "safe_load", fail_safe_load)
+
+        assert load_yaml("name: John") == {"name": "John"}
+        assert calls == [("name: John", loader)]
+
+    def test_initial_parse_falls_back_to_python_safe_loader(self, monkeypatch):
+        loader = object()
+        calls = []
+
+        def fail_c_loader(text, Loader):
+            calls.append(("c", text, Loader))
+            raise yaml.YAMLError("forced C-loader failure")
+
+        def fake_safe_load(text):
+            calls.append(("python", text))
+            return {"name": "John"}
+
+        monkeypatch.setattr(utils, "_YAML_C_SAFE_LOADER", loader)
+        monkeypatch.setattr(utils.yaml, "load", fail_c_loader)
+        monkeypatch.setattr(utils.yaml, "safe_load", fake_safe_load)
+
+        assert load_yaml("name: John") == {"name": "John"}
+        assert calls == [
+            ("c", "name: John", loader),
+            ("python", "name: John"),
+        ]
+
+    def test_initial_parse_uses_python_safe_loader_without_c_extension(self, monkeypatch):
+        calls = []
+
+        def fake_safe_load(text):
+            calls.append(text)
+            return {"name": "John"}
+
+        monkeypatch.setattr(utils, "_YAML_C_SAFE_LOADER", None)
+        monkeypatch.setattr(utils.yaml, "safe_load", fake_safe_load)
+
+        assert load_yaml("name: John") == {"name": "John"}
+        assert calls == ["name: John"]
+
+    @pytest.mark.skipif(utils._YAML_C_SAFE_LOADER is None, reason="LibYAML extension unavailable")
+    def test_c_loader_risk_detection_uses_real_c_scanner(self, monkeypatch):
+        real_scan = utils.yaml.scan
+        calls = []
+
+        def spy_scan(text, Loader):
+            calls.append((text, Loader))
+            return real_scan(text, Loader=Loader)
+
+        monkeypatch.setattr(utils.yaml, "scan", spy_scan)
+
+        assert utils._has_yaml_c_loader_risk("a: !")
+        assert calls == [("a: !", utils._YAML_C_SAFE_LOADER)]
+
+    @pytest.mark.parametrize(
+        ("yaml_text", "expected"),
+        [
+            ("a: !", {"a": None}),
+            ("!", {}),
+            ("- !", [None]),
+            ("a: ! # comment", {"a": None}),
+            ("a: ! foo", {"a": "foo"}),
+            ("a: !!str foo", {"a": "foo"}),
+        ],
+    )
+    def test_initial_parse_preserves_safe_loader_tag_semantics(self, yaml_text, expected):
+        assert load_yaml(yaml_text) == expected
+
+    @pytest.mark.parametrize(
+        ("yaml_text", "expected"),
+        [
+            ("\ufeff\ufefftitle: hello", {"\ufefftitle": "hello"}),
+            ("---\n\ufefftitle: hello", {"\ufefftitle": "hello"}),
+        ],
+    )
+    def test_initial_parse_preserves_safe_loader_bom_semantics(self, yaml_text, expected):
+        assert load_yaml(yaml_text) == expected
+
+    @pytest.mark.parametrize(
+        "yaml_text",
+        [
+            'a: "!"',
+            "a: '!'",
+            "a: wow!",
+        ],
+    )
+    def test_c_loader_risk_detection_ignores_scalar_exclamation_marks(self, yaml_text):
+        assert not utils._has_yaml_c_loader_risk(yaml_text)
+
+    @pytest.mark.parametrize(
+        "yaml_text",
+        [
+            "a: !",
+            "a: !!str foo",
+            "{title: !!str, type: [Bug fix]}",
+            "{title: !!null, type: [Bug fix]}",
+            "{title: !!binary, type: [Bug fix]}",
+        ],
+    )
+    def test_c_loader_risk_detection_routes_yaml_tags(self, yaml_text):
+        assert utils._has_yaml_c_loader_risk(yaml_text)
+
+    @pytest.mark.skipif(utils._YAML_C_SAFE_LOADER is None, reason="LibYAML extension unavailable")
+    @pytest.mark.parametrize(
+        ("yaml_text", "expected"),
+        [
+            ("{title: Fix?, type: [Bug fix]}", True),
+            ("[Fix?]", True),
+            ("type: [?,, Bug fix]", True),
+            ("{? foo: bar}", True),
+            ("{title: value}", False),
+            ("title: Fix?", False),
+            ('{title: "Fix?"}', False),
+            ("code: |\n  if x? y: z", False),
+        ],
+    )
+    def test_flow_question_mark_detection(self, yaml_text, expected):
+        assert utils._has_yaml_c_loader_risk(yaml_text) is expected
+
+    def test_flow_question_precheck_skips_scan_without_flow_collection(self, monkeypatch):
+        def fail_scan(*args, **kwargs):
+            pytest.fail("Block-style question marks should not trigger a YAML token pre-scan")
+
+        monkeypatch.setattr(utils.yaml, "scan", fail_scan)
+
+        assert not utils._has_yaml_c_loader_risk("code: |\n  if x? y: z")
+
+    @pytest.mark.parametrize(
+        "yaml_text",
+        [
+            "title: foo\tbar",
+            "a: |#comment\n  value",
+            "a: >-#comment\n  value",
+            "a: |2+#comment\n  value",
+        ],
+    )
+    def test_initial_parse_routes_text_prechecks_through_existing_repair_path(
+        self, monkeypatch, yaml_text
+    ):
+        calls = []
+
+        def fail_c_loader(*args, **kwargs):
+            pytest.fail("C loader should not run for known C/Python parser differences")
+
+        def fail_safe_load(text):
+            calls.append(("python", text))
+            raise yaml.YAMLError("forced SafeLoader failure")
+
+        def fake_try_fix_yaml(text, **kwargs):
+            calls.append(("repair", text))
+            return {"repaired": True}
+
+        monkeypatch.setattr(utils, "_YAML_C_SAFE_LOADER", object())
+        monkeypatch.setattr(utils.yaml, "load", fail_c_loader)
+        monkeypatch.setattr(utils.yaml, "safe_load", fail_safe_load)
+        monkeypatch.setattr(utils, "try_fix_yaml", fake_try_fix_yaml)
+
+        assert load_yaml(yaml_text) == {"repaired": True}
+        assert calls == [
+            ("python", yaml_text),
+            ("repair", yaml_text),
+        ]
+
+    @pytest.mark.skipif(utils._YAML_C_SAFE_LOADER is None, reason="LibYAML extension unavailable")
+    @pytest.mark.parametrize(
+        "yaml_text",
+        [
+            "{title: Fix?, type: [Bug fix]}",
+            "type: [?,, Bug fix]",
+            "{title: !!str, type: [Bug fix]}",
+            "{title: !!null, type: [Bug fix]}",
+            "{title: !!binary, type: [Bug fix]}",
+            "[" * (utils._YAML_MAX_C_NESTING + 1) + "0" + "]" * (utils._YAML_MAX_C_NESTING + 1),
+            "- " * (utils._YAML_MAX_C_NESTING + 1) + "0",
+            "-  " * (utils._YAML_MAX_C_NESTING + 1) + "0",
+            "? " * (utils._YAML_MAX_C_NESTING + 1) + "a",
+        ],
+    )
+    def test_initial_parse_routes_scanner_compatibility_cases_through_existing_repair_path(
+        self, monkeypatch, yaml_text
+    ):
+        calls = []
+
+        def fail_c_loader(*args, **kwargs):
+            pytest.fail("C loader should not run for known C/Python parser differences")
+
+        def fail_safe_load(text):
+            calls.append(("python", text))
+            raise yaml.YAMLError("forced SafeLoader failure")
+
+        def fake_try_fix_yaml(text, **kwargs):
+            calls.append(("repair", text))
+            return {"repaired": True}
+
+        monkeypatch.setattr(utils.yaml, "load", fail_c_loader)
+        monkeypatch.setattr(utils.yaml, "safe_load", fail_safe_load)
+        monkeypatch.setattr(utils, "try_fix_yaml", fake_try_fix_yaml)
+
+        assert load_yaml(yaml_text) == {"repaired": True}
+        assert calls == [
+            ("python", yaml_text),
+            ("repair", yaml_text),
+        ]
+
+    def test_nesting_precheck_counts_root_mapping(self, monkeypatch):
+        monkeypatch.setattr(utils, "_YAML_MAX_C_NESTING", 3)
+
+        assert not utils._has_yaml_c_loader_risk("[[[0]]]")
+        assert utils._has_yaml_c_loader_risk("value: [[[0]]]")
+
+    def test_nesting_precheck_skips_large_flat_documents(self, monkeypatch):
+        def fail_scan(*args, **kwargs):
+            pytest.fail("Flat documents should not trigger a YAML token pre-scan")
+
+        monkeypatch.setattr(utils.yaml, "scan", fail_scan)
+        line_count = utils._YAML_MAX_C_NESTING + 50
+
+        flat_mapping = "\n".join(f"key_{index}: value" for index in range(line_count))
+        flat_sequence = "\n".join(f"- item_{index}" for index in range(line_count))
+
+        assert not utils._has_yaml_c_loader_risk(flat_mapping)
+        assert not utils._has_yaml_c_loader_risk(flat_sequence)
+
+    def test_excessive_nesting_detection_uses_yaml_tokens(self):
+        depth = utils._YAML_MAX_C_NESTING + 1
+        nested_mapping = "\n".join(" " * index + "a:" for index in range(depth))
+        nested_mapping += "\n" + " " * depth + "value: leaf"
+        cr_nested_mapping = "\r".join(" " * index + "a:" for index in range(depth))
+        cr_nested_mapping += "\r" + " " * depth + "value: leaf"
+
+        mixed_nesting = "- " * 200 + "[" * 200 + "0" + "]" * 200
+
+        indentless_mapping_sequence = []
+        for index in range(utils._YAML_MAX_C_NESTING // 2):
+            indent = "  " * index
+            indentless_mapping_sequence.extend([f"{indent}a:", f"{indent}- a:"])
+        indentless_mapping_sequence.append(
+            "  " * (utils._YAML_MAX_C_NESTING // 2) + "value: leaf"
+        )
+        indentless_mapping_sequence = "\n".join(indentless_mapping_sequence)
+
+        assert utils._has_yaml_c_loader_risk("[" * depth + "0" + "]" * depth)
+        assert utils._has_yaml_c_loader_risk("- " * depth + "0")
+        assert utils._has_yaml_c_loader_risk("-  " * depth + "0")
+        assert utils._has_yaml_c_loader_risk("? " * depth + "a")
+        assert utils._has_yaml_c_loader_risk(nested_mapping)
+        assert utils._has_yaml_c_loader_risk(cr_nested_mapping)
+        for line_break in ("\x85", "\u2028", "\u2029"):
+            alternate_nested_mapping = line_break.join(" " * index + "a:" for index in range(depth))
+            alternate_nested_mapping += line_break + " " * depth + "value: leaf"
+            assert utils._has_yaml_c_loader_risk(alternate_nested_mapping)
+        assert utils._has_yaml_c_loader_risk(mixed_nesting)
+        assert utils._has_yaml_c_loader_risk(indentless_mapping_sequence)
+        assert not utils._has_yaml_c_loader_risk('value: "' + "[" * depth + '"')
+        assert not utils._has_yaml_c_loader_risk("code: |\n  " + "- " * depth + "text")
 
     def test_load_invalid_yaml1(self):
         yaml_str = (
