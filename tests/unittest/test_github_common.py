@@ -96,4 +96,3 @@ def test_handle_line_comments_dispatches_leading_ask():
     assert "--line_end=10" in result
     assert "--file_name=src/main.py" in result
     assert result[-1] == "why is this here?"
-
