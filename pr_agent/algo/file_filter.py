@@ -6,9 +6,7 @@ from pr_agent.log import get_logger
 
 
 def filter_ignored(files, platform = 'github'):
-    """
-    Filter out files that match the ignore patterns.
-    """
+    """Filter out files that match the ignore patterns."""
 
     try:
         # load regex patterns, and translate glob patterns to regex
@@ -50,33 +48,30 @@ def filter_ignored(files, platform = 'github'):
                 if platform in ('github', 'codecommit'):
                     files = [f for f in files if (f.filename and not r.match(f.filename))]
                 elif platform == 'bitbucket':
-                    # files = [f for f in files if (f.new.path and not r.match(f.new.path))]
                     files_o = []
                     for f in files:
-                        if hasattr(f, 'new'):
-                            if f.new and f.new.path and not r.match(f.new.path):
-                                files_o.append(f)
-                                continue
-                        if hasattr(f, 'old'):
-                            if f.old and f.old.path and not r.match(f.old.path):
-                                files_o.append(f)
-                                continue
+                        new, old = getattr(f, 'new', None), getattr(f, 'old', None)
+                        path = (new and new.path) or (old and old.path)
+                        if path and not r.match(path):
+                            files_o.append(f)
                     files = files_o
                 elif platform == 'bitbucket_server':
-                    files = [f for f in files if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])]
+                    files = [
+                        f for f in files
+                        if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])
+                    ]
                 elif platform == 'gitlab':
-                    # files = [f for f in files if (f['new_path'] and not r.match(f['new_path']))]
                     files_o = []
                     for f in files:
-                        if 'new_path' in f and f['new_path'] and not r.match(f['new_path']):
+                        path = f.get('new_path') or f.get('old_path')
+                        if path and not r.match(path):
                             files_o.append(f)
-                            continue
-                        if 'old_path' in f and f['old_path'] and not r.match(f['old_path']):
-                            files_o.append(f)
-                            continue
                     files = files_o
                 elif platform == 'azure':
-                    files = [f for f in files if not r.match(f)]
+                    # Azure DevOps returns item paths with a leading slash ("/src/app.cs").
+                    # The patterns are anchored, so strip it before matching; otherwise no
+                    # pattern ever matches and [ignore] is inert on Azure.
+                    files = [f for f in files if not r.match(f.lstrip('/'))]
                 elif platform == 'gitea':
                     files = [f for f in files if not r.match(f.get("filename", ""))]
                 elif platform == "gerrit":

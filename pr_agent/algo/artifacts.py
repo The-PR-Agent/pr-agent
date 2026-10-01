@@ -1,4 +1,5 @@
 import os
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +12,28 @@ DEFAULT_ARTIFACT_INSTRUCTIONS = (
     "Consider this CI artifact as additional context when analyzing the PR. "
     "It was produced by a prior CI step."
 )
+
+_artifact_context: ContextVar[Optional[tuple[str, frozenset[str]]]] = ContextVar(
+    "pr_agent_artifact_context", default=None
+)
+
+
+def _append_artifact_context(settings, text, targets):
+    separator = "\n======\n\n"
+    for key in settings:
+        setting = settings.get(key)
+        if isinstance(setting, dynaconf.DataDict) and key.lower() in targets and hasattr(setting, "extra_instructions"):
+            extra_instructions = str(setting.extra_instructions or "")
+            if text not in extra_instructions:
+                setting.extra_instructions = extra_instructions + separator + text if extra_instructions else text
+
+
+def reapply_artifact_context() -> None:
+    """Compose already-read context after final command settings, without file I/O."""
+    payload = _artifact_context.get()
+    if payload is not None:
+        text, targets = payload
+        _append_artifact_context(get_settings(), text, targets)
 
 
 def resolve_artifact_path(path: str) -> Optional[Path]:
@@ -119,6 +142,10 @@ def inject_artifact_context() -> None:
     ARTIFACT_PATH in the environment turns the feature on by itself. Called once before a
     command runs, by the GitHub Action runner and by the CLI.
     """
+    # Each ingress prepares a new payload. Failed, empty, or disabled ingress must
+    # not leave an earlier task's payload available for dispatcher reapplication.
+    _artifact_context.set(None)
+
     artifact_path_env = (
         os.environ.get("ARTIFACT_PATH") or os.environ.get("PR_AGENT_ARTIFACT_PATH") or ""
     ).strip()
@@ -147,18 +174,9 @@ def inject_artifact_context() -> None:
         )
         if isinstance(target_tools, str):
             target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
-        target_tools = {str(t).lower() for t in target_tools}
-        separator = "\n======\n\n"
-        for key in get_settings():
-            setting = get_settings().get(key)
-            if isinstance(setting, dynaconf.DataDict):
-                if key.lower() in target_tools and hasattr(setting, 'extra_instructions'):
-                    extra_instructions = str(setting.extra_instructions or "")
-                    if artifact_text not in extra_instructions:
-                        setting.extra_instructions = (
-                            extra_instructions + separator + artifact_text
-                            if extra_instructions else artifact_text
-                        )
+        target_tools = frozenset(str(t).lower() for t in target_tools)
+        _artifact_context.set((artifact_text, target_tools))
+        _append_artifact_context(get_settings(), artifact_text, target_tools)
         get_logger().info(f"Injected artifact context into tools: {target_tools}")
     except (OSError, ValueError, TypeError) as e:
         get_logger().warning(f"Failed to process artifacts: {e}", exc_info=True)

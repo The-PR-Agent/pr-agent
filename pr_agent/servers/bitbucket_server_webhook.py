@@ -22,6 +22,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import (
     get_pr_commands,
+    is_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
     verify_signature,
@@ -142,7 +143,8 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         if get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
             get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {pr_url}", **log_context)
             return JSONResponse(
-                status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "PR ignored due to auto feedback not enabled"})
+                status_code=status.HTTP_200_OK,
+                content=jsonable_encoder({"message": "PR ignored due to auto feedback not enabled"})
             )
         get_settings().set("config.is_auto_command", True)
         if data["eventKey"] == "pr:opened":
@@ -151,14 +153,24 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             if not get_settings().get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER"):
                 get_logger().info(f"Push trigger is disabled, skipping push commands for PR {pr_url}", **log_context)
                 return JSONResponse(
-                    status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "PR ignored due to push trigger not enabled"})
+                    status_code=status.HTTP_200_OK,
+                    content=jsonable_encoder({"message": "PR ignored due to push trigger not enabled"})
                 )
 
             get_settings().set("config.is_new_pr", False)
             commands_to_run.extend(_get_commands_list_from_settings('BITBUCKET_SERVER.PUSH_COMMANDS'))
             is_push_event = True
     elif data["eventKey"] == "pr:comment:added":
-        commands_to_run.append(data["comment"]["text"])
+        comment_text = data["comment"]["text"]
+        if not is_command_comment(comment_text):
+            # A plain comment whose first word happens to be a command name must not
+            # dispatch a tool: the dispatcher strips an optional leading slash.
+            get_logger().info("Ignoring comment not starting with /")
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=jsonable_encoder({"message": "Comment ignored - not a command"}),
+            )
+        commands_to_run.append(comment_text)
     else:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -232,10 +244,29 @@ async def root():
     return {"status": "ok"}
 
 
+app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+app.include_router(router)
+
+
 def start():
-    app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
-    app.include_router(router)
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "3000")))
+    """
+    Start the BitBucket Webhook server.
+
+    The server port can be configured via the PORT environment variable.
+    Defaults to 3000 if PORT is not set or invalid.
+    """
+
+    raw_port = os.environ.get("PORT")
+    try:
+        port = int(raw_port) if raw_port else 3000
+        if not (1 <= port <= 65535):
+            raise ValueError(f"Port {port} is out of valid range")
+        if raw_port:
+            get_logger().info(f"Using custom PORT from environment: {port}")
+    except ValueError as e:
+        get_logger().warning(f"Invalid PORT environment variable ({e}), using default port 3000")
+        port = 3000
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":

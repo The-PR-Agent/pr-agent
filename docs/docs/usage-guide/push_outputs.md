@@ -1,4 +1,7 @@
-# Push outputs to external sinks
+---
+title: "Push outputs to external sinks"
+sidebar_position: 7
+---
 
 The `[push_outputs]` feature routes finished tool output to external sinks — stdout, a JSONL file, a
 generic webhook, or Slack — without calling git-provider APIs. It is disabled by default, and is
@@ -51,13 +54,14 @@ slack_webhook_url = ""                 # Slack Incoming Webhook; must be an abso
 - `webhook_url` — the endpoint the `webhook` channel POSTs the generic record to.
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.
 
-!!! danger "Host-only configuration"
-    The whole `[push_outputs]` section is **host-only**. A repository cannot set these keys:
-    keys supplied through a repo's local `.pr_agent.toml` are dropped, and CLI arguments
-    (`--push_outputs.webhook_url=...`, `--push_outputs={...}`) are blocked. This prevents a
-    pull request from redirecting review output to an attacker-controlled host, reaching
-    internal endpoints, or appending to arbitrary host files. Configure these values in the
-    PR-Agent host's own settings.
+:::danger[Host-only configuration]
+The whole `[push_outputs]` section is **host-only**. A repository cannot set these keys:
+keys supplied through a repo's local `.pr_agent.toml` are dropped, and CLI arguments
+(`--push_outputs.webhook_url=...`, `--push_outputs={...}`) are blocked. This prevents a
+pull request from redirecting review output to an attacker-controlled host, reaching
+internal endpoints, or appending to arbitrary host files. Configure these values in the
+PR-Agent host's own settings.
+:::
 
 ### URL requirements
 

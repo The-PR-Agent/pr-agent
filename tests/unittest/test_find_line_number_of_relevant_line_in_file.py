@@ -20,6 +20,25 @@ class TestFindLineNumberOfRelevantLineInFile:
         expected = (3, 2) # (position in patch, absolute_position in new file)
         assert find_line_number_of_relevant_line_in_file(diff_files, relevant_file, relevant_line_in_file) == expected
 
+    def test_exact_raw_patch_line_skips_difflib(self, monkeypatch):
+        diff_files = [
+            FilePatchInfo(
+                base_file="file1",
+                head_file="file1",
+                patch="@@ -1 +1 @@\n-old\n+new\n",
+                filename="file1",
+            )
+        ]
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("difflib should not run for an exact raw patch-line match")
+
+        monkeypatch.setattr("pr_agent.algo.utils.difflib.get_close_matches", fail_if_called)
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "+new"
+        ) == (2, 1)
+
     # Returns the correct line number when a similar line is found using difflib
     def test_similar_line_found_using_difflib(self):
         diff_files = [
@@ -172,3 +191,56 @@ class TestFindLineNumberOfRelevantLineInFile:
 
         assert position == 8
         assert absolute_position == 6
+
+    def test_no_newline_marker_does_not_shift_absolute_line_lookup(self):
+        patch = (
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "\\ No newline at end of file\n"
+            "+new\n"
+            "\\ No newline at end of file\n"
+        )
+        diff_files = [
+            FilePatchInfo(base_file="old", head_file="new", patch=patch, filename="file1")
+        ]
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "", absolute_position=1
+        ) == (3, 1)
+
+    def test_no_newline_marker_is_ignored_when_matching_source_lines(self):
+        patch = (
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "\\ No newline at end of file\n"
+            "+new\n"
+            "\\ No newline at end of file\n"
+        )
+        diff_files = [
+            FilePatchInfo(base_file="old", head_file="new", patch=patch, filename="file1")
+        ]
+
+        for relevant_line in ("new", "ne", "+   new"):
+            assert find_line_number_of_relevant_line_in_file(
+                diff_files, "file1", relevant_line
+            ) == (3, 1)
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "No newline"
+        ) == (-1, -1)
+
+    def test_no_newline_marker_does_not_interfere_with_fuzzy_matching(self):
+        patch = (
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "\\ No newline at end of file\n"
+            "+No newline at end of file\n"
+            "\\ No newline at end of file\n"
+        )
+        diff_files = [
+            FilePatchInfo(base_file="old", head_file="No newline at end of file", patch=patch, filename="file1")
+        ]
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "No newline at end of filee"
+        ) == (3, 1)

@@ -1,4 +1,7 @@
-# Configuration Reference
+---
+title: "Configuration Reference"
+sidebar_position: 4
+---
 
 > This page is **auto-generated** and should not be edited by hand.
 > Regenerate it from the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) with:
@@ -15,7 +18,7 @@ Rows with an empty **Description** are keys whose TOML entry carries no explanat
 They are listed deliberately rather than hidden, so the gaps double as the documentation
 to-do list.
 
-## `[config]`
+## `[config]` {#config}
 
 **models**
 
@@ -117,6 +120,7 @@ to-do list.
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
 | `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here only when litellm does not know the model (custom OpenAI-compatible endpoints). Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
+| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Model IDs match exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, the suffix-free base ID also matches (for example, `future-model` matches `openrouter/vendor/future-model:nitro`), while other model variants keep their full ID. The defaults below preserve the former static registry entries that litellm's metadata still marks temperature-capable; the probe diff for this change is posted on the issue. |
 **extended thinking for Claude reasoning models**
 
 | Key | Default | Description |
@@ -132,7 +136,7 @@ to-do list.
 | `description_issue_regex` | "" | Configure a regex replacing bare #N references, with exactly one capturing group for an ASCII issue number. Leave empty for default matching (up to six digits); fall back with a warning on invalid patterns. Set the custom digit limit in the pattern; use only integer-parseable captures. Keep full URLs and owner/repo#N references. Use TOML literal quotes to preserve backslashes, e.g. description_issue_regex = '(?i)(?:fixes\|closes\|resolves)\s+#(\d+)' |
 
 
-## `[pr_reviewer]` — /review
+## `[pr_reviewer]` — /review {#pr_reviewer-review}
 
 **enable/disable features**
 
@@ -158,7 +162,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `review_heading` | "PR Reviewer Guide" | Visible base heading for full and incremental review comments. Identity is tracked separately. |
 | `persistent_finding_state` | true | Persist review finding state across complete review runs. |
-| `inline_key_issues` | false |  |
+| `inline_key_issues` | false | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab). |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
 | `final_update_message` | true |  |
@@ -182,7 +186,7 @@ to-do list.
 | `max_number_of_calls` | 3 | maximum number of chunk review calls, used only when enable_large_pr_chunking is true |
 
 
-## `[pr_description]` — /describe
+## `[pr_description]` — /describe {#pr_description-describe}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -223,7 +227,7 @@ to-do list.
 | `async_ai_calls` | true |  |
 
 
-## `[pr_questions]` — /ask
+## `[pr_questions]` — /ask {#pr_questions-ask}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -234,11 +238,11 @@ to-do list.
 | `extra_instructions` | "" |  |
 
 
-## `[pr_code_suggestions]` — /improve
+## `[pr_code_suggestions]` — /improve {#pr_code_suggestions-improve}
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `commitable_code_suggestions` | false |  |
+| `committable_code_suggestions` | false |  |
 | `dual_publishing_score_threshold` | -1 | -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
 | `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
@@ -248,7 +252,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `max_history_len` | 4 |  |
 | `publish_output_no_suggestions` | true |  |
-| `enable_suggestions_coverage_footer` | true | show when failed analysis chunks make the suggestions incomplete |
+| `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
 **suggestions scoring**
 
 | Key | Default | Description |
@@ -263,6 +267,7 @@ to-do list.
 | --- | --- | --- |
 | `num_code_suggestions_per_chunk` | 3 |  |
 | `max_suggestions_per_file` | 0 | Maximum suggestions retained per file after all chunks are merged; 0 disables the cap. Skip unresolvable line locations before applying a positive cap to summarized output; leave inline selection unchanged. |
+| `max_discussion_context_chars` | 24000 | Character budget for prior code-suggestion threads given to /improve as context (GitLab, Azure DevOps); 0 disables it. |
 | `max_number_of_calls` | 3 |  |
 | `parallel_calls` | true |  |
 | `decouple_hunks` | false |  |
@@ -276,7 +281,7 @@ to-do list.
 | `fold_suggestions_on_self_review` | true | if true, the code suggestions will be folded after the author clicks on the self-review checkbox |
 
 
-## `[pr_add_docs]` — /add_docs
+## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -284,7 +289,7 @@ to-do list.
 | `docs_style` | "Sphinx" | "Google Style with Args, Returns, Attributes...etc", "Numpy Style", "Sphinx Style", "PEP257", "reStructuredText" |
 
 
-## `[pr_update_changelog]` — /update_changelog
+## `[pr_update_changelog]` — /update_changelog {#pr_update_changelog-update_changelog}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -294,11 +299,11 @@ to-do list.
 | `skip_ci_on_push` | true |  |
 
 
-## `[pr_config]` — /config
+## `[pr_config]` — /config {#pr_config-config}
 
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
-## `[pr_help_docs]`
+## `[pr_help_docs]` {#pr_help_docs}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -310,7 +315,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `enable_help_text` | false |  |
 
 
-## `[github]`
+## `[github]` {#github}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -326,11 +331,11 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `publish_as_check_run` | false | when true, publish review/description/improve output as GitHub Checks instead of PR comments |
 
 
-## `[github_action_config]`
+## `[github_action_config]` {#github_action_config}
 
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
-## `[github_app]`
+## `[github_app]` {#github_app}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -353,7 +358,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `push_commands` | ["/describe", "/review"] |  |
 
 
-## `[gitlab]`
+## `[gitlab]` {#gitlab}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -361,8 +366,9 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `expand_submodule_diffs` | false |  |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
+| `reply_to_trigger_comment` | false | On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available. |
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
-| `publish_code_suggestions_as_review` | false | When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
+| `publish_code_suggestions_as_review` | false | When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
 | `auto_resolve_fixed_inline_threads` | false | Resolve the bot's own inline threads whose flagged line was modified after the comment was posted - i.e. the diff between the comment's head sha and the current head sha removes/replaces that line. Unlike resolve_outdated_inline_threads this is content-based: threads on lines nobody touched (or merely shifted by unrelated insertions) stay open. |
 | `handle_push_trigger` | false |  |
@@ -371,7 +377,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `reviewer_commands` | ["/review"] |  |
 
 
-## `[gitea]`
+## `[gitea]` {#gitea}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -380,7 +386,14 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `push_commands` | ["/describe", "/review"] |  |
 
 
-## `[bitbucket_app]`
+## `[bitbucket]` {#bitbucket}
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `identity_request_timeout` | 30 | positive seconds for authenticated-account verification requests |
+
+
+## `[bitbucket_app]` {#bitbucket_app}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -388,11 +401,11 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `request_timeout` | 30 | positive seconds for connection and response-read inactivity timeouts |
 
 
-## `[local]`
+## `[local]` {#local}
 
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
-## `[gerrit]`
+## `[gerrit]` {#gerrit}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -400,14 +413,14 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `webhook_password` | "" |  |
 
 
-## `[bitbucket_server]`
+## `[bitbucket_server]` {#bitbucket_server}
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "" | URL to the BitBucket Server instance |
 
 
-## `[jira]`
+## `[jira]` {#jira}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -415,7 +428,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `project_keys` | [] | Optional allowlist of Jira project keys, e.g. ["PROJ", "OPS"]. When non-empty, key-shaped text with another prefix ("SHA-256", "UTF-8", "ISO-8601") is dropped before any lookup, so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys; a supplied list with no valid entry disables the lookup rather than widening it. Empty (default) looks up every key found. |
 
 
-## `[litellm]`
+## `[litellm]` {#litellm}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -428,10 +441,10 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
 | `force_streaming_api_base_substrings` | [] |  |
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
-| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching) |
+| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (`litellm.enable_anthropic_prompt_caching`, env `LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING`, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
 
 
-## `[openrouter]`
+## `[openrouter]` {#openrouter}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -443,7 +456,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `max_tokens` | 0 | hard cap on completion tokens for the request; 0 = unset |
 
 
-## `[model_routing]` — send a small pull request to a cheaper primary model (disabled by default)
+## `[model_routing]` — send a small pull request to a cheaper primary model (disabled by default) {#model_routing-send a small pull request to a cheaper primary model (disabled by default)}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -451,7 +464,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `rules` | [] | e.g. [{ max_hunks = 3, model = "gpt-5.6-luna" }, { max_hunks = 15, max_files = 6, model = "gpt-5.6-terra" }] |
 
 
-## `[otel]`
+## `[otel]` {#otel}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -466,7 +479,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `include_error_details` | false | set to true to attach exception messages and rejected-command text to spans (may expose PR URLs, repo names, or other request content) |
 
 
-## `[pr_similar_issue]`
+## `[pr_similar_issue]` {#pr_similar_issue}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -476,7 +489,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `vectordb` | "lancedb" | options: "pinecone", "lancedb", "qdrant" |
 
 
-## `[pinecone]`
+## `[pinecone]` {#pinecone}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -484,18 +497,18 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `region` | "us-east-1" |  |
 
 
-## `[lancedb]`
+## `[lancedb]` {#lancedb}
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `uri` | "./lancedb" |  |
 
 
-## `[qdrant]`
+## `[qdrant]` {#qdrant}
 
 _This section only documents commented-out examples; see the [TOML source](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) for details._
 
-## `[skills]`
+## `[skills]` {#skills}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -504,7 +517,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `max_skills_tokens` | 8000 | token budget for the combined skills_context block |
 
 
-## `[artifacts]`
+## `[artifacts]` {#artifacts}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -516,7 +529,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `max_artifact_size` | 50000 | Max artifact size in characters (content is truncated if exceeded) |
 
 
-## `[mosaico]`
+## `[mosaico]` {#mosaico}
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -524,28 +537,28 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `context_history_max_tasks` | 100 | maximum prior tasks considered for a context follow-up; set from 1 to 1000 |
 
 
-## `[asana]`
+## `[asana]` {#asana}
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `request_timeout` | 10 | seconds allowed for each Asana task API request |
 
 
-## `[azure_devops]`
+## `[azure_devops]` {#azure_devops}
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `default_comment_status` | "closed" |  |
 
 
-## `[azure_devops_server]`
+## `[azure_devops_server]` {#azure_devops_server}
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `agent_identity` | "" | empty: discover the identity from earlier agent comments on the PR |
 
 
-## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default)
+## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)}
 
 | Key | Default | Description |
 | --- | --- | --- |

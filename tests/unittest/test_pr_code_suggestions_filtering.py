@@ -303,9 +303,9 @@ async def test_analyze_self_reflection_clears_existing_code_when_equal_to_improv
     tool = _make_tool(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
-    snapshot = snapshot_settings(["pr_code_suggestions.commitable_code_suggestions"])
+    snapshot = snapshot_settings(["pr_code_suggestions.committable_code_suggestions"])
     settings.config.publish_output = False
-    settings.set("pr_code_suggestions.commitable_code_suggestions", False)
+    settings.set("pr_code_suggestions.committable_code_suggestions", False)
     try:
         data = {"code_suggestions": [_valid_suggestion(existing_code="same()", improved_code="same()")]}
         response_reflect = """
@@ -318,7 +318,7 @@ code_suggestions:
 
         suggestion = data["code_suggestions"][0]
         assert suggestion["score"] == 6
-        # Non-commitable mode clears existing_code so the rendered suggestion
+        # Non-committable mode clears existing_code so the rendered suggestion
         # doesn't show an identical before/after block.
         assert suggestion["existing_code"] == ""
         assert suggestion["improved_code"] == "same()"
@@ -328,15 +328,15 @@ code_suggestions:
 
 
 @pytest.mark.asyncio
-async def test_analyze_self_reflection_clears_improved_code_in_commitable_mode():
+async def test_analyze_self_reflection_clears_improved_code_in_committable_mode():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
     tool = _make_tool(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
-    snapshot = snapshot_settings(["pr_code_suggestions.commitable_code_suggestions"])
+    snapshot = snapshot_settings(["pr_code_suggestions.committable_code_suggestions"])
     settings.config.publish_output = False
-    settings.set("pr_code_suggestions.commitable_code_suggestions", True)
+    settings.set("pr_code_suggestions.committable_code_suggestions", True)
     try:
         data = {"code_suggestions": [_valid_suggestion(existing_code="same()", improved_code="same()")]}
         response_reflect = """
@@ -348,7 +348,7 @@ code_suggestions:
         await tool.analyze_self_reflection_response(data, response_reflect)
 
         suggestion = data["code_suggestions"][0]
-        # Commitable mode keeps existing_code (used to locate the line in PR)
+        # committable mode keeps existing_code (used to locate the line in PR)
         # and clears improved_code instead.
         assert suggestion["existing_code"] == "same()"
         assert suggestion["improved_code"] == ""

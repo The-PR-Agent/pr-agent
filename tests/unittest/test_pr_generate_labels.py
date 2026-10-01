@@ -2,6 +2,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
 from pr_agent.tools.pr_generate_labels import PRGenerateLabels
 
 
@@ -64,3 +66,28 @@ async def test_user_labels_are_still_preserved_when_the_provider_supports_labels
 
     provider.get_pr_labels.assert_called_once()
     provider.publish_labels.assert_called_once_with(["Bug fix", "Review effort 3/5"])
+
+
+@pytest.mark.asyncio
+async def test_incomplete_bitbucket_diff_is_re_raised_after_temporary_comment_cleanup(monkeypatch):
+    async def fail_with_incomplete_diff(*_args, **_kwargs):
+        raise IncompleteBitbucketPullRequestFilesError("incomplete aggregate diff")
+
+    provider = _provider(supports_labels=True)
+    tool = _tool(provider)
+    settings = get_settings()
+    previous = {
+        "publish_output": settings.config.publish_output,
+        "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+    }
+    settings.config.publish_output = True
+    settings.set("config.propagate_tool_errors", False)
+    monkeypatch.setattr("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", fail_with_incomplete_diff)
+    try:
+        with pytest.raises(IncompleteBitbucketPullRequestFilesError):
+            await tool.run()
+    finally:
+        settings.config.publish_output = previous["publish_output"]
+        settings.set("config.propagate_tool_errors", previous["propagate_tool_errors"])
+
+    provider.remove_initial_comment.assert_called_once()

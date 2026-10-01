@@ -29,6 +29,7 @@ from pr_agent.algo.output_models import PRReview
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    FallbackEligibleError,
     PreparedPRDiff,
     add_ai_metadata_to_diff_files,
     get_pr_diff,
@@ -61,7 +62,12 @@ from pr_agent.algo.utils import (
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
-from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
+from pr_agent.git_providers.git_provider import (
+    GitProvider,
+    IncompleteBitbucketPullRequestFilesError,
+    IncrementalPR,
+    get_main_pr_language,
+)
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
@@ -228,7 +234,9 @@ class PRReviewer:
             "require_risk_assessment": get_settings().pr_reviewer.get("require_risk_assessment", False),
             "require_merge_recommendation": get_settings().pr_reviewer.get("require_merge_recommendation", False),
             "require_priority_files": get_settings().pr_reviewer.get("require_priority_files", False),
-            "require_estimate_contribution_time_cost": get_settings().pr_reviewer.require_estimate_contribution_time_cost,
+            "require_estimate_contribution_time_cost": (
+                get_settings().pr_reviewer.require_estimate_contribution_time_cost
+            ),
             'require_can_be_split_review': get_settings().pr_reviewer.require_can_be_split_review,
             'require_security_review': get_settings().pr_reviewer.require_security_review,
             'require_todo_scan': get_settings().pr_reviewer.get("require_todo_scan", False),
@@ -456,7 +464,10 @@ class PRReviewer:
             get_logger().error(f"Failed to review PR: {e}")
             # The status of the whole run must not read as success just because the error stopped here.
             record_command_failure()
-            if get_settings().config.get("propagate_tool_errors", False):
+            if (
+                isinstance(e, IncompleteBitbucketPullRequestFilesError)
+                or get_settings().config.get("propagate_tool_errors", False)
+            ):
                 raise
         finally:
             if progress_response is not None:
@@ -466,6 +477,7 @@ class PRReviewer:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
             if (
                 review_failed
+                and not isinstance(review_error, IncompleteBitbucketPullRequestFilesError)
                 and get_settings().config.publish_output
                 and (
                     persistent_write_failed
@@ -786,7 +798,10 @@ class PRReviewer:
             self._review_state_result = result
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
-        return get_settings().pr_reviewer.get('publish_output_no_suggestions', True) or "No major issues detected" not in pr_review
+        return (
+            get_settings().pr_reviewer.get('publish_output_no_suggestions', True)
+            or "No major issues detected" not in pr_review
+        )
 
     async def _prepare_prediction(self, model: str) -> None:
         # Each model attempt owns a fresh result. A malformed primary must not
@@ -831,7 +846,7 @@ class PRReviewer:
             self.remaining_files_list = []
 
         # Resume an incomplete chunk plan even when a fallback model can fit the full diff.
-        # Otherwise the single-call path would bypass cached successful chunks.
+        # Otherwise, the single-call path would bypass cached successful chunks.
         has_incomplete_chunk_plan = hasattr(self, "_chunked_patches_diff_list")
         if chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan):
             prepared_diff = output if isinstance(output, PreparedPRDiff) else None
@@ -845,7 +860,7 @@ class PRReviewer:
             self.prediction = prediction
         else:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
-            raise ValueError(f"No PR diff fits the /review request for {model}")
+            raise FallbackEligibleError(f"No PR diff fits the /review request for {model}")
 
     async def _prepare_chunked_prediction(self, model: str,
                                           prepared_diff: PreparedPRDiff | None = None) -> bool:
@@ -915,7 +930,7 @@ class PRReviewer:
         if len(chunk_results) < len(patches_diff_list):
             if chunk_errors:
                 raise chunk_errors[0]
-            raise ValueError("No valid review output was produced for one or more chunks")
+            raise FallbackEligibleError("No valid review output was produced for one or more chunks")
 
         return self._merge_cached_review_chunks()
 
@@ -1042,7 +1057,7 @@ class PRReviewer:
             preserve_minimum=True,
         )
         if fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed review diff does not fit the token limit for {model}"
             )
 
@@ -1111,7 +1126,7 @@ class PRReviewer:
         """Parse one prediction and require the minimum publishable review shape."""
         data = cls._load_review_yaml(prediction)
         if not isinstance(data, dict) or not isinstance(data.get("review"), dict) or not data["review"]:
-            raise ValueError(f"{source} did not contain a non-empty review mapping")
+            raise FallbackEligibleError(f"{source} did not contain a non-empty review mapping")
         return data
 
     def _prepare_pr_review(self) -> str:
@@ -1459,8 +1474,9 @@ class PRReviewer:
         num_commits_threshold = get_settings().pr_reviewer.minimal_commits_for_incremental_review
         not_enough_commits = num_new_commits < num_commits_threshold
         # checking if the commits are not too recent to start the review
-        recent_commits_threshold = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None) - datetime.timedelta(
-            minutes=get_settings().pr_reviewer.minimal_minutes_for_incremental_review
+        recent_commits_threshold = (
+            datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+            - datetime.timedelta(minutes=get_settings().pr_reviewer.minimal_minutes_for_incremental_review)
         )
         last_seen_commit_date = (
             self.incremental.last_seen_commit.commit.author.date if self.incremental.last_seen_commit else None
@@ -1514,7 +1530,10 @@ class PRReviewer:
                     if estimated_effort_number is not None:
                         estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
-                if get_settings().pr_reviewer.enable_review_labels_security and get_settings().pr_reviewer.require_security_review:
+                if (
+                        get_settings().pr_reviewer.enable_review_labels_security
+                        and get_settings().pr_reviewer.require_security_review
+                    ):
                     security_concerns = data['review'].get('security_concerns')
                     if security_concerns is None:
                         get_logger().warning("Missing security_concerns in review data")
@@ -1524,6 +1543,13 @@ class PRReviewer:
                             review_labels.append('Possible security concern')
 
                 current_labels = self.git_provider.get_pr_labels(update=True)
+                if current_labels is None:
+                    # The read failed with no snapshot to fall back on. publish_labels
+                    # replaces the whole set, so publishing would delete human labels.
+                    get_logger().error(
+                        "Skipping review label publish: existing labels could not be read, "
+                        "and publishing would remove them")
+                    return
                 if not current_labels:
                     current_labels = []
                 get_logger().debug(f"Current labels:\n{current_labels}")

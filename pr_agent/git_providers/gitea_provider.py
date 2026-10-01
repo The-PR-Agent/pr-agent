@@ -380,7 +380,8 @@ class GiteaProvider(GitProvider):
             return False
 
 
-    def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str, original_suggestion=None):
+    def publish_inline_comment(self,body: str, relevant_file: str, relevant_line_in_file: str,
+                               original_suggestion=None):
         """Publish an inline comment on a specific line"""
         body = self.limit_output_characters(body, self.max_comment_chars)
         position, absolute_position = find_line_number_of_relevant_line_in_file(self.diff_files,
@@ -394,7 +395,8 @@ class GiteaProvider(GitProvider):
             subject_type = "LINE"
 
         path = relevant_file.strip()
-        payload = dict(body=body, path=path, old_position=position,new_position = absolute_position) if subject_type == "LINE" else {}
+        payload = (dict(body=body, path=path, old_position=position, new_position = absolute_position)
+                   if subject_type == "LINE" else {})
         self.publish_inline_comments([payload])
 
 
@@ -434,8 +436,11 @@ class GiteaProvider(GitProvider):
 
             path = suggestion.get("relevant_file","")
             new_position = suggestion.get("relevant_lines_start",0)
-            old_position = suggestion.get("relevant_lines_start",0) if "original_suggestion" not in suggestion else suggestion["original_suggestion"].get("relevant_lines_start",0)
-            title_body = suggestion["original_suggestion"].get("suggestion_content","") if "original_suggestion" in suggestion else ""
+            old_position = (suggestion.get("relevant_lines_start", 0)
+                            if "original_suggestion" not in suggestion
+                            else suggestion["original_suggestion"].get("relevant_lines_start", 0))
+            title_body = (suggestion["original_suggestion"].get("suggestion_content","")
+                          if "original_suggestion" in suggestion else "")
             payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
             publishable_count += 1
             if title_body:
@@ -524,7 +529,7 @@ class GiteaProvider(GitProvider):
                 self.logger.error("No commit messages found")
                 return ""
 
-            commit_message = "".join(commit_messages)
+            commit_message = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
             if max_tokens:
                 commit_message = clip_tokens(commit_message, max_tokens)
 
@@ -633,7 +638,8 @@ class GiteaProvider(GitProvider):
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{relevant_file}"
+        encoded_file = quote(relevant_file, safe="/")
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -856,7 +862,10 @@ class GiteaProvider(GitProvider):
 
     def remove_initial_comment(self) -> None:
         """Remove the initial comment"""
-        for comment in self.comments_list:
+        # Iterate over a snapshot: remove_comment() drops the comment from
+        # comments_list, so mutating it mid-iteration skips the next element
+        # and leaves every other temporary comment behind.
+        for comment in list(self.comments_list):
             try:
                 if not comment.get("is_temporary"):
                     continue
@@ -947,7 +956,8 @@ class RepoApi(giteapy.RepositoryApi):
         self.logger = get_logger()
         super().__init__(client)
 
-    def create_inline_comment(self, owner: str, repo: str, pr_number: int, body : str ,commit_id : str, comments: List[Dict[str, Any]]):
+    def create_inline_comment(self, owner: str, repo: str, pr_number: int,
+                              body : str ,commit_id : str, comments: List[Dict[str, Any]]):
         body = {
             "body": body,
             "comments": comments,

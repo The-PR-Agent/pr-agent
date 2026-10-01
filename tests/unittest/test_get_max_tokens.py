@@ -6,7 +6,6 @@ from pr_agent.algo import (
     _CLAUDE_MODEL_FAMILIES,
     CLAUDE_EXTENDED_THINKING_MODELS,
     MAX_TOKENS,
-    NO_SUPPORT_TEMPERATURE_MODELS,
     _generate_claude_registries,
     _validate_claude_model_family,
 )
@@ -469,6 +468,26 @@ class TestGetMaxTokens:
         assert get_max_tokens("bedrock_mantle/xai.grok-4.3") == 1000000
 
     @pytest.mark.parametrize("model", [
+        "bedrock/moonshotai.kimi-k3",
+        "bedrock/us.moonshotai.kimi-k3",
+        "bedrock/global.moonshotai.kimi-k3",
+        "bedrock/converse/moonshotai.kimi-k3",
+        "bedrock/converse/us.moonshotai.kimi-k3",
+        "bedrock/converse/global.moonshotai.kimi-k3",
+    ])
+    def test_bedrock_kimi_k3_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
+
+    @pytest.mark.parametrize("model", [
         "xai/grok-4.5",
         "xai/grok-4.5-latest",
         "xai/grok-build-latest",
@@ -863,9 +882,13 @@ class TestGetMaxTokens:
 
         assert get_max_tokens("fake-provider/fake-model-xyz") == 8000
 
-    def test_litellm_fallback_uses_real_registry(self, monkeypatch):
-        """Unknown model resolved against the real installed LiteLLM model registry."""
-        model = "cohere/command-r-plus"
+    @pytest.mark.parametrize("model, documented_input_tokens", [
+        ("cohere/command-r-plus", None),
+        ("github_copilot/gpt-4o", 64000),
+        ("github_copilot/gpt-4.1", 128000),
+    ])
+    def test_litellm_fallback_uses_real_registry(self, monkeypatch, model, documented_input_tokens):
+        """Verify registry fallback and Copilot input limits in changing_a_model.md."""
 
         assert model not in MAX_TOKENS
 
@@ -874,6 +897,10 @@ class TestGetMaxTokens:
 
         assert isinstance(expected_max_input_tokens, int)
         assert expected_max_input_tokens > 0
+        if documented_input_tokens is not None:
+            assert expected_max_input_tokens == documented_input_tokens, (
+                f"Review {model} input limits in docs/docs/usage-guide/changing_a_model.md"
+            )
 
         fake_settings = type("", (), {
             "config": type("", (), {
@@ -909,12 +936,10 @@ class TestGetMaxTokens:
 
         # Capability lists
         for alias in expected_aliases:
-            assert alias in NO_SUPPORT_TEMPERATURE_MODELS
             assert alias not in CLAUDE_EXTENDED_THINKING_MODELS
 
         # Negative checks to ensure no over-generation
         assert "bedrock/apac.anthropic.claude-opus-4-8" not in MAX_TOKENS
-        assert "bedrock/apac.anthropic.claude-opus-4-8" not in NO_SUPPORT_TEMPERATURE_MODELS
 
     def test_claude_opus_4_6_family_expansion_and_capabilities(self):
         """Independent verification of Opus 4.6 generated aliases and capabilities."""
@@ -964,10 +989,6 @@ class TestGetMaxTokens:
         assert "claude-opus-4-6-20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
         assert "anthropic/claude-opus-4-6-20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
         assert "vertex_ai/claude-opus-4-6@20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
-
-        # Negative checks: no Opus 4.6 in NO_SUPPORT_TEMPERATURE_MODELS
-        for alias in expected_max_tokens_aliases:
-            assert alias not in NO_SUPPORT_TEMPERATURE_MODELS
 
     def test_claude_model_family_metadata_key_validation(self):
         """Regression test for validating Claude model family metadata keys.
@@ -1033,7 +1054,7 @@ class TestGetMaxTokens:
 
         Proves:
         - scalar int extra_aliases only populate token counts.
-        - structured extra_aliases route to no_temperature and extended_thinking when flagged.
+        - structured extra_aliases route to extended_thinking when flagged.
         - capability flags do not bleed to unrelated aliases.
         """
         synthetic_family = {
@@ -1043,10 +1064,6 @@ class TestGetMaxTokens:
             "vertex": False,
             "extra_aliases": {
                 "test/extra-token-only": 500000,
-                "test/extra-no-temp": {
-                    "max_tokens": 500000,
-                    "no_temperature": True,
-                },
                 "test/extra-thinking": {
                     "max_tokens": 500000,
                     "extended_thinking": True,
@@ -1054,35 +1071,22 @@ class TestGetMaxTokens:
             },
         }
 
-        tokens, no_temp, thinking = _generate_claude_registries(families=[synthetic_family])
+        tokens, thinking = _generate_claude_registries(families=[synthetic_family])
 
         # Token verification
         assert tokens["test-claude-synthetic"] == 500000
         assert tokens["anthropic/test-claude-synthetic"] == 500000
         assert tokens["test/extra-token-only"] == 500000
-        assert tokens["test/extra-no-temp"] == 500000
         assert tokens["test/extra-thinking"] == 500000
-
-        # No-temperature capability routing (no bleed)
-        assert "test/extra-no-temp" in no_temp
-        assert "test/extra-token-only" not in no_temp
-        assert "test/extra-thinking" not in no_temp
 
         # Extended-thinking capability routing (no bleed)
         assert "test/extra-thinking" in thinking
         assert "test/extra-token-only" not in thinking
-        assert "test/extra-no-temp" not in thinking
 
     def test_claude_registries_baseline_parity_and_no_duplicates(self):
         """Verify baseline capability parity and that no duplicate entries exist."""
         # Capability lists have no duplicates
-        assert len(NO_SUPPORT_TEMPERATURE_MODELS) == len(set(NO_SUPPORT_TEMPERATURE_MODELS))
         assert len(CLAUDE_EXTENDED_THINKING_MODELS) == len(set(CLAUDE_EXTENDED_THINKING_MODELS))
-
-        # Extended thinking and no-temperature for Claude models are disjoint
-        claude_thinking = {m for m in CLAUDE_EXTENDED_THINKING_MODELS if "claude" in m}
-        claude_no_temp = {m for m in NO_SUPPORT_TEMPERATURE_MODELS if "claude" in m}
-        assert claude_thinking.isdisjoint(claude_no_temp)
 
     @pytest.mark.parametrize(
         "model, expected",
@@ -1180,8 +1184,8 @@ class TestNoLiteLLMDuplicates:
         get_max_tokens() already falls back to litellm.get_model_info(), so a
         static entry that reports the identical value is dead duplication.
         Generator-expanded Claude families are excluded: they also drive the
-        no-temperature / extended-thinking registries, and their 1M-context
-        handling is a separate, deliberate judgement (issue #3196). Entries in
+        extended-thinking registry, and their 1M-context handling is a separate,
+        deliberate judgement (issue #3196). Entries in
         LITELLM_BUNDLED_MAP_UNKNOWN are pinned because the bundled cost map does
         not carry them, so the fallback could not resolve them.
         """

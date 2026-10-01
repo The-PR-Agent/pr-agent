@@ -153,9 +153,9 @@ async def test_question_uses_configured_handler_error_path_without_openai_key(
     tool = build_question_tool(tmp_path, monkeypatch, handler)
 
     if propagate_tool_errors:
-        with pytest.raises(Exception, match="Failed to generate prediction with any model") as exc_info:
+        with pytest.raises(RuntimeError) as exc_info:
             await tool.run()
-        assert exc_info.value.__cause__ is handler.error
+        assert exc_info.value is handler.error
     else:
         assert await tool.run() == ""
 
@@ -304,6 +304,11 @@ async def test_walkthrough_uses_current_documentation_site(published_output, che
         ("/index.md", "", f"{CURRENT_DOCS_URL}/"),
         ("/tools/review.md", "Automatic review", f"{CURRENT_DOCS_URL}/tools/review/#automatic-review"),
         ("/faq/index.md", "Frequently asked questions", f"{CURRENT_DOCS_URL}/faq/#frequently-asked-questions"),
+        # Pages needing JSX are stored as '.mdx'. The suffix must not leak into the
+        # URL, and '/index.mdx' must still collapse to the site root.
+        ("/tools/improve.mdx", "Overview", f"{CURRENT_DOCS_URL}/tools/improve/#overview"),
+        ("/index.mdx", "", f"{CURRENT_DOCS_URL}/"),
+        ("/faq/index.mdx", "", f"{CURRENT_DOCS_URL}/faq/"),
     ],
 )
 def test_question_source_urls_use_canonical_documentation_paths(file_name, header, expected):

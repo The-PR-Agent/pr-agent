@@ -5,9 +5,13 @@ from urllib.parse import unquote
 
 import pytest
 
+from pr_agent.agent import pr_agent as pr_agent_module
+from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.utils import decode_user_text_args, update_settings_from_args
+from pr_agent.config_loader import get_settings
 from pr_agent.servers import azuredevops_server_webhook as webhook
 
+URL = "https://dev.azure.com/org/proj/_git/repo/pullrequest/1"
 AGENT_ALIASES = {
     "agent-guid",
     "Build Service (organization)",
@@ -284,3 +288,69 @@ def test_empty_slash_ask_is_preserved():
     provider.get_thread_context.return_value = None
 
     assert webhook.handle_line_comment("/ask", 22, 31, provider) == "/ask --comment_id=22 --origin_comment_id=31"
+
+
+class _SwallowingReview:
+    """Stand-in for a command that hits its own error and returns normally anyway, which is what
+    the real tools do while `propagate_tool_errors` is false (see pr_reviewer.py:458-464)."""
+
+    def __init__(self, pr_url, ai_handler=None, args=None):
+        self.observed_propagation = None
+
+    async def run(self):
+        self.observed_propagation = get_settings().config.get("propagate_tool_errors", False)
+        record_command_failure()
+        if self.observed_propagation:
+            raise RuntimeError("the model call failed")
+
+
+class _CleanReview:
+    def __init__(self, pr_url, ai_handler=None, args=None):
+        self.ran = False
+
+    async def run(self):
+        self.ran = True
+
+
+async def _run_comment_command(body, tool_class, monkeypatch):
+    """Drive the comment endpoint through the real agent so the settings the tool sees are the
+    ones the handler asked for, and return the provider plus the tool instance."""
+    provider = MagicMock()
+    provider.get_thread_context.return_value = None
+    built = []
+
+    def build(*args, **kwargs):
+        tool = tool_class(*args, **kwargs)
+        built.append(tool)
+        return tool
+
+    monkeypatch.setitem(pr_agent_module.command2class, "review", build)
+    monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
+    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
+    with patch.object(webhook, "get_git_provider_with_context", return_value=provider):
+        await webhook.handle_request_comment(URL, body, 7, 42, {})
+    return provider, built[0]
+
+
+async def test_swallowed_tool_failure_does_not_resolve_the_thread(monkeypatch):
+    """Resolving the discussion on a run that raised inside the tool leaves the author a closed
+    thread and no review, so the handler must demand an honest verdict the way the GitHub comment
+    path does. The "On it!" reply is posted before the command runs, so it still has to be cleaned
+    up on that failed run, like the temporary comments the tools remove in their finally blocks."""
+
+    provider, tool = await _run_comment_command("/review", _SwallowingReview, monkeypatch)
+
+    provider.set_thread_status.assert_not_called()
+    provider.remove_initial_comment.assert_called_once()
+    assert tool.observed_propagation is True
+
+
+async def test_successful_command_still_resolves_the_thread(monkeypatch):
+    """The companion guard: a run that raised nothing must keep closing the thread, so the fix is
+    not just "never close"."""
+
+    provider, tool = await _run_comment_command("/review", _CleanReview, monkeypatch)
+
+    assert tool.ran is True
+    provider.set_thread_status.assert_called_once_with(7, "closed")
+    provider.remove_initial_comment.assert_called_once()

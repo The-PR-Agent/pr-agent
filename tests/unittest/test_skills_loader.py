@@ -1,9 +1,12 @@
 """Unit tests for the agent skills loader."""
+import copy
 import os
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+import pytest
 from jinja2 import Environment, StrictUndefined
 from starlette_context import request_cycle_context
 
@@ -195,6 +198,7 @@ class TestGetSkillsContext:
 
     def test_request_cache_respects_effective_settings_changes(self, monkeypatch):
         settings = SimpleNamespace(
+            config=SimpleNamespace(model="gpt-4o"),
             skills=SimpleNamespace(
                 enabled=True,
                 paths=["/host/skills"],
@@ -239,12 +243,36 @@ class TestGetSkillsContext:
             ["/other/skills"],
         ]
 
+    @pytest.mark.parametrize("models", [("gpt-4", "gpt-4o"), ("gpt-4o", "gpt-4")])
+    def test_request_cache_respects_model_changes(self, tmp_path, models):
+        from pr_agent.config_loader import get_settings
+
+        _write_skill(tmp_path, "demo", body="漢字🙂🚀 résumé café " * 100)
+        settings = copy.deepcopy(get_settings())
+        settings.set("skills", {"enabled": True, "paths": [str(tmp_path)], "max_skills_tokens": 120})
+        skills = discover_skills([str(tmp_path)])
+        rendered = []
+
+        with request_cycle_context({"settings": settings}):
+            with patch.object(skills_loader, "discover_skills", wraps=discover_skills) as discovery:
+                for call_count, model in enumerate(models, start=1):
+                    settings.set("config.model", model)
+                    expected = format_skills_context(skills, 120)
+                    actual = get_skills_context()
+                    assert actual == expected
+                    assert get_skills_context() == actual
+                    assert discovery.call_count == call_count
+                    rendered.append(actual)
+
+        assert rendered[0] != rendered[1]
+
     def test_request_cache_respects_expanded_path_changes(self, tmp_path, monkeypatch):
         first_dir = tmp_path / "first"
         second_dir = tmp_path / "second"
         _write_skill(first_dir, "first-skill")
         _write_skill(second_dir, "second-skill")
         settings = SimpleNamespace(
+            config=SimpleNamespace(model="gpt-4o"),
             skills=SimpleNamespace(
                 enabled=True,
                 paths=["$SKILLS_TEST_DIR"],

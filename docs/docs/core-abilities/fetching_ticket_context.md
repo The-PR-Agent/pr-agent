@@ -1,10 +1,14 @@
-# Fetching Ticket Context for PRs
+---
+title: "Fetching Ticket Context for PRs"
+sidebar_position: 5
+---
 
 `Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea`
 
-!!! note "Branch-name linking: Jira keys on all providers; numeric GitHub issues on GitHub only"
-    **Jira** ticket keys (e.g. `ABC-123`) are extracted from the branch name on **every git provider**.
-    Extracting **numeric GitHub issue** links from the branch name (and the optional `branch_issue_regex` setting) is currently implemented for **GitHub only**; support for other providers is planned for a later release.
+:::note[Branch-name linking: Jira keys on all providers; numeric GitHub issues on GitHub only]
+**Jira** ticket keys (e.g. `ABC-123`) are extracted from the branch name on **every git provider**.
+Extracting **numeric GitHub issue** links from the branch name (and the optional `branch_issue_regex` setting) is currently implemented for **GitHub only**; support for other providers is planned for a later release.
+:::
 
 ## Overview
 
@@ -51,7 +55,7 @@ Each ticket will be assigned a label (Compliance/Alignment level), Indicates the
 - Not Compliant
 - PR Code Verified
 
-![Ticket Compliance](../assets/ticket_compliance_review.png){width=768}
+<img src="/img/ticket_compliance_review.png" alt="Ticket Compliance" width="768" />
 
 A `PR Code Verified` label indicates the PR code meets ticket requirements, but requires additional manual testing beyond the code scope. For example - validating UI display across different environments (Mac, Windows, mobile, etc.).
 
@@ -168,7 +172,7 @@ You can create an API token from your Atlassian account:
 
 4. Click Copy to clipboard.
 
-![Jira Cloud API Token](https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken){width=384}
+<img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
 
 5. In your [configuration file](../usage-guide/configuration_options.md) add the following lines:
 

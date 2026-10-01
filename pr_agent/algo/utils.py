@@ -17,10 +17,12 @@ from pydantic import BaseModel
 
 import pr_agent.algo.comment_identity as _ci
 from pr_agent.algo.git_patch_processing import (
+    NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
     to_hunk_only_patch,
 )
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
@@ -88,6 +90,28 @@ def _expand_minute_suffix(text: str) -> str:
     "30ms" or "30min" unchanged.
     """
     return re.sub(r'(\d+)m\b', r'\1 minutes', text)
+
+
+def _get_fence(content: str) -> str:
+    """Return the shortest fence string (minimum 3) that does not appear in content.
+
+    Considers both backtick and tilde fences and picks whichever yields a shorter
+    safe fence, reducing the risk that a very long backtick run in the content
+    produces an extremely long fence line that gets truncated by the provider.
+    """
+    max_backticks = 2
+    for m in re.finditer(r"`+", content):
+        max_backticks = max(max_backticks, len(m.group()))
+    backtick_len = max_backticks + 1
+
+    max_tildes = 2
+    for m in re.finditer(r"~+", content):
+        max_tildes = max(max_tildes, len(m.group()))
+    tilde_len = max_tildes + 1
+
+    if tilde_len < backtick_len:
+        return "~" * tilde_len
+    return "`" * backtick_len
 
 
 def convert_to_markdown_v2(output_data: dict,
@@ -186,7 +210,8 @@ def convert_to_markdown_v2(output_data: dict,
                                      artifact={"value": value})
                 continue
             if gfm_supported:
-                markdown_text += f"<tr><td>{emoji}&nbsp;<strong>Contribution time estimate</strong> (best, average, worst case): "
+                markdown_text += \
+                    f"<tr><td>{emoji}&nbsp;<strong>Contribution time estimate</strong> (best, average, worst case): "
                 best = _expand_minute_suffix(value['best_case'])
                 avg = _expand_minute_suffix(value['average_case'])
                 worst = _expand_minute_suffix(value['worst_case'])
@@ -213,7 +238,8 @@ def convert_to_markdown_v2(output_data: dict,
                     markdown_text += f'### {emoji} No security concerns identified\n\n'
                 else:
                     markdown_text += f"### {emoji} Security concerns\n\n"
-                    value = _ci.emphasize_header(value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
+                    value = _ci.emphasize_header(
+                        value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}\n\n"
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
@@ -315,7 +341,8 @@ def convert_to_markdown_v2(output_data: dict,
                         except (TypeError, ValueError):
                             start_line, end_line = 0, 0
                         valid_lines = start_line > 0 and end_line >= start_line
-                        relevant_lines_str = extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=True) if valid_lines else ""
+                        relevant_lines_str = extract_relevant_lines_str(
+                            end_line, files, relevant_file, start_line, dedent=True) if valid_lines else ""
                         if git_provider and valid_lines:
                             reference_link = git_provider.get_line_link(relevant_file, start_line, end_line)
                         else:
@@ -324,9 +351,17 @@ def convert_to_markdown_v2(output_data: dict,
                         if gfm_supported:
                             if reference_link is not None and len(reference_link) > 0:
                                 if relevant_lines_str:
-                                    issue_str = f"<details><summary><a href='{reference_link}'><strong>{issue_header}</strong></a>\n\n{issue_content}\n</summary>\n\n{relevant_lines_str}\n\n</details>"
+                                    issue_str = (
+                                        f"<details><summary><a href='{reference_link}'>"
+                                        f"<strong>{issue_header}</strong></a>\n\n"
+                                        f"{issue_content}\n</summary>\n\n"
+                                        f"{relevant_lines_str}\n\n</details>"
+                                    )
                                 else:
-                                    issue_str = f"<a href='{reference_link}'><strong>{issue_header}</strong></a><br>{issue_content}"
+                                    issue_str = (
+                                        f"<a href='{reference_link}'>"
+                                        f"<strong>{issue_header}</strong></a><br>{issue_content}"
+                                    )
                             else:
                                 issue_str = f"<strong>{issue_header}</strong><br>{issue_content}"
                         else:
@@ -355,7 +390,7 @@ def convert_to_markdown_v2(output_data: dict,
 
 def extract_relevant_lines_str(end_line, files, relevant_file, start_line, dedent=False) -> str:
     """
-    Finds 'relevant_file' in 'files', and extracts the lines from 'start_line' to 'end_line' string from the file content.
+    Finds 'relevant_file' in 'files', and extracts the lines from 'start_line' to 'end_line' str from the file content.
     """
     try:
         relevant_lines_str = ""
@@ -366,8 +401,11 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
                     if not file.head_file:
                         # as a fallback, extract relevant lines directly from patch
                         patch = file.patch
-                        get_logger().info(f"No content found in file: '{file.filename}' for 'extract_relevant_lines_str'. Using patch instead")
-                        _, selected_lines = extract_hunk_lines_from_patch(patch, file.filename, start_line, end_line,side='right')
+                        get_logger().info(
+                            f"No content found in file: '{file.filename}' for 'extract_relevant_lines_str'. "
+                            f"Using patch instead")
+                        _, selected_lines = extract_hunk_lines_from_patch(
+                            patch, file.filename, start_line, end_line,side="right")
                         if not selected_lines:
                             get_logger().error(f"Failed to extract relevant lines from patch: {file.filename}")
                             return ""
@@ -384,7 +422,9 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
                     if dedent and relevant_lines_str:
                         # Remove the longest leading string of spaces and tabs common to all lines.
                         relevant_lines_str = textwrap.dedent(relevant_lines_str)
-                    relevant_lines_str = f"```{file.language}\n{relevant_lines_str}\n```"
+                    if relevant_lines_str:
+                        fence = _get_fence(relevant_lines_str)
+                        relevant_lines_str = f"{fence}{file.language}\n{relevant_lines_str}\n{fence}"
                     break
 
         return relevant_lines_str
@@ -442,14 +482,21 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                     explanation += f"Non-compliant requirements:\n\n{not_compliant_str}\n\n"
                 if requires_further_human_verification:
                     explanation += f"Requires further human verification:\n\n{requires_further_human_verification}\n\n"
-                ticket_compliance_str += f"\n\n**[{ticket_url.split('/')[-1]}]({ticket_url}) - {ticket_compliance_level}**\n\n{explanation}\n\n"
+                ticket_compliance_str += (
+                    f"\n\n**[{ticket_url.split('/')[-1]}]({ticket_url}) - "
+                    f"{ticket_compliance_level}**\n\n{explanation}\n\n"
+                )
 
                 # for debugging
                 if requires_further_human_verification:
-                    get_logger().debug("Ticket compliance requires further human verification",
-                                       artifact={'ticket_url': ticket_url,
-                                                 'requires_further_human_verification': requires_further_human_verification,
-                                                 'compliance_level': ticket_compliance_level})
+                    get_logger().debug(
+                        "Ticket compliance requires further human verification",
+                        artifact={
+                            "ticket_url": ticket_url,
+                            "requires_further_human_verification": requires_further_human_verification,
+                            "compliance_level": ticket_compliance_level,
+                        },
+                    )
 
             except Exception as e:
                 get_logger().exception(f"Failed to process ticket compliance: {e}")
@@ -527,7 +574,10 @@ def process_can_be_split(emoji, value):
             #     title = split.get('title', '')
             #     relevant_files = split.get('relevant_files', [])
             #     if i == 0:
-            #         markdown_text += f"<td><details><summary>\nSub-PR theme:<br><strong>{title}</strong></summary>\n\n"
+            #         markdown_text += (
+            #             f"<td><details><summary>\n"
+            #             f"Sub-PR theme:<br><strong>{title}</strong></summary>\n\n"
+            #         )
             #         markdown_text += f"<hr>\n"
             #         markdown_text += f"Relevant files:\n"
             #         markdown_text += f"<ul>\n"
@@ -535,7 +585,10 @@ def process_can_be_split(emoji, value):
             #             markdown_text += f"<li>{file}</li>\n"
             #         markdown_text += f"</ul>\n\n</details></td></tr>\n"
             #     else:
-            #         markdown_text += f"<tr>\n<td><details><summary>\nSub-PR theme:<br><strong>{title}</strong></summary>\n\n"
+            #         markdown_text += (
+            #             f"<tr>\n<td><details><summary>\n"
+            #             f"Sub-PR theme:<br><strong>{title}</strong></summary>\n\n"
+            #         )
             #         markdown_text += f"<hr>\n"
             #         markdown_text += f"Relevant files:\n"
             #         markdown_text += f"<ul>\n"
@@ -713,7 +766,8 @@ def convert_str_to_datetime(date_str):
     return datetime.strptime(date_str, datetime_format)
 
 
-def load_large_diff(filename, new_file_content_str: str, original_file_content_str: str, show_warning: bool = True) -> str:
+def load_large_diff(filename, new_file_content_str: str,
+                    original_file_content_str: str, show_warning: bool = True) -> str:
     """
     Generate a patch for a modified file by comparing the original content of the file with the new content provided as
     input. The returned patch starts at its first hunk and excludes unified-diff file metadata.
@@ -722,8 +776,15 @@ def load_large_diff(filename, new_file_content_str: str, original_file_content_s
         return ""
 
     try:
-        original_file_content_str = (original_file_content_str or "").rstrip() + "\n"
-        new_file_content_str = (new_file_content_str or "").rstrip() + "\n"
+        original_file_content_str = original_file_content_str or ""
+        new_file_content_str = new_file_content_str or ""
+        # Keep diff lines separated without stripping content or inventing empty-side lines.
+        if original_file_content_str and not original_file_content_str.endswith("\n"):
+            original_file_content_str += "\n"
+        if new_file_content_str and not new_file_content_str.endswith("\n"):
+            new_file_content_str += "\n"
+        if original_file_content_str == new_file_content_str:
+            return ""
         diff = difflib.unified_diff(original_file_content_str.splitlines(keepends=True),
                                     new_file_content_str.splitlines(keepends=True))
         if get_verbosity_level() >= 2 and show_warning:
@@ -804,7 +865,8 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
         return text
     sanitized, count = _YAML_ILLEGAL_CHARS_RE.subn('', text)
     if count and log:
-        get_logger().warning(f"Removed {count} unambiguous illegal control character(s) from AI prediction before YAML parsing")
+        get_logger().warning(
+            f"Removed {count} unambiguous illegal control character(s) from AI prediction before YAML parsing")
     return sanitized
 
 
@@ -1098,7 +1160,10 @@ def try_fix_yaml(response_text: str,
         line_stripped = line.rstrip()
         if any(key in line_stripped for key in (improve_sections+describe_sections)):
             start_line = i
-        elif line_stripped.endswith(': |') or line_stripped.endswith(': |-') or line_stripped.endswith(': |2') or any(line_stripped.endswith(key) for key in keys_yaml):
+        elif (line_stripped.endswith(': |')
+              or line_stripped.endswith(': |-')
+              or line_stripped.endswith(': |2')
+              or any(line_stripped.endswith(key) for key in keys_yaml)):
             start_line = -1
         elif start_line != -1:
             response_text_copy_lines[i] = '    ' + line
@@ -1123,7 +1188,8 @@ def try_fix_yaml(response_text: str,
     except:
         pass
 
-    # ninth fallback - try to decode the response text with different encodings. GPT-5 can return text that is not utf-8 encoded.
+    # ninth fallback - try to decode the response text with different encodings.
+    # GPT-5 can return text that is not utf-8 encoded.
     encodings_to_try = ['latin-1', 'utf-16']
     for encoding in encodings_to_try:
         try:
@@ -1146,18 +1212,23 @@ def try_fix_yaml(response_text: str,
 
 
 
+_DEFAULT_CUSTOM_LABELS = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
+# Mirrors the hardcoded enum the prompts render when custom labels are disabled.
+_BUILTIN_LABELS = ['Bug fix', 'Tests', 'Enhancement', 'Documentation', 'Other']
+
+
 def set_custom_labels(variables, git_provider=None):
     if not get_settings().config.enable_custom_labels:
         return
 
     labels = get_settings().get('custom_labels', {})
     if not labels:
-        # set default labels
-        labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
-        labels_list = "\n      - ".join(labels) if labels else ""
-        labels_list = f"      - {labels_list}" if labels_list else ""
-        variables["custom_labels"] = labels_list
-        return
+        # No [custom_labels] section is configured, so fall back to the default set. The
+        # templates read custom_labels_class, so the enum has to be built here; writing a
+        # bullet list to an unused key left the prompt declaring `List[Label]` with no
+        # `Label` class at all. The loop below builds the same structure from a description
+        # map, so reuse it.
+        labels = {label: label for label in _DEFAULT_CUSTOM_LABELS}
 
     # Set custom labels
     variables["custom_labels_class"] = "class Label(str, Enum):"
@@ -1182,12 +1253,15 @@ def get_user_labels(current_labels: List[str] = None):
         if current_labels is None:
             current_labels = []
         user_labels = []
+        # /describe publishes the built-in PRType whatever the configuration, so those are
+        # always bot-owned. A configured set adds to them rather than replacing them, else a
+        # stale "Bug fix" would survive every /describe re-run.
+        bot_labels = {label.lower() for label in _BUILTIN_LABELS}
+        if enable_custom_labels:
+            bot_labels |= {str(label).lower() for label in custom_labels or _DEFAULT_CUSTOM_LABELS}
         for label in current_labels:
-            if label.lower() in ['bug fix', 'tests', 'enhancement', 'documentation', 'other']:
+            if label.lower() in bot_labels:
                 continue
-            if enable_custom_labels:
-                if label in custom_labels:
-                    continue
             user_labels.append(label)
         if user_labels:
             get_logger().debug(f"Keeping user labels: {user_labels}")
@@ -1230,6 +1304,8 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
             if absolute_position != -1: # matching absolute to relative
                 skip_hunk = False
                 for i, line in enumerate(patch_lines):
+                    if line == NO_NEWLINE_AT_EOF_MARKER:
+                        continue
                     # new hunk
                     if line.startswith('@@'):
                         delta = 0
@@ -1260,11 +1336,14 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                                      artifact={"relevant_file": relevant_file})
                 continue
             else:
-                # try to find the line in the patch using difflib, with some margin of error
-                matches_difflib: list[str | Any] = difflib.get_close_matches(relevant_line_in_file,
-                                                                             patch_lines, n=3, cutoff=0.93)
-                if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
-                    relevant_line_in_file = matches_difflib[0]
+                # Skip fuzzy normalization when the raw patch line matches exactly.
+                fuzzy_match_candidates = [line for line in patch_lines if line != NO_NEWLINE_AT_EOF_MARKER]
+                if relevant_line_in_file not in fuzzy_match_candidates:
+                    matches_difflib: list[str | Any] = difflib.get_close_matches(
+                        relevant_line_in_file, fuzzy_match_candidates, n=3, cutoff=0.93
+                    )
+                    if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
+                        relevant_line_in_file = matches_difflib[0]
 
 
                 def scan_patch_lines(is_match):
@@ -1272,6 +1351,8 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     scan_start2 = 0
                     skip_hunk = False
                     for i, line in enumerate(patch_lines):
+                        if line == NO_NEWLINE_AT_EOF_MARKER:
+                            continue
                         if line.startswith('@@'):
                             scan_delta = 0
                             header_match = re_hunk_header.match(line)
@@ -1302,6 +1383,8 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     no_plus_line = relevant_line_in_file[1:].lstrip()
                     skip_hunk = False
                     for i, line in enumerate(patch_lines):
+                        if line == NO_NEWLINE_AT_EOF_MARKER:
+                            continue
                         if line.startswith('@@'):
                             delta = 0
                             match = re_hunk_header.match(line)
@@ -1344,7 +1427,8 @@ def process_description(description_full: str) -> Tuple[str, List]:
     if _ci.PRDescriptionHeader.FILE_WALKTHROUGH.value in description_full:
         try:
             # FILE_WALKTHROUGH are presented in a collapsible section in the description
-            regex_pattern = r'<details.*?>\s*<summary>\s*<h3>\s*' + re.escape(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value) + r'\s*</h3>\s*</summary>'
+            regex_pattern = (r"<details.*?>\s*<summary>\s*<h3>\s*"
+                             + re.escape(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value) + r"\s*</h3>\s*</summary>")
             description_split = re.split(regex_pattern, description_full, maxsplit=1, flags=re.DOTALL)
 
             # If the regex pattern is not found, fallback to the previous method
@@ -1356,7 +1440,8 @@ def process_description(description_full: str) -> Tuple[str, List]:
             description_split = description_full.split(_ci.PRDescriptionHeader.FILE_WALKTHROUGH.value, 1)
 
         if len(description_split) < 2:
-            get_logger().error("Failed to split description into base and changes walkthrough", artifact={'description': description_full})
+            get_logger().error("Failed to split description into base and changes walkthrough",
+                               artifact={"description": description_full})
             return description_full.strip(), []
 
         base_description_str = description_split[0].strip()
@@ -1391,13 +1476,17 @@ def process_description(description_full: str) -> Tuple[str, List]:
                 try:
                     if isinstance(file_data, tuple):
                         file_data = file_data[0]
-                    pattern = r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?</summary>\s*<hr>\s*(.*?)\s*(?:<li>|•)(.*?)</details>'
+                    pattern = (r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?'
+                               r'</summary>\s*<hr>\s*(.*?)\s*(?:<li>|•)(.*?)</details>')
                     res = re.search(pattern, file_data, re.DOTALL)
                     if not res or res.lastindex != 4:
-                        pattern_back = r'<details>\s*<summary><strong>(.*?)</strong><dd><code>(.*?)</code>.*?</summary>\s*<hr>\s*(.*?)\n\n\s*(.*?)</details>'
+                        pattern_back = (r'<details>\s*<summary><strong>(.*?)</strong><dd><code>(.*?)</code>.*?'
+                                        r'</summary>\s*<hr>\s*(.*?)\n\n\s*(.*?)</details>')
                         res = re.search(pattern_back, file_data, re.DOTALL)
                     if not res or res.lastindex != 4:
-                        pattern_back = r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?</summary>\s*<hr>\s*(.*?)\s*-\s*(.*?)\s*</details>' # looking for hyphen ('- ')
+                        # looking for hyphen ('- ')
+                        pattern_back = (r'<details>\s*<summary><strong>(.*?)</strong>\s*<dd><code>(.*?)</code>.*?'
+                                        r'</summary>\s*<hr>\s*(.*?)\s*-\s*(.*?)\s*</details>')
                         res = re.search(pattern_back, file_data, re.DOTALL)
                     if res and res.lastindex == 4:
                         short_filename = res.group(1).strip()
@@ -1440,18 +1529,13 @@ def set_file_languages(diff_files) -> List[FilePatchInfo]:
         if hasattr(diff_files[0], 'language') and diff_files[0].language:
             return diff_files
 
-        # map file extensions to programming languages
-        language_extension_map_org = get_settings().language_extension_map_org
-        extension_to_language = {}
-        for language, extensions in language_extension_map_org.items():
-            for ext in extensions:
-                extension_to_language[ext] = language
+        # Reuse the shared classifier. Matching on the last suffix alone missed every
+        # multi-part key (Config.cmake.in -> ".in"), every wildcard key (module.bsl ->
+        # ".bsl" where the map stores "*.bsl") and every uppercase suffix (handler.PY).
+        get_language = build_language_file_matcher(get_settings().language_extension_map_org)
         for file in diff_files:
-            extension_s = '.' + file.filename.rsplit('.')[-1]
-            language_name = "txt"
-            if extension_s and (extension_s in extension_to_language):
-                language_name = extension_to_language[extension_s]
-            file.language = language_name.lower()
+            language_name = get_language(file.filename)
+            file.language = (language_name or "txt").lower()
     except Exception as e:
         get_logger().exception(f"Failed to set file languages: {e}")
 
@@ -1466,12 +1550,19 @@ def format_todo_item(todo_item: TodoItem | str, git_provider, gfm_supported) -> 
     if not isinstance(todo_item, dict):
         return str(todo_item).strip() if todo_item is not None else ""
     relevant_file = str(todo_item.get('relevant_file', '') or '').strip()
-    line_number = todo_item.get('line_number', '')
+    try:
+        line_number = int(str(todo_item.get('line_number')).strip())
+    except (TypeError, ValueError):
+        line_number = 0
     content = str(todo_item.get('content', '') or '')
     if not relevant_file:
         return content.strip()
-    reference_link = git_provider.get_line_link(relevant_file, line_number, line_number)
-    file_ref = f"{relevant_file} [{line_number}]"
+    if line_number < 1:
+        reference_link = git_provider.get_line_link(relevant_file, -1)
+        file_ref = relevant_file
+    else:
+        reference_link = git_provider.get_line_link(relevant_file, line_number, line_number)
+        file_ref = f"{relevant_file} [{line_number}]"
     if reference_link:
         if gfm_supported:
             file_ref = f"<a href='{reference_link}'>{file_ref}</a>"

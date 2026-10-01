@@ -246,6 +246,34 @@ class TestHandleLineComments:
         assert "--comment_id=987654" in result
         assert result[-1] == "Why this change?"
 
+    def test_only_strips_the_leading_ask_command(self):
+        # The question is about the /ask command itself, so the inner occurrence
+        # must survive. gitlab_webhook.handle_ask_line() already guarantees this.
+        body = self._payload()
+        result = github_app.handle_line_comments(body, "/ask explain why /ask appears in the source")
+        assert result[-1] == "explain why /ask appears in the source"
+
+    def test_question_mentioning_ask_line_survives(self):
+        body = self._payload()
+        result = github_app.handle_line_comments(body, "/ask how do I call /ask_line from /ask?")
+        assert result[-1] == "how do I call /ask_line from /ask?"
+
+    def test_question_containing_hash_is_untouched(self):
+        body = self._payload()
+        result = github_app.handle_line_comments(body, "/ask does #42 cover this?")
+        assert result[-1] == "does #42 cover this?"
+
+    def test_surrounding_whitespace_is_trimmed(self):
+        body = self._payload()
+        result = github_app.handle_line_comments(body, "  /ask   padded question  ")
+        assert result[-1] == "padded question"
+
+    def test_command_without_question_adds_no_trailing_argv(self):
+        body = self._payload()
+        result = github_app.handle_line_comments(body, "/ask")
+        assert result[0] == "/ask_line"
+        assert not any(arg == "" for arg in result)
+
     def test_missing_start_line_falls_back_to_line(self):
         body = self._payload(start_line=None)
         result = github_app.handle_line_comments(body, "/ask anything")
@@ -598,3 +626,26 @@ class TestPushTriggerDedupe:
         )
 
         assert push_trigger_env["count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _reformat_quote_ask_command
+# ---------------------------------------------------------------------------
+
+
+def test_reformat_quote_ask_moves_command_to_front_and_keeps_the_tail():
+    # A mobile image-quote reply with a second /ask must not drop the tail:
+    # the previous split('/ask') truncation lost everything past the second
+    # occurrence before dispatching the command.
+    original = "> ![image](screenshot.png)\n> /ask what does this do? Also /ask the tail"
+    result = github_app._reformat_quote_ask_command(original)
+
+    assert result is not None
+    assert result.startswith("/ask ")
+    assert "the tail" in result
+    assert "![image]" in result
+
+
+def test_reformat_quote_ask_returns_none_for_non_quote_reply():
+    assert github_app._reformat_quote_ask_command("just a normal comment") is None
+    assert github_app._reformat_quote_ask_command("> ![image](a.png)\n> no command here") is None

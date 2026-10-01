@@ -37,7 +37,7 @@ PR-Agent is a community-maintained open-source project, with its ongoing develop
 
 <p align="center">
   <a target="_blank" href="https://www.qodo.ai/">
-    <img alt="Qodo — Gold sponsor" src="https://www.qodo.ai/wp-content/uploads/2025/03/qodo-logo.svg" width="300">
+    <img alt="Qodo — Gold sponsor" src="https://www.qodo.ai/wp-content/uploads/2025/03/qodo-logo.svg" width="150">
   </a>
 </p>
 
@@ -113,7 +113,7 @@ Full notes for every release are on the [Releases page](https://github.com/the-p
 
 **Fast & Affordable**: Each tool (`/review`, `/improve`, `/ask`) uses a single LLM call (~30 seconds, low cost)
 
-**Handles Any PR Size**: Our [PR Compression strategy](https://docs.pr-agent.ai/core-abilities/#pr-compression-strategy) effectively processes both small and large PRs
+**Handles Any PR Size**: Our [PR Compression strategy](https://docs.pr-agent.ai/core-abilities/compression_strategy/) effectively processes both small and large PRs
 
 **Highly Customizable**: JSON-based prompting allows easy customization of review categories and behavior via [configuration files](pr_agent/settings/configuration.toml)
 
@@ -132,7 +132,7 @@ Full notes for every release are on the [Releases page](https://github.com/the-p
 
 <div style="text-align:left;">
 
-See the current [feature and git provider support matrix](https://docs.pr-agent.ai/#features) in the PR-Agent documentation.
+See the current [feature and git provider support matrix](https://docs.pr-agent.ai/overview/supported_platforms/) in the PR-Agent documentation.
 
 ⚠️ `/help_docs` is temporarily disabled since `v0.36.1` pending a fix for a credential-exposure issue ([#2445](https://github.com/the-pr-agent/pr-agent/issues/2445)).
 

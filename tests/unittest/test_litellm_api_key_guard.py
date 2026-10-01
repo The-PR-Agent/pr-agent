@@ -2896,6 +2896,14 @@ async def test_compatible_provider_key_shadows_residual_global(monkeypatch):
     monkeypatch.setattr(litellm, "api_key", "another-request-key")
     resolve_provider = MagicMock(side_effect=AssertionError("explicit providers must use the environment snapshot"))
     monkeypatch.setattr(litellm, "get_llm_provider", resolve_provider)
+    # Isolate the handler's temperature metadata probe: its litellm lookup is
+    # orthogonal to the api key snapshot and, for openai-compatible providers,
+    # internally resolves the provider through get_llm_provider.
+    monkeypatch.setattr(
+        litellm,
+        "get_supported_openai_params",
+        lambda model, custom_llm_provider=None: ["temperature"],
+    )
 
     kwargs = await _call(LiteLLMAIHandler(), "together_ai/model")
 
@@ -6560,6 +6568,12 @@ async def test_bare_model_provider_alias_uses_canonical_request_settings(monkeyp
 async def test_bare_model_provider_resolution_is_cached_per_handler(monkeypatch):
     resolve_provider = MagicMock(return_value=("gpt-4o", "openai", None, None))
     monkeypatch.setattr(litellm, "get_llm_provider", resolve_provider)
+    # Isolate the temperature metadata probe (see the shadowing test above).
+    monkeypatch.setattr(
+        litellm,
+        "get_supported_openai_params",
+        lambda model, custom_llm_provider=None: ["temperature"],
+    )
     handler = LiteLLMAIHandler()
 
     await _call(handler, "gpt-4o")

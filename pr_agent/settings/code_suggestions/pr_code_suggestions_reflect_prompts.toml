@@ -81,7 +81,7 @@ Each YAML output MUST be after a newline, indented, with block scalar indicator 
 
 user="""You are given a Pull Request (PR) code diff:
 ======
-{{ diff|trim }}
+{{ diff }}
 ======
 
 

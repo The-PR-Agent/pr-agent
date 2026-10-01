@@ -1,5 +1,7 @@
 import copy
+import re
 from functools import partial
+from urllib.parse import urlparse
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -7,6 +9,7 @@ from pr_agent.algo.comment_identity import format_pr_questions_header
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+    FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
 )
@@ -136,11 +139,26 @@ class PRQuestions:
             # /ask question ...  > ![image](img_path)
             img_path = self.question_str.split('![image]')[1].strip().strip('()')
             self.vars['img_path'] = img_path
-        elif 'https://' in self.question_str and ('.png' in self.question_str or 'jpg' in self.question_str): # direct image link
-            # include https:// in the image path
-            img_path = 'https://' + self.question_str.split('https://')[1]
-            self.vars['img_path'] = img_path
+        elif 'https://' in self.question_str:
+            # direct image link
+            # pick the first http(s) URL that actually looks like an image, so that
+            # surrounding prose and any earlier non-image links are not absorbed
+            img_path = self._find_image_url(self.question_str)
+            if img_path:
+                self.vars['img_path'] = img_path
         return img_path
+
+    @staticmethod
+    def _find_image_url(text: str) -> str:
+        """Return the first http(s) URL in ``text`` that points at an image, else an empty string."""
+        for match in re.finditer(r'https?://[^\s\'"<>)\]]+', text):
+            candidate = match.group(0)
+            # strip sentence punctuation that a user typed right after the link
+            candidate = candidate.rstrip('.,;:?!')
+            path = urlparse(candidate).path.lower()
+            if re.search(r'\.(?:png|jpe?g|gif|webp)$', path):
+                return candidate
+        return ''
 
     async def _prepare_prediction(self, model: str):
         variables = copy.deepcopy(self.vars)
@@ -194,7 +212,7 @@ class PRQuestions:
             output_token_reserve=output_token_reserve,
         )
         if not patches_diff:
-            raise ValueError(f"No PR diff fits the /ask request for {model}")
+            raise FallbackEligibleError(f"No PR diff fits the /ask request for {model}")
 
         fitted = budget.fit_prompt_variable(
             variables,
@@ -206,7 +224,7 @@ class PRQuestions:
             image_path=image_path,
         )
         if fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed question diff does not fit the token limit for {model}"
             )
         self.patches_diff = fitted.optional_text

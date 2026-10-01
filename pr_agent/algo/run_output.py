@@ -203,6 +203,11 @@ def show_run_details(gfm_supported: bool) -> str:
                   (details.total_tokens, "total")]
         reported = [f"{value:,} {label}" for value, label in counts if value]
         lines.append(f"- Tokens: {' / '.join(reported)}")
+    if details.has_cache_usage:
+        # Prompt-cache activity proves whether the cache config is earning anything.
+        cache_counts = [(details.cache_read_tokens, "read"), (details.cache_creation_tokens, "written")]
+        cache_reported = [f"{value:,} {label}" for value, label in cache_counts if value]
+        lines.append(f"- Prompt cache: {' / '.join(cache_reported)}")
     lines.append(f"- Time cost: {details.duration_seconds:.1f}s")
     if details.num_ai_calls:
         lines.append(f"- AI calls: {details.num_ai_calls}")

@@ -40,9 +40,8 @@ class FakeProvider:
         return self.files.get(file_path)
 
     def get_repo_context_ref(self, from_default_branch: bool = False):
-        # Simulate a provider that keys its content on a revision: the default branch uses a
-        # stable name, and the target/base branch uses a commit-derived value.
-        return "default" if from_default_branch else "target-sha"
+        # Simulate a provider that resolves both branches to a commit SHA.
+        return "d" * 40 if from_default_branch else "e" * 40
 
 
 class UnsupportedProvider:
@@ -1750,9 +1749,9 @@ def test_prompt_templates_render_configured_repo_context(prompt_name, variables)
 class RefishProvider(FakeProvider):
     """A provider whose repo-context revision can move between calls, like a rebased base branch."""
 
-    def __init__(self, files, pr_url=None):
+    def __init__(self, files, pr_url=None, context_ref="1" * 40):
         super().__init__(files, pr_url)
-        self.context_ref = "sha-1"
+        self.context_ref = context_ref
 
     def get_repo_context_ref(self, from_default_branch: bool = False):
         return self.context_ref
@@ -1769,7 +1768,7 @@ def test_build_repo_context_process_cache_refreshes_when_revision_changes(repo_c
 
     # The base branch moved (rebase/push within the TTL): the revision the cache is keyed on
     # changes, so the stale entry must not be served.
-    provider.context_ref = "sha-2"
+    provider.context_ref = "2" * 40
     provider.files["AGENTS.md"] = "after rebase"
 
     second_context = build_repo_context(provider)
@@ -1794,6 +1793,20 @@ def test_build_repo_context_provider_cache_refreshes_when_revision_changes(repo_
 
     assert "after push" in second_context
     assert provider.requested_paths == ["AGENTS.md", "AGENTS.md"]
+
+
+def test_build_repo_context_skips_cache_for_a_mutable_ref(repo_context_settings):
+    """Skip the process cache when the ref is a branch name: the key stays the same while the
+    commit it points at moves, so a cached entry would hide a push for the whole TTL."""
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    pr_url = "https://example.com/org/repo/pull/1"
+
+    build_repo_context(RefishProvider({"AGENTS.md": "version one"}, pr_url=pr_url, context_ref="main"))
+    # Someone pushes to the branch, and the next event builds a new provider. The ref is unchanged.
+    second = RefishProvider({"AGENTS.md": "version two"}, pr_url=pr_url, context_ref="main")
+
+    assert "version two" in build_repo_context(second)
 
 
 def test_get_repo_context_ref_github_returns_base_sha():

@@ -9,6 +9,7 @@ on:
       - opened
       - reopened
       - synchronize
+      - edited
 
 permissions:
   contents: read
@@ -26,7 +27,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   auto_label:
-    if: github.event_name == 'pull_request_target'
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (github.event.action != 'edited' || github.event.changes.title)
     permissions:
       contents: read
       pull-requests: write

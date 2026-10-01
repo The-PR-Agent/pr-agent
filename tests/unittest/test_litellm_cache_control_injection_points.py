@@ -141,3 +141,188 @@ async def test_not_injected_for_non_anthropic_model(monkeypatch):
         await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
     assert "cache_control_injection_points" not in mock_call.call_args.kwargs
+
+
+def _warn_settings(points=None):
+    return lambda: FakeSettings(
+        settings_values={
+            "LITELLM.CACHE_CONTROL_INJECTION_POINTS": points or [{"location": "message", "role": "system"}]
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_warns_once_when_model_does_not_support_prompt_caching(monkeypatch):
+    # The call must still go through (caching is best effort), but the operator needs one
+    # audible warning per (model, reason) that their config cannot take effect.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+    monkeypatch.setattr(litellm_handler, "get_settings", _warn_settings())
+    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", lambda model: False)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr")
+        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr")
+
+    assert mock_call.call_count == 2
+    warning_texts = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert len([text for text in warning_texts if "does not support prompt caching" in text]) == 1
+    assert "claude-sonnet-5" in warning_texts[0]
+
+
+@pytest.mark.asyncio
+async def test_warns_once_for_non_anthropic_model_even_though_forwarding_is_gated(monkeypatch):
+    # A non-Claude model never gets the kwarg forwarded, but it must no longer be silently
+    # dropped in a debug line: the operator gets one warning naming the model and the reason.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+    monkeypatch.setattr(litellm_handler, "get_settings", _warn_settings())
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == 2
+    assert "cache_control_injection_points" not in mock_call.call_args.kwargs
+    warning_texts = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert len([text for text in warning_texts if "does not route to an Anthropic Claude model" in text]) == 1
+
+
+def test_anthropic_routed_alias_without_metadata_is_silent(monkeypatch):
+    # A provider-aliased Claude deployment (e.g. anthropic/my-deployment) may be absent from
+    # litellm's cost map: best-effort metadata lookups must not emit a false warning.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+    monkeypatch.setattr(
+        litellm_handler.litellm.utils, "supports_prompt_caching", MagicMock(side_effect=RuntimeError("no model"))
+    )
+
+    handler = litellm_handler.LiteLLMAIHandler()
+    handler._warn_prompt_cache_conditions(
+        "my-claude-gateway", "sys", "usr", [{"location": "message", "role": "system"}], request_provider="anthropic"
+    )
+
+    assert mock_logger.warning.call_count == 0
+
+
+def test_openrouter_claude_route_skips_route_warning(monkeypatch):
+    # LiteLLM writes cache_control into the OpenRouter payload for Claude models too,
+    # so this route must not get the non-Anthropic warning.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+
+    handler = litellm_handler.LiteLLMAIHandler()
+    handler._warn_prompt_cache_conditions(
+        "openrouter/anthropic/claude-3.5-sonnet",
+        "sys",
+        "usr",
+        [{"location": "message", "role": "system"}],
+        request_provider="openrouter",
+    )
+
+    warning_texts = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert not [text for text in warning_texts if "does not route to an Anthropic Claude model" in text]
+
+
+@pytest.mark.asyncio
+async def test_warns_when_cached_prefix_below_model_minimum(monkeypatch):
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+    monkeypatch.setattr(litellm_handler, "get_settings", _warn_settings())
+    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", lambda model: True)
+    monkeypatch.setattr(litellm_handler.litellm, "get_model_info", lambda model: {"prompt_cache_min_tokens": 4096})
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_estimate_cached_prefix_tokens",
+        staticmethod(lambda system, user, points: 120),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr")
+
+    assert mock_call.call_count == 1
+    warning_texts = [call.args[0] for call in mock_logger.warning.call_args_list]
+    assert len([text for text in warning_texts if "below the model's 4096 token minimum" in text]) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_warning_when_support_and_prefix_match(monkeypatch):
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+    monkeypatch.setattr(litellm_handler, "get_settings", _warn_settings())
+    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", lambda model: True)
+    monkeypatch.setattr(litellm_handler.litellm, "get_model_info", lambda model: {"prompt_cache_min_tokens": 1024})
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_estimate_cached_prefix_tokens",
+        staticmethod(lambda system, user, points: 2000),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr")
+
+    assert mock_logger.warning.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_no_warning_without_cache_metadata_but_call_proceeds(monkeypatch):
+    # A metadata lookup failure must be silent, not an error: the warning is best effort.
+    mock_logger = MagicMock()
+    monkeypatch.setattr(litellm_handler, "get_logger", lambda: mock_logger)
+    monkeypatch.setattr(litellm_handler, "_ANTHROPIC_CACHE_WARNING_LOG", set())
+    monkeypatch.setattr(litellm_handler, "get_settings", _warn_settings())
+    monkeypatch.setattr(
+        litellm_handler.litellm.utils, "supports_prompt_caching", MagicMock(side_effect=RuntimeError("no model"))
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr")
+
+    assert mock_call.call_count == 1
+    assert mock_logger.warning.call_count == 0
+
+
+def test_estimate_counts_prompt_prefix_up_to_targeted_message(monkeypatch):
+    class _FakeEncoder:
+        @staticmethod
+        def encode(text, **kwargs):
+            return [1] * ((len(text) if text else 0) // 2 + 1)
+
+    monkeypatch.setattr(
+        "pr_agent.algo.token_handler.TokenEncoder.get_token_encoder",
+        staticmethod(lambda model: _FakeEncoder()),
+    )
+
+    handler = litellm_handler.LiteLLMAIHandler()
+    system_only = handler._estimate_cached_prefix_tokens(
+        "pineapple", "banana", [{"location": "message", "role": "system"}]
+    )
+    user_only = handler._estimate_cached_prefix_tokens("pineapple", "banana", [{"location": "message", "role": "user"}])
+
+    # Caching the user message also caches the system message that precedes it, so its
+    # estimate must be strictly larger than the system-only one.
+    assert system_only == len("pineapple") // 2 + 1 + 32
+    assert user_only == len("pineapple") // 2 + 1 + len("banana") // 2 + 1 + 48
+    assert user_only > system_only
+
+
+def test_estimate_is_zero_without_targeted_role(monkeypatch):
+    handler = litellm_handler.LiteLLMAIHandler()
+    assert handler._estimate_cached_prefix_tokens("pineapple", "banana", [{"location": "message", "role": "none"}]) == 0
+    assert handler._estimate_cached_prefix_tokens("pineapple", "banana", []) == 0

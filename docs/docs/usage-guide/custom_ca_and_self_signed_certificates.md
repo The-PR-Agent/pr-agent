@@ -1,4 +1,7 @@
-## Custom CA and self-signed certificates
+---
+title: "Custom CA and Self-Signed Certificates"
+sidebar_position: 11
+---
 
 When PR-Agent runs behind a corporate TLS-inspecting proxy or against servers using self-signed certificates, HTTPS calls to the LLM provider and git operations can fail with `certificate verify failed` errors. The fix requires two pieces: telling the HTTP clients which CA bundle to trust, and making LiteLLM use a transport that honours that bundle.
 

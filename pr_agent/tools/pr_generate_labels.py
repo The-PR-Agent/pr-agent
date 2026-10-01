@@ -2,20 +2,24 @@ import copy
 from functools import partial
 from typing import List
 
+from pydantic import ValidationError
+
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.output_models import Labels
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
+    FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
 )
+from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
-from pr_agent.git_providers.git_provider import get_main_pr_language
+from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
 
 
@@ -92,16 +96,28 @@ class PRGenerateLabels:
 
                 if self.git_provider.is_supported("get_labels"):
                     current_labels = self.git_provider.get_pr_labels()
-                    user_labels = get_user_labels(current_labels)
-                    pr_labels = pr_labels + user_labels
-                    self.git_provider.publish_labels(pr_labels)
+                    if current_labels is None:
+                        # The read failed and there is no earlier snapshot to preserve user
+                        # labels from. publish_labels replaces the whole set, so publishing
+                        # now would delete every label a human added to the PR.
+                        get_logger().error(
+                            "Skipping label publish: existing labels could not be read, "
+                            "and publishing would remove them")
+                    else:
+                        user_labels = get_user_labels(current_labels)
+                        pr_labels = pr_labels + user_labels
+                        self.git_provider.publish_labels(pr_labels)
                 elif pr_labels:
                     value = ', '.join(v for v in pr_labels)
                     pr_labels_text = f"## PR Labels:\n{value}\n"
                     self.git_provider.publish_comment(pr_labels_text, is_temporary=False)
         except Exception as e:
             get_logger().error(f"Error generating PR labels {self.pr_id}: {e}")
-            if get_settings().config.get("propagate_tool_errors", False):
+            record_command_failure()
+            if (
+                isinstance(e, IncompleteBitbucketPullRequestFilesError)
+                or get_settings().config.get("propagate_tool_errors", False)
+            ):
                 raise
         finally:
             if progress_comment is not None:
@@ -150,7 +166,7 @@ class PRGenerateLabels:
             output_token_reserve=output_token_reserve,
         )
         if not patches_diff:
-            raise ValueError(f"No PR diff fits the /generate_labels request for {model}")
+            raise FallbackEligibleError(f"No PR diff fits the /generate_labels request for {model}")
         fitted = budget.fit_prompt_variable(
             variables,
             "diff",
@@ -160,7 +176,7 @@ class PRGenerateLabels:
             preserve_minimum=True,
         )
         if fitted.optional_text != patches_diff:
-            raise ValueError(
+            raise FallbackEligibleError(
                 f"The complete packed labels diff does not fit the token limit for {model}"
             )
         variables["diff"] = fitted.optional_text
@@ -201,7 +217,12 @@ class PRGenerateLabels:
     def _load_valid_labels_yaml(prediction: str) -> dict:
         """Load a usable labels response or fail the current model attempt."""
         data = load_yaml(prediction.strip())
-        return Labels.model_validate(data).model_dump()
+        try:
+            return Labels.model_validate(data).model_dump()
+        except ValidationError as error:
+            first_error = error.errors(include_input=False)[0]
+            field = ".".join(str(part) for part in first_error["loc"]) or "$"
+            raise FallbackEligibleError(f"Invalid labels model output at {field}: {first_error['msg']}") from error
 
     def _prepare_labels(self) -> List[str]:
         pr_types = self.data["labels"].copy()

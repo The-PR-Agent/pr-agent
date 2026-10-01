@@ -75,7 +75,7 @@ Commit messages:
 
 The PR Git Diff:
 ======
-{{ diff|trim }}
+{{ diff }}
 ======
 
 Note that lines in the diff body are prefixed with a symbol that represents the type of change: '-' for deletions, '+' for additions, and ' ' (a space) for unchanged lines.

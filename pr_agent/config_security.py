@@ -67,8 +67,13 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # by the repo's maintainers in .pr_agent.toml stay accepted (apply_repo_settings does not consult
 # this map); only CliArgs.validate_user_args enforces it, so repo settings and comment args do
 # not drift.
+# github_action_config.fail_on_tool_errors decides whether a tool's recorded failure fails the
+# GitHub Action. The runner reads it after the command has applied its arguments, so a comment
+# such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
+# into a green workflow; the workflow's operator sets it instead.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({"repo_context_files"}),
+    "github_action_config": frozenset({"fail_on_tool_errors"}),
 }
 
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is
@@ -106,8 +111,15 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     }),
     "pr_questions": frozenset({"resolve_threads", "use_conversation_history"}),
     "pr_code_suggestions": frozenset({
+        "committable_code_suggestions",
+        # The deprecated pre-1.0 spelling stays host-only for the same reason: a nested file
+        # must not be able to flip /improve to inline publishing through the alias that
+        # get_committable_code_suggestions() still accepts. This layer works by subtraction
+        # (the whole section is overridable in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS), and
+        # an unrecognized key survives the merge, so leaving the alias out of this set would
+        # hand a nested file the very control the canonical name is denied.
         "commitable_code_suggestions",
-        "max_number_of_calls", "parallel_calls",
+        "max_number_of_calls", "parallel_calls", "max_discussion_context_chars",
         "approve_pr_on_self_review", "demand_code_suggestions_self_review",
     }),
     "pr_similar_issue": frozenset({"force_update_dataset", "max_issues_to_scan", "vectordb", "skip_comments"}),

@@ -1,4 +1,7 @@
-# Usage guide
+---
+title: "Usage guide"
+sidebar_position: 1
+---
 
 This section provides a detailed guide on how to use PR-Agent.
 It includes information on how to adjust PR-Agent configurations, define which tools will run automatically, and other advanced configurations.

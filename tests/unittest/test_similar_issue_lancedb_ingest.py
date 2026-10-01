@@ -223,6 +223,35 @@ def test_ingest_appends_rows_when_table_exists(monkeypatch):
     assert fake_table.delete_calls == []
 
 
+def test_ingest_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
+    """Oversized rejects are not counted so the scan budget reaches older index gaps."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_table = _fake_table()
+    fake_db.table = fake_table
+
+    tool = _make_tool(monkeypatch, fake_db)
+    tool.max_issues_to_scan = 2
+    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 10 ** 6)
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_max_tokens", lambda model: 8192)
+
+    oversized = SimpleNamespace(
+        number=1,
+        title="oversized",
+        body="x" * 9000,
+        pull_request=False,
+        user=SimpleNamespace(login="tester"),
+        created_at="2026-01-01T00:00:00Z",
+    )
+    tool._update_table_with_issues(
+        [oversized, _fake_issue(2), _fake_issue(3), _fake_issue(4)],
+        "utkarsh-demo",
+        ingest=True,
+    )
+
+    ids = [row["id"] for row in fake_table.rows]
+    assert ids == ["issue_2.issue", "issue_3.issue", "example_issue_utkarsh-demo"]
+
+
 def test_ingest_fetches_table_when_table_handle_unset(monkeypatch):
     """A missing table handle is fetched from the db before appending rows."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
@@ -497,6 +526,40 @@ def test_constructor_second_repo_joins_existing_table(monkeypatch):
         row["id"] for row in fake_db.table.rows if row["id"].startswith("example_issue_")
     ]
     assert sentinels == ["example_issue_org-repo-a", "example_issue_org-repo-b"]
+
+
+def test_constructor_backfills_an_older_index_gap(monkeypatch):
+    """A normal constructor run re-adds an older issue missing below the newest indexed one."""
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable([
+        _lancedb_row("issue_6.issue", "org-repo-b"),
+        _lancedb_row("example_issue_org-repo-b", "org-repo-b"),
+    ])
+    _install_fake_pandas(monkeypatch)
+    _install_fake_lancedb(monkeypatch, fake_db)
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_settings", lambda: _LanceSettings)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_similar_issue._provider_supports_issue_indexing", lambda: True
+    )
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
+    monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_similar_issue.TokenHandler",
+        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
+    )
+
+    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    ids = [row["id"] for row in fake_db.table.rows]
+    assert "issue_5.issue" in ids
+    assert ids.count("example_issue_org-repo-b") == 1
+    assert fake_db.table.add_calls == [1]
+
+    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    ids = [row["id"] for row in fake_db.table.rows]
+    assert ids.count("issue_5.issue") == 1
+    assert fake_db.table.add_calls == [1]  # gap filled, nothing new to add
 
 
 def test_concurrent_first_runs_do_not_duplicate_rows(monkeypatch):

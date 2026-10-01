@@ -66,12 +66,16 @@ async def handle_request_comment(url: str, body: str, thread_id: int, comment_id
                 return
             is_question = body.startswith("/ask")
             handled = await agent.handle_request(
-                url, body, notify=lambda: provider.reply_to_thread(thread_id, "On it! ⏳", True)
-            )
+                url, body, notify=lambda: provider.reply_to_thread(thread_id, "On it! ⏳", True),
+                # A tool that fails internally returns normally while `propagate_tool_errors` is
+                # false, and then a resolved discussion thread plus a deleted progress comment would
+                # read as "review done" for a review that was never published.
+                propagate_tool_errors=True)
             if handled and not is_question:
                 provider.set_thread_status(thread_id, "closed")
-            if handled:
-                provider.remove_initial_comment()
+            # The progress reply was posted before the command ran, so a failed run still has to
+            # take it back; only closing the thread depends on the outcome.
+            provider.remove_initial_comment()
     except Exception as e:
         get_logger().exception("Failed to handle webhook", artifact={"url": url, "body": body}, error=str(e))
 
@@ -206,7 +210,8 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B
 
 async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict):
     apply_repo_settings(api_url)
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+    # auto commands for PR, and auto feedback is disabled
+    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
     commands = (
@@ -244,7 +249,7 @@ async def handle_request_azure(data, log_context):
         comment_content = comment["content"]
         if (isinstance(comment_content, str)
                 and (available_commands_rgx.match(comment_content) or extract_azure_mention(comment_content))):
-            if(data["resourceVersion"] == "2.0"):
+            if data["resourceVersion"] == "2.0":
                 repo = data["resource"]["pullRequest"]["repository"]["webUrl"]
                 pr_url = unquote(f'{repo}/pullrequest/{data["resource"]["pullRequest"]["pullRequestId"]}')
                 action = comment["content"]
@@ -256,7 +261,9 @@ async def handle_request_azure(data, log_context):
                 # API V1 not supported as it does not contain the PR URL
                 return JSONResponse(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    content=json.dumps({"message": "version 1.0 webhook for Azure Devops PR comment is not supported. please upgrade to version 2.0"})),
+                    content=json.dumps(
+                        {"message": "version 1.0 webhook for Azure Devops PR comment is not supported. "
+                                    "please upgrade to version 2.0"})),
         else:
             return JSONResponse(
                 status_code=status.HTTP_204_NO_CONTENT,

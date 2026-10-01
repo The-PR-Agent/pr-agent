@@ -280,7 +280,7 @@ User answers:
 
 The PR code diff:
 ======
-{{ diff|trim }}
+{{ diff }}
 ======
 
 

@@ -1,3 +1,8 @@
+---
+title: "Add Docs"
+sidebar_position: 6
+---
+
 ## Overview
 
 The `add_docs` tool scans the PR code changes and suggests documentation for any code components that are missing documentation, such as functions, classes, and methods.
@@ -12,7 +17,7 @@ It can be invoked manually by commenting on any PR:
 
 Invoke the tool manually by commenting `/add_docs` on any PR:
 
-![Add Docs](../assets/add_docs_comment.png){width=512}
+<img src="/img/add_docs_comment.png" alt="Add Docs" width="512" />
 
 The tool will generate documentation suggestions as inline code suggestions.
 
@@ -62,3 +67,11 @@ You can pass configuration options directly in the command:
 1. The tool analyzes the PR diff to identify code components (functions, classes, methods) that lack documentation
 2. It uses AI to generate appropriate documentation based on the code context and language
 3. Documentation suggestions are published as inline code suggestions that can be applied with a single click
+
+### Publication failures
+
+With `CONFIG.PUBLISH_OUTPUT` enabled, PR-Agent retries unsuccessful batch
+publication one suggestion at a time. If the batch and every individual retry
+explicitly report failure, it attempts to post **Failed to publish code
+documentation for this PR.** and records the command as failed. Partial success
+or an unconfirmed provider result does not trigger this all-failed outcome.

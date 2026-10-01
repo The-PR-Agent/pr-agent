@@ -47,7 +47,18 @@ def test_qdrant_upload_points_uses_batching(monkeypatch):
         def upload_points(self, **kwargs):
             calls.update(kwargs)
 
-    fake_qdrant_models = SimpleNamespace(PointStruct=_PointStruct)
+        def upsert(self, **kwargs):
+            calls["sentinel"] = kwargs["points"]
+
+        def delete(self, **kwargs):
+            calls["deleted"] = True
+
+    fake_qdrant_models = SimpleNamespace(
+        PointStruct=_PointStruct,
+        FieldCondition=lambda **kwargs: kwargs,
+        Filter=lambda must=None: SimpleNamespace(must=must),
+        MatchValue=lambda value=None: SimpleNamespace(value=value),
+    )
     fake_qdrant_client = SimpleNamespace(models=fake_qdrant_models)
 
     monkeypatch.setitem(
@@ -96,7 +107,10 @@ def test_qdrant_upload_points_uses_batching(monkeypatch):
     assert calls["collection_name"] == "test-collection"
     assert calls["batch_size"] == 100
     assert calls["wait"] is True
-    assert len(calls["points"]) == 2
+    # Only the issue point is batched; the completion sentinel is its own final write
+    assert len(calls["points"]) == 1
+    assert calls["sentinel"][0].payload["id"] == "example_issue_example-repo"
+    assert calls["deleted"] is True
 
 
 def test_collection_name_has_the_v2_suffix():
@@ -112,6 +126,7 @@ def test_suffix_is_scoped_to_qdrant_only():
         "self.qdrant.upload_points(",
         "batch_size=100",
         "wait=True",
+        "self.qdrant.upsert(collection_name=self.qdrant_collection_name, points=[sentinel_point])",
     ]
 
     for call_site in qdrant_only_call_sites:

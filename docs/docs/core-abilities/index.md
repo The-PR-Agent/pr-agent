@@ -1,4 +1,7 @@
-# Core Abilities
+---
+title: "Core Abilities"
+sidebar_position: 1
+---
 
 PR-Agent utilizes a variety of core abilities to provide a comprehensive and efficient code review experience. These abilities include:
 

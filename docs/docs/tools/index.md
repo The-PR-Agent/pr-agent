@@ -1,4 +1,7 @@
-# Tools
+---
+title: "Tools"
+sidebar_position: 1
+---
 
 Each PR-Agent tool has a dedicated page that explains its behavior and usage:
 
@@ -6,7 +9,7 @@ Each PR-Agent tool has a dedicated page that explains its behavior and usage:
 |------|-------------|
 | **[PR Description (`/describe`)](./describe.md)** | Generate a PR title, type, summary, code walkthrough and labels. |
 | **[PR Review (`/review`)](./review.md)** | Generate a PR review with feedback on possible issues, security concerns, tests and review effort. |
-| **[Code Suggestions (`/improve`)](./improve.md)** | Generate actionable code suggestions for improving the PR. |
+| **[Code Suggestions (`/improve`)](./improve.mdx)** | Generate actionable code suggestions for improving the PR. |
 | **[Question Answering (`/ask ...`)](./ask.md)** | Answering free-text questions about the PR, or on specific code lines |
 | **[Add Documentation (`/add_docs`)](./add_docs.md)** | Generate documentation for code components that are missing it |
 | **[Generate Labels (`/generate_labels`)](./generate_labels.md)** | Generate custom labels for the PR based on the code changes |
@@ -28,7 +31,7 @@ Both accept the same tool arguments and [configuration overrides](../usage-guide
 |------------------------------------------|----------------------------------|----------------------------------------------------------------|
 | [Describe](./describe.md)                | `/describe`                      | `python -m pr_agent.cli --pr_url=<PR_URL> describe`             |
 | [Review](./review.md)                    | `/review`                        | `python -m pr_agent.cli --pr_url=<PR_URL> review`              |
-| [Improve](./improve.md)                  | `/improve`                       | `python -m pr_agent.cli --pr_url=<PR_URL> improve`             |
+| [Improve](./improve.mdx)                  | `/improve`                       | `python -m pr_agent.cli --pr_url=<PR_URL> improve`             |
 | [Ask](./ask.md)                          | `/ask "How does X work?"`        | `python -m pr_agent.cli --pr_url=<PR_URL> ask "How does X work?"` |
 | [Add Docs](./add_docs.md)                | `/add_docs`                      | `python -m pr_agent.cli --pr_url=<PR_URL> add_docs`           |
 | [Generate Labels](./generate_labels.md)  | `/generate_labels`               | `python -m pr_agent.cli --pr_url=<PR_URL> generate_labels`     |

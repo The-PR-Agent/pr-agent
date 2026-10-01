@@ -130,7 +130,7 @@ Commit messages:
 
 The PR Files and Changes:
 =====
-{{ diff|trim }}
+{{ diff }}
 =====
 
 {%- if duplicate_prompt_examples %}

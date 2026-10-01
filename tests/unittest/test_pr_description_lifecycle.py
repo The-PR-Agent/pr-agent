@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
 from pr_agent.tools import pr_description as pr_description_module
 from pr_agent.tools.pr_description import PRDescription
 from tests.unittest._settings_helpers import (
@@ -72,6 +73,33 @@ async def test_run_removes_progress_comment_when_description_generation_fails(
         provider.publish_comment.assert_called_once_with(
             "Preparing PR description...", is_temporary=True
         )
+        provider.remove_comment.assert_called_once_with(progress_comment)
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_re_raises_incomplete_bitbucket_diff_after_progress_cleanup(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.publish_comment.return_value = progress_comment
+        description = _make_description(provider)
+
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        incomplete_diff_error = IncompleteBitbucketPullRequestFilesError("incomplete aggregate diff")
+        monkeypatch.setattr(
+            pr_description_module,
+            "retry_with_fallback_models",
+            AsyncMock(side_effect=incomplete_diff_error),
+        )
+        _configure_published_run()
+
+        with pytest.raises(IncompleteBitbucketPullRequestFilesError) as exc_info:
+            await description.run()
+
+        assert exc_info.value is incomplete_diff_error
         provider.remove_comment.assert_called_once_with(progress_comment)
     finally:
         restore_settings(settings_snapshot)

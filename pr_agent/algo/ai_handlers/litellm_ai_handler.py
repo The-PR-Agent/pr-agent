@@ -41,7 +41,6 @@ except ImportError:
 from pr_agent.algo import (
     CLAUDE_EXTENDED_THINKING_MODELS,
     GROK_REASONING_EFFORT_LEVELS,
-    NO_SUPPORT_TEMPERATURE_MODELS,
     STREAMING_REQUIRED_MODELS,
     USER_MESSAGE_ONLY_MODELS,
     normalize_litellm_model,
@@ -141,6 +140,17 @@ from pr_agent.log import get_logger
 MODEL_RETRIES = 2
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
 OPENAI_DEFAULT_API_BASE = "https://api.openai.com/v1"
+
+# Token-count allowances used when estimating the cached prompt prefix for the
+# cache_control_injection_points pre-call warning. Mirrors pr_help_message.py.
+_CACHE_MESSAGE_FRAMING_ALLOWANCE = 16
+_CACHE_REPLY_FRAMING_ALLOWANCE = 16
+# Providers that serve Anthropic Claude models and honor cache_control injection.
+_ANTHROPIC_CACHE_REQUEST_PROVIDERS = ("anthropic", "bedrock", "bedrock_mantle", "vertex_ai")
+# One-time warnings telling the operator when an enabled prompt-cache config cannot take
+# effect, keyed by (model, reason) so the same warning is logged once per process. See
+# _warn_prompt_cache_conditions.
+_ANTHROPIC_CACHE_WARNING_LOG: set[tuple[str, str]] = set()
 
 PROVIDER_SETTING_PATHS = {
     "anthropic": {"api_key": "ANTHROPIC.KEY"},
@@ -259,12 +269,24 @@ def _should_retry_same_model(exc: BaseException) -> bool:
 
     With config.retry_same_model_on_timeout set to false, a timed-out call is handed to the
     fallback-models loop instead of being replayed on the model that just missed the deadline.
+    Request validation errors also surface immediately rather than replaying the same request.
     """
-    if isinstance(exc, openai.RateLimitError):
+    if isinstance(exc, (openai.RateLimitError, openai.BadRequestError, openai.UnprocessableEntityError)):
         return False
     if isinstance(exc, openai.APITimeoutError):
         return _as_bool(get_settings().config.get("retry_same_model_on_timeout", True), default=True)
     return isinstance(exc, openai.APIError)
+
+
+def _log_anthropic_cache_warning(model: str, reason: str) -> None:
+    """Log one warning per process for a prompt-cache config that cannot take effect."""
+    key = (model, reason)
+    if key in _ANTHROPIC_CACHE_WARNING_LOG:
+        return
+    _ANTHROPIC_CACHE_WARNING_LOG.add(key)
+    get_logger().warning(
+        f"cache_control_injection_points may not take effect for {model}: {reason}"
+    )
 
 
 class LiteLLMAIHandler(BaseAiHandler):
@@ -478,8 +500,36 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Models that only use user message
         self.user_message_only_models = USER_MESSAGE_ONLY_MODELS
 
-        # Model that doesn't support temperature argument
-        self.no_support_temperature_models = NO_SUPPORT_TEMPERATURE_MODELS
+        # Models that must never receive the temperature argument. Support is
+        # otherwise derived from litellm's parameter metadata (see
+        # _litellm_supports_temperature); this list overrides it for endpoints
+        # whose providers reject temperature despite the metadata, and for the
+        # deprecated-but-accepted case where the parameter still reaches a model.
+        # Matched exactly or through any provider prefix, mirroring
+        # additional_reasoning_effort_models.
+        no_temperature_models = _coerce_string_list_config(
+            get_settings().config.get("no_temperature_models", [])
+        )
+        if no_temperature_models is None:
+            get_logger().warning(
+                "Invalid no_temperature_models in config; expected a list of model names. "
+                "Ignoring it."
+            )
+            no_temperature_models = []
+        elif no_temperature_models and not all(
+            isinstance(model, str) and model.strip() for model in no_temperature_models
+        ):
+            get_logger().warning(
+                "Invalid no_temperature_models in config; "
+                "expected a list of model name strings. "
+                "Ignoring it."
+            )
+            no_temperature_models = []
+        # Store stripped names so exact-match checks against the model succeed even when the
+        # config entries contain surrounding whitespace (validation above already used strip()).
+        self.no_temperature_models = [
+            model.strip() for model in no_temperature_models
+        ]
 
         # Config-listed models opt endpoints litellm does not know into receiving
         # reasoning_effort. Reasoning support otherwise comes from litellm's own
@@ -1269,8 +1319,9 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @staticmethod
     def _is_gpt6_astra_model(model: str) -> bool:
-        """Recognize native Astra models without changing gateway model IDs."""
-        return _strip_openai_azure_prefixes(model).removesuffix("_thinking") == "gpt-6-astra"
+        """Recognize Astra models through routed provider prefixes."""
+        model_base = _strip_openai_azure_prefixes(model.removeprefix("openrouter/"))
+        return model_base.removesuffix("_thinking") == "gpt-6-astra"
 
     @staticmethod
     def _is_gpt5_model(model: str) -> bool:
@@ -1478,8 +1529,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         if provider == "bedrock" and "api_key" not in params and _has_live_provider_api_key_environment(provider):
             raise ValueError("Refusing process-wide Bedrock bearer token fallback")
         if provider in ("sagemaker_chat", "sagemaker_nova") and os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-            # LiteLLM 1.101.0's SageMaker signer ignores its api_key argument and
-            # otherwise reads this Bedrock-only token directly from the environment.
+            # LiteLLM's SageMaker signer ignores api_key and can use
+            # AWS_BEARER_TOKEN_BEDROCK from the environment instead of SigV4.
             raise ValueError("Refusing Bedrock bearer token fallback for SageMaker")
         if provider == "azure" and getattr(self, "_azure_ad", False):
             if azure_ad_token is None:
@@ -1557,7 +1608,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
             if not uses_bedrock_bearer:
                 if any(os.environ.get(variable) for variable in LITELLM_AWS_CREDENTIAL_SELECTOR_ENV_VARS):
-                    # LiteLLM 1.101.0 resolves these selectors ahead of explicit
+                    # LiteLLM resolves these selectors ahead of explicit
                     # request credentials, which would replace the isolated keys.
                     raise ValueError(f"Refusing ambient LiteLLM AWS credential selector for provider {provider}")
                 aws_request_credentials = dict(aws_request_credentials or {})
@@ -1786,6 +1837,55 @@ class LiteLLMAIHandler(BaseAiHandler):
             return False
 
     @staticmethod
+    def _litellm_supports_temperature(
+        model: str,
+        custom_llm_provider: str | None = None,
+    ) -> bool:
+        """Probe litellm's parameter metadata for temperature support.
+
+        The list returned by ``litellm.get_supported_openai_params`` is the
+        provider's canonical parameters, so temperature disappears for providers
+        that reject it. Like ``_litellm_supports_reasoning``, the lookup is
+        exact per spelling, so every suffix of the id is probed after stripping
+        the leading ``openrouter/`` segment, plus the ``xai/``-prefixed bare
+        name, to mirror the old ``endswith("/<id>")`` membership. The caller
+        passes the api-key-guard-resolved provider when it has one, which skips
+        the probe's own bare-model resolution inside ``get_supported_openai_params``
+        (openai-compatible providers still map through their own config, but that
+        internal step never touches the snapshotted api key). Models litellm
+        does not know raise and are treated as not supporting temperature: the
+        same safe default as the reasoning gate, so an unknown endpoint never
+        receives a parameter that might be rejected.
+        """
+        probe = model
+        if probe.startswith("openrouter/"):
+            probe = probe.removeprefix("openrouter/")
+        segments = probe.split("/")
+        candidates = []
+        for i in range(len(segments)):
+            candidates.append("/".join(segments[i:]))
+            if i == len(segments) - 1:
+                candidates.append(f"xai/{segments[-1]}")
+        probe_failure = None
+        for candidate in candidates:
+            try:
+                supported_params = litellm.get_supported_openai_params(
+                    model=candidate,
+                    custom_llm_provider=custom_llm_provider or None,
+                ) or []
+            except Exception as e:
+                if probe_failure is None:
+                    probe_failure = e
+                continue
+            if "temperature" in supported_params:
+                return True
+        if probe_failure is not None:
+            get_logger().warning(
+                f"Failed to probe litellm temperature metadata for {model}: {probe_failure}"
+            )
+        return False
+
+    @staticmethod
     def _model_cost_entry_supports_reasoning(model: str) -> bool:
         """Return whether the bundled cost map flags one exact model id as reasoning-capable.
 
@@ -1809,6 +1909,22 @@ class LiteLLMAIHandler(BaseAiHandler):
         """
         normalized = model.lower().replace("_", "-").replace(".", "-")
         return re.search(r"claude(?:-|$)", normalized) is not None
+
+    @staticmethod
+    def _is_gemini_minimal_reasoning_model(model: str) -> bool:
+        """Return whether Gemini's ``minimal`` effort needs a supported-level fallback."""
+        normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
+        return any(
+            normalized_model == gemini_id or normalized_model.endswith("/" + gemini_id)
+            for gemini_id in ("gemini-3.7-flash", "gemini-3.8-flash")
+        )
+
+    @classmethod
+    def _clamp_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
+        """Map unsupported Gemini 3.x ``minimal`` effort to the nearest level."""
+        if cls._is_gemini_minimal_reasoning_model(model) and reasoning_effort == "minimal":
+            return "low"
+        return reasoning_effort
 
     @staticmethod
     def _grok_reasoning_levels_for(model: str) -> set[str] | None:
@@ -1856,9 +1972,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Validate a configured reasoning effort and clamp it to this model's Grok levels."""
         reasoning_effort = self._validate_reasoning_effort(configured_effort)
         clamped_effort = self._clamp_grok_reasoning_effort(model, reasoning_effort)
+        clamped_effort = self._clamp_gemini_reasoning_effort(model, clamped_effort)
         if clamped_effort != reasoning_effort:
             get_logger().info(
-                f"Grok model {model} does not support reasoning_effort='{reasoning_effort}'; "
+                f"Model {model} does not support reasoning_effort='{reasoning_effort}'; "
                 f"using '{clamped_effort}' instead."
             )
         return clamped_effort
@@ -2140,7 +2257,10 @@ class LiteLLMAIHandler(BaseAiHandler):
             "budget_tokens": extended_thinking_budget_tokens
         }
         if get_verbosity_level() >= 2:
-            get_logger().info(f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, extended thinking budget tokens: {extended_thinking_budget_tokens}")
+            get_logger().info(
+                f"Adding max output tokens {extended_thinking_max_output_tokens} to model {model}, "
+                f"extended thinking budget tokens: {extended_thinking_budget_tokens}"
+            )
         kwargs["max_tokens"] = extended_thinking_max_output_tokens
 
         # temperature may only be set to 1 when thinking is enabled
@@ -2194,8 +2314,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
         # Adaptive-thinking Claude models have sampling parameters removed, so
         # never send temperature here. This pop is load-bearing rather than
-        # defensive: NO_SUPPORT_TEMPERATURE_MODELS covers most of these ids
-        # after #2400/#2449, but not all of them. It carries
+        # defensive: litellm's parameter metadata still reports temperature for
+        # these ids, so it would otherwise reach the model. It carries
         # bedrock/anthropic.claude-opus-4-7-v1:0 and
         # bedrock/us.anthropic.claude-opus-4-7 without the two combined, so for
         # bedrock/us.anthropic.claude-opus-4-7-v1:0 this line is the only thing
@@ -2327,6 +2447,80 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
         return cache_control_injection_points
 
+    @staticmethod
+    def _warn_prompt_cache_conditions(
+        model: str, system: str, user: str, injection_points, request_provider: str | None = None
+    ) -> None:
+        """Warn once per process when an enabled prompt-cache config cannot take effect.
+
+        LiteLLM skips Anthropic prompt caching silently when the model does not support it or
+        the cached prefix stays below the model's ``prompt_cache_min_tokens``. Both conditions
+        are knowable before the call, so surface them instead of leaving the operator blind.
+        Best effort: a metadata gap or estimate failure skips the check, never fails the call.
+        """
+        if not isinstance(model, str) or not model:
+            return
+        is_claude_named = "claude" in model.lower()
+        is_anthropic_provider = request_provider in _ANTHROPIC_CACHE_REQUEST_PROVIDERS
+        if not is_claude_named and not is_anthropic_provider:
+            # cache_control_injection_points is an Anthropic-only kwarg; a config pointing at
+            # another provider (or a model identifier that cannot resolve as Anthropic) will
+            # never attach, so warn instead of silently dropping it in a debug line.
+            _log_anthropic_cache_warning(
+                model, "the request does not route to an Anthropic Claude model"
+            )
+            return
+        try:
+            supports = litellm.utils.supports_prompt_caching(model)
+        except Exception:
+            return
+        if supports is False and is_claude_named:
+            # Conclusive only for a model identifier we recognize; a provider-aliased model
+            # (e.g. anthropic/my-deployment) may simply be absent from litellm's cost map.
+            _log_anthropic_cache_warning(model, "the model does not support prompt caching")
+            return
+        try:
+            min_tokens = litellm.get_model_info(model).get("prompt_cache_min_tokens")
+        except Exception:
+            return
+        if not isinstance(min_tokens, int) or isinstance(min_tokens, bool) or min_tokens <= 0:
+            return
+        cached_tokens = LiteLLMAIHandler._estimate_cached_prefix_tokens(system, user, injection_points)
+        if 0 < cached_tokens < min_tokens:
+            _log_anthropic_cache_warning(
+                model,
+                f"the cached prefix is below the model's {min_tokens} token minimum",
+            )
+
+    @staticmethod
+    def _estimate_cached_prefix_tokens(system: str, user: str, injection_points) -> int:
+        """Estimate the tokens in the prompt segment the injection points will cache.
+
+        A cache_control breakpoint caches everything from the start of the prompt up to the
+        targeted message, so the estimate counts the targeted messages plus every message
+        before them (system, then user in this handler's call shape). Returns 0 when none of
+        the points targets a supported role or the estimate cannot be produced, which skips
+        the below-minimum check entirely.
+        """
+        targets_user = any(
+            isinstance(point, dict) and point.get("role") == "user" for point in injection_points
+        )
+        if not any(isinstance(point, dict) and point.get("role") in ("system", "user")
+                   for point in injection_points):
+            return 0
+        try:
+            from pr_agent.algo.token_handler import TokenEncoder
+
+            encoder = TokenEncoder.get_token_encoder("anthropic/claude")
+            system_tokens = len(encoder.encode(system or "", disallowed_special=()))
+            user_tokens = len(encoder.encode(user or "", disallowed_special=()))
+        except Exception:
+            system_tokens = len(system or "") // 4
+            user_tokens = len(user or "") // 4
+        cached_tokens = system_tokens + (user_tokens if targets_user else 0)
+        cached_framing = _CACHE_MESSAGE_FRAMING_ALLOWANCE * (2 if targets_user else 1) + _CACHE_REPLY_FRAMING_ALLOWANCE
+        return cached_tokens + cached_framing
+
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         configured_deployment_id = self.deployment_id
         return await self._chat_completion_with_retry(
@@ -2373,7 +2567,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     timeout=_IMAGE_HEAD_TIMEOUT_SECONDS,
                 )
                 if r.status_code == 404:
-                    error_msg = "The image link is not [alive](img_path).\nPlease repost the original image as a comment, and send the question again with 'quote reply' (see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+                    error_msg = (
+                    "The image link is not [alive](img_path).\n"
+                    "Please repost the original image as a comment, and send the question again with 'quote reply' "
+                    "(see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+                )
                     get_logger().error(error_msg)
                     return f"{error_msg}", "error"
             except Exception as e:
@@ -2401,6 +2599,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # prefixes must remain intact in multi-provider configurations.
                 model = completion_model
                 openrouter_model = self._canonical_openrouter_model(model, request_provider)
+                family_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
+                capability_model = (
+                    family_model
+                    if openrouter_model and openrouter_model.endswith((":nitro", ":floor"))
+                    else openrouter_model or model
+                )
                 normalized_system, user = self.normalize_request_prompts(model, system, user)
                 if normalized_system != system:
                     get_logger().warning(
@@ -2420,11 +2624,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # and Azure mode auto-prepends "azure/", which together can produce stacked prefixes
                 # like "azure/openai/gpt-5...". Without normalization the GPT-5 path is skipped and
                 # litellm rejects the request with UnsupportedParamsError for temperature=0.2.
-                is_gpt6_astra = self._is_gpt6_astra_model(model)
-                is_gpt5_model = self._is_gpt5_model(openrouter_model or model)
+                is_gpt6_astra = self._is_gpt6_astra_model(family_model)
+                is_gpt5_model = self._is_gpt5_model(family_model)
                 if is_gpt5_model or is_gpt6_astra:
                     # Use configured reasoning_effort or default to MEDIUM.
                     effort = self._validate_reasoning_effort(self._default_reasoning_effort)
+                    lookup_model = _strip_openai_azure_prefixes(
+                        family_model.removeprefix("openrouter/")
+                    ).removesuffix("_thinking")
 
                     if is_gpt6_astra and effort in (ReasoningEffort.NONE.value, ReasoningEffort.MINIMAL.value):
                         get_logger().info(f"GPT-6 Astra does not support reasoning_effort='{effort}'; using 'low'")
@@ -2435,7 +2642,6 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
                         # false for gpt-5 and gpt-5.1, so those are clamped to 'high' instead.
                         # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        lookup_model = _strip_openai_azure_prefixes(model).removesuffix("_thinking")
                         try:
                             supports_xhigh = litellm.get_model_info(lookup_model).get(
                                 "supports_xhigh_reasoning_effort"
@@ -2457,6 +2663,27 @@ class LiteLLMAIHandler(BaseAiHandler):
                             get_logger().info(
                                 "GPT-5 models name their top reasoning level 'xhigh'; "
                                 "using 'xhigh' for reasoning_effort='max'"
+                            )
+                    elif not is_gpt6_astra and effort == ReasoningEffort.MINIMAL.value:
+                        # From LiteLLM 1.102.0 the bundled model map marks 'minimal' unsupported
+                        # for gpt-5.1, gpt-5.2, gpt-5.4 and newer base models (bare gpt-5 still
+                        # takes it), and litellm raises UnsupportedParamsError for that value. Clamp
+                        # to 'low' only when the metadata says so; unknown models keep 'minimal'.
+                        # GPT-6 Astra is clamped to 'low' in the first branch.
+                        try:
+                            supports_minimal = litellm.get_model_info(lookup_model).get(
+                                "supports_minimal_reasoning_effort"
+                            )
+                        except Exception:
+                            get_logger().debug(
+                                f"litellm.get_model_info could not resolve model '{lookup_model}'"
+                            )
+                            supports_minimal = None
+                        if supports_minimal is False:
+                            effort = ReasoningEffort.LOW.value
+                            get_logger().info(
+                                f"{lookup_model} does not support reasoning_effort='minimal'; "
+                                "using 'low'"
                             )
 
                     if openrouter_model:
@@ -2492,8 +2719,31 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["num_retries"] = client_retries
                     kwargs["max_retries"] = client_retries
 
-                # Add temperature only if model supports it
-                if model not in self.no_support_temperature_models and not get_settings().config.custom_reasoning_model:
+                # Add temperature only if the model supports it. Support comes from
+                # litellm's parameter metadata (probed over suffix forms, mirroring the
+                # reasoning_effort gate) and config.no_temperature_models as the operator
+                # override for endpoints litellm does not know or providers that reject
+                # temperature despite the metadata. Adaptive-thinking Claude models
+                # (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it, matching the
+                # sampling-parameter removal of _configure_claude_adaptive_thinking.
+                # OpenRouter :nitro/:floor routing shortcuts are ignored for temperature
+                # capability checks; model retains the routed id for the actual request.
+                # The probe receives the api-key-guard-resolved provider so it skips the
+                # probe's own bare-model resolution; the api key snapshot itself is
+                # untouched (see the guard tests).
+                if (
+                    not get_settings().config.custom_reasoning_model
+                    and not any(
+                        candidate == no_temp_model or candidate.endswith("/" + no_temp_model)
+                        for candidate in (model, capability_model)
+                        for no_temp_model in self.no_temperature_models
+                    )
+                    and not self._model_uses_adaptive_thinking(model)
+                    and self._litellm_supports_temperature(
+                        capability_model,
+                        request_provider or custom_llm_provider or None,
+                    )
+                ):
                     # get_logger().info(f"Adding temperature with value {temperature} to model {model}.")
                     kwargs["temperature"] = temperature
 
@@ -2502,7 +2752,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if is_gpt5_model or is_gpt6_astra:
                     kwargs.pop('temperature', None)
 
-                reasoning_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
+                reasoning_model = family_model
                 # Add reasoning_effort if the model supports it. Support comes from
                 # litellm's bundled model metadata (probed over suffix forms so bare,
                 # provider-prefixed, and OpenRouter :nitro/:floor variants all resolve),
@@ -2582,7 +2832,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # setdefault keeps the extended-thinking limit authoritative.
                 max_output_tokens = self._resolve_output_token_limit(model, openrouter_model)
                 if max_output_tokens > 0:
-                    output_limit_param = "max_completion_tokens" if is_gpt6_astra else "max_tokens"
+                    output_limit_param = (
+                        "max_completion_tokens"
+                        if self._is_gpt6_astra_model(capability_model)
+                        else "max_tokens"
+                    )
                     kwargs.setdefault(output_limit_param, max_output_tokens)
 
                 if get_settings().litellm.get("enable_callbacks", False):
@@ -2634,16 +2888,18 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # Anthropic prompt caching via LiteLLM's cache_control_injection_points. The value
                 # is validated before the try/except (see above) so a malformed config surfaces as
                 # a ValueError instead of being retried. The kwarg is Anthropic-specific (Claude via
-                # the Anthropic API, Bedrock or Vertex), so gate on the model to avoid passing an
-                # unsupported param to other providers when litellm.drop_params is off. setdefault
-                # guards against overwriting a value already merged into kwargs.
+                # the Anthropic API, Bedrock or Vertex), so gate the forwarding on the model to
+                # avoid passing an unsupported param to other providers when litellm.drop_params is
+                # off. The pre-call warning runs for every configured model instead, so an operator
+                # who misconfigures an aliased or non-Anthropic model gets a signal rather than a
+                # silently skipped debug line. setdefault guards against overwriting a value already
+                # merged into kwargs.
                 if cache_control_injection_points:
                     if isinstance(model, str) and "claude" in model.lower():
                         kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
-                    else:
-                        get_logger().debug(
-                            f"cache_control_injection_points configured but not applied: {model} is not an "
-                            "Anthropic (Claude) model")
+                    self._warn_prompt_cache_conditions(
+                        model, system, user, cache_control_injection_points, request_provider=request_provider
+                    )
 
                 # Classic `bedrock/` calls use model_id for Bedrock Runtime inference profiles.
                 # Bedrock Mantle uses Projects, so `bedrock_mantle/` intentionally omits it.
@@ -2756,8 +3012,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                 kwargs["custom_llm_provider"] = custom_llm_provider
             if self._bedrock_model_id and request_provider == "bedrock":
                 kwargs["model_id"] = self._bedrock_model_id
+            streaming = self._requires_streaming(kwargs["model"]) or self._force_streaming_for_request(
+                custom_llm_provider, kwargs.get("api_base")
+            )
+            if streaming:
+                kwargs["stream"] = True
+                kwargs["stream_options"] = {"include_usage": True}
             kwargs["model"] = normalize_litellm_model(kwargs["model"], custom_llm_provider)
-            await self._acompletion(_completion=_completion, **kwargs)
+            response = await self._acompletion(_completion=_completion, **kwargs)
+            if streaming or hasattr(response, "__aiter__"):
+                async for _ in response:
+                    pass
 
     async def _get_completion(self, **kwargs):
         """
@@ -2813,11 +3078,17 @@ class LiteLLMAIHandler(BaseAiHandler):
         custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
         provider = self._resolve_configured_request_provider(kwargs.get("model"), custom_llm_provider)
         transport = (
-            custom_llm_provider or self._resolve_request_transport_provider(kwargs.get("model")) or provider
+            custom_llm_provider
+            or self._resolve_request_transport_provider(kwargs.get("model"))
+            or provider
         )
         transport_model = kwargs.get("deployment_id") or kwargs.get("model")
         azure_ad_token = kwargs.get("azure_ad_token")
-        oidc_selector = azure_ad_token if isinstance(azure_ad_token, str) and azure_ad_token.startswith("oidc/") else None
+        oidc_selector = (
+            azure_ad_token
+            if isinstance(azure_ad_token, str) and azure_ad_token.startswith("oidc/")
+            else None
+        )
         companion_auth = (
             self._uses_captured_azure_companion_auth(provider)
             and not _is_cloudflare_gateway(kwargs.get("api_base"))

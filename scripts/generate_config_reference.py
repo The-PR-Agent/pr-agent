@@ -22,7 +22,10 @@ DEFAULT_OUTPUT = ROOT / "docs/docs/usage-guide/configuration_reference.md"
 
 SOURCE_URL = "https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml"
 
-PAGE_HEADER = f"""# Configuration Reference
+PAGE_HEADER = f"""---
+title: "Configuration Reference"
+sidebar_position: 4
+---
 
 > This page is **auto-generated** and should not be edited by hand.
 > Regenerate it from the [TOML source]({SOURCE_URL}) with:
@@ -178,8 +181,14 @@ def render_page(sections: list) -> str:
     for section in sections:
         keys = section["keys"]
         heading = f"## `[{section['name']}]`"
+        anchor = section["name"]
         if section["tag"]:
             heading += f" — {section['tag']}"
+            anchor = f"{anchor}-{section['tag'].lstrip('/')}"
+        # Pin the heading id. Docusaurus' slugger turns the em dash into a second
+        # separator ("pr_reviewer--review"), but pr_agent/servers/help.py and the
+        # published site both use the single-hyphen form.
+        heading += f" {{#{anchor}}}"
         out.append(heading)
         out.append("")
         if not keys:

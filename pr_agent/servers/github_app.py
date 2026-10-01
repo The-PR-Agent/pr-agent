@@ -19,6 +19,12 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.github_common import (
+    _normalise_setting_list,
+    _reformat_quote_ask_command,
+)
+from pr_agent.servers.github_common import handle_line_comments as handle_line_comments
+from pr_agent.servers.github_common import matches_review_state as matches_review_state
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     get_pr_commands,
@@ -121,9 +127,9 @@ async def handle_comments_on_pr(body: Dict[str, Any],
         return {}
     comment_body = body.get("comment", {}).get("body")
     if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
-        if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
-            comment_body_split = comment_body.split('/ask')
-            comment_body = '/ask' + comment_body_split[1] +' \n' +comment_body_split[0].strip().lstrip('>')
+        reformatted = _reformat_quote_ask_command(comment_body) if '/ask' in comment_body else None
+        if reformatted is not None:
+            comment_body = reformatted
             get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
         else:
             get_logger().info("Ignoring comment not starting with /")
@@ -232,30 +238,6 @@ def _finish_auto_command_check_run(provider, name: str | None, command, succeede
         get_logger().warning(f"Failed to complete the {name} check run: {e}")
 
 
-def _normalise_setting_list(value):
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple, set)):
-        return list(value)
-    return [value]
-
-
-def matches_review_state(review_state: Any, configured_states: Any) -> bool:
-    """Return whether a review state matches one of the configured states."""
-    if not isinstance(review_state, str) or not review_state.strip():
-        return False
-    configured_states = _normalise_setting_list(configured_states)
-    if not configured_states:
-        return False
-    normalized_state = review_state.strip().lower()
-    return any(
-        isinstance(state, str) and state.strip().lower() == normalized_state
-        for state in configured_states
-    )
-
-
 async def handle_pull_request_review_submitted(body: Dict[str, Any],
                                                event: str,
                                                sender: str,
@@ -315,7 +297,9 @@ async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
     if not (pull_request and api_url):
         return {}
 
-    apply_repo_settings(api_url) # we need to apply the repo settings to get the correct settings for the PR. This is quite expensive - a call to the git provider is made for each PR event.
+    # we need to apply the repo settings to get the correct settings for the PR.
+    # This is quite expensive - a call to the git provider is made for each PR event.
+    apply_repo_settings(api_url)
     if not get_settings().github_app.handle_push_trigger:
         return {}
 
@@ -444,7 +428,7 @@ async def handle_request(body: Dict[str, Any], event: str, delivery_id: str | No
         event: The GitHub event type (e.g. "pull_request", "issue_comment", etc.).
         delivery_id: GitHub's stable identifier for this webhook delivery and its redeliveries.
     """
-    action = body.get("action")  # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
+    action = body.get("action") # "created", "opened", "reopened", "ready_for_review", "review_requested", "synchronize"
     get_logger().debug(f"Handling request with event: {event}, action: {action}")
     if not action:
         get_logger().debug("No action found in request body, exiting handle_request")
@@ -467,39 +451,6 @@ async def handle_request(body: Dict[str, Any], event: str, delivery_id: str | No
     return {}
 
 
-def handle_line_comments(body: Dict, comment_body: [str, Any]):
-    if not comment_body:
-        return ""
-    start_line = body["comment"]["start_line"] or body["comment"].get("original_start_line")
-    end_line = body["comment"]["line"] or body["comment"].get("original_line")
-    start_line = end_line if not start_line else start_line
-    question = comment_body.replace('/ask', '').strip()
-    diff_hunk = body["comment"]["diff_hunk"]
-    get_settings().set("ask_diff_hunk", diff_hunk)
-    path = body["comment"]["path"]
-    side = body["comment"]["side"]
-    comment_id = body["comment"]["id"]
-    if '/ask' in comment_body:
-        # Build an argv list rather than concatenating into a shell-style
-        # command string. PRAgent._handle_request() tokenises string requests
-        # with shlex.shlex after escaping single quotes, which neutralises any
-        # shlex.quote() output and re-introduces the CLI-argument injection
-        # vector (a quoted value containing whitespace splits into multiple
-        # argv tokens). Passing a list bypasses the shlex path entirely.
-        cmd = [
-            "/ask_line",
-            f"--line_start={start_line}",
-            f"--line_end={end_line}",
-            f"--side={side}",
-            f"--file_name={path}",
-            f"--comment_id={comment_id}",
-        ]
-        if question:
-            cmd.append(question)
-        return cmd
-    return comment_body
-
-
 def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tuple[Dict[str, Any], str]:
     invalid_result = {}, ""
     pull_request = body.get("pull_request")
@@ -511,7 +462,8 @@ def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tup
     log_context["api_url"] = api_url
     if pull_request.get("state") != "open":
         return invalid_result
-    if action in ("review_requested", "synchronize") and pull_request.get("created_at") == pull_request.get("updated_at"):
+    if (action in ("review_requested", "synchronize")
+            and pull_request.get("created_at") == pull_request.get("updated_at")):
         # avoid double reviews when opening a PR for the first time
         return invalid_result
     return pull_request, api_url
@@ -543,11 +495,19 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
         return
     get_settings().set("config.is_auto_command", True)
     provider = _check_run_provider(api_url)
+    try:
+        command_provider = get_git_provider_with_context(pr_url=api_url)
+    except Exception as e:
+        get_logger().warning(f"Cannot access the GitHub provider for cache reset, {api_url=}: {e}")
+        command_provider = None
     succeeded = True
     for command in commands:
         check_run = None
         command_succeeded = True
         try:
+            reset_diff_cache = getattr(command_provider, "reset_diff_cache_for_command", None)
+            if callable(reset_diff_cache):
+                reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
             check_run = _start_auto_command_check_run(provider, new_command)

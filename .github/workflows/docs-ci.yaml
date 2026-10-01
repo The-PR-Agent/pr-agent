@@ -6,28 +6,33 @@ on:
       - add-docs-portal
     paths:
       - docs/**
+  pull_request:
+    paths:
+      - docs/**
 permissions:
   contents: write
 jobs:
-  deploy:
+  docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Configure Git Credentials
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
-          python-version: 3.x
-      - run: echo "cache_id=$(date --utc '+%V')" >> "$GITHUB_ENV"
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci
+        working-directory: docs
+      # The build fails on broken links and anchors, so this is the gate that keeps
+      # a bad docs change from reaching main. It runs on pull requests too.
+      - run: npm run build
+        working-directory: docs
+      - name: Verify documentation URLs referenced from the codebase still resolve
+        run: python3 scripts/check_docs_urls.py
+      - name: Deploy to GitHub Pages
+        if: github.event_name == 'push'
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453  # v4.1.0
         with:
-          key: mkdocs-material-${{ env.cache_id }}
-          path: .cache
-          restore-keys: |
-            mkdocs-material-
-      - run: pip install mkdocs-material
-      - run: pip install "mkdocs-material[imaging]"
-      - run: pip install mkdocs-glightbox
-      - run: mkdocs gh-deploy -f docs/mkdocs.yml --force
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/build
+          cname: docs.pr-agent.ai

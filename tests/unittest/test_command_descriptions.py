@@ -54,7 +54,14 @@ def test_runtime_help_uses_current_documentation_links():
 
 @pytest.mark.parametrize("command", COMMAND_DESCRIPTIONS)
 def test_tool_docs_use_canonical_command_descriptions(command):
-    tool_docs = REPO_ROOT / "docs" / "docs" / "tools" / f"{command}.md"
+    # Pages needing JSX are stored as '.mdx', so the suffix is not fixed.
+    tools_dir = REPO_ROOT / "docs" / "docs" / "tools"
+    candidates = [tools_dir / f"{command}.md", tools_dir / f"{command}.mdx"]
+    tool_docs = next((path for path in candidates if path.is_file()), None)
+    assert tool_docs is not None, (
+        f"no documentation page for /{command}; looked for "
+        f"{[path.name for path in candidates]} in {tools_dir}"
+    )
     assert COMMAND_DESCRIPTIONS[command] in tool_docs.read_text(encoding="utf-8")
 
 

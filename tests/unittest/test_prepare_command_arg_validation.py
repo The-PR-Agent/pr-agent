@@ -11,6 +11,7 @@ FORBIDDEN = [
     "--config.extra_config_url=http://example.com/evil.toml",
     "--config.review_path=/etc/cron.d/x",
     "--openai.key=sk-leaked",
+    "--qdrant={url:https://example.com}",
 ]
 
 
@@ -33,19 +34,21 @@ def test_a_forbidden_argument_is_not_applied(settings, argument):
     key = argument[2:].split("=", 1)[0]
     original = settings.get(key, None)
     try:
-        prepare_command(f"/review {argument}")
+        command = prepare_command(f"/review {argument}")
 
+        assert command == ["/review"]
         assert settings.get(key, None) == original
     finally:
         settings.set(key, original)
 
 
-def test_an_allowed_argument_is_still_applied(settings):
-    """Ordinary auto-command overrides must keep working."""
+def test_an_allowed_argument_is_applied_and_retained(settings):
+    """Keep accepted overrides available both before loading and at dispatch."""
     original = settings.get("pr_reviewer.extra_instructions", "")
     try:
-        prepare_command('/review --pr_reviewer.extra_instructions="focus on tests"')
+        command = prepare_command('/review --pr_reviewer.extra_instructions="focus on tests"')
 
+        assert command == ["/review", '--pr_reviewer.extra_instructions="focus on tests"']
         assert settings.get("pr_reviewer.extra_instructions") == "focus on tests"
     finally:
         settings.set("pr_reviewer.extra_instructions", original)
@@ -77,8 +80,9 @@ def test_an_instruction_that_mentions_a_forbidden_key_is_still_applied(settings,
     """Only the key can set a setting; the value is free text a reviewer may write anything in."""
     original = settings.get("pr_reviewer.extra_instructions", "")
     try:
-        prepare_command(f'/review --pr_reviewer.extra_instructions="{instruction}"')
+        command = prepare_command(f'/review --pr_reviewer.extra_instructions="{instruction}"')
 
+        assert len(command) == 2
         assert settings.get("pr_reviewer.extra_instructions") == instruction
     finally:
         settings.set("pr_reviewer.extra_instructions", original)
@@ -114,9 +118,10 @@ def test_a_forbidden_and_an_allowed_argument_are_separated(settings):
     """A dropped argument must not take an allowed one with it."""
     original = settings.get("pr_reviewer.extra_instructions", "")
     try:
-        prepare_command('/review --openai.key=sk-leaked '
-                        '--pr_reviewer.extra_instructions="focus on retries"')
+        command = prepare_command('/review --openai.key=sk-leaked '
+                                  '--pr_reviewer.extra_instructions="focus on retries"')
 
+        assert command == ["/review", '--pr_reviewer.extra_instructions="focus on retries"']
         assert settings.get("pr_reviewer.extra_instructions") == "focus on retries"
     finally:
         settings.set("pr_reviewer.extra_instructions", original)

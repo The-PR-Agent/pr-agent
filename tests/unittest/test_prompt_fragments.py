@@ -106,6 +106,30 @@ def test_affected_templates_delegate_to_shared_fragment_once(prompt_name, legacy
     assert legacy_example not in system_prompt
 
 
+@pytest.mark.parametrize(
+    ("prompt_name", "variable"),
+    [
+        ("pr_review_prompt", "diff"),
+        ("pr_add_docs_prompt", "diff"),
+        ("pr_questions_prompt", "diff"),
+        ("pr_custom_labels_prompt", "diff"),
+        ("pr_update_changelog_prompt", "diff"),
+        ("pr_information_from_user_prompt", "diff"),
+        ("pr_description_prompt", "diff"),
+        ("pr_description_only_files_prompts", "diff"),
+        ("pr_description_only_description_prompts", "diff"),
+        ("pr_code_suggestions_reflect_prompt", "diff"),
+        ("pr_code_suggestions_prompt", "diff_no_line_numbers"),
+        ("pr_code_suggestions_prompt_not_decoupled", "diff_no_line_numbers"),
+    ],
+)
+def test_diff_prompt_variables_do_not_use_content_trimming(prompt_name, variable):
+    user_prompt = get_settings().get(prompt_name).user
+
+    assert f"{{{{ {variable}|trim }}}}" not in user_prompt
+    assert f"{{{{ {variable} }}}}" in user_prompt
+
+
 @pytest.mark.parametrize("prompt_name", [
     "pr_code_suggestions_prompt",
     "pr_code_suggestions_prompt_not_decoupled",
