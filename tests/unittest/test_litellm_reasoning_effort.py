@@ -1381,9 +1381,11 @@ class TestLiteLLMReasoningEffortGrok:
     @pytest.mark.parametrize(
         ("model", "configured", "expected"),
         [
+            ("gemini/gemini-3.7-flash", "none", "low"),
             ("gemini/gemini-3.7-flash", "minimal", "low"),
             ("vertex_ai/gemini-3.7-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.7-flash", "minimal", "low"),
+            ("gemini/gemini-3.8-flash", "none", "low"),
             ("gemini/gemini-3.8-flash", "minimal", "low"),
             ("vertex_ai/gemini-3.8-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.8-flash", "minimal", "low"),
@@ -1391,10 +1393,11 @@ class TestLiteLLMReasoningEffortGrok:
             ("gemini/gemini-3.7-flash", "low", "low"),
             ("gemini/gemini-3.7-flash", "medium", "medium"),
             ("gemini/gemini-3.7-flash", "high", "high"),
+            ("gemini/gemini-2.5-pro", "none", "none"),
             ("gemini/gemini-2.5-pro", "minimal", "minimal"),
         ],
     )
-    def test_resolve_reasoning_effort_clamps_gemini_minimal(self, model, configured, expected):
+    def test_resolve_reasoning_effort_clamps_unsupported_gemini_levels(self, model, configured, expected):
         handler = object.__new__(LiteLLMAIHandler)
         assert handler._resolve_reasoning_effort(model, configured) == expected
 

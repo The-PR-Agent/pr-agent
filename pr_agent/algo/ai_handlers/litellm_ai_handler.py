@@ -1911,8 +1911,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         return re.search(r"claude(?:-|$)", normalized) is not None
 
     @staticmethod
-    def _is_gemini_minimal_reasoning_model(model: str) -> bool:
-        """Return whether Gemini's ``minimal`` effort needs a supported-level fallback."""
+    def _uses_gemini_low_reasoning_floor(model: str) -> bool:
+        """Return whether Gemini reasoning needs a supported-level floor."""
         normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
         return any(
             normalized_model == gemini_id or normalized_model.endswith("/" + gemini_id)
@@ -1921,8 +1921,8 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @classmethod
     def _clamp_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
-        """Map unsupported Gemini 3.x ``minimal`` effort to the nearest level."""
-        if cls._is_gemini_minimal_reasoning_model(model) and reasoning_effort == "minimal":
+        """Map unsupported Gemini 3.x efforts to the nearest level."""
+        if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort in ("none", "minimal"):
             return "low"
         return reasoning_effort
 
@@ -2036,6 +2036,15 @@ class LiteLLMAIHandler(BaseAiHandler):
             if clamped_effort != effective_reasoning_effort:
                 get_logger().info(
                     f"Grok model {model} does not support reasoning_effort="
+                    f"'{effective_reasoning_effort}'; using '{clamped_effort}' instead."
+                )
+                effective_reasoning_effort = clamped_effort
+
+        if effective_reasoning_effort == "none":
+            clamped_effort = self._clamp_gemini_reasoning_effort(model, effective_reasoning_effort)
+            if clamped_effort != effective_reasoning_effort:
+                get_logger().info(
+                    f"Gemini model {model} does not support reasoning_effort="
                     f"'{effective_reasoning_effort}'; using '{clamped_effort}' instead."
                 )
                 effective_reasoning_effort = clamped_effort
@@ -2182,6 +2191,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         reasoning_effort = self._clamp_grok_reasoning_effort(
             openrouter_model, reasoning_effort
         )
+        if reasoning_effort == "none":
+            reasoning_effort = self._clamp_gemini_reasoning_effort(
+                openrouter_model, reasoning_effort
+            )
         reasoning_tokens = self._coerce_token_value(
             self._openrouter_controls.get("reasoning_max_tokens", 0)
         )

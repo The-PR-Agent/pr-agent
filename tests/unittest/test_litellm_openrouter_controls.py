@@ -251,6 +251,37 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "openrouter/google/gemini-3.7-flash",
+            "openrouter/google/gemini-3.8-flash:nitro",
+        ],
+    )
+    async def test_gemini_none_uses_low_reasoning_floor(self, monkeypatch, model):
+        kwargs = await _run(monkeypatch, model, {"reasoning_effort": "none"})
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_gemini_inherited_none_uses_low_reasoning_floor(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-3.7-flash",
+            {},
+            reasoning_effort="none",
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_gemini_explicit_minimal_is_preserved(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-3.7-flash",
+            {"reasoning_effort": "minimal"},
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "minimal"}
+
+    @pytest.mark.asyncio
     async def test_reasoning_max_tokens(self, monkeypatch):
         """Verify that a token budget suppresses the mutually exclusive effort control."""
         kwargs = await _run(monkeypatch, "openrouter/z-ai/glm-5.2", {
@@ -349,6 +380,14 @@ class TestOpenRouterControls:
             "reasoning_max_tokens": 2048,
         })
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+
+    @pytest.mark.asyncio
+    async def test_gemini_none_keeps_reasoning_budget(self, monkeypatch):
+        kwargs = await _run(monkeypatch, "openrouter/google/gemini-3.7-flash", {
+            "reasoning_effort": "none",
+            "reasoning_max_tokens": 2048,
+        })
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
 
     @pytest.mark.asyncio
     async def test_reasoning_budget_overrides_global_none(self, monkeypatch):
