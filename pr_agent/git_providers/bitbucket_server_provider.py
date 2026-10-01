@@ -203,8 +203,7 @@ class BitbucketServerProvider(GitProvider):
         get_logger().warning(message)
 
     def _log_code_suggestion_publish_error(self, error: Exception) -> None:
-        if get_verbosity_level() >= 2:
-            get_logger().error(f"Failed to publish code suggestion, error: {error}")
+        get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
         if capability in ['get_labels', 'gfm_markdown']:

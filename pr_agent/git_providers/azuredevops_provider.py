@@ -742,8 +742,20 @@ class AzureDevopsProvider(GitProvider):
             )
             settings_files.append(("local", b"".join(list(contents))))
         except Exception as e:
-            if get_verbosity_level() >= 2:
-                get_logger().error(f"Failed to get repo settings, error: {e}")
+            # GitItemNotFoundException is the normal case here, a repository with no
+            # .pr_agent.toml, so it is not reported as a failure. It is not proof the file
+            # is absent though: Azure raises the same exception when the token lacks read
+            # permission for the path, which would silently drop the repository settings.
+            # The cause cannot be told apart from the exception, so leave a trace at a
+            # level that costs nothing per run and surfaces when someone goes looking.
+            if _is_not_found_error(e):
+                get_logger().debug(
+                    f"No repository .pr_agent.toml was read for {self.repo_slug}; it is absent or "
+                    f"not readable by this token, error: {e}")
+            else:
+                get_logger().error(
+                    f"Failed to get the repository's .pr_agent.toml; it will not be applied for this "
+                    f"run, error: {e}")
         return settings_files if settings_files else ""
 
     def get_owning_namespace(self) -> Optional[str]:
@@ -1292,9 +1304,11 @@ class AzureDevopsProvider(GitProvider):
             for comment in comments:
                 if not comment:
                     continue
+                # Reset the name for each comment, including failures during lookup.
+                relevant_file = "unknown file"
                 try:
+                    relevant_file = comment.get("path") or comment.get("relevant_file") or "unknown file"
                     comment_body = comment["body"]
-                    relevant_file = comment.get("relevant_file") or "unknown file"
                     thread_context = None
                     if comment.get("path"):
                         relevant_file = comment["path"]
@@ -1321,8 +1335,9 @@ class AzureDevopsProvider(GitProvider):
                             f"Published code suggestion on {self.pr_num} at {relevant_file}"
                         )
                 except Exception as e:
-                    if get_verbosity_level() >= 2:
-                        get_logger().error(f"Failed to publish code suggestion, error: {e}")
+                    get_logger().error(
+                        f"Azure DevOps failed to publish code suggestion on {self.pr_num} at "
+                        f"{relevant_file}, error: {e}")
                     overall_success = False
             return overall_success
 
