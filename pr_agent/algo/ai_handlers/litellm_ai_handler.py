@@ -1926,13 +1926,6 @@ class LiteLLMAIHandler(BaseAiHandler):
             return "low"
         return reasoning_effort
 
-    @classmethod
-    def _clamp_openrouter_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
-        """Map unsupported OpenRouter Gemini disablement to the nearest level."""
-        if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort == "none":
-            return "low"
-        return reasoning_effort
-
     @staticmethod
     def _grok_reasoning_levels_for(model: str) -> set[str] | None:
         """Return the reasoning-effort levels accepted by a registered Grok model."""
@@ -2047,14 +2040,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 )
                 effective_reasoning_effort = clamped_effort
 
-        if effective_reasoning_effort == "none":
-            clamped_effort = self._clamp_openrouter_gemini_reasoning_effort(model, effective_reasoning_effort)
-            if clamped_effort != effective_reasoning_effort:
-                get_logger().info(
-                    f"Gemini model {model} does not support reasoning_effort="
-                    f"'{effective_reasoning_effort}'; using '{clamped_effort}' instead."
-                )
-                effective_reasoning_effort = clamped_effort
+        if effective_reasoning_effort == "none" and self._uses_gemini_low_reasoning_floor(model):
+            get_logger().info(f"Gemini model {model} does not support reasoning_effort='none'; using 'low' instead.")
+            effective_reasoning_effort = "low"
 
         # Preserve explicit disablement; otherwise keep effort and max_tokens
         # mutually exclusive by preferring the token budget.
@@ -2198,10 +2186,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         reasoning_effort = self._clamp_grok_reasoning_effort(
             openrouter_model, reasoning_effort
         )
-        if reasoning_effort == "none":
-            reasoning_effort = self._clamp_openrouter_gemini_reasoning_effort(
-                openrouter_model, reasoning_effort
-            )
+        if reasoning_effort == "none" and self._uses_gemini_low_reasoning_floor(openrouter_model):
+            reasoning_effort = "low"
         reasoning_tokens = self._coerce_token_value(
             self._openrouter_controls.get("reasoning_max_tokens", 0)
         )
