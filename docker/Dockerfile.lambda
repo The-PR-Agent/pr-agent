@@ -18,7 +18,7 @@ RUN dnf update -y && \
 ENV UV_COMPILE_BYTECODE=1 UV_PROJECT_ENVIRONMENT=/opt/venv
 WORKDIR ${LAMBDA_TASK_ROOT}
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --no-dev --extra lambda --python /var/lang/bin/python3.14
+RUN uv sync --frozen --no-install-project --no-dev --extra all --extra lambda --python /var/lang/bin/python3.14
 ENV PYTHONPATH="/opt/venv/lib/python3.14/site-packages:${LAMBDA_TASK_ROOT}"
 COPY pr_agent/ ${LAMBDA_TASK_ROOT}/pr_agent/
 RUN --mount=type=bind,source=docs/docs,target=/tmp/help-docs-source \
