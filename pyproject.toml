@@ -142,10 +142,10 @@ dev = [
   "ruff==0.16.8",
 ]
 
-#[tool.uv]
-## Keep this exact pin in sync with docker/Dockerfile and docker/Dockerfile.lambda
-## so local, CI, release, and container builds use the same uv version.
-#required-version = "==0.12.10"
+[tool.uv]
+# Keep this exact pin in sync with docker/Dockerfile and docker/Dockerfile.lambda
+# so local, CI, release, and container builds use the same uv version.
+required-version = "==0.12.10"
 
 [tool.ruff]
 line-length = 120
