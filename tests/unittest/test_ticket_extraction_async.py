@@ -608,6 +608,27 @@ class TestSubIssues:
         subs = result[0]["sub_issues"]
         assert [s["ticket_url"] for s in subs] == [sub_good]
 
+    def test_sub_issues_capped_at_max_limit(self, settings_snapshot):
+        # 15 sub-issues linked to main issue #1; only MAX_SUB_ISSUES_PER_TICKET (10) should be fetched
+        issues_dict = {1: _FakeIssue(1, title="Main", body="m")}
+        sub_urls = []
+        for i in range(101, 116):
+            issues_dict[i] = _FakeIssue(i, title=f"Sub {i}", body=f"body {i}")
+            sub_urls.append(f"https://github.com/org/repo/issues/{i}")
+
+        repo_obj = _FakeRepoObj(issues_dict)
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo_obj=repo_obj,
+            sub_issues_map={"https://github.com/org/repo/issues/1": sub_urls},
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert result and len(result) == 1
+        subs = result[0]["sub_issues"]
+        assert len(subs) == 10
+        expected_urls = sorted(sub_urls)[:10]
+        assert [s["ticket_url"] for s in subs] == expected_urls
+
 
 # ---------------------------------------------------------------------------
 # Scenario 6: labels — supports both object-style and string-style
@@ -830,7 +851,7 @@ class TestExtractAndCachePrTickets:
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
         assert vars_["related_tickets"] == cached
 
-    def test_stores_sub_issues_before_main_issue_in_related_tickets(
+    def test_stores_main_issue_before_sub_issues_in_related_tickets(
         self, settings_snapshot, monkeypatch
     ):
         settings_snapshot.set("pr_reviewer.require_ticket_analysis_review", True)
@@ -855,9 +876,10 @@ class TestExtractAndCachePrTickets:
         vars_ = {}
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
 
-        # Per current production order: sub-issues are appended first, then main.
+        # Main ticket is appended first, followed by its sub-issues,
+        # so prompt clipping preserving a prefix keeps the primary ticket.
         stored = vars_["related_tickets"]
-        assert stored == [sub_a, sub_b, main_ticket]
+        assert stored == [main_ticket, sub_a, sub_b]
         # Settings cache is also populated
         assert get_settings().get("related_tickets") == stored
 

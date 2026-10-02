@@ -358,6 +358,7 @@ MAX_ASANA_REQUEST_TIMEOUT = 60
 MAX_ASANA_TICKETS = 3
 MAX_GITHUB_TICKETS = 3
 MAX_GITHUB_TICKET_LOOKUPS = 30
+MAX_SUB_ISSUES_PER_TICKET = 10
 MAX_GITLAB_TICKETS = 3
 GITLAB_TICKET_PATTERN = re.compile(
     r"(?P<url>https?://[^\s<>(),;]+)"
@@ -927,8 +928,8 @@ async def extract_tickets(git_provider):
                     # Extract sub-issues
                     sub_issues_content = []
                     try:
-                        sub_issues = git_provider.fetch_sub_issues(ticket)
-                        for sub_issue_url in sub_issues:
+                        sub_issues = git_provider.fetch_sub_issues(ticket) or []
+                        for sub_issue_url in sorted(sub_issues)[:MAX_SUB_ISSUES_PER_TICKET]:
                             try:
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = _get_repo_obj_for_ticket(git_provider, sub_issue_url, sub_repo,
@@ -1087,13 +1088,12 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
         tickets_content = await extract_tickets(git_provider)
 
         if tickets_content:
-            # Store sub-issues along with main issues
+            # Store main tickets along with their sub-issues (main ticket first so prompt clipping preserves the parent)
             for ticket in tickets_content:
+                related_tickets.append(ticket)
                 if "sub_issues" in ticket and ticket["sub_issues"]:
                     for sub_issue in ticket["sub_issues"]:
                         related_tickets.append(sub_issue)  # Add sub-issues content
-
-                related_tickets.append(ticket)
 
             get_logger().info("Extracted tickets and sub-issues from PR description",
                               artifact={"tickets": related_tickets})
