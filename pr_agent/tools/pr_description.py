@@ -16,6 +16,7 @@ from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     FallbackEligibleError,
+    append_filtered_file_names,
     get_pr_diff,
     get_pr_diff_multiple_patchs,
     retry_with_fallback_models,
@@ -522,6 +523,20 @@ class PRDescription:
                 files_walkthrough_prompt += _build_unprocessed_files_block(
                     deleted_files_list, "Additional deleted files:",
                     max_files=MAX_EXTRA_FILES_TO_PROMPT)
+            filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+            if isinstance(filtered_files, (list, tuple)) and filtered_files:
+                header_budget = AttemptTokenBudget.for_attempt(
+                    model, token_handler_only_description_prompt,
+                    output_token_reserve=output_token_reserve,
+                )
+                files_walkthrough_prompt = append_filtered_file_names(
+                    files_walkthrough_prompt,
+                    self.git_provider,
+                    header_budget.token_handler,
+                    header_budget.token_handler.prompt_tokens + header_budget.available_tokens(
+                        OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
+                    ),
+                )
             # PR header inference
             get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,

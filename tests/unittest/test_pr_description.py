@@ -667,6 +667,9 @@ class TestPRDescriptionLargePR:
     async def test_prepare_prediction_large_pr_multi_patch_flow(self, monkeypatch, async_calls):
         """Force _prepare_prediction() into the large-PR branch and verify chunk + header flow."""
         obj = _make_large_pr_instance()
+        obj.git_provider.get_filtered_diff_file_names.return_value = ["pnpm-lock.yaml"]
+        obj.token_handler.prompt_tokens = 0
+        obj.token_handler.count_tokens.side_effect = lambda value: len(value.split())
         monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", async_calls)
 
         recorded_prompts = []
@@ -741,6 +744,9 @@ description: |
         assert prompts_called.count("pr_description_only_files_prompts") == 2
         # Final pass used description prompt
         assert prompts_called.count("pr_description_only_description_prompts") == 1
+        header_prompt = next(content for prompt, content in recorded_prompts
+                             if prompt == "pr_description_only_description_prompts")
+        assert "pnpm-lock.yaml" in header_prompt
         # Negative assertion: standard single-prompt path was NOT called
         assert "pr_description_prompt" not in prompts_called
 

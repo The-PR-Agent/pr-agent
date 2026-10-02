@@ -87,6 +87,20 @@ def _append_metadata_section(
     return final_diff, curr_token, ""
 
 
+def append_filtered_file_names(diff: str, git_provider: GitProvider,
+                               token_handler: TokenHandler, max_tokens: int) -> str:
+    """Include filtered file names in a prompt without exceeding its input budget."""
+    filtered_files = getattr(git_provider, "get_filtered_diff_file_names", lambda: [])()
+    if not isinstance(filtered_files, (list, tuple)) or not filtered_files:
+        return diff
+    section = FILTERED_FILES_ + "\n" + "\n".join(filtered_files)
+    result, _, _ = _append_metadata_section(
+        diff, token_handler.prompt_tokens + token_handler.count_tokens(diff),
+        section, max_tokens, token_handler,
+    )
+    return result
+
+
 def _find_verified_fitting_prefix_length(items, max_length: int, fits: Callable[[list], bool]) -> int:
     """Find a fitting ordered prefix with logarithmic exact-count probes.
 
@@ -331,6 +345,15 @@ def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenH
             add_line_numbers_to_hunks,
             large_pr_handling=True,
         )
+
+    max_tokens = token_handler.prompt_tokens + hard_token_budget
+    for index, patches in enumerate(patches_compressed_list):
+        if patches:
+            rendered = "\n".join(patches)
+            extended = append_filtered_file_names(rendered, git_provider, token_handler, max_tokens)
+            if extended != rendered:
+                patches.append(extended[len(rendered) + 1:])
+                total_tokens_list[index] = token_handler.prompt_tokens + token_handler.count_tokens(extended)
 
     return (
         patches_compressed_list, total_tokens_list, deleted_files_list,
@@ -842,14 +865,30 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD, preserve_minimum=True, clamp=False
     )
 
+    def include_filtered_files(result):
+        filtered_files = getattr(git_provider, "get_filtered_diff_file_names", lambda: [])()
+        if not isinstance(filtered_files, (list, tuple)) or not filtered_files:
+            return result
+        if return_remaining_files:
+            chunks, remaining = result
+        else:
+            chunks, remaining = result, None
+        hard_token_budget = budget.available_tokens(
+            OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False
+        )
+        max_tokens = token_handler.prompt_tokens + hard_token_budget
+        chunks = [append_filtered_file_names(chunk, git_provider, token_handler, max_tokens)
+                  for chunk in chunks]
+        return (chunks, remaining) if return_remaining_files else chunks
+
     if can_reuse_prepared:
-        return _get_pr_multi_diffs_from_prepared(
+        return include_filtered_files(_get_pr_multi_diffs_from_prepared(
             prepared_diff,
             token_handler,
             max_calls,
             return_remaining_files,
             soft_token_budget,
-        )
+        ))
 
     diff_files = git_provider.get_diff_files()
 
@@ -872,7 +911,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     # if we are under the limit, return the full diff
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:
         full_diff_list = ["\n".join(patches_extended)] if patches_extended else []
-        return (full_diff_list, []) if return_remaining_files else full_diff_list
+        result = (full_diff_list, []) if return_remaining_files else full_diff_list
+        return include_filtered_files(result)
 
     # Sort files within each language group by tokens in descending order
     sorted_files = []
@@ -913,13 +953,13 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             'edit_type': file.edit_type,
         }
 
-    return _pack_pr_multi_diffs(
+    return include_filtered_files(_pack_pr_multi_diffs(
         file_dict,
         token_handler,
         max_calls,
         return_remaining_files,
         soft_token_budget,
-    )
+    ))
 
 
 def add_ai_metadata_to_diff_files(git_provider, pr_description_files):

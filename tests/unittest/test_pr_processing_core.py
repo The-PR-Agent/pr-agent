@@ -40,6 +40,56 @@ class FakeProvider:
         return self.filtered_names
 
 
+@pytest.mark.parametrize("path", ["fresh", "prepared"])
+def test_multi_diff_chunks_name_filtered_files(monkeypatch, path):
+    handler = FakeTokenHandler()
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
+    file_dict = {
+        name: {"patch": f"## File: {name}\n" + "change " * 80,
+               "tokens": 83, "edit_type": EDIT_TYPE.MODIFIED}
+        for name in ("first.py", "second.py")
+    }
+    if path == "prepared":
+        prepared = pr_processing.PreparedPRDiff(
+            "", [], file_dict=file_dict, files_by_name={}, model="model",
+            add_line_numbers_to_hunks=True, token_handler=handler,
+        )
+        chunks = pr_processing.get_pr_multi_diffs(provider, handler, "model", prepared_diff=prepared)
+    else:
+        monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+        monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: ([], 10_000, []))
+        monkeypatch.setattr(pr_processing, "handle_patch_deletions", lambda patch, *args: patch)
+        monkeypatch.setattr(
+            pr_processing, "decouple_and_convert_to_hunks_with_lines_numbers", lambda patch, file: patch,
+        )
+        provider.files = [
+            FilePatchInfo("old", "new", file_dict[name]["patch"], name, edit_type=EDIT_TYPE.MODIFIED)
+            for name in file_dict
+        ]
+        chunks = pr_processing.get_pr_multi_diffs(provider, handler, "model")
+
+    assert len(chunks) == 2
+    assert all("pnpm-lock.yaml" in chunk for chunk in chunks)
+    assert all(handler.prompt_tokens + handler.count_tokens(chunk) <= 700 for chunk in chunks)
+
+
+def test_description_chunks_name_filtered_files(monkeypatch):
+    handler = FakeTokenHandler()
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_compressed_diff",
+        lambda *args, **kwargs: ([['## File: first.py\nchange'], ['## File: second.py\nchange']],
+                                 [4, 4], [], [], {}, [["first.py"], ["second.py"]]),
+    )
+
+    chunks, *_ = pr_processing.get_pr_diff_multiple_patchs(provider, handler, "model")
+
+    assert all("pnpm-lock.yaml" in "\n".join(chunk) for chunk in chunks)
+
+
 @pytest.mark.parametrize("compressed", [False, True])
 def test_get_pr_diff_names_filtered_lockfiles_without_their_contents(monkeypatch, compressed):
     handler = CharacterTokenHandler(prompt_tokens=0)
