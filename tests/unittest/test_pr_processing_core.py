@@ -128,6 +128,19 @@ def test_filtered_file_section_keeps_lockfile_after_fifty_assets():
     assert "... and 6 more" in section
 
 
+def test_filtered_file_names_never_append_a_partial_path():
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=["short.map", "3rdparty/longer-name.min.js"])
+    base = "source patch"
+    budget = len(base + "\n\n" + pr_processing._filtered_file_section(["short.map"])) + 5
+
+    result = pr_processing.append_filtered_file_names(base, provider, handler, budget)
+
+    assert result.endswith(pr_processing._filtered_file_section(["short.map"]))
+    assert "3rdparty" not in result
+    assert handler.count_tokens(result) <= budget
+
+
 def test_all_filtered_files_do_not_create_a_review_diff(monkeypatch):
     handler = CharacterTokenHandler(prompt_tokens=0)
     provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])

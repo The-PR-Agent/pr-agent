@@ -63,8 +63,9 @@ def _append_metadata_section(
     section: str,
     max_tokens: int,
     token_handler: TokenHandler,
+    whole_lines: bool = False,
 ) -> tuple[str, int, str]:
-    """Append one clipped metadata section when its rendered form fits the input budget."""
+    """Append metadata within the input budget, optionally keeping every line complete."""
     if not section:
         return final_diff, curr_token, section
 
@@ -75,15 +76,23 @@ def _append_metadata_section(
     if section_budget <= 0:
         return final_diff, curr_token, ""
 
-    section_tokens = token_handler.count_tokens(section)
-    clipped_section = clip_tokens(section, section_budget, num_input_tokens=section_tokens)
-    if not clipped_section:
-        return final_diff, curr_token, ""
-
-    candidate = final_diff + separator + clipped_section
-    candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(token_handler, candidate)
-    if candidate_tokens <= max_tokens:
-        return candidate, candidate_tokens, clipped_section
+    if whole_lines:
+        lines = section.splitlines()
+        # A heading without a filename conveys no useful filtered-file information.
+        for count in range(len(lines), 2, -1):
+            clipped_section = "\n".join(lines[:count])
+            candidate = final_diff + separator + clipped_section
+            candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(token_handler, candidate)
+            if candidate_tokens <= max_tokens:
+                return candidate, candidate_tokens, clipped_section
+    else:
+        section_tokens = token_handler.count_tokens(section)
+        clipped_section = clip_tokens(section, section_budget, num_input_tokens=section_tokens)
+        if clipped_section:
+            candidate = final_diff + separator + clipped_section
+            candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(token_handler, candidate)
+            if candidate_tokens <= max_tokens:
+                return candidate, candidate_tokens, clipped_section
 
     return final_diff, curr_token, ""
 
@@ -97,7 +106,7 @@ def append_filtered_file_names(diff: str, git_provider: GitProvider,
     section = _filtered_file_section(filtered_files)
     result, _, _ = _append_metadata_section(
         diff, token_handler.prompt_tokens + token_handler.count_tokens(diff),
-        section, max_tokens, token_handler,
+        section, max_tokens, token_handler, whole_lines=True,
     )
     return result
 
@@ -235,9 +244,9 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 _filtered_file_section(filtered_files),
                 token_handler.prompt_tokens + hard_token_budget,
                 token_handler,
+                whole_lines=True,
             )
-            # A token counter may count joined patches differently from their individual
-            # counts. Repack when the full diff leaves no room for even the first filename.
+            # Repack if joined patch token counts leave no room for the first filename.
             first_name = _prioritized_filtered_files(filtered_files)[0]
             if first_name not in included_section.splitlines():
                 full_diff_is_usable = False
@@ -320,7 +329,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         final_diff, curr_token, deleted_list_str, max_tokens, token_handler
     )
     final_diff, curr_token, filtered_list_str = _append_metadata_section(
-        final_diff, curr_token, _filtered_file_section(filtered_files), max_tokens, token_handler
+        final_diff, curr_token, _filtered_file_section(filtered_files), max_tokens, token_handler, whole_lines=True
     )
 
     get_logger().debug(f"After pruning, added_list_str: {added_list_str}, modified_list_str: {modified_list_str}, "
