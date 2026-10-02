@@ -13,7 +13,7 @@ from pr_agent.algo.git_patch_processing import (
     extend_patch,
     handle_patch_deletions,
 )
-from pr_agent.algo.language_handler import sort_files_by_main_languages
+from pr_agent.algo.language_handler import AUTO_GENERATED_FILES_EXACT, sort_files_by_main_languages
 from pr_agent.algo.model_routing import route_primary_model
 from pr_agent.algo.run_details import record_model_used
 from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError, clip_tokens
@@ -102,10 +102,18 @@ def append_filtered_file_names(diff: str, git_provider: GitProvider,
     return result
 
 
+def _prioritized_filtered_files(filtered_files: list | tuple) -> list[str]:
+    return sorted(
+        filtered_files,
+        key=lambda name: name.replace('\\', '/').rsplit('/', 1)[-1] not in AUTO_GENERATED_FILES_EXACT,
+    )
+
+
 def _filtered_file_section(filtered_files: list | tuple) -> str:
     if not filtered_files:
         return ""
-    section = FILTERED_FILES_ + "\n" + "\n".join(filtered_files[:MAX_FILTERED_FILES_TO_PROMPT])
+    ordered = _prioritized_filtered_files(filtered_files)
+    section = FILTERED_FILES_ + "\n" + "\n".join(ordered[:MAX_FILTERED_FILES_TO_PROMPT])
     if len(filtered_files) > MAX_FILTERED_FILES_TO_PROMPT:
         section += f"\n... and {len(filtered_files) - MAX_FILTERED_FILES_TO_PROMPT} more"
     return section
@@ -208,23 +216,40 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
 
     # if we are under the limit, return the full diff
+    if not patches_extended:
+        if return_prepared:
+            return PreparedPRDiff("", [], model=model,
+                                  add_line_numbers_to_hunks=add_line_numbers_to_hunks,
+                                  token_handler=token_handler, attempt_budget=budget)
+        return ""
+
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:
         get_logger().info(f"Tokens: {total_tokens}, total tokens under limit: {budget.context_window}, "
                           f"returning full diff.")
         full_diff = "\n".join(patches_extended)
+        full_diff_is_usable = True
         if filtered_files:
-            full_diff, _, _ = _append_metadata_section(
+            full_diff_with_metadata, _, included_section = _append_metadata_section(
                 full_diff,
                 token_handler.prompt_tokens + token_handler.count_tokens(full_diff),
                 _filtered_file_section(filtered_files),
                 token_handler.prompt_tokens + hard_token_budget,
                 token_handler,
             )
-        if return_prepared:
-            return PreparedPRDiff(full_diff, [], model=model,
-                                  add_line_numbers_to_hunks=add_line_numbers_to_hunks,
-                                  token_handler=token_handler, attempt_budget=budget)
-        return full_diff
+            # A token counter may count joined patches differently from their individual
+            # counts. Repack when the full diff leaves no room for even the first filename.
+            first_name = _prioritized_filtered_files(filtered_files)[0]
+            if first_name not in included_section.splitlines():
+                full_diff_is_usable = False
+                get_logger().info("Full diff left no room for filtered filenames; repacking")
+            else:
+                full_diff = full_diff_with_metadata
+        if full_diff_is_usable:
+            if return_prepared:
+                return PreparedPRDiff(full_diff, [], model=model,
+                                      add_line_numbers_to_hunks=add_line_numbers_to_hunks,
+                                      token_handler=token_handler, attempt_budget=budget)
+            return full_diff
 
     # if we are over the limit, start pruning (If we got here, we will not extend the patches with extra lines)
     get_logger().info(f"Tokens: {total_tokens}, total tokens over limit: {budget.context_window}, "

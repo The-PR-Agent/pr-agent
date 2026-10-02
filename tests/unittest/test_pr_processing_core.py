@@ -118,12 +118,51 @@ def test_filtered_file_section_caps_number_of_names():
     assert "... and 5 more" in section
 
 
+def test_filtered_file_section_keeps_lockfile_after_fifty_assets():
+    names = [f"asset_{index}.map" for index in range(55)] + ["subdir/pnpm-lock.yaml"]
+
+    section = pr_processing._filtered_file_section(names)
+
+    assert "subdir/pnpm-lock.yaml" in section
+    assert section.index("subdir/pnpm-lock.yaml") < section.index("asset_0.map")
+    assert "... and 6 more" in section
+
+
+def test_all_filtered_files_do_not_create_a_review_diff(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+
+    assert pr_processing.get_pr_diff(provider, handler, "model") == ""
+    assert pr_processing.get_pr_diff(provider, handler, "model", return_prepared=True).diff == ""
+
+
+def test_full_diff_repackages_when_exact_count_leaves_no_room_for_lockfile(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: (["x" * 690], 150, []),
+    )
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_compressed_diff",
+        lambda *args, **kwargs: ([['manifest patch']], [14], [], [], {}, [[]]),
+    )
+
+    diff = pr_processing.get_pr_diff(provider, handler, "model")
+
+    assert "manifest patch" in diff
+    assert "pnpm-lock.yaml" in diff
+    assert "x" * 690 not in diff
+
+
 def test_compressed_diff_prioritizes_unprocessed_source_over_filtered_assets(monkeypatch):
     handler = CharacterTokenHandler(prompt_tokens=0)
     provider = FakeProvider([], filtered_names=[f"asset_{index}.map" for index in range(100)])
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: ([], 10_000, []))
+    monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: (["large"], 10_000, []))
     monkeypatch.setattr(
         pr_processing, "pr_generate_compressed_diff",
         lambda *args, **kwargs: (

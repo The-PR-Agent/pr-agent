@@ -4,6 +4,12 @@ from typing import Dict
 
 from pr_agent.config_loader import get_settings
 
+AUTO_GENERATED_FILES_EXACT = frozenset({
+    'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock', 'Gemfile.lock',
+    'poetry.lock', 'go.sum', '.terraform.lock.hcl', 'uv.lock',
+    'Cargo.lock', 'Pipfile.lock', 'mix.lock', 'pubspec.lock', 'bun.lockb',
+})
+
 
 def filter_bad_extensions(files):
     # Bad Extensions, source: https://github.com/EleutherAI/github-downloader/blob/345e7c4cbb9e0dc8a0615fd995a08bf9d73b3fe6/download_repo_text.py  # noqa: E501
@@ -21,13 +27,8 @@ def is_valid_file(filename:str, bad_extensions=None) -> bool:
         if get_settings().config.use_extra_bad_extensions:
             bad_extensions += get_settings().bad_extensions.extra
 
-    auto_generated_files_exact = {
-        'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'composer.lock', 'Gemfile.lock',
-        'poetry.lock', 'go.sum', '.terraform.lock.hcl', 'uv.lock',
-        'Cargo.lock', 'Pipfile.lock', 'mix.lock', 'pubspec.lock', 'bun.lockb',
-    }
     auto_generated_suffixes = ('.min.js', '.min.css', '.js.map', '.ts.map', '.css.map')
-    if filename.replace('\\', '/').split('/')[-1] in auto_generated_files_exact:
+    if filename.replace('\\', '/').split('/')[-1] in AUTO_GENERATED_FILES_EXACT:
         return False
     if filename.endswith(auto_generated_suffixes):
         return False

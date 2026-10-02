@@ -1431,6 +1431,9 @@ class TestGiteaRepoIgnoreRules:
         repo's [ignore] rules into the request settings and confirm
         get_diff_files() drops the matching files."""
         provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+        provider.git_files = provider.git_files + [
+            {"filename": "pnpm-lock.yaml", "additions": 1, "deletions": 1, "status": "modified"},
+        ]
 
         with request_cycle_context({}):
             context["settings"] = copy.deepcopy(global_settings)
@@ -1439,6 +1442,7 @@ class TestGiteaRepoIgnoreRules:
 
             diff_files = provider.get_diff_files()
             names = [f.filename for f in diff_files]
+            assert provider.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
 
             assert "src/application.py" in names
             assert "generated/client.py" not in names, \

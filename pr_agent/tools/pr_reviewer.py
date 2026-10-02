@@ -32,6 +32,7 @@ from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
     PreparedPRDiff,
     add_ai_metadata_to_diff_files,
+    append_filtered_file_names,
     get_pr_diff,
     get_pr_multi_diffs,
     retry_with_fallback_models,
@@ -879,6 +880,7 @@ class PRReviewer:
                 "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
                 "add_line_numbers": True,
                 "return_remaining_files": True,
+                "include_filtered_file_names": False,
             }
             output_token_reserve = getattr(
                 getattr(self, "ai_handler", None), "get_output_token_reserve", None
@@ -903,8 +905,19 @@ class PRReviewer:
         get_logger().debug("PR diff chunks", artifact=patches_diff_list)
         chunk_results = getattr(self, "_chunked_results", {})
         pending_indices = [index for index in range(len(patches_diff_list)) if index not in chunk_results]
+        filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+        if isinstance(filtered_files, (list, tuple)) and filtered_files:
+            attempt_budget = self._review_attempt_budget(model)
+            max_tokens = attempt_budget.token_handler.prompt_tokens + attempt_budget.available_tokens(
+                OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
+            )
+            prompts = [append_filtered_file_names(
+                patches_diff_list[index], self.git_provider, attempt_budget.token_handler, max_tokens,
+            ) for index in pending_indices]
+        else:
+            prompts = [patches_diff_list[index] for index in pending_indices]
         predictions = await asyncio.gather(
-            *[self._get_prediction(model, patches_diff_list[index]) for index in pending_indices],
+            *[self._get_prediction(model, prompt) for prompt in prompts],
             return_exceptions=True)
 
         chunk_errors = []

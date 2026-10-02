@@ -795,6 +795,35 @@ description: |
         assert obj.description_failed_files == ["src/file2.py"]
 
     @pytest.mark.asyncio
+    async def test_large_pr_discards_filtered_and_duplicate_file_summaries(self, monkeypatch):
+        obj = _make_large_pr_instance()
+        obj.git_provider.get_filtered_diff_file_names.return_value = ["pnpm-lock.yaml"]
+        obj.token_handler.prompt_tokens = 0
+        obj.token_handler.count_tokens.side_effect = lambda value: len(value.split())
+        monkeypatch.setattr(get_settings().pr_description, "async_ai_calls", False)
+
+        async def predict(model, patches_diff, prompt="pr_description_prompt"):
+            if prompt == "pr_description_only_description_prompts":
+                assert "pnpm-lock.yaml" in patches_diff
+                return _header_prediction()
+            filename = "src/file1.py" if "file1" in patches_diff else "src/file2.py"
+            return "pr_files:\n" + "\n".join(
+                _file_prediction(name).removeprefix("pr_files:\n")
+                for name in (filename, "pnpm-lock.yaml")
+            )
+
+        obj._get_prediction = AsyncMock(side_effect=predict)
+        with patch("pr_agent.tools.pr_description.get_pr_diff", return_value=""), patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs", return_value=_large_pr_chunks(),
+        ):
+            await obj._prepare_prediction("gpt-4o")
+
+        parsed = load_yaml(obj.prediction, keys_fix_yaml=obj.keys_fix)
+        assert [row["filename"].strip() for row in parsed["pr_files"]] == [
+            "src/file1.py", "src/file2.py",
+        ]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("malformed_prediction", [
         "pr_files: []",
         "pr_files:\n- not-a-file-record",

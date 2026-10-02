@@ -170,9 +170,11 @@ class CodeCommitProvider(GitProvider):
         if len(self._get_target_contexts()) == 1:
             files = filter_ignored(files, platform="codecommit")
 
+        invalid_files_names = []
         for diff_item in files:
             # Skip "bad extensions" from language_extensions.toml, lockfiles and minified assets
             if not is_valid_file(diff_item.filename):
+                invalid_files_names.append(diff_item.filename)
                 continue
 
             patch_filename = ""
@@ -217,6 +219,7 @@ class CodeCommitProvider(GitProvider):
             )
             diff_files.append(info)
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return self.diff_files
 

@@ -634,6 +634,7 @@ class GiteaProvider(GitProvider):
         if invalid_files_names:
             self.logger.info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 

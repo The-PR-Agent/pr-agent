@@ -411,6 +411,7 @@ class BitbucketProvider(GitProvider):
         if invalid_files_names:
             get_logger().info(f"Disregarding files with invalid extensions:\n{invalid_files_names}")
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 

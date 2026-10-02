@@ -449,6 +449,7 @@ class PRDescription:
             file_description_str_list = []
             chunk_errors = []
             failed_files = []
+            described_files = set()
             for i, (result, (_patches, files_in_patch)) in enumerate(zip(results, chunk_pairs, strict=True)):
                 if isinstance(result, Exception):
                     chunk_errors.append(result)
@@ -472,6 +473,25 @@ class PRDescription:
                 prediction_files_data = load_yaml(prediction_files, keys_fix_yaml=self.keys_fix)
                 file_descriptions = (prediction_files_data.get('pr_files')
                                      if isinstance(prediction_files_data, dict) else None)
+                if isinstance(file_descriptions, list):
+                    allowed_files = set(files_in_patch)
+                    filtered_descriptions = []
+                    for file_description in file_descriptions:
+                        if not isinstance(file_description, dict):
+                            filtered_descriptions.append(file_description)
+                            continue
+                        filename = file_description.get('filename')
+                        if not isinstance(filename, str):
+                            filtered_descriptions.append(file_description)
+                            continue
+                        filename = filename.strip()
+                        if filename in allowed_files and filename not in described_files:
+                            filtered_descriptions.append(file_description)
+                    if len(filtered_descriptions) != len(file_descriptions):
+                        file_descriptions = filtered_descriptions
+                        prediction_files = yaml.safe_dump(
+                            {'pr_files': file_descriptions}, sort_keys=False, allow_unicode=True,
+                        ).strip()
                 required_fields = ['filename', 'changes_title', 'label']
                 if self.vars.get('include_file_summary_changes', True):
                     required_fields.append('changes_summary')
@@ -486,6 +506,10 @@ class PRDescription:
                         valid_file_descriptions):
                     prediction_files = prediction_files.removeprefix('pr_files:').strip()
                     file_description_str_list.append(prediction_files)
+                    described_files.update(
+                        file_description['filename'].strip() for file_description in file_descriptions
+                        if isinstance(file_description, dict) and isinstance(file_description.get('filename'), str)
+                    )
                 else:
                     chunk_errors.append(FallbackEligibleError(f"Description chunk {i + 1} returned invalid YAML"))
                     failed_files.extend(files_in_patch)

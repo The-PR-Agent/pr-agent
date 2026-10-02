@@ -654,6 +654,16 @@ index 1111111..2222222 100644
         provider.pr.diff.assert_called_once_with()
         provider._get_pr_file_content.assert_not_called()
 
+    def test_get_diff_files_retains_filtered_lockfile_name(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        diffstats[0].new.path = "pnpm-lock.yaml"
+        diffstats[0].old.path = "pnpm-lock.yaml"
+        with patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats):
+            files = provider.get_diff_files()
+
+        assert [file.filename for file in files] == ["src/second.py"]
+        assert provider.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
+
     def test_get_repo_file_content_reads_from_target_branch(self):
         # Repo-context files must be read from the PR destination (target) branch,
         # matching the other providers.
