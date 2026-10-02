@@ -928,8 +928,12 @@ async def extract_tickets(git_provider):
                     # Extract sub-issues
                     sub_issues_content = []
                     try:
-                        sub_issues = git_provider.fetch_sub_issues(ticket) or []
-                        for sub_issue_url in sorted(sub_issues)[:MAX_SUB_ISSUES_PER_TICKET]:
+                        raw_sub_issues = git_provider.fetch_sub_issues(ticket) or []
+                        valid_sub_issues = [
+                            url for url in raw_sub_issues
+                            if isinstance(url, str) and url.strip()
+                        ]
+                        for sub_issue_url in sorted(valid_sub_issues)[:MAX_SUB_ISSUES_PER_TICKET]:
                             try:
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = _get_repo_obj_for_ticket(git_provider, sub_issue_url, sub_repo,

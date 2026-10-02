@@ -629,6 +629,26 @@ class TestSubIssues:
         expected_urls = sorted(sub_urls)[:10]
         assert [s["ticket_url"] for s in subs] == expected_urls
 
+    def test_malformed_sub_issue_entries_skipped_safely(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({
+            1: _FakeIssue(1, title="Main", body="m"),
+            101: _FakeIssue(101, title="Sub 101", body="b1"),
+            102: _FakeIssue(102, title="Sub 102", body="b2"),
+        })
+        sub_valid_1 = "https://github.com/org/repo/issues/101"
+        sub_valid_2 = "https://github.com/org/repo/issues/102"
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo_obj=repo_obj,
+            sub_issues_map={
+                "https://github.com/org/repo/issues/1": [None, sub_valid_2, 12345, sub_valid_1, ""]
+            },
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert result and len(result) == 1
+        subs = result[0]["sub_issues"]
+        assert [s["ticket_url"] for s in subs] == [sub_valid_1, sub_valid_2]
+
 
 # ---------------------------------------------------------------------------
 # Scenario 6: labels — supports both object-style and string-style
