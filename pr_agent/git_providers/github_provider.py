@@ -387,6 +387,7 @@ class GithubProvider(GitProvider):
             try:
                 diff_files = context.get("diff_files", None)
                 if diff_files:
+                    self.filtered_diff_file_names = context.get("filtered_diff_file_names", [])
                     return diff_files
             except ContextDoesNotExistError:
                 # Skip the per-request cache outside a request cycle; fall through and compute the files.
@@ -504,9 +505,11 @@ class GithubProvider(GitProvider):
             if invalid_files_names:
                 get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
+            self.filtered_diff_file_names = invalid_files_names
             self.diff_files = diff_files
             try:
                 context["diff_files"] = diff_files
+                context["filtered_diff_file_names"] = invalid_files_names
             except ContextDoesNotExistError:
                 # Skip caching outside a request cycle; the value is already on self.
                 pass

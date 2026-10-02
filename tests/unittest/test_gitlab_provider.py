@@ -113,6 +113,34 @@ class TestGitLabProvider:
             mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
 
+    def test_filtered_lockfile_name_is_available_without_ignored_paths(self, gitlab_provider):
+        def change(name):
+            return {
+                "old_path": name,
+                "new_path": name,
+                "diff": "@@ -1 +1 @@\n-old\n+new",
+                "new_file": False,
+                "deleted_file": False,
+                "renamed_file": False,
+            }
+
+        gitlab_provider._get_merge_request_changes = MagicMock(return_value={
+            "changes": [change("package.json"), change("pnpm-lock.yaml"), change("ignored.lock")],
+            "diff_refs": {"base_sha": "base", "head_sha": "head"},
+        })
+        mod = "pr_agent.git_providers.gitlab_provider"
+        with patch.object(
+            gitlab_provider, "_expand_submodule_changes", side_effect=lambda changes, refs: changes
+        ), patch(
+            f"{mod}.filter_ignored", side_effect=lambda changes, provider: changes[:2]
+        ), patch(f"{mod}.is_valid_file", side_effect=lambda name: name != "pnpm-lock.yaml"), patch.object(
+            gitlab_provider, "get_pr_file_content", return_value="content"
+        ):
+            diffs = gitlab_provider.get_diff_files()
+
+        assert [file.filename for file in diffs] == ["package.json"]
+        assert gitlab_provider.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
+
     def test_get_pr_file_content_success(self, gitlab_provider, mock_project):
         mock_file = MagicMock(ProjectFile)
         mock_file.decode.return_value = "# Changelog\n\n## v1.0.0\n- Initial release"

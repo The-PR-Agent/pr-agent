@@ -300,6 +300,23 @@ class TestGetDiffFilesEditTypes:
         # No fake _get_pr_file_content needed because it should not be called.
         assert p.get_diff_files() is sentinel
 
+    def test_filtered_lockfile_name_is_available_without_ignored_paths(self):
+        files = [
+            _make_file("package.json", "modified"),
+            _make_file("pnpm-lock.yaml", "modified"),
+            _make_file("ignored.lock", "modified"),
+        ]
+        p = _make_provider_for_diff(files)
+        p._get_pr_file_content = lambda file, sha, path=None: "content"
+        mod = "pr_agent.git_providers.github_provider"
+        with patch(f"{mod}.filter_ignored", side_effect=lambda entries: entries[:2]), patch(
+            f"{mod}.is_valid_file", side_effect=lambda name: name != "pnpm-lock.yaml"
+        ):
+            diffs = p.get_diff_files()
+
+        assert [file.filename for file in diffs] == ["package.json"]
+        assert p.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
+
     def test_additions_deletions_propagated(self, patched_helpers):
         f = _make_file("x.py", "modified", additions=5, deletions=2)
         p = _make_provider_for_diff([f])

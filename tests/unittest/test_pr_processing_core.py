@@ -22,8 +22,9 @@ class FakeTokenHandler:
 
 
 class FakeProvider:
-    def __init__(self, files):
+    def __init__(self, files, filtered_names=()):
         self.files = files
+        self.filtered_names = filtered_names
         self.diff_calls = 0
         self.language_calls = 0
 
@@ -34,6 +35,34 @@ class FakeProvider:
     def get_languages(self):
         self.language_calls += 1
         return {"Python": 100}
+
+    def get_filtered_diff_file_names(self):
+        return self.filtered_names
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_get_pr_diff_names_filtered_lockfiles_without_their_contents(monkeypatch, compressed):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(
+        pr_processing,
+        "pr_generate_extended_diff",
+        lambda *args, **kwargs: (["package.json patch"], 10_000 if compressed else 18, []),
+    )
+    if compressed:
+        monkeypatch.setattr(
+            pr_processing,
+            "pr_generate_compressed_diff",
+            lambda *args, **kwargs: ([['package.json patch']], [18], [], [], {}, [[]]),
+        )
+
+    diff = pr_processing.get_pr_diff(provider, handler, "model")
+
+    assert "package.json patch" in diff
+    assert "Files changed but omitted from the diff" in diff
+    assert "pnpm-lock.yaml" in diff
 
 
 class CharacterTokenHandler(FakeTokenHandler):

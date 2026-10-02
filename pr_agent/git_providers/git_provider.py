@@ -542,6 +542,10 @@ class GitProvider(ABC):
     def get_diff_files(self) -> list[FilePatchInfo]:
         pass
 
+    def get_filtered_diff_file_names(self) -> list[str]:
+        """Return changed paths omitted from the diff by file-type filtering."""
+        return getattr(self, "filtered_diff_file_names", [])
+
     def get_incremental_commits(self, is_incremental) -> None:
         return None
 

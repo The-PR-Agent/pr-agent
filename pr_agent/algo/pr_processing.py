@@ -30,6 +30,8 @@ MORE_MODIFIED_FILES_ = "Additional modified files (insufficient token budget to 
 
 ADDED_FILES_ = "Additional added files (insufficient token budget to process):\n"
 
+FILTERED_FILES_ = "Files changed but omitted from the diff by file-type filtering:\n"
+
 OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD = 1500
 OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD = 1000
 MAX_EXTRA_LINES = 10
@@ -164,6 +166,9 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
     diff_files = git_provider.get_diff_files()
+    filtered_files = getattr(git_provider, "get_filtered_diff_file_names", lambda: [])()
+    if not isinstance(filtered_files, (list, tuple)):
+        filtered_files = []
 
     # get pr languages
     pr_languages = sort_files_by_main_languages(git_provider.get_languages(), diff_files)
@@ -183,6 +188,14 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
         get_logger().info(f"Tokens: {total_tokens}, total tokens under limit: {budget.context_window}, "
                           f"returning full diff.")
         full_diff = "\n".join(patches_extended)
+        if filtered_files:
+            full_diff, _, _ = _append_metadata_section(
+                full_diff,
+                token_handler.prompt_tokens + token_handler.count_tokens(full_diff),
+                FILTERED_FILES_ + "\n" + "\n".join(filtered_files),
+                token_handler.prompt_tokens + hard_token_budget,
+                token_handler,
+            )
         if return_prepared:
             return PreparedPRDiff(full_diff, [], model=model,
                                   add_line_numbers_to_hunks=add_line_numbers_to_hunks,
@@ -248,6 +261,10 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                     deleted_list_str = deleted_list_str + f"\n{filename}"
 
     # prune the added, modified, and deleted files lists, and add them to the final diff
+    filtered_list_str = FILTERED_FILES_ + "\n" + "\n".join(filtered_files) if filtered_files else ""
+    final_diff, curr_token, filtered_list_str = _append_metadata_section(
+        final_diff, curr_token, filtered_list_str, max_tokens, token_handler
+    )
     final_diff, curr_token, added_list_str = _append_metadata_section(
         final_diff, curr_token, added_list_str, max_tokens, token_handler
     )
