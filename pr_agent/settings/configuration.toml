@@ -217,6 +217,8 @@ collapsible_file_list_threshold=6
 file_table_collapsible_open_by_default=false
 # markers
 use_description_markers=false
+# wrap each generated marker section in <!-- pr_agent:<name>:start/end --> comments so later runs regenerate it
+refresh_description_markers=false
 enable_large_pr_handling=true
 include_generated_by_header=true
 #custom_labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']

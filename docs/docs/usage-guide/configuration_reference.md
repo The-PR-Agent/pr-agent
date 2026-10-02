@@ -221,6 +221,7 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `use_description_markers` | false |  |
+| `refresh_description_markers` | false | wrap each generated marker section in <!-- pr_agent:<name>:start/end --> comments so later runs regenerate it |
 | `enable_large_pr_handling` | true |  |
 | `include_generated_by_header` | true |  |
 | `max_ai_calls` | 4 |  |
