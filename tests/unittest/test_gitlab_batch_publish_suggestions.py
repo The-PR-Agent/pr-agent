@@ -5,7 +5,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from gitlab import GitlabCreateError
 from requests.exceptions import RequestException
+from starlette_context import request_cycle_context
 
+import pr_agent.git_providers as providers
 from pr_agent.algo import inline_comment_dedup as dedup
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -301,22 +303,74 @@ def test_queued_draft_failure_retries_without_recreating_and_records_bodies(publ
         return original(*args, **kwargs)
 
     operation.side_effect = fail_after_queue
-    assert p.publish_code_suggestions([_suggestion()]) is False
+    suggestion = _suggestion()
+    assert p.publish_code_suggestions([suggestion]) is False
     assert manager.create.call_count == 1
     assert p.get_recent_inline_comment_bodies() == []
     assert p.publish_code_suggestions([]) is True
     assert manager.create.call_count == 1
     # A failed retry remains retryable; neither retry creates new suggestions.
-    assert p.publish_code_suggestions([_suggestion(body="caller retry")]) is False
+    assert p.publish_code_suggestions([suggestion]) is False
     operation.side_effect = original
-    assert p.publish_code_suggestions([_suggestion(body="caller retry")]) is True
+    assert p.publish_code_suggestions([suggestion]) is True
     assert manager.create.call_count == 1
     assert manager.list() == []
     assert "fix it" in p.get_recent_inline_comment_bodies()[0]
     calls = manager.bulk_publish.call_count
-    assert p.publish_code_suggestions([_suggestion(body="second caller retry")]) is True
+    assert p.publish_code_suggestions([suggestion]) is True
     assert manager.bulk_publish.call_count == calls
     assert manager.create.call_count == 1
+    # A distinct batch on the same provider, e.g. /improve after /review, is published.
+    new_batch = [_suggestion(body="**Suggestion:** other", relevant_lines_start=3, relevant_lines_end=3)]
+    assert p.publish_code_suggestions(new_batch) is True
+    assert manager.create.call_count == 2
+    assert manager.list() == []
+
+
+@pytest.mark.parametrize("retry_first", [False, True])
+@pytest.mark.parametrize("include_old", [False, True])
+def test_distinct_or_mixed_batch_publishes_after_failure(publication_provider, request, retry_first, include_old):
+    p = publication_provider
+    manager = p.mr.draft_notes
+    original = manager.bulk_publish.side_effect
+    manager.bulk_publish.side_effect = RequestException("temporary publication failure")
+    old = _suggestion()
+    assert p.publish_code_suggestions([old]) is False
+    manager.bulk_publish.side_effect = original
+    if retry_first:
+        # Equal dictionaries, not only the original object, remain a retry.
+        assert p.publish_code_suggestions([dict(old)]) is True
+        assert manager.create.call_count == 1
+    new = _suggestion(body="new command", improved_code="x = 3")
+    assert p.publish_code_suggestions(([old] if include_old else []) + [new]) is True
+    persistent = request.node.callspec.params["publication_provider"]
+    assert manager.create.call_count == (2 if not include_old or persistent else 3)
+    assert manager.list() == []
+    assert any("new command" in body for body in p.get_recent_inline_comment_bodies())
+
+
+def test_successful_batches_on_same_provider_create_each_new_suggestion(publication_provider):
+    p = publication_provider
+    assert p.publish_code_suggestions([_suggestion()]) is True
+    assert p.publish_code_suggestions([_suggestion(body="new command", improved_code="x = 3")]) is True
+    assert p.mr.draft_notes.create.call_count == 2
+    assert p.mr.draft_notes.list() == []
+    assert len(p.get_recent_inline_comment_bodies()) == 2
+
+
+@pytest.mark.parametrize("invalid", [None, {}, _suggestion(relevant_file="absent.py")])
+def test_invalid_new_batch_after_successful_retry_does_not_report_success(publication_provider, invalid):
+    p = publication_provider
+    publish = p.mr.draft_notes.bulk_publish.side_effect
+    p.mr.draft_notes.bulk_publish.side_effect = RequestException("temporary failure")
+    old = _suggestion()
+    assert p.publish_code_suggestions([old]) is False
+    p.mr.draft_notes.bulk_publish.side_effect = publish
+    assert p.publish_code_suggestions([old]) is True
+    calls = p.mr.draft_notes.bulk_publish.call_count
+    assert p.publish_code_suggestions([invalid]) is False
+    assert p.mr.draft_notes.bulk_publish.call_count == calls
+    assert p.mr.draft_notes.create.call_count == 1
 
 
 def test_live_fallback_survives_unavailable_draft_listing(publication_provider):
@@ -439,7 +493,8 @@ def test_empty_draft_body_is_not_recorded_as_a_published_finding(publication_pro
 
 
 @pytest.mark.parametrize("failure", ["bulk", "list", "drafts-unsupported"])
-def test_improve_caller_retries_queued_batch_but_not_live_fallback(publication_provider, failure):
+@pytest.mark.parametrize("count", [1, 2])
+def test_improve_caller_retries_queued_batch_but_not_live_fallback(publication_provider, failure, count):
     p = publication_provider
     if failure == "drafts-unsupported":
         p.mr.draft_notes.create.side_effect = GitlabCreateError("drafts unsupported")
@@ -463,14 +518,40 @@ def test_improve_caller_retries_queued_batch_but_not_live_fallback(publication_p
     tool._validate_suggestion = lambda *args: (True, "", True)
     tool.dedent_code = lambda filename, line, code: code
     tool._validate_python_replacement_syntax = lambda *args: True
-    asyncio.run(tool.push_inline_code_suggestions({"code_suggestions": [_suggestion()]},
+    suggestions = [_suggestion()]
+    if count == 2:
+        suggestions.append(_suggestion(suggestion_content="second", improved_code="x = 3"))
+    asyncio.run(tool.push_inline_code_suggestions({"code_suggestions": suggestions},
                                                 include_coverage_footer=False))
     assert tool._output_published is True
     p.mr.notes.create.assert_not_called()  # no duplicate summary on top of delivered comments
     assert p.get_recent_inline_comment_bodies()
     if failure == "drafts-unsupported":
-        assert p.mr.discussions.create.call_count == 1
+        assert p.mr.discussions.create.call_count == count
         p.mr.draft_notes.bulk_publish.assert_not_called()
     else:
-        assert p.mr.draft_notes.create.call_count == 1
+        assert p.mr.draft_notes.create.call_count == count
         assert p.mr.draft_notes.list() == []
+
+
+def test_cached_provider_publishes_new_batch_without_retrying_previous_failure(publication_provider):
+    p = publication_provider
+    settings = MagicMock()
+    settings.config.git_provider = "gitlab"
+    settings.get.return_value = None
+    factory = MagicMock(return_value=p)
+    publish = p.mr.draft_notes.bulk_publish.side_effect
+    with patch.object(providers, "get_settings", return_value=settings), \
+            patch.dict(providers._GIT_PROVIDERS, {"gitlab": factory}), \
+            request_cycle_context({"settings": {"present": True}}):
+        first = providers.get_git_provider_with_context("https://gitlab.test/mr/1")
+        p.mr.draft_notes.bulk_publish.side_effect = RequestException("review publication failed")
+        assert first.publish_code_suggestions([_suggestion()]) is False
+        second = providers.get_git_provider_with_context("https://gitlab.test/mr/1")
+        assert second is first
+        factory.assert_called_once()
+        p.mr.draft_notes.bulk_publish.side_effect = publish
+        assert second.publish_code_suggestions([_suggestion(body="improve batch", improved_code="x = 3")]) is True
+    assert p.mr.draft_notes.create.call_count == 2
+    assert p.mr.draft_notes.list() == []
+    assert any("improve batch" in body for body in p.get_recent_inline_comment_bodies())
