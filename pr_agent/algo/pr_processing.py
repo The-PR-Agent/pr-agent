@@ -31,6 +31,7 @@ MORE_MODIFIED_FILES_ = "Additional modified files (insufficient token budget to 
 ADDED_FILES_ = "Additional added files (insufficient token budget to process):\n"
 
 FILTERED_FILES_ = "Files changed but omitted from the diff by file-type filtering:\n"
+MAX_FILTERED_FILES_TO_PROMPT = 50
 
 OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD = 1500
 OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD = 1000
@@ -93,12 +94,21 @@ def append_filtered_file_names(diff: str, git_provider: GitProvider,
     filtered_files = getattr(git_provider, "get_filtered_diff_file_names", lambda: [])()
     if not isinstance(filtered_files, (list, tuple)) or not filtered_files:
         return diff
-    section = FILTERED_FILES_ + "\n" + "\n".join(filtered_files)
+    section = _filtered_file_section(filtered_files)
     result, _, _ = _append_metadata_section(
         diff, token_handler.prompt_tokens + token_handler.count_tokens(diff),
         section, max_tokens, token_handler,
     )
     return result
+
+
+def _filtered_file_section(filtered_files: list | tuple) -> str:
+    if not filtered_files:
+        return ""
+    section = FILTERED_FILES_ + "\n" + "\n".join(filtered_files[:MAX_FILTERED_FILES_TO_PROMPT])
+    if len(filtered_files) > MAX_FILTERED_FILES_TO_PROMPT:
+        section += f"\n... and {len(filtered_files) - MAX_FILTERED_FILES_TO_PROMPT} more"
+    return section
 
 
 def _find_verified_fitting_prefix_length(items, max_length: int, fits: Callable[[list], bool]) -> int:
@@ -206,7 +216,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             full_diff, _, _ = _append_metadata_section(
                 full_diff,
                 token_handler.prompt_tokens + token_handler.count_tokens(full_diff),
-                FILTERED_FILES_ + "\n" + "\n".join(filtered_files),
+                _filtered_file_section(filtered_files),
                 token_handler.prompt_tokens + hard_token_budget,
                 token_handler,
             )
@@ -275,10 +285,6 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                     deleted_list_str = deleted_list_str + f"\n{filename}"
 
     # prune the added, modified, and deleted files lists, and add them to the final diff
-    filtered_list_str = FILTERED_FILES_ + "\n" + "\n".join(filtered_files) if filtered_files else ""
-    final_diff, curr_token, filtered_list_str = _append_metadata_section(
-        final_diff, curr_token, filtered_list_str, max_tokens, token_handler
-    )
     final_diff, curr_token, added_list_str = _append_metadata_section(
         final_diff, curr_token, added_list_str, max_tokens, token_handler
     )
@@ -287,6 +293,9 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     )
     final_diff, curr_token, deleted_list_str = _append_metadata_section(
         final_diff, curr_token, deleted_list_str, max_tokens, token_handler
+    )
+    final_diff, curr_token, filtered_list_str = _append_metadata_section(
+        final_diff, curr_token, _filtered_file_section(filtered_files), max_tokens, token_handler
     )
 
     get_logger().debug(f"After pruning, added_list_str: {added_list_str}, modified_list_str: {modified_list_str}, "
@@ -345,15 +354,6 @@ def get_pr_diff_multiple_patchs(git_provider: GitProvider, token_handler: TokenH
             add_line_numbers_to_hunks,
             large_pr_handling=True,
         )
-
-    max_tokens = token_handler.prompt_tokens + hard_token_budget
-    for index, patches in enumerate(patches_compressed_list):
-        if patches:
-            rendered = "\n".join(patches)
-            extended = append_filtered_file_names(rendered, git_provider, token_handler, max_tokens)
-            if extended != rendered:
-                patches.append(extended[len(rendered) + 1:])
-                total_tokens_list[index] = token_handler.prompt_tokens + token_handler.count_tokens(extended)
 
     return (
         patches_compressed_list, total_tokens_list, deleted_files_list,
@@ -818,7 +818,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        add_line_numbers: bool = True,
                        return_remaining_files: bool = False,
                        prepared_diff: PreparedPRDiff | None = None,
-                       output_token_reserve: Callable[[str, int], int] | None = None):
+                       output_token_reserve: Callable[[str, int], int] | None = None,
+                       include_filtered_file_names: bool = True):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -866,6 +867,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     )
 
     def include_filtered_files(result):
+        if not include_filtered_file_names:
+            return result
         filtered_files = getattr(git_provider, "get_filtered_diff_file_names", lambda: [])()
         if not isinstance(filtered_files, (list, tuple)) or not filtered_files:
             return result

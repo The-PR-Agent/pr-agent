@@ -74,7 +74,7 @@ def test_multi_diff_chunks_name_filtered_files(monkeypatch, path):
     assert all(handler.prompt_tokens + handler.count_tokens(chunk) <= 700 for chunk in chunks)
 
 
-def test_description_chunks_name_filtered_files(monkeypatch):
+def test_description_file_chunks_do_not_request_filtered_file_summaries(monkeypatch):
     handler = FakeTokenHandler()
     provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
@@ -87,7 +87,55 @@ def test_description_chunks_name_filtered_files(monkeypatch):
 
     chunks, *_ = pr_processing.get_pr_diff_multiple_patchs(provider, handler, "model")
 
-    assert all("pnpm-lock.yaml" in "\n".join(chunk) for chunk in chunks)
+    assert all("pnpm-lock.yaml" not in "\n".join(chunk) for chunk in chunks)
+
+
+def test_multi_diff_can_leave_metadata_out_of_hunk_conversion(monkeypatch):
+    handler = FakeTokenHandler()
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_extended_diff",
+        lambda *args, **kwargs: (["## File: app.py\n@@ -1 +1 @@\n-old\n+new"], 10, []),
+    )
+
+    chunks = pr_processing.get_pr_multi_diffs(
+        provider, handler, "model", include_filtered_file_names=False,
+    )
+
+    assert len(chunks) == 1
+    assert "pnpm-lock.yaml" not in chunks[0]
+
+
+def test_filtered_file_section_caps_number_of_names():
+    names = [f"asset_{index}.map" for index in range(55)]
+
+    section = pr_processing._filtered_file_section(names)
+
+    assert "asset_49.map" in section
+    assert "asset_50.map" not in section
+    assert "... and 5 more" in section
+
+
+def test_compressed_diff_prioritizes_unprocessed_source_over_filtered_assets(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=[f"asset_{index}.map" for index in range(100)])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: ([], 10_000, []))
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_compressed_diff",
+        lambda *args, **kwargs: (
+            [["changed code"]], [12], [], ["important.py"],
+            {"important.py": {"edit_type": EDIT_TYPE.MODIFIED}}, [[]],
+        ),
+    )
+
+    diff = pr_processing.get_pr_diff(provider, handler, "model")
+
+    assert "important.py" in diff
+    assert diff.index("important.py") < diff.index("Files changed but omitted")
 
 
 @pytest.mark.parametrize("compressed", [False, True])

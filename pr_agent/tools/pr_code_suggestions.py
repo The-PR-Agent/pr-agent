@@ -26,6 +26,7 @@ from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
     _get_all_models,
     add_ai_metadata_to_diff_files,
+    append_filtered_file_names,
     get_effective_fallback_chain,
     get_pr_diff,
     get_pr_multi_diffs,
@@ -2007,12 +2008,26 @@ class PRCodeSuggestions:
                 self.git_provider, attempt_token_handler, model,
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=False, return_remaining_files=True,
-                output_token_reserve=output_token_reserve)
+                output_token_reserve=output_token_reserve,
+                include_filtered_file_names=False)
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers,
                 model,
                 attempt_budget=self._suggestion_attempt_budget,
             )
+            filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+            if self.patches_diff_list and isinstance(filtered_files, (list, tuple)) and filtered_files:
+                max_tokens = attempt_token_handler.prompt_tokens + self._suggestion_attempt_budget.available_tokens(
+                    OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
+                )
+                self.patches_diff_list = [
+                    append_filtered_file_names(chunk, self.git_provider, attempt_token_handler, max_tokens)
+                    for chunk in self.patches_diff_list
+                ]
+                self.patches_diff_list_no_line_numbers = [
+                    append_filtered_file_names(chunk, self.git_provider, attempt_token_handler, max_tokens)
+                    for chunk in self.patches_diff_list_no_line_numbers
+                ]
             if not self.patches_diff_list:
                 # fallback to decoupled hunks
                 self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
