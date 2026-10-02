@@ -450,3 +450,25 @@ class TestNoPatternsConfigured:
         files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
 
         assert filter_ignored(list(files), platform='gitlab') == [files[1]]
+
+    def test_azure_leading_slash_does_not_defeat_the_ignore_patterns(self, monkeypatch):
+        """Azure DevOps reports "/vendor/lib/x.js"; the anchored pattern must still match."""
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['/vendor/lib/jquery.min.js', '/src/app.cs']
+
+        assert filter_ignored(list(files), platform='azure') == ['/src/app.cs']
+
+    def test_azure_paths_without_a_leading_slash_still_filter(self, monkeypatch):
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['vendor/lib/jquery.min.js', 'src/app.cs']
+
+        assert filter_ignored(list(files), platform='azure') == ['src/app.cs']
+
+    def test_azure_keeps_unmatched_paths(self, monkeypatch):
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['/src/app.cs', '/docs/readme.md']
+
+        assert filter_ignored(list(files), platform='azure') == files

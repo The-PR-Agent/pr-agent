@@ -20,7 +20,8 @@ There are several ways to use PR-Agent:
 
 When GitHub polling needs to look back through PR comments, it reuses the polling
 HTTP session rather than blocking the event loop with a synchronous request.
-`github.polling_request_timeout` sets the total timeout for this fallback request
+`github.polling_request_timeout` sets the total timeout for the entire fallback
+comment-history scan, including any follow-up page requests
 (default: 10 seconds; positive values are capped at 60). Invalid values use the
 default with a warning. Set it in the host configuration or through
 `GITHUB__POLLING_REQUEST_TIMEOUT`; repository settings do not control this limit.
@@ -30,12 +31,13 @@ behavior, not Requests-specific environment settings.
 
 ## Sizing a self-hosted webhook server
 
-The GitHub, GitLab and Gitea webhook servers (the `github_app`, `gitlab_webhook` and `gitea_app` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket, Azure DevOps, GitHub polling, and the Lambda variants — do not use this gunicorn worker configuration.
+The GitHub, GitLab, Gitea and Bitbucket Server webhook servers (the `github_app`, `gitlab_webhook`, `gitea_app` and `bitbucket_server_webhook` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket Cloud, Azure DevOps, GitHub polling, and the Lambda variants — do not use this gunicorn worker configuration.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `GUNICORN_WORKERS` | *(unset)* | Pins the worker count exactly. Overrides everything below. |
-| `GUNICORN_MAX_WORKERS` | `4` | Upper bound on the automatically derived worker count. |
+| Variable               | Default   | Description                                                                               |
+|------------------------|-----------|-------------------------------------------------------------------------------------------|
+| `GUNICORN_WORKERS`     | *(unset)* | Pins the worker count exactly. Overrides the derived count and `GUNICORN_MAX_WORKERS`.    |
+| `GUNICORN_MAX_WORKERS` | `4`       | Upper bound on the automatically derived worker count.                                    |
+| `PORT`                 | `3000`    | Port the server binds to.                                                                 |
 
 When `GUNICORN_WORKERS` is unset, the worker count is derived from the CPUs actually available to the container (cgroup CPU limit, falling back to CPU affinity), clamped to between 2 and `GUNICORN_MAX_WORKERS`. Note that a CPU *request* without a *limit* leaves no cgroup quota to read, so the cap is what bounds the worker count there.
 

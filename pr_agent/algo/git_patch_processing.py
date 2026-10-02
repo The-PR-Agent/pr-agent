@@ -234,14 +234,22 @@ def check_if_hunk_lines_matches_to_file(i, original_lines, patch_lines, start1):
                             f"Detected different encoding in hunk header line {start1}, needed encoding: {encoding}"
                         )
                             return False # we still want to avoid extending the hunk. But we don't want to log an error
-                    except:
+                    except (UnicodeError, LookupError):
+                        # this encoding cannot represent the line, so it is not a match.
+                        # Fall through and try the next candidate encoding.
                         pass
 
                 is_valid_hunk = False
                 get_logger().info(
                     f"Invalid hunk in PR, line {start1} in hunk header doesn't match the original file content")
-    except:
-        pass
+    except Exception as e:
+        # the check itself failed (for example a hunk header pointing past the end of the
+        # original file), so the hunk cannot be trusted. Report it as invalid rather than
+        # silently leaving is_valid_hunk at its True default and extending a bogus hunk.
+        is_valid_hunk = False
+        get_logger().info(
+            f"Could not validate hunk starting at line {start1} against the original file content",
+            artifact={"error": str(e)})
     return is_valid_hunk
 
 

@@ -54,15 +54,11 @@ def mock_logger():
 def _pin_reasoning_support_metadata(monkeypatch):
     """Pin the reasoning-support metadata this suite keys off.
 
-    CI runs litellm 1.99.0 and 1.101.0 in parallel and their bundled cost maps
-    differ, so the regression matrix forces the entries the reasoning_effort gate
-    consults in ``litellm.model_cost``: bare o3/o4/Gemini-2.5 ids register
-    directly and claude-sonnet-4-5 / claude-haiku-4-5 report True while the
-    handler's claude-family check still keeps them out of the reasoning_effort
-    path. The six Grok ids are not pinned here: the gate recognizes them through
-    the GROK_REASONING_EFFORT_LEVELS registry, so their coverage does not depend
-    on the bundled map (xai/grok-build-latest is absent from the 1.99.0 map).
-    All other bundled entries stay untouched.
+    Keep reasoning-effort cases independent of LiteLLM's bundled cost map.
+    Bare o3/o4/Gemini-2.5 ids and Claude family entries are marked as
+    reasoning-capable; the handler still excludes Claude from the generic
+    reasoning-effort path. Grok uses GROK_REASONING_EFFORT_LEVELS, so this
+    fixture leaves its entries alone. All other bundled entries stay untouched.
     """
     reasoning_models = (
         "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16",
@@ -1385,9 +1381,11 @@ class TestLiteLLMReasoningEffortGrok:
     @pytest.mark.parametrize(
         ("model", "configured", "expected"),
         [
+            ("gemini/gemini-3.7-flash", "none", "none"),
             ("gemini/gemini-3.7-flash", "minimal", "low"),
             ("vertex_ai/gemini-3.7-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.7-flash", "minimal", "low"),
+            ("gemini/gemini-3.8-flash", "none", "none"),
             ("gemini/gemini-3.8-flash", "minimal", "low"),
             ("vertex_ai/gemini-3.8-flash", "minimal", "low"),
             ("openrouter/google/gemini-3.8-flash", "minimal", "low"),
@@ -1395,10 +1393,11 @@ class TestLiteLLMReasoningEffortGrok:
             ("gemini/gemini-3.7-flash", "low", "low"),
             ("gemini/gemini-3.7-flash", "medium", "medium"),
             ("gemini/gemini-3.7-flash", "high", "high"),
+            ("gemini/gemini-2.5-pro", "none", "none"),
             ("gemini/gemini-2.5-pro", "minimal", "minimal"),
         ],
     )
-    def test_resolve_reasoning_effort_clamps_gemini_minimal(self, model, configured, expected):
+    def test_resolve_reasoning_effort_clamps_unsupported_gemini_levels(self, model, configured, expected):
         handler = object.__new__(LiteLLMAIHandler)
         assert handler._resolve_reasoning_effort(model, configured) == expected
 

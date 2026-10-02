@@ -66,12 +66,16 @@ async def handle_request_comment(url: str, body: str, thread_id: int, comment_id
                 return
             is_question = body.startswith("/ask")
             handled = await agent.handle_request(
-                url, body, notify=lambda: provider.reply_to_thread(thread_id, "On it! ⏳", True)
-            )
+                url, body, notify=lambda: provider.reply_to_thread(thread_id, "On it! ⏳", True),
+                # A tool that fails internally returns normally while `propagate_tool_errors` is
+                # false, and then a resolved discussion thread plus a deleted progress comment would
+                # read as "review done" for a review that was never published.
+                propagate_tool_errors=True)
             if handled and not is_question:
                 provider.set_thread_status(thread_id, "closed")
-            if handled:
-                provider.remove_initial_comment()
+            # The progress reply was posted before the command ran, so a failed run still has to
+            # take it back; only closing the thread depends on the outcome.
+            provider.remove_initial_comment()
     except Exception as e:
         get_logger().exception("Failed to handle webhook", artifact={"url": url, "body": body}, error=str(e))
 

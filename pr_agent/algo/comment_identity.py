@@ -28,6 +28,10 @@ class PRCodeSuggestionsIdentity(str, Enum):
     UNANCHORED = "<!-- pr-agent:improve:unanchored -->"
 
 
+class PRCommandNoticeIdentity(str, Enum):
+    INCOMPLETE_BITBUCKET_FILES = "<!-- pr-agent:bitbucket-incomplete-files -->"
+
+
 class PRDescriptionHeader(str, Enum):
     DIAGRAM_WALKTHROUGH = "Diagram Walkthrough"
     FILE_WALKTHROUGH = "File Walkthrough"
@@ -39,6 +43,7 @@ _ALL_COMMENT_IDENTITIES = (
     PRCodeSuggestionsIdentity.SUMMARY.value,
     PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
     PRCodeSuggestionsIdentity.UNANCHORED.value,
+    PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value,
 )
 _REVIEW_IDENTITY_HEADER_LINES = 5
 _MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(

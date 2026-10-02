@@ -6,6 +6,10 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import (
+    IncompleteBitbucketPullRequestFilesError,
+    IncompletePullRequestFilesError,
+)
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 from pr_agent.tools import pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -16,7 +20,7 @@ _TRACKED_SETTINGS = (
     "config.publish_output_progress",
     "config.is_auto_command",
     "config.propagate_tool_errors",
-    "pr_code_suggestions.commitable_code_suggestions",
+    "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.dual_publishing_score_threshold",
     "pr_code_suggestions.persistent_comment",
     "github.publish_as_check_run",
@@ -115,6 +119,74 @@ async def test_run_removes_progress_comment_when_cancelled(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "incomplete_error_class", [IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError]
+)
+async def test_run_re_raises_incomplete_provider_diff_after_progress_cleanup(monkeypatch, incomplete_error_class):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = False
+        provider.publish_comment.return_value = progress_comment
+        tool = _make_tool(provider)
+        tool.progress = "progress body"
+        incomplete_diff_error = incomplete_error_class("incomplete aggregate diff")
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(side_effect=incomplete_diff_error),
+        )
+        _configure_published_run()
+
+        with pytest.raises(incomplete_error_class) as exc_info:
+            await tool.run()
+
+        assert exc_info.value is incomplete_diff_error
+        provider.remove_comment.assert_called_once_with(progress_comment)
+        provider.publish_comment.assert_called_once_with(
+            "Preparing suggestions...", is_temporary=True
+        )
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_preserves_incomplete_bitbucket_diff_when_progress_cleanup_fails(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = False
+        provider.publish_comment.return_value = progress_comment
+        provider.remove_comment.side_effect = RuntimeError("delete unavailable")
+        tool = _make_tool(provider)
+        tool.progress = "progress body"
+        incomplete_diff_error = IncompleteBitbucketPullRequestFilesError("incomplete aggregate diff")
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(side_effect=incomplete_diff_error),
+        )
+        _configure_published_run()
+
+        with pytest.raises(IncompleteBitbucketPullRequestFilesError) as exc_info:
+            await tool.run()
+
+        assert exc_info.value is incomplete_diff_error
+        provider.remove_comment.assert_called_once_with(progress_comment)
+        provider.publish_comment.assert_called_once_with(
+            "Preparing suggestions...", is_temporary=True
+        )
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
 async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publishing(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
@@ -135,7 +207,7 @@ async def test_run_does_not_remove_final_summary_when_cancelled_during_dual_publ
         )
         _configure_published_run()
         settings = get_settings()
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.dual_publishing_score_threshold = 1
         settings.pr_code_suggestions.persistent_comment = False
 
@@ -175,7 +247,7 @@ async def test_run_does_not_publish_failure_after_successful_summary(monkeypatch
         )
         _configure_published_run()
         settings = get_settings()
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.dual_publishing_score_threshold = "invalid"
         settings.pr_code_suggestions.persistent_comment = persistent_comment
 
@@ -241,7 +313,7 @@ async def test_run_does_not_publish_failure_after_successful_inline_suggestions(
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.committable_code_suggestions = True
         settings.pr_code_suggestions.dual_publishing_score_threshold = 0
 
         await tool.run()
@@ -276,12 +348,41 @@ async def test_run_publishes_failure_when_inline_suggestions_never_publish(monke
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.committable_code_suggestions = True
 
         await tool.run()
 
         provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
         assert provider.remove_initial_comment.call_count == 2
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_preserves_original_error_when_failure_comment_publish_fails(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [object()]
+        provider.publish_comment.side_effect = RuntimeError("failure comment rejected")
+        tool = _make_tool(provider)
+        original_error = RuntimeError("generation failed")
+
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(side_effect=original_error),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.is_auto_command = True
+        settings.config.propagate_tool_errors = True
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await tool.run()
+
+        assert exc_info.value is original_error
+        provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
     finally:
         restore_settings(settings_snapshot)
 
@@ -309,7 +410,7 @@ async def test_run_does_not_remove_persistent_summary_when_cancelled_during_dual
         )
         _configure_published_run()
         settings = get_settings()
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.dual_publishing_score_threshold = 1
         settings.pr_code_suggestions.persistent_comment = True
 
@@ -379,7 +480,7 @@ async def test_run_cleans_up_progress_comment_on_check_run_publish(monkeypatch):
         _configure_published_run()
         settings = get_settings()
         settings.github.publish_as_check_run = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = True
 
         await tool.run()
@@ -418,7 +519,7 @@ async def test_run_retains_progress_handle_when_check_run_cleanup_fails(monkeypa
         _configure_published_run()
         settings = get_settings()
         settings.github.publish_as_check_run = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = True
 
         await tool.run()
@@ -473,7 +574,7 @@ async def test_run_reports_exhausted_inline_publication_retries(
         settings = get_settings()
         settings.config.publish_output_progress = show_progress
         settings.config.propagate_tool_errors = propagate_errors
-        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.committable_code_suggestions = True
 
         await tool.run()
 
@@ -536,7 +637,7 @@ async def test_failed_inline_retries_preserve_fallback_output(
         _configure_published_run()
         settings = get_settings()
         settings.config.propagate_tool_errors = propagate_errors
-        settings.pr_code_suggestions.commitable_code_suggestions = True
+        settings.pr_code_suggestions.committable_code_suggestions = True
 
         if propagate_errors:
             with pytest.raises(RuntimeError, match="Failed to publish code suggestions"):
@@ -584,7 +685,7 @@ async def test_run_routes_all_invalid_ranges_through_publish_no_suggestions(
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = False
         settings.pr_code_suggestions.publish_output_no_suggestions = publish_output_no_suggestions
 
@@ -625,7 +726,7 @@ async def test_run_all_invalid_ranges_honors_quiet_gate_via_real_publish(
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = False
         settings.pr_code_suggestions.publish_output_no_suggestions = publish_output_no_suggestions
 
@@ -679,7 +780,7 @@ async def test_run_plain_diff_leaks_no_progress_when_all_ranges_invalid(monkeypa
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = False
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = False
 
         await tool.run()
@@ -720,7 +821,7 @@ async def test_run_valid_ranges_skip_no_suggestions_comment(monkeypatch, publish
         _configure_published_run()
         settings = get_settings()
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.persistent_comment = False
         settings.pr_code_suggestions.publish_output_no_suggestions = publish_no_suggestions
 

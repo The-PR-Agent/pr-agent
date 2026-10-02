@@ -629,11 +629,7 @@ def test_disable_eyes_short_circuits_before_any_backend_call(provider_name: str)
 
 @pytest.mark.parametrize(
     "provider_name",
-    [
-        name
-        for name, (cls, _) in PROVIDERS.items()
-        if "publish_code_suggestions" in cls.__dict__
-    ],
+    PROVIDERS,
 )
 def test_publish_code_suggestions_declares_bool_return(provider_name: str):
     provider_type, _ = PROVIDERS[provider_name]
@@ -641,15 +637,10 @@ def test_publish_code_suggestions_declares_bool_return(provider_name: str):
     assert hints.get("return") is bool
 
 
-def test_every_provider_overriding_publish_code_suggestions_has_a_contract_row():
-    overriding = {
-        name
-        for name, (cls, _) in PROVIDERS.items()
-        if "publish_code_suggestions" in cls.__dict__
-    }
+def test_every_provider_has_a_suggestion_outcome_contract():
     contracted = {contract.provider_name for contract in SUGGESTION_OUTCOME_CONTRACTS}
     assert len(contracted) == len(SUGGESTION_OUTCOME_CONTRACTS)
-    assert contracted == overriding
+    assert contracted == set(PROVIDERS)
 
 
 @pytest.mark.parametrize(

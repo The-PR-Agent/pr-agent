@@ -529,7 +529,7 @@ class GiteaProvider(GitProvider):
                 self.logger.error("No commit messages found")
                 return ""
 
-            commit_message = "".join(commit_messages)
+            commit_message = "\n".join([f"{i + 1}. {message}" for i, message in enumerate(commit_messages)])
             if max_tokens:
                 commit_message = clip_tokens(commit_message, max_tokens)
 
@@ -638,7 +638,8 @@ class GiteaProvider(GitProvider):
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{relevant_file}"
+        encoded_file = quote(relevant_file, safe="/")
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -861,7 +862,10 @@ class GiteaProvider(GitProvider):
 
     def remove_initial_comment(self) -> None:
         """Remove the initial comment"""
-        for comment in self.comments_list:
+        # Iterate over a snapshot: remove_comment() drops the comment from
+        # comments_list, so mutating it mid-iteration skips the next element
+        # and leaves every other temporary comment behind.
+        for comment in list(self.comments_list):
             try:
                 if not comment.get("is_temporary"):
                     continue

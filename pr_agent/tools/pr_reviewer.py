@@ -63,7 +63,12 @@ from pr_agent.algo.utils import (
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
-from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
+from pr_agent.git_providers.git_provider import (
+    GitProvider,
+    IncompleteProviderPullRequestFilesError,
+    IncrementalPR,
+    get_main_pr_language,
+)
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
@@ -465,7 +470,10 @@ class PRReviewer:
             get_logger().error(f"Failed to review PR: {e}")
             # The status of the whole run must not read as success just because the error stopped here.
             record_command_failure()
-            if get_settings().config.get("propagate_tool_errors", False):
+            if (
+                isinstance(e, IncompleteProviderPullRequestFilesError)
+                or get_settings().config.get("propagate_tool_errors", False)
+            ):
                 raise
         finally:
             if progress_response is not None:
@@ -475,6 +483,7 @@ class PRReviewer:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
             if (
                 review_failed
+                and not isinstance(review_error, IncompleteProviderPullRequestFilesError)
                 and get_settings().config.publish_output
                 and (
                     persistent_write_failed
@@ -1569,6 +1578,13 @@ class PRReviewer:
                             review_labels.append('Possible security concern')
 
                 current_labels = self.git_provider.get_pr_labels(update=True)
+                if current_labels is None:
+                    # The read failed with no snapshot to fall back on. publish_labels
+                    # replaces the whole set, so publishing would delete human labels.
+                    get_logger().error(
+                        "Skipping review label publish: existing labels could not be read, "
+                        "and publishing would remove them")
+                    return
                 if not current_labels:
                     current_labels = []
                 get_logger().debug(f"Current labels:\n{current_labels}")

@@ -68,7 +68,10 @@ def filter_ignored(files, platform = 'github'):
                             files_o.append(f)
                     files = files_o
                 elif platform == 'azure':
-                    files = [f for f in files if not r.match(f)]
+                    # Azure DevOps returns item paths with a leading slash ("/src/app.cs").
+                    # The patterns are anchored, so strip it before matching; otherwise no
+                    # pattern ever matches and [ignore] is inert on Azure.
+                    files = [f for f in files if not r.match(f.lstrip('/'))]
                 elif platform == 'gitea':
                     files = [f for f in files if not r.match(f.get("filename", ""))]
                 elif platform == "gerrit":

@@ -37,7 +37,7 @@ def token_settings(monkeypatch):
         lambda model=None: SimpleNamespace(
             model=model,
             encode=lambda text, disallowed_special=(): list(text),
-            decode=lambda tokens: "".join(tokens),
+            decode=lambda tokens, errors="replace": "".join(tokens),
         ),
     )
     return settings
@@ -436,7 +436,7 @@ def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatc
     handler = FakeTokenHandler()
     handler.encoder = SimpleNamespace(
         encode=lambda text, disallowed_special=(): text.split("|"),
-        decode=lambda tokens: "|".join(tokens),
+        decode=lambda tokens, errors="replace": "|".join(tokens),
     )
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 75)
 
@@ -451,6 +451,53 @@ def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatc
     retained = fitted.optional_text.removesuffix("[cut]").rstrip("|")
     assert retained in {"alpha", "alpha|bravo", "alpha|bravo|charlie"}
     assert fitted.input_tokens <= 73
+
+
+def _o200k_encoder():
+    from tiktoken import get_encoding
+
+    return get_encoding("o200k_base")
+
+
+def test_fit_optional_text_prefix_cut_drops_dangling_multibyte_fragments(monkeypatch):
+    # Real BPE encoding: the emoji span multiple tokens, so the fitting cut at
+    # this window lands inside one and would decode to U+FFFD (verified against
+    # the pre-fix behavior; the framing allowances shift the exact cut point).
+    handler = FakeTokenHandler()
+    handler.encoder = _o200k_encoder()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 85)
+    optional_text = ("done 🎉🚀 shipped check this out\n") * 20
+
+    fitted = budget.fit_optional_text(
+        optional_text,
+        lambda optional: ("fixed", f"body:{optional}"),
+        ai_handler=object(),
+        default_output_tokens=5,
+        keep="prefix",
+    )
+
+    assert "\ufffd" not in fitted.optional_text
+    assert fitted.optional_text.endswith(token_budget_module.DEFAULT_TRUNCATION_MARKER)
+    assert len(fitted.optional_text) < len(optional_text)
+
+
+def test_fit_optional_text_suffix_cut_drops_dangling_multibyte_fragments(monkeypatch):
+    handler = FakeTokenHandler()
+    handler.encoder = _o200k_encoder()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 106)
+    optional_text = ("done 🎉🚀 shipped check this out\n") * 20
+
+    fitted = budget.fit_optional_text(
+        optional_text,
+        lambda optional: ("fixed", f"body:{optional}"),
+        ai_handler=object(),
+        default_output_tokens=5,
+        keep="suffix",
+    )
+
+    assert "\ufffd" not in fitted.optional_text
+    assert fitted.optional_text.startswith(token_budget_module.DEFAULT_TRUNCATION_MARKER)
+    assert len(fitted.optional_text) < len(optional_text)
 
 
 def test_fit_optional_text_rejects_required_prompt_that_cannot_fit(monkeypatch):

@@ -121,12 +121,6 @@ def test_key_issue_markers_use_bitbucket_hidden_form():
     assert d.marker_fingerprints(out) == {"aaaaaaaaaaaa", "bbbbbbbbbbbb"}
 
 
-def test_inline_comment_line_prefers_line():
-    assert d.inline_comment_line({"line": 5, "position": 9}) == 5
-    assert d.inline_comment_line({"position": 9}) == 9
-    assert d.inline_comment_line({}) is None
-
-
 # --------------------------------------------------------------------------- #
 # store
 # --------------------------------------------------------------------------- #

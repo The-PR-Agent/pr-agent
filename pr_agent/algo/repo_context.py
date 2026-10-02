@@ -23,6 +23,7 @@ _DEFAULT_MAX_SIBLING_CONTEXT_FILES = 5
 _HARD_MAX_SIBLING_CONTEXT_FILES = 20
 _SIBLING_REPO_SEPARATOR = ":"
 _REPO_CONTEXT_CACHE_MISS = object()
+_COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _unsupported_repo_context_provider_classes = set()
 
 
@@ -87,7 +88,9 @@ def _get_repo_context_process_cache_key(
     except Exception:
         pr_url = getattr(git_provider, "pr_url", None)
 
-    if not pr_url:
+    # A branch name keeps its value while the branch moves, so only a commit SHA may key an
+    # entry that outlives this provider instance.
+    if not pr_url or not (isinstance(context_ref, str) and _COMMIT_SHA_PATTERN.fullmatch(context_ref)):
         return None
 
     return type(git_provider).__name__, pr_url, _get_repo_context_cache_key(

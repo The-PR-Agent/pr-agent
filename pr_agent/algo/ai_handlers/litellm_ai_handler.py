@@ -1319,8 +1319,9 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @staticmethod
     def _is_gpt6_astra_model(model: str) -> bool:
-        """Recognize native Astra models without changing gateway model IDs."""
-        return _strip_openai_azure_prefixes(model).removesuffix("_thinking") == "gpt-6-astra"
+        """Recognize Astra models through routed provider prefixes."""
+        model_base = _strip_openai_azure_prefixes(model.removeprefix("openrouter/"))
+        return model_base.removesuffix("_thinking") == "gpt-6-astra"
 
     @staticmethod
     def _is_gpt5_model(model: str) -> bool:
@@ -1528,8 +1529,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         if provider == "bedrock" and "api_key" not in params and _has_live_provider_api_key_environment(provider):
             raise ValueError("Refusing process-wide Bedrock bearer token fallback")
         if provider in ("sagemaker_chat", "sagemaker_nova") and os.environ.get("AWS_BEARER_TOKEN_BEDROCK"):
-            # LiteLLM 1.102.1's SageMaker signer ignores its api_key argument and
-            # otherwise reads this Bedrock-only token directly from the environment.
+            # LiteLLM's SageMaker signer ignores api_key and can use
+            # AWS_BEARER_TOKEN_BEDROCK from the environment instead of SigV4.
             raise ValueError("Refusing Bedrock bearer token fallback for SageMaker")
         if provider == "azure" and getattr(self, "_azure_ad", False):
             if azure_ad_token is None:
@@ -1607,7 +1608,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
             if not uses_bedrock_bearer:
                 if any(os.environ.get(variable) for variable in LITELLM_AWS_CREDENTIAL_SELECTOR_ENV_VARS):
-                    # LiteLLM 1.102.1 resolves these selectors ahead of explicit
+                    # LiteLLM resolves these selectors ahead of explicit
                     # request credentials, which would replace the isolated keys.
                     raise ValueError(f"Refusing ambient LiteLLM AWS credential selector for provider {provider}")
                 aws_request_credentials = dict(aws_request_credentials or {})
@@ -1910,8 +1911,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         return re.search(r"claude(?:-|$)", normalized) is not None
 
     @staticmethod
-    def _is_gemini_minimal_reasoning_model(model: str) -> bool:
-        """Return whether Gemini's ``minimal`` effort needs a supported-level fallback."""
+    def _uses_gemini_low_reasoning_floor(model: str) -> bool:
+        """Return whether Gemini reasoning needs a supported-level floor."""
         normalized_model = model.rsplit(":", 1)[0] if model.startswith("openrouter/") else model
         return any(
             normalized_model == gemini_id or normalized_model.endswith("/" + gemini_id)
@@ -1921,7 +1922,7 @@ class LiteLLMAIHandler(BaseAiHandler):
     @classmethod
     def _clamp_gemini_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
         """Map unsupported Gemini 3.x ``minimal`` effort to the nearest level."""
-        if cls._is_gemini_minimal_reasoning_model(model) and reasoning_effort == "minimal":
+        if cls._uses_gemini_low_reasoning_floor(model) and reasoning_effort == "minimal":
             return "low"
         return reasoning_effort
 
@@ -2038,6 +2039,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                     f"'{effective_reasoning_effort}'; using '{clamped_effort}' instead."
                 )
                 effective_reasoning_effort = clamped_effort
+
+        if effective_reasoning_effort == "none" and self._uses_gemini_low_reasoning_floor(model):
+            get_logger().info(f"Gemini model {model} does not support reasoning_effort='none'; using 'low' instead.")
+            effective_reasoning_effort = "low"
 
         # Preserve explicit disablement; otherwise keep effort and max_tokens
         # mutually exclusive by preferring the token budget.
@@ -2181,6 +2186,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         reasoning_effort = self._clamp_grok_reasoning_effort(
             openrouter_model, reasoning_effort
         )
+        if reasoning_effort == "none" and self._uses_gemini_low_reasoning_floor(openrouter_model):
+            reasoning_effort = "low"
         reasoning_tokens = self._coerce_token_value(
             self._openrouter_controls.get("reasoning_max_tokens", 0)
         )
@@ -2598,6 +2605,12 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # prefixes must remain intact in multi-provider configurations.
                 model = completion_model
                 openrouter_model = self._canonical_openrouter_model(model, request_provider)
+                family_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
+                capability_model = (
+                    family_model
+                    if openrouter_model and openrouter_model.endswith((":nitro", ":floor"))
+                    else openrouter_model or model
+                )
                 normalized_system, user = self.normalize_request_prompts(model, system, user)
                 if normalized_system != system:
                     get_logger().warning(
@@ -2617,11 +2630,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # and Azure mode auto-prepends "azure/", which together can produce stacked prefixes
                 # like "azure/openai/gpt-5...". Without normalization the GPT-5 path is skipped and
                 # litellm rejects the request with UnsupportedParamsError for temperature=0.2.
-                is_gpt6_astra = self._is_gpt6_astra_model(model)
-                is_gpt5_model = self._is_gpt5_model(openrouter_model or model)
+                is_gpt6_astra = self._is_gpt6_astra_model(family_model)
+                is_gpt5_model = self._is_gpt5_model(family_model)
                 if is_gpt5_model or is_gpt6_astra:
                     # Use configured reasoning_effort or default to MEDIUM.
                     effort = self._validate_reasoning_effort(self._default_reasoning_effort)
+                    lookup_model = _strip_openai_azure_prefixes(
+                        family_model.removeprefix("openrouter/")
+                    ).removesuffix("_thinking")
 
                     if is_gpt6_astra and effort in (ReasoningEffort.NONE.value, ReasoningEffort.MINIMAL.value):
                         get_logger().info(f"GPT-6 Astra does not support reasoning_effort='{effort}'; using 'low'")
@@ -2632,7 +2648,6 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # name that level 'xhigh'; litellm reports supports_xhigh_reasoning_effort
                         # false for gpt-5 and gpt-5.1, so those are clamped to 'high' instead.
                         # GPT-6 Astra accepts 'max' natively and is left untouched.
-                        lookup_model = _strip_openai_azure_prefixes(model).removesuffix("_thinking")
                         try:
                             supports_xhigh = litellm.get_model_info(lookup_model).get(
                                 "supports_xhigh_reasoning_effort"
@@ -2661,10 +2676,6 @@ class LiteLLMAIHandler(BaseAiHandler):
                         # takes it), and litellm raises UnsupportedParamsError for that value. Clamp
                         # to 'low' only when the metadata says so; unknown models keep 'minimal'.
                         # GPT-6 Astra is clamped to 'low' in the first branch.
-                        lookup_model = model
-                        while lookup_model.startswith(("openai/", "azure/")):
-                            lookup_model = lookup_model.removeprefix("openai/").removeprefix("azure/")
-                        lookup_model = lookup_model.removesuffix("_thinking")
                         try:
                             supports_minimal = litellm.get_model_info(lookup_model).get(
                                 "supports_minimal_reasoning_effort"
@@ -2721,18 +2732,21 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # temperature despite the metadata. Adaptive-thinking Claude models
                 # (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive it, matching the
                 # sampling-parameter removal of _configure_claude_adaptive_thinking.
+                # OpenRouter :nitro/:floor routing shortcuts are ignored for temperature
+                # capability checks; model retains the routed id for the actual request.
                 # The probe receives the api-key-guard-resolved provider so it skips the
                 # probe's own bare-model resolution; the api key snapshot itself is
                 # untouched (see the guard tests).
                 if (
                     not get_settings().config.custom_reasoning_model
                     and not any(
-                        model == no_temp_model or model.endswith("/" + no_temp_model)
+                        candidate == no_temp_model or candidate.endswith("/" + no_temp_model)
+                        for candidate in (model, capability_model)
                         for no_temp_model in self.no_temperature_models
                     )
                     and not self._model_uses_adaptive_thinking(model)
                     and self._litellm_supports_temperature(
-                        model,
+                        capability_model,
                         request_provider or custom_llm_provider or None,
                     )
                 ):
@@ -2744,7 +2758,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if is_gpt5_model or is_gpt6_astra:
                     kwargs.pop('temperature', None)
 
-                reasoning_model = openrouter_model.rsplit(":", 1)[0] if openrouter_model else model
+                reasoning_model = family_model
                 # Add reasoning_effort if the model supports it. Support comes from
                 # litellm's bundled model metadata (probed over suffix forms so bare,
                 # provider-prefixed, and OpenRouter :nitro/:floor variants all resolve),
@@ -2824,7 +2838,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # setdefault keeps the extended-thinking limit authoritative.
                 max_output_tokens = self._resolve_output_token_limit(model, openrouter_model)
                 if max_output_tokens > 0:
-                    output_limit_param = "max_completion_tokens" if is_gpt6_astra else "max_tokens"
+                    output_limit_param = (
+                        "max_completion_tokens"
+                        if self._is_gpt6_astra_model(capability_model)
+                        else "max_tokens"
+                    )
                     kwargs.setdefault(output_limit_param, max_output_tokens)
 
                 if get_settings().litellm.get("enable_callbacks", False):
@@ -3000,8 +3018,17 @@ class LiteLLMAIHandler(BaseAiHandler):
                 kwargs["custom_llm_provider"] = custom_llm_provider
             if self._bedrock_model_id and request_provider == "bedrock":
                 kwargs["model_id"] = self._bedrock_model_id
+            streaming = self._requires_streaming(kwargs["model"]) or self._force_streaming_for_request(
+                custom_llm_provider, kwargs.get("api_base")
+            )
+            if streaming:
+                kwargs["stream"] = True
+                kwargs["stream_options"] = {"include_usage": True}
             kwargs["model"] = normalize_litellm_model(kwargs["model"], custom_llm_provider)
-            await self._acompletion(_completion=_completion, **kwargs)
+            response = await self._acompletion(_completion=_completion, **kwargs)
+            if streaming or hasattr(response, "__aiter__"):
+                async for _ in response:
+                    pass
 
     async def _get_completion(self, **kwargs):
         """

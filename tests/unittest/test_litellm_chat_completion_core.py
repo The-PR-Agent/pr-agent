@@ -477,7 +477,9 @@ async def test_chat_completion_strips_temperature_for_config_no_temperature_mode
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: FakeSettings(config_values={"no_temperature_models": ["o1", "o1-2024-12-17"]}),
+        lambda: FakeSettings(config_values={
+            "no_temperature_models": ["o1", "future-base", "future-variant:nitro"],
+        }),
     )
     monkeypatch.setattr(
         litellm_handler.LiteLLMAIHandler,
@@ -491,9 +493,17 @@ async def test_chat_completion_strips_temperature_for_config_no_temperature_mode
 
         await handler.chat_completion(model="o1", system="sys", user="usr", temperature=0.2)
         await handler.chat_completion(model="gpt-4o", system="sys", user="usr", temperature=0.2)
+        await handler.chat_completion(
+            model="openrouter/vendor/future-base:nitro", system="sys", user="usr", temperature=0.2
+        )
+        await handler.chat_completion(
+            model="openrouter/vendor/future-variant:nitro", system="sys", user="usr", temperature=0.2
+        )
 
     assert "temperature" not in mock_call.call_args_list[0].kwargs
     assert "temperature" in mock_call.call_args_list[1].kwargs
+    assert "temperature" not in mock_call.call_args_list[2].kwargs
+    assert "temperature" not in mock_call.call_args_list[3].kwargs
 
 
 @pytest.mark.asyncio

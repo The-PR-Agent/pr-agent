@@ -284,6 +284,272 @@ async def test_polling_loop_reaps_workers_on_idle_and_failed_polls(workers, monk
 
 
 @pytest.mark.asyncio
+async def test_polling_loop_keeps_drifted_notification_unread_for_unconditional_retry(monkeypatch):
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling,
+        "get_git_provider",
+        lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot"),
+    )
+    mark_read = AsyncMock()
+    monkeypatch.setattr(github_polling, "mark_notification_as_read", mark_read)
+    monkeypatch.setattr(
+        github_polling,
+        "is_valid_notification",
+        AsyncMock(side_effect=[
+            (False, set(), github_polling._RETRY_POLLING_NOTIFICATION),
+            (False, set()),
+        ]),
+    )
+    notification = {"id": 1}
+    requests = []
+    finished = asyncio.Event()
+
+    class Session:
+        status = 200
+        headers = {"Last-Modified": "retry-test"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, *args, **kwargs):
+            requests.append(kwargs)
+            return self
+
+        async def json(self):
+            return [notification]
+
+    async def sleep(_delay):
+        if len(requests) >= 2:
+            finished.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(sleep=sleep))
+    task = asyncio.create_task(github_polling.polling_loop())
+    try:
+        await asyncio.wait_for(finished.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    mark_read.assert_awaited_once()
+    assert mark_read.await_args.args[1] == notification
+    assert len(requests) == 2
+    assert "If-Modified-Since" not in requests[1]["headers"]
+
+
+@pytest.mark.asyncio
+async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out(monkeypatch):
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling,
+        "get_git_provider",
+        lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot"),
+    )
+    mark_read = AsyncMock()
+    monkeypatch.setattr(github_polling, "mark_notification_as_read", mark_read)
+    scan_calls = 0
+
+    async def scan(*args, **kwargs):
+        nonlocal scan_calls
+        scan_calls += 1
+        if scan_calls == 1:
+            return None
+        raise asyncio.TimeoutError("retry deadline exhausted")
+
+    monkeypatch.setattr(github_polling, "_fetch_comment_history_scan", scan)
+    notification = {
+        "id": 1,
+        "reason": "mention",
+        "subject": {
+            "type": "PullRequest",
+            "url": "https://example.test/repos/owner/repo/pulls/1",
+            "latest_comment_url": "https://example.test/latest",
+        },
+    }
+    notification_requests = []
+    finished = asyncio.Event()
+
+    class Response:
+        status = 200
+
+        def __init__(self, body, headers=None):
+            self.body = body
+            self.headers = headers or {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def json(self, **kwargs):
+            return self.body
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, url, **kwargs):
+            if url == github_polling.NOTIFICATION_URL:
+                notification_requests.append(kwargs)
+                return Response([notification], {"Last-Modified": "unchanged"})
+            assert url == notification["subject"]["latest_comment_url"]
+            return Response({"id": 99, "body": "Other discussion", "user": {"login": "human"}})
+
+    async def sleep(_delay):
+        if notification_requests:
+            finished.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(
+        github_polling,
+        "asyncio",
+        SimpleNamespace(
+            sleep=sleep,
+            get_running_loop=asyncio.get_running_loop,
+            TimeoutError=asyncio.TimeoutError,
+        ),
+    )
+    task = asyncio.create_task(github_polling.polling_loop())
+    try:
+        await asyncio.wait_for(finished.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert scan_calls == 2
+    assert len(notification_requests) == 1
+    mark_read.assert_not_awaited()
+
+
+@pytest.mark.parametrize("valid_command", [True, False], ids=["valid-command", "invalid-notification"])
+@pytest.mark.asyncio
+async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monkeypatch, valid_command):
+    settings = SimpleNamespace(
+        github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
+    )
+    monkeypatch.setattr(github_polling, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        github_polling,
+        "get_git_provider",
+        lambda: lambda: SimpleNamespace(get_user_id=lambda: "bot"),
+    )
+    monkeypatch.setattr(github_polling, "get_logger", MagicMock())
+    preexisting_notification = {"id": 42}
+    notification = {"id": 1}
+    comment = {"id": 99}
+    large_preexisting_ids = set(range(10_000, 20_000))
+    handled_at_validation = []
+    handled_references = []
+
+    class NonCopyingSet(set):
+        def copy(self):
+            raise AssertionError("polling must not copy the full handled-ID history")
+
+    monkeypatch.setattr(github_polling, "set", NonCopyingSet, raising=False)
+
+    async def validate(
+        _notification, _headers, handled_ids, _session, _user_id, added_handled_ids=None
+    ):
+        if _notification is preexisting_notification:
+            handled_ids.update(large_preexisting_ids)
+            return False, handled_ids
+        handled_at_validation.append((len(handled_ids), large_preexisting_ids <= handled_ids))
+        handled_references.append(handled_ids)
+        assert comment["id"] not in handled_ids
+        handled_ids.add(comment["id"])
+        added_handled_ids.add(comment["id"])
+        if valid_command:
+            return True, handled_ids, comment, "@bot /review", "https://example.test/pull/1", "@bot"
+        return False, handled_ids
+
+    monkeypatch.setattr(github_polling, "is_valid_notification", validate)
+    mark_attempts = 0
+
+    async def mark_read(_headers, _notification, _session):
+        nonlocal mark_attempts
+        mark_attempts += 1
+        if mark_attempts == 2:
+            raise RuntimeError("temporary PATCH failure")
+
+    monkeypatch.setattr(github_polling, "mark_notification_as_read", mark_read)
+    requests = []
+    dispatched = []
+    finished = asyncio.Event()
+
+    class Response:
+        status = 200
+        headers = {"Last-Modified": "unchanged-notification"}
+
+        def __init__(self, notifications):
+            self.notifications = notifications
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def json(self):
+            return self.notifications
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        def get(self, *args, **kwargs):
+            requests.append(kwargs)
+            notifications = [preexisting_notification, notification] if len(requests) == 1 else [notification]
+            return Response(notifications)
+
+    async def start_queued(task_queue, _limit, _active_processes):
+        dispatched.extend(task_queue)
+        finished.set()
+
+    async def sleep(_delay):
+        if len(requests) >= 2:
+            if not valid_command:
+                finished.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(github_polling, "_start_queued_processes", start_queued)
+    monkeypatch.setattr(github_polling, "aiohttp", SimpleNamespace(ClientSession=Session))
+    monkeypatch.setattr(github_polling, "asyncio", SimpleNamespace(sleep=sleep))
+    task = asyncio.create_task(github_polling.polling_loop())
+    try:
+        await asyncio.wait_for(finished.wait(), 2)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert handled_at_validation == [(len(large_preexisting_ids) + 1, True)] * 2
+    assert mark_attempts == 3
+    assert len(requests) == 2
+    assert "If-Modified-Since" not in requests[1]["headers"]
+    assert len(dispatched) == int(valid_command)
+    assert large_preexisting_ids <= handled_references[-1]
+    assert {preexisting_notification["id"], notification["id"], comment["id"]} <= handled_references[-1]
+
+
+@pytest.mark.asyncio
 async def test_reap_real_spawned_worker(monkeypatch):
     ctx = multiprocessing.get_context("spawn")
     monkeypatch.setattr(github_polling, "multiprocessing", SimpleNamespace(Process=ctx.Process))

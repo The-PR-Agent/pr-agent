@@ -36,7 +36,7 @@ from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.run_details import init_run_details, record_command_failure, record_model_used
 from pr_agent.algo.run_output import push_outputs, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
@@ -46,11 +46,22 @@ from pr_agent.algo.utils import (
 )
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider_with_context
-from pr_agent.git_providers.git_provider import GitProvider, IncrementalPR, get_main_pr_language
+from pr_agent.git_providers.git_provider import (
+    GitProvider,
+    IncompleteProviderPullRequestFilesError,
+    IncrementalPR,
+    get_main_pr_language,
+)
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.pr_description import insert_br_after_x_chars
 from pr_agent.tools.progress_comment import build_progress_comment
+
+# TODO: in 1.0, remove the deprecated "commitable_code_suggestions" fallback in
+# get_committable_code_suggestions() below, its entry in
+# config_security.PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION, and the deprecation note in
+# docs/docs/tools/improve.mdx. The flag guards the one-off warning it emits.
+_deprecated_spellings_warned = False
 
 
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
@@ -69,6 +80,39 @@ def get_suggestions_score_threshold() -> int:
 
 def get_dual_publishing_score_threshold() -> int:
     return _as_threshold("pr_code_suggestions.dual_publishing_score_threshold", 0, 0)
+
+
+def get_committable_code_suggestions() -> bool:
+    """Whether suggestions publish as committable inline comments.
+
+    ``commitable_code_suggestions`` was the public key from v0.22 until the pre-1.0 typo fix, so
+    it stays readable as a deprecated fallback: existing ``.pr_agent.toml`` files and pasted
+    ``/improve`` overrides keep working instead of silently reverting to table output.
+
+    The mode is enabled when *either* spelling is true, so the one set to true takes priority:
+    the canonical key wins when it is true, and a stale deprecated alias still enables the mode
+    when the canonical key is false. The canonical key cannot override the alias to false
+    because its default in configuration.toml is also false, leaving "unset" indistinguishable
+    from an explicit false after the settings merge; making the canonical key win outright
+    would silently disable every configuration that only sets the deprecated spelling.
+    """
+    global _deprecated_spellings_warned
+    # Either spelling set to true enables the mode, so whichever is true takes priority: check
+    # the canonical key first, then fall back to the deprecated alias.
+    if get_settings().pr_code_suggestions.committable_code_suggestions:
+        return True
+    # The deprecated key is absent from configuration.toml, so read it with a default instead of
+    # attribute access. Both spellings are spelled out literally so the dead-key ledger in
+    # tests/unittest/test_config_dead_keys.py can still see the canonical reader.
+    deprecated = bool(get_settings().pr_code_suggestions.get("commitable_code_suggestions", False))
+    # The caller may sit in a per-suggestion loop, so report the deprecated spelling only once.
+    if deprecated and not _deprecated_spellings_warned:
+        _deprecated_spellings_warned = True
+        get_logger().warning(
+            "pr_code_suggestions.commitable_code_suggestions is deprecated and will be removed in "
+            "1.0; rename it to pr_code_suggestions.committable_code_suggestions"
+        )
+    return deprecated
 
 
 def _markdown_code_span(text: str) -> str:
@@ -462,17 +506,29 @@ class PRCodeSuggestions:
                                artifact={"traceback": traceback.format_exc()})
             if get_settings().config.publish_output:
                 if self.progress_response:
-                    self.git_provider.remove_comment(self.progress_response)
-                if not self._output_published:
+                    try:
+                        self.git_provider.remove_comment(self.progress_response)
+                    except Exception as cleanup_error:
+                        get_logger().exception(
+                            "Failed to remove code suggestions progress comment after an error, "
+                            f"error: {cleanup_error}"
+                        )
+                if (
+                    not isinstance(e, IncompleteProviderPullRequestFilesError)
+                    and not self._output_published
+                ):
                     try:
                         if not self.progress_response:
                             self.git_provider.remove_initial_comment()
                         self.git_provider.publish_comment("Failed to generate code suggestions for PR")
-                    except Exception as e:
-                        get_logger().exception(f"Failed to update persistent review, error: {e}")
+                    except Exception as publish_error:
+                        get_logger().exception(f"Failed to update persistent review, error: {publish_error}")
             # The status of the whole run must not read as success just because the error stopped here.
             record_command_failure()
-            if get_settings().config.get("propagate_tool_errors", False):
+            if (
+                isinstance(e, IncompleteProviderPullRequestFilesError)
+                or get_settings().config.get("propagate_tool_errors", False)
+            ):
                 raise
 
     async def add_self_review_text(self, pr_body):
@@ -800,9 +856,18 @@ class PRCodeSuggestions:
                         count = prev_suggestions.count(f"\n<details><summary>{name.capitalize()}")
                         count += prev_suggestions.count(f"\n<details><summary>✅ {name.capitalize()}")
                         if count >= max_previous_comments:
-                            # remove the oldest suggestion
-                            prev_suggestion_table = prev_suggestion_table[:prev_suggestion_table.rfind(
-                                f"<details><summary>{name.capitalize()} up to commit")]
+                            # remove the oldest suggestion. Entries gain a "✅ " prefix once they are
+                            # applied, so match both forms, the same way the count above does. An
+                            # unticked-only rfind() matches no entry when all of them are applied and
+                            # returns -1, which chops the closing tag; when a newer unticked entry is
+                            # present it matches that one instead and discards the whole history.
+                            oldest_entry = max(
+                                prev_suggestion_table.rfind(f"<details><summary>{name.capitalize()} up to commit"),
+                                prev_suggestion_table.rfind(
+                                    f"<details><summary>✅ {name.capitalize()} up to commit"),
+                            )
+                            if oldest_entry != -1:
+                                prev_suggestion_table = prev_suggestion_table[:oldest_entry]
 
                         tick = "✅ " if "✅" in latest_table else ""
                         # Add to the prev_suggestions section
@@ -1038,7 +1103,7 @@ class PRCodeSuggestions:
                             f"edited improved suggestion {i + 1}, because equal to existing code: "
                             f"{suggestion['existing_code']}"
                         )
-                        if get_settings().pr_code_suggestions.commitable_code_suggestions:
+                        if get_committable_code_suggestions():
                             suggestion['improved_code'] = ""  # we need 'existing_code' to locate the code in the PR
                         else:
                             suggestion['existing_code'] = ""
@@ -1212,7 +1277,7 @@ class PRCodeSuggestions:
 
     def _uses_summarized_output(self) -> bool:
         return not get_settings().config.publish_output or (
-            not get_settings().pr_code_suggestions.commitable_code_suggestions
+            not get_committable_code_suggestions()
             and self.git_provider.is_supported("gfm_markdown")
         )
 
@@ -2051,20 +2116,10 @@ class PRCodeSuggestions:
                     token_count = attempt_budget.count_tokens(patch_final)
                     if token_count > max_input_tokens:
                         get_logger().warning(
-                            f"Token count {token_count} exceeds the limit {max_input_tokens}. clipping the tokens")
-                        add_truncation_marker = True
-                        while patch_final and token_count > max_input_tokens:
-                            clipped_patch = clip_tokens(
-                                patch_final,
-                                max_input_tokens,
-                                add_three_dots=add_truncation_marker,
-                                num_input_tokens=token_count,
-                            )
-                            add_truncation_marker = False
-                            if len(clipped_patch) >= len(patch_final):
-                                clipped_patch = patch_final[:len(patch_final) // 2]
-                            patch_final = clipped_patch
-                            token_count = attempt_budget.count_tokens(patch_final)
+                            f"Token count {token_count} exceeds the limit {max_input_tokens}. "
+                            "Repacking numbered chunks to preserve matching generation and reflection inputs."
+                        )
+                        return []
                     patches_diff_list.append(patch_final)
                 return patches_diff_list
             except Exception:
@@ -2210,8 +2265,13 @@ class PRCodeSuggestions:
             pr_body += """</tr></tbody></table>"""
             return pr_body
         except Exception as e:
-            get_logger().info(f"Failed to publish summarized code suggestions, error: {e}")
-            return ""
+            # Returning "" here is not a safe "no suggestions" answer: the caller appends the
+            # coverage footer and then overwrites the persistent review, so a swallowed
+            # rendering error would replace the existing suggestion table with a footer-only
+            # body and demote the real table into history. Fail loudly instead, the way
+            # PRReviewer._prepare_pr_review does, so the run reports a failure.
+            get_logger().exception(f"Failed to publish summarized code suggestions, error: {e}")
+            raise ValueError("Failed to generate summarized code suggestions") from e
 
     def get_score_str(self, score: int) -> str:
         th_high = get_settings().pr_code_suggestions.get('new_score_mechanism_th_high', 9)

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import FileContentSnapshot
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog, strip_wrapping_code_fence
 
 EXISTING = "# Changelog\n\n## 2026-01-01\n- Initial release\n"
@@ -68,9 +69,62 @@ def test_a_wrapping_fence_is_removed(fenced, expected):
     "- A line with ``` inside it",
     "```\nunterminated fence",
     "- one\n\n```python\nx = 1\n```\n\n- two",
+    # Balanced fences of the entry's own: the trailing fence closes them, it is not a wrapper.
+    "- one\n\n```python\nx = 1\n```",
 ])
 def test_text_without_a_wrapping_fence_is_untouched(text):
     assert strip_wrapping_code_fence(text) == text
+
+
+@pytest.mark.parametrize("fenced, expected", [
+    ("```markdown\n- one\n```", "- one"),
+    # The dangling-closing-fence answer the prompt usually produces.
+    ("- one\n- two\n```", "- one\n- two"),
+    # A whole answer wrapping an entry that itself ends in a code block.
+    ("```markdown\n- one\n\n```python\nx = 1\n```\n```", "- one\n\n```python\nx = 1\n```"),
+])
+def test_stripping_twice_is_the_same_as_once(fenced, expected):
+    """The answer is stripped on the reply and again before the changelog is built."""
+    once = strip_wrapping_code_fence(fenced)
+
+    assert once == expected
+    assert strip_wrapping_code_fence(once.strip()) == expected
+
+
+def test_an_entry_ending_in_a_code_block_is_committed_verbatim():
+    """A second strip used to eat the closing fence, unterminating the code block."""
+    entry = "## 2026-09-06\n\n### Added\n- New CLI flag\n\n```python\nflags.add('--x')\n```"
+
+    new_file_content, _answer = _prepared(strip_wrapping_code_fence(f"```markdown\n{entry}\n```"))
+
+    assert new_file_content == f"{entry}\n\n{EXISTING}"
+
+
+# --------------------------------------------------------------------------------------
+# A complete internal code block followed by the wrapper close
+# --------------------------------------------------------------------------------------
+_ENTRY_WITH_CODE_BLOCK = "## 2026-09-06\n\n### Added\n- New CLI flag\n\n```python\nflags.add('--x')\n```"
+
+
+def test_a_wrapper_close_after_a_complete_code_block_is_removed():
+    """No opening wrapper, a closed internal block, then a trailing wrapper close.
+
+    The trailing fence is a wrapper here: the internal block is already balanced. Keeping it
+    left a dangling fence that rendered every older entry as code.
+    """
+    fenced = f"{_ENTRY_WITH_CODE_BLOCK}\n```"
+
+    assert strip_wrapping_code_fence(fenced) == _ENTRY_WITH_CODE_BLOCK
+    assert strip_wrapping_code_fence(strip_wrapping_code_fence(fenced).strip()) == _ENTRY_WITH_CODE_BLOCK
+
+
+def test_a_leftover_wrapper_fence_is_not_committed():
+    """The prepared changelog must not put the existing entries inside a code block."""
+    new_file_content, _answer = _prepared(strip_wrapping_code_fence(f"{_ENTRY_WITH_CODE_BLOCK}\n```"))
+
+    assert new_file_content == f"{_ENTRY_WITH_CODE_BLOCK}\n\n{EXISTING}"
+    # Every fence in the new entry pairs up, so the existing changelog renders as itself.
+    assert new_file_content.split(EXISTING)[0].count("\n```") % 2 == 0
 
 
 def test_the_commit_hint_is_appended_when_not_committing():
@@ -96,6 +150,7 @@ def committing_tool(monkeypatch):
     tool = PRUpdateChangelog.__new__(PRUpdateChangelog)
     tool.git_provider = provider
     tool.changelog_file = EXISTING
+    tool.changelog_snapshot = FileContentSnapshot(EXISTING, True, "fixture-revision")
     tool.commit_changelog = True
     return tool, provider
 

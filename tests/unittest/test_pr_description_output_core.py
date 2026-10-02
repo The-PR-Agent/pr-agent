@@ -18,8 +18,10 @@ Coverage:
   walkthrough produced by ``process_pr_files_prediction``.
 """
 
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.parse import unquote, urlsplit
 
 import pytest
 import yaml
@@ -29,6 +31,7 @@ from pr_agent.algo.comment_identity import PRDescriptionHeader
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import process_description
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_description import PRDescription, sanitize_diagram
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
@@ -575,6 +578,24 @@ class TestProcessPRFilesPrediction:
         body = obj.process_pr_files_prediction("", value)
 
         assert "<details><summary>2 files</summary>" in body
+
+    def test_rendered_href_preserves_reserved_filename_from_gitlab_provider(self):
+        filename = "src/a#b?c&d space-☃.py"
+        provider = GitLabProvider.__new__(GitLabProvider)
+        provider.gl = SimpleNamespace(url="https://gitlab.example")
+        provider.id_project = "owner/repo"
+        provider.mr = SimpleNamespace(
+            web_url="https://gitlab.example/owner/repo/-/merge_requests/7",
+            source_branch="feature/test",
+        )
+        link = provider.get_line_link(filename, -1)
+        obj = _make_instance()
+
+        row = obj.add_file_data("", "+1/-0", "", filename, "<strong>a.py</strong>", link, "")
+
+        rendered_link = re.search(r'href="([^"]+)"', row).group(1)
+        assert rendered_link == link
+        assert unquote(urlsplit(rendered_link).path).endswith(f"/{filename}")
 
 
 # ---------------------------------------------------------------------------
