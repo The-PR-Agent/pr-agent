@@ -296,12 +296,6 @@ class PRReviewer:
                 if not self.incremental.is_incremental:
                     # Reload the findings the incremental mode left out, for the fallback full review.
                     self.vars["previous_findings"] = self._load_previous_findings_context()
-                    self.token_handler = TokenHandler(
-                        self.git_provider.pr,
-                        self.vars,
-                        get_settings().pr_review_prompt.system,
-                        get_settings().pr_review_prompt.user
-                    )
 
             # if isinstance(self.args, list) and self.args and self.args[0] == 'auto_approve':
             #     get_logger().info(f'Auto approve flow PR: {self.pr_url} ...')
@@ -834,15 +828,29 @@ class PRReviewer:
             ai_handler, "get_output_token_reserve", None
         )
         if raw_prompt_vars is not None:
-            self.vars, self.token_handler = fit_related_tickets_to_prompt_budget(
-                self.git_provider.pr,
-                raw_prompt_vars,
-                get_settings().pr_review_prompt.system,
-                get_settings().pr_review_prompt.user,
-                model,
-                ai_handler=ai_handler,
-                output_token_reserve=output_token_reserve,
-            )
+            try:
+                self.vars, self.token_handler = fit_related_tickets_to_prompt_budget(
+                    self.git_provider.pr,
+                    raw_prompt_vars,
+                    get_settings().pr_review_prompt.system,
+                    get_settings().pr_review_prompt.user,
+                    model,
+                    ai_handler=ai_handler,
+                    output_token_reserve=output_token_reserve,
+                )
+            except FallbackEligibleError:
+                if not raw_prompt_vars.get("previous_findings"):
+                    raise
+                get_logger().warning(f"Earlier findings do not fit the prompt budget for {model}, omitting them")
+                self.vars, self.token_handler = fit_related_tickets_to_prompt_budget(
+                    self.git_provider.pr,
+                    dict(raw_prompt_vars, previous_findings=""),
+                    get_settings().pr_review_prompt.system,
+                    get_settings().pr_review_prompt.user,
+                    model,
+                    ai_handler=ai_handler,
+                    output_token_reserve=output_token_reserve,
+                )
         chunking_enabled = get_settings().pr_reviewer.get("enable_large_pr_chunking", False)
         diff_kwargs = {
             "add_line_numbers_to_hunks": True,

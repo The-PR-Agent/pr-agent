@@ -22,6 +22,7 @@ from pr_agent.algo.review_finding_state import (
     render_previous_findings,
     serialize_review_state,
 )
+from pr_agent.algo.token_budget import FallbackEligibleError
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
@@ -1614,14 +1615,35 @@ async def test_incremental_fallback_to_full_review_loads_previous_findings(monke
     reviewer.is_auto = False
     reviewer.incremental = SimpleNamespace(is_incremental=True, commits_range=None)
     reviewer._load_previous_findings_context = MagicMock(return_value="[stored findings]")
-    token_handler = MagicMock()
-    monkeypatch.setattr("pr_agent.tools.pr_reviewer.TokenHandler", token_handler)
     _patch_run_dependencies(monkeypatch, reviewer)
 
     await reviewer.run()
 
     assert reviewer.incremental.is_incremental is False
-    assert token_handler.call_args.args[1]["previous_findings"] == "[stored findings]"
+    assert reviewer._raw_prompt_vars["previous_findings"] == "[stored findings]"
+
+
+@pytest.mark.asyncio
+async def test_previous_findings_are_dropped_when_they_do_not_fit_the_model(monkeypatch):
+    reviewer = _reviewer_for_run(MagicMock())
+    reviewer._raw_prompt_vars = {"previous_findings": "[stored findings]", "related_tickets": []}
+    fitted_findings = []
+
+    def fit(_pr, raw_vars, _system, _user, _model, **_kwargs):
+        fitted_findings.append(raw_vars["previous_findings"])
+        if raw_vars["previous_findings"]:
+            raise FallbackEligibleError("no room")
+        return raw_vars, MagicMock()
+
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget", fit)
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.get_pr_diff", lambda *_args, **_kwargs: "")
+
+    with pytest.raises(FallbackEligibleError, match="No PR diff"):
+        await PRReviewer._prepare_prediction(reviewer, "small-model")
+
+    assert fitted_findings == ["[stored findings]", ""]
+    assert reviewer.vars["previous_findings"] == ""
+    assert reviewer._raw_prompt_vars["previous_findings"] == "[stored findings]"
 
 
 def test_render_previous_findings_keeps_the_most_recent_active_finding_within_the_budget():
@@ -1640,5 +1662,5 @@ def test_previous_findings_render_in_the_user_prompt_only():
     prompts = get_settings().pr_review_prompt
     variables = defaultdict(str, previous_findings='[{"issue_content": "stored finding"}]', num_max_findings=3)
 
-    assert "stored finding" not in Environment().from_string(prompts.system).render(variables)
-    assert "stored finding" in Environment().from_string(prompts.user).render(variables)
+    assert "stored finding" not in Environment(autoescape=True).from_string(prompts.system).render(variables)
+    assert "stored finding" in Environment(autoescape=True).from_string(prompts.user).render(variables)
