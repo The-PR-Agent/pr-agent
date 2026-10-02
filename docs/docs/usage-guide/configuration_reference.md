@@ -242,7 +242,7 @@ to-do list.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `committable_code_suggestions` | false |  |
+| `committable_code_suggestions` | false | Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions |
 | `dual_publishing_score_threshold` | -1 | -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
 | `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
@@ -277,8 +277,8 @@ to-do list.
 | --- | --- | --- |
 | `demand_code_suggestions_self_review` | false | add a checkbox for the author to self-review the code suggestions |
 | `code_suggestions_self_review_text` | "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones." |  |
-| `approve_pr_on_self_review` | false | if true, the PR will be auto-approved after the author clicks on the self-review checkbox |
-| `fold_suggestions_on_self_review` | true | if true, the code suggestions will be folded after the author clicks on the self-review checkbox |
+| `approve_pr_on_self_review` | false | no effect: the self-review checkbox is a visual marker only, and PR-Agent does not approve PRs (see the improve docs and the FAQ) |
+| `fold_suggestions_on_self_review` | true | no effect: the self-review checkbox is a visual marker only, and suggestions are not folded when it is ticked |
 
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
@@ -366,8 +366,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `expand_submodule_diffs` | false |  |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
-| `reply_to_trigger_comment` | false | On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available. |
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
+| `reply_to_trigger_comment` | false | On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available. |
 | `publish_code_suggestions_as_review` | false | When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
 | `auto_resolve_fixed_inline_threads` | false | Resolve the bot's own inline threads whose flagged line was modified after the comment was posted - i.e. the diff between the comment's head sha and the current head sha removes/replaces that line. Unlike resolve_outdated_inline_threads this is content-based: threads on lines nobody touched (or merely shifted by unrelated insertions) stay open. |

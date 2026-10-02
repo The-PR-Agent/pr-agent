@@ -267,8 +267,8 @@ decouple_hunks = false
 # self-review checkbox
 demand_code_suggestions_self_review=false # add a checkbox for the author to self-review the code suggestions
 code_suggestions_self_review_text= "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones."
-approve_pr_on_self_review=false # if true, the PR will be auto-approved after the author clicks on the self-review checkbox
-fold_suggestions_on_self_review=true # if true, the code suggestions will be folded after the author clicks on the self-review checkbox
+approve_pr_on_self_review=false # no effect: the self-review checkbox is a visual marker only, and PR-Agent does not approve PRs (see the improve docs and the FAQ)
+fold_suggestions_on_self_review=true # no effect: the self-review checkbox is a visual marker only, and suggestions are not folded when it is ticked
 
 [pr_add_docs] # /add_docs #
 extra_instructions = ""
@@ -356,7 +356,7 @@ feedback_on_draft_pr = false
 publish_review_as_thread = false
 # Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
 publish_improve_as_thread = false
-# Reply to the triggering GitLab note's discussion for /review and /improve output.
+# On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available.
 reply_to_trigger_comment = false
 # When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft
 # note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of
