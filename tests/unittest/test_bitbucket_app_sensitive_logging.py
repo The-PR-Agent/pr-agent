@@ -247,4 +247,3 @@ async def test_uninstalled_webhook_logs_only_selected_payload_fields(monkeypatch
     assert "clientKey" in logged and "principal" in logged and "sharedSecret" in logged
     assert "private-username" not in logged
     assert "uninstalled-secret-sentinel" not in logged
-
