@@ -5,7 +5,8 @@ import re
 from functools import partial
 from tempfile import TemporaryDirectory
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
+from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -319,7 +320,7 @@ class PredictionPreparator:
         self._system_prompt = system_prompt
         self._user_prompt = user_prompt
         try:
-            environment = Environment(undefined=StrictUndefined)
+            environment = SandboxedEnvironment(undefined=StrictUndefined)
             environment.from_string(system_prompt).render(self._vars)
             environment.from_string(user_prompt).render(self._vars)
         except Exception:
