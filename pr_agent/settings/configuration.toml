@@ -471,7 +471,7 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 # Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
 # model_id = ""
 # Optional mapping from opaque request model ids (for example Bedrock application inference profile
-# ARNs) to LiteLLM-known base models. Used only for cost calculation; it does not change routing.
+# ARNs) to LiteLLM-known base models. Use this mapping only to calculate cost; keep model routing unchanged.
 base_models = {}
 # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}]
 # (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points for named Claude

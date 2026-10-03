@@ -118,6 +118,41 @@ def test_record_completion_metadata_prices_routed_model_and_records_configured_m
     assert get_run_details().model_costs_usd == {"gpt-5_thinking": Decimal("0.0842")}
 
 
+def test_record_completion_metadata_uses_request_model_for_base_model_lookup(monkeypatch):
+    usage = _Usage(100, 10, 110)
+    response = _Response(usage)
+    request_model = "gpt-5"
+    routed_model = "azure/gpt-5"
+    base_model = "azure/priced-gpt-5"
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            True if key == "config.output_run_cost"
+            else {request_model: base_model} if key == "LITELLM.BASE_MODELS"
+            else default
+        )
+    )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.get_settings",
+        lambda: settings,
+    )
+    init_run_details()
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.completion_cost",
+        return_value=0.0842,
+    ) as completion_cost:
+        LiteLLMAIHandler._record_completion_metadata(
+            response,
+            model=routed_model,
+            display_model=request_model,
+            request_model=request_model,
+        )
+
+    assert completion_cost.call_args.kwargs["model"] == routed_model
+    assert completion_cost.call_args.kwargs["base_model"] == base_model
+    assert get_run_details().model_costs_usd == {request_model: Decimal("0.0842")}
+
+
 def test_record_completion_metadata_uses_positive_finalized_inline_cost(monkeypatch):
     _set_cost_collection(monkeypatch, True)
     init_run_details()

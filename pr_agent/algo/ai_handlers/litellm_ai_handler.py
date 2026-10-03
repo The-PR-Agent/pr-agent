@@ -1722,7 +1722,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         return response_log
 
     @staticmethod
-    def _record_completion_metadata(response, model=None, display_model=None) -> None:
+    def _record_completion_metadata(response, model=None, display_model=None, request_model=None) -> None:
         """Count a successful call and synchronously collect usage-based cost when possible."""
         usage = _response_field(response, "usage")
 
@@ -1742,7 +1742,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if not isinstance(response, dict) and not hasattr(response, "model_dump"):
                         cost_response = response.dict()
                     cost_kwargs = {"completion_response": cost_response, "model": model}
-                    base_model = LiteLLMAIHandler._litellm_base_model_for(model)
+                    base_model = LiteLLMAIHandler._litellm_base_model_for(request_model or model)
                     if base_model:
                         cost_kwargs["base_model"] = base_model
                     cost_usd = litellm.completion_cost(**cost_kwargs)
@@ -3023,7 +3023,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         if get_verbosity_level() >= 2:
             get_logger().info(f"\nAI response:\n{resp}")
 
-        self._record_completion_metadata(response_obj, model=model, display_model=user_model)
+        self._record_completion_metadata(
+            response_obj, model=model, display_model=user_model, request_model=user_model
+        )
 
         return resp, finish_reason
 
