@@ -2234,8 +2234,10 @@ class GitLabProvider(GitProvider):
                 get_logger().warning("Cannot add a reaction: merge request ID is not set.")
                 return None
 
-            mr = self.gl.projects.get(self.id_project).mergerequests.get(self.id_mr)
-            comment = mr.notes.get(issue_comment_id)
+            # lazy: the ids are already known, so fetching the project, the merge request and
+            # the note first would spend three GETs on objects the emoji endpoint does not need
+            mr = self.gl.projects.get(self.id_project, lazy=True).mergerequests.get(self.id_mr, lazy=True)
+            comment = mr.notes.get(issue_comment_id, lazy=True)
 
             if not comment:
                 get_logger().warning(f"Comment with ID {issue_comment_id} not found in merge request {self.id_mr}.")
@@ -2255,8 +2257,10 @@ class GitLabProvider(GitProvider):
                 get_logger().warning("Cannot remove reaction: merge request ID is not set.")
                 return False
 
-            mr = self.gl.projects.get(self.id_project).mergerequests.get(self.id_mr)
-            comment = mr.notes.get(issue_comment_id)
+            # lazy: the ids are already known, so fetching the project, the merge request and
+            # the note first would spend three GETs on objects the emoji endpoint does not need
+            mr = self.gl.projects.get(self.id_project, lazy=True).mergerequests.get(self.id_mr, lazy=True)
+            comment = mr.notes.get(issue_comment_id, lazy=True)
 
             if not comment:
                 get_logger().warning(f"Comment with ID {issue_comment_id} not found in merge request {self.id_mr}.")

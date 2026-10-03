@@ -43,14 +43,18 @@ def _make_provider():
 @pytest.mark.parametrize("error", API_ERRORS)
 def test_add_reaction_returns_none_on_api_failure(error):
     provider = _make_provider()
-    provider.gl.projects.get.side_effect = error
+    # The emoji endpoint is the only request left: the project, merge request and note are lazy
+    # handles now, so raising on `gl.projects.get` would fail before anything reached the network.
+    note = provider.gl.projects.get.return_value.mergerequests.get.return_value.notes.get.return_value
+    note.awardemojis.create.side_effect = error
     assert provider.add_reaction(11, "eyes") is None
 
 
 @pytest.mark.parametrize("error", UNEXPECTED_ERRORS)
 def test_add_reaction_propagates_unexpected_errors(error):
     provider = _make_provider()
-    provider.gl.projects.get.side_effect = error
+    note = provider.gl.projects.get.return_value.mergerequests.get.return_value.notes.get.return_value
+    note.awardemojis.create.side_effect = error
     with pytest.raises(type(error)):
         provider.add_reaction(11, "eyes")
 
