@@ -91,7 +91,10 @@ async def test_run_records_failed_persistent_update_without_duplicate_summary(
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
         existing = SimpleNamespace(
-            body=f"{PRCodeSuggestionsHeader.SUMMARY.value}\n{PRCodeSuggestionsIdentity.SUMMARY.value}\n<table>old</table>"
+            body=(
+                f"{PRCodeSuggestionsHeader.SUMMARY.value}\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n<table>old</table>"
+            )
         )
         provider = _provider_with_anchored_diff(MagicMock())
         provider.get_files.return_value = [object()]
