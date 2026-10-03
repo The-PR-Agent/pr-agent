@@ -7,6 +7,7 @@ import pytest
 from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
+import pr_agent.git_providers.gitea_provider as gitea_module
 from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as provider_utils
@@ -15,7 +16,6 @@ from pr_agent.git_providers.git_provider import (
     IncompleteProviderPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
-from pr_agent.git_providers.gitea_provider import GiteaProvider, IncompleteGiteaPullRequestFilesError, RepoApi
 
 
 def _identity_args(args):
@@ -26,17 +26,16 @@ def test_incomplete_file_errors_share_only_provider_neutral_base():
     assert issubclass(IncompletePullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert issubclass(IncompleteBitbucketPullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert not issubclass(IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError)
-    assert issubclass(IncompleteGiteaPullRequestFilesError, IncompleteProviderPullRequestFilesError)
-    assert not issubclass(IncompleteGiteaPullRequestFilesError, IncompletePullRequestFilesError)
+    assert issubclass(gitea_module.IncompleteGiteaPullRequestFilesError, IncompleteProviderPullRequestFilesError)
+    assert not issubclass(gitea_module.IncompleteGiteaPullRequestFilesError, IncompletePullRequestFilesError)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["published", "inspection_failure", "publication_failure", "disabled"])
 async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypatch, outcome):
-    """A failed SDK files page must abort the real /review route before model use."""
+    """Verify a failed SDK files page aborts the real /review route before model use."""
     from giteapy.rest import ApiException
 
-    import pr_agent.git_providers.gitea_provider as gitea_module
     import pr_agent.tools.pr_reviewer as reviewer_module
 
     settings = Mock()
@@ -48,18 +47,20 @@ async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypat
     transport = Mock()
     transport.call_api.side_effect = ApiException(status=502, reason="private/repo secret failure")
     monkeypatch.setattr(gitea_module.giteapy, "ApiClient", lambda _config: transport)
-    monkeypatch.setattr(RepoApi, "get_pull_request", lambda *_args, **_kwargs: SimpleNamespace(
-        head=SimpleNamespace(sha="head"), base=SimpleNamespace(sha="base", ref="main")))
-    monkeypatch.setattr(RepoApi, "get_pull_request_diff", lambda *_args, **_kwargs: "")
-    monkeypatch.setattr(RepoApi, "get_pr_commits", lambda *_args, **_kwargs: [{"sha": "head"}])
-    monkeypatch.setattr(RepoApi, "get_languages", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        gitea_module.RepoApi, "get_pull_request", lambda *_args, **_kwargs: SimpleNamespace(
+            head=SimpleNamespace(sha="head"), base=SimpleNamespace(sha="base", ref="main"))
+    )
+    monkeypatch.setattr(gitea_module.RepoApi, "get_pull_request_diff", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(gitea_module.RepoApi, "get_pr_commits", lambda *_args, **_kwargs: [{"sha": "head"}])
+    monkeypatch.setattr(gitea_module.RepoApi, "get_languages", lambda *_args, **_kwargs: {})
 
     def comments(_provider):
         if outcome == "inspection_failure":
             raise RuntimeError("private comment lookup")
         return []
 
-    monkeypatch.setattr(GiteaProvider, "get_issue_comments", comments)
+    monkeypatch.setattr(gitea_module.GiteaProvider, "get_issue_comments", comments)
     published = []
 
     def publish(_provider, body):
@@ -67,11 +68,11 @@ async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypat
         if outcome == "publication_failure":
             raise RuntimeError("private publication error")
 
-    monkeypatch.setattr(GiteaProvider, "publish_comment", publish)
+    monkeypatch.setattr(gitea_module.GiteaProvider, "publish_comment", publish)
     providers = []
 
     def provider_factory(_url):
-        provider = GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+        provider = gitea_module.GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
         providers.append(provider)
         return provider
 
@@ -94,7 +95,7 @@ async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypat
     else:
         assert len(published) == 1
         assert "Gitea returned incomplete or unavailable" in published[0]
-        assert IncompleteGiteaPullRequestFilesError.notice_marker in published[0]
+        assert gitea_module.IncompleteGiteaPullRequestFilesError.notice_marker in published[0]
         assert "private/repo" not in published[0]
         assert "test-token" not in published[0]
 
