@@ -853,10 +853,11 @@ async def test_length_truncation_reaches_the_fallback_model(monkeypatch):
             body=None,
         )
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="Failed to generate prediction with any model") as raised:
         await pr_processing.retry_with_fallback_models(f)
 
     assert attempts == ["primary", "fallback"]
+    assert isinstance(raised.value.__cause__, litellm_handler.EmptyTruncatedResponseError)
 
 
 @pytest.mark.asyncio
