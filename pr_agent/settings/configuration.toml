@@ -84,10 +84,14 @@ ignore_pr_authors = [] # authors to ignore from PR agent when an PR is created
 # Reactions added to the comment that triggered a command. Names are provider-specific:
 # GitHub accepts only +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab and Gitea
 # take any award-emoji name. An empty value disables that reaction. When an outcome reaction
-# is configured it replaces the start reaction rather than joining it.
+# is configured it replaces the start reaction rather than joining it. The GitHub App and the
+# GitLab webhook both apply the outcome reactions. They differ on auto_review, which runs without
+# the notify hook the start reaction hangs off: the GitLab webhook gives it nothing, because it
+# gates the outcome on that hook too, while the GitHub App still gives it the outcome reaction. A
+# comment that is not a command gets no reaction at all on the GitLab webhook.
 reaction_on_start = "eyes"   # added before the command runs
-reaction_on_success = ""     # added when the command finished successfully
-reaction_on_failure = ""     # added when the command failed
+reaction_on_success = ""     # replaces the start reaction when the command succeeded (GitHub App, GitLab webhook)
+reaction_on_failure = ""     # replaces the start reaction when the command failed (GitHub App, GitLab webhook)
 ignore_repositories = [] # a list of regular expressions of repository full names (e.g. "org/repo") to ignore from PR agent processing
 ignore_language_framework = [] # a list of code-generation languages or frameworks (e.g. 'protobuf', 'go_gen') whose auto-generated source files will be excluded from analysis
 # Substring indicators used to skip bot users on webhook events. Currently consumed by

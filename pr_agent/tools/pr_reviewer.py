@@ -478,8 +478,6 @@ class PRReviewer:
             review_error = e
             review_failed = True
             get_logger().error(f"Failed to review PR: {e}")
-            # The status of the whole run must not read as success just because the error stopped here.
-            record_command_failure()
             if (
                 isinstance(e, IncompleteProviderPullRequestFilesError)
                 or get_settings().config.get("propagate_tool_errors", False)
@@ -492,6 +490,12 @@ class PRReviewer:
                     self.git_provider.remove_comment(progress_response)
                 except Exception as e:
                     get_logger().exception(f"Failed to remove review progress comment, error: {e}")
+            if review_failed:
+                # Record the failure here, where `review_failed` is consumed: the branches above
+                # set it and go on to publish a failure comment instead of raising, so the run
+                # would otherwise report success. `command_failed()` is what the GitHub Action
+                # runner and the reaction outcomes read.
+                record_command_failure()
             if (
                 review_failed
                 and not isinstance(review_error, IncompleteProviderPullRequestFilesError)
