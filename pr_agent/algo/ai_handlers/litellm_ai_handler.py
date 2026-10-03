@@ -124,6 +124,7 @@ from pr_agent.algo.ai_handlers.cloud_auth import (
     _vertex_request_default_adc,
 )
 from pr_agent.algo.ai_handlers.litellm_helpers import (
+    EmptyTruncatedResponseError,
     _get_azure_ad_credential,
     _get_azure_ad_token,
     _handle_streaming_response,
@@ -262,16 +263,6 @@ def _configured_client_retries():
         get_logger().warning(f"Ignoring negative config.num_retries: {parsed}")
         return None
     return parsed
-
-
-class EmptyTruncatedResponseError(openai.APIError):
-    """The model returned no content because it exhausted the output budget.
-
-    Raised when an empty response carries ``finish_reason == "length"``. Replaying the
-    identical request on the same model reproduces the truncation, so by default the
-    handler hands this straight to the fallback-models loop instead of paying for a
-    second identical, empty call. Set config.retry_same_model_on_length to retry anyway.
-    """
 
 
 def _should_retry_same_model(exc: BaseException) -> bool:

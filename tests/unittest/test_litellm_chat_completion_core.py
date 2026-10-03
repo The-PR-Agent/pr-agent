@@ -792,6 +792,50 @@ async def test_chat_completion_empty_content_without_length_still_retries(monkey
     assert mock_call.call_count == litellm_handler.MODEL_RETRIES
 
 
+def _empty_stream(finish_reason):
+    async def _stream():
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=""), finish_reason=finish_reason)],
+            usage=None,
+            _hidden_params=None,
+        )
+
+    return _stream()
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_length_truncation_does_not_retry_same_model_streaming(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = lambda **_: _empty_stream("length")
+        handler = litellm_handler.LiteLLMAIHandler()
+        handler.streaming_required_models = ["gpt-4o"]
+
+        # An empty, length-truncated stream is deterministic for the same request, so it is not
+        # replayed; the error surfaces to the caller's fallback-models loop after one attempt.
+        with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_streaming_empty_without_length_still_retries(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = lambda **_: _empty_stream("stop")
+        handler = litellm_handler.LiteLLMAIHandler()
+        handler.streaming_required_models = ["gpt-4o"]
+
+        # Without the deterministic "length" signal, an empty stream can be transient.
+        with pytest.raises(openai.APIError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
 @pytest.mark.asyncio
 async def test_length_truncation_reaches_the_fallback_model(monkeypatch):
     import pr_agent.algo.pr_processing as pr_processing
