@@ -217,7 +217,7 @@ class TestGetSkillsContext:
         monkeypatch.setattr(
             skills_loader,
             "format_skills_context",
-            lambda skills, max_tokens: f"budget={max_tokens}",
+            lambda skills, max_tokens, **kwargs: f"budget={max_tokens}",
         )
 
         with request_cycle_context({}):
@@ -286,7 +286,7 @@ class TestGetSkillsContext:
         monkeypatch.setattr(
             skills_loader,
             "format_skills_context",
-            lambda skills, max_tokens: ",".join(skill.name for skill in skills),
+            lambda skills, max_tokens, **kwargs: ",".join(skill.name for skill in skills),
         )
 
         with request_cycle_context({}):
@@ -533,7 +533,9 @@ class TestSelectSkills:
         )
 
         assert zulu in ranked
-        assert alpha not in ranked
+        # The irrelevant skills tie at score zero, so the cap keeps the
+        # alphabetically-earlier one of them.
+        assert other not in ranked
         assert len(ranked) == 2
 
     def test_max_skills_zero_disables_the_cap(self):
@@ -581,8 +583,9 @@ class TestRelevanceHintCache:
             skills=SimpleNamespace(
                 enabled=True,
                 paths=["/host/skills"],
-                max_skills_tokens=8000,
-                get=lambda key, default=None: 0 if key == "max_skills" else default,
+                # Small enough that only one of the two skills fits, so each
+                # hint must produce a different surviving skill.
+                max_skills_tokens=30,
             )
         )
         with patch.object(skills_loader, "get_settings", lambda: settings):
@@ -600,5 +603,7 @@ class TestRelevanceHintCache:
                     notes = skills_loader.get_skills_context(
                         relevance_hint="Write the release notes")
 
-        assert terraform.index("Skill: z-terraform-standards") < terraform.index("Skill: a-release-notes")
-        assert notes.index("Skill: a-release-notes") < notes.index("Skill: z-terraform-standards")
+        assert "Skill: z-terraform-standards" in terraform
+        assert "Skill: a-release-notes" not in terraform
+        assert "Skill: a-release-notes" in notes
+        assert "Skill: z-terraform-standards" not in notes

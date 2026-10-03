@@ -40,7 +40,7 @@ def build_tool(monkeypatch):
     original = copy.deepcopy(settings.get("PR_CODE_SUGGESTIONS", None))
     monkeypatch.setattr(pcs, "get_git_provider_with_context", lambda url: FakeGitProvider())
     monkeypatch.setattr(pcs, "get_main_pr_language", lambda languages, files: "Python")
-    monkeypatch.setattr(pcs, "get_skills_context", lambda: "")
+    monkeypatch.setattr(pcs, "get_skills_context", lambda *args, **kwargs: "")
     monkeypatch.setattr(pcs, "build_repo_context", lambda provider: "")
     monkeypatch.setattr(pcs, "TokenHandler", lambda *args, **kwargs: None)
 
