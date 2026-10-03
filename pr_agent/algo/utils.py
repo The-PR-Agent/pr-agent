@@ -113,6 +113,20 @@ def _get_fence(content: str) -> str:
     return "`" * backtick_len
 
 
+def get_suggestion_fence(code: str) -> str:
+    """Return the backtick fence (minimum 3) for a ``suggestion`` block around *code*.
+
+    A fence closes at the first run of its character at least as long as the
+    opener, so a ``` line inside the suggested code -- a code block in a
+    Markdown file, a doctest in a docstring -- would end the block there, and
+    committing the suggestion would apply only the lines before it. Unlike
+    ``_get_fence`` this never switches to tildes: suggestion blocks are
+    written, and matched by the providers, with backticks.
+    """
+    longest = max((len(m.group()) for m in re.finditer(r"`+", code)), default=0)
+    return "`" * max(3, longest + 1)
+
+
 def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,

@@ -371,17 +371,20 @@ class GerritProvider(GitProvider):
         return True
 
     def split_suggestion(self, msg) -> tuple[str, str]:
-        is_code_context = False
+        # The fence that opened the suggestion block; it can be longer than three
+        # backticks when the suggested code itself contains a ``` line.
+        fence = None
         description = []
         context = []
         for line in msg.splitlines():
-            if line.startswith('```suggestion'):
-                is_code_context = True
+            opener = re.match(r'(`{3,})suggestion', line)
+            if opener:
+                fence = opener.group(1)
                 continue
-            if line.startswith('```'):
-                is_code_context = False
+            if line.startswith(fence or '```'):
+                fence = None
                 continue
-            if is_code_context:
+            if fence:
                 context.append(line)
             else:
                 description.append(

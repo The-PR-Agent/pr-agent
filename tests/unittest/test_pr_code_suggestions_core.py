@@ -2909,3 +2909,26 @@ def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary
     failure_body = provider.published[0][0]
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
     assert "previous suggestions remain unchanged" in failure_body
+
+
+@pytest.mark.asyncio
+async def test_suggestion_containing_a_code_fence_gets_a_longer_fence():
+    """A ``` line inside the improved code would close a ```suggestion block early,
+    so committing the suggestion would apply only the lines before it."""
+    git_provider = _provider_with_file("# Usage\nRun it.\n", filename="README.md")
+    tool = _make_tool(git_provider)
+
+    improved = "Run it:\n\n```bash\nmake run\n```"
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_file="README.md",
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="Run it.",
+            improved_code=improved,
+            score=8,
+        )
+    ]})
+
+    body = _published_suggestion(git_provider)["body"]
+    assert f"\n````suggestion\n{improved}\n````" in body

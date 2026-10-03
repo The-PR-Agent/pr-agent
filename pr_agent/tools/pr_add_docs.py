@@ -15,7 +15,7 @@ from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import load_yaml
+from pr_agent.algo.utils import get_suggestion_fence, load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
@@ -186,7 +186,9 @@ class PRAddDocs:
                     new_code_snippet = self.dedent_code(relevant_file, relevant_line, documentation, doc_placement,
                                                         add_original_line=True)
 
-                    body = "**Suggestion:** Proposed documentation\n```suggestion\n" + new_code_snippet + "\n```"
+                    fence = get_suggestion_fence(new_code_snippet)
+                    body = (f"**Suggestion:** Proposed documentation\n{fence}suggestion\n"
+                            + new_code_snippet + f"\n{fence}")
                     docs.append({'body': body, 'relevant_file': relevant_file,
                                  "relevant_lines_start": relevant_line,
                                  "relevant_lines_end": relevant_line})

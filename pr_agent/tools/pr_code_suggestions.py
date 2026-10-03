@@ -42,6 +42,7 @@ from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
     get_model,
+    get_suggestion_fence,
     load_yaml,
     replace_code_tags,
 )
@@ -1395,13 +1396,14 @@ class PRCodeSuggestions:
             score = d.get("score")
             header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
                 else f"**Suggestion:** {content} [{label}]"
+            fence = get_suggestion_fence(new_code_snippet or "")
             if new_code_snippet and is_applicable:
-                body = f"{header}\n```suggestion\n" + new_code_snippet + "\n```"
+                body = f"{header}\n{fence}suggestion\n" + new_code_snippet + f"\n{fence}"
             else:
                 body = header
                 if new_code_snippet:
                     body += (f"\n\nProposed code (not offered as a committable change because {fallback_reason}):\n"
-                             f"```\n{new_code_snippet}\n```")
+                             f"{fence}\n{new_code_snippet}\n{fence}")
                 elif requires_pr_fallback:
                     body += f"\n\nNot offered as a committable change because {fallback_reason}."
 

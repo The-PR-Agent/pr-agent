@@ -1182,10 +1182,13 @@ class GithubProvider(GitProvider):
         for comment in invalid_comments:
             try:
                 fixed_comment = copy.deepcopy(comment)  # avoid modifying the original comment dict for later logging
-                if "```suggestion" in comment["body"]:
-                    # Keep what follows the block, where the dedup markers live.
-                    before, _, rest = comment["body"].partition("```suggestion")
-                    fixed_comment["body"] = before + rest.rsplit("```", 1)[-1]
+                opener = re.search(r"(`{3,})suggestion", comment["body"])
+                if opener:
+                    # Keep what follows the block, where the dedup markers live. The
+                    # block may be fenced with more than three backticks.
+                    fence = opener.group(1)
+                    before, rest = comment["body"][:opener.start()], comment["body"][opener.end():]
+                    fixed_comment["body"] = before + rest.rsplit(fence, 1)[-1]
                 if "start_line" in comment:
                     fixed_comment["line"] = comment["start_line"]
                     del fixed_comment["start_line"]
@@ -2127,7 +2130,7 @@ class GithubProvider(GitProvider):
                                 diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
                                              f"```diff\n{patch.rstrip()}\n```")
                                 # replace ```suggestion ... ``` with diff_code, using regex:
-                                body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
+                                body = re.sub(r'(`{3,})suggestion.*?\1', lambda _: diff_code, body, flags=re.DOTALL)
                                 body += "\n\n</details>"
                                 suggestion['relevant_lines_start'] = new_start
                                 suggestion['relevant_lines_end'] = new_end
