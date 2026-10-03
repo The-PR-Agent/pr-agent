@@ -227,7 +227,6 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
     on somebody asking for something, and its silence is pinned in test_pr_agent_routing.py.
     """
     import pr_agent.agent.pr_agent as pr_agent_module
-    from pr_agent.agent.pr_agent import PRAgent
 
     class _Tool:
         def __init__(self, pr_url, ai_handler=None, args=None, **kwargs):
@@ -243,7 +242,7 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
                         lambda pr_url: _RecordingProvider())
     monkeypatch.setitem(pr_agent_module.command2class, command.lstrip("/"), _Tool)
 
-    result = asyncio.run(PRAgent(ai_handler="fake-ai").handle_request(
+    result = asyncio.run(pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
         "https://github.com/org/repo/pull/1", command, notify=lambda: acknowledged.append(command)))
 
     assert result is True
@@ -258,7 +257,6 @@ def test_auto_review_never_acknowledges_on_the_real_dispatcher(monkeypatch):
     acknowledging `auto_review`. This one goes through `PRAgent`.
     """
     import pr_agent.agent.pr_agent as pr_agent_module
-    from pr_agent.agent.pr_agent import PRAgent
 
     class _Tool:
         def __init__(self, pr_url, ai_handler=None, args=None, **kwargs):
@@ -273,7 +271,7 @@ def test_auto_review_never_acknowledges_on_the_real_dispatcher(monkeypatch):
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context",
                         lambda pr_url: _RecordingProvider())
 
-    result = asyncio.run(PRAgent(ai_handler="fake-ai").handle_request(
+    result = asyncio.run(pr_agent_module.PRAgent(ai_handler="fake-ai").handle_request(
         "https://github.com/org/repo/pull/1", "/auto_review", notify=lambda: acknowledged.append("auto")))
 
     assert result is True, "auto_review runs, it just does not acknowledge"

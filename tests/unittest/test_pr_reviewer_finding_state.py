@@ -1495,6 +1495,7 @@ async def test_review_run_surfaces_failed_persistent_write(monkeypatch, is_auto_
     assert command_failed() is True
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("is_auto_command", [True, False])
 async def test_a_successful_run_is_not_recorded_as_failed(monkeypatch, is_auto_command):
     """The control: recording on failure must not turn every run into a failure."""
