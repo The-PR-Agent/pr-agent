@@ -302,6 +302,17 @@ class GithubProvider(GitProvider):
                 return self.comments[index]
         return None
 
+    @staticmethod
+    def _file_collection_marker(pr) -> tuple[str, str, str, int]:
+        head = getattr(pr, "head", None)
+        base = getattr(pr, "base", None)
+        revision = (getattr(head, "sha", None), getattr(base, "sha", None), getattr(base, "ref", None))
+        count = getattr(pr, "changed_files", None)
+        if (not all(isinstance(value, str) and value for value in revision)
+                or isinstance(count, bool) or not isinstance(count, int) or count < 0):
+            raise IncompletePullRequestFilesError("GitHub returned invalid pull-request revision metadata")
+        return (*revision, count)
+
     def _get_complete_files(self):
         if context.exists():
             context_files = context.get("git_files", None)
@@ -312,14 +323,18 @@ class GithubProvider(GitProvider):
         if git_files is not None:
             return git_files
 
+        original_marker = None
         for attempt in range(2):
             try:
+                if original_marker is None:
+                    original_marker = self._file_collection_marker(self.pr)
                 git_files = list(self.pr.get_files())  # 'list' to handle pagination
-                changed_files = self.pr.changed_files
-                if isinstance(changed_files, bool) or not isinstance(changed_files, int):
+                fresh_marker = self._file_collection_marker(self._get_pr())
+                if fresh_marker != original_marker:
                     raise IncompletePullRequestFilesError(
-                        f"GitHub returned an invalid changed_files count: {changed_files!r}"
+                        "GitHub pull-request revision changed while collecting files"
                     )
+                changed_files = original_marker[3]
                 if len(git_files) != changed_files:
                     raise IncompletePullRequestFilesError(
                         f"GitHub returned {len(git_files)} pull-request files but reported {changed_files}"

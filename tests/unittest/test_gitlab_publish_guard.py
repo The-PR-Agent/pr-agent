@@ -20,7 +20,10 @@ def _provider(monkeypatch, head=HEAD):
     provider.get_diff_files = lambda: [FilePatchInfo(base_file="", head_file=head, patch="",
                                                      filename="a.py", edit_type=EDIT_TYPE.MODIFIED)]
     provider.sent = []
-    provider.send_inline_comment = lambda *args, **kwargs: provider.sent.append(args)
+    def send(*args, **kwargs):
+        provider.sent.append(args)
+        return True
+    provider.send_inline_comment = send
     return provider, logger
 
 
@@ -34,7 +37,7 @@ def test_unpublishable_suggestion_is_skipped_with_warning(monkeypatch, head, sta
     """Blank head, out-of-range, or zero line numbers must not raise IndexError."""
     provider, logger = _provider(monkeypatch, head)
 
-    assert provider.publish_code_suggestions([_suggestion(start=start, end=start)]) is True
+    assert provider.publish_code_suggestions([_suggestion(start=start, end=start)]) is False
     assert provider.sent == []
     warned = [c[0][0] for c in logger.warning.call_args_list]
     assert any("Skipping suggestion" in w for w in warned)

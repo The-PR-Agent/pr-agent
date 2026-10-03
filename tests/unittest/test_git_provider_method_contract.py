@@ -350,7 +350,7 @@ def _build_github_suggestion_provider(monkeypatch, tmp_path) -> GithubProvider:
 def _build_gitlab_suggestion_provider(monkeypatch, tmp_path) -> GitLabProvider:
     provider = _gitlab(monkeypatch)
     provider.resolve_outdated_inline_threads = MagicMock()
-    provider.get_diff_files = MagicMock(return_value=[SimpleNamespace(filename="app.py", head_file="orig\n")])
+    provider.get_diff_files = MagicMock(return_value=[SimpleNamespace(filename="app.py", head_file="orig\n", patch="")])
     return provider
 
 
@@ -418,9 +418,6 @@ SUGGESTION_OUTCOME_CONTRACTS = (
         ),
         make_succeed=lambda p, mp, tmp: setattr(p, "send_inline_comment", MagicMock(return_value=True)),
         payload=SUGGESTION_PAYLOAD,
-        deliberate_mismatch=DeliberateMismatch(
-            "GitLab unconditionally returns True; issue #3129 owns reporting total failures."
-        ),
     ),
     SuggestionOutcomeContract(
         provider_name="gitea",

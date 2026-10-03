@@ -11,7 +11,7 @@ import time
 import jwt
 import requests
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import APIRouter, Request, Response
 from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
@@ -25,6 +25,7 @@ from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
     is_command_comment,
@@ -110,6 +111,18 @@ async def handle_manifest(request: Request, response: Response):
         get_logger().error("Failed to replace api_key in Bitbucket manifest, trying to continue")
     manifest_obj = json.loads(manifest)
     return JSONResponse(manifest_obj)
+
+
+def _payload_log_summary(data: object) -> dict:
+    if not isinstance(data, dict):
+        return {"payload_type": type(data).__name__}
+
+    summary = {"payload_keys": sorted(data.keys())}
+    for field in ("clientKey", "event"):
+        value = data.get(field)
+        if isinstance(value, str):
+            summary[field] = value
+    return summary
 
 
 def _get_username(data):
@@ -262,7 +275,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
         return "OK"
     input_jwt = jwt_parts[1]
     data = await request.json()
-    get_logger().debug(data)
+    get_logger().debug(_payload_log_summary(data))
 
     async def inner():
         try:
@@ -421,7 +434,7 @@ async def handle_uninstalled_webhooks(request: Request, response: Response):
     get_logger().info("handle_uninstalled_webhooks")
 
     data = await request.json()
-    get_logger().info(data)
+    get_logger().info(_payload_log_summary(data))
 
 
 def start():
@@ -429,7 +442,7 @@ def start():
     get_settings().set("CONFIG.GIT_PROVIDER", "bitbucket")
     get_settings().set("PR_DESCRIPTION.PUBLISH_DESCRIPTION_AS_COMMENT", True)
     middleware = [Middleware(RawContextMiddleware)]
-    app = FastAPI(middleware=middleware)
+    app = create_server_app(middleware=middleware)
     app.include_router(router)
 
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "3000")))

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import git
 import pytest
 import urllib3.util
@@ -345,3 +347,54 @@ def test_cleanup_reports_a_failed_removal_instead_of_claiming_success(tmp_path, 
     assert "Failed to clean up temp repo" in combined
     assert str(repo_path) in combined
     assert "device busy" in combined
+
+
+def _patch_gerrit_provider_initialization(monkeypatch):
+    settings_values = {
+        "gerrit.url": "https://gerrit.example:29418",
+        "gerrit.user": "bot",
+    }
+    settings = SimpleNamespace(get=lambda key: settings_values[key])
+    prepare_calls = []
+
+    def prepare_repo(url, project, refspec):
+        prepare_calls.append((url, project, refspec))
+        return "repo-path"
+
+    monkeypatch.setattr(gerrit_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr(gerrit_provider, "prepare_repo", prepare_repo)
+    monkeypatch.setattr(gerrit_provider, "Repo", lambda _path: object())
+    monkeypatch.setattr(gerrit_provider, "PullRequestMimic", lambda title, files: (title, files))
+    monkeypatch.setattr(GerritProvider, "get_pr_title", lambda _self: "change")
+    monkeypatch.setattr(GerritProvider, "get_diff_files", lambda _self: [])
+    return prepare_calls
+
+
+@pytest.mark.parametrize("refspec", ["refs/changes/01/1/1", "refs/changes/23/123/4"])
+def test_init_accepts_canonical_change_refspec(monkeypatch, refspec):
+    prepare_calls = _patch_gerrit_provider_initialization(monkeypatch)
+
+    provider = GerritProvider(f"my/project:{refspec}")
+
+    assert provider.refspec == refspec
+    assert prepare_calls[0][1:] == ("my/project", refspec)
+
+
+@pytest.mark.parametrize(
+    "refspec",
+    [
+        "refs/changes/1/1/1",
+        "refs/changes/001/1/1",
+        "refs/heads/main",
+        "refs/changes/01/1",
+        "refs/changes/01/1/1/extra",
+        "refs/changes/ab/1/1",
+    ],
+)
+def test_init_rejects_malformed_change_refspec_before_preparing_repo(monkeypatch, refspec):
+    prepare_calls = _patch_gerrit_provider_initialization(monkeypatch)
+
+    with pytest.raises(ValueError, match="refspec"):
+        GerritProvider(f"my/project:{refspec}")
+
+    assert prepare_calls == []

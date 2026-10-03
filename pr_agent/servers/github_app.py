@@ -5,7 +5,7 @@ import uuid
 from typing import Any, Dict, Tuple
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette_context import context
@@ -25,6 +25,7 @@ from pr_agent.servers.github_common import (
 )
 from pr_agent.servers.github_common import handle_line_comments as handle_line_comments
 from pr_agent.servers.github_common import matches_review_state as matches_review_state
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     get_pr_commands,
@@ -100,11 +101,6 @@ async def get_body(request):
     except Exception as e:
         get_logger().error("Error reading request body", artifact={"error": e})
         raise HTTPException(status_code=400, detail="Error reading request body") from e
-    try:
-        body = await request.json()
-    except Exception as e:
-        get_logger().error("Error parsing request body", artifact={"error": e})
-        raise HTTPException(status_code=400, detail="Error parsing request body") from e
     webhook_secret = getattr(get_settings().github, 'webhook_secret', None)
     if not webhook_secret:
         # Refuse unauthenticated webhooks. Silently accepting requests when
@@ -114,6 +110,11 @@ async def get_body(request):
         raise HTTPException(status_code=403, detail="Webhook secret not configured")
     signature_header = request.headers.get('x-hub-signature-256', None)
     verify_signature(body_bytes, webhook_secret, signature_header)
+    try:
+        body = await request.json()
+    except Exception as e:
+        get_logger().error("Error parsing request body", artifact={"error": e})
+        raise HTTPException(status_code=400, detail="Error parsing request body") from e
     return body
 
 
@@ -543,7 +544,7 @@ if get_settings().github_app.override_deployment_type:
 middleware = [Middleware(RawContextMiddleware)]
 if prometheus_metrics_enabled():
     attach_metrics_endpoint(router)
-app = FastAPI(middleware=middleware)
+app = create_server_app(middleware=middleware)
 app.include_router(router)
 
 
