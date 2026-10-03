@@ -29,7 +29,7 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
 # host-only. publish_error_details controls what service-side failure state is
 # disclosed in a PR comment, so the PR author must not be able to enable it.
 REPO_HOST_ONLY_KEYS_BY_SECTION = {
-    # Provider routing remains host-controlled so a reviewed repo cannot redirect requests.
+    # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
     "databricks": frozenset({"api_base"}),
     "huggingface": frozenset({"api_base"}),
