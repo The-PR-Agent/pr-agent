@@ -16,7 +16,7 @@ from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
-from pr_agent.algo.run_details import get_run_details
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -433,6 +433,10 @@ class PRAgent:
             # result cannot be overridden by either source. Restore it below for request isolation.
             previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
             settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
+        # Install a fresh collector at the per-command boundary so the finally block
+        # exports this command's usage and never repeats or inherits a prior command's
+        # counts. Tools that run their own collector (e.g. /review) replace it on entry.
+        init_run_details()
         try:
             with get_logger().contextualize(command=action, pr_url=pr_url):
                 get_logger().info("PR-Agent request handler started", analytics=True)
