@@ -564,6 +564,12 @@ uri = "./lancedb"
 enabled = false
 paths = [] # directories to scan recursively for "*/SKILL.md"; supports ~ and $VAR
 max_skills_tokens = 8000 # token budget for the combined skills_context block
+# Cap how many skills are injected regardless of the token budget; 0 disables the cap.
+# When the token budget forces drops, skills are kept in order of lexical relevance
+# to the PR title and main language (alphabetical as tiebreaker), so the guidance
+# the model sees is biased toward the PR's domain instead of toward the start of
+# the alphabet.
+max_skills = 0
 
 [artifacts]
 # Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set)

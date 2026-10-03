@@ -38,7 +38,8 @@ class PRQuestions:
         self.question_str = question_str
         settings = get_settings()
         skills_context = (
-            get_skills_context()
+            get_skills_context(
+                relevance_hint=f"{self.git_provider.pr.title} {self.main_pr_language}")
             if settings.skills.get("enabled", False)
             else ""
         )

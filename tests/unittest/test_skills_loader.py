@@ -17,6 +17,7 @@ from pr_agent.algo.skills_loader import (
     discover_skills,
     format_skills_context,
     get_skills_context,
+    select_skills,
 )
 
 
@@ -216,7 +217,7 @@ class TestGetSkillsContext:
         monkeypatch.setattr(
             skills_loader,
             "format_skills_context",
-            lambda skills, max_tokens: f"budget={max_tokens}",
+            lambda skills, max_tokens, **kwargs: f"budget={max_tokens}",
         )
 
         with request_cycle_context({}):
@@ -285,7 +286,7 @@ class TestGetSkillsContext:
         monkeypatch.setattr(
             skills_loader,
             "format_skills_context",
-            lambda skills, max_tokens: ",".join(skill.name for skill in skills),
+            lambda skills, max_tokens, **kwargs: ",".join(skill.name for skill in skills),
         )
 
         with request_cycle_context({}):
@@ -491,3 +492,136 @@ class TestResourceGathering:
         out = format_skills_context(skills, max_tokens=200)  # 800-char budget
         assert "Skill: first" in out
         assert "Skill: second" not in out
+
+
+def _skill(name: str, description: str) -> Skill:
+    return Skill(name=name, description=description, body="guidance")
+
+
+class TestSelectSkills:
+    def test_prefers_relevant_skill_over_alphabetical(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform infrastructure code.")
+
+        ranked = select_skills([alpha, zulu], relevance_hint="Migrate EC2 instances in main.tf (Terraform)")
+
+        assert ranked[0] is zulu
+        assert ranked[1] is alpha
+
+    def test_empty_hint_keeps_alphabetical_order(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        assert select_skills([alpha, zulu]) == [alpha, zulu]
+        assert select_skills([alpha, zulu], relevance_hint="   ") == [alpha, zulu]
+
+    def test_ties_fall_back_to_alphabetical(self):
+        first = _skill("aaa", "Use for python tests.")
+        second = _skill("bbb", "Use for python tests.")
+
+        assert select_skills([second, first], relevance_hint="python tests") == [first, second]
+
+    def test_max_skills_caps_after_ranking(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+        other = _skill("m-migrations", "Use for database migrations.")
+
+        ranked = select_skills(
+            [alpha, other, zulu],
+            relevance_hint="Terraform plan changes",
+            max_skills=2,
+        )
+
+        assert zulu in ranked
+        # The irrelevant skills tie at score zero, so the cap keeps the
+        # alphabetically-earlier one of them.
+        assert other not in ranked
+        assert len(ranked) == 2
+
+    def test_max_skills_zero_disables_the_cap(self):
+        alpha = _skill("a", "Use for a.")
+        zulu = _skill("z", "Use for z.")
+
+        assert len(select_skills([alpha, zulu], relevance_hint="z things", max_skills=0)) == 2
+
+    def test_cap_ranks_by_relevance_before_cutting(self):
+        """A relevant alphabetically-later skill must survive the count cap."""
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        ranked = select_skills([alpha, zulu], relevance_hint="Terraform changes", max_skills=1)
+
+        assert ranked == [zulu]
+
+    def test_symbolic_language_names_keep_their_signal(self):
+        """C++ and C# hints must match skills naming those languages."""
+        cpp_skill = _skill("cpp-guidelines", "Use when reviewing modern C++ code.")
+        other = _skill("release-notes", "Use when writing release notes.")
+
+        assert select_skills([other, cpp_skill], relevance_hint="Refactor the parser (C++)")[0] is cpp_skill
+        csharp_skill = _skill("csharp-guidelines", "Use when reviewing C# code.")
+        assert select_skills([other, csharp_skill], relevance_hint="Update the C# service")[0] is csharp_skill
+
+
+class TestRelevanceBudget:
+    def test_budget_drop_keeps_the_relevant_skill(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        out = format_skills_context(
+            [alpha, zulu], max_tokens=30, relevance_hint="Terraform migration in main.tf")
+
+        assert "Skill: z-terraform-standards" in out
+        assert "Skill: a-release-notes" not in out
+
+    def test_budget_drop_without_hint_keeps_today_behavior(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        out = format_skills_context([alpha, zulu], max_tokens=30)
+
+        assert "Skill: a-release-notes" in out
+        assert "Skill: z-terraform-standards" not in out
+
+    def test_everything_fitting_is_unchanged_by_a_hint(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        with_hint = format_skills_context(
+            [alpha, zulu], max_tokens=8000, relevance_hint="Terraform migration")
+        without_hint = format_skills_context([alpha, zulu], max_tokens=8000)
+
+        assert with_hint == without_hint
+
+
+class TestRelevanceHintCache:
+    def test_hint_participates_in_the_request_cache(self, monkeypatch):
+        settings = SimpleNamespace(
+            config=SimpleNamespace(model="gpt-4o"),
+            skills=SimpleNamespace(
+                enabled=True,
+                paths=["/host/skills"],
+                # Small enough that only one of the two skills fits, so each
+                # hint must produce a different surviving skill.
+                max_skills_tokens=30,
+            )
+        )
+        with patch.object(skills_loader, "get_settings", lambda: settings):
+            with patch.object(
+                skills_loader,
+                "discover_skills",
+                lambda _paths: [
+                    _skill("a-release-notes", "Use when writing release notes."),
+                    _skill("z-terraform-standards", "Use when reviewing Terraform code."),
+                ],
+            ):
+                with request_cycle_context({}):
+                    terraform = skills_loader.get_skills_context(
+                        relevance_hint="Terraform migration in main.tf")
+                    notes = skills_loader.get_skills_context(
+                        relevance_hint="Write the release notes")
+
+        assert "Skill: z-terraform-standards" in terraform
+        assert "Skill: a-release-notes" not in terraform
+        assert "Skill: a-release-notes" in notes
+        assert "Skill: z-terraform-standards" not in notes

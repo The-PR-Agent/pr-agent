@@ -38,6 +38,7 @@ In short, this implementation supports **text-only** agent skills.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -249,13 +250,75 @@ def _format_skill(skill: Skill) -> str:
     return "\n".join(parts).rstrip()
 
 
-def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
+_RELEVANCE_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+    "has", "in", "is", "it", "its", "of", "on", "or", "that", "the", "this",
+    "to", "was", "were", "when", "with", "use", "used", "using", "pr", "pull",
+    "request", "change", "changes", "code", "add", "adds", "fix", "fixes",
+})
+
+
+_SYMBOLIC_LANGUAGE_ALIASES = (
+    ("c++", " cpp "),
+    ("c#", " csharp "),
+    ("f#", " fsharp "),
+    ("objective-c", " objc "),
+)
+
+
+def _relevance_tokens(text: str) -> frozenset:
+    lowered = (text or "").lower()
+    # The generic word split would reduce symbolic language names like C++ or
+    # C# to a single "c" and drop it, losing the main-language hint signal.
+    for symbolic, alias in _SYMBOLIC_LANGUAGE_ALIASES:
+        lowered = lowered.replace(symbolic, alias)
+    return frozenset(
+        token for token in re.findall(r"[a-z0-9]+", lowered)
+        if len(token) > 1 and token not in _RELEVANCE_STOPWORDS
+    )
+
+
+def _relevance_score(skill: Skill, hint_tokens: frozenset) -> int:
+    skill_tokens = _relevance_tokens(f"{skill.name} {skill.description}")
+    return len(skill_tokens & hint_tokens)
+
+
+def select_skills(
+    skills: List[Skill], relevance_hint: str = "", max_skills: Optional[int] = None
+) -> List[Skill]:
+    """Order skills so budget-constrained packing drops the least relevant first.
+
+    Relevance is a cheap lexical overlap between the hint (the PR title and main
+    language) and each skill's name and description; ties keep the alphabetical
+    order ``discover_skills`` returned, so an empty hint reproduces it exactly
+    and description-based activation is unchanged whenever everything fits.
+    """
+    if len(skills) <= 1:
+        return list(skills)
+    ranked = list(skills)
+    hint_tokens = _relevance_tokens(relevance_hint)
+    if hint_tokens:
+        ranked.sort(key=lambda skill: (-_relevance_score(skill, hint_tokens), skill.name))
+    if max_skills is not None:
+        try:
+            cap = int(max_skills)
+        except (TypeError, ValueError):
+            cap = 0
+        if 0 < cap < len(ranked):
+            ranked = ranked[:cap]
+    return ranked
+
+
+def format_skills_context(skills: List[Skill], max_tokens: int, relevance_hint: str = "") -> str:
     """Format skills into a prompt-ready string under a token budget.
 
-    Skills are emitted in order; once the running token count would exceed the
-    budget, remaining skills are dropped. If the first skill alone exceeds the
-    budget, its formatted text is clipped via ``clip_tokens`` and a marker is
-    appended. Returns an empty string when nothing fits.
+    Skills are emitted in the given order; once the running token count would
+    exceed the budget, remaining skills are dropped. If the first skill alone
+    exceeds the budget, its formatted text is clipped via ``clip_tokens`` and a
+    marker is appended. Returns an empty string when nothing fits. With a
+    ``relevance_hint``, the order is retried by relevance only when the
+    alphabetical order dropped skills, so a fitting set packs byte-identically
+    to the hint-less call.
     """
     if not skills:
         return ""
@@ -266,30 +329,40 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
     separator = "\n\n---\n\n"
     sep_tokens = _count_tokens(separator)
     marker_tokens = _count_tokens(truncate_marker)
-    pieces: List[str] = []
-    used = 0
-    for skill in skills:
-        formatted = _format_skill(skill)
-        tokens = _count_tokens(formatted)
-        addition = (sep_tokens if pieces else 0) + tokens
-        if used + addition > max_tokens:
-            if not pieces:
-                budget = max(1, max_tokens - marker_tokens)
-                truncated = clip_tokens(formatted, budget, add_three_dots=False)
-                while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
-                    truncated = truncated[: int(len(truncated) * 0.9)]
-                pieces.append(truncated + truncate_marker)
-                if len(skills) > 1:
+
+    def pack(order: List[Skill]) -> Tuple[List[str], int]:
+        pieces: List[str] = []
+        used = 0
+        for skill in order:
+            formatted = _format_skill(skill)
+            tokens = _count_tokens(formatted)
+            addition = (sep_tokens if pieces else 0) + tokens
+            if used + addition > max_tokens:
+                if not pieces:
+                    budget = max(1, max_tokens - marker_tokens)
+                    truncated = clip_tokens(formatted, budget, add_three_dots=False)
+                    while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
+                        truncated = truncated[: int(len(truncated) * 0.9)]
+                    pieces.append(truncated + truncate_marker)
+                    if len(order) > 1:
+                        get_logger().info(
+                            f"First skill exceeded budget; truncated and dropped {len(order) - 1} skill(s)"
+                        )
+                else:
                     get_logger().info(
-                        f"First skill exceeded budget; truncated and dropped {len(skills) - 1} skill(s)"
+                        f"Skills context budget reached; dropping {len(order) - len(pieces)} skill(s)"
                     )
-            else:
-                get_logger().info(
-                    f"Skills context budget reached; dropping {len(skills) - len(pieces)} skill(s)"
-                )
-            break
-        pieces.append(formatted)
-        used += addition
+                break
+            pieces.append(formatted)
+            used += addition
+        return pieces, len(order) - len(pieces)
+
+    pieces, dropped = pack(list(skills))
+    if dropped and relevance_hint and len(skills) > 1:
+        ranked = select_skills(skills, relevance_hint=relevance_hint)
+        if [skill.name for skill in ranked] != [skill.name for skill in skills]:
+            ranked_pieces, _ = pack(ranked)
+            pieces = ranked_pieces
 
     return separator.join(pieces).strip()
 
@@ -317,13 +390,14 @@ def _set_cached_context(
         return
 
 
-def get_skills_context() -> str:
+def get_skills_context(relevance_hint: str = "") -> str:
     """Read settings, discover skills, and format them for prompt injection.
 
-    Memoised per request, effective Skills settings, and model via ``starlette_context``
-    so tools that inject ``skills_context`` (review, improve, describe, ask)
-    share a single discovery + parse + format. Returns ``''`` when skills are
-    disabled, no paths are configured, or no skills are found.
+    Memoised per request, effective Skills settings, model, and relevance hint
+    via ``starlette_context`` so tools that inject ``skills_context`` (review,
+    improve, describe, ask) share a single discovery + parse + format. Returns
+    ``''`` when skills are disabled, no paths are configured, or no skills are
+    found.
     """
     settings = get_settings()
     enabled = bool(settings.skills.enabled)
@@ -346,7 +420,7 @@ def get_skills_context() -> str:
         invalid_max = True
         max_tokens = _DEFAULT_MAX_SKILLS_TOKENS
 
-    cache_settings = (True, expanded_paths, max_tokens, settings.config.model)
+    cache_settings = (True, expanded_paths, max_tokens, settings.config.model, relevance_hint)
     cached = _get_cached_context(cache_settings)
     if cached is not None:
         return cached
@@ -355,7 +429,22 @@ def get_skills_context() -> str:
             f"Invalid skills.max_skills_tokens={raw_max!r}; falling back to {_DEFAULT_MAX_SKILLS_TOKENS}"
         )
 
+    # Attribute access keeps working for both Dynaconf boxes and the
+    # SimpleNamespace settings used in unit tests; a missing key means no cap.
+    raw_max_skills = getattr(settings.skills, "max_skills", 0)
+    try:
+        max_skills = int(raw_max_skills)
+    except (TypeError, ValueError):
+        get_logger().warning(f"Invalid skills.max_skills={raw_max_skills!r}; ignoring the cap")
+        max_skills = 0
+
     skills = discover_skills(paths)
-    out = format_skills_context(skills, max_tokens) if skills else ""
+    # The cap ranks by relevance first so it cannot cut a relevant but
+    # alphabetically-later skill; budget reordering still happens inside
+    # format_skills_context, and only when the budget dropped skills, so a
+    # fitting set (no cap) packs byte-identically with and without a hint.
+    if skills and 0 < max_skills < len(skills):
+        skills = select_skills(skills, relevance_hint=relevance_hint, max_skills=max_skills)
+    out = format_skills_context(skills, max_tokens, relevance_hint=relevance_hint) if skills else ""
     _set_cached_context(cache_settings, out)
     return out
