@@ -544,6 +544,24 @@ class TestSelectSkills:
 
         assert len(select_skills([alpha, zulu], relevance_hint="z things", max_skills=0)) == 2
 
+    def test_cap_ranks_by_relevance_before_cutting(self):
+        """A relevant alphabetically-later skill must survive the count cap."""
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        ranked = select_skills([alpha, zulu], relevance_hint="Terraform changes", max_skills=1)
+
+        assert ranked == [zulu]
+
+    def test_symbolic_language_names_keep_their_signal(self):
+        """C++ and C# hints must match skills naming those languages."""
+        cpp_skill = _skill("cpp-guidelines", "Use when reviewing modern C++ code.")
+        other = _skill("release-notes", "Use when writing release notes.")
+
+        assert select_skills([other, cpp_skill], relevance_hint="Refactor the parser (C++)")[0] is cpp_skill
+        csharp_skill = _skill("csharp-guidelines", "Use when reviewing C# code.")
+        assert select_skills([other, csharp_skill], relevance_hint="Update the C# service")[0] is csharp_skill
+
 
 class TestRelevanceBudget:
     def test_budget_drop_keeps_the_relevant_skill(self):
