@@ -3,6 +3,7 @@
 # Your repository configuration should only include options you wish to override from the defaults.
 
 [config]
+max_webhook_request_body_bytes = 5242880 # maximum request body accepted by webhook servers (5 MiB)
 # models
 model="gpt-5.6"
 fallback_models=["gpt-5.6-terra"]
