@@ -123,3 +123,59 @@ async def test_separate_credentials_do_not_share_results(provider_factory):
     assert await tickets.extract_tickets(denied) == []
     assert allowed_transport.requests[0].headers["PRIVATE-TOKEN"] == "allowed-offline-token"
     assert denied_transport.requests[0].headers["PRIVATE-TOKEN"] == "denied-offline-token"
+
+
+async def test_failed_initial_references_are_replaced_with_later_tickets(provider_factory):
+    provider, transport = provider_factory("Fixes #1 #2 #3 #4 #5 #6 #7", [404, 403, 500, 200, 200, 200])
+    result = await tickets.extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [4, 5, 6]
+    assert len(transport.requests) == 6
+
+
+async def test_successful_ticket_limit_stops_later_lookups(provider_factory):
+    provider, transport = provider_factory("Fixes #1 #2 #3 #4", [200, 200, 200, 404])
+    assert [ticket["ticket_id"] for ticket in await tickets.extract_tickets(provider)] == [1, 2, 3]
+    assert len(transport.requests) == 3
+
+
+async def test_failed_ticket_lookup_budget_is_ten_distinct_references(provider_factory):
+    provider, transport = provider_factory("Fixes " + " ".join(f"#{iid}" for iid in range(1, 12)), [404] * 11)
+    assert await tickets.extract_tickets(provider) == []
+    assert [int(urlparse(request.url).path.rsplit("/", 1)[-1]) for request in transport.requests] == list(range(1, 11))
+
+
+async def test_duplicate_references_do_not_consume_lookup_budget(provider_factory):
+    description = "#1 GROUP/REPO#1 #2 #2 #3 #4"
+    provider, transport = provider_factory(description, [404, 404, 404, 200])
+    assert [ticket["ticket_id"] for ticket in await tickets.extract_tickets(provider)] == [4]
+    assert len(transport.requests) == 4
+
+
+async def test_logical_lookup_budget_preserves_sdk_transient_retries(provider_factory, monkeypatch):
+    monkeypatch.setattr("gitlab.utils.time.sleep", lambda seconds: None)
+    provider, transport = provider_factory("Fixes #1 #2 #3 #4", [503] * 9 + [200, 200, 200], retry=True)
+    assert [ticket["ticket_id"] for ticket in await tickets.extract_tickets(provider)] == [1, 2, 3]
+    assert len(transport.requests) == 12
+
+
+async def test_cancellation_during_refill_stops_later_references(provider_factory):
+    provider, transport = provider_factory("Fixes #1 #2 #3 #4 #5", [404, 404, 404, asyncio.CancelledError(), 200])
+    with pytest.raises(asyncio.CancelledError):
+        await tickets.extract_tickets(provider)
+    assert len(transport.requests) == 4
+
+
+async def test_other_ticket_integrations_remain_outside_gitlab_success_limit(provider_factory, monkeypatch):
+    asana = {"ticket_id": "asana-1"}
+    jira = {"ticket_id": "jira-1"}
+
+    async def fetch_asana(*args):
+        return [asana]
+
+    monkeypatch.setattr(tickets, "_fetch_asana_ticket_contents", fetch_asana)
+    monkeypatch.setattr(tickets, "add_jira_tickets", lambda provider, content: content.append(jira))
+    provider, transport = provider_factory("#1 #2 #3 #4", [404, 200, 200, 200])
+    result = await tickets.extract_tickets(provider)
+    assert [ticket["ticket_id"] for ticket in result] == [2, 3, 4, "asana-1", "jira-1"]
+    assert len(transport.requests) == 4

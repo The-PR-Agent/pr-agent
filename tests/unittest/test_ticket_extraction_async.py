@@ -734,6 +734,15 @@ class TestAzureDevopsExtraction:
 # ---------------------------------------------------------------------------
 
 class TestGitLabExtraction:
+    def test_reference_limit_defaults_to_three_and_can_expand_for_lookup_refill(self):
+        description = "#1 GROUP/REPO#1 " + " ".join(f"#{iid}" for iid in range(2, 12))
+        assert extract_gitlab_ticket_references(description, "group/repo", "https://gitlab.com") == [
+            ("group/repo", iid) for iid in range(1, 4)
+        ]
+        assert extract_gitlab_ticket_references(description, "group/repo", "https://gitlab.com", max_tickets=10) == [
+            ("group/repo", iid) for iid in range(1, 11)
+        ]
+
     @pytest.mark.parametrize(
         ("description", "repo_path", "gitlab_url", "expected"),
         [
