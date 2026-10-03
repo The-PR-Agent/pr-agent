@@ -6403,6 +6403,9 @@ async def test_azure_deployment_id_is_not_used_for_non_azure_probe(monkeypatch):
 @pytest.mark.parametrize(("setting_path", "model", "expected_key"), (
     ("ANTHROPIC.KEY", "anthropic/claude-sonnet-4-5", "anthropic-key"),
     ("COHERE.KEY", "cohere/command-r", "cohere-key"),
+    ("COMPACTIFAI.KEY", "compactifai/glm-5-3", "compactifai-key"),
+    ("COMPACTIFAI.KEY", "compactifai/glm-5-2", "compactifai-key"),
+    ("COMPACTIFAI.KEY", "compactifai/quasar-438b", "compactifai-key"),
     ("GROQ.KEY", "groq/llama-3.3-70b-versatile", "groq-key"),
     ("SAMBANOVA.KEY", "sambanova/Meta-Llama-3.3-70B-Instruct", "sambanova-key"),
     ("REPLICATE.KEY", "replicate/meta/model", "replicate-key"),
@@ -6430,6 +6433,21 @@ async def test_provider_key_is_forwarded_only_for_matching_model(monkeypatch, se
 
     assert matching_kwargs["api_key"] == expected_key
     assert openai_kwargs["api_key"] == DUMMY_LITELLM_API_KEY
+
+
+@pytest.mark.asyncio
+async def test_compactifai_configured_key_overrides_native_environment(monkeypatch):
+    monkeypatch.setenv("COMPACTIFAI_API_KEY", "native-compactifai-key")
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _make_settings({"COMPACTIFAI.KEY": "configured-compactifai-key"}),
+    )
+
+    kwargs = await _call(LiteLLMAIHandler(), "compactifai/glm-5-3")
+
+    assert kwargs["api_key"] == "configured-compactifai-key"
+    assert os.environ["COMPACTIFAI_API_KEY"] == "native-compactifai-key"
 
 
 @pytest.mark.asyncio
