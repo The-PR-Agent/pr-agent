@@ -17,6 +17,7 @@ from pr_agent.algo.skills_loader import (
     discover_skills,
     format_skills_context,
     get_skills_context,
+    select_skills,
 )
 
 
@@ -491,3 +492,113 @@ class TestResourceGathering:
         out = format_skills_context(skills, max_tokens=200)  # 800-char budget
         assert "Skill: first" in out
         assert "Skill: second" not in out
+
+
+def _skill(name: str, description: str) -> Skill:
+    return Skill(name=name, description=description, body="guidance")
+
+
+class TestSelectSkills:
+    def test_prefers_relevant_skill_over_alphabetical(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform infrastructure code.")
+
+        ranked = select_skills([alpha, zulu], relevance_hint="Migrate EC2 instances in main.tf (Terraform)")
+
+        assert ranked[0] is zulu
+        assert ranked[1] is alpha
+
+    def test_empty_hint_keeps_alphabetical_order(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        assert select_skills([alpha, zulu]) == [alpha, zulu]
+        assert select_skills([alpha, zulu], relevance_hint="   ") == [alpha, zulu]
+
+    def test_ties_fall_back_to_alphabetical(self):
+        first = _skill("aaa", "Use for python tests.")
+        second = _skill("bbb", "Use for python tests.")
+
+        assert select_skills([second, first], relevance_hint="python tests") == [first, second]
+
+    def test_max_skills_caps_after_ranking(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+        other = _skill("m-migrations", "Use for database migrations.")
+
+        ranked = select_skills(
+            [alpha, other, zulu],
+            relevance_hint="Terraform plan changes",
+            max_skills=2,
+        )
+
+        assert zulu in ranked
+        assert alpha not in ranked
+        assert len(ranked) == 2
+
+    def test_max_skills_zero_disables_the_cap(self):
+        alpha = _skill("a", "Use for a.")
+        zulu = _skill("z", "Use for z.")
+
+        assert len(select_skills([alpha, zulu], relevance_hint="z things", max_skills=0)) == 2
+
+
+class TestRelevanceBudget:
+    def test_budget_drop_keeps_the_relevant_skill(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        out = format_skills_context(
+            [alpha, zulu], max_tokens=30, relevance_hint="Terraform migration in main.tf")
+
+        assert "Skill: z-terraform-standards" in out
+        assert "Skill: a-release-notes" not in out
+
+    def test_budget_drop_without_hint_keeps_today_behavior(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        out = format_skills_context([alpha, zulu], max_tokens=30)
+
+        assert "Skill: a-release-notes" in out
+        assert "Skill: z-terraform-standards" not in out
+
+    def test_everything_fitting_is_unchanged_by_a_hint(self):
+        alpha = _skill("a-release-notes", "Use when writing release notes.")
+        zulu = _skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        with_hint = format_skills_context(
+            [alpha, zulu], max_tokens=8000, relevance_hint="Terraform migration")
+        without_hint = format_skills_context([alpha, zulu], max_tokens=8000)
+
+        assert with_hint == without_hint
+
+
+class TestRelevanceHintCache:
+    def test_hint_participates_in_the_request_cache(self, monkeypatch):
+        settings = SimpleNamespace(
+            config=SimpleNamespace(model="gpt-4o"),
+            skills=SimpleNamespace(
+                enabled=True,
+                paths=["/host/skills"],
+                max_skills_tokens=8000,
+                get=lambda key, default=None: 0 if key == "max_skills" else default,
+            )
+        )
+        with patch.object(skills_loader, "get_settings", lambda: settings):
+            with patch.object(
+                skills_loader,
+                "discover_skills",
+                lambda _paths: [
+                    _skill("a-release-notes", "Use when writing release notes."),
+                    _skill("z-terraform-standards", "Use when reviewing Terraform code."),
+                ],
+            ):
+                with request_cycle_context({}):
+                    terraform = skills_loader.get_skills_context(
+                        relevance_hint="Terraform migration in main.tf")
+                    notes = skills_loader.get_skills_context(
+                        relevance_hint="Write the release notes")
+
+        assert terraform.index("Skill: z-terraform-standards") < terraform.index("Skill: a-release-notes")
+        assert notes.index("Skill: a-release-notes") < notes.index("Skill: z-terraform-standards")
