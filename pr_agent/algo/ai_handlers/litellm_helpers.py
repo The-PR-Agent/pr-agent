@@ -15,6 +15,7 @@ DEFAULT_CALLBACK_TIMEOUT_SECONDS = 30
 MAX_DRAIN_ROUNDS = 5
 FLUSH_RESERVE_SECONDS = 1.0  # cap for each terminal phase reservation
 CANCELLATION_CLEANUP_SECONDS = 0.1
+_stream_close_tasks = set()
 _LITELLM_CALLBACK_ATTRS = (
     "callbacks",
     "success_callback",
@@ -62,7 +63,50 @@ def _stream_usage(chunk):
     return None
 
 
-async def _handle_streaming_response(response, model=None):
+def _warn_stream_cleanup(message):
+    try:
+        get_logger().warning(message)
+    except Exception:
+        # Logging must not replace the inference result during cleanup.
+        pass
+
+
+async def _aclose_quietly(response):
+    """Close a stream without replacing its result or exposing provider details."""
+    try:
+        result = getattr(response, "aclose", lambda: None)()
+        if inspect.isawaitable(result):
+            await result
+    except Exception as error:
+        _warn_stream_cleanup(f"Failed to close streaming response: {type(error).__name__}")
+
+
+async def _close_stream(response):
+    """Let consumer cancellation propagate without interrupting stream cleanup."""
+    try:
+        task = asyncio.ensure_future(_aclose_quietly(response))
+        # Keep a strong reference when a cancelled consumer leaves cleanup running.
+        _stream_close_tasks.add(task)
+        task.add_done_callback(_stream_close_tasks.discard)
+        # Skip waiting while cancellation unwinds, even without a task.cancel() request.
+        if not asyncio.current_task().cancelling() and not isinstance(sys.exception(), asyncio.CancelledError):
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling():
+                    raise
+                _warn_stream_cleanup("Failed to close streaming response: CancelledError")
+    finally:
+        # LiteLLM's close task cannot restore the consuming task's correlation IDs.
+        restore = getattr(type(response), "_restore_consumer_correlation_context", None)
+        if callable(restore):
+            try:
+                restore(response)
+            except Exception:
+                _warn_stream_cleanup("Unable to restore stream correlation context")
+
+
+async def _handle_streaming_response(response, model=None, stream_cleanup=None):
     """
     Handle streaming response from acompletion and collect the full response.
 
@@ -92,6 +136,11 @@ async def _handle_streaming_response(response, model=None):
     except Exception as e:
         get_logger().error(f"Error handling streaming response: {e}")
         raise
+    finally:
+        if stream_cleanup is None:
+            await _close_stream(response)
+        else:
+            stream_cleanup.append(response)
 
     if not full_response and finish_reason is None:
         get_logger().warning("Streaming response resulted in empty content with no finish reason")

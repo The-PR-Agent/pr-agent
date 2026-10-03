@@ -28,12 +28,19 @@ The A2A server exposes three endpoints:
 Images with health-probe hardening return `Unhealthy: LLM probe failed` for provider
 failures; the health check's own warning records only the exception type.
 `mosaico.health_timeout_seconds` sets a finite positive deadline in seconds (default: 10)
-for cooperative asynchronous preparation, dispatch, and stream consumption. Synchronous
-initialization and blocking SDK work can exceed this deadline. Older images may predate these protections.
+for cooperative asynchronous preparation, dispatch, stream consumption, and cleanup waiting.
+Stream cleanup can continue in the background after this deadline. Synchronous
+initialization and blocking SDK work can still exceed it.
+Older images may predate these protections.
 Set `MOSAICO__HEALTH_TIMEOUT_SECONDS` in the server's environment to override the default.
 Invalid values produce the generic unhealthy response (503), rather than using the default.
 When increasing the budget, also allow sufficient time in any external health-check client
 and container healthcheck; the bundled Compose probe uses a separate 25-second HTTP timeout.
+
+Chat and health-probe streams attempt cleanup on completion, failure, or cancellation.
+Consumer cancellation does not interrupt stream cleanup, which may continue after `/health`
+times out while the event loop remains active. Cleanup has no separate wait budget or
+configuration key and does not impose a local stream admission limit.
 
 The advertised agent card carries the skills `review`, `improve`, `describe`, and `ask`, the
 name `"PR-Agent Solution Agent"`, a `version` derived from the running build (never

@@ -124,6 +124,7 @@ from pr_agent.algo.ai_handlers.cloud_auth import (
     _vertex_request_default_adc,
 )
 from pr_agent.algo.ai_handlers.litellm_helpers import (
+    _close_stream,
     _get_azure_ad_credential,
     _get_azure_ad_token,
     _handle_streaming_response,
@@ -1195,19 +1196,26 @@ class LiteLLMAIHandler(BaseAiHandler):
         return fingerprints
 
     @contextlib.asynccontextmanager
-    async def _snapshot_aws_request_credentials(self, enabled):
+    async def _snapshot_aws_request_credentials(self, enabled, stream_cleanup=None):
         """Refresh off-loop and serialize this handler's AWS call and static fallback."""
-        if not enabled:
-            yield dict(self._aws_active_creds), False
-            return
-        async with self._aws_bedrock_lock:
-            if not self._aws_imds_fell_back:
-                self._validate_aws_credential_chain_environment()
-                if self._aws_imds_mode and not await self._refresh_aws_imds_credentials() and self._aws_static_creds:
-                    self._activate_static_aws_fallback()
-                    get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
-            can_fallback = self._aws_imds_mode and not self._aws_imds_fell_back and bool(self._aws_static_creds)
-            yield dict(self._aws_active_creds), can_fallback
+        try:
+            if not enabled:
+                yield dict(self._aws_active_creds), False
+                return
+            async with self._aws_bedrock_lock:
+                if not self._aws_imds_fell_back:
+                    self._validate_aws_credential_chain_environment()
+                    if (self._aws_imds_mode and not await self._refresh_aws_imds_credentials()
+                            and self._aws_static_creds):
+                        self._activate_static_aws_fallback()
+                        get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
+                can_fallback = self._aws_imds_mode and not self._aws_imds_fell_back and bool(self._aws_static_creds)
+                yield dict(self._aws_active_creds), can_fallback
+        finally:
+            if stream_cleanup is not None:
+                # Close any queued stream after releasing the AWS lock; each snapshot dispatches at most one.
+                for response in stream_cleanup:
+                    await _close_stream(response)
 
     def _should_use_aws_imds(self, provider: str | None) -> bool:
         """Return whether this request needs SigV4 credentials from the ambient AWS chain."""
@@ -2600,7 +2608,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 return f"Error fetching image: {img_path}", "error"
 
         _aws_imds = self._should_use_aws_imds(request_provider)
-        async with self._snapshot_aws_request_credentials(_aws_imds) as (
+        stream_cleanup = [] if _aws_imds else None
+        fallback_kwargs = None
+        async with self._snapshot_aws_request_credentials(_aws_imds, stream_cleanup=stream_cleanup) as (
             aws_request_credentials,
             aws_can_fallback,
         ):
@@ -2951,7 +2961,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["custom_llm_provider"] = custom_llm_provider
 
                 # Get completion with automatic streaming detection
-                resp, finish_reason, response_obj = await self._get_completion(**kwargs)
+                resp, finish_reason, response_obj = await self._get_completion(
+                    _stream_cleanup=stream_cleanup, **kwargs,
+                )
 
             except openai.RateLimitError as e:
                 get_logger().error(f"Rate limit error during LLM inference: {e}")
@@ -2960,7 +2972,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if aws_can_fallback:
                     if not self._aws_imds_fell_back:
                         self._activate_static_aws_fallback()
-                        get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
+                        get_logger().warning(f"{AWS_PROVIDER_CALL_FALLBACK_MESSAGE}: {type(e).__name__}")
                     fallback_credentials = dict(self._aws_active_creds)
                     request_region = kwargs.get("aws_region_name")
                     for key in AWS_REQUEST_CREDENTIAL_KEYS:
@@ -2973,7 +2985,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                         ))
                     ):
                         kwargs["aws_region_name"] = request_region
-                    resp, finish_reason, response_obj = await self._get_completion(**kwargs)
+                    fallback_kwargs = kwargs
                 else:
                     get_logger().warning(f"Error during LLM inference: {e}")
                     raise
@@ -2984,6 +2996,15 @@ class LiteLLMAIHandler(BaseAiHandler):
                     request=httpx.Request("POST", model),
                     body=None,
                 ) from e
+
+        if fallback_kwargs is not None:
+            fallback_stream_cleanup = []
+            async with self._snapshot_aws_request_credentials(
+                _aws_imds, stream_cleanup=fallback_stream_cleanup,
+            ):
+                resp, finish_reason, response_obj = await self._get_completion(
+                    _stream_cleanup=fallback_stream_cleanup, **fallback_kwargs,
+                )
 
         # Post-response bookkeeping happens outside the Bedrock IMDS lock above: it
         # touches no os.environ credentials, and in IMDS mode the lock serializes
@@ -3010,7 +3031,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
         request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
         deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
-        async with self._snapshot_aws_request_credentials(self._should_use_aws_imds(request_provider)) as (
+        use_aws_imds = self._should_use_aws_imds(request_provider)
+        stream_cleanup = [] if use_aws_imds else None
+        async with self._snapshot_aws_request_credentials(
+            use_aws_imds, stream_cleanup=stream_cleanup,
+        ) as (
             aws_request_credentials,
             _,
         ):
@@ -3043,10 +3068,16 @@ class LiteLLMAIHandler(BaseAiHandler):
             kwargs["model"] = normalize_litellm_model(kwargs["model"], custom_llm_provider)
             response = await self._acompletion(_completion=_completion, **kwargs)
             if streaming or hasattr(response, "__aiter__"):
-                async for _ in response:
-                    pass
+                try:
+                    async for _ in response:
+                        pass
+                finally:
+                    if stream_cleanup is None:
+                        await _close_stream(response)
+                    else:
+                        stream_cleanup.append(response)
 
-    async def _get_completion(self, **kwargs):
+    async def _get_completion(self, *, _stream_cleanup=None, **kwargs):
         """
         Wrapper that automatically handles streaming for required models.
         """
@@ -3071,7 +3102,9 @@ class LiteLLMAIHandler(BaseAiHandler):
             else:
                 get_logger().info(f"Using streaming mode for model {model}")
             response = await self._acompletion(**kwargs)
-            return await _handle_streaming_response(response, model=model)
+            if _stream_cleanup is None:
+                return await _handle_streaming_response(response, model=model)
+            return await _handle_streaming_response(response, model=model, stream_cleanup=_stream_cleanup)
         else:
             response = await self._acompletion(**kwargs)
             if response is None or len(response["choices"]) == 0:
