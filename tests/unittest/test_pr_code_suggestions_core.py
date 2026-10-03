@@ -2857,7 +2857,7 @@ def test_persistent_improve_edit_failure_does_not_publish_duplicate_summary(edit
     assert len(provider.published) == 1
     failure_body = provider.published[0][0]
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
-    assert "previous suggestions remain unchanged" in failure_body
+    assert "update could not be confirmed" in failure_body
     assert provider.removed == [progress]
     assert existing.body == old_body
     assert details.command_failed is True
@@ -2880,7 +2880,8 @@ def test_failed_persistent_improve_update_relabels_retained_progress():
     )
 
     provider.edit_comment.assert_called_with(
-        progress, "Failed to update the persistent suggestions comment; the previous suggestions remain unchanged."
+        progress,
+        "The persistent suggestions update could not be confirmed. Check the existing suggestions before retrying."
     )
     provider.remove_comment.assert_called_once_with(progress)
     provider.publish_comment.assert_called_once()
@@ -2970,5 +2971,36 @@ def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary
     assert len(provider.published) == 1
     failure_body = provider.published[0][0]
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
-    assert "previous suggestions remain unchanged" in failure_body
+    assert "update could not be confirmed" in failure_body
+    assert details.command_failed is True
+
+
+def test_stateful_unconfirmed_edit_does_not_claim_previous_summary_is_unchanged(monkeypatch):
+    details = init_run_details()
+    existing = _lifecycle_suggestion_comment("existing")
+    provider = _LifecycleSuggestionProvider([existing], supports_state=True)
+
+    def applied_edit_with_lost_response(comment, body):
+        comment.body = body
+        raise RuntimeError("edit response unavailable")
+
+    monkeypatch.setattr(provider, "edit_comment", applied_edit_with_lost_response)
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n<table>new suggestions</table>",
+        PRCodeSuggestionsHeader.SUMMARY.value,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert "new suggestions" in existing.body
+    assert result is provider.published[0][2]
+    assert len(provider.published) == 1
+    warning = provider.published[0][0]
+    assert "update could not be confirmed" in warning
+    assert "remain unchanged" not in warning
+    assert PRCodeSuggestionsIdentity.SUMMARY.value not in warning
     assert details.command_failed is True

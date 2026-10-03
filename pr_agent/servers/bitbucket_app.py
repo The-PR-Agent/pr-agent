@@ -112,6 +112,18 @@ async def handle_manifest(request: Request, response: Response):
     return JSONResponse(manifest_obj)
 
 
+def _payload_log_summary(data: object) -> dict:
+    if not isinstance(data, dict):
+        return {"payload_type": type(data).__name__}
+
+    summary = {"payload_keys": sorted(data.keys())}
+    for field in ("clientKey", "event"):
+        value = data.get(field)
+        if isinstance(value, str):
+            summary[field] = value
+    return summary
+
+
 def _get_username(data):
     actor = data.get("data", {}).get("actor", {})
     if actor:
@@ -262,7 +274,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
         return "OK"
     input_jwt = jwt_parts[1]
     data = await request.json()
-    get_logger().debug(data)
+    get_logger().debug(_payload_log_summary(data))
 
     async def inner():
         try:
@@ -421,7 +433,7 @@ async def handle_uninstalled_webhooks(request: Request, response: Response):
     get_logger().info("handle_uninstalled_webhooks")
 
     data = await request.json()
-    get_logger().info(data)
+    get_logger().info(_payload_log_summary(data))
 
 
 def start():
