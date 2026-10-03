@@ -476,13 +476,17 @@ class TestGitLabProvider:
         mock_project.files.create.assert_not_called()
 
     def test_create_or_update_pr_file_update_exception(self, gitlab_provider, mock_project):
-        mock_project.files.get.side_effect = Exception("Network error")
+        # Non-404 read failure on an existing file must propagate instead of creating anything.
+        error = GitlabGetError("500 Server Error", response_code=500)
+        mock_project.files.get.side_effect = error
 
-        with pytest.raises(Exception):
+        with pytest.raises(GitlabGetError) as raised:
             gitlab_provider.create_or_update_pr_file(
                 "CHANGELOG.md", "feature-branch", "content", "message",
                 expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
             )
+        assert raised.value is error
+        mock_project.files.create.assert_not_called()
 
     def test_has_create_or_update_pr_file_method(self, gitlab_provider):
         assert hasattr(gitlab_provider, "create_or_update_pr_file")

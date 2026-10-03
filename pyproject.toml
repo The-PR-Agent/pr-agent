@@ -142,7 +142,7 @@ dev = [
   "pytest-cov==7.1.0",
   "httpx==0.28.1",
   "pre-commit>=4,<5",
-  "ruff==0.16.8",
+  "ruff==0.16.10",
 ]
 
 [tool.uv]
@@ -177,7 +177,6 @@ lint.exclude = ["api/code_completions"]
 # the entry. TODO: burn this list down.
 lint.ignore = [
   "E722", # bare `except`
-  "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
   "B904", # raise without `from` inside `except`
 ]
