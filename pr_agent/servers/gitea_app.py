@@ -2,7 +2,7 @@ import copy
 import os
 from typing import Any, Dict
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette_context import context
@@ -12,6 +12,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
     is_command_comment,
@@ -173,7 +174,7 @@ def should_process_pr_logic(body) -> bool:
 middleware = [Middleware(RawContextMiddleware)]
 if prometheus_metrics_enabled():
     attach_metrics_endpoint(router)
-app = FastAPI(middleware=middleware)
+app = create_server_app(middleware=middleware)
 app.include_router(router)
 
 def start():
