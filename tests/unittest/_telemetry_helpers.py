@@ -27,6 +27,8 @@ def clear_telemetry_caches():
     tracer.get_tracer.cache_clear()
     meter.get_meter.cache_clear()
     meter.get_commands_counter.cache_clear()
+    meter.get_tokens_counter.cache_clear()
+    meter.get_ai_calls_counter.cache_clear()
     shutdown.register_shutdown_handler.cache_clear()
     registry.provider_registry.reset()
 
@@ -77,3 +79,18 @@ def build_in_memory_tracer():
     provider = TracerProvider(shutdown_on_exit=False)
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     return provider.get_tracer("telemetry-test"), exporter
+
+
+def build_in_memory_meter():
+    """Return (meter, reader) backed by a local provider — not the global one.
+
+    ``InMemoryMetricReader`` collects synchronously on read, so counters added by
+    the code under test are visible via ``reader.get_metrics_data()`` without an
+    export interval or an explicit provider flush.
+    """
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)
+    return provider.get_meter("telemetry-test"), reader
