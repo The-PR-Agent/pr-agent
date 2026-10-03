@@ -18,6 +18,7 @@ from starlette_context.middleware import RawContextMiddleware
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
@@ -199,13 +200,15 @@ async def _get_bot_user_id():
             gl = gitlab.Gitlab(
                 url=gitlab_url,
                 oauth_token=gitlab_token,
-                ssl_verify=ssl_verify
+                ssl_verify=ssl_verify,
+                timeout=get_http_request_timeout(),
             )
         else:
             gl = gitlab.Gitlab(
                 url=gitlab_url,
                 private_token=gitlab_token,
-                ssl_verify=ssl_verify
+                ssl_verify=ssl_verify,
+                timeout=get_http_request_timeout(),
             )
         gl.auth()
         return gl.user.id

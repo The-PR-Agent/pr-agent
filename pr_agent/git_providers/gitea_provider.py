@@ -1,4 +1,7 @@
+import functools
+import inspect
 import json
+import math
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, urlparse
 
@@ -19,6 +22,7 @@ from pr_agent.git_providers.git_provider import (
     IncrementalPR,
     redact_credentials,
 )
+from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
 
 # Shipped default for the [gitea] url setting in configuration.toml. A value
@@ -35,6 +39,75 @@ class _GiteaCommitAdapter:
         raw = raw or {}
         self.sha = raw.get("sha", "")
         self.html_url = raw.get("html_url", "")
+
+
+def _is_usable_timeout(value) -> bool:
+    """Report whether giteapy would turn ``value`` into a real urllib3 timeout.
+
+    It honours an ``int`` and a two-element pair, and silently sends the request unbounded for
+    everything else - including None, a falsy value, and a bare float such as 0.5. A pair of
+    Nones passes its type check but resolves to no timeout at all, so it is refused too.
+    """
+    if isinstance(value, int):  # the one type giteapy checks for; 0 fails the number check below
+        return _is_positive_number(value)
+    if not (isinstance(value, tuple) and len(value) == 2):
+        return False
+    return all(_is_positive_number(part) for part in value)
+
+
+def _is_positive_number(value) -> bool:
+    """Report whether urllib3 would accept ``value`` as a timeout.
+
+    A bool is an int, 0 and a negative number are rejected by urllib3 with a ValueError rather than
+    applied, and an infinity overflows the socket layer instead, so none of them is usable here.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    return math.isfinite(value) and value > 0
+
+
+def _with_default_request_timeout(call_api):
+    """Give every Gitea API call a timeout, which giteapy otherwise leaves unset.
+
+    giteapy reads no timeout from its Configuration, and its generated methods always forward
+    ``_request_timeout`` - as None unless a caller supplied a value - so the default is filled in
+    here. The value is passed as a pair, which is what keeps a fractional
+    ``config.http_request_timeout`` from being lost; see ``_is_usable_timeout`` for the types
+    giteapy accepts.
+
+    The setting is read per call rather than once when this wrapper is built, so a change made
+    later in the process is picked up: ``apply_repo_settings`` runs again per command, and a
+    provider cached from an earlier one may predate a merge. The GitLab client cannot do this, as
+    it takes the value when it builds its own client.
+
+    The value bounds one attempt rather than one call: giteapy builds its pool manager without a
+    ``retries`` argument, so urllib3 applies ``Retry(total=3, read=None)`` and retries a read that
+    stalls, for the request methods it retries by default.
+    """
+
+    # Derived from the signature rather than written down twice: the position shifts if giteapy's
+    # generated client gains a parameter before it, and a wrong index would replace the wrong slot.
+    # call_api arrives bound, so the signature has no self and the index is used as is. A stand-in
+    # with no such parameter (a test double, say) has no positional slot to fill, and the keyword
+    # below is then all it can set.
+    try:
+        position = list(inspect.signature(call_api).parameters).index("_request_timeout")
+    except ValueError:
+        position = None
+
+    def call_api_with_timeout(*args, **kwargs):
+        passed_by_position = position is not None and len(args) > position
+        given = args[position] if passed_by_position else None
+        if not _is_usable_timeout(kwargs.get("_request_timeout", given)):
+            default = (get_http_request_timeout(),) * 2
+            if passed_by_position:
+                # the slot is taken, so setting the keyword too would raise "multiple values"
+                args = (*args[:position], default, *args[position + 1:])
+            else:
+                kwargs["_request_timeout"] = default
+        return call_api(*args, **kwargs)
+
+    return functools.wraps(call_api)(call_api_with_timeout)
 
 
 class GiteaProvider(GitProvider):
@@ -69,6 +142,7 @@ class GiteaProvider(GitProvider):
         configuration.ssl_ca_cert = get_settings().get("GITEA.SSL_CA_CERT", None)
 
         client = giteapy.ApiClient(configuration)
+        client.call_api = _with_default_request_timeout(client.call_api)
         self.repo_api = RepoApi(client)
         self.owner = None
         self.repo = None

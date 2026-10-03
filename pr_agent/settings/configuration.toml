@@ -28,6 +28,24 @@ extra_config_url="" # optional URL or path to an additional .pr_agent.toml merge
 disable_auto_feedback = false
 enable_auto_approval = false # when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out
 ai_timeout=120 # 2 minutes
+# seconds of connect and of read inactivity allowed for the HTTP requests PR-Agent sends to a
+# provider API, so one that stalls is abandoned instead of holding a worker open indefinitely.
+# The bound is per attempt, so a client that retries is not bounded by it: the Gitea one takes
+# up to four attempts, and each may spend this twice, once connecting and once reading.
+# 600 is the highest a repository or an operator can set, so a per-repository override can still
+# raise a stalled call to 600 seconds, and an operator fronting a slower self-hosted host is
+# capped there too.
+# The Gitea client and the Bitbucket and Gerrit requests PR-Agent issues itself read it per call,
+# so a later change is picked up; the GitLab client reads it once when it is built, and the one
+# apply_repo_settings builds for a command is built before that repository's own settings are
+# merged, so a per-repository value does not reach that client. A GitLab client built later, as
+# /ask does, does read it. The giteapy client
+# retries a read that stalls, over the request methods urllib3 retries by default. The GitHub,
+# CodeCommit and Bitbucket SDK calls keep their own client defaults, the Bitbucket App server
+# keeps bitbucket_app.request_timeout, the Bitbucket account check keeps
+# bitbucket.identity_request_timeout, and the Azure DevOps client takes no timeout at all, so a
+# self-hosted server there is not covered.
+http_request_timeout=60
 retry_same_model_on_timeout = true # when false, a timed-out call is not retried on the same model and moves on to fallback_models
 # num_retries = 0 # per-call retries inside the completion client itself; unset keeps the client's default. These multiply the handler's own retry attempts
 skip_keys = []
