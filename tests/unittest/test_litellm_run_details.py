@@ -3,6 +3,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import openai
 import pytest
 
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -359,8 +360,11 @@ async def test_chat_completion_does_not_record_when_the_call_fails(monkeypatch):
     monkeypatch.setattr(handler, "_get_completion", failing_get_completion)
 
     init_run_details()
-    with pytest.raises(Exception):
+    with pytest.raises(openai.APIError) as raised:
         await handler.chat_completion(model="some-model", system="sys", user="usr")
+
+    # The handler wraps the provider failure; the original cause must survive for diagnostics.
+    assert isinstance(raised.value.__cause__, ValueError)
 
     details = get_run_details()
     assert details.num_ai_calls == 0

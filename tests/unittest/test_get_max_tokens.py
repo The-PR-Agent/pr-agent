@@ -222,7 +222,7 @@ class TestGetMaxTokens:
             })()
         })()
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="Ensure .* is defined in MAX_TOKENS"):
             get_max_tokens("gpt-4o_thinking")
 
     @pytest.mark.parametrize("invalid_limit", ["unknown", None, {}, float("inf"), 0, -1])
@@ -399,7 +399,7 @@ class TestGetMaxTokens:
 
         model = "custom-model"
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match="Ensure .* is defined in MAX_TOKENS"):
             get_max_tokens(model)
 
     def test_model_max_tokens_with__limit(self, monkeypatch):

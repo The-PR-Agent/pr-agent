@@ -177,7 +177,6 @@ lint.exclude = ["api/code_completions"]
 # the entry. TODO: burn this list down.
 lint.ignore = [
   "E722", # bare `except`
-  "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
   "B904", # raise without `from` inside `except`
 ]

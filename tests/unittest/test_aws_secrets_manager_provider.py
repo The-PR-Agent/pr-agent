@@ -2,6 +2,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from pr_agent.secret_providers.aws_secrets_manager_provider import AWSSecretsManagerProvider
 
@@ -13,13 +14,12 @@ class TestAWSSecretsManagerProvider:
         with patch('pr_agent.secret_providers.aws_secrets_manager_provider.get_settings') as mock_get_settings, \
              patch('pr_agent.secret_providers.aws_secrets_manager_provider.boto3.client') as mock_boto3_client:
 
-            settings = MagicMock()
-            settings.get.side_effect = lambda k, d=None: {
-                'aws_secrets_manager.secret_arn': 'arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret',
-                'aws_secrets_manager.region_name': 'us-east-1',
-                'aws.AWS_REGION_NAME': 'us-east-1'
-            }.get(k, d)
-            settings.aws_secrets_manager.secret_arn = 'arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret'
+
+            settings = {
+                "aws_secrets_manager.secret_arn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test-secret",
+                "aws_secrets_manager.region_name": "us-east-1",
+                "aws.AWS_REGION_NAME": "us-east-1"
+            }
             mock_get_settings.return_value = settings
 
             # Mock boto3 client
@@ -73,17 +73,26 @@ class TestAWSSecretsManagerProvider:
         )
 
     def test_init_failure_invalid_config(self):
-        with patch('pr_agent.secret_providers.aws_secrets_manager_provider.get_settings') as mock_get_settings:
-            settings = MagicMock()
-            settings.aws_secrets_manager.secret_arn = None  # Configuration error
+        with patch("pr_agent.secret_providers.aws_secrets_manager_provider.get_settings") as mock_get_settings, \
+             patch("pr_agent.secret_providers.aws_secrets_manager_provider.boto3.client"):
+
+            settings = {
+                "aws_secrets_manager.region_name": "us-east-1",
+                "aws.AWS_REGION_NAME": "us-east-1",
+                "aws_secrets_manager.secret_arn": None
+            }
             mock_get_settings.return_value = settings
 
-            with pytest.raises(Exception):
+            with pytest.raises(ValueError, match="AWS Secrets Manager ARN is not configured"):
                 AWSSecretsManagerProvider()
 
     def test_store_secret_failure(self):
         provider, mock_client = self._provider()
-        mock_client.put_secret_value.side_effect = Exception("AWS error")
+        error = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "AWS error"}},
+                            "PutSecretValue")
+        mock_client.put_secret_value.side_effect = error
 
-        with pytest.raises(Exception):
+        with pytest.raises(ClientError) as caught:
             provider.store_secret('test-secret', 'test-value')
+
+        assert caught.value is error
