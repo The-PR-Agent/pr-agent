@@ -732,11 +732,13 @@ class PRCodeSuggestions:
             return True
 
         def _publish_persistent_update_failure():
-            _clean_up_progress_note()
-            failure_body = (
-                f"⚠️ Failed to update the persistent {name} comment; "
-                f"the previous {name} remain unchanged."
+            record_command_failure()
+            failure_message = (
+                f"The persistent {name} update could not be confirmed. "
+                f"Check the existing {name} before retrying."
             )
+            _clean_up_progress_note(failure_message)
+            failure_body = f"⚠️ {failure_message}"
             try:
                 return git_provider.publish_comment(
                     failure_body,
