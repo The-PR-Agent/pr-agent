@@ -135,15 +135,15 @@ _ALLOWLIST = {
     (
         "push_outputs",
         "file_path",
-    ): "cfg.get(\"file_path\", \"pr-agent-outputs/reviews.jsonl\") in pr_agent/algo/run_output.py",
+    ): "cfg.get(\"file_path\", \"pr-agent-outputs/reviews.jsonl\") in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "webhook_url",
-    ): "_push_outputs_sink_url(cfg, \"webhook_url\") in pr_agent/algo/run_output.py",
+    ): "_push_outputs_sink_url(cfg, \"webhook_url\") in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "slack_webhook_url",
-    ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/run_output.py",
+    ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/output_sinks.py",
 }
 
 
