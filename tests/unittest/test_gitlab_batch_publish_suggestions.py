@@ -358,6 +358,76 @@ def test_successful_batches_on_same_provider_create_each_new_suggestion(publicat
     assert len(p.get_recent_inline_comment_bodies()) == 2
 
 
+@pytest.mark.parametrize("unqueued_first", [False, True])
+@pytest.mark.parametrize("recovers", [False, True])
+def test_failed_creation_in_failed_batch_is_created_on_retry(publication_provider, unqueued_first, recovers):
+    p = publication_provider
+    manager = p.mr.draft_notes
+    create = manager.create.side_effect
+    publish = manager.bulk_publish.side_effect
+    reject = True
+
+    def create_or_reject(payload):
+        if reject and "unqueued" in payload["note"]:
+            raise GitlabCreateError("cannot create draft")
+        return create(payload)
+
+    manager.create.side_effect = create_or_reject
+    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion")
+    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note")
+    manager.bulk_publish.side_effect = RequestException("cannot publish batch")
+    queued = _suggestion(body="queued", improved_code="x = 3")
+    unqueued = _suggestion(body="unqueued", suggestion_content="unqueued", improved_code="x = 4")
+    assert p.publish_code_suggestions([queued, unqueued]) is False
+    assert len(manager.list()) == 1
+    assert p.get_recent_inline_comment_bodies() == []
+    manager.bulk_publish.side_effect = publish
+    reject = not recovers
+    order = [unqueued, queued] if unqueued_first else [queued, unqueued]
+    for suggestion in order:
+        assert p.publish_code_suggestions([suggestion]) is (recovers or suggestion is queued)
+    assert manager.list() == []
+    bodies = p.get_recent_inline_comment_bodies()
+    assert sum(body.startswith("queued") for body in bodies) == 1
+    assert sum(body.startswith("unqueued") for body in bodies) == int(recovers)
+    assert manager.bulk_publish.call_count == 1 + (2 if not unqueued_first and recovers else 1)
+
+
+@pytest.mark.parametrize("unqueued_first", [False, True])
+def test_retry_publication_failure_keeps_settled_inputs(publication_provider, unqueued_first):
+    p = publication_provider
+    manager = p.mr.draft_notes
+    create = manager.create.side_effect
+    publish = manager.bulk_publish.side_effect
+    reject = True
+
+    def create_or_reject(payload):
+        if reject and "unqueued" in payload["note"]:
+            raise GitlabCreateError("cannot create draft")
+        return create(payload)
+
+    manager.create.side_effect = create_or_reject
+    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion")
+    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note")
+    manager.bulk_publish.side_effect = RequestException("cannot publish batch")
+    queued = _suggestion(body="queued", improved_code="x = 3")
+    unqueued = _suggestion(body="unqueued", suggestion_content="unqueued", improved_code="x = 4")
+    assert p.publish_code_suggestions([queued, unqueued]) is False
+    reject = False
+    order = [unqueued, queued] if unqueued_first else [queued, unqueued]
+    for suggestion in order:
+        assert p.publish_code_suggestions([suggestion]) is False
+    assert len(manager.list()) == 2
+    assert p.get_recent_inline_comment_bodies() == []
+    calls = manager.create.call_count
+    manager.bulk_publish.side_effect = publish
+    for suggestion in order:
+        assert p.publish_code_suggestions([suggestion]) is True
+    assert manager.create.call_count == calls
+    assert manager.list() == []
+    assert len(p.get_recent_inline_comment_bodies()) == 2
+
+
 @pytest.mark.parametrize("invalid", [None, {}, _suggestion(relevant_file="absent.py")])
 def test_invalid_new_batch_after_successful_retry_does_not_report_success(publication_provider, invalid):
     p = publication_provider
@@ -532,6 +602,53 @@ def test_improve_caller_retries_queued_batch_but_not_live_fallback(publication_p
     else:
         assert p.mr.draft_notes.create.call_count == count
         assert p.mr.draft_notes.list() == []
+
+
+@pytest.mark.parametrize("unqueued_first", [False, True])
+@pytest.mark.parametrize("recovers", [False, True])
+def test_improve_caller_retries_unsettled_suggestion(publication_provider, unqueued_first, recovers):
+    p = publication_provider
+    manager = p.mr.draft_notes
+    create = manager.create.side_effect
+    publish = manager.bulk_publish.side_effect
+    reject = True
+    failed = False
+
+    def create_or_reject(payload):
+        if reject and "unqueued" in payload["note"]:
+            raise GitlabCreateError("cannot create draft")
+        return create(payload)
+
+    def fail_first_publish(*args, **kwargs):
+        nonlocal failed, reject
+        if not failed:
+            failed = True
+            reject = not recovers
+            raise RequestException("cannot publish batch")
+        return publish(*args, **kwargs)
+
+    manager.create.side_effect = create_or_reject
+    manager.bulk_publish.side_effect = fail_first_publish
+    p.mr.discussions.create.side_effect = GitlabCreateError("cannot create live discussion")
+    p.mr.notes.create.side_effect = GitlabCreateError("cannot create live note")
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = p
+    tool.progress_response = None
+    tool._validate_suggestion = lambda *args: (True, "", True)
+    tool.dedent_code = lambda filename, line, code: code
+    tool._validate_python_replacement_syntax = lambda *args: True
+    queued = _suggestion(suggestion_content="queued", improved_code="x = 3")
+    unqueued = _suggestion(suggestion_content="unqueued", improved_code="x = 4")
+    suggestions = [unqueued, queued] if unqueued_first else [queued, unqueued]
+    asyncio.run(tool.push_inline_code_suggestions({"code_suggestions": suggestions},
+                                                include_coverage_footer=False))
+    assert tool._output_published is True
+    assert manager.list() == []
+    bodies = p.get_recent_inline_comment_bodies()
+    assert sum("queued" in body and "unqueued" not in body for body in bodies) == 1
+    assert sum("unqueued" in body for body in bodies) == int(recovers)
+    # Preserve the caller's existing partial-success policy, not a per-input summary guarantee.
+    p.mr.notes.create.assert_called()  # initial unqueued suggestion exhausted live fallback too
 
 
 def test_cached_provider_publishes_new_batch_without_retrying_previous_failure(publication_provider):

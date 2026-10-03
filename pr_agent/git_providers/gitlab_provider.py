@@ -1746,8 +1746,9 @@ class GitLabProvider(GitProvider):
         self.reconcile_code_suggestion_threads()
         if not code_suggestions:
             return True
-        if getattr(self, "_failed_draft_batch", None) is not None and all(
-                suggestion in self._failed_draft_inputs for suggestion in code_suggestions):
+        retry = getattr(self, "_failed_draft_batch", None) is not None and all(
+                suggestion in self._failed_draft_inputs for suggestion in code_suggestions)
+        if retry and all(suggestion in self._failed_draft_settled for suggestion in code_suggestions):
             # Caller retries publish the queued batch without recreating its suggestions.
             if not self._failed_draft_batch:
                 try:
@@ -1756,8 +1757,9 @@ class GitLabProvider(GitProvider):
                 except (GitlabError, RequestException) as e:
                     get_logger().warning(f"Retrying draft publication for MR {self.id_mr} failed: {e}")
             return self._failed_draft_batch
-        self._failed_draft_batch = None
-        landed, settled = False, 0
+        if not retry:
+            self._failed_draft_batch = None
+        landed, settled = False, []
         self._code_suggestion_draft_queued = False
         # When true, suggestions are queued as GitLab draft notes and published together in a single
         # batch at the end, instead of each one going out as its own live discussion (and its own
@@ -1839,7 +1841,8 @@ class GitLabProvider(GitProvider):
                                                    source_line_no, target_file, target_line_no, original_suggestion,
                                                    as_draft=as_review)
                 landed = landed or bool(created)
-                settled += created is not False
+                if created is not False:
+                    settled.append(suggestion)
             except Exception as e:
                 # Deliberately broad: suggestions are published one by one, so the loop has to
                 # survive a single bad one - whatever went wrong with it - and still land the rest.
@@ -1869,11 +1872,13 @@ class GitLabProvider(GitProvider):
                     f"as pending drafts, visible only to the posting user, until published manually from "
                     f"the GitLab UI or by a subsequent successful run: {e}")
                 self._failed_draft_batch = False
-                self._failed_draft_inputs = code_suggestions
+                if not retry:
+                    self._failed_draft_inputs, self._failed_draft_settled = code_suggestions, []
+                self._failed_draft_settled += settled
                 return False
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
-        return landed or settled == len(code_suggestions)
+        return landed or len(settled) == len(code_suggestions)
 
     def search_line(self, relevant_file, relevant_line_in_file):
         # A relevant_file that is absent from the diff (filtered out by [ignore]/bad-extension
