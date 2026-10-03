@@ -4,7 +4,7 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions, render_suggestions_markdown
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (
@@ -263,6 +263,16 @@ async def test_push_inline_renders_body_with_score_and_label():
     assert "```suggestion\n    return new()\n```" in body
     # original_suggestion is the unmodified dict
     assert args[0]["original_suggestion"]["one_sentence_summary"] == "Use the shared helper"
+
+
+def test_render_suggestions_markdown_includes_score_why_when_present():
+    data = {"code_suggestions": [
+        _suggestion(score=7, score_why="Self-reflection unavailable; score not model-assigned")]}
+
+    markdown = render_suggestions_markdown(data)
+
+    assert "(score 7)" in markdown
+    assert "Why: Self-reflection unavailable; score not model-assigned" in markdown
 
 
 @pytest.mark.asyncio
