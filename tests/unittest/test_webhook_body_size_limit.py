@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException, Request
 
 from pr_agent.servers import github_app
-from pr_agent.servers.request_body_limit import create_server_app
+from pr_agent.servers.request_body_limit import RequestBodyLimitMiddleware, create_server_app
 
 
 async def _send_request(app, headers, body_chunks):
@@ -141,6 +141,40 @@ def test_allows_body_at_limit_and_replays_it_to_handler():
 
     assert status == 200
     assert handler_called
+
+
+def test_replays_buffered_body_as_one_message_and_continues_receiving():
+    messages = [
+        {"type": "http.request", "body": b"first ", "more_body": True},
+        {"type": "http.request", "body": b"chunk", "more_body": False},
+        {"type": "http.disconnect"},
+    ]
+    receive_count = 0
+    forwarded = []
+
+    async def receive():
+        nonlocal receive_count
+        receive_count += 1
+        return messages.pop(0)
+
+    async def app(scope, app_receive, send):
+        forwarded.append(await app_receive())
+        forwarded.append(await app_receive())
+
+    async def send(_message):
+        pass
+
+    middleware = RequestBodyLimitMiddleware(app, max_body_size=11)
+    scope = {"type": "http", "headers": []}
+
+    asyncio.run(middleware(scope, receive, send))
+
+    assert forwarded == [
+        {"type": "http.request", "body": b"first chunk", "more_body": False},
+        {"type": "http.disconnect"},
+    ]
+    assert receive_count == 3
+    assert not messages
 
 
 def _request(body):

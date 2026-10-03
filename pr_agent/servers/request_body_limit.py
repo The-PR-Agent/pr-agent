@@ -6,8 +6,6 @@ from starlette.responses import JSONResponse
 
 from pr_agent.config_loader import get_settings
 
-DEFAULT_MAX_WEBHOOK_REQUEST_BODY_BYTES = 5 * 1024 * 1024
-
 
 class RequestBodyLimitMiddleware:
     """Reject oversized HTTP bodies before application code parses them."""
@@ -50,23 +48,15 @@ class RequestBodyLimitMiddleware:
             if not message.get("more_body", False):
                 break
 
-        body_index = 0
-        empty_body_sent = False
+        body = b"".join(body_chunks)
+        replayed = False
 
         async def replay_body():
-            nonlocal body_index, empty_body_sent
-            if body_index < len(body_chunks):
-                chunk = body_chunks[body_index]
-                body_index += 1
-                return {
-                    "type": "http.request",
-                    "body": chunk,
-                    "more_body": body_index < len(body_chunks),
-                }
-            if not body_chunks and not empty_body_sent:
-                empty_body_sent = True
-                return {"type": "http.request", "body": b"", "more_body": False}
-            return {"type": "http.disconnect"}
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
 
         await self.app(scope, replay_body, send)
 
@@ -81,9 +71,7 @@ def create_server_app(
 ) -> FastAPI:
     """Build a FastAPI server with the shared request-body limit enabled."""
     if max_body_size is None:
-        max_body_size = get_settings().get(
-            "CONFIG.MAX_WEBHOOK_REQUEST_BODY_BYTES", DEFAULT_MAX_WEBHOOK_REQUEST_BODY_BYTES
-        )
+        max_body_size = get_settings().config.max_webhook_request_body_bytes
     try:
         max_body_size = int(max_body_size)
     except (TypeError, ValueError) as exc:
