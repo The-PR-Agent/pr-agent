@@ -168,11 +168,9 @@ async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
     ],
 )
 async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, model, expected_model_id):
-    monkeypatch.setattr(
-        litellm_handler,
-        "get_settings",
-        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}),
-    )
+    settings = FakeSettings(settings_values={"litellm.model_id": "profile-123"})
+    settings.config.model = model
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -189,6 +187,7 @@ async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, m
 @pytest.mark.asyncio
 async def test_health_probe_uses_snapshotted_classic_bedrock_model_id(monkeypatch):
     active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-a"})
+    active_settings.config.model = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
     handler = litellm_handler.LiteLLMAIHandler()
     active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-b"})

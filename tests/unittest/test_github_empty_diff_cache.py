@@ -18,10 +18,11 @@ def _provider(files=(), *, real_files=False):
     provider.diff_files = None
     provider.incremental = SimpleNamespace(is_incremental=False)
     provider.pr = SimpleNamespace(
-        base=SimpleNamespace(sha="base"),
+        base=SimpleNamespace(sha="base", ref="main"),
         head=SimpleNamespace(sha="head"),
     )
     provider.repo_obj = Mock()
+    provider._get_pr = Mock(return_value=provider.pr)
     provider.repo_obj.compare.return_value = SimpleNamespace(merge_base_commit=provider.pr.base)
     if real_files:
         provider.git_files = None

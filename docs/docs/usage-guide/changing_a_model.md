@@ -440,6 +440,15 @@ model_id = "your-application-inference-profile-arn"
 
 The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
 
+The profile is sent only with requests for the model set in `config.model`. Models in `config.fallback_models` do not use it, so a fallback is never routed to the primary model's inference profile.
+
+To give a fallback its own application inference profile, list it in `litellm.model_ids`, keyed by the exact model name. An entry in `model_ids` takes priority for that model; `model_id` still applies to `config.model` when it has no entry. A model that is in neither gets no profile.
+
+```toml
+[litellm]
+model_ids = {"bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0" = "your-primary-profile-arn", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "your-fallback-profile-arn"}
+```
+
 #### Claude 5 thinking with an application inference profile ARN
 
 Claude Sonnet 5 on Bedrock is invoked through an inference profile rather than a direct

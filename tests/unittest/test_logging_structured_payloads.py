@@ -104,6 +104,10 @@ def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep, rate_limit_
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
     provider.pr = MagicMock()
+    provider.pr.head.sha = "head-sha"
+    provider.pr.base.sha = "base-sha"
+    provider.pr.base.ref = "main"
+    provider.pr.changed_files = 1
     attempts = []
 
     def rate_limited():
