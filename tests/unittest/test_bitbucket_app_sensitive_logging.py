@@ -199,3 +199,51 @@ async def test_installed_webhook_does_not_log_store_secret_error(monkeypatch):
     assert result.status_code == 500
     assert provider_error not in logged
     assert "Failed to register user: secret provider failure (RuntimeError)" in logged
+
+
+async def test_webhook_logs_only_selected_payload_fields(monkeypatch):
+    logger = _RecordingLogger()
+    background_tasks = BackgroundTasks()
+    payload = {
+        "event": "pullrequest:created",
+        "clientKey": "webhook-client-key",
+        "data": {
+            "sharedSecret": "webhook-secret-sentinel",
+            "description": "private-webhook-description",
+        },
+    }
+    monkeypatch.setattr(bitbucket_app, "get_logger", lambda: logger)
+
+    result = await _route_endpoint("/webhook", "POST")(
+        background_tasks,
+        _Request({"authorization": "JWT token"}, payload),
+    )
+
+    logged = repr(logger.calls)
+    assert result == "OK"
+    assert "pullrequest:created" in logged
+    assert "webhook-client-key" in logged
+    assert "event" in logged and "data" in logged
+    assert "webhook-secret-sentinel" not in logged
+    assert "private-webhook-description" not in logged
+
+
+async def test_uninstalled_webhook_logs_only_selected_payload_fields(monkeypatch):
+    logger = _RecordingLogger()
+    payload = {
+        "clientKey": "uninstalled-client-key",
+        "principal": {"username": "private-username"},
+        "sharedSecret": "uninstalled-secret-sentinel",
+    }
+    monkeypatch.setattr(bitbucket_app, "get_logger", lambda: logger)
+
+    await _route_endpoint("/uninstalled", "POST")(
+        _Request({}, payload),
+        None,
+    )
+
+    logged = repr(logger.calls)
+    assert "uninstalled-client-key" in logged
+    assert "clientKey" in logged and "principal" in logged and "sharedSecret" in logged
+    assert "private-username" not in logged
+    assert "uninstalled-secret-sentinel" not in logged
