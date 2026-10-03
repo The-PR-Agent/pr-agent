@@ -99,6 +99,21 @@ And to ignore Python files in all PRs using `regex` pattern, set in a configurat
 regex = ['.*\.py$']
 ```
 
+A `**/` segment in a `glob` pattern matches zero or more directories, so `src/**/generated_*.py`
+also ignores `src/generated_pb.py` and not only `src/api/generated_pb.py`. Note that `*` still
+matches across `/`, as in `['*.py']` above. A glob with more than six `**/` segments keeps only
+the form that requires a directory for every `**/` segment, plus its root-level form when the
+glob starts with `**/`, and PR-Agent logs a warning. A glob that collapses to a form matching every
+file — `*`, `**`, `**/*`, `**/**` or `**/**/**` — is logged too, since it leaves nothing to analyze.
+The glob you configure and the root-level form of a `**/`-leading glob are always kept, so a glob
+matching every file in one of those two forms is still reported once the variant limit below is
+reached. Each of those three warnings is logged once per filtering call, naming the first glob
+that hit it. A later glob that hits the same condition is still applied, only not named.
+
+Per filtering call, at most 256 of those expanded variants are kept across `glob` and the
+`ignore_language_framework` lists; further variants are dropped and logged. The patterns you
+configure yourself are always kept, so a long `glob` list is never truncated.
+
 ## Extra instructions
 
 All PR-Agent tools have a parameter called `extra_instructions`, that enables to add free-text extra instructions. Example usage:
