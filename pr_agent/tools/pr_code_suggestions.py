@@ -250,7 +250,8 @@ class PRCodeSuggestions:
             "diff_no_line_numbers": "",  # empty diff for initial calculation
             "num_code_suggestions": num_code_suggestions,
             "extra_instructions": get_settings().pr_code_suggestions.extra_instructions,
-            "skills_context": get_skills_context(),
+            "skills_context": get_skills_context(
+                relevance_hint=f"{self.git_provider.pr.title} {self.main_language}"),
             "repo_context": build_repo_context(self.git_provider),
             "suggestion_discussion_context": self._load_suggestion_discussion_context(),
             "commit_messages_str": self.git_provider.get_commit_messages(),

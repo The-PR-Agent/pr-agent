@@ -38,6 +38,7 @@ In short, this implementation supports **text-only** agent skills.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -249,10 +250,57 @@ def _format_skill(skill: Skill) -> str:
     return "\n".join(parts).rstrip()
 
 
-def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
+_RELEVANCE_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+    "has", "in", "is", "it", "its", "of", "on", "or", "that", "the", "this",
+    "to", "was", "were", "when", "with", "use", "used", "using", "pr", "pull",
+    "request", "change", "changes", "code", "add", "adds", "fix", "fixes",
+})
+
+
+def _relevance_tokens(text: str) -> frozenset:
+    return frozenset(
+        token for token in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(token) > 1 and token not in _RELEVANCE_STOPWORDS
+    )
+
+
+def _relevance_score(skill: Skill, hint_tokens: frozenset) -> int:
+    skill_tokens = _relevance_tokens(f"{skill.name} {skill.description}")
+    return len(skill_tokens & hint_tokens)
+
+
+def select_skills(
+    skills: List[Skill], relevance_hint: str = "", max_skills: Optional[int] = None
+) -> List[Skill]:
+    """Order skills so budget-constrained packing drops the least relevant first.
+
+    Relevance is a cheap lexical overlap between the hint (the PR title and main
+    language) and each skill's name and description; ties keep the alphabetical
+    order ``discover_skills`` returned, so an empty hint reproduces it exactly
+    and description-based activation is unchanged whenever everything fits.
+    """
+    if len(skills) <= 1:
+        return list(skills)
+    ranked = list(skills)
+    hint_tokens = _relevance_tokens(relevance_hint)
+    if hint_tokens:
+        ranked.sort(key=lambda skill: (-_relevance_score(skill, hint_tokens), skill.name))
+    if max_skills is not None:
+        try:
+            cap = int(max_skills)
+        except (TypeError, ValueError):
+            cap = 0
+        if 0 < cap < len(ranked):
+            ranked = ranked[:cap]
+    return ranked
+
+
+def format_skills_context(skills: List[Skill], max_tokens: int, relevance_hint: str = "") -> str:
     """Format skills into a prompt-ready string under a token budget.
 
-    Skills are emitted in order; once the running token count would exceed the
+    Skills are emitted in ``select_skills`` order (relevance to the hint, then
+    alphabetical); once the running token count would exceed the
     budget, remaining skills are dropped. If the first skill alone exceeds the
     budget, its formatted text is clipped via ``clip_tokens`` and a marker is
     appended. Returns an empty string when nothing fits.
@@ -261,6 +309,7 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
         return ""
     if max_tokens is None or max_tokens <= 0:
         return ""
+    skills = select_skills(skills, relevance_hint=relevance_hint)
 
     truncate_marker = "\n\n[truncated]"
     separator = "\n\n---\n\n"
@@ -317,13 +366,14 @@ def _set_cached_context(
         return
 
 
-def get_skills_context() -> str:
+def get_skills_context(relevance_hint: str = "") -> str:
     """Read settings, discover skills, and format them for prompt injection.
 
-    Memoised per request, effective Skills settings, and model via ``starlette_context``
-    so tools that inject ``skills_context`` (review, improve, describe, ask)
-    share a single discovery + parse + format. Returns ``''`` when skills are
-    disabled, no paths are configured, or no skills are found.
+    Memoised per request, effective Skills settings, model, and relevance hint
+    via ``starlette_context`` so tools that inject ``skills_context`` (review,
+    improve, describe, ask) share a single discovery + parse + format. Returns
+    ``''`` when skills are disabled, no paths are configured, or no skills are
+    found.
     """
     settings = get_settings()
     enabled = bool(settings.skills.enabled)
@@ -346,7 +396,7 @@ def get_skills_context() -> str:
         invalid_max = True
         max_tokens = _DEFAULT_MAX_SKILLS_TOKENS
 
-    cache_settings = (True, expanded_paths, max_tokens, settings.config.model)
+    cache_settings = (True, expanded_paths, max_tokens, settings.config.model, relevance_hint)
     cached = _get_cached_context(cache_settings)
     if cached is not None:
         return cached
@@ -355,7 +405,15 @@ def get_skills_context() -> str:
             f"Invalid skills.max_skills_tokens={raw_max!r}; falling back to {_DEFAULT_MAX_SKILLS_TOKENS}"
         )
 
+    raw_max_skills = settings.skills.get("max_skills", 0)
+    try:
+        max_skills = int(raw_max_skills)
+    except (TypeError, ValueError):
+        get_logger().warning(f"Invalid skills.max_skills={raw_max_skills!r}; ignoring the cap")
+        max_skills = 0
+
     skills = discover_skills(paths)
-    out = format_skills_context(skills, max_tokens) if skills else ""
+    skills = select_skills(skills, relevance_hint=relevance_hint, max_skills=max_skills) if skills else []
+    out = format_skills_context(skills, max_tokens, relevance_hint=relevance_hint) if skills else ""
     _set_cached_context(cache_settings, out)
     return out
