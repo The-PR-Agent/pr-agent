@@ -342,7 +342,7 @@ class PRUpdateChangelog:
             except Exception as feedback_error:
                 if written_commit is None:
                     raise ValueError("The changelog write did not return a commit for review") from feedback_error
-                get_logger().warning(
+                get_logger().opt(exception=feedback_error).warning(
                     f"CHANGELOG.md was updated, but its automatic feedback could not be confirmed: {feedback_error}"
                 )
 

@@ -7,6 +7,7 @@ from requests.exceptions import HTTPError, Timeout
 
 from pr_agent.git_providers.git_provider import ConcurrentFileUpdateError, FileContentSnapshot
 from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.log import get_logger
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 
 
@@ -992,21 +993,32 @@ class TestPRUpdateChangelog:
         else:
             mock_git_provider.publish_comment.return_value = None
 
-        with (
-            patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock),
-            patch("pr_agent.tools.pr_update_changelog.get_logger") as logger,
-        ):
-            if has_commit:
-                await changelog_tool._push_changelog_update("new content", "answer")
-                warning = logger.return_value.warning.call_args.args[0]
-                assert "CHANGELOG.md was updated" in warning
-                assert "feedback" in warning
-            else:
-                with pytest.raises(ValueError, match="did not return a commit") as raised:
+        records = []
+        logger = get_logger()
+        sink = logger.add(lambda message: records.append(message.record), level="WARNING")
+        try:
+            with patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock):
+                if has_commit:
                     await changelog_tool._push_changelog_update("new content", "answer")
-                if fallback_raises:
-                    assert raised.value.__cause__ is fallback_error
-                logger.return_value.warning.assert_not_called()
+                    assert len(records) == 1
+                    warning = records[0]
+                    assert warning["level"].name == "WARNING"
+                    assert "CHANGELOG.md was updated" in warning["message"]
+                    assert "feedback" in warning["message"]
+                    assert warning["exception"].type is RuntimeError
+                    assert warning["exception"].traceback is not None
+                    if fallback_raises:
+                        assert warning["exception"].value is fallback_error
+                    else:
+                        assert str(warning["exception"].value) == "The changelog fallback comment was not confirmed"
+                else:
+                    with pytest.raises(ValueError, match="did not return a commit") as raised:
+                        await changelog_tool._push_changelog_update("new content", "answer")
+                    if fallback_raises:
+                        assert raised.value.__cause__ is fallback_error
+                    assert records == []
+        finally:
+            logger.remove(sink)
 
         mock_git_provider.create_or_update_pr_file.assert_called_once()
         assert mock_git_provider.pr.create_review.call_count == int(has_commit)
