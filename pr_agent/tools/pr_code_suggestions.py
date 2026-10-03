@@ -198,6 +198,9 @@ def render_suggestions_markdown(data: dict) -> str:
         summary = str(suggestion.get("one_sentence_summary") or suggestion.get("suggestion_content") or "").strip()
         if summary:
             lines.append(summary)
+        score_why = str(suggestion.get("score_why") or "").strip()
+        if score_why:
+            lines.append(f"Why: {score_why}")
         lines.append("")
     if not lines:
         return "## PR Code Suggestions\n\nNo suggestions to report."
@@ -1093,15 +1096,17 @@ class PRCodeSuggestions:
         response_reflect_yaml = load_yaml(response_reflect)
         if not isinstance(response_reflect_yaml, dict):
             get_logger().warning(
-                "Self-reflection feedback was not a mapping; line anchors will not be resolved"
+                "Self-reflection feedback was not a mapping; applying the reflection-failure score"
             )
+            apply_reflection_failure_score(data["code_suggestions"])
             return
         code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
         if not isinstance(code_suggestions_feedback, list):
             get_logger().warning(
                 "Self-reflection feedback 'code_suggestions' was not a list; "
-                "line anchors will not be resolved"
+                "applying the reflection-failure score"
             )
+            apply_reflection_failure_score(data["code_suggestions"])
             return
         if code_suggestions_feedback and len(code_suggestions_feedback) == len(data["code_suggestions"]):
             for i, suggestion in enumerate(data["code_suggestions"]):
@@ -1157,8 +1162,9 @@ class PRCodeSuggestions:
         else:
             get_logger().warning(
                 f"Self-reflection feedback covered {len(code_suggestions_feedback)} suggestion(s) instead of "
-                f"{len(data['code_suggestions'])}; line anchors will not be resolved"
+                f"{len(data['code_suggestions'])}; applying the reflection-failure score"
             )
+            apply_reflection_failure_score(data["code_suggestions"])
 
     @staticmethod
     def _truncate_if_needed(suggestion):
@@ -1436,6 +1442,9 @@ class PRCodeSuggestions:
             score = d.get("score")
             header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
                 else f"**Suggestion:** {content} [{label}]"
+            score_why = (d.get("score_why") or "").strip()
+            if score_why:
+                header += f"\n\nWhy: {score_why}"
             if new_code_snippet and is_applicable:
                 body = f"{header}\n```suggestion\n" + new_code_snippet + "\n```"
             else:

@@ -1673,8 +1673,11 @@ class GitLabProvider(GitProvider):
                     label = original_suggestion['label']
                     score = original_suggestion.get('score', 7)
 
+                score_why = str(original_suggestion.get('score_why') or "").strip()
                 link = self.get_line_link(relevant_file, line_start, line_end)
                 body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                if score_why:
+                    body_fallback += f"Why: {score_why}\n\n"
                 body_fallback += (f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"
                                   f"</summary>\n\n")
                 body_fallback += ("\n\n___\n\n`(Cannot implement directly - GitLab API allows committable "

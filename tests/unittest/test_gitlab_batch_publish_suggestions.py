@@ -208,6 +208,21 @@ def test_draft_totally_unavailable_falls_back_to_a_live_comment_not_a_dropped_su
     p.mr.draft_notes.bulk_publish.assert_not_called()
 
 
+def test_live_note_fallback_repeats_the_score_why_disclosure():
+    p = _gl_provider()
+    p.mr.discussions.create.side_effect = GitlabCreateError("position rejected")
+    gs = _settings(as_review=False)
+    try:
+        assert p.publish_code_suggestions([
+            _suggestion(score_why="Self-reflection unavailable; score not model-assigned")]) is True
+    finally:
+        gs.stop()
+
+    fallback_body = p.mr.notes.create.call_args.args[0]['body']
+    assert "importance: 7" in fallback_body
+    assert "Why: Self-reflection unavailable; score not model-assigned" in fallback_body
+
+
 def test_bulk_publish_failure_is_caught_and_does_not_propagate():
     p = _gl_provider()
     p.mr.draft_notes.bulk_publish.side_effect = RequestException("network error")

@@ -14,7 +14,7 @@ from pr_agent.tools.pr_code_suggestions import (
     apply_reflection_failure_score,
     filter_suggestions_by_score_threshold,
 )
-from tests.unittest._settings_helpers import restore_settings, snapshot_settings
+from tests.unittest._settings_helpers import _remove_key, restore_settings, snapshot_settings
 
 
 class _Settings:
@@ -198,7 +198,7 @@ code_suggestions:
 
 
 def _prediction_tool():
-    """A /improve tool whose self-reflection always fails, with the token budget stubbed out."""
+    """Build a /improve tool whose self-reflection always fails, with the token budget stubbed out."""
     tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
     tool.git_provider = MagicMock()
     tool.ai_handler = MagicMock()
@@ -226,7 +226,8 @@ class TestReflectionFailureScore:
     async def test_default_score_and_explanation_when_reflection_fails(self):
         snapshot = snapshot_settings(("pr_code_suggestions.score_on_reflection_failure",))
         try:
-            get_settings().set("pr_code_suggestions.score_on_reflection_failure", 7)
+            # Drop the configured value so the resolver's built-in default is exercised.
+            _remove_key(get_settings(), "pr_code_suggestions.score_on_reflection_failure")
             tool = _prediction_tool()
             data = await tool._get_prediction("primary-model", "numbered diff", "complete diff")
         finally:
