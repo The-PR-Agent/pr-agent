@@ -88,6 +88,51 @@ def get_dual_publishing_score_threshold() -> int:
     return _as_threshold("pr_code_suggestions.dual_publishing_score_threshold", 0, 0)
 
 
+_REFLECTION_FAILURE_SCORE_WHY = "Self-reflection unavailable; score not model-assigned"
+
+
+def get_reflection_failure_score() -> int:
+    """Score for suggestions the model never vetted because self-reflection was unavailable.
+
+    Clamped at 0 and defaults to 7 so a malformed value cannot fail the run. Setting it below
+    pr_code_suggestions.suggestions_score_threshold drops those unvetted suggestions.
+    """
+    return _as_threshold("pr_code_suggestions.score_on_reflection_failure", 7, 0)
+
+
+def apply_reflection_failure_score(suggestions: List[Dict]) -> None:
+    """Assign the configured fallback score and mark it as not model-assigned."""
+    score = get_reflection_failure_score()
+    for suggestion in suggestions:
+        suggestion["score"] = score
+        suggestion["score_why"] = _REFLECTION_FAILURE_SCORE_WHY
+
+
+def filter_suggestions_by_score_threshold(suggestions: List[Dict], call_index: int = 0) -> List[Dict]:
+    """Keep suggestions scored at or above pr_code_suggestions.suggestions_score_threshold.
+
+    A suggestion whose score cannot be read is dropped, as before.
+    """
+    score_threshold = get_suggestions_score_threshold()
+    kept = []
+    for i, suggestion in enumerate(suggestions):
+        try:
+            score = int(suggestion.get("score", 1))
+        except Exception as e:
+            get_logger().error(
+                f"Error getting PR diff for suggestion {i} in call {call_index}, error: {e}",
+                artifact={"prediction": suggestion})
+            continue
+        if score >= score_threshold:
+            kept.append(suggestion)
+        else:
+            get_logger().info(
+                f"Removing suggestions {i} from call {call_index}, because score is {score}, "
+                f"and score_threshold is {score_threshold}",
+                artifact=suggestion)
+    return kept
+
+
 def get_committable_code_suggestions() -> bool:
     """Whether suggestions publish as committable inline comments.
 
@@ -158,6 +203,9 @@ def render_suggestions_markdown(data: dict) -> str:
         summary = str(suggestion.get("one_sentence_summary") or suggestion.get("suggestion_content") or "").strip()
         if summary:
             lines.append(summary)
+        score_why = str(suggestion.get("score_why") or "").strip()
+        if score_why:
+            lines.append(f"Why: {score_why}")
         lines.append("")
     if not lines:
         return "## PR Code Suggestions\n\nNo suggestions to report."
@@ -1007,10 +1055,10 @@ class PRCodeSuggestions:
         if response_reflect:
             await self.analyze_self_reflection_response(data, response_reflect)
         else:
-            get_logger().warning("Could not self-reflect on suggestions; using default score 7")
-            for suggestion in data["code_suggestions"]:
-                suggestion["score"] = 7
-                suggestion["score_why"] = ""
+            score_on_failure = get_reflection_failure_score()
+            get_logger().warning(
+                f"Could not self-reflect on suggestions; using score {score_on_failure}")
+            apply_reflection_failure_score(data["code_suggestions"])
 
         return data
 
@@ -1053,15 +1101,17 @@ class PRCodeSuggestions:
         response_reflect_yaml = load_yaml(response_reflect)
         if not isinstance(response_reflect_yaml, dict):
             get_logger().warning(
-                "Self-reflection feedback was not a mapping; line anchors will not be resolved"
+                "Self-reflection feedback was not a mapping; applying the reflection-failure score"
             )
+            apply_reflection_failure_score(data["code_suggestions"])
             return
         code_suggestions_feedback = response_reflect_yaml.get("code_suggestions", [])
         if not isinstance(code_suggestions_feedback, list):
             get_logger().warning(
                 "Self-reflection feedback 'code_suggestions' was not a list; "
-                "line anchors will not be resolved"
+                "applying the reflection-failure score"
             )
+            apply_reflection_failure_score(data["code_suggestions"])
             return
         if code_suggestions_feedback and len(code_suggestions_feedback) == len(data["code_suggestions"]):
             for i, suggestion in enumerate(data["code_suggestions"]):
@@ -1097,8 +1147,7 @@ class PRCodeSuggestions:
                     get_logger().error(f"Error processing suggestion score {i}",
                                        artifact={"suggestion": suggestion,
                                                  "code_suggestions_feedback": code_suggestions_feedback[i]})
-                    suggestion["score"] = 7
-                    suggestion["score_why"] = ""
+                    apply_reflection_failure_score([suggestion])
 
                 suggestion = self.validate_one_liner_suggestion_not_repeating_code(suggestion)
 
@@ -1118,8 +1167,9 @@ class PRCodeSuggestions:
         else:
             get_logger().warning(
                 f"Self-reflection feedback covered {len(code_suggestions_feedback)} suggestion(s) instead of "
-                f"{len(data['code_suggestions'])}; line anchors will not be resolved"
+                f"{len(data['code_suggestions'])}; applying the reflection-failure score"
             )
+            apply_reflection_failure_score(data["code_suggestions"])
 
     @staticmethod
     def _truncate_if_needed(suggestion):
@@ -2120,20 +2170,8 @@ class PRCodeSuggestions:
             data = {"code_suggestions": []}
             for j, predictions in enumerate(prediction_list):  # each call adds an element to the list
                 if "code_suggestions" in predictions:
-                    score_threshold = get_suggestions_score_threshold()
-                    for i, prediction in enumerate(predictions["code_suggestions"]):
-                        try:
-                            score = int(prediction.get("score", 1))
-                            if score >= score_threshold:
-                                data["code_suggestions"].append(prediction)
-                            else:
-                                get_logger().info(
-                                    f"Removing suggestions {i} from call {j}, because score is {score}, "
-                                    f"and score_threshold is {score_threshold}",
-                                    artifact=prediction)
-                        except Exception as e:
-                            get_logger().error(f"Error getting PR diff for suggestion {i} in call {j}, error: {e}",
-                                               artifact={"prediction": prediction})
+                    data["code_suggestions"].extend(
+                        filter_suggestions_by_score_threshold(predictions["code_suggestions"], j))
             data["code_suggestions"] = self._limit_suggestions_per_file(data["code_suggestions"])
             self.data = data
         else:
