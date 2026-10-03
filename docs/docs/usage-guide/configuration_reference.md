@@ -108,8 +108,8 @@ to-do list.
 | `ignore_pr_labels` | [] | labels to ignore from PR agent when an PR is created |
 | `ignore_pr_authors` | [] | authors to ignore from PR agent when an PR is created |
 | `reaction_on_start` | "eyes" | added before the command runs |
-| `reaction_on_success` | "" | added when the command finished successfully |
-| `reaction_on_failure` | "" | added when the command failed |
+| `reaction_on_success` | "" | replaces the start reaction when the command succeeded (GitHub App, GitLab webhook) |
+| `reaction_on_failure` | "" | replaces the start reaction when the command failed (GitHub App, GitLab webhook) |
 | `ignore_repositories` | [] | a list of regular expressions of repository full names (e.g. "org/repo") to ignore from PR agent processing |
 | `ignore_language_framework` | [] | a list of code-generation languages or frameworks (e.g. 'protobuf', 'go_gen') whose auto-generated source files will be excluded from analysis |
 | `bot_user_indicators` | ["codium", "bot_", "bot-", "_bot", "-bot"] | Substring indicators used to skip bot users on webhook events. Currently consumed by the GitLab webhook (`is_bot_user`); other providers may adopt this list in future. The match is case-insensitive against the sender's display name. Overriding this setting REPLACES the default list — include the entries below in your override if you want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`). |

@@ -16,6 +16,7 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -56,7 +57,7 @@ def get_fork_safe_secret_provider():
     return _secret_provider_state["provider"]
 
 
-async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None):
+async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None) -> bool:
     log_context["action"] = body
     log_context["event"] = "pull_request" if body == "/review" else "comment"
     log_context["api_url"] = api_url
@@ -71,7 +72,7 @@ async def handle_request(api_url: str, body: str, log_context: dict, sender_id: 
             provider.set_command_actor(sender_id)
 
     with get_logger().contextualize(**log_context):
-        await PRAgent().handle_request(api_url, body, notify)
+        return await PRAgent().handle_request(api_url, body, notify)
 
 async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
                                    log_context: dict, data: dict):
@@ -424,8 +425,28 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                         and is_ask_command_comment(body)):  # /ask_line
                     body = handle_ask_line(body, data)
 
-                await handle_request(
-                    url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))
+                # A fresh collector, so the verdict below can only come from this command.
+                init_run_details()
+                dispatched = False
+
+                def notify_start_reaction():
+                    # Use `notify` as the gate on "was this a command": `PRAgent` calls it only
+                    # once it decides to run something. Re-parsing the comment here would be a
+                    # second opinion, and the dispatcher reads it with shlex and rewrites `/ask` on
+                    # a diff line into `/ask_line`.
+                    nonlocal dispatched
+                    dispatched = True
+                    provider.add_eyes_reaction(comment_id)
+
+                result = await handle_request(
+                    url, body, log_context, sender_id, notify=notify_start_reaction)
+                if not dispatched:
+                    return
+                # `propagate_tool_errors` is off, so a tool that failed internally still returns
+                # normally. Reading that as success would tick a comment whose command never ran.
+                # `bool()` rather than `result is not False`, so a `None` reads as failure here the
+                # same way it does in `pr_reviewer` and the GitHub App
+                provider.react_to_outcome(comment_id, bool(result) and not command_failed())
 
     background_tasks.add_task(inner, request_json)
     end_time = datetime.now()

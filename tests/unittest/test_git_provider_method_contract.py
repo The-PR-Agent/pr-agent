@@ -96,7 +96,7 @@ def _gitlab(monkeypatch) -> GitLabProvider:
     provider.mr.commits.return_value._list = [{"message": COMMIT_MESSAGE}]
     note = MagicMock()
     note.awardemojis.create.return_value = SimpleNamespace(id=REACTION_ID)
-    note.awardemojis.list.return_value = [SimpleNamespace(name=REACTION_ID, delete=MagicMock())]
+    note.awardemojis.get.return_value = SimpleNamespace(delete=MagicMock())
     provider.gl = MagicMock()
     provider.gl.projects.get.return_value.mergerequests.get.return_value.notes.get.return_value = note
     return provider
