@@ -72,6 +72,7 @@ from pr_agent.git_providers.git_provider import (
 )
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.progress_comment import ChunkProgressReporter
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
     fit_related_tickets_to_prompt_budget,
@@ -79,6 +80,7 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 
 MAX_REVIEW_COVERAGE_FILES = 50
 _SUGGESTION_FENCE_RE = re.compile(r"```[ \t]*suggestion\b", re.IGNORECASE)
+REVIEW_PROGRESS_COMMENT = "Preparing review..."
 
 _REVIEW_FAILURE_REASONS = (
     (
@@ -289,6 +291,8 @@ class PRReviewer:
         review_error = None
         review_failed = False
         persistent_write_failed = False
+        self._progress_response = None
+        self._chunk_progress = None
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -332,7 +336,12 @@ class PRReviewer:
                 return None
 
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
-                progress_response = self.git_provider.publish_comment("Preparing review...", is_temporary=True)
+                progress_response = self.git_provider.publish_comment(
+                    REVIEW_PROGRESS_COMMENT, is_temporary=True)
+                # A chunked run rewrites this temporary comment in place. The chunk count is
+                # only known once the diff is split, so the reporter is built there; all this
+                # run keeps is the handle.
+                self._progress_response = progress_response
 
             try:
                 await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR,
@@ -477,6 +486,7 @@ class PRReviewer:
             ):
                 raise
         finally:
+            self._chunk_progress = None
             if progress_response is not None:
                 try:
                     self.git_provider.remove_comment(progress_response)
@@ -898,6 +908,32 @@ class PRReviewer:
             get_logger().warning(f"Empty diff for PR: {self.pr_url}")
             raise FallbackEligibleError(f"No PR diff fits the /review request for {model}")
 
+    def _review_progress_body(self, line: str) -> str:
+        """Render the temporary review placeholder plus the current chunk progress line."""
+        return f"{REVIEW_PROGRESS_COMMENT} {line}" if line else REVIEW_PROGRESS_COMMENT
+
+    def _chunk_progress_reporter(self, total: int, completed: int = 0) -> ChunkProgressReporter | None:
+        """Report chunk progress by rewriting the temporary review comment in place.
+
+        A chunked run makes several parallel model calls plus retries that can take minutes,
+        so the placeholder is kept current. Returns None when the comment cannot be edited
+        back (output-only providers) or when progress reporting is turned off, which leaves
+        the run with today's frozen placeholder.
+        """
+        comment = getattr(self, "_progress_response", None)
+        settings = get_settings()
+        if comment is None or not settings.config.get("publish_output_progress", True):
+            return None
+        return ChunkProgressReporter.create(
+            self.git_provider,
+            comment,
+            REVIEW_PROGRESS_COMMENT,
+            total=total,
+            body_builder=self._review_progress_body,
+            label="review",
+            completed=completed,
+        )
+
     async def _prepare_chunked_prediction(self, model: str,
                                           prepared_diff: PreparedPRDiff | None = None) -> bool:
         """Review a too-large diff in chunks and merge the per-chunk verdicts.
@@ -951,8 +987,18 @@ class PRReviewer:
             ) for index in pending_indices]
         else:
             prompts = [patches_diff_list[index] for index in pending_indices]
+        # A fallback model starts a new batch, so clear the previous attempt's line first.
+        # Otherwise it stays on screen at "N of N" and the new attempt's first chunk rewinds
+        # it; the chunks an earlier attempt finished are counted through `completed` below.
+        previous_progress = getattr(self, "_chunk_progress", None)
+        if previous_progress is not None:
+            await previous_progress.reset_to_base()
+        self._chunk_progress = self._chunk_progress_reporter(
+            len(patches_diff_list),
+            completed=len(patches_diff_list) - len(pending_indices),
+        )
         predictions = await asyncio.gather(
-            *[self._get_prediction(model, prompt) for prompt in prompts],
+            *[self._review_chunk(model, prompt) for prompt in prompts],
             return_exceptions=True)
 
         chunk_errors = []
@@ -974,6 +1020,8 @@ class PRReviewer:
             self._validate_review_schema(data)
             chunk_results[chunk_index] = (prediction, data, model)
         self._chunked_results = chunk_results
+        if self._chunk_progress is not None:
+            await self._chunk_progress.set_failed(len(patches_diff_list) - len(chunk_results))
 
         if len(chunk_results) < len(patches_diff_list):
             if chunk_errors:
@@ -1080,6 +1128,15 @@ class PRReviewer:
             for model in models:
                 record_model_used(model, is_fallback=model != self._chunked_primary_model)
         return True
+
+    async def _review_chunk(self, model: str, prompt: str) -> str:
+        """Review one chunk, then advance the in-place progress comment it runs under."""
+        try:
+            return await self._get_prediction(model, prompt)
+        finally:
+            progress = getattr(self, "_chunk_progress", None)
+            if progress is not None:
+                await progress.record_settled()
 
     async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
         """

@@ -75,6 +75,28 @@ def test_rejects_content_length_over_limit_before_calling_handler():
     assert not handler_called
 
 
+def test_malformed_content_length_still_enforces_streamed_body_limit():
+    app = create_server_app(max_body_size=8)
+    handler_called = False
+
+    @app.post("/webhook")
+    async def webhook(request: Request):
+        nonlocal handler_called
+        handler_called = True
+        return await request.body()
+
+    status, _ = asyncio.run(
+        _send_request(
+            app,
+            [(b"host", b"testserver"), (b"content-length", b"invalid")],
+            [b"12345678", b"9"],
+        )
+    )
+
+    assert status == 413
+    assert not handler_called
+
+
 def test_rejects_chunked_body_over_limit_before_calling_handler():
     app = create_server_app(max_body_size=8)
     handler_called = False

@@ -22,13 +22,14 @@ class RequestBodyLimitMiddleware:
             return
 
         content_length = dict(scope.get("headers", [])).get(b"content-length")
-        if content_length is not None:
-            try:
-                if int(content_length) > self.max_body_size:
-                    await self._reject(scope, receive, send)
-                    return
-            except ValueError:
-                pass
+        try:
+            declared_content_length = int(content_length) if content_length is not None else None
+        except ValueError:
+            # Fall back to streamed byte counting; never trust an invalid size.
+            declared_content_length = None
+        if declared_content_length is not None and declared_content_length > self.max_body_size:
+            await self._reject(scope, receive, send)
+            return
 
         body_chunks = []
         body_size = 0
