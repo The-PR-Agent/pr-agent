@@ -185,7 +185,7 @@ def test_tool_initializers_supply_the_fragment_before_token_counting(
 
     monkeypatch.setattr(pr_reviewer, "get_git_provider_with_context", lambda _url: provider)
     monkeypatch.setattr(pr_reviewer, "get_main_pr_language", lambda _languages, _files: "Python")
-    monkeypatch.setattr(pr_reviewer, "get_skills_context", lambda: "")
+    monkeypatch.setattr(pr_reviewer, "get_skills_context", lambda *args, **kwargs: "")
     monkeypatch.setattr(pr_reviewer, "build_repo_context", lambda _provider: "")
     monkeypatch.setattr(pr_reviewer, "add_ai_metadata_to_diff_files", lambda _provider, _files: None)
 
@@ -194,7 +194,7 @@ def test_tool_initializers_supply_the_fragment_before_token_counting(
 
     monkeypatch.setattr(pr_code_suggestions, "get_git_provider_with_context", lambda _url: provider)
     monkeypatch.setattr(pr_code_suggestions, "get_main_pr_language", lambda _languages, _files: "Python")
-    monkeypatch.setattr(pr_code_suggestions, "get_skills_context", lambda: "")
+    monkeypatch.setattr(pr_code_suggestions, "get_skills_context", lambda *args, **kwargs: "")
     monkeypatch.setattr(pr_code_suggestions, "build_repo_context", lambda _provider: "")
     monkeypatch.setattr(
         pr_code_suggestions,
@@ -235,7 +235,7 @@ def test_non_decoupled_suggestions_render_without_the_shared_fragment(monkeypatc
 
     monkeypatch.setattr(pr_code_suggestions, "get_git_provider_with_context", lambda _url: provider)
     monkeypatch.setattr(pr_code_suggestions, "get_main_pr_language", lambda _languages, _files: "Python")
-    monkeypatch.setattr(pr_code_suggestions, "get_skills_context", lambda: "")
+    monkeypatch.setattr(pr_code_suggestions, "get_skills_context", lambda *args, **kwargs: "")
     monkeypatch.setattr(pr_code_suggestions, "build_repo_context", lambda _provider: "")
 
     suggestions = pr_code_suggestions.PRCodeSuggestions(

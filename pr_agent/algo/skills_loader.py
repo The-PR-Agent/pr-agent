@@ -299,46 +299,57 @@ def select_skills(
 def format_skills_context(skills: List[Skill], max_tokens: int, relevance_hint: str = "") -> str:
     """Format skills into a prompt-ready string under a token budget.
 
-    Skills are emitted in ``select_skills`` order (relevance to the hint, then
-    alphabetical); once the running token count would exceed the
-    budget, remaining skills are dropped. If the first skill alone exceeds the
-    budget, its formatted text is clipped via ``clip_tokens`` and a marker is
-    appended. Returns an empty string when nothing fits.
+    Skills are emitted in the given order; once the running token count would
+    exceed the budget, remaining skills are dropped. If the first skill alone
+    exceeds the budget, its formatted text is clipped via ``clip_tokens`` and a
+    marker is appended. Returns an empty string when nothing fits. With a
+    ``relevance_hint``, the order is retried by relevance only when the
+    alphabetical order dropped skills, so a fitting set packs byte-identically
+    to the hint-less call.
     """
     if not skills:
         return ""
     if max_tokens is None or max_tokens <= 0:
         return ""
-    skills = select_skills(skills, relevance_hint=relevance_hint)
 
     truncate_marker = "\n\n[truncated]"
     separator = "\n\n---\n\n"
     sep_tokens = _count_tokens(separator)
     marker_tokens = _count_tokens(truncate_marker)
-    pieces: List[str] = []
-    used = 0
-    for skill in skills:
-        formatted = _format_skill(skill)
-        tokens = _count_tokens(formatted)
-        addition = (sep_tokens if pieces else 0) + tokens
-        if used + addition > max_tokens:
-            if not pieces:
-                budget = max(1, max_tokens - marker_tokens)
-                truncated = clip_tokens(formatted, budget, add_three_dots=False)
-                while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
-                    truncated = truncated[: int(len(truncated) * 0.9)]
-                pieces.append(truncated + truncate_marker)
-                if len(skills) > 1:
+
+    def pack(order: List[Skill]) -> Tuple[List[str], int]:
+        pieces: List[str] = []
+        used = 0
+        for skill in order:
+            formatted = _format_skill(skill)
+            tokens = _count_tokens(formatted)
+            addition = (sep_tokens if pieces else 0) + tokens
+            if used + addition > max_tokens:
+                if not pieces:
+                    budget = max(1, max_tokens - marker_tokens)
+                    truncated = clip_tokens(formatted, budget, add_three_dots=False)
+                    while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
+                        truncated = truncated[: int(len(truncated) * 0.9)]
+                    pieces.append(truncated + truncate_marker)
+                    if len(order) > 1:
+                        get_logger().info(
+                            f"First skill exceeded budget; truncated and dropped {len(order) - 1} skill(s)"
+                        )
+                else:
                     get_logger().info(
-                        f"First skill exceeded budget; truncated and dropped {len(skills) - 1} skill(s)"
+                        f"Skills context budget reached; dropping {len(order) - len(pieces)} skill(s)"
                     )
-            else:
-                get_logger().info(
-                    f"Skills context budget reached; dropping {len(skills) - len(pieces)} skill(s)"
-                )
-            break
-        pieces.append(formatted)
-        used += addition
+                break
+            pieces.append(formatted)
+            used += addition
+        return pieces, len(order) - len(pieces)
+
+    pieces, dropped = pack(list(skills))
+    if dropped and relevance_hint and len(skills) > 1:
+        ranked = select_skills(skills, relevance_hint=relevance_hint)
+        if [skill.name for skill in ranked] != [skill.name for skill in skills]:
+            ranked_pieces, _ = pack(ranked)
+            pieces = ranked_pieces
 
     return separator.join(pieces).strip()
 
@@ -405,7 +416,9 @@ def get_skills_context(relevance_hint: str = "") -> str:
             f"Invalid skills.max_skills_tokens={raw_max!r}; falling back to {_DEFAULT_MAX_SKILLS_TOKENS}"
         )
 
-    raw_max_skills = settings.skills.get("max_skills", 0)
+    # Attribute access keeps working for both Dynaconf boxes and the
+    # SimpleNamespace settings used in unit tests; a missing key means no cap.
+    raw_max_skills = getattr(settings.skills, "max_skills", 0)
     try:
         max_skills = int(raw_max_skills)
     except (TypeError, ValueError):
@@ -413,7 +426,11 @@ def get_skills_context(relevance_hint: str = "") -> str:
         max_skills = 0
 
     skills = discover_skills(paths)
-    skills = select_skills(skills, relevance_hint=relevance_hint, max_skills=max_skills) if skills else []
+    # Only the cap is applied up front; relevance reordering happens inside
+    # format_skills_context and only when the budget dropped skills, so a
+    # fitting set packs byte-identically with and without a hint.
+    if skills and 0 < max_skills < len(skills):
+        skills = select_skills(skills, max_skills=max_skills)
     out = format_skills_context(skills, max_tokens, relevance_hint=relevance_hint) if skills else ""
     _set_cached_context(cache_settings, out)
     return out
