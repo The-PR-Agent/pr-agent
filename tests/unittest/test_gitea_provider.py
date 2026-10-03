@@ -1167,6 +1167,26 @@ class TestGiteaProviderInlineCommentStatus:
         assert result is True
         assert provider.repo_api.create_inline_comment.call_count == 3
 
+    def test_publish_code_suggestions_anchor_to_the_new_file(self):
+        # Gitea ignores new_position while old_position is non-zero and anchors the comment
+        # to the old side instead (services/pull.CreatePullReview). PR-Agent's relevant lines
+        # are new-file lines, so old_position must stay 0 for the anchor to be correct.
+        provider = self._provider(create_inline_comment_result=True)
+        suggestions = [
+            {"body": "**Suggestion:** one", "relevant_file": "a.py", "relevant_lines_start": 3},
+            {"body": "**Suggestion:** two", "relevant_file": "b.py", "relevant_lines_start": 12,
+             "original_suggestion": {"relevant_lines_start": 12}},
+        ]
+
+        assert provider.publish_code_suggestions(suggestions) is True
+
+        sent = [call.kwargs["comments"][0]
+                for call in provider.repo_api.create_inline_comment.call_args_list]
+        assert sent == [
+            {"body": "**Suggestion:** one", "path": "a.py", "old_position": 0, "new_position": 3},
+            {"body": "**Suggestion:** two", "path": "b.py", "old_position": 0, "new_position": 12},
+        ]
+
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     def test_create_inline_comment_submits_as_comment_not_pending(self, mock_api_client_cls):
         from pr_agent.git_providers.gitea_provider import RepoApi
