@@ -70,6 +70,34 @@ def test_record_completion_metadata_collects_known_non_streaming_cost(monkeypatc
     assert completion_cost.call_args.kwargs["completion_response"]["usage"] is usage
 
 
+def test_record_completion_metadata_uses_configured_base_model_for_cost(monkeypatch):
+    usage = _Usage(100, 10, 110)
+    response = _Response(usage)
+    request_model = "bedrock/converse/arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test"
+    base_model = "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            True if key == "config.output_run_cost"
+            else {request_model: base_model} if key == "LITELLM.BASE_MODELS"
+            else default
+        )
+    )
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.get_settings",
+        lambda: settings,
+    )
+    init_run_details()
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.completion_cost",
+        return_value=0.0842,
+    ) as completion_cost:
+        LiteLLMAIHandler._record_completion_metadata(response, model=request_model)
+
+    assert completion_cost.call_args.kwargs["model"] == request_model
+    assert completion_cost.call_args.kwargs["base_model"] == base_model
+
+
 def test_record_completion_metadata_prices_routed_model_and_records_configured_model(monkeypatch):
     usage = _Usage(100, 10, 110)
     response = _Response(usage)

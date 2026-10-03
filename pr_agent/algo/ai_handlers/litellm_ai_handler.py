@@ -560,6 +560,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         # Models that support extended thinking (config override replaces the built-in list when non-empty)
         override = self._validated_model_name_list("claude_extended_thinking_models_override")
+        self.claude_extended_thinking_models_override = override
         self.claude_extended_thinking_models = override or CLAUDE_EXTENDED_THINKING_MODELS
 
         # Treat configured model ids as additional adaptive-only models. Add opaque Bedrock application
@@ -1740,7 +1741,11 @@ class LiteLLMAIHandler(BaseAiHandler):
                     cost_response = response
                     if not isinstance(response, dict) and not hasattr(response, "model_dump"):
                         cost_response = response.dict()
-                    cost_usd = litellm.completion_cost(completion_response=cost_response, model=model)
+                    cost_kwargs = {"completion_response": cost_response, "model": model}
+                    base_model = LiteLLMAIHandler._litellm_base_model_for(model)
+                    if base_model:
+                        cost_kwargs["base_model"] = base_model
+                    cost_usd = litellm.completion_cost(**cost_kwargs)
             except Exception as e:
                 # Treat missing model pricing or insufficient usage as an unavailable call cost.
                 # Retain the successful call so the collector marks the aggregate safely.
@@ -2307,6 +2312,40 @@ class LiteLLMAIHandler(BaseAiHandler):
             isinstance(model, str)
             and model.strip() in self.claude_adaptive_thinking_models_override
         ) or self._is_claude_adaptive_thinking_model(model)
+
+    def _is_claude_model(self, model: str) -> bool:
+        """Recognize Claude model ids, including opaque ids explicitly listed in thinking overrides."""
+        if not isinstance(model, str) or not model.strip():
+            return False
+        stripped_model = model.strip()
+        return (
+            "claude" in stripped_model.lower()
+            or stripped_model in self.claude_adaptive_thinking_models_override
+            or stripped_model in getattr(self, "claude_extended_thinking_models_override", [])
+        )
+
+    @staticmethod
+    def _litellm_base_model_for(model: str) -> str | None:
+        """Resolve an opaque request model to a LiteLLM-known model for cost calculation only."""
+        value = get_settings().get("LITELLM.BASE_MODELS", {})
+        if value in (None, ""):
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                value = None
+        if hasattr(value, "to_dict"):
+            value = value.to_dict()
+        if not isinstance(value, dict) or not all(
+            isinstance(key, str) and key.strip() and isinstance(mapped, str) and mapped.strip()
+            for key, mapped in value.items()
+        ):
+            get_logger().warning(
+                "Invalid LITELLM.BASE_MODELS; expected a mapping of non-empty model strings. Ignoring it."
+            )
+            return None
+        return value.get(model)
 
     def _configure_claude_adaptive_thinking(self, model: str, kwargs: dict) -> dict:
         """Configure thinking for Claude models that reject token budgets."""
@@ -2901,7 +2940,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # silently skipped debug line. setdefault guards against overwriting a value already
                 # merged into kwargs.
                 if cache_control_injection_points:
-                    if isinstance(model, str) and "claude" in model.lower():
+                    if self._is_claude_model(model):
                         kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
                     self._warn_prompt_cache_conditions(
                         model, system, user, cache_control_injection_points, request_provider=request_provider

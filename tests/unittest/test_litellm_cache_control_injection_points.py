@@ -143,6 +143,41 @@ async def test_not_injected_for_non_anthropic_model(monkeypatch):
     assert "cache_control_injection_points" not in mock_call.call_args.kwargs
 
 
+@pytest.mark.asyncio
+async def test_opaque_bedrock_profile_in_adaptive_override_gets_cache_points(monkeypatch):
+    points = [{"location": "message", "role": "system"}]
+    model = "bedrock/converse/arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test"
+    settings = FakeSettings(
+        config_values={"claude_adaptive_thinking_models_override": [model]},
+        settings_values={"LITELLM.CACHE_CONTROL_INJECTION_POINTS": points},
+    )
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model=model, system="sys", user="usr")
+
+    assert mock_call.call_args.kwargs["cache_control_injection_points"] == points
+
+
+@pytest.mark.asyncio
+async def test_unlisted_opaque_bedrock_profile_does_not_get_cache_points(monkeypatch):
+    points = [{"location": "message", "role": "system"}]
+    model = "bedrock/converse/arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/test"
+    settings = FakeSettings(
+        settings_values={"LITELLM.CACHE_CONTROL_INJECTION_POINTS": points},
+    )
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model=model, system="sys", user="usr")
+
+    assert "cache_control_injection_points" not in mock_call.call_args.kwargs
+
+
 def _warn_settings(points=None):
     return lambda: FakeSettings(
         settings_values={

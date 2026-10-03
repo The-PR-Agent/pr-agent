@@ -457,7 +457,18 @@ enable_claude_adaptive_thinking = true
 claude_adaptive_thinking_models_override = [
     "bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>"
 ]
+
+[litellm]
+cache_control_injection_points = [{location = "message", role = "system"}]
+base_models = {
+    "bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>" = "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+}
 ```
+
+Adding the ARN to a Claude thinking override also lets PR-Agent forward configured Anthropic
+prompt-cache injection points for that opaque model id. `litellm.base_models` is optional and is
+used only for run-cost calculation: map the request ARN to a LiteLLM-known priced model when
+`config.output_run_cost=true`. It does not change which model is invoked.
 
 The override is additive, so named Claude models in the same fallback chain continue to use
 built-in detection. PR-Agent also registers each override with LiteLLM, preventing LiteLLM from
