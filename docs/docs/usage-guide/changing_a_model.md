@@ -440,6 +440,25 @@ model_id = "your-application-inference-profile-arn"
 
 The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
 
+##### Prompt caching and run cost with an ARN
+
+Prompt caching and run-cost estimation identify the model by name, so an opaque application
+inference profile ARN needs extra configuration:
+
+- Add the ARN to `claude_adaptive_thinking_models_override` (or
+  `claude_extended_thinking_models_override` for extended thinking) so PR-Agent treats it as
+  Claude and forwards `cache_control_injection_points`. See [Claude 5 thinking with an
+  application inference profile ARN](#claude-5-thinking-with-an-application-inference-profile-arn).
+- Map the ARN to a LiteLLM-priced model id in `[litellm] base_models`, so run cost is estimated
+  instead of reported as unavailable:
+
+```toml
+[litellm]
+base_models = {
+    "bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>" = "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+}
+```
+
 #### Claude 5 thinking with an application inference profile ARN
 
 Claude Sonnet 5 on Bedrock is invoked through an inference profile rather than a direct
