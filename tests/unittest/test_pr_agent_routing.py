@@ -15,6 +15,7 @@ from pr_agent.git_providers.git_provider import (
     IncompleteProviderPullRequestFilesError,
     IncompletePullRequestFilesError,
 )
+from pr_agent.git_providers.gitea_provider import GiteaProvider, IncompleteGiteaPullRequestFilesError, RepoApi
 
 
 def _identity_args(args):
@@ -25,6 +26,77 @@ def test_incomplete_file_errors_share_only_provider_neutral_base():
     assert issubclass(IncompletePullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert issubclass(IncompleteBitbucketPullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert not issubclass(IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError)
+    assert issubclass(IncompleteGiteaPullRequestFilesError, IncompleteProviderPullRequestFilesError)
+    assert not issubclass(IncompleteGiteaPullRequestFilesError, IncompletePullRequestFilesError)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["published", "inspection_failure", "publication_failure", "disabled"])
+async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypatch, outcome):
+    """A failed SDK files page must abort the real /review route before model use."""
+    from giteapy.rest import ApiException
+
+    import pr_agent.git_providers.gitea_provider as gitea_module
+    import pr_agent.tools.pr_reviewer as reviewer_module
+
+    settings = Mock()
+    settings.get.side_effect = lambda key, default=None: {
+        "GITEA.URL": "https://gitea.example.com",
+        "GITEA.PERSONAL_ACCESS_TOKEN": "test-token",
+    }.get(key, default)
+    monkeypatch.setattr(gitea_module, "get_settings", lambda: settings)
+    transport = Mock()
+    transport.call_api.side_effect = ApiException(status=502, reason="private/repo secret failure")
+    monkeypatch.setattr(gitea_module.giteapy, "ApiClient", lambda _config: transport)
+    monkeypatch.setattr(RepoApi, "get_pull_request", lambda *_args, **_kwargs: SimpleNamespace(
+        head=SimpleNamespace(sha="head"), base=SimpleNamespace(sha="base", ref="main")))
+    monkeypatch.setattr(RepoApi, "get_pull_request_diff", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(RepoApi, "get_pr_commits", lambda *_args, **_kwargs: [{"sha": "head"}])
+    monkeypatch.setattr(RepoApi, "get_languages", lambda *_args, **_kwargs: {})
+
+    def comments(_provider):
+        if outcome == "inspection_failure":
+            raise RuntimeError("private comment lookup")
+        return []
+
+    monkeypatch.setattr(GiteaProvider, "get_issue_comments", comments)
+    published = []
+
+    def publish(_provider, body):
+        published.append(body)
+        if outcome == "publication_failure":
+            raise RuntimeError("private publication error")
+
+    monkeypatch.setattr(GiteaProvider, "publish_comment", publish)
+    providers = []
+
+    def provider_factory(_url):
+        provider = GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+        providers.append(provider)
+        return provider
+
+    monkeypatch.setattr(reviewer_module, "get_git_provider_with_context", provider_factory)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", provider_factory)
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setattr(get_settings().config, "publish_output", outcome != "disabled", raising=False)
+    model_factory = Mock()
+
+    handled = await pr_agent_module.PRAgent(ai_handler=model_factory)._handle_request(
+        "https://gitea.example.com/owner/repo/pulls/1", "/review"
+    )
+
+    assert handled is False
+    model_factory.assert_not_called()
+    assert len(providers) == (1 if outcome == "disabled" else 2)
+    assert transport.call_api.call_count == 1
+    if outcome == "disabled":
+        assert published == []
+    else:
+        assert len(published) == 1
+        assert "Gitea returned incomplete or unavailable" in published[0]
+        assert IncompleteGiteaPullRequestFilesError.notice_marker in published[0]
+        assert "private/repo" not in published[0]
+        assert "test-token" not in published[0]
 
 
 @pytest.fixture(autouse=True)
