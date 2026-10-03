@@ -265,29 +265,6 @@ async def test_push_inline_renders_body_with_score_and_label():
     assert args[0]["original_suggestion"]["one_sentence_summary"] == "Use the shared helper"
 
 
-@pytest.mark.asyncio
-async def test_push_inline_discloses_why_the_score_was_not_model_assigned():
-    git_provider = MagicMock()
-    git_provider.diff_files = [
-        FilePatchInfo(
-            base_file="",
-            head_file="def f():\n    return old()\n",
-            patch="",
-            filename="app.py",
-        )
-    ]
-    git_provider.publish_code_suggestions.return_value = True
-    tool = _make_tool(git_provider)
-    data = {"code_suggestions": [
-        _suggestion(score=7, score_why="Self-reflection unavailable; score not model-assigned")]}
-
-    await tool.push_inline_code_suggestions(data)
-
-    body = git_provider.publish_code_suggestions.call_args.args[0][0]["body"]
-    assert "[maintainability, importance: 7]" in body
-    assert "Why: Self-reflection unavailable; score not model-assigned" in body
-
-
 def test_render_suggestions_markdown_includes_score_why_when_present():
     data = {"code_suggestions": [
         _suggestion(score=7, score_why="Self-reflection unavailable; score not model-assigned")]}

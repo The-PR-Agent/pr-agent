@@ -1442,9 +1442,6 @@ class PRCodeSuggestions:
             score = d.get("score")
             header = f"**Suggestion:** {content} [{label}, importance: {score}]" if score \
                 else f"**Suggestion:** {content} [{label}]"
-            score_why = (d.get("score_why") or "").strip()
-            if score_why:
-                header += f"\n\nWhy: {score_why}"
             if new_code_snippet and is_applicable:
                 body = f"{header}\n```suggestion\n" + new_code_snippet + "\n```"
             else:
