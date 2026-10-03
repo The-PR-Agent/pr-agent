@@ -264,17 +264,31 @@ def _configured_client_retries():
     return parsed
 
 
+class EmptyTruncatedResponseError(openai.APIError):
+    """The model returned no content because it exhausted the output budget.
+
+    Raised when an empty response carries ``finish_reason == "length"``. Replaying the
+    identical request on the same model reproduces the truncation, so by default the
+    handler hands this straight to the fallback-models loop instead of paying for a
+    second identical, empty call. Set config.retry_same_model_on_length to retry anyway.
+    """
+
+
 def _should_retry_same_model(exc: BaseException) -> bool:
     """Whether chat_completion retries the SAME model, before falling back to fallback_models.
 
     With config.retry_same_model_on_timeout set to false, a timed-out call is handed to the
     fallback-models loop instead of being replayed on the model that just missed the deadline.
     Request validation errors also surface immediately rather than replaying the same request.
+    An empty, length-truncated response is deterministic for the same request and cap, so it is
+    not replayed unless config.retry_same_model_on_length enables it.
     """
     if isinstance(exc, (openai.RateLimitError, openai.BadRequestError, openai.UnprocessableEntityError)):
         return False
     if isinstance(exc, openai.APITimeoutError):
         return _as_bool(get_settings().config.get("retry_same_model_on_timeout", True), default=True)
+    if isinstance(exc, EmptyTruncatedResponseError):
+        return _as_bool(get_settings().config.get("retry_same_model_on_length", False), default=False)
     return isinstance(exc, openai.APIError)
 
 
@@ -3069,9 +3083,17 @@ class LiteLLMAIHandler(BaseAiHandler):
             if not content:
                 get_logger().warning(
                     f"Empty content in model response, finish_reason: {finish_reason}")
+                error_message = f"Empty content in model response (finish_reason: {finish_reason})"
+                error_request = httpx.Request("POST", model)
+                if finish_reason == "length":
+                    raise EmptyTruncatedResponseError(
+                        error_message,
+                        request=error_request,
+                        body=None,
+                    )
                 raise openai.APIError(
-                    f"Empty content in model response (finish_reason: {finish_reason})",
-                    request=httpx.Request("POST", model),
+                    error_message,
+                    request=error_request,
                     body=None,
                 )
             return content, finish_reason, response
