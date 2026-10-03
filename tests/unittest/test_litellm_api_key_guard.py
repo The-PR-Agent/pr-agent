@@ -20,10 +20,11 @@ import pr_agent.algo.ai_handlers.litellm_helpers as litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_ai_handler import DUMMY_LITELLM_API_KEY, LiteLLMAIHandler
 
 
-def _make_settings(overrides=None):
+def _make_settings(overrides=None, model=None):
     overrides = overrides or {}
     return type("Settings", (), {
         "config": type("Config", (), {
+            "model": model,
             "reasoning_effort": None,
             "ai_timeout": 30,
             "custom_reasoning_model": False,
@@ -8237,7 +8238,7 @@ async def test_native_bedrock_model_region_precedence(monkeypatch, model_source,
         native_params = {"api_key": "owned-bearer"}
     if model_source == "model_id":
         native_params["model_id"] = arn
-    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(overrides))
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(overrides, model=model))
     seen = []
 
     class TransportReached(BaseException):

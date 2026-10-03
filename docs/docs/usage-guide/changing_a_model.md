@@ -438,7 +438,7 @@ AWS_REGION_NAME="..."
 model_id = "your-application-inference-profile-arn"
 ```
 
-The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
+The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It is scoped to `config.model`, the model it is configured for, so fallback (and `model_weak` / `model_reasoning`) models with a different name do not inherit the primary model's inference profile. A fallback that is the same model as `config.model` still receives it. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
 
 #### Claude 5 thinking with an application inference profile ARN
 

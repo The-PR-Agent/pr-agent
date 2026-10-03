@@ -37,7 +37,7 @@ class FakeBox:
 
 
 class FakeSettings:
-    def __init__(self, config_values=None, settings_values=None):
+    def __init__(self, config_values=None, settings_values=None, model="gpt-4o"):
         self.config = FakeBox(
             config_values or {},
             reasoning_effort=None,
@@ -45,7 +45,7 @@ class FakeSettings:
             custom_reasoning_model=False,
             max_model_tokens=32000,
             verbosity_level=0,
-            model="gpt-4o",
+            model=model,
         )
         self.litellm = FakeBox()
         self._settings_values = {
@@ -171,7 +171,7 @@ async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, m
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
-        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}),
+        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}, model=model),
     )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
@@ -188,18 +188,57 @@ async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, m
 
 @pytest.mark.asyncio
 async def test_health_probe_uses_snapshotted_classic_bedrock_model_id(monkeypatch):
-    active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-a"})
+    bedrock_model = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
+    active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-a"}, model=bedrock_model)
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
     handler = litellm_handler.LiteLLMAIHandler()
-    active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-b"})
+    active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-b"}, model=bedrock_model)
     completion = AsyncMock(return_value=_mock_response())
 
     await handler.probe_completion(
-        "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
+        bedrock_model,
         _completion=completion,
     )
 
     assert completion.call_args.kwargs["model_id"] == "profile-a"
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_does_not_send_model_id_to_fallback_models(monkeypatch):
+    # litellm.model_id belongs to config.model, so a fallback model must not be sent to the
+    # primary's Bedrock inference profile (issue #3837).
+    primary = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
+    fallback = "bedrock/qwen.qwen3-235b-a22b-2507-v1:0"
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}, model=primary),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=fallback, system="sys", user="usr")
+
+    assert "model_id" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_health_probe_does_not_send_model_id_to_fallback_models(monkeypatch):
+    primary = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
+    fallback = "bedrock/qwen.qwen3-235b-a22b-2507-v1:0"
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}, model=primary),
+    )
+    handler = litellm_handler.LiteLLMAIHandler()
+    completion = AsyncMock(return_value=_mock_response())
+
+    await handler.probe_completion(fallback, _completion=completion)
+
+    assert "model_id" not in completion.call_args.kwargs
 
 
 @pytest.mark.asyncio

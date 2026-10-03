@@ -18,10 +18,11 @@ from pr_agent.algo.ai_handlers import cloud_auth
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 
-def _base_settings(overrides=None):
+def _base_settings(overrides=None, model=None):
     overrides = overrides or {}
     return type("Settings", (), {
         "config": type("Config", (), {
+            "model": model,
             "reasoning_effort": None,
             "ai_timeout": 30,
             "custom_reasoning_model": False,
@@ -37,7 +38,7 @@ def _base_settings(overrides=None):
     })()
 
 
-def _static_aws_settings(prefix="STATIC", session_token=None, overrides=None):
+def _static_aws_settings(prefix="STATIC", session_token=None, overrides=None, model=None):
     overrides = {
         "aws.AWS_ACCESS_KEY_ID": f"{prefix}-KEY",
         "aws.AWS_SECRET_ACCESS_KEY": f"{prefix}-SECRET",
@@ -46,7 +47,7 @@ def _static_aws_settings(prefix="STATIC", session_token=None, overrides=None):
     }
     if session_token:
         overrides["aws.AWS_SESSION_TOKEN"] = session_token
-    return _base_settings(overrides)
+    return _base_settings(overrides, model=model)
 
 
 def _frozen_creds(access_key="IMDS-KEY", secret_key="IMDS-SECRET", token=None):
@@ -857,7 +858,7 @@ async def test_bedrock_request_region_from_captured_model(monkeypatch, model_sou
         model = f"bedrock/{arn}"
     elif model_source == "region_path":
         model = f"bedrock/eu-west-1/{native_model}"
-    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _base_settings(settings))
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: _base_settings(settings, model=model))
     monkeypatch.setattr(litellm, "api_key", None)
     monkeypatch.setenv("LITELLM_RUST", "false")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "request-key")
@@ -1807,7 +1808,7 @@ async def test_bedrock_static_fallback_preserves_request_region(monkeypatch, mod
         litellm_handler,
         "get_settings",
         lambda: _static_aws_settings(
-            session_token="STATIC-TOKEN", overrides={"litellm.model_id": model_id} if model_id else {},
+            session_token="STATIC-TOKEN", overrides={"litellm.model_id": model_id} if model_id else {}, model=model,
         ),
     )
     credentials = MagicMock()
