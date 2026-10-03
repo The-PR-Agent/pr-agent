@@ -681,7 +681,10 @@ class PRCodeSuggestions:
             return True
 
         def _publish_persistent_update_failure():
-            _clean_up_progress_note()
+            record_command_failure()
+            _clean_up_progress_note(
+                f"Failed to update the persistent {name} comment; the previous {name} remain unchanged."
+            )
             failure_body = (
                 f"⚠️ Failed to update the persistent {name} comment; "
                 f"the previous {name} remain unchanged."
