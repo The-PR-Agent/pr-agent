@@ -11,7 +11,7 @@ import time
 import jwt
 import requests
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import APIRouter, Request, Response
 from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
@@ -25,6 +25,7 @@ from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
     is_command_comment,
@@ -441,7 +442,7 @@ def start():
     get_settings().set("CONFIG.GIT_PROVIDER", "bitbucket")
     get_settings().set("PR_DESCRIPTION.PUBLISH_DESCRIPTION_AS_COMMENT", True)
     middleware = [Middleware(RawContextMiddleware)]
-    app = FastAPI(middleware=middleware)
+    app = create_server_app(middleware=middleware)
     app.include_router(router)
 
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "3000")))

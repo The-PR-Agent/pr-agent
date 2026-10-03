@@ -5,7 +5,7 @@ import os
 from typing import List
 
 import uvicorn
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import RedirectResponse
 from starlette import status
@@ -20,6 +20,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
     is_command_comment,
@@ -244,7 +245,7 @@ async def root():
     return {"status": "ok"}
 
 
-app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+app = create_server_app(middleware=[Middleware(RawContextMiddleware)])
 app.include_router(router)
 
 
