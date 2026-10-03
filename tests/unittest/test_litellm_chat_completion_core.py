@@ -1,4 +1,3 @@
-import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -73,6 +72,49 @@ def _mock_response(usage=None):
     return mock
 
 
+class _FakeImageResponse:
+    def __init__(self, status):
+        self.status = status
+        self.headers = {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+def _install_fake_image_probe(monkeypatch, status):
+    """Install a deterministic aiohttp session + DNS for the /ask image probe."""
+    from pr_agent.algo import url_safety
+
+    observed = {}
+    response = _FakeImageResponse(status)
+
+    class _FakeImageSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def request(self, method, url, allow_redirects=True):
+            observed.update(method=method, url=url, allow_redirects=allow_redirects)
+            return response
+
+    def _factory(*args, **kwargs):
+        observed["timeout"] = kwargs.get("timeout")
+        return _FakeImageSession()
+
+    monkeypatch.setattr(litellm_handler.aiohttp, "ClientSession", _factory)
+    monkeypatch.setattr(
+        url_safety.socket,
+        "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("140.82.121.4", 0))],
+    )
+    return observed
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_passes_seed_when_temperature_is_zero(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: FakeSettings(config_values={"seed": 123}))
@@ -103,16 +145,9 @@ async def test_claude_empty_system_prompt_uses_public_request_normalization(monk
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
+async def test_chat_completion_probes_images_with_bounded_head(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    loop_thread = threading.get_ident()
-    observed = {}
-
-    def fake_head(url, **kwargs):
-        observed.update(url=url, kwargs=kwargs, thread=threading.get_ident())
-        return SimpleNamespace(status_code=200)
-
-    monkeypatch.setattr(litellm_handler.requests, "head", fake_head)
+    observed = _install_fake_image_probe(monkeypatch, 200)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -125,9 +160,11 @@ async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
             img_path="https://example.test/image.png",
         )
 
+    # The probe is a bounded, non-redirecting HEAD with the configured timeout.
+    assert observed["method"] == "HEAD"
     assert observed["url"] == "https://example.test/image.png"
-    assert observed["kwargs"] == {"allow_redirects": True, "timeout": 5}
-    assert observed["thread"] != loop_thread
+    assert observed["allow_redirects"] is False
+    assert observed["timeout"].total == 5
     assert mock_call.call_args.kwargs["messages"][1]["content"][1] == {
         "type": "image_url",
         "image_url": {"url": "https://example.test/image.png"},
@@ -137,11 +174,7 @@ async def test_chat_completion_probes_images_off_loop_with_timeout(monkeypatch):
 @pytest.mark.asyncio
 async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    monkeypatch.setattr(
-        litellm_handler.requests,
-        "head",
-        lambda *args, **kwargs: SimpleNamespace(status_code=404),
-    )
+    _install_fake_image_probe(monkeypatch, 404)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         handler = litellm_handler.LiteLLMAIHandler()
@@ -552,11 +585,7 @@ def test_request_messages_recognize_routed_user_only_models(monkeypatch, model):
 @pytest.mark.asyncio
 async def test_chat_completion_keeps_image_for_user_message_only_models(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
-    monkeypatch.setattr(
-        litellm_handler.requests,
-        "head",
-        lambda *args, **kwargs: SimpleNamespace(status_code=200),
-    )
+    _install_fake_image_probe(monkeypatch, 200)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -588,11 +617,7 @@ async def test_chat_completion_keeps_image_for_custom_reasoning_models(monkeypat
     settings = FakeSettings()
     settings.config.custom_reasoning_model = True
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
-    monkeypatch.setattr(
-        litellm_handler.requests,
-        "head",
-        lambda *args, **kwargs: SimpleNamespace(status_code=200),
-    )
+    _install_fake_image_probe(monkeypatch, 200)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()

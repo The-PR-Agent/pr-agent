@@ -10,10 +10,10 @@ import shutil  # noqa: F401  (module attribute asserted by tests)
 import stat
 import threading
 
+import aiohttp
 import httpx
 import litellm
 import openai
-import requests
 from litellm import acompletion
 from tenacity import retry, retry_if_exception, stop_after_attempt
 
@@ -136,12 +136,18 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 )
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
+from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
+_IMAGE_NOT_ALIVE_MESSAGE = (
+    "The image link is not [alive](img_path).\n"
+    "Please repost the original image as a comment, and send the question again with 'quote reply' "
+    "(see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+)
 OPENAI_DEFAULT_API_BASE = "https://api.openai.com/v1"
 
 # Token-count allowances used when estimating the cached prompt prefix for the
@@ -2598,6 +2604,32 @@ class LiteLLMAIHandler(BaseAiHandler):
         cached_framing = _CACHE_MESSAGE_FRAMING_ALLOWANCE * (2 if targets_user else 1) + _CACHE_REPLY_FRAMING_ALLOWANCE
         return cached_tokens + cached_framing
 
+    @staticmethod
+    async def _image_url_error(img_path: str) -> str | None:
+        """Return an error message when the image URL is unsafe or unreachable, else None.
+
+        The probe is https-only and follows at most MAX_SAFE_REDIRECTS redirects, validating
+        every hop against the SSRF guard, so a comment cannot aim PR-Agent at an internal
+        address or a long redirect chain.
+        """
+
+        async def _status(response, _url):
+            return response.status
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=_IMAGE_HEAD_TIMEOUT_SECONDS)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                status = await with_safe_redirects(session, img_path, _status, method="HEAD")
+        except Exception as e:
+            get_logger().error(f"Error fetching image: {img_path}", e)
+            return f"Error fetching image: {img_path}"
+        if status is None:
+            get_logger().error(f"Blocked unsafe or over-redirecting image URL: {img_path}")
+            return _IMAGE_NOT_ALIVE_MESSAGE
+        if status == 404:
+            return _IMAGE_NOT_ALIVE_MESSAGE
+        return None
+
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         configured_deployment_id = self.deployment_id
         return await self._chat_completion_with_retry(
@@ -2635,25 +2667,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
         deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
         if img_path:
-            try:
-                # Finish external image I/O before validating mutable credential fallbacks.
-                r = await asyncio.to_thread(
-                    requests.head,
-                    img_path,
-                    allow_redirects=True,
-                    timeout=_IMAGE_HEAD_TIMEOUT_SECONDS,
-                )
-                if r.status_code == 404:
-                    error_msg = (
-                    "The image link is not [alive](img_path).\n"
-                    "Please repost the original image as a comment, and send the question again with 'quote reply' "
-                    "(see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
-                )
-                    get_logger().error(error_msg)
-                    return f"{error_msg}", "error"
-            except Exception as e:
-                get_logger().error(f"Error fetching image: {img_path}", e)
-                return f"Error fetching image: {img_path}", "error"
+            # Finish external image I/O before validating mutable credential fallbacks.
+            image_error = await self._image_url_error(img_path)
+            if image_error is not None:
+                get_logger().error(image_error)
+                return image_error, "error"
 
         _aws_imds = self._should_use_aws_imds(request_provider)
         async with self._snapshot_aws_request_credentials(_aws_imds) as (
