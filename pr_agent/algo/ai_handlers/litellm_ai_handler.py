@@ -470,6 +470,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
         }
         self._bedrock_model_id = settings.get("litellm.model_id", None)
+        self._configured_model = getattr(settings.config, "model", None)
+        self._bedrock_model_ids = dict(settings.get("litellm.model_ids", None) or {})
         self._custom_llm_provider = str(
             getattr(settings.litellm, "custom_llm_provider", "") or ""
         ).strip().lower()
@@ -1352,6 +1354,19 @@ class LiteLLMAIHandler(BaseAiHandler):
             return not (snapshot["azure_key"] or snapshot["azure_ad_token"])
         return True
 
+    def _bedrock_model_id_for(self, model):
+        """Return litellm.model_id only for the model it was configured for (config.model).
+
+        Fallback models must not be sent to the primary model's inference profile.
+        """
+        model_ids = getattr(self, "_bedrock_model_ids", None) or {}
+        if isinstance(model, str) and model_ids.get(model):
+            return model_ids[model]
+        model_id = getattr(self, "_bedrock_model_id", None)
+        if model_id and model == getattr(self, "_configured_model", None):
+            return model_id
+        return None
+
     def _get_provider_request_params(
         self,
         model: str,
@@ -1595,7 +1610,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 params["api_base"] = url[:-len(suffix)]
         if provider in AWS_REQUEST_PROVIDERS:
             model_region = (
-                _get_bedrock_model_region(transport_model or model, getattr(self, "_bedrock_model_id", None))
+                _get_bedrock_model_region(transport_model or model, self._bedrock_model_id_for(model))
                 if provider == "bedrock" else None
             )
             if model_region:
@@ -2909,7 +2924,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                 # Classic `bedrock/` calls use model_id for Bedrock Runtime inference profiles.
                 # Bedrock Mantle uses Projects, so `bedrock_mantle/` intentionally omits it.
-                bedrock_model_id = getattr(self, "_bedrock_model_id", None)
+                bedrock_model_id = self._bedrock_model_id_for(model)
                 if bedrock_model_id and request_provider == "bedrock":
                     kwargs["model_id"] = bedrock_model_id
                     get_logger().info(f"Using Bedrock custom inference profile: {bedrock_model_id}")
@@ -3016,8 +3031,9 @@ class LiteLLMAIHandler(BaseAiHandler):
             ))
             if custom_llm_provider:
                 kwargs["custom_llm_provider"] = custom_llm_provider
-            if self._bedrock_model_id and request_provider == "bedrock":
-                kwargs["model_id"] = self._bedrock_model_id
+            probe_model_id = self._bedrock_model_id_for(model)
+            if probe_model_id and request_provider == "bedrock":
+                kwargs["model_id"] = probe_model_id
             streaming = self._requires_streaming(kwargs["model"]) or self._force_streaming_for_request(
                 custom_llm_provider, kwargs.get("api_base")
             )
