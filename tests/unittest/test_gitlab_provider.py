@@ -215,7 +215,9 @@ class TestGitLabProvider:
         content = gitlab_provider.get_repo_file_content("AGENTS.md")
 
         assert content == "repo context"
-        mock_gitlab_client.projects.get.assert_called_with("test/repo")
+        # a lazy handle: the MR target branch is the ref, so the project payload is not needed
+        # (the fixture already fetched the MR itself, so check the last call rather than the count)
+        mock_gitlab_client.projects.get.assert_called_with("test/repo", lazy=True)
         mock_project.files.get.assert_called_once_with(file_path="AGENTS.md", ref="release-1.0")
         mock_file.decode.assert_called_once()
 

@@ -665,7 +665,7 @@ class GitLabProvider(GitProvider):
             return ("", "")
         if not repo_git_url: #Use PR url as context
             try:
-                desired_branch = self.gl.projects.get(self.id_project).default_branch
+                desired_branch = self._project_default_branch()
             except (GitlabError, RequestException, AttributeError):
                 get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. "
                                        f"Tried project ID: {self.id_project}")
@@ -682,6 +682,20 @@ class GitLabProvider(GitProvider):
     def pr(self):
         '''The GitLab terminology is merge request (MR) instead of pull request (PR)'''
         return self.mr
+
+    _default_branch: str | None  # set on first read; annotation only, so `hasattr` means "read it"
+
+    def _project_default_branch(self) -> str | None:
+        """Return this project's default branch, fetching it at most once per provider.
+
+        `id_project` is already known, so this one field is the only reason to download a project.
+        The answer is cached for the lifetime of this provider instance, so a caller that outlives
+        a default-branch change has to build a new provider to see the new one. Keyed on `hasattr`,
+        not on the value, so that a repository with no default branch caches that answer too.
+        """
+        if not hasattr(self, "_default_branch"):
+            self._default_branch = self.gl.projects.get(self.id_project).default_branch
+        return self._default_branch
 
     def _set_merge_request(self, merge_request_url: str):
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
@@ -1978,7 +1992,7 @@ class GitLabProvider(GitProvider):
         if global_settings:
             settings_files.append(("global", global_settings))
         try:
-            project = self.gl.projects.get(self.id_project)
+            project = self.gl.projects.get(self.id_project, lazy=True)
             contents = None
             config_branch = get_config_branch()
             if config_branch:
@@ -1994,7 +2008,7 @@ class GitLabProvider(GitProvider):
                     get_logger().debug(
                         f"No .pr_agent.toml on branch '{config_branch}', falling back to default branch")
             if contents is None:
-                main_branch = project.default_branch
+                main_branch = self._project_default_branch()
                 contents = project.files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
                 self._resolved_config_branch = main_branch or ""
             if contents:
@@ -2022,9 +2036,9 @@ class GitLabProvider(GitProvider):
         """
         if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
             return [], ""
-        project = self.gl.projects.get(self.id_project)
+        project = self.gl.projects.get(self.id_project, lazy=True)
         root_branch = getattr(self, "_resolved_config_branch", "")
-        resolved_ref = root_branch or ref or project.default_branch
+        resolved_ref = root_branch or ref or self._project_default_branch()
         try:
             return self._list_config_tree_paths(project, resolved_ref), resolved_ref
         except GitlabGetError as e:
@@ -2035,7 +2049,7 @@ class GitLabProvider(GitProvider):
                     f"No repository tree for branch '{resolved_ref}' that supplied the root .pr_agent.toml; "
                     "skipping per-directory settings instead of reading them from another branch")
                 return [], ""
-            if resolved_ref == project.default_branch:
+            if resolved_ref == self._project_default_branch():
                 get_logger().debug("No repository tree found for per-directory settings; skipping")
                 return [], ""
         # Match the root config fallback for a caller-provided branch hint: a missing branch/tree is an
@@ -2043,7 +2057,7 @@ class GitLabProvider(GitProvider):
         get_logger().debug(
             f"No repository tree for branch '{resolved_ref}' while listing per-directory settings; "
             "falling back to default branch")
-        resolved_ref = project.default_branch
+        resolved_ref = self._project_default_branch()
         try:
             return self._list_config_tree_paths(project, resolved_ref), resolved_ref
         except GitlabGetError as e:
@@ -2081,7 +2095,7 @@ class GitLabProvider(GitProvider):
         """Fetch raw content of per-directory settings files at *ref*."""
         if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
             return {}
-        project = self.gl.projects.get(self.id_project)
+        project = self.gl.projects.get(self.id_project, lazy=True)  # one handle for the whole loop
         result: dict[str, bytes] = {}
         for path in paths:
             try:
@@ -2112,14 +2126,14 @@ class GitLabProvider(GitProvider):
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         try:
-            project = self.gl.projects.get(self.id_project)
+            project = self.gl.projects.get(self.id_project, lazy=True)
             # Read from the MR target branch (the branch being merged into), matching the other
             # providers; fall back to the project default branch outside of an MR context, or
             # always when from_default_branch is requested.
             if from_default_branch:
-                ref = project.default_branch
+                ref = self._project_default_branch()
             else:
-                ref = getattr(self.mr, "target_branch", None) or project.default_branch
+                ref = getattr(self.mr, "target_branch", None) or self._project_default_branch()
             contents = project.files.get(file_path=file_path, ref=ref).decode()
             return decode_if_bytes(contents)
         except GitlabGetError as e:
@@ -2224,9 +2238,7 @@ class GitLabProvider(GitProvider):
             target_branch = getattr(self.mr, "target_branch", None)
             if target_branch:
                 return target_branch
-        if not hasattr(self, "_repo_context_default_branch"):
-            self._repo_context_default_branch = self.gl.projects.get(self.id_project).default_branch
-        return self._repo_context_default_branch
+        return self._project_default_branch()
 
     def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
         try:
