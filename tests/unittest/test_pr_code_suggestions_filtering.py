@@ -10,7 +10,7 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.tools.pr_code_suggestions import _REFLECTION_FAILURE_SCORE_WHY, PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (
@@ -282,7 +282,7 @@ async def test_analyze_self_reflection_invalid_feedback_assigns_default_score_se
     try:
         data = {"code_suggestions": [_valid_suggestion()]}
         # Missing required keys ('suggestion_score', 'why') triggers the
-        # fallback branch which assigns score=7 and clears score_why.
+        # fallback branch which assigns the configured score and explains why.
         response_reflect = """
 code_suggestions:
   - irrelevant_key: 1
@@ -291,7 +291,7 @@ code_suggestions:
         await tool.analyze_self_reflection_response(data, response_reflect)
 
         assert data["code_suggestions"][0]["score"] == 7
-        assert data["code_suggestions"][0]["score_why"] == ""
+        assert data["code_suggestions"][0]["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
     finally:
         settings.config.publish_output = original_publish_output
 
