@@ -258,9 +258,22 @@ _RELEVANCE_STOPWORDS = frozenset({
 })
 
 
+_SYMBOLIC_LANGUAGE_ALIASES = (
+    ("c++", " cpp "),
+    ("c#", " csharp "),
+    ("f#", " fsharp "),
+    ("objective-c", " objc "),
+)
+
+
 def _relevance_tokens(text: str) -> frozenset:
+    lowered = (text or "").lower()
+    # The generic word split would reduce symbolic language names like C++ or
+    # C# to a single "c" and drop it, losing the main-language hint signal.
+    for symbolic, alias in _SYMBOLIC_LANGUAGE_ALIASES:
+        lowered = lowered.replace(symbolic, alias)
     return frozenset(
-        token for token in re.findall(r"[a-z0-9]+", (text or "").lower())
+        token for token in re.findall(r"[a-z0-9]+", lowered)
         if len(token) > 1 and token not in _RELEVANCE_STOPWORDS
     )
 
@@ -426,11 +439,12 @@ def get_skills_context(relevance_hint: str = "") -> str:
         max_skills = 0
 
     skills = discover_skills(paths)
-    # Only the cap is applied up front; relevance reordering happens inside
-    # format_skills_context and only when the budget dropped skills, so a
-    # fitting set packs byte-identically with and without a hint.
+    # The cap ranks by relevance first so it cannot cut a relevant but
+    # alphabetically-later skill; budget reordering still happens inside
+    # format_skills_context, and only when the budget dropped skills, so a
+    # fitting set (no cap) packs byte-identically with and without a hint.
     if skills and 0 < max_skills < len(skills):
-        skills = select_skills(skills, max_skills=max_skills)
+        skills = select_skills(skills, relevance_hint=relevance_hint, max_skills=max_skills)
     out = format_skills_context(skills, max_tokens, relevance_hint=relevance_hint) if skills else ""
     _set_cached_context(cache_settings, out)
     return out
