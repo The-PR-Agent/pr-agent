@@ -34,6 +34,8 @@ class IssueTransport(BaseAdapter):
             "description": "x" * (tickets.MAX_TICKET_CHARACTERS + 1),
             "labels": ["bug", "backend"],
         } if outcome == 200 else {"message": "unavailable"}
+        if isinstance(outcome, tuple):
+            outcome, payload = outcome
         response = requests.Response()
         response.status_code = outcome
         response._content = json.dumps(payload).encode()
@@ -93,6 +95,15 @@ async def test_issue_failures_preserve_successful_context(provider_factory, fail
 
     assert [ticket["ticket_id"] for ticket in result] == [2]
     assert len(transport.requests) == 2
+
+
+@pytest.mark.parametrize("payload", [{}, {"iid": 2, "description": "partial issue"}])
+async def test_malformed_issue_preserves_earlier_successes_and_refills(provider_factory, payload):
+    provider, transport = provider_factory("Fixes #1 #2 #3 #4 #5", [200, (200, payload), 200, 200, 200])
+    result = await tickets.extract_tickets(provider)
+
+    assert [ticket["ticket_id"] for ticket in result] == [1, 3, 4]
+    assert [int(urlparse(request.url).path.rsplit("/", 1)[-1]) for request in transport.requests] == [1, 2, 3, 4]
 
 
 async def test_failed_issue_is_fetched_again_on_next_extraction(provider_factory):

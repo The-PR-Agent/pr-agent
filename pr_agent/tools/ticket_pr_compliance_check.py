@@ -1002,26 +1002,26 @@ async def extract_tickets(git_provider):
                     # Only the issue manager is needed; avoid fetching unused project metadata.
                     project = git_provider.gl.projects.get(project_path, lazy=True)
                     issue = project.issues.get(issue_iid)
+
+                    issue_body = issue.description or ""
+                    if len(issue_body) > MAX_TICKET_CHARACTERS:
+                        issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
+
+                    tickets_content.append(
+                        {
+                            "ticket_id": issue.iid,
+                            "ticket_url": issue.web_url,
+                            "title": issue.title,
+                            "body": issue_body,
+                            "labels": ", ".join(issue.labels or []),
+                        }
+                    )
                 except Exception as e:
                     get_logger().error(
                         f"Error getting GitLab issue {project_path}#{issue_iid}: {e}",
                         artifact={"traceback": traceback.format_exc()},
                     )
                     continue
-
-                issue_body = issue.description or ""
-                if len(issue_body) > MAX_TICKET_CHARACTERS:
-                    issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
-
-                tickets_content.append(
-                    {
-                        "ticket_id": issue.iid,
-                        "ticket_url": issue.web_url,
-                        "title": issue.title,
-                        "body": issue_body,
-                        "labels": ", ".join(issue.labels or []),
-                    }
-                )
 
                 if len(tickets_content) >= MAX_GITLAB_TICKETS:
                     break
