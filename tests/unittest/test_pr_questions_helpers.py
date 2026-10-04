@@ -492,6 +492,26 @@ class TestQuestionEchoSanitization:
         assert "what does /merge do here?" in out
 
 
+class TestLineQuestionAnswerSanitization:
+    @pytest.mark.asyncio
+    async def test_carriage_return_slash_is_neutralized(self, monkeypatch, line_question_settings):
+        line_question_settings.set("comment_id", 42)
+        line_question_settings.set("file_name", "t.py")
+        lq = _make_line_questions()
+        lq.git_provider.get_diff_files.return_value = [SimpleNamespace(filename="t.py", patch="diff")]
+
+        async def get_answer(*args, **kwargs):
+            return "Done.\n\r/merge"
+
+        monkeypatch.setattr("pr_agent.tools.pr_line_questions.extract_hunk_lines_from_patch",
+                            MagicMock(return_value=("@@ -1,1 +1,1 @@\n patch", "selected")))
+        monkeypatch.setattr("pr_agent.tools.pr_line_questions.retry_with_fallback_models", get_answer)
+
+        await lq.run()
+
+        lq.git_provider.reply_to_comment_from_comment_id.assert_called_once_with(42, "Done.\n\r /merge")
+
+
 class TestPublishPrAnswer:
     def test_replies_to_azure_thread_when_comment_id_is_set(self):
         settings = get_settings()
