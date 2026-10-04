@@ -2096,7 +2096,8 @@ class PRCodeSuggestions:
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=True, return_remaining_files=True,
                 output_token_reserve=output_token_reserve,
-                include_filtered_file_names=False)  # decouple hunk with line numbers
+                include_filtered_file_names=False,
+                handle_deletions=True)  # decouple hunk with line numbers
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
@@ -2106,7 +2107,8 @@ class PRCodeSuggestions:
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=False, return_remaining_files=True,
                 output_token_reserve=output_token_reserve,
-                include_filtered_file_names=False)
+                include_filtered_file_names=False,
+                handle_deletions=True)
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers,
                 model,
@@ -2119,7 +2121,8 @@ class PRCodeSuggestions:
                     max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                     add_line_numbers=True, return_remaining_files=True,
                     output_token_reserve=output_token_reserve,
-                    include_filtered_file_names=False)  # decouple hunk with line numbers
+                    include_filtered_file_names=False,
+                    handle_deletions=True)  # decouple hunk with line numbers
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()

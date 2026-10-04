@@ -187,8 +187,6 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 return_remaining_files=False,
                 return_prepared=False,
                 output_token_reserve: Callable[[str, int], int] | None = None,
-                remove_delete_only_files: bool = False,
-                remove_delete_only_hunks: bool = False,
                 handle_deletions: bool = False):
     budget = AttemptTokenBudget.for_attempt(
         model, token_handler, output_token_reserve=output_token_reserve
@@ -223,10 +221,11 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             pass
 
     # generate a standard diff string, with patch extension
-    patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
+    patches_extended, total_tokens, patches_extended_tokens, deleted_files_list_ext = pr_generate_extended_diff(
         pr_languages, token_handler, add_line_numbers_to_hunks,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
-        handle_deletions=handle_deletions)
+        handle_deletions=handle_deletions,
+        return_deleted_files=True)
 
     # if we are under the limit, return the full diff
     if not patches_extended:
@@ -258,6 +257,14 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             else:
                 full_diff = full_diff_with_metadata
         if full_diff_is_usable:
+            # Append deleted files list if any were dropped
+            if handle_deletions and deleted_files_list_ext:
+                deleted_list_str = DELETED_FILES_ + "\n" + "\n".join(deleted_files_list_ext)
+                max_tokens = token_handler.prompt_tokens + hard_token_budget
+                curr_token = token_handler.prompt_tokens + token_handler.count_tokens(full_diff)
+                full_diff, _, _ = _append_metadata_section(
+                    full_diff, curr_token, deleted_list_str, max_tokens, token_handler
+                )
             if return_prepared:
                 return PreparedPRDiff(full_diff, [], model=model,
                                       add_line_numbers_to_hunks=add_line_numbers_to_hunks,
@@ -570,10 +577,12 @@ def pr_generate_extended_diff(pr_languages: list,
                               add_line_numbers_to_hunks: bool,
                               patch_extra_lines_before: int = 0,
                               patch_extra_lines_after: int = 0,
-                              handle_deletions: bool = False) -> Tuple[list, int, list]:
+                              handle_deletions: bool = False,
+                              return_deleted_files: bool = False) -> Union[Tuple[list, int, list], Tuple[list, int, list, list]]:
     total_tokens = token_handler.prompt_tokens  # initial tokens
     patches_extended = []
     patches_extended_tokens = []
+    deleted_files_list = []
     for lang in pr_languages:
         for file in lang['files']:
             original_file_content_str = file.base_file
@@ -607,6 +616,8 @@ def pr_generate_extended_diff(pr_languages: list,
                     file.edit_type,
                 )
                 if extended_patch is None:
+                    if file.filename not in deleted_files_list:
+                        deleted_files_list.append(file.filename)
                     continue
 
             if add_line_numbers_to_hunks:
@@ -626,6 +637,8 @@ def pr_generate_extended_diff(pr_languages: list,
 
     if patches_extended:
         total_tokens += _count_raw_and_stripped_tokens(token_handler, "\n".join(patches_extended))
+    if return_deleted_files or handle_deletions:
+        return patches_extended, total_tokens, patches_extended_tokens, deleted_files_list
     return patches_extended, total_tokens, patches_extended_tokens
 
 
@@ -869,7 +882,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        return_remaining_files: bool = False,
                        prepared_diff: PreparedPRDiff | None = None,
                        output_token_reserve: Callable[[str, int], int] | None = None,
-                       include_filtered_file_names: bool = True):
+                       include_filtered_file_names: bool = True,
+                       handle_deletions: bool = False):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -955,11 +969,12 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
     # First try a single run with the full diff and extended patch context.
-    patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
+    patches_extended, total_tokens, patches_extended_tokens, *_ = pr_generate_extended_diff(
         pr_languages, token_handler,
         add_line_numbers_to_hunks=add_line_numbers,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE,
-        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
+        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
+        return_deleted_files=True)
 
     # if we are under the limit, return the full diff
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:

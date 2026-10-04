@@ -325,7 +325,7 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
         # logic for handling deleted files - don't show patch, just show that the file was deleted
         if get_verbosity_level() > 0:
             get_logger().info(f"Processing file: {file_name}, minimizing deletion file")
-        patch = None # file was deleted
+        patch = None  # file was deleted
     else:
         patch_lines = patch.splitlines()
         patch_new = omit_deletion_hunks(patch_lines)
@@ -333,6 +333,12 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
             if get_verbosity_level() > 0:
                 get_logger().info(f"Processing file: {file_name}, hunks were deleted")
             patch = patch_new
+        elif patch_new is None or not patch_new.strip():
+            # The patch became empty after removing delete-only hunks (e.g., a modified file with only deletions)
+            if edit_type == EDIT_TYPE.DELETED or not new_file_content_str:
+                patch = None
+            else:
+                patch = None  # Treat as deletion-only content
     return patch
 
 
