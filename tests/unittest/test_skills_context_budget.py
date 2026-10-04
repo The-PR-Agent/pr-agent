@@ -2,6 +2,7 @@
 import pytest
 
 from pr_agent.algo.skills_loader import Skill, format_skills_context
+from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.log import get_logger
 
@@ -74,17 +75,30 @@ def test_over_budget_skills_log_warning_with_dropped_names():
 
 
 def test_first_skill_over_budget_log_warning():
-    """First skill exceeding budget produces a warning with skill name, token counts, and dropped skills."""
+    """First skill exceeding budget produces a warning with exact retained/full token counts excluding marker."""
     huge_skill = Skill(name="huge_skill", description="d1", body="word " * 500)
     skill_b = Skill(name="skill_b", description="d2", body="short body")
 
-    warnings = _capture_warnings(lambda: format_skills_context([huge_skill, skill_b], 50))
+    max_tokens = 50
+    formatted_full = format_skills_context([huge_skill], 100000)
+    full_tokens = _tokens(formatted_full)
+
+    truncate_marker = "\n\n[truncated]"
+    marker_tokens = _tokens(truncate_marker)
+    budget = max(1, max_tokens - marker_tokens)
+    truncated = clip_tokens(formatted_full, budget, add_three_dots=False)
+    while truncated and _tokens(truncated + truncate_marker) > max_tokens:
+        truncated = truncated[: int(len(truncated) * 0.9)]
+    expected_kept_tokens = _tokens(truncated)
+
+    warnings = _capture_warnings(lambda: format_skills_context([huge_skill, skill_b], max_tokens))
 
     assert len(warnings) == 1
     msg = warnings[0]
-    assert "First skill 'huge_skill' exceeded budget" in msg
-    assert "tokens kept" in msg
+    expected_count_str = f"({expected_kept_tokens}/{full_tokens} tokens kept)"
+    assert f"First skill 'huge_skill' exceeded budget {expected_count_str}" in msg
     assert "truncated and dropped 1 skill(s): skill_b" in msg
+    assert expected_kept_tokens < _tokens(truncated + truncate_marker)
 
 
 def test_in_budget_skills_produce_no_warning():

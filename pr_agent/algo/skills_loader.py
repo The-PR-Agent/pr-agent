@@ -279,7 +279,7 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
                 while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
                     truncated = truncated[: int(len(truncated) * 0.9)]
                 pieces.append(truncated + truncate_marker)
-                kept_tokens = _count_tokens(pieces[0])
+                kept_tokens = _count_tokens(truncated)
                 dropped = [s.name for s in skills[1:]]
                 if dropped:
                     get_logger().warning(
