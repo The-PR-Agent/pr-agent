@@ -61,6 +61,65 @@ def test_a_full_url_is_not_bounded():
     assert _links(f"Fixes {url}") == [url]
 
 
+def test_enterprise_full_url_keeps_first_seen_order_and_custom_explicit_span(description_regex):
+    description_regex(r"(\d+)")
+    enterprise = "https://ghe.example.test"
+    description = (
+        f"Fixes {enterprise}/other/project/issues/7, then #2, "
+        f"again {enterprise}/other/project/issues/7"
+    )
+    assert extract_ticket_links_from_pr_description(description, REPO, enterprise) == [
+        f"{enterprise}/other/project/issues/7",
+        f"{enterprise}/{REPO}/issues/2",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("base", "url", "expected"),
+    [
+        ("https://ghe.example.test", "https://ghe.example.test/org/repo/issues/7", True),
+        ("https://ghe.example.test", "https://ghe.example.test:443/org/repo/issues/7", True),
+        ("https://ghe.example.test:8443", "https://ghe.example.test:8443/org/repo/issues/7", True),
+        ("https://ghe.example.test:8443", "https://ghe.example.test/org/repo/issues/7", False),
+        ("https://ghe.example.test:8443", "https://ghe.example.test:443/org/repo/issues/7", False),
+        ("https://ghe.example.test", "http://ghe.example.test/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://other.example.test/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://ghe.example.test.evil/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://user@ghe.example.test/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://ghe.example.test@evil.test/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://ghe.example.test/org/repo/issues/0", False),
+        ("https://ghe.example.test", "https://ghe.example.test/org/repo/issues/7/extra", False),
+        ("https://ghe.example.test", "https://ghe.example.test/org/../issues/7", False),
+    ],
+)
+def test_enterprise_full_url_uses_only_configured_https_origin_and_canonical_path(base, url, expected):
+    links = extract_ticket_links_from_pr_description(f"See {url}", REPO, base)
+    assert links == ([url] if expected else [])
+
+
+def test_enterprise_full_url_custom_capture_does_not_create_a_local_duplicate(description_regex):
+    description_regex(r"(\d+)")
+    enterprise = "https://ghe.example.test"
+    assert extract_ticket_links_from_pr_description(
+        f"See {enterprise}/other/project/issues/7", REPO, enterprise
+    ) == [f"{enterprise}/other/project/issues/7"]
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "http://ghe.example.test",
+        "https://user@ghe.example.test",
+        "https://ghe.example.test/path",
+        "https://ghe.example.test:bad",
+    ],
+)
+def test_invalid_provider_web_origin_does_not_admit_full_url(base):
+    assert extract_ticket_links_from_pr_description(
+        "See https://ghe.example.test/org/repo/issues/7", REPO, base
+    ) == []
+
+
 def test_a_cross_repo_shorthand_is_not_bounded():
     """Control: owner/repo#123 names its repository, so it is unambiguous too."""
     assert _links("Fixes other/project#12345") == [f"{BASE}/other/project/issues/12345"]
