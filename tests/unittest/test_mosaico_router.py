@@ -8,6 +8,7 @@ asyncio_mode=auto."""
 import aiohttp
 import pytest
 
+from pr_agent.algo import url_safety
 from pr_agent.algo.language_handler import sort_files_by_main_languages
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico import dispatch
@@ -657,7 +658,7 @@ class _FakeSession:
     def __init__(self, resp):
         self._resp = resp
 
-    def get(self, url, allow_redirects=True):
+    def request(self, method, url, allow_redirects=True):
         return self._resp
 
     async def __aenter__(self):
@@ -711,32 +712,32 @@ class TestFetchPublicDiffSSRF:
 
     @pytest.mark.asyncio
     async def test_private_ip_blocked(self, monkeypatch):
-        monkeypatch.setattr(dispatch.socket, "getaddrinfo",
+        monkeypatch.setattr(url_safety.socket, "getaddrinfo",
                             lambda *a, **k: [(2, 1, 6, "", ("10.0.0.5", 0))])
         assert await dispatch._url_is_safe("https://internal.example/x/pull/1.diff") is False
 
     @pytest.mark.asyncio
     async def test_metadata_ip_blocked(self, monkeypatch):
-        monkeypatch.setattr(dispatch.socket, "getaddrinfo",
+        monkeypatch.setattr(url_safety.socket, "getaddrinfo",
                             lambda *a, **k: [(2, 1, 6, "", ("169.254.169.254", 0))])
         assert await dispatch._url_is_safe("https://metadata.example/pull/1.diff") is False
 
     @pytest.mark.asyncio
     async def test_public_ip_allowed(self, monkeypatch):
         # 140.82.121.4 is a public GitHub IP
-        monkeypatch.setattr(dispatch.socket, "getaddrinfo",
+        monkeypatch.setattr(url_safety.socket, "getaddrinfo",
                             lambda *a, **k: [(2, 1, 6, "", ("140.82.121.4", 0))])
         assert await dispatch._url_is_safe("https://github.com/o/r/pull/1.diff") is True
 
     @pytest.mark.asyncio
     async def test_fetch_blocks_unsafe_without_request(self, monkeypatch):
-        # _url_is_safe returns False -> _fetch_public_diff must return None without calling GET
+        # _url_is_safe returns False -> _fetch_public_diff must return None without a request
         async def always_unsafe(url: str) -> bool:
             return False
 
         class _NeverCalledSession:
-            def get(self, url, allow_redirects=False):
-                raise AssertionError("GET must not be called when URL is unsafe")
+            def request(self, method, url, allow_redirects=False):
+                raise AssertionError("request must not be made when URL is unsafe")
 
             async def __aenter__(self):
                 return self
@@ -761,13 +762,13 @@ class TestFetchPublicDiffSSRF:
             # Any other host (incl. the raw IP string) -> private
             return [(2, 1, 6, "", (PRIVATE_IP, 0))]
 
-        monkeypatch.setattr(dispatch.socket, "getaddrinfo", fake_getaddrinfo)
+        monkeypatch.setattr(url_safety.socket, "getaddrinfo", fake_getaddrinfo)
 
-        # First GET returns a 302 pointing at an internal URL; second must never be reached.
+        # First request returns a 302 pointing at an internal URL; second must never be reached.
         redirect_resp = _FakeResp(302, b"", headers={"Location": f"https://{PRIVATE_IP}/evil"})
 
         class _RedirectSession:
-            def get(self, url, allow_redirects=False):
+            def request(self, method, url, allow_redirects=False):
                 return redirect_resp
 
             async def __aenter__(self):
