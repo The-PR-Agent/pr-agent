@@ -15,7 +15,7 @@ from pr_agent.log import get_logger
 class OutputSink(Protocol):
     def send(self, record: dict, cfg: dict) -> None:
         """Deliver one record using host-controlled settings; let the caller isolate failures."""
-        ...
+        pass
 
 
 def _push_outputs_sink_url(cfg: dict, key: str) -> str:
@@ -77,8 +77,8 @@ class SlackSink:
         _post_json("slack", url, {"text": text})
 
 
-# Registry order preserves the existing delivery order, regardless of configuration order:
-# local channels first, then network channels. Each selected channel is attempted once.
+# Keep local channels before network channels, regardless of configuration order.
+# Attempt each selected channel once.
 OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
     "stdout": StdoutSink,
     "file": FileSink,
