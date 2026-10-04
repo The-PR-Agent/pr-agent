@@ -25,6 +25,47 @@ def _expected_max_tokens(model: str) -> int:
 
 class TestGetMaxTokens:
 
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("provider", ["ollama", "openai_like", "azure_text", "text-completion-openai"])
+    @pytest.mark.parametrize("custom_limit", [16000, "16000"])
+    @pytest.mark.parametrize("global_limit, expected", [(0, 16000), (32000, 16000), (8000, 8000)])
+    def test_custom_provider_bare_gpt6_honors_explicit_limit(
+        self, monkeypatch, model, provider, custom_limit, global_limit, expected
+    ):
+        settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": custom_limit, "max_model_tokens": global_limit,
+            })(),
+            "litellm": type("", (), {"custom_llm_provider": provider})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda *args: pytest.fail("Explicit limit expected"))
+
+        assert get_max_tokens(model) == expected
+        assert get_max_tokens(model, ignore_max_model_tokens=True) == 16000
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6"])
+    @pytest.mark.parametrize("provider", ["", "openai", "azure", "azure_ai", "aiohttp_openai", "openrouter"])
+    def test_native_registered_models_keep_registry_priority(self, monkeypatch, model, provider):
+        settings = type("", (), {
+            "config": type("", (), {"custom_model_max_tokens": 16000, "max_model_tokens": 0})(),
+            "litellm": type("", (), {"custom_llm_provider": provider})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+
+        assert get_max_tokens(model) == 1050000
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6"])
+    @pytest.mark.parametrize("custom_limit", [0, -1])
+    def test_custom_provider_without_override_keeps_registered_limit(self, monkeypatch, model, custom_limit):
+        settings = type("", (), {
+            "config": type("", (), {"custom_model_max_tokens": custom_limit, "max_model_tokens": 0})(),
+            "litellm": type("", (), {"custom_llm_provider": "ollama"})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+
+        assert get_max_tokens(model) == 1050000
+
     # Test if the file is in MAX_TOKENS
     def test_model_max_tokens(self, monkeypatch):
         fake_settings = type('', (), {
@@ -106,10 +147,13 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1050000
 
-    @pytest.mark.parametrize("prefix", ["", "openai/", "azure/", "azure/openai/"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("prefix", [
+        "", "openai/", "azure/", "azure/openai/", "openrouter/", "openrouter/openai/",
+    ])
     @pytest.mark.parametrize("suffix", ["", "_thinking"])
     @pytest.mark.parametrize("cap", [0, 32000])
-    def test_gpt6_astra_model_max_tokens(self, monkeypatch, prefix, suffix, cap):
+    def test_gpt6_model_max_tokens(self, monkeypatch, model, prefix, suffix, cap):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 0,
@@ -119,14 +163,30 @@ class TestGetMaxTokens:
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_model_info", lambda *args, **kwargs: pytest.fail("Static lookup expected"))
 
-        assert get_max_tokens(f"{prefix}gpt-6-astra{suffix}") == (cap or 1050000)
+        assert get_max_tokens(f"{prefix}{model}{suffix}") == (cap or 1050000)
 
-    @pytest.mark.parametrize("model", [
-        "openai/gpt-6-astra", "azure/gpt-6-astra", "azure/openai/gpt-6-astra_thinking",
-        "gpt-6-astra_thinking",
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("suffix", ["", "_thinking"])
+    @pytest.mark.parametrize("custom_limit, expected", [(0, 1050000), (128000, 128000)])
+    def test_azure_ai_gpt6_max_tokens(self, monkeypatch, model, suffix, custom_limit, expected):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": custom_limit,
+                "max_model_tokens": 0,
+            })()
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda *args, **kwargs: pytest.fail("Static lookup expected"))
+
+        assert get_max_tokens(f"azure_ai/{model}{suffix}") == expected
+
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("alias", [
+        "openai/{}", "azure/{}", "azure/openai/{}_thinking", "{}_thinking",
+        "openrouter/{}", "openrouter/openai/{}_thinking",
     ])
     @pytest.mark.parametrize("cap, expected", [(0, 128000), (32000, 32000)])
-    def test_gpt6_astra_alias_preserves_custom_limit(self, monkeypatch, model, cap, expected):
+    def test_gpt6_alias_preserves_custom_limit(self, monkeypatch, model, alias, cap, expected):
         fake_settings = type("", (), {
             "config": type("", (), {
                 "custom_model_max_tokens": 128000,
@@ -135,7 +195,110 @@ class TestGetMaxTokens:
         })()
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == expected
+        assert get_max_tokens(alias.format(model)) == expected
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("prefix", ["", "openai/", "openrouter/openai/"])
+    @pytest.mark.parametrize("route", [":nitro", ":floor", ":online", ":exacto"])
+    @pytest.mark.parametrize("custom_limit, expected", [(0, 1050000), (128000, 128000)])
+    def test_gpt6_thinking_route_alias_max_tokens(self, monkeypatch, model, prefix, route, custom_limit, expected):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": custom_limit,
+                "max_model_tokens": 0,
+            })(),
+            "litellm": type("", (), {
+                "custom_llm_provider": "" if prefix.startswith("openrouter/") else "openrouter",
+            })(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda *args, **kwargs: pytest.fail("Static lookup expected"))
+
+        assert get_max_tokens(f"{prefix}{model}_thinking{route}") == expected
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize(("prefix", "custom_provider"), [
+        ("", "ollama"), ("openrouter/openai/", "ollama"), ("", ""),
+    ])
+    @pytest.mark.parametrize("route", [":nitro", ":floor", ":online", ":exacto"])
+    @pytest.mark.parametrize("custom_limit, expected", [(0, 32768), (16384, 16384)])
+    def test_non_openrouter_gpt6_variant_preserves_metadata_limit(
+        self, monkeypatch, model, prefix, custom_provider, route, custom_limit, expected
+    ):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": custom_limit,
+                "max_model_tokens": 0,
+            })(),
+            "litellm": type("", (), {"custom_llm_provider": custom_provider})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        lookup_models = []
+
+        def model_info(lookup_model):
+            lookup_models.append(lookup_model)
+            return {"max_input_tokens": 32768}
+
+        monkeypatch.setattr(litellm, "get_model_info", model_info)
+        variant = f"{prefix}{model}{route}"
+
+        assert get_max_tokens(variant) == expected
+        assert lookup_models == ([variant] if custom_limit == 0 else [])
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("route", [":batch", ":free"])
+    def test_gpt6_thinking_nonrouting_variant_uses_provider_metadata(self, monkeypatch, model, route):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda *args, **kwargs: None)
+
+        with pytest.raises(Exception, match="defined in MAX_TOKENS"):
+            get_max_tokens(f"openrouter/openai/{model}_thinking{route}")
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("custom_provider", ["ollama", "openai_like", "azure_text", "text-completion-openai"])
+    @pytest.mark.parametrize("alias", [
+        "{}_thinking", "openai/{}", "azure/{}", "azure_ai/{}", "openrouter/openai/{}",
+        "openai/{}_thinking", "openrouter/openai/{}_thinking",
+    ])
+    @pytest.mark.parametrize("custom_limit, expected", [(0, 32768), (16384, 16384)])
+    def test_custom_provider_gpt6_alias_preserves_metadata_limit(
+        self, monkeypatch, model, custom_provider, alias, custom_limit, expected
+    ):
+        fake_settings = type("", (), {
+            "config": type("", (), {"custom_model_max_tokens": custom_limit, "max_model_tokens": 0})(),
+            "litellm": type("", (), {"custom_llm_provider": custom_provider})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        lookup_models = []
+
+        def model_info(lookup_model):
+            lookup_models.append(lookup_model)
+            return {"max_input_tokens": 32768}
+
+        monkeypatch.setattr(litellm, "get_model_info", model_info)
+        variant = alias.format(model)
+
+        assert get_max_tokens(variant) == expected
+        assert lookup_models == ([variant] if custom_limit == 0 else [])
+
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("custom_provider", ["openai", "aiohttp_openai", "azure", "azure_ai", "openrouter"])
+    @pytest.mark.parametrize("alias", ["{}_thinking", "openai/{}", "openai/{}_thinking"])
+    def test_native_provider_gpt6_alias_preserves_registered_limit(self, monkeypatch, model, custom_provider, alias):
+        fake_settings = type("", (), {
+            "config": type("", (), {"custom_model_max_tokens": 0, "max_model_tokens": 0})(),
+            "litellm": type("", (), {"custom_llm_provider": custom_provider})(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        monkeypatch.setattr(litellm, "get_model_info", lambda *args: pytest.fail("Static lookup expected"))
+
+        assert get_max_tokens(alias.format(model)) == 1050000
 
     @pytest.mark.parametrize("model", [
         "gpt-5_thinking",

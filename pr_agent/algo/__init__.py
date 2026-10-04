@@ -226,6 +226,11 @@ _claude_tokens, _claude_extended_thinking = (
 )
 
 
+GPT6_MODELS = ('gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna')
+GPT6_OPENROUTER_ROUTING_SUFFIXES = (":nitro", ":floor", ":online", ":exacto")
+GPT6_MAX_INPUT_TOKENS = {"gpt-6-sol": 922000, "gpt-6-luna": 922000}
+
+
 # MAX_TOKENS holds only entries that deliberately deviate from (or are absent
 # from) LiteLLM's model registry. Exact LiteLLM duplicates were removed because
 # get_max_tokens() already falls back to litellm.get_model_info() with the same
@@ -255,6 +260,8 @@ MAX_TOKENS = {
     'gpt-5.6-terra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-5.6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-6-astra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'o1-mini': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-mini-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-2024-12-17': 204800,  # 200K, but may be limited by config.max_model_tokens
