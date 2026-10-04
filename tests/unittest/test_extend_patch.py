@@ -8,6 +8,7 @@ from pr_agent.algo.git_patch_processing import (
 )
 from pr_agent.algo.pr_processing import pr_generate_extended_diff
 from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
 
@@ -284,3 +285,92 @@ class TestOmittedHunkCount:
                  "@@ -20,3 +20,3 @@\n ctx20\n-old21\n+new21\n ctx22")
         full, _ = extract_hunk_lines_from_patch(patch, "f.py", 13, 13, "right")
         assert "@@ -10,1 +12 @@" not in full
+
+
+class TestExtendedDiffDeletionHandling:
+    """The extended diff must drop deletion-only content when the caller asks for it."""
+
+    def _languages(self, *files):
+        return [{"language": "Python", "files": list(files)}]
+
+    def _deleted_file(self, filename="gone.py"):
+        return FilePatchInfo(
+            base_file="one\ntwo\nthree\n",
+            head_file="",
+            patch="@@ -1,3 +0,0 @@\n-one\n-two\n-three",
+            filename=filename,
+            edit_type=EDIT_TYPE.DELETED,
+        )
+
+    def test_deleted_file_body_is_dropped_and_named(self):
+        languages = self._languages(self._deleted_file())
+        deleted: list = []
+
+        patches, _, _ = pr_generate_extended_diff(
+            languages, TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+            handle_deletions=True, deleted_files_out=deleted,
+        )
+
+        assert patches == []
+        assert deleted == ["gone.py"]
+
+    def test_deleted_file_body_is_kept_by_default(self):
+        languages = self._languages(self._deleted_file())
+
+        patches, _, _ = pr_generate_extended_diff(
+            languages, TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+        )
+
+        assert len(patches) == 1
+        assert "-one" in patches[0]
+
+    def test_file_with_only_deletions_is_named_and_dropped(self):
+        # Nothing is left to anchor a suggestion on, so the file goes entirely and is named.
+        file = FilePatchInfo(
+            base_file="keep\ndrop\n",
+            head_file="keep\n",
+            patch="@@ -1,2 +1 @@\n keep\n-drop",
+            filename="trimmed.py",
+            edit_type=EDIT_TYPE.MODIFIED,
+        )
+        deleted: list = []
+
+        patches, _, _ = pr_generate_extended_diff(
+            self._languages(file), TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+            handle_deletions=True, deleted_files_out=deleted,
+        )
+
+        assert patches == []
+        assert deleted == ["trimmed.py"]
+
+    def test_delete_only_hunk_is_kept_by_default(self):
+        file = FilePatchInfo(
+            base_file="keep\ndrop\n",
+            head_file="keep\n",
+            patch="@@ -1,2 +1 @@\n keep\n-drop",
+            filename="trimmed.py",
+            edit_type=EDIT_TYPE.MODIFIED,
+        )
+
+        patches, _, _ = pr_generate_extended_diff(
+            self._languages(file), TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+        )
+
+        assert "-drop" in patches[0]
+
+    def test_added_lines_survive_beside_a_dropped_hunk(self):
+        file = FilePatchInfo(
+            base_file="keep\ndrop\nadd\n",
+            head_file="keep\nadded\n",
+            patch="@@ -1,3 +1,2 @@\n keep\n-drop\n+added",
+            filename="both.py",
+            edit_type=EDIT_TYPE.MODIFIED,
+        )
+
+        patches, _, _ = pr_generate_extended_diff(
+            self._languages(file), TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+            handle_deletions=True,
+        )
+
+        assert len(patches) == 1
+        assert "+added" in patches[0]

@@ -974,15 +974,30 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
     # First try a single run with the full diff and extended patch context.
+    deleted_files_extended: list = []
     patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
         pr_languages, token_handler,
         add_line_numbers_to_hunks=add_line_numbers,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE,
-        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
+        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
+        handle_deletions=handle_deletions,
+        deleted_files_out=deleted_files_extended if handle_deletions else None)
 
     # if we are under the limit, return the full diff
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:
-        full_diff_list = ["\n".join(patches_extended)] if patches_extended else []
+        full_diff = "\n".join(patches_extended) if patches_extended else ""
+        if handle_deletions and deleted_files_extended:
+            # Name the dropped files, so a diff made only of deletions still reports the change.
+            max_tokens = token_handler.prompt_tokens + budget.available_tokens(
+                OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False
+            )
+            curr_token = token_handler.prompt_tokens + token_handler.count_tokens(full_diff)
+            full_diff, _, _ = _append_metadata_section(
+                full_diff, curr_token,
+                DELETED_FILES_ + "\n" + "\n".join(deleted_files_extended),
+                max_tokens, token_handler,
+            )
+        full_diff_list = [full_diff] if full_diff else []
         result = (full_diff_list, []) if return_remaining_files else full_diff_list
         return include_filtered_files(result)
 
