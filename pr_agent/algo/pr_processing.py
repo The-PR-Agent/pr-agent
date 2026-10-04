@@ -573,6 +573,15 @@ def _unreadable_file_notice(file) -> str:
     )
 
 
+def _has_added_line(patch: str) -> bool:
+    """True when a patch still carries at least one added line.
+
+    A suggestion has to anchor to a line that exists in the new file, so a patch with no
+    additions cannot host one, however much removed code it still shows.
+    """
+    return any(line.startswith("+") and not line.startswith("+++") for line in patch.splitlines())
+
+
 def pr_generate_extended_diff(pr_languages: list,
                               token_handler: TokenHandler,
                               add_line_numbers_to_hunks: bool,
@@ -615,17 +624,22 @@ def pr_generate_extended_diff(pr_languages: list,
                 continue
 
             if handle_deletions:
-                extended_patch = handle_patch_deletions(
+                filtered = handle_patch_deletions(
                     extended_patch,
                     original_file_content_str,
                     new_file_content_str,
                     file.filename,
                     file.edit_type,
                 )
-                if extended_patch is None:
+                # handle_patch_deletions deliberately keeps a still-existing file's patch even
+                # when every hunk was a pure removal, so reviewers still see the removed code.
+                # For /improve that content is pure cost and leaves no new line to anchor a
+                # suggestion on, so drop the file here and name it instead.
+                if filtered is None or not _has_added_line(filtered):
                     if deleted_files_out is not None and file.filename not in deleted_files_out:
                         deleted_files_out.append(file.filename)
                     continue
+                extended_patch = filtered
 
             if add_line_numbers_to_hunks:
                 full_extended_patch = decouple_and_convert_to_hunks_with_lines_numbers(extended_patch, file)

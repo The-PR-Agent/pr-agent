@@ -325,7 +325,7 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
         # logic for handling deleted files - don't show patch, just show that the file was deleted
         if get_verbosity_level() > 0:
             get_logger().info(f"Processing file: {file_name}, minimizing deletion file")
-        patch = None  # file was deleted
+        patch = None # file was deleted
     else:
         patch_lines = patch.splitlines()
         patch_new = omit_deletion_hunks(patch_lines)
@@ -333,13 +333,6 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
             if get_verbosity_level() > 0:
                 get_logger().info(f"Processing file: {file_name}, hunks were deleted")
             patch = patch_new
-        elif not patch_new or not patch_new.strip():
-            # Removing the delete-only hunks left nothing, so the patch carries no new line to
-            # anchor on. Report the file as deleted rather than returning an empty diff body,
-            # which callers would render as a file header with no content.
-            if get_verbosity_level() > 0:
-                get_logger().info(f"Processing file: {file_name}, no additions left")
-            patch = None
     return patch
 
 
