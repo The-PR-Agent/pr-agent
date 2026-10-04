@@ -567,12 +567,8 @@ class LiteLLMAIHandler(BaseAiHandler):
         ]
 
         # Models that support extended thinking (config override replaces the built-in list when non-empty)
-        self.claude_extended_thinking_models_override = self._validated_model_name_list(
-            "claude_extended_thinking_models_override"
-        )
-        self.claude_extended_thinking_models = (
-            self.claude_extended_thinking_models_override or CLAUDE_EXTENDED_THINKING_MODELS
-        )
+        override = self._validated_model_name_list("claude_extended_thinking_models_override")
+        self.claude_extended_thinking_models = override or CLAUDE_EXTENDED_THINKING_MODELS
 
         # Treat configured model ids as additional adaptive-only models. Add opaque Bedrock application
         # inference profile ARNs while preserving built-in detection for named models.
@@ -1809,13 +1805,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                     cost_response = response
                     if not isinstance(response, dict) and not hasattr(response, "model_dump"):
                         cost_response = response.dict()
-                    cost_kwargs = {"completion_response": cost_response, "model": model}
-                    base_model = LiteLLMAIHandler._resolve_cost_base_model(model)
-                    if base_model:
-                        # LiteLLM has no price for an opaque id such as a Bedrock application
-                        # inference profile ARN; price the mapped foundation model instead.
-                        cost_kwargs["base_model"] = base_model
-                    cost_usd = litellm.completion_cost(**cost_kwargs)
+                    base_models = get_settings().get("litellm.base_models") or {}
+                    base_model = base_models.get(model) if isinstance(base_models, dict) else None
+                    extra = {"base_model": base_model} if base_model else {}
+                    cost_usd = litellm.completion_cost(completion_response=cost_response, model=model, **extra)
             except Exception as e:
                 # Treat missing model pricing or insufficient usage as an unavailable call cost.
                 # Retain the successful call so the collector marks the aggregate safely.
@@ -1823,28 +1816,6 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         recorded_model = display_model if display_model is not None else model
         record_ai_call(usage, model=recorded_model, cost_usd=cost_usd)
-
-    @staticmethod
-    def _resolve_cost_base_model(model):
-        """Map an opaque request id such as a Bedrock inference profile ARN to a priced model.
-
-        LiteLLM has no price for an application inference profile ARN, so ``litellm.base_models``
-        lets an operator point the request id at the underlying foundation-model id for cost
-        estimation. Returns None when no mapping applies.
-        """
-        if not isinstance(model, str):
-            return None
-        base_models = get_settings().get("litellm.base_models", None)
-        if not isinstance(base_models, dict):
-            return None
-        base_model = base_models.get(model)
-        if base_model is None:
-            normalized_model = model.strip().lower()
-            for key, value in base_models.items():
-                if isinstance(key, str) and key.strip().lower() == normalized_model:
-                    base_model = value
-                    break
-        return base_model if isinstance(base_model, str) and base_model.strip() else None
 
     @staticmethod
     def _read_positive_response_cost(response, usage):
@@ -2412,20 +2383,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         ) or self._is_claude_adaptive_thinking_model(model)
 
     def _is_claude_model(self, model: str) -> bool:
-        """Return whether a model should be treated as Anthropic Claude.
-
-        Application inference profile ARNs carry no model name, so models listed in either
-        thinking override are recognized as Claude for provider-specific features such as
-        prompt caching.
-        """
-        if not isinstance(model, str):
-            return False
-        if "claude" in model.lower():
-            return True
-        stripped = model.strip()
-        return (
-            stripped in getattr(self, "claude_adaptive_thinking_models_override", [])
-            or stripped in getattr(self, "claude_extended_thinking_models_override", [])
+        """Treat models listed in a Claude thinking override as Claude, for opaque Bedrock ARNs."""
+        return isinstance(model, str) and (
+            "claude" in model.lower()
+            or model.strip() in self.claude_adaptive_thinking_models_override
+            or model.strip() in self.claude_extended_thinking_models
         )
 
     def _configure_claude_adaptive_thinking(self, model: str, kwargs: dict) -> dict:
