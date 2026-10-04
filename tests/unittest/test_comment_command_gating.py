@@ -56,6 +56,7 @@ def test_is_command_comment(body, expected):
         ("/ask_line --line_start=1", True),
         ("/asking about retries", False),
         ("/askfoo", False),
+        ("/ASK why?", False),
         ("/review please, I will /ask later", False),
         ("review please, I will /ask later", False),
         ("can you /ask about this line?", False),

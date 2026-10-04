@@ -64,7 +64,7 @@ def is_ask_command_comment(body) -> bool:
     stripped = body.lstrip()
     if not stripped:
         return False
-    return stripped.split(maxsplit=1)[0].lower() in ("/ask", "/ask_line")
+    return stripped.split(maxsplit=1)[0] in ("/ask", "/ask_line")
 
 
 def get_pr_commands(provider: str) -> Sequence[str]:
