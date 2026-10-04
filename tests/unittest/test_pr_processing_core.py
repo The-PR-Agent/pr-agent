@@ -1863,3 +1863,44 @@ def test_get_pr_diff_lists_deleted_files_by_name_when_pruned(monkeypatch):
     assert "kept_file.py" in diff
     assert "deleted_file.py" in diff
     assert "print('gone')" not in diff
+
+
+def test_append_metadata_section_accepts_heading_plus_single_filename():
+    token_handler = CharacterTokenHandler(prompt_tokens=0)
+
+    final_diff, _, clipped = pr_processing._append_metadata_section(
+        "base", 5, "Heading:\nname.py", 100, token_handler, whole_lines=True)
+
+    assert clipped == "Heading:\nname.py"
+    assert final_diff == "base\n\nHeading:\nname.py"
+
+
+def test_get_pr_diff_deletion_only_pr_lists_the_filename(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(
+        pr_processing, "sort_files_by_main_languages",
+        lambda _languages, _files: [{"language": "Python", "files": [_deletion_pr_languages()[0]["files"][0]]}])
+
+    diff = pr_processing.get_pr_diff(provider, handler, "model", prune_deletions=True)
+
+    assert diff.strip()
+    assert "deleted_file.py" in diff
+    assert "print('gone')" not in diff
+
+
+def test_get_pr_multi_diffs_deletion_only_pr_keeps_non_empty_chunks(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(
+        pr_processing, "sort_files_by_main_languages",
+        lambda _languages, _files: [{"language": "Python", "files": [_deletion_pr_languages()[0]["files"][0]]}])
+
+    chunks = pr_processing.get_pr_multi_diffs(provider, handler, "model", prune_deletions=True)
+
+    rendered = "\n".join(chunks)
+    assert rendered
+    assert "deleted_file.py" in rendered
+    assert "print('gone')" not in rendered

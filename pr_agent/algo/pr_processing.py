@@ -78,8 +78,10 @@ def _append_metadata_section(
 
     if whole_lines:
         lines = section.splitlines()
-        # A heading without a filename conveys no useful filtered-file information.
-        for count in range(len(lines), 2, -1):
+        # A heading without a filename conveys no useful filtered-file information, but a
+        # heading plus a single filename does - a lone deleted or filtered file must still
+        # be listed instead of falling through to a path that drops the name entirely.
+        for count in range(len(lines), 1, -1):
             clipped_section = "\n".join(lines[:count])
             candidate = final_diff + separator + clipped_section
             candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(token_handler, candidate)
