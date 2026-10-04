@@ -12,11 +12,16 @@ Both outcome reactions default to empty, so this path is inert until an operator
 
 import asyncio
 import shlex
+import threading
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.background import BackgroundTasks
+from starlette_context import request_cycle_context
 
-from pr_agent.agent.pr_agent import command2class
+import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo.run_details import record_command_failure
 from pr_agent.config_loader import get_settings
 from tests.unittest._reaction_helpers import _RecordingProvider
@@ -45,7 +50,7 @@ def _acknowledges(request):
     silent, because it runs on every merge request rather than on somebody asking for something.
     """
     action = _first_token(request).lstrip("/").lower()
-    return action in command2class and action != "auto_review"
+    return action in pr_agent_module.command2class and action != "auto_review"
 
 
 def _note_event(body="/review"):
@@ -156,6 +161,51 @@ def test_a_tool_that_failed_internally_is_not_reported_as_success(run_comment):
     assert provider.reactions == [(COMMENT_ID, "eyes"), (COMMENT_ID, "confused")]
 
 
+@pytest.mark.asyncio
+async def test_outcome_reaction_preserves_settings_without_blocking_the_event_loop(monkeypatch):
+    import pr_agent.servers.gitlab_webhook as gitlab_webhook
+
+    provider = _RecordingProvider()
+    started = threading.Event()
+    released = threading.Event()
+    original = provider.react_to_outcome
+
+    def blocking_reaction(comment_id, succeeded):
+        started.set()
+        assert released.wait(5), "the event loop could not release the blocking reaction"
+        return original(comment_id, succeeded)
+
+    async def handle_request(api_url, body, log_context, sender_id, notify=None):
+        notify()
+        return True
+
+    async def release_reaction():
+        assert await asyncio.to_thread(started.wait, 5), "the outcome reaction never started"
+        released.set()
+
+    monkeypatch.setattr(provider, "react_to_outcome", blocking_reaction)
+    monkeypatch.setattr(gitlab_webhook, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.setattr(gitlab_webhook, "is_bot_user", lambda data: False)
+    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args: None)
+    monkeypatch.setattr(gitlab_webhook, "handle_request", handle_request)
+    background = BackgroundTasks()
+    request = SimpleNamespace(json=AsyncMock(return_value=_note_event()))
+
+    with request_cycle_context({}):
+        await gitlab_webhook.gitlab_webhook(background, request)
+        # Override the request-scoped copy installed by the webhook.
+        monkeypatch.setattr(get_settings().config, "reaction_on_success", "hooray", raising=False)
+        observer = asyncio.create_task(release_reaction())
+        try:
+            await background()
+        finally:
+            released.set()
+            await observer
+
+    assert provider.reactions == [(COMMENT_ID, "eyes"), (COMMENT_ID, "hooray")]
+    assert provider.removed == [(COMMENT_ID, 1)]
+
+
 def test_handle_request_hands_the_verdict_back_to_its_caller(monkeypatch):
     """The reaction is only as honest as this return value, so pin the value itself."""
     import pr_agent.servers.gitlab_webhook as gitlab_webhook
@@ -226,7 +276,6 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
     `auto_review` is the exception and stays that way: it runs on every merge request rather than
     on somebody asking for something, and its silence is pinned in test_pr_agent_routing.py.
     """
-    import pr_agent.agent.pr_agent as pr_agent_module
 
     class _Tool:
         def __init__(self, pr_url, ai_handler=None, args=None, **kwargs):
@@ -256,7 +305,6 @@ def test_auto_review_never_acknowledges_on_the_real_dispatcher(monkeypatch):
     decides what to notify on its own, so they would stay green even if the dispatcher started
     acknowledging `auto_review`. This one goes through `PRAgent`.
     """
-    import pr_agent.agent.pr_agent as pr_agent_module
 
     class _Tool:
         def __init__(self, pr_url, ai_handler=None, args=None, **kwargs):

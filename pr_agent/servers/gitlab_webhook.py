@@ -437,6 +437,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                     # a diff line into `/ask_line`.
                     nonlocal dispatched
                     dispatched = True
+                    # Keep start acknowledgement synchronous because notify is not awaitable.
                     provider.add_eyes_reaction(comment_id)
 
                 result = await handle_request(
@@ -447,7 +448,9 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 # normally. Reading that as success would tick a comment whose command never ran.
                 # `bool()` rather than `result is not False`, so a `None` reads as failure here the
                 # same way it does in `pr_reviewer` and the GitHub App
-                provider.react_to_outcome(comment_id, bool(result) and not command_failed())
+                # Offload outcome HTTP requests while preserving request-scoped settings.
+                await asyncio.to_thread(
+                    provider.react_to_outcome, comment_id, bool(result) and not command_failed())
 
     background_tasks.add_task(inner, request_json)
     end_time = datetime.now()
