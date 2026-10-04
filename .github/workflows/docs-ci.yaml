@@ -39,8 +39,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The only step that pushes is the deploy step, so it is the only job that
-  # needs contents: write. It runs after the build gate and only on push.
+  # Keep `contents: write` scoped to this job: the deploy step is the only thing that
+  # pushes. Never grant the read-only build gate above write access on pull requests.
   deploy:
     needs: docs
     if: github.event_name == 'push'
