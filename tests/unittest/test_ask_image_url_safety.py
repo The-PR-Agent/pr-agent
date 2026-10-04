@@ -145,6 +145,17 @@ async def test_image_probe_allows_reachable_https_image(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 500])
+async def test_image_probe_reports_failed_status(monkeypatch, status):
+    _patch_session(monkeypatch, [_Resp(status)])
+    _patch_public_dns(monkeypatch)
+
+    error = await LiteLLMAIHandler._image_url_error("https://example.com/a.png")
+
+    assert error == _IMAGE_NOT_ALIVE_MESSAGE
+
+
+@pytest.mark.asyncio
 async def test_image_probe_reports_missing_image(monkeypatch):
     _patch_session(monkeypatch, [_Resp(404)])
     _patch_public_dns(monkeypatch)
