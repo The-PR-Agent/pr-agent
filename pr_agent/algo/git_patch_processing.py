@@ -333,12 +333,13 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
             if get_verbosity_level() > 0:
                 get_logger().info(f"Processing file: {file_name}, hunks were deleted")
             patch = patch_new
-        elif patch_new is None or not patch_new.strip():
-            # The patch became empty after removing delete-only hunks (e.g., a modified file with only deletions)
-            if edit_type == EDIT_TYPE.DELETED or not new_file_content_str:
-                patch = None
-            else:
-                patch = None  # Treat as deletion-only content
+        elif not patch_new or not patch_new.strip():
+            # Removing the delete-only hunks left nothing, so the patch carries no new line to
+            # anchor on. Report the file as deleted rather than returning an empty diff body,
+            # which callers would render as a file header with no content.
+            if get_verbosity_level() > 0:
+                get_logger().info(f"Processing file: {file_name}, no additions left")
+            patch = None
     return patch
 
 

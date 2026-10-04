@@ -221,11 +221,12 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             pass
 
     # generate a standard diff string, with patch extension
-    patches_extended, total_tokens, patches_extended_tokens, deleted_files_list_ext = pr_generate_extended_diff(
+    deleted_files_list_ext: list = []
+    patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
         pr_languages, token_handler, add_line_numbers_to_hunks,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
         handle_deletions=handle_deletions,
-        return_deleted_files=True)
+        deleted_files_out=deleted_files_list_ext if handle_deletions else None)
 
     # if we are under the limit, return the full diff
     if not patches_extended:
@@ -578,11 +579,17 @@ def pr_generate_extended_diff(pr_languages: list,
                               patch_extra_lines_before: int = 0,
                               patch_extra_lines_after: int = 0,
                               handle_deletions: bool = False,
-                              return_deleted_files: bool = False) -> Union[Tuple[list, int, list], Tuple[list, int, list, list]]:
+                              deleted_files_out: list | None = None) -> Tuple[list, int, list]:
+    """Render the full extended diff, optionally stripping deletion-only content.
+
+    ``handle_deletions`` mirrors the compressed path: a fully deleted file, or a patch left
+    empty once its delete-only hunks are removed, contributes no diff body. Such files are
+    appended to ``deleted_files_out`` when a list is supplied, so the caller can still name
+    them instead of silently dropping guidance.
+    """
     total_tokens = token_handler.prompt_tokens  # initial tokens
     patches_extended = []
     patches_extended_tokens = []
-    deleted_files_list = []
     for lang in pr_languages:
         for file in lang['files']:
             original_file_content_str = file.base_file
@@ -616,8 +623,8 @@ def pr_generate_extended_diff(pr_languages: list,
                     file.edit_type,
                 )
                 if extended_patch is None:
-                    if file.filename not in deleted_files_list:
-                        deleted_files_list.append(file.filename)
+                    if deleted_files_out is not None and file.filename not in deleted_files_out:
+                        deleted_files_out.append(file.filename)
                     continue
 
             if add_line_numbers_to_hunks:
@@ -637,8 +644,6 @@ def pr_generate_extended_diff(pr_languages: list,
 
     if patches_extended:
         total_tokens += _count_raw_and_stripped_tokens(token_handler, "\n".join(patches_extended))
-    if return_deleted_files or handle_deletions:
-        return patches_extended, total_tokens, patches_extended_tokens, deleted_files_list
     return patches_extended, total_tokens, patches_extended_tokens
 
 
@@ -969,12 +974,11 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
     # First try a single run with the full diff and extended patch context.
-    patches_extended, total_tokens, patches_extended_tokens, *_ = pr_generate_extended_diff(
+    patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
         pr_languages, token_handler,
         add_line_numbers_to_hunks=add_line_numbers,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE,
-        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
-        return_deleted_files=True)
+        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
 
     # if we are under the limit, return the full diff
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:
