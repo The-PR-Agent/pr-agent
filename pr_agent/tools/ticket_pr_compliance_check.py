@@ -360,6 +360,7 @@ MAX_GITHUB_TICKETS = 3
 MAX_GITHUB_TICKET_LOOKUPS = 30
 MAX_SUB_ISSUES_PER_TICKET = 10
 MAX_GITLAB_TICKETS = 3
+MAX_GITLAB_TICKET_LOOKUPS = 10
 GITLAB_TICKET_PATTERN = re.compile(
     r"(?P<url>https?://[^\s<>(),;]+)"
     r"|(?<![\w./-])(?P<project>[\w.-]+(?:/[\w.-]+)+)#(?P<project_issue>\d+)\b"
@@ -608,7 +609,7 @@ def _get_user_description_for_asana(git_provider) -> str:
     return description if isinstance(description, str) else ""
 
 
-def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
+def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_tickets=MAX_GITLAB_TICKETS):
     """Extract ``(project_path, issue_iid)`` references from a GitLab MR description."""
     if not isinstance(pr_description, str) or not pr_description:
         return []
@@ -658,9 +659,9 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
             seen.add(dedupe_key)
             references.append(reference)
 
-    if len(references) > MAX_GITLAB_TICKETS:
+    if len(references) > max_tickets:
         get_logger().info(f"Too many GitLab tickets found in MR description: {len(references)}")
-    return references[:MAX_GITLAB_TICKETS]
+    return references[:max_tickets]
 
 
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com',
@@ -993,6 +994,7 @@ async def extract_tickets(git_provider):
                 user_description,
                 git_provider.id_project,
                 git_provider.gitlab_url,
+                max_tickets=MAX_GITLAB_TICKET_LOOKUPS,
             )
             tickets_content = []
             for project_path, issue_iid in references:
@@ -1000,6 +1002,20 @@ async def extract_tickets(git_provider):
                     # Only the issue manager is needed; avoid fetching unused project metadata.
                     project = git_provider.gl.projects.get(project_path, lazy=True)
                     issue = project.issues.get(issue_iid)
+
+                    issue_body = issue.description or ""
+                    if len(issue_body) > MAX_TICKET_CHARACTERS:
+                        issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
+
+                    tickets_content.append(
+                        {
+                            "ticket_id": issue.iid,
+                            "ticket_url": issue.web_url,
+                            "title": issue.title,
+                            "body": issue_body,
+                            "labels": ", ".join(issue.labels or []),
+                        }
+                    )
                 except Exception as e:
                     get_logger().error(
                         f"Error getting GitLab issue {project_path}#{issue_iid}: {e}",
@@ -1007,19 +1023,8 @@ async def extract_tickets(git_provider):
                     )
                     continue
 
-                issue_body = issue.description or ""
-                if len(issue_body) > MAX_TICKET_CHARACTERS:
-                    issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
-
-                tickets_content.append(
-                    {
-                        "ticket_id": issue.iid,
-                        "ticket_url": issue.web_url,
-                        "title": issue.title,
-                        "body": issue_body,
-                        "labels": ", ".join(issue.labels or []),
-                    }
-                )
+                if len(tickets_content) >= MAX_GITLAB_TICKETS:
+                    break
 
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
