@@ -342,10 +342,10 @@ callback_timeout_seconds = 30 # default
 
 ## Built-in OpenTelemetry command telemetry
 
-PR-Agent can emit its own [OpenTelemetry](https://opentelemetry.io/) signals for utilization and adoption tracking. These cover the **command** layer — how often each tool runs, on which git provider, and whether it succeeded — which no LLM-level integration can report, because many failures happen before any model call:
+PR-Agent can emit its own [OpenTelemetry](https://opentelemetry.io/) signals for utilization and adoption tracking. These cover the **command** layer — how often each tool runs, on which git provider, whether it succeeded, and how many tokens it consumes — which no LLM-level integration can report, because many failures happen before any model call:
 
 - **Traces**: one span per request, named `pr_agent <command>` (for example `pr_agent review`), carrying `pr_agent.command`, `pr_agent.args_count`, `vcs.provider.name`, a span status, and a bounded `error.type` on failure. Prompt and response content is never attached.
-- **Metrics**: `pr_agent.commands`, a counter of executed commands labeled by command and git provider.
+- **Metrics**: `pr_agent.commands`, a counter of executed commands labeled by command and git provider. `pr_agent.tokens` counts consumed tokens, labeled by command, git provider, `pr_agent.fallback_used` (true or false), and `gen_ai.token.type` (`input`, `output`, `cache_read`, or `cache_creation`). `pr_agent.ai_calls` counts successful model calls, labeled by command, git provider, and `pr_agent.fallback_used`. Zero values are skipped, so providers that do not report usage add no token timeseries (`pr_agent.ai_calls` still counts their calls).
 
 ### Two independent layers
 
@@ -384,7 +384,7 @@ This is the recommended topology for fleets: point every PR-Agent instance at th
 
 ### Exposing native Prometheus metrics
 
-Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the gunicorn-served apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command counter is translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
+Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the gunicorn-served apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
 
 ```toml
 [otel]

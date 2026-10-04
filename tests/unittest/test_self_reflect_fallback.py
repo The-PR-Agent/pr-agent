@@ -2,11 +2,19 @@
 Tests that self-reflection walks the reasoning-model chain: a model that returns
 nothing advances to the next one instead of degrading every suggestion to score 7.
 """
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.config_loader import get_settings
+from pr_agent.tools.pr_code_suggestions import (
+    _REFLECTION_FAILURE_SCORE_WHY,
+    PRCodeSuggestions,
+    apply_reflection_failure_score,
+    filter_suggestions_by_score_threshold,
+)
+from tests.unittest._settings_helpers import _remove_key, restore_settings, snapshot_settings
 
 
 class _Settings:
@@ -174,3 +182,89 @@ class TestSelfReflectFallback:
             await tool._self_reflect_with_fallback([{"suggestion": "a"}], "diff", "primary-model")
 
         assert not [key for key, _ in settings.set_calls if key == "openai.deployment_id"]
+
+
+_SUGGESTION_RESPONSE = """
+code_suggestions:
+- one_sentence_summary: "Avoid duplicated work"
+  label: maintainability
+  relevant_file: app.py
+  relevant_lines_start: 1
+  relevant_lines_end: 1
+  suggestion_content: "Use the shared helper."
+  existing_code: "old()"
+  improved_code: "new()"
+"""
+
+
+def _prediction_tool():
+    """Build a /improve tool whose self-reflection always fails, with the token budget stubbed out."""
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = MagicMock()
+    tool.ai_handler = MagicMock()
+    tool.ai_handler.chat_completion = AsyncMock(return_value=(_SUGGESTION_RESPONSE, "stop"))
+    tool.ai_handler.get_output_token_reserve = MagicMock(return_value=0)
+    tool.vars = {"diff": "", "diff_no_line_numbers": ""}
+    tool.pr_code_suggestions_prompt_system = "system"
+    tool.pr_code_suggestions_prompt_user = "user"
+    tool._suggestion_attempt_budget = SimpleNamespace(
+        model="primary-model",
+        fit_optional_text=MagicMock(return_value=SimpleNamespace(
+            optional_text="complete diff",
+            system_prompt="system",
+            user_prompt="user",
+        )),
+    )
+    tool._self_reflect_with_fallback = AsyncMock(return_value="")
+    return tool
+
+
+class TestReflectionFailureScore:
+    """The score assigned when no model could vet a suggestion must be visible and configurable."""
+
+    @pytest.mark.asyncio
+    async def test_default_score_and_explanation_when_reflection_fails(self):
+        snapshot = snapshot_settings(("pr_code_suggestions.score_on_reflection_failure",))
+        try:
+            # Drop the configured value so the resolver's built-in default is exercised.
+            _remove_key(get_settings(), "pr_code_suggestions.score_on_reflection_failure")
+            tool = _prediction_tool()
+            data = await tool._get_prediction("primary-model", "numbered diff", "complete diff")
+        finally:
+            restore_settings(snapshot)
+
+        suggestion = data["code_suggestions"][0]
+        assert suggestion["score"] == 7
+        assert suggestion["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
+
+    @pytest.mark.asyncio
+    async def test_configured_score_is_used_when_reflection_fails(self):
+        snapshot = snapshot_settings(("pr_code_suggestions.score_on_reflection_failure",))
+        try:
+            get_settings().set("pr_code_suggestions.score_on_reflection_failure", 3)
+            tool = _prediction_tool()
+            data = await tool._get_prediction("primary-model", "numbered diff", "complete diff")
+        finally:
+            restore_settings(snapshot)
+
+        suggestion = data["code_suggestions"][0]
+        assert suggestion["score"] == 3
+        assert suggestion["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
+
+    def test_unvetted_suggestions_below_the_threshold_are_filtered_out(self):
+        snapshot = snapshot_settings((
+            "pr_code_suggestions.score_on_reflection_failure",
+            "pr_code_suggestions.suggestions_score_threshold",
+        ))
+        try:
+            get_settings().set("pr_code_suggestions.score_on_reflection_failure", 5)
+            get_settings().set("pr_code_suggestions.suggestions_score_threshold", 8)
+            suggestions = [{"one_sentence_summary": "Avoid duplicated work"}]
+            apply_reflection_failure_score(suggestions)
+            kept = filter_suggestions_by_score_threshold(suggestions)
+        finally:
+            restore_settings(snapshot)
+
+        assert suggestions[0]["score"] == 5
+        assert suggestions[0]["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
+        assert kept == []

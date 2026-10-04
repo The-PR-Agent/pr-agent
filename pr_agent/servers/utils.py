@@ -50,8 +50,21 @@ def is_command_comment(body) -> bool:
 
 
 def is_ask_command_comment(body) -> bool:
-    """Return True when a comment body starts with the /ask command."""
-    return isinstance(body, str) and body.lstrip().startswith("/ask")
+    """Return True when a comment body starts with the /ask command.
+
+    Match the command token, not a bare prefix the way ``str.startswith`` would.
+    A line comment such as "/asking about retries" is not an ask command: the
+    dispatcher rejects the unknown "/asking" command, but prefix matching would
+    instead rewrite the comment into an /ask_line question whose text is
+    "ing about retries". "/ask_line" is the generated command name, so it is
+    accepted as well.
+    """
+    if not isinstance(body, str):
+        return False
+    stripped = body.lstrip()
+    if not stripped:
+        return False
+    return stripped.split(maxsplit=1)[0] in ("/ask", "/ask_line")
 
 
 def get_pr_commands(provider: str) -> Sequence[str]:

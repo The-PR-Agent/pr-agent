@@ -29,6 +29,14 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
 # host-only. publish_error_details controls what service-side failure state is
 # disclosed in a PR comment, so the PR author must not be able to enable it.
 REPO_HOST_ONLY_KEYS_BY_SECTION = {
+    # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
+    "azure_ad": frozenset({"api_base"}),
+    "databricks": frozenset({"api_base"}),
+    "huggingface": frozenset({"api_base"}),
+    "moonshot": frozenset({"api_base"}),
+    "ollama": frozenset({"api_base"}),
+    "openai": frozenset({"api_base", "api_type", "api_version"}),
+    "openrouter": frozenset({"api_base"}),
     "pr_reviewer": frozenset({"publish_error_details"}),
     # repo_context_sibling_repos lists the sibling repositories whose files a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must

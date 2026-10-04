@@ -168,11 +168,9 @@ async def test_chat_completion_dead_image_uses_current_help_link(monkeypatch):
     ],
 )
 async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, model, expected_model_id):
-    monkeypatch.setattr(
-        litellm_handler,
-        "get_settings",
-        lambda: FakeSettings(settings_values={"litellm.model_id": "profile-123"}),
-    )
+    settings = FakeSettings(settings_values={"litellm.model_id": "profile-123"})
+    settings.config.model = model
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -189,6 +187,7 @@ async def test_chat_completion_scopes_model_id_to_classic_bedrock(monkeypatch, m
 @pytest.mark.asyncio
 async def test_health_probe_uses_snapshotted_classic_bedrock_model_id(monkeypatch):
     active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-a"})
+    active_settings.config.model = "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
     handler = litellm_handler.LiteLLMAIHandler()
     active_settings = FakeSettings(settings_values={"litellm.model_id": "profile-b"})
@@ -624,6 +623,15 @@ def _timeout_error():
     return openai.APITimeoutError(request=httpx.Request("POST", "http://model.invalid"))
 
 
+def _empty_response(finish_reason):
+    mock = MagicMock()
+    response = {"choices": [{"message": {"content": ""}, "finish_reason": finish_reason}]}
+    mock.usage = None
+    mock.__getitem__.side_effect = response.__getitem__
+    mock.dict.return_value = response
+    return mock
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "error, expected_attempts",
@@ -732,6 +740,124 @@ async def test_chat_completion_timeout_not_retried_same_model_when_disabled(monk
             await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
     assert mock_call.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_length_truncation_does_not_retry_same_model(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _empty_response("length")
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        # Same request and cap reproduce the truncation, so the empty call is not replayed;
+        # the error surfaces to the caller's fallback-models loop after one attempt.
+        with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_length_truncation_retries_same_model_when_enabled(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: FakeSettings(config_values={"retry_same_model_on_length": True}),
+    )
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _empty_response("length")
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_empty_content_without_length_still_retries(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _empty_response("stop")
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        # Without the deterministic "length" signal, an empty response can be transient.
+        with pytest.raises(openai.APIError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
+def _empty_stream(finish_reason):
+    async def _stream():
+        yield SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=""), finish_reason=finish_reason)],
+            usage=None,
+            _hidden_params=None,
+        )
+
+    return _stream()
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_length_truncation_does_not_retry_same_model_streaming(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = lambda **_: _empty_stream("length")
+        handler = litellm_handler.LiteLLMAIHandler()
+        handler.streaming_required_models = ["gpt-4o"]
+
+        # An empty, length-truncated stream is deterministic for the same request, so it is not
+        # replayed; the error surfaces to the caller's fallback-models loop after one attempt.
+        with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_streaming_empty_without_length_still_retries(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = lambda **_: _empty_stream("stop")
+        handler = litellm_handler.LiteLLMAIHandler()
+        handler.streaming_required_models = ["gpt-4o"]
+
+        # Without the deterministic "length" signal, an empty stream can be transient.
+        with pytest.raises(openai.APIError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert mock_call.call_count == litellm_handler.MODEL_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_length_truncation_reaches_the_fallback_model(monkeypatch):
+    import pr_agent.algo.pr_processing as pr_processing
+
+    monkeypatch.setattr(pr_processing, "_get_all_models", lambda model_type: ["primary", "fallback"])
+    monkeypatch.setattr(pr_processing, "_get_all_deployments", lambda models: [None, None])
+    monkeypatch.setattr(pr_processing, "route_primary_model", lambda model_type, git_provider: None)
+
+    attempts = []
+
+    async def f(model):
+        attempts.append(model)
+        raise litellm_handler.EmptyTruncatedResponseError(
+            "Empty content in model response (finish_reason: length)",
+            request=httpx.Request("POST", "http://model.invalid"),
+            body=None,
+        )
+
+    with pytest.raises(Exception, match="Failed to generate prediction with any model") as raised:
+        await pr_processing.retry_with_fallback_models(f)
+
+    assert attempts == ["primary", "fallback"]
+    assert isinstance(raised.value.__cause__, litellm_handler.EmptyTruncatedResponseError)
 
 
 @pytest.mark.asyncio

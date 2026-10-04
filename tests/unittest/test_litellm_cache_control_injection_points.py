@@ -143,6 +143,62 @@ async def test_not_injected_for_non_anthropic_model(monkeypatch):
     assert "cache_control_injection_points" not in mock_call.call_args.kwargs
 
 
+# A Bedrock application inference profile ARN carries no model name, so the thinking overrides
+# tell PR-Agent to treat it as Claude for the prompt-caching pass-through (issue #3836).
+_PROFILE_ARN = "bedrock/converse/arn:aws:bedrock:eu-central-1:123456789012:application-inference-profile/abc"
+
+
+def _arn_settings(points, config_values=None):
+    return lambda: FakeSettings(
+        config_values=config_values or {},
+        settings_values={
+            "LITELLM.CACHE_CONTROL_INJECTION_POINTS": points,
+            "aws.AWS_ACCESS_KEY_ID": "test-access-key",
+            "aws.AWS_SECRET_ACCESS_KEY": "test-secret-key",
+            "aws.AWS_REGION_NAME": "eu-central-1",
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config_values",
+    [
+        {"claude_adaptive_thinking_models_override": [_PROFILE_ARN]},
+        {"claude_extended_thinking_models_override": [_PROFILE_ARN]},
+    ],
+)
+async def test_arn_in_thinking_override_receives_cache_control_injection_points(monkeypatch, config_values):
+    points = [{"location": "message", "role": "system"}]
+    monkeypatch.setattr(litellm_handler, "get_settings", _arn_settings(points, config_values))
+    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", lambda model: False)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model=_PROFILE_ARN, system="sys", user="usr")
+
+    assert mock_call.call_args.kwargs["cache_control_injection_points"] == points
+
+
+@pytest.mark.asyncio
+async def test_arn_not_in_thinking_override_does_not_receive_cache_control_injection_points(monkeypatch):
+    points = [{"location": "message", "role": "system"}]
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        _arn_settings(points, {"claude_adaptive_thinking_models_override": []}),
+    )
+    monkeypatch.setattr(litellm_handler.litellm.utils, "supports_prompt_caching", lambda model: False)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model=_PROFILE_ARN, system="sys", user="usr")
+
+    assert "cache_control_injection_points" not in mock_call.call_args.kwargs
+
+
 def _warn_settings(points=None):
     return lambda: FakeSettings(
         settings_values={

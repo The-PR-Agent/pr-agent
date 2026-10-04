@@ -23,6 +23,7 @@ def _base_settings(overrides=None):
     overrides = overrides or {}
     return type("Settings", (), {
         "config": type("Config", (), {
+            "model": overrides.get("config.model"),
             "reasoning_effort": None,
             "ai_timeout": 30,
             "custom_reasoning_model": False,
@@ -853,7 +854,7 @@ async def test_bedrock_request_region_from_captured_model(monkeypatch, model_sou
     native_model = "anthropic.claude-3-haiku-20240307-v1:0"
     arn = f"arn:aws:bedrock:eu-west-1:123456789012:inference-profile/{native_model}"
     model = f"bedrock/{native_model}"
-    settings = {"litellm.model_id": arn} if model_source == "model_id" else {}
+    settings = {"litellm.model_id": arn, "config.model": model} if model_source == "model_id" else {}
     if model_source == "model_arn":
         model = f"bedrock/{arn}"
     elif model_source == "region_path":
@@ -2006,7 +2007,8 @@ async def test_bedrock_static_fallback_preserves_request_region(monkeypatch, mod
         litellm_handler,
         "get_settings",
         lambda: _static_aws_settings(
-            session_token="STATIC-TOKEN", overrides={"litellm.model_id": model_id} if model_id else {},
+            session_token="STATIC-TOKEN",
+            overrides={"litellm.model_id": model_id, "config.model": model} if model_id else {},
         ),
     )
     credentials = MagicMock()

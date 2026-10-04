@@ -215,7 +215,9 @@ class TestGitLabProvider:
         content = gitlab_provider.get_repo_file_content("AGENTS.md")
 
         assert content == "repo context"
-        mock_gitlab_client.projects.get.assert_called_with("test/repo")
+        # a lazy handle: the MR target branch is the ref, so the project payload is not needed
+        # (the fixture already fetched the MR itself, so check the last call rather than the count)
+        mock_gitlab_client.projects.get.assert_called_with("test/repo", lazy=True)
         mock_project.files.get.assert_called_once_with(file_path="AGENTS.md", ref="release-1.0")
         mock_file.decode.assert_called_once()
 
@@ -476,13 +478,17 @@ class TestGitLabProvider:
         mock_project.files.create.assert_not_called()
 
     def test_create_or_update_pr_file_update_exception(self, gitlab_provider, mock_project):
-        mock_project.files.get.side_effect = Exception("Network error")
+        # Non-404 read failure on an existing file must propagate instead of creating anything.
+        error = GitlabGetError("500 Server Error", response_code=500)
+        mock_project.files.get.side_effect = error
 
-        with pytest.raises(Exception):
+        with pytest.raises(GitlabGetError) as raised:
             gitlab_provider.create_or_update_pr_file(
                 "CHANGELOG.md", "feature-branch", "content", "message",
                 expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
             )
+        assert raised.value is error
+        mock_project.files.create.assert_not_called()
 
     def test_has_create_or_update_pr_file_method(self, gitlab_provider):
         assert hasattr(gitlab_provider, "create_or_update_pr_file")

@@ -16,6 +16,7 @@ from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -26,7 +27,7 @@ from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFil
 from pr_agent.git_providers.git_provider import IncompletePullRequestFilesError as _IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
-from pr_agent.telemetry.meter import get_commands_counter
+from pr_agent.telemetry.meter import get_ai_calls_counter, get_commands_counter, get_tokens_counter
 from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
 from pr_agent.tools.pr_add_docs import PRAddDocs
@@ -271,6 +272,34 @@ def prepare_command(command: str) -> list[str]:
     return [action] + kept
 
 
+def _record_token_metrics(action: str, git_provider: str) -> None:
+    """Export the run's token usage through the OTel counters, if any was collected.
+
+    Repo and PR stay out of the labels on purpose: they are high-cardinality, the same
+    reason the command counter omits them. Zero values are skipped, so a provider that
+    reports no usage adds nothing.
+    """
+    details = get_run_details()
+    if details is None:
+        return
+    labels = {
+        "pr_agent.command": action,
+        "vcs.provider.name": git_provider,
+        "pr_agent.fallback_used": details.fallback_used,
+    }
+    tokens_counter = get_tokens_counter()
+    for token_type, count in (
+        ("input", details.prompt_tokens),
+        ("output", details.completion_tokens),
+        ("cache_read", details.cache_read_tokens),
+        ("cache_creation", details.cache_creation_tokens),
+    ):
+        if count:
+            tokens_counter.add(count, {**labels, "gen_ai.token.type": token_type})
+    if details.num_ai_calls:
+        get_ai_calls_counter().add(details.num_ai_calls, labels)
+
+
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
@@ -404,6 +433,10 @@ class PRAgent:
             # result cannot be overridden by either source. Restore it below for request isolation.
             previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
             settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
+        # Install a fresh collector at the per-command boundary so the finally block
+        # exports this command's usage and never repeats or inherits a prior command's
+        # counts. Tools that run their own collector (e.g. /review) replace it on entry.
+        init_run_details()
         try:
             with get_logger().contextualize(command=action, pr_url=pr_url):
                 get_logger().info("PR-Agent request handler started", analytics=True)
@@ -426,6 +459,7 @@ class PRAgent:
                 span.set_status(StatusCode.OK)
                 return True
         finally:
+            _record_token_metrics(action, _git_provider)
             if propagate_tool_errors is not None:
                 settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)
 

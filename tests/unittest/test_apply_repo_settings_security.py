@@ -54,7 +54,19 @@ class FakeGitProvider:
         self.comments.append(body)
 
 
-SNAPSHOT_SECTIONS = ("CONFIG", "PR_REVIEWER", "PROMPT_FRAGMENTS", "CUSTOM_SECTION_FOR_TEST")
+SNAPSHOT_SECTIONS = (
+    "CONFIG",
+    "PR_REVIEWER",
+    "PROMPT_FRAGMENTS",
+    "CUSTOM_SECTION_FOR_TEST",
+    "OPENAI",
+    "AZURE_AD",
+    "HUGGINGFACE",
+    "OLLAMA",
+    "MOONSHOT",
+    "DATABRICKS",
+    "OPENROUTER",
+)
 
 
 def _snapshot_settings_sections(settings):
@@ -177,9 +189,7 @@ def test_repo_settings_cannot_enable_publish_error_details(monkeypatch, settings
 
 
 def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
-    provider = FakeGitProvider(
-        repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n'
-    )
+    provider = FakeGitProvider(repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n')
     captured = _install_provider(monkeypatch, provider)
 
     get_settings().set("config.use_repo_settings_file", True)
@@ -287,6 +297,7 @@ def test_forbidden_directive_publishes_one_local_error(monkeypatch, settings_sna
     assert captured["errors"][0]["settings"] == forbidden_toml
     # The error message must not leak the server's internal temp path to PR users.
     import tempfile
+
     error_text = captured["errors"][0]["error"]
     assert tempfile.gettempdir() not in error_text
     assert ".pr_agent.toml" in error_text
@@ -374,3 +385,49 @@ def test_restore_settings_sections_removes_section_created_after_snapshot():
         assert "CUSTOM_SECTION_FOR_TEST" not in settings.as_dict()
     finally:
         _restore_settings_sections(settings, original_snapshot)
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
+        ("openai", "api_base"),
+        ("openai", "api_type"),
+        ("openai", "api_version"),
+        ("azure_ad", "api_base"),
+        ("huggingface", "api_base"),
+        ("ollama", "api_base"),
+        ("moonshot", "api_base"),
+        ("databricks", "api_base"),
+        ("openrouter", "api_base"),
+    ],
+)
+def test_repo_settings_cannot_override_provider_endpoint_keys(monkeypatch, settings_snapshot, section, key):
+    repo_settings = f'[{section}]\n{key} = "repo-controlled"\n'.encode()
+    provider = FakeGitProvider(repo_settings_bytes=repo_settings)
+    captured = _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set(f"{section}.{key}", "host-controlled")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert _section(settings, section).get(key) == "host-controlled"
+
+
+def test_repo_settings_still_apply_allowed_provider_keys(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=(b'[ollama]\napi_base = "https://repo-controlled.example"\napi_key = "repo-key"\n')
+    )
+    _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("ollama.api_base", "https://host-controlled.example")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    ollama = _section(settings, "ollama")
+    assert ollama.get("api_base") == "https://host-controlled.example"
+    assert ollama.get("api_key") == "repo-key"

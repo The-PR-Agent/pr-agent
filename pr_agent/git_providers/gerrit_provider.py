@@ -215,9 +215,15 @@ def upload_patch(patch, path):
 class GerritProvider(GitProvider):
 
     def __init__(self, key: str, incremental=False):
+        self.repo_path = None
         self.project, self.refspec = key.split(':')
         assert self.project, "Project name is required"
         assert self.refspec, "Refspec is required"
+
+        if not re.fullmatch(r"refs/changes/[0-9]{2}/[0-9]+/[0-9]+", self.refspec):
+            raise ValueError(
+                "Gerrit refspec must match refs/changes/NN/<change>/<patchset>"
+            )
         base_url = get_settings().get('gerrit.url')
         assert base_url, "Gerrit URL is required"
         user = get_settings().get('gerrit.user')

@@ -52,11 +52,18 @@ def test_is_command_comment(body, expected):
     [
         ("/ask why this line changed?", True),
         ("  /ask why this line changed?", True),
+        ("/ask", True),
         ("/ask_line --line_start=1", True),
+        ("/asking about retries", False),
+        ("/askfoo", False),
+        ("/ASK why?", False),
         ("/review please, I will /ask later", False),
+        ("review please, I will /ask later", False),
         ("can you /ask about this line?", False),
         ("", False),
+        ("   ", False),
         (None, False),
+        (12345, False),
     ],
 )
 def test_is_ask_command_comment(body, expected):
@@ -185,6 +192,53 @@ async def test_github_line_review_mentioning_ask_stays_review(monkeypatch):
     assert handled == [(
         "https://api.github.com/repos/org/repo/pulls/1",
         "/review please, I will /ask later",
+    )]
+
+
+async def test_github_line_comment_prefixing_ask_is_not_rewritten_to_ask_line(monkeypatch):
+    handled = []
+
+    class FakeAgent:
+        async def handle_request(self, api_url, body, notify=None, propagate_tool_errors=False):
+            handled.append((api_url, body))
+            return True
+
+    class FakeProvider:
+        def add_eyes_reaction(self, comment_id, disable_eyes=False):
+            return None
+
+        def react_to_outcome(self, comment_id, succeeded):
+            return None
+
+    class EligibleIdentityProvider:
+        def verify_eligibility(self, *_args):
+            return Eligibility.ELIGIBLE
+
+    body = {
+        "action": "created",
+        "comment": {
+            "body": "/asking about retries",
+            "id": 123,
+            "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+            "subject_type": "line",
+            "start_line": 10,
+            "line": 12,
+            "diff_hunk": "@@ -1,3 +1,4 @@\n+new line",
+            "path": "src/app.py",
+            "side": "RIGHT",
+        },
+    }
+
+    monkeypatch.setattr(github_app, "get_git_provider_with_context", lambda **_kwargs: FakeProvider())
+    monkeypatch.setattr(github_app, "get_identity_provider", EligibleIdentityProvider)
+
+    await github_app.handle_comments_on_pr(
+        body, "pull_request_review_comment", "human-user", "42", "created", {}, FakeAgent())
+
+    # Not converted to an /ask_line argv list with the corrupted question "ing about retries".
+    assert handled == [(
+        "https://api.github.com/repos/org/repo/pulls/1",
+        "/asking about retries",
     )]
 
 

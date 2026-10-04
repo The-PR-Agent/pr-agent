@@ -354,7 +354,9 @@ Draft MRs and MRs matching the [ignore settings](additional_configurations.md#ig
 
 Similar to GitHub app, when running PR-Agent from BitBucket App, the default [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) will be initially loaded.
 
-By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can edit and customize any configuration parameter. Note that you need to upload `.pr_agent.toml` prior to creating a PR, in order for the configuration to take effect.
+By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload `.pr_agent.toml` prior to creating a PR, in order for the configuration to take effect.
+
+Provider endpoint settings are host-controlled. Values for the endpoint keys listed in the [local configuration guide](./configuration_options.md#local-configuration-file) are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host.
 
 For example, if your local `.pr_agent.toml` file contains:
 

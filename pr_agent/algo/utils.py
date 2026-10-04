@@ -13,6 +13,19 @@ from urllib.parse import quote, unquote
 import html2text
 import yaml
 from pydantic import BaseModel
+from yaml.tokens import (
+    BlockEndToken,
+    BlockEntryToken,
+    BlockMappingStartToken,
+    BlockSequenceStartToken,
+    FlowMappingEndToken,
+    FlowMappingStartToken,
+    FlowSequenceEndToken,
+    FlowSequenceStartToken,
+    KeyToken,
+    ScalarToken,
+    TagToken,
+)
 
 import pr_agent.algo.comment_identity as _ci
 from pr_agent.algo.git_patch_processing import (
@@ -27,6 +40,11 @@ from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
+_YAML_C_SAFE_LOADER = getattr(yaml, "CSafeLoader", None)
+_YAML_MAX_C_NESTING = 256
+_YAML_BLOCK_PREFIX_RE = re.compile(r"(?:^|(?<=[\n\r\x85\u2028\u2029]))( *)((?:[-?] +)*)")
+_YAML_INDENTED_LINE_RE = re.compile(r"[\n\r\x85\u2028\u2029] ")
+_YAML_UNSEPARATED_BLOCK_SCALAR_COMMENT_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?#")
 
 
 def encode_user_text_arg(value: str) -> str:
@@ -899,6 +917,109 @@ def drop_sign_off_after_wrapper_fence(text: str) -> str:
     return text
 
 
+def _has_yaml_c_loader_risk(response_text: str) -> bool:
+    """Detect inputs that should stay on Python SafeLoader for compatibility or stack safety."""
+    check_tag = "!" in response_text
+    flow_openers = response_text.count("[") + response_text.count("{")
+    check_flow_question = "?" in response_text and flow_openers > 0
+    check_nesting = flow_openers >= _YAML_MAX_C_NESTING
+    if not check_nesting and (
+        "- " in response_text
+        or "? " in response_text
+        or _YAML_INDENTED_LINE_RE.search(response_text)
+    ):
+        remaining_depth = _YAML_MAX_C_NESTING - flow_openers
+        for match in _YAML_BLOCK_PREFIX_RE.finditer(response_text):
+            block_prefix = match.group(2)
+            block_depth_hint = len(match.group(1)) + block_prefix.count("-") + block_prefix.count("?")
+            if block_depth_hint >= remaining_depth:
+                check_nesting = True
+                break
+    if not check_tag and not check_flow_question and not check_nesting:
+        return False
+
+    flow_depth = 0
+    nesting_depth = 0
+    block_stack = []
+    indentless_sequence_indents = []
+    loader = _YAML_C_SAFE_LOADER or yaml.SafeLoader
+    try:
+        for token in yaml.scan(response_text, Loader=loader):
+            if isinstance(token, KeyToken):
+                while indentless_sequence_indents and token.start_mark.column <= indentless_sequence_indents[-1]:
+                    indentless_sequence_indents.pop()
+
+            if isinstance(token, (BlockMappingStartToken, BlockSequenceStartToken)):
+                block_stack.append(token)
+                nesting_depth += 1
+            elif isinstance(token, BlockEntryToken):
+                entry_indent = token.start_mark.column
+                explicit_sequence = any(
+                    isinstance(block_token, BlockSequenceStartToken)
+                    and block_token.start_mark.column == entry_indent
+                    for block_token in block_stack
+                )
+                if not explicit_sequence:
+                    while indentless_sequence_indents and indentless_sequence_indents[-1] > entry_indent:
+                        indentless_sequence_indents.pop()
+                    if not indentless_sequence_indents or indentless_sequence_indents[-1] < entry_indent:
+                        indentless_sequence_indents.append(entry_indent)
+            elif isinstance(token, (FlowMappingStartToken, FlowSequenceStartToken)):
+                flow_depth += 1
+                nesting_depth += 1
+            elif isinstance(token, BlockEndToken):
+                if block_stack:
+                    block_stack.pop()
+                while (
+                    indentless_sequence_indents
+                    and token.start_mark.column <= indentless_sequence_indents[-1]
+                ):
+                    indentless_sequence_indents.pop()
+                nesting_depth = max(0, nesting_depth - 1)
+            elif isinstance(token, (FlowMappingEndToken, FlowSequenceEndToken)):
+                flow_depth = max(0, flow_depth - 1)
+                nesting_depth = max(0, nesting_depth - 1)
+
+            effective_nesting_depth = nesting_depth + len(indentless_sequence_indents)
+            if effective_nesting_depth > _YAML_MAX_C_NESTING:
+                return True
+            if check_tag and isinstance(token, TagToken):
+                return True
+            if check_flow_question and flow_depth:
+                if isinstance(token, ScalarToken) and token.plain and "?" in token.value:
+                    return True
+                if (
+                    isinstance(token, KeyToken)
+                    and response_text[token.start_mark.index:token.end_mark.index] == "?"
+                ):
+                    return True
+    except yaml.YAMLError:
+        return False
+    return False
+
+
+def _load_yaml_initial(response_text: str) -> Any:
+    """Parse initial YAML with LibYAML while preserving SafeLoader edge-case semantics."""
+    if _YAML_C_SAFE_LOADER is None:
+        return yaml.safe_load(response_text)
+    # Keep non-initial BOMs on SafeLoader because LibYAML consumes them at document boundaries.
+    if response_text.find("\ufeff", 1) != -1:
+        return yaml.safe_load(response_text)
+    # Keep known parser divergences and unsafe native nesting on the original SafeLoader path.
+    if (
+        "\t" in response_text
+        or _YAML_UNSEPARATED_BLOCK_SCALAR_COMMENT_RE.search(response_text)
+        or _has_yaml_c_loader_risk(response_text)
+    ):
+        return yaml.safe_load(response_text)
+    try:
+        return yaml.load(response_text, Loader=_YAML_C_SAFE_LOADER)
+    except yaml.YAMLError:
+        # Keep the existing Python SafeLoader behavior as a compatibility fallback
+        # before handing malformed model output to the repair pipeline.
+        return yaml.safe_load(response_text)
+
+
 def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_key="", last_key="") -> dict:
     if keys_fix_yaml is None:
         keys_fix_yaml = []
@@ -923,7 +1044,7 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_
         # through the same exception handling as a normal parse failure instead.
         if response_text_original.strip() and not response_text.strip():
             raise ValueError("Preprocessing/sanitization removed all content from a non-empty AI prediction")
-        data = yaml.safe_load(response_text)
+        data = _load_yaml_initial(response_text)
     except Exception as e:
         get_logger().warning(f"Initial failure to parse AI prediction: {e}")
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,

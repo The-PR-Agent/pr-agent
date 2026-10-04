@@ -63,6 +63,17 @@ def _stream_usage(chunk):
     return None
 
 
+class EmptyTruncatedResponseError(openai.APIError):
+    """The model returned no content because it exhausted the output budget.
+
+    Raised when an empty response carries ``finish_reason == "length"``, for both streaming and
+    non-streaming calls. Replaying the identical request on the same model reproduces the
+    truncation, so by default the handler hands this straight to the fallback-models loop
+    instead of paying for a second identical, empty call. Set config.retry_same_model_on_length
+    to retry anyway.
+    """
+
+
 def _warn_stream_cleanup(message):
     try:
         get_logger().warning(message)
@@ -150,7 +161,8 @@ async def _handle_streaming_response(response, model=None, stream_cleanup=None):
         get_logger().debug(
             f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}"
         )
-        raise openai.APIError(
+        error_cls = EmptyTruncatedResponseError if finish_reason == "length" else openai.APIError
+        raise error_cls(
             f"Streaming response completed with finish_reason '{finish_reason}' but no content received",
             request=httpx.Request("POST", model or ""), body=None)
     return full_response, finish_reason, MockResponse(full_response, finish_reason, finalized_usage, model)
