@@ -678,13 +678,6 @@ class GiteaProvider(GitProvider):
                 files = self.repo_api.get_change_file_pull_request(
                     owner=self.owner, repo=self.repo, pr_number=self.pr_number
                 )
-                if not isinstance(files, list) or any(
-                    not isinstance(file, Mapping)
-                    or not isinstance(file.get("filename"), str)
-                    or not file["filename"]
-                    for file in files
-                ):
-                    raise ValueError("Invalid Gitea changed-file inventory")
             except Exception as exc:
                 raise IncompleteGiteaPullRequestFilesError(
                     "Gitea changed-file inventory is unavailable or incomplete"
