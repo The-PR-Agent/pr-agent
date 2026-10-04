@@ -381,8 +381,8 @@ def test_add_jira_tickets_scans_local_branch_name(tmp_path, monkeypatch):
 
 
 def _make_repo_context_provider(tmp_path, monkeypatch):
-    # AGENTS.md says "base rules" on the target branch and "head rules" on the
-    # checked-out feature branch, so a test can tell which revision was read.
+    # Commit "base rules" to AGENTS.md on the target branch and "head rules" on the
+    # feature branch so a test can tell which revision was read.
     repo = _make_repo(tmp_path, ["a.py", "docs/guide.md"])
     target_branch_name = repo.active_branch.name
     (tmp_path / "AGENTS.md").write_bytes(b"base rules\n")
@@ -397,8 +397,8 @@ def _make_repo_context_provider(tmp_path, monkeypatch):
 
 
 def test_get_repo_file_content_reads_target_branch_not_head(tmp_path, monkeypatch):
-    # Like the hosted providers, repo context must come from the target branch so
-    # the reviewed changes cannot rewrite the instructions used to review them.
+    # Read repo context from the target branch, like the hosted providers, so the
+    # reviewed changes cannot rewrite the instructions used to review them.
     target_commit, provider = _make_repo_context_provider(tmp_path, monkeypatch)
 
     assert provider.get_repo_file_content("AGENTS.md") == "base rules\n"
