@@ -31,7 +31,7 @@ def _github_ticket_pattern(base_url_html):
             full_url = (
                 rf"(?<![\w@/])(?i:https://{authority})/"
                 r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.{1,2}/)[A-Za-z0-9._-]+/issues/[1-9]\d*"
-                r"(?=$|[\s.,;:!?)}\]>'\"`])"
+                r"(?=$|[\s.,;:!?)}\]>'\"`#]|/(?=$|[\s.,;:!?)}\]>'\"`#]))"
             )
     except (AttributeError, TypeError, ValueError):
         pass

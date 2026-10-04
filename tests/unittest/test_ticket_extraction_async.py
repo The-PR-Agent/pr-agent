@@ -361,6 +361,7 @@ class TestCrossRepoTicketResolution:
         [
             "http://ghe.example.test/other/project/issues/7",
             "https://other.example.test/other/project/issues/7",
+            "https://other.example.test/other/project/issues/7#issuecomment-123",
             "https://ghe.example.test.evil/other/project/issues/7",
             "https://user@ghe.example.test/other/project/issues/7",
             "https://ghe.example.test@evil.test/other/project/issues/7",
@@ -391,6 +392,20 @@ class TestCrossRepoTicketResolution:
 
         assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [7]
         assert provider.github_client.get_repo_calls == []
+
+    def test_enterprise_comment_permalink_fetches_canonical_issue(self, settings_snapshot):
+        client = _FakeGithubClient({"other/project": _FakeRepoObj({7: _FakeIssue(7)})})
+        provider = _make_github_provider(
+            user_description="See https://ghe.example.test/other/project/issues/7#issuecomment-123",
+            base_url_html="https://ghe.example.test",
+            repo_obj=_FakeRepoObj({}),
+            github_client=client,
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+        assert [ticket["ticket_id"] for ticket in result] == [7]
+        assert result[0]["ticket_url"] == "https://ghe.example.test/other/project/issues/7"
+        assert client.get_repo_calls == ["other/project"]
 
     def test_enterprise_nondefault_port_uses_configured_client(self, settings_snapshot):
         client = _FakeGithubClient({"other/project": _FakeRepoObj({7: _FakeIssue(7)})})

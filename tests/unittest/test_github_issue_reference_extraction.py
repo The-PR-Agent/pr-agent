@@ -105,6 +105,13 @@ def test_enterprise_full_url_custom_capture_does_not_create_a_local_duplicate(de
     ) == [f"{enterprise}/other/project/issues/7"]
 
 
+@pytest.mark.parametrize("base", ["https://github.com", "https://ghe.example.test"])
+@pytest.mark.parametrize("suffix", ["/", "?plain=1", "#issuecomment-123", "/#issuecomment-123"])
+def test_full_issue_link_with_benign_suffix_keeps_canonical_issue_pointer(base, suffix):
+    issue = f"{base}/{REPO}/issues/7"
+    assert extract_ticket_links_from_pr_description(f"See {issue}{suffix}", REPO, base) == [issue]
+
+
 @pytest.mark.parametrize(
     "base",
     [
