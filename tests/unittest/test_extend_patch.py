@@ -182,7 +182,7 @@ class TestExtendedPatchMoreLines:
         ]
 
     def test_extend_patches_with_extra_lines(self, token_handler, pr_languages):
-        patches_extended_no_extra_lines, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
+        patches_extended_no_extra_lines, total_tokens, patches_extended_tokens, _ = pr_generate_extended_diff(
             pr_languages, token_handler, add_line_numbers_to_hunks=False,
             patch_extra_lines_before=0,
             patch_extra_lines_after=0
@@ -194,7 +194,7 @@ class TestExtendedPatchMoreLines:
         assert p0 == "## File: 'file1'\n\n" + pr_languages[0]['files'][0].patch.strip()
         assert p1 == "## File: 'file2'\n\n" + pr_languages[0]['files'][1].patch.strip()
 
-        patches_extended_with_extra_lines, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
+        patches_extended_with_extra_lines, total_tokens, patches_extended_tokens, _ = pr_generate_extended_diff(
             pr_languages, token_handler, add_line_numbers_to_hunks=False,
             patch_extra_lines_before=2,
             patch_extra_lines_after=1

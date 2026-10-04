@@ -58,7 +58,7 @@ def test_multi_diff_chunks_name_filtered_files(monkeypatch, path):
         chunks = pr_processing.get_pr_multi_diffs(provider, handler, "model", prepared_diff=prepared)
     else:
         monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-        monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: ([], 10_000, []))
+        monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: ([], 10_000, [], []))
         monkeypatch.setattr(pr_processing, "handle_patch_deletions", lambda patch, *args: patch)
         monkeypatch.setattr(
             pr_processing, "decouple_and_convert_to_hunks_with_lines_numbers", lambda patch, file: patch,
@@ -97,7 +97,7 @@ def test_multi_diff_can_leave_metadata_out_of_hunk_conversion(monkeypatch):
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
     monkeypatch.setattr(
         pr_processing, "pr_generate_extended_diff",
-        lambda *args, **kwargs: (["## File: app.py\n@@ -1 +1 @@\n-old\n+new"], 10, []),
+        lambda *args, **kwargs: (["## File: app.py\n@@ -1 +1 @@\n-old\n+new"], 10, [], []),
     )
 
     chunks = pr_processing.get_pr_multi_diffs(
@@ -156,7 +156,7 @@ def test_full_diff_repackages_when_exact_count_leaves_no_room_for_lockfile(monke
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
     monkeypatch.setattr(
-        pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: (["x" * 690], 150, []),
+        pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: (["x" * 690], 150, [], []),
     )
     monkeypatch.setattr(
         pr_processing, "pr_generate_compressed_diff",
@@ -175,7 +175,7 @@ def test_compressed_diff_prioritizes_unprocessed_source_over_filtered_assets(mon
     provider = FakeProvider([], filtered_names=[f"asset_{index}.map" for index in range(100)])
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
-    monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: (["large"], 10_000, []))
+    monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: (["large"], 10_000, [], []))
     monkeypatch.setattr(
         pr_processing, "pr_generate_compressed_diff",
         lambda *args, **kwargs: (
@@ -199,7 +199,7 @@ def test_get_pr_diff_names_filtered_lockfiles_without_their_contents(monkeypatch
     monkeypatch.setattr(
         pr_processing,
         "pr_generate_extended_diff",
-        lambda *args, **kwargs: (["package.json patch"], 10_000 if compressed else 18, []),
+        lambda *args, **kwargs: (["package.json patch"], 10_000 if compressed else 18, [], []),
     )
     if compressed:
         monkeypatch.setattr(
@@ -255,7 +255,7 @@ def _rendered_budget_files():
 @pytest.mark.parametrize("add_line_numbers", [False, True])
 def test_extended_diff_total_counts_the_rendered_join(add_line_numbers):
     handler = CharacterTokenHandler(prompt_tokens=11)
-    patches, total, per_patch = pr_processing.pr_generate_extended_diff(
+    patches, total, per_patch, _ = pr_processing.pr_generate_extended_diff(
         [{"files": _rendered_budget_files()}], handler, add_line_numbers,
     )
 
@@ -276,7 +276,7 @@ def test_extended_diff_preserves_changed_trailing_whitespace(add_line_numbers, w
     )
     handler = CharacterTokenHandler(prompt_tokens=0)
 
-    patches, _, _ = pr_processing.pr_generate_extended_diff(
+    patches, _, _, _ = pr_processing.pr_generate_extended_diff(
         [{"files": [file]}], handler, add_line_numbers,
     )
 
@@ -336,7 +336,7 @@ def test_fast_path_rejects_a_join_that_exceeds_the_reserved_limit(
     monkeypatch, packing_path, add_line_numbers,
 ):
     handler = CharacterTokenHandler(prompt_tokens=11)
-    patches, _, individual_counts = pr_processing.pr_generate_extended_diff(
+    patches, _, individual_counts, _ = pr_processing.pr_generate_extended_diff(
         [{"files": _rendered_budget_files()}], handler, add_line_numbers,
     )
     reserve = 5_000
@@ -377,7 +377,7 @@ def test_real_encoder_extended_diff_total_includes_non_additive_join(monkeypatch
             return len(encoder.encode(patch))
 
     handler = EncoderHandler(prompt_tokens=11)
-    patches, total, per_patch = pr_processing.pr_generate_extended_diff(
+    patches, total, per_patch, _ = pr_processing.pr_generate_extended_diff(
         [{"files": _rendered_budget_files()}], handler, False,
     )
     rendered_count = handler.count_tokens("\n".join(patches))
@@ -523,7 +523,7 @@ def test_extended_diff_counts_trimmed_rendering():
             return 100 if patch and patch == patch.strip() else super().count_tokens(patch)
 
     handler = StripSensitiveHandler(prompt_tokens=11)
-    _, total, _ = pr_processing.pr_generate_extended_diff(
+    _, total, _, _ = pr_processing.pr_generate_extended_diff(
         [{"files": [_rendered_budget_files()[0]]}], handler, False,
     )
 
@@ -604,7 +604,7 @@ def test_multi_packing_clips_with_exact_single_patch_count(monkeypatch):
 def test_fresh_and_prepared_multi_diffs_fit_the_same_rendered_boundary(monkeypatch):
     handler = CharacterTokenHandler(prompt_tokens=11)
     files = _rendered_budget_files()
-    patches, _, _ = pr_processing.pr_generate_extended_diff([{"files": files}], handler, True)
+    patches, _, _, _ = pr_processing.pr_generate_extended_diff([{"files": files}], handler, True)
     reserve = 5_000
     limit = handler.prompt_tokens + handler.count_tokens("\n".join(patches[:2])) + reserve - 1
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: limit)
@@ -750,7 +750,7 @@ def test_get_pr_diff_routes_each_metadata_type_through_bounded_append(
     monkeypatch.setattr(
         pr_processing,
         "pr_generate_extended_diff",
-        lambda *args, **kwargs: (["full diff"], 1_500, []),
+        lambda *args, **kwargs: (["full diff"], 1_500, [], []),
     )
     monkeypatch.setattr(
         pr_processing,
@@ -1148,7 +1148,7 @@ def test_get_pr_diff_preserves_strict_full_diff_boundary(monkeypatch, extra_capa
     original_generate_extended_diff = pr_processing.pr_generate_extended_diff
     probe_handler = FakeTokenHandler(prompt_tokens=100)
     probe_files = _make_budget_files(tokens_per_file=1)[:1]
-    probe_patches, probe_total, _ = original_generate_extended_diff(
+    probe_patches, probe_total, _, _ = original_generate_extended_diff(
         [{"files": probe_files}], probe_handler, False, patch_extra_lines_before=0, patch_extra_lines_after=0
     )
     full_diff = "\n".join(probe_patches)
@@ -1194,7 +1194,7 @@ def test_get_pr_multi_diffs_preserves_strict_full_diff_boundary(
     original_generate_extended_diff = pr_processing.pr_generate_extended_diff
     probe_handler = FakeTokenHandler(prompt_tokens=100)
     probe_files = _make_budget_files(tokens_per_file=1)[:1]
-    probe_patches, probe_total, _ = original_generate_extended_diff(
+    probe_patches, probe_total, _, _ = original_generate_extended_diff(
         [{"files": probe_files}], probe_handler, True, patch_extra_lines_before=0, patch_extra_lines_after=0
     )
     full_diff = "\n".join(probe_patches)
@@ -1784,3 +1784,82 @@ def test_pr_description_reads_fall_back_when_keys_missing():
     assert pr_description.get("enable_large_pr_handling", True) is True
     assert pr_description.get("async_ai_calls", True) is True
     assert pr_description.get("max_ai_calls", 4) == 4
+
+
+def _deletion_pr_languages():
+    deleted = FilePatchInfo(
+        "print('gone')\n",
+        "",
+        "@@ -1 +0,0 @@\n-print('gone')\n",
+        "deleted_file.py",
+        edit_type=EDIT_TYPE.DELETED,
+    )
+    kept = FilePatchInfo(
+        "ctx\n",
+        "ctx\nnew line\n",
+        "@@ -1,1 +1,2 @@\n ctx\n+new line\n",
+        "kept_file.py",
+        edit_type=EDIT_TYPE.MODIFIED,
+    )
+    return [{"language": "Python", "files": [deleted, kept]}]
+
+
+def test_prune_deletions_lists_deleted_files_without_bodies():
+    handler = CharacterTokenHandler(prompt_tokens=0)
+
+    patches, _, _, deleted_files = pr_processing.pr_generate_extended_diff(
+        _deletion_pr_languages(), handler, add_line_numbers_to_hunks=False,
+        prune_deletions=True)
+
+    assert deleted_files == ["deleted_file.py"]
+    rendered = "\n".join(patches)
+    assert "kept_file.py" in rendered
+    assert "deleted_file.py" not in rendered
+    assert "print('gone')" not in rendered
+
+
+def test_prune_deletions_omits_delete_only_hunks():
+    mixed = FilePatchInfo(
+        "ctx\nremoved1\nremoved2\ntail\n",
+        "ctx\ntail\n",
+        "@@ -1,3 +0,0 @@\n-ctx\n-removed1\n-removed2\n@@ -4 +1,2 @@\n tail\n+kept line\n",
+        "mixed.py",
+        edit_type=EDIT_TYPE.MODIFIED,
+    )
+    handler = CharacterTokenHandler(prompt_tokens=0)
+
+    patches, _, _, deleted_files = pr_processing.pr_generate_extended_diff(
+        [{"language": "Python", "files": [mixed]}], handler, add_line_numbers_to_hunks=False,
+        prune_deletions=True)
+
+    rendered = "\n".join(patches)
+    assert "removed1" not in rendered
+    assert "kept line" in rendered
+    assert deleted_files == []
+
+
+def test_without_prune_the_deleted_code_is_kept():
+    handler = CharacterTokenHandler(prompt_tokens=0)
+
+    patches, _, _, deleted_files = pr_processing.pr_generate_extended_diff(
+        _deletion_pr_languages(), handler, add_line_numbers_to_hunks=False)
+
+    rendered = "\n".join(patches)
+    assert "deleted_file.py" in rendered
+    assert "print('gone')" in rendered
+    assert deleted_files == []
+
+
+def test_get_pr_diff_lists_deleted_files_by_name_when_pruned(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(
+        pr_processing, "sort_files_by_main_languages",
+        lambda languages, files: _deletion_pr_languages())
+
+    diff = pr_processing.get_pr_diff(provider, handler, "model", prune_deletions=True)
+
+    assert "kept_file.py" in diff
+    assert "deleted_file.py" in diff
+    assert "print('gone')" not in diff

@@ -138,7 +138,7 @@ def test_unreadable_file_reaches_the_model_instead_of_being_dropped():
     token_handler = MagicMock()
     token_handler.count_tokens.return_value = 10
 
-    patches, _, _ = pr_generate_extended_diff(
+    patches, _, _, _ = pr_generate_extended_diff(
         [{"files": [unreadable, healthy]}], token_handler, add_line_numbers_to_hunks=False)
 
     rendered = "\n".join(patches)

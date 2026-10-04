@@ -992,6 +992,7 @@ class PRCodeSuggestions:
                                         model,
                                         add_line_numbers_to_hunks=True,
                                         disable_extra_lines=False,
+                                        prune_deletions=True,
                                         output_token_reserve=output_token_reserve)
         self.patches_diff_list = [self.patches_diff]
         self.patches_diff_no_line_number = self.remove_line_numbers([self.patches_diff])[0]
@@ -2097,7 +2098,8 @@ class PRCodeSuggestions:
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=True, return_remaining_files=True,
                 output_token_reserve=output_token_reserve,
-                include_filtered_file_names=False)  # decouple hunk with line numbers
+                include_filtered_file_names=False,  # decouple hunk with line numbers
+                prune_deletions=True)
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
@@ -2107,7 +2109,8 @@ class PRCodeSuggestions:
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=False, return_remaining_files=True,
                 output_token_reserve=output_token_reserve,
-                include_filtered_file_names=False)
+                include_filtered_file_names=False,
+                prune_deletions=True)
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers,
                 model,
@@ -2120,7 +2123,8 @@ class PRCodeSuggestions:
                     max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                     add_line_numbers=True, return_remaining_files=True,
                     output_token_reserve=output_token_reserve,
-                    include_filtered_file_names=False)  # decouple hunk with line numbers
+                    include_filtered_file_names=False,  # decouple hunk with line numbers
+                    prune_deletions=True)
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()

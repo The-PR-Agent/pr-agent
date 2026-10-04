@@ -186,6 +186,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 large_pr_handling=False,
                 return_remaining_files=False,
                 return_prepared=False,
+                prune_deletions: bool = False,
                 output_token_reserve: Callable[[str, int], int] | None = None):
     budget = AttemptTokenBudget.for_attempt(
         model, token_handler, output_token_reserve=output_token_reserve
@@ -220,12 +221,13 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             pass
 
     # generate a standard diff string, with patch extension
-    patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
+    patches_extended, total_tokens, patches_extended_tokens, deleted_files_list = pr_generate_extended_diff(
         pr_languages, token_handler, add_line_numbers_to_hunks,
-        patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
+        patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
+        prune_deletions=prune_deletions)
 
     # if we are under the limit, return the full diff
-    if not patches_extended:
+    if not patches_extended and not deleted_files_list:
         if return_prepared:
             return PreparedPRDiff("", [], model=model,
                                   add_line_numbers_to_hunks=add_line_numbers_to_hunks,
@@ -237,6 +239,21 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                           f"returning full diff.")
         full_diff = "\n".join(patches_extended)
         full_diff_is_usable = True
+        if deleted_files_list:
+            full_diff_with_metadata, _, included_section = _append_metadata_section(
+                full_diff,
+                token_handler.prompt_tokens + token_handler.count_tokens(full_diff),
+                DELETED_FILES_ + "\n" + "\n".join(deleted_files_list),
+                token_handler.prompt_tokens + hard_token_budget,
+                token_handler,
+                whole_lines=True,
+            )
+            # Repack if joined patch token counts leave no room for the first filename.
+            if deleted_files_list[0] not in included_section.splitlines():
+                full_diff_is_usable = False
+                get_logger().info("Full diff left no room for deleted filenames; repacking")
+            else:
+                full_diff = full_diff_with_metadata
         if filtered_files:
             full_diff_with_metadata, _, included_section = _append_metadata_section(
                 full_diff,
@@ -565,10 +582,12 @@ def pr_generate_extended_diff(pr_languages: list,
                               token_handler: TokenHandler,
                               add_line_numbers_to_hunks: bool,
                               patch_extra_lines_before: int = 0,
-                              patch_extra_lines_after: int = 0) -> Tuple[list, int, list]:
+                              patch_extra_lines_after: int = 0,
+                              prune_deletions: bool = False) -> Tuple[list, int, list, list]:
     total_tokens = token_handler.prompt_tokens  # initial tokens
     patches_extended = []
     patches_extended_tokens = []
+    deleted_files_list = []
     for lang in pr_languages:
         for file in lang['files']:
             original_file_content_str = file.base_file
@@ -584,6 +603,18 @@ def pr_generate_extended_diff(pr_languages: list,
                 patches_extended_tokens.append(file.tokens)
                 patches_extended.append(full_extended_patch)
                 continue
+
+            # Optionally drop deleted files and delete-only hunks before extending, so the
+            # model input no longer depends on whether the PR happens to fit the budget:
+            # the compressed path has always pruned them, a suggestion can never anchor to
+            # a removed line, and /review keeps the deleted code by not enabling this.
+            if prune_deletions:
+                patch = handle_patch_deletions(patch, original_file_content_str,
+                                               new_file_content_str, file.filename, file.edit_type)
+                if patch is None:
+                    if file.filename not in deleted_files_list:
+                        deleted_files_list.append(file.filename)
+                    continue
 
             # extend each patch with extra lines of context
             extended_patch = extend_patch(original_file_content_str, patch,
@@ -610,7 +641,7 @@ def pr_generate_extended_diff(pr_languages: list,
 
     if patches_extended:
         total_tokens += _count_raw_and_stripped_tokens(token_handler, "\n".join(patches_extended))
-    return patches_extended, total_tokens, patches_extended_tokens
+    return patches_extended, total_tokens, patches_extended_tokens, deleted_files_list
 
 
 def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler,
@@ -853,7 +884,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        return_remaining_files: bool = False,
                        prepared_diff: PreparedPRDiff | None = None,
                        output_token_reserve: Callable[[str, int], int] | None = None,
-                       include_filtered_file_names: bool = True):
+                       include_filtered_file_names: bool = True,
+                       prune_deletions: bool = False):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -939,17 +971,39 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     PATCH_EXTRA_LINES_AFTER = cap_and_log_extra_lines(PATCH_EXTRA_LINES_AFTER, "after")
 
     # First try a single run with the full diff and extended patch context.
-    patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
+    patches_extended, total_tokens, patches_extended_tokens, deleted_files_list = pr_generate_extended_diff(
         pr_languages, token_handler,
         add_line_numbers_to_hunks=add_line_numbers,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE,
-        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
+        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
+        prune_deletions=prune_deletions)
 
     # if we are under the limit, return the full diff
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:
-        full_diff_list = ["\n".join(patches_extended)] if patches_extended else []
-        result = (full_diff_list, []) if return_remaining_files else full_diff_list
-        return include_filtered_files(result)
+        full_diff = "\n".join(patches_extended) if patches_extended else ""
+        deleted_fits = True
+        if deleted_files_list:
+            # Computed here rather than up front so the reserve call sequence is
+            # unchanged for runs without deletions (asserted by the attempt tests).
+            hard_token_budget = budget.available_tokens(
+                OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False
+            )
+            full_diff, _, included_section = _append_metadata_section(
+                full_diff,
+                token_handler.prompt_tokens + token_handler.count_tokens(full_diff),
+                DELETED_FILES_ + "\n" + "\n".join(deleted_files_list),
+                token_handler.prompt_tokens + hard_token_budget,
+                token_handler,
+                whole_lines=True,
+            )
+            deleted_fits = deleted_files_list[0] in included_section.splitlines()
+            if not deleted_fits:
+                # The packing path below re-collects deletions per chunk.
+                get_logger().info("Full diff left no room for deleted filenames; falling back to packing")
+        if deleted_fits:
+            full_diff_list = [full_diff] if full_diff else []
+            result = (full_diff_list, []) if return_remaining_files else full_diff_list
+            return include_filtered_files(result)
 
     # Sort files within each language group by tokens in descending order
     sorted_files = []

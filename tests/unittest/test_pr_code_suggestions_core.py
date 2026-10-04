@@ -116,7 +116,7 @@ async def test_convert_to_decoupled_uses_normalized_diff_and_keeps_ai_summary():
     )
     try:
         get_settings().set("config.enable_ai_metadata", True)
-        patches, _, _ = pr_processing.pr_generate_extended_diff(
+        patches, _, _, _ = pr_processing.pr_generate_extended_diff(
             [{"language": "Python", "files": [file]}],
             token_handler,
             add_line_numbers_to_hunks=False,
@@ -158,7 +158,7 @@ async def test_convert_to_decoupled_preserves_quoted_file_headings_across_files(
             filename="second.py",
         ),
     )
-    patches, _, _ = pr_processing.pr_generate_extended_diff(
+    patches, _, _, _ = pr_processing.pr_generate_extended_diff(
         [{"language": "Python", "files": files}],
         token_handler,
         add_line_numbers_to_hunks=False,
