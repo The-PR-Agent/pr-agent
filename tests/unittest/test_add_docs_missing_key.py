@@ -111,7 +111,7 @@ def results(provider):
     ([False, False, True], None, True),
     ([False, None, False], None, True),
 ])
-async def test_routed_publication_outcome_without_run_details(
+async def test_routed_publication_outcome_with_empty_run_details(
         publish_output, monkeypatch, suggestion_results, comment_error, expected_result):
     provider = FakeGitProvider(suggestion_results=suggestion_results, comment_error=comment_error)
     tool = PRAddDocs.__new__(PRAddDocs)
@@ -125,7 +125,6 @@ async def test_routed_publication_outcome_without_run_details(
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "add_docs", lambda *_args, **_kwargs: tool)
-    assert get_run_details() is None
     span = Mock()
     settings = get_settings()
     previous = settings.get("config.propagate_tool_errors", False)
@@ -141,7 +140,11 @@ async def test_routed_publication_outcome_without_run_details(
     span.set_status.assert_called_once_with(StatusCode.OK if expected_result else StatusCode.ERROR)
     assert provider.initial_comment_removed
     assert len(provider.suggestions) == (1 if suggestion_results == [True] else 3)
-    assert get_run_details() is None
+    # The agent installs a collector per command; an empty one must not affect routing.
+    details = get_run_details()
+    assert details is not None
+    assert details.num_ai_calls == 0
+    assert details.model_used is None
     if not expected_result:
         assert results(provider) == ["Failed to publish code documentation for this PR."]
         span.set_attribute.assert_any_call("error.type", "documentation_publication_failed")
