@@ -249,6 +249,11 @@ def _format_skill(skill: Skill) -> str:
     return "\n".join(parts).rstrip()
 
 
+def _skill_names(skills: List[Skill]) -> str:
+    """Render skill names for a log line, so a dropped skill can be identified."""
+    return ", ".join(skill.name for skill in skills)
+
+
 def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
     """Format skills into a prompt-ready string under a token budget.
 
@@ -268,7 +273,7 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
     marker_tokens = _count_tokens(truncate_marker)
     pieces: List[str] = []
     used = 0
-    for skill in skills:
+    for index, skill in enumerate(skills):
         formatted = _format_skill(skill)
         tokens = _count_tokens(formatted)
         addition = (sep_tokens if pieces else 0) + tokens
@@ -279,13 +284,17 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
                 while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
                     truncated = truncated[: int(len(truncated) * 0.9)]
                 pieces.append(truncated + truncate_marker)
-                if len(skills) > 1:
-                    get_logger().info(
-                        f"First skill exceeded budget; truncated and dropped {len(skills) - 1} skill(s)"
+                dropped = skills[index + 1 :]
+                if dropped:
+                    get_logger().warning(
+                        f"Skills context budget reached; first skill {skill.name} clipped to "
+                        f"{_count_tokens(pieces[-1])}/{tokens} tokens, dropping "
+                        f"{len(dropped)} skill(s): {_skill_names(dropped)}"
                     )
             else:
-                get_logger().info(
-                    f"Skills context budget reached; dropping {len(skills) - len(pieces)} skill(s)"
+                dropped = skills[index:]
+                get_logger().warning(
+                    f"Skills context budget reached; dropping {len(dropped)} skill(s): {_skill_names(dropped)}"
                 )
             break
         pieces.append(formatted)
