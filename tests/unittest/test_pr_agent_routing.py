@@ -10,10 +10,21 @@ import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as provider_utils
+from pr_agent.git_providers.git_provider import (
+    IncompleteBitbucketPullRequestFilesError,
+    IncompleteProviderPullRequestFilesError,
+    IncompletePullRequestFilesError,
+)
 
 
 def _identity_args(args):
     return args
+
+
+def test_incomplete_file_errors_share_only_provider_neutral_base():
+    assert issubclass(IncompletePullRequestFilesError, IncompleteProviderPullRequestFilesError)
+    assert issubclass(IncompleteBitbucketPullRequestFilesError, IncompleteProviderPullRequestFilesError)
+    assert not issubclass(IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError)
 
 
 @pytest.fixture(autouse=True)
@@ -330,7 +341,130 @@ async def test_incomplete_github_files_constructor_error_publishes_sanitized_not
     assert "Otherwise, retry the command" in published
     assert "command was not run" in published
     assert secret not in published
-    assert pr_agent_module.INCOMPLETE_GITHUB_FILES_COMMENT_MARKER in published.splitlines()[:5]
+    assert pr_agent_module.IncompletePullRequestFilesError.notice_marker in published.splitlines()[:5]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["published", "disabled", "provider_failure", "publication_failure"])
+async def test_incomplete_bitbucket_constructor_error_keeps_provider_specific_failure(monkeypatch, outcome):
+    secret = "private/repository patch mismatch with secret request details"
+    provider = _incomplete_files_provider()
+    provider.supports_html_comment_markers.return_value = False
+    provider_factory = Mock(return_value=provider)
+    if outcome == "provider_failure":
+        provider_factory.side_effect = RuntimeError("secondary provider failure")
+    elif outcome == "publication_failure":
+        provider.publish_comment.side_effect = RuntimeError("secondary publication failure")
+
+    class IncompleteTool:
+        def __init__(self, pr_url, ai_handler, args):
+            raise pr_agent_module.IncompleteBitbucketPullRequestFilesError(secret)
+
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setattr(get_settings().config, "publish_output", outcome != "disabled", raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", provider_factory)
+    monkeypatch.setitem(pr_agent_module.command2class, "describe", IncompleteTool)
+
+    handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/describe")
+
+    assert handled is False
+    if outcome == "disabled":
+        provider_factory.assert_not_called()
+    else:
+        provider_factory.assert_called_once_with("https://example/pr/1")
+    if outcome in {"disabled", "provider_failure"}:
+        provider.get_issue_comments_newest_first.assert_not_called()
+        provider.is_comment_authored_by_pr_agent.assert_not_called()
+        provider.publish_comment.assert_not_called()
+    else:
+        provider.get_issue_comments_newest_first.assert_called_once()
+        provider.is_comment_authored_by_pr_agent.assert_not_called()
+        provider.publish_comment.assert_called_once()
+        published = provider.publish_comment.call_args.args[0]
+        assert pr_agent_module.IncompleteBitbucketPullRequestFilesError.notice_marker not in published
+        assert (
+            "[pr-agent:bitbucket-incomplete-files]: https://github.com/The-PR-Agent/pr-agent"
+            in published
+        )
+        assert "Bitbucket returned an incomplete or inconsistent pull-request diff" in published
+        assert "command was not run" in published
+        assert "GitHub" not in published
+        assert "3,000" not in published
+        assert secret not in published
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "action", ["add_docs", "generate_labels", "describe", "review", "improve"]
+)
+async def test_incomplete_bitbucket_tool_error_returns_failure_and_publishes_notice(monkeypatch, action):
+    provider = _incomplete_files_provider()
+    provider.supports_html_comment_markers.return_value = False
+
+    class IncompleteTool:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self):
+            raise pr_agent_module.IncompleteBitbucketPullRequestFilesError("internal diff details")
+
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+    monkeypatch.setitem(pr_agent_module.command2class, action, IncompleteTool)
+
+    handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", f"/{action}")
+
+    assert handled is False
+    provider.publish_comment.assert_called_once()
+    published = provider.publish_comment.call_args.args[0]
+    assert "Bitbucket returned an incomplete or inconsistent pull-request diff" in published
+    assert "Failed to review PR" not in published
+    assert "Failed to generate code suggestions for PR" not in published
+
+
+def test_incomplete_bitbucket_files_notice_deduplicates_trusted_agent_comment(monkeypatch):
+    marker = pr_agent_module.IncompleteBitbucketPullRequestFilesError.notice_marker
+    existing = {"body": f"## Existing notice\n\n{marker}\n\nDetails"}
+    provider = _incomplete_files_provider([existing])
+    provider.is_comment_authored_by_pr_agent.return_value = True
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompleteBitbucketPullRequestFilesError("incomplete")
+    )
+
+    provider.publish_comment.assert_not_called()
+
+
+def test_foreign_incomplete_bitbucket_files_marker_does_not_suppress_notice(monkeypatch):
+    marker = pr_agent_module.IncompleteBitbucketPullRequestFilesError.notice_marker
+    existing = {"body": f"## Spoofed notice\n\n{marker}\n\nDetails"}
+    provider = _incomplete_files_provider([existing])
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompleteBitbucketPullRequestFilesError("incomplete")
+    )
+
+    provider.publish_comment.assert_called_once()
+
+
+def test_unverifiable_incomplete_bitbucket_files_marker_does_not_suppress_notice(monkeypatch):
+    marker = pr_agent_module.IncompleteBitbucketPullRequestFilesError.notice_marker
+    existing = {"body": f"## Existing notice\n\n{marker}\n\nDetails"}
+    provider = _incomplete_files_provider([existing])
+    provider.is_comment_authored_by_pr_agent.side_effect = RuntimeError("identity unavailable")
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompleteBitbucketPullRequestFilesError("incomplete")
+    )
+
+    provider.publish_comment.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -357,7 +491,7 @@ def test_incomplete_files_notice_deduplicates_trusted_agent_comment(monkeypatch)
     existing = {
         "body": (
             "## Existing notice\n\n"
-            f"{pr_agent_module.INCOMPLETE_GITHUB_FILES_COMMENT_MARKER}\n\nDetails"
+            f"{pr_agent_module.IncompletePullRequestFilesError.notice_marker}\n\nDetails"
         )
     }
     provider = _incomplete_files_provider([existing])
@@ -365,7 +499,9 @@ def test_incomplete_files_notice_deduplicates_trusted_agent_comment(monkeypatch)
     monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
 
-    pr_agent_module.publish_incomplete_github_files_comment("https://example/pr/1")
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompletePullRequestFilesError("incomplete")
+    )
 
     provider.publish_comment.assert_not_called()
 
@@ -374,14 +510,16 @@ def test_foreign_incomplete_files_marker_does_not_suppress_notice(monkeypatch):
     existing = {
         "body": (
             "## Spoofed notice\n\n"
-            f"{pr_agent_module.INCOMPLETE_GITHUB_FILES_COMMENT_MARKER}\n\nDetails"
+            f"{pr_agent_module.IncompletePullRequestFilesError.notice_marker}\n\nDetails"
         )
     }
     provider = _incomplete_files_provider([existing])
     monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
 
-    pr_agent_module.publish_incomplete_github_files_comment("https://example/pr/1")
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompletePullRequestFilesError("incomplete")
+    )
 
     provider.publish_comment.assert_called_once()
 
@@ -390,7 +528,7 @@ def test_incomplete_files_notice_fails_open_when_author_cannot_be_verified(monke
     existing = {
         "body": (
             "## Existing notice\n\n"
-            f"{pr_agent_module.INCOMPLETE_GITHUB_FILES_COMMENT_MARKER}\n\nDetails"
+            f"{pr_agent_module.IncompletePullRequestFilesError.notice_marker}\n\nDetails"
         )
     }
     provider = _incomplete_files_provider([existing])
@@ -398,7 +536,9 @@ def test_incomplete_files_notice_fails_open_when_author_cannot_be_verified(monke
     monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
 
-    pr_agent_module.publish_incomplete_github_files_comment("https://example/pr/1")
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompletePullRequestFilesError("incomplete")
+    )
 
     provider.publish_comment.assert_called_once()
 
@@ -409,7 +549,9 @@ def test_incomplete_files_notice_fails_open_when_comment_lookup_fails(monkeypatc
     monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
 
-    pr_agent_module.publish_incomplete_github_files_comment("https://example/pr/1")
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompletePullRequestFilesError("incomplete")
+    )
 
     provider.publish_comment.assert_called_once()
 
@@ -420,7 +562,9 @@ def test_incomplete_files_notice_fails_open_when_comment_body_cannot_be_read(mon
     monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
 
-    pr_agent_module.publish_incomplete_github_files_comment("https://example/pr/1")
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompletePullRequestFilesError("incomplete")
+    )
 
     provider.publish_comment.assert_called_once()
 
@@ -452,7 +596,9 @@ def test_incomplete_files_notice_respects_disabled_output(monkeypatch):
     monkeypatch.setattr(get_settings().config, "publish_output", False, raising=False)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", provider_factory)
 
-    pr_agent_module.publish_incomplete_github_files_comment("https://example/pr/1")
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompletePullRequestFilesError("incomplete")
+    )
 
     provider_factory.assert_not_called()
 

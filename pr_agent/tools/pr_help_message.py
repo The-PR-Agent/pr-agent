@@ -6,14 +6,15 @@ from importlib.resources.abc import Traversable
 from math import ceil, isfinite
 from pathlib import Path, PurePosixPath
 
-from jinja2 import Environment, StrictUndefined, select_autoescape
+from jinja2 import StrictUndefined, select_autoescape
+from jinja2.sandbox import SandboxedEnvironment
 from litellm import token_counter
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.algo.run_details import record_command_failure
-from pr_agent.algo.token_budget import get_max_tokens
+from pr_agent.algo.token_budget import get_max_input_tokens, get_max_tokens
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.utils import ModelType, load_yaml
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
@@ -169,7 +170,7 @@ class PRHelpMessage:
     @staticmethod
     def _render_prompts(variables):
         # These string templates produce plain-text model prompts, not HTML.
-        environment = Environment(
+        environment = SandboxedEnvironment(
             autoescape=select_autoescape(default_for_string=False),
             undefined=StrictUndefined,
         )
@@ -218,7 +219,11 @@ class PRHelpMessage:
             output_tokens = self._coerce_output_token_limit(raw_output_tokens)
         if output_tokens <= 0:
             output_tokens = HELP_OUTPUT_TOKEN_RESERVE
-        return max(get_max_tokens(model, ignore_max_model_tokens=True) - output_tokens, 0)
+        input_capacity = get_max_tokens(model, ignore_max_model_tokens=True) - output_tokens
+        max_input_tokens = get_max_input_tokens(model)
+        if max_input_tokens is not None:
+            input_capacity = min(input_capacity, max_input_tokens)
+        return max(input_capacity, 0)
 
     @staticmethod
     def _count_prompt_tokens(model: str, system_prompt: str, user_prompt: str) -> int:

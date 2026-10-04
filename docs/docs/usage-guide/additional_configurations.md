@@ -64,7 +64,7 @@ The amount is an estimate based on LiteLLM's pricing data, not provider-invoice-
 
 Notes:
 
-- `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.commitable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run details section appears.
+- `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.committable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run details section appears.
 - With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run details block per run because the existing PR description is preserved and only the markers are replaced.
 
 ## Ignoring files from analysis

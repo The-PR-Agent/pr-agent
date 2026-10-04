@@ -93,6 +93,10 @@ for the authoritative default values.
 
   </tr>
   <tr>
+    <td><b>max_previous_findings_chars</b></td>
+    <td>Character budget for the findings stored by earlier reviews (requires <code>persistent_finding_state</code>). They are given to the model so it repeats a still-valid finding with its earlier wording instead of re-raising it reworded, and does not re-raise a resolved one unless the code reintroduces it. Set to 0 to disable. Default is 8000.</td>
+  </tr>
+  <tr>
   <td><b>final_update_message</b></td>
   <td>When set to true, updating a persistent review comment during online commenting will automatically add a short comment with a link to the updated review in the pull request.</td>
   </tr>
@@ -290,6 +294,14 @@ to `max_number_of_calls` chunks, each chunk is reviewed on its own, and the answ
 into a single review that says how many chunks it was built from. Files that do not fit even
 after chunking are still listed in the coverage footer. Every chunk is a separate model call,
 so a chunked review costs roughly `max_number_of_calls` times a normal one.
+
+While the chunks run, the temporary `Preparing review...` comment is rewritten in place with the
+number of chunks already analyzed, for example `Preparing review... analyzed 2 of 3 chunks`, plus
+`... 1 chunk failed` when a chunk gives up. The updates require
+`config.publish_output_progress` and a provider that supports both editing and removing a
+comment, so plain-diff runs and automatic commands keep the frozen placeholder. The comment stays
+temporary and is still removed before the merged review is published. A fallback model restores
+the placeholder before it starts, so the visible count never moves backward.
 
 If a chunk fails or returns malformed output, successful chunks are retained and fallback
 models retry only the pending work. Pending chunks can be split for a smaller model, within

@@ -30,8 +30,18 @@ class _FakePR:
 
     def __init__(self, raise_on_first=None):
         self.create_review_calls = []
+        self.create_review_comment_calls = []
         self._raise_on_first = raise_on_first
         self._calls = 0
+
+    def create_review_comment(self, body, commit, path, subject_type=None):
+        self.create_review_comment_calls.append({
+            "body": body,
+            "commit": commit,
+            "path": path,
+            "subject_type": subject_type,
+        })
+        return SimpleNamespace(id=2)
 
     def create_review(self, commit=None, event=None, comments=None):
         self._calls += 1
@@ -126,8 +136,8 @@ def test_create_inline_comment_returns_line_payload(monkeypatch):
     assert payload == {"body": "LGTM", "path": "src/foo.py", "position": 5}
 
 
-def test_create_inline_comment_returns_empty_when_position_unresolved(monkeypatch):
-    """If no position can be resolved (position == -1) current behavior returns {}."""
+def test_create_inline_comment_returns_file_payload_when_position_unresolved(monkeypatch):
+    """Keep unresolved findings visible as file-level review comments."""
     provider = _make_provider()
 
     monkeypatch.setattr(
@@ -137,18 +147,37 @@ def test_create_inline_comment_returns_empty_when_position_unresolved(monkeypatc
     )
 
     payload = provider.create_inline_comment("body", "src/foo.py", "x = 1")
-    assert payload == {}
+    assert payload == {
+        "body": "body",
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }
 
 
-def test_create_inline_comment_lookup_strips_backticks_but_payload_preserves_them(monkeypatch):
-    """Backtick handling is asymmetric in current production code.
+def test_publish_inline_comment_uses_file_comment_endpoint_for_unresolved_position(monkeypatch):
+    """File-level fallbacks must not be sent through create_review."""
+    fake_pr = _FakePR()
+    provider = _make_provider(pr=fake_pr)
 
-    ``find_line_number_of_relevant_line_in_file`` is called with
-    ``relevant_file.strip('`')`` (so the *lookup* sees the un-backticked
-    path), but the payload ``path`` only has ``.strip()`` applied — so any
-    surrounding backticks survive into the resulting comment payload. This
-    test documents that asymmetry; it does not endorse it.
-    """
+    monkeypatch.setattr(
+        gh_module,
+        "find_line_number_of_relevant_line_in_file",
+        lambda *args, **kwargs: (-1, -1),
+    )
+
+    provider.publish_inline_comment("body", "src/foo.py", "x = 1")
+
+    assert fake_pr.create_review_calls == []
+    assert fake_pr.create_review_comment_calls == [{
+        "body": "body",
+        "commit": provider.last_commit_id,
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }]
+
+
+def test_create_inline_comment_normalizes_backticked_file_path(monkeypatch):
+    """Use the repository path without Markdown wrapping for lookup and publication."""
     provider = _make_provider()
     recorded = {}
 
@@ -162,12 +191,28 @@ def test_create_inline_comment_lookup_strips_backticks_but_payload_preserves_the
         recording_resolver,
     )
 
-    payload = provider.create_inline_comment("b", "`src/foo.py`", "x = 1")
+    payload = provider.create_inline_comment("b", "  `src/foo.py`  ", "x = 1")
 
-    # Lookup arg has backticks stripped.
     assert recorded["rel_file"] == "src/foo.py"
-    # Payload path preserves backticks (only .strip() runs on it).
-    assert payload["path"] == "`src/foo.py`"
+    assert payload["path"] == "src/foo.py"
+
+
+def test_create_inline_comment_normalizes_backticked_file_level_fallback(monkeypatch):
+    """Use the normalized repository path when a backticked finding has no line anchor."""
+    provider = _make_provider()
+    monkeypatch.setattr(
+        gh_module,
+        "find_line_number_of_relevant_line_in_file",
+        lambda *a, **kw: (-1, -1),
+    )
+
+    payload = provider.create_inline_comment("body", "  `src/foo.py`  ", "x = 1")
+
+    assert payload == {
+        "body": "body",
+        "path": "src/foo.py",
+        "subject_type": "file",
+    }
 
 
 def test_create_inline_comment_payload_strips_surrounding_whitespace(monkeypatch):

@@ -25,3 +25,7 @@ class FilePatchInfo:
     language: Optional[str] = None
     ai_file_summary: str = None
     head_file_is_complete: bool = True
+    # Set when the provider could not read one side of the file, so no trustworthy patch can
+    # be built for it. The file is kept with an empty patch and this flag, and diff generation
+    # tells the model the file could not be reviewed instead of dropping it silently.
+    content_fetch_failed: bool = False

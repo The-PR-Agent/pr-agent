@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, status
+from fastapi import APIRouter, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTasks
@@ -21,8 +21,11 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
+    is_ask_command_comment,
+    is_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
 )
@@ -408,13 +411,18 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 get_logger().info(f"A comment has been added to a merge request: {url}")
                 body = data.get('object_attributes', {}).get('note')
+                if not is_command_comment(body):
+                    # A plain comment whose first word happens to be a command name must not
+                    # dispatch a tool: the dispatcher strips an optional leading slash.
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
                 discussion_id = data.get('object_attributes', {}).get('discussion_id')
                 command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
                 if (discussion_id and not data.get('object_attributes', {}).get('type')
                         and command in ("/review", "/review_pr", "/improve", "/improve_code")):
                     body = f"{body} --comment_id={discussion_id}"
                 if (data.get('object_attributes', {}).get('type') == 'DiffNote'
-                        and isinstance(body, str) and '/ask' in body):  # /ask_line
+                        and is_ask_command_comment(body)):  # /ask_line
                     body = handle_ask_line(body, data)
 
                 await handle_request(
@@ -467,7 +475,7 @@ get_settings().config.git_provider = "gitlab"
 middleware = [Middleware(RawContextMiddleware)]
 if prometheus_metrics_enabled():
     attach_metrics_endpoint(router)
-app = FastAPI(middleware=middleware)
+app = create_server_app(middleware=middleware)
 app.include_router(router)
 
 

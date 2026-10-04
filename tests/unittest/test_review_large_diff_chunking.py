@@ -116,6 +116,7 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
         max_calls=3,
         add_line_numbers=True,
         return_remaining_files=True,
+        include_filtered_file_names=False,
         output_token_reserve=reviewer.ai_handler.get_output_token_reserve,
     )
     assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == ["chunk-a", "chunk-b"]
@@ -507,8 +508,10 @@ async def test_larger_fallback_includes_omitted_files_without_repeating_successe
 
 
 @pytest.mark.asyncio
-async def test_a_smaller_fallback_splits_an_oversized_pending_chunk(chunking_enabled):
+@pytest.mark.parametrize("filtered", [False, True])
+async def test_a_smaller_fallback_splits_an_oversized_pending_chunk(chunking_enabled, filtered):
     reviewer = _make_reviewer()
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = (["pnpm-lock.yaml"] if filtered else [])
     a_part = "## File: 'a.py'\n+change a\n"
     b_part = "## File: 'blong.py'\n+long change b\n"
     combined_chunk = a_part + b_part
@@ -531,10 +534,13 @@ async def test_a_smaller_fallback_splits_an_oversized_pending_chunk(chunking_ena
     assert reviewer.prediction_data["review"]["score"] == 40
     assert reviewer.review_chunk_count == 3
     assert reviewer.review_failed_chunk_count == 0
-    assert [call.args for call in reviewer._get_prediction.await_args_list] == [
-        ("primary", combined_chunk), ("primary", chunk_c),
-        ("fallback", a_part), ("fallback", b_part),
-    ]
+    calls = [call.args for call in reviewer._get_prediction.await_args_list]
+    assert [model for model, _ in calls] == ["primary", "primary", "fallback", "fallback"]
+    assert all(("pnpm-lock.yaml" in chunk) is filtered for _, chunk in calls)
+    assert combined_chunk in calls[0][1]
+    assert chunk_c in calls[1][1]
+    assert a_part in calls[2][1]
+    assert b_part in calls[3][1]
 
 
 @pytest.mark.asyncio

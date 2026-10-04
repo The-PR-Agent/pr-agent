@@ -395,7 +395,9 @@ class GiteaProvider(GitProvider):
             subject_type = "LINE"
 
         path = relevant_file.strip()
-        payload = (dict(body=body, path=path, old_position=position, new_position = absolute_position)
+        # absolute_position is a new-file line; Gitea only honours new_position while
+        # old_position is 0, otherwise it anchors the comment to the old side.
+        payload = (dict(body=body, path=path, old_position=0, new_position=absolute_position)
                    if subject_type == "LINE" else {})
         self.publish_inline_comments([payload])
 
@@ -435,13 +437,13 @@ class GiteaProvider(GitProvider):
                 continue
 
             path = suggestion.get("relevant_file","")
-            new_position = suggestion.get("relevant_lines_start",0)
-            old_position = (suggestion.get("relevant_lines_start", 0)
-                            if "original_suggestion" not in suggestion
-                            else suggestion["original_suggestion"].get("relevant_lines_start", 0))
+            # relevant_lines_start is an absolute position in the new file. Gitea anchors a
+            # review comment to the old side whenever old_position is non-zero, ignoring
+            # new_position in that case, so keep old_position at 0 to stay on the new side.
+            new_position = suggestion.get("relevant_lines_start", 0)
             title_body = (suggestion["original_suggestion"].get("suggestion_content","")
                           if "original_suggestion" in suggestion else "")
-            payload = dict(body=body, path=path, old_position=old_position,new_position = new_position)
+            payload = dict(body=body, path=path, old_position=0, new_position=new_position)
             publishable_count += 1
             if title_body:
                 title_body = f"**Suggestion:** {title_body}"
@@ -634,11 +636,13 @@ class GiteaProvider(GitProvider):
         if invalid_files_names:
             self.logger.info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 
     def get_line_link(self, relevant_file, relevant_line_start, relevant_line_end = None) -> str:
-        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{relevant_file}"
+        encoded_file = quote(relevant_file, safe="/")
+        link = f"{self.base_url_html}/{self.owner}/{self.repo}/src/branch/{quote(self.get_pr_branch())}/{encoded_file}"
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
@@ -861,7 +865,10 @@ class GiteaProvider(GitProvider):
 
     def remove_initial_comment(self) -> None:
         """Remove the initial comment"""
-        for comment in self.comments_list:
+        # Iterate over a snapshot: remove_comment() drops the comment from
+        # comments_list, so mutating it mid-iteration skips the next element
+        # and leaves every other temporary comment behind.
+        for comment in list(self.comments_list):
             try:
                 if not comment.get("is_temporary"):
                     continue

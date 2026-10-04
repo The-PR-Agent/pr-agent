@@ -9,7 +9,7 @@ import re
 from urllib.parse import quote, unquote
 
 import uvicorn
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette import status
@@ -26,6 +26,7 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MARKER, AzureDevopsProvider
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import basic_auth_matches, get_pr_commands
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
@@ -308,7 +309,7 @@ async def root():
     return {"status": "ok"}
 
 def start():
-    app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+    app = create_server_app(middleware=[Middleware(RawContextMiddleware)])
     if prometheus_metrics_enabled():
         attach_metrics_endpoint(router)
     app.include_router(router)

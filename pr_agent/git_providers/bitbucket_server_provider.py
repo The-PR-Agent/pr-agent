@@ -203,8 +203,7 @@ class BitbucketServerProvider(GitProvider):
         get_logger().warning(message)
 
     def _log_code_suggestion_publish_error(self, error: Exception) -> None:
-        if get_verbosity_level() >= 2:
-            get_logger().error(f"Failed to publish code suggestion, error: {error}")
+        get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
         if capability in ['get_labels', 'gfm_markdown']:
@@ -286,6 +285,7 @@ class BitbucketServerProvider(GitProvider):
                     raise e
 
         diff_files = []
+        invalid_files_names = []
         original_file_content_str = ""
         new_file_content_str = ""
 
@@ -297,6 +297,7 @@ class BitbucketServerProvider(GitProvider):
             file_path = change['path']['toString']
             if not is_valid_file(file_path.split("/")[-1]):
                 get_logger().info(f"Skipping a non-code file: {file_path}")
+                invalid_files_names.append(file_path)
                 continue
 
             old_filename = None
@@ -343,6 +344,7 @@ class BitbucketServerProvider(GitProvider):
                 )
             )
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 

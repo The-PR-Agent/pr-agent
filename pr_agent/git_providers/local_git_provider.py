@@ -240,7 +240,7 @@ class LocalGitProvider(GitProvider):
         return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_branch(self):
-        return self.repo.head
+        return self.head_branch_name
 
     def get_user_id(self):
         return -1  # Not used anywhere for the local provider, but required by the interface

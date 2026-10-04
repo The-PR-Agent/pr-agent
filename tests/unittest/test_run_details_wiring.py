@@ -35,7 +35,7 @@ _TRACKED_KEYS_SUGGESTIONS = (
     "config.publish_output",
     "config.publish_output_progress",
     "config.is_auto_command",
-    "pr_code_suggestions.commitable_code_suggestions",
+    "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.demand_code_suggestions_self_review",
     "pr_code_suggestions.enable_chat_text",
     "pr_code_suggestions.enable_help_text",
@@ -199,7 +199,7 @@ async def test_pr_code_suggestions_appends_run_details_only_when_enabled(monkeyp
         get_settings().set("config.publish_output", True)
         get_settings().set("config.publish_output_progress", False)
         get_settings().set("config.is_auto_command", False)
-        get_settings().pr_code_suggestions.commitable_code_suggestions = False
+        get_settings().pr_code_suggestions.committable_code_suggestions = False
         get_settings().pr_code_suggestions.demand_code_suggestions_self_review = False
         get_settings().pr_code_suggestions.enable_chat_text = False
         get_settings().pr_code_suggestions.enable_help_text = False

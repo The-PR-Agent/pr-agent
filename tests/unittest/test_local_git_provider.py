@@ -332,3 +332,49 @@ def test_init_on_detached_head_falls_back_to_commit_sha(tmp_path, monkeypatch):
 
     assert provider.get_pr_title() == commit.hexsha[:7]
     assert [f.filename for f in provider.get_diff_files()] == ["a.py"]
+
+
+def _make_feature_branch_provider(tmp_path, monkeypatch, branch_name):
+    repo = _make_repo(tmp_path, ["a.py"])
+    target_branch_name = repo.active_branch.name
+    repo.git.checkout("-b", branch_name)
+    (tmp_path / "a.py").write_text("y\n")
+    repo.index.add(["a.py"])
+    commit = repo.index.commit("change a.py")
+    monkeypatch.chdir(tmp_path)
+    return repo, commit, LocalGitProvider(target_branch_name)
+
+
+def test_get_pr_branch_returns_branch_name_string(tmp_path, monkeypatch):
+    # get_pr_branch() is consumed as text (prompt variables, ticket-key scanning),
+    # so it must return the branch name rather than GitPython's HEAD object.
+    _, _, provider = _make_feature_branch_provider(tmp_path, monkeypatch, "feature/PROJ-123-fix")
+
+    assert provider.get_pr_branch() == "feature/PROJ-123-fix"
+
+
+def test_get_pr_branch_on_detached_head_returns_commit_sha(tmp_path, monkeypatch):
+    repo, commit, _ = _make_feature_branch_provider(tmp_path, monkeypatch, "feature")
+    repo.git.checkout(commit.hexsha)
+    assert repo.head.is_detached
+
+    provider = LocalGitProvider("feature")
+
+    assert provider.get_pr_branch() == commit.hexsha[:7]
+
+
+def test_add_jira_tickets_scans_local_branch_name(tmp_path, monkeypatch):
+    # Regression: add_jira_tickets() joins title, description and branch into one
+    # string. A non-str branch made the join raise, which was logged as
+    # "Error extracting Jira tickets: ... expected str instance, HEAD found" on
+    # every local run, even with Jira unconfigured.
+    from pr_agent.tools import ticket_pr_compliance_check as tickets
+
+    _, _, provider = _make_feature_branch_provider(tmp_path, monkeypatch, "feature/PROJ-123-fix")
+    scanned = []
+    monkeypatch.setattr(tickets, "extract_jira_tickets",
+                        lambda text, *args, **kwargs: scanned.append(text) or [])
+
+    assert tickets.add_jira_tickets(provider, []) == []
+    assert len(scanned) == 1
+    assert "feature/PROJ-123-fix" in scanned[0]

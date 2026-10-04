@@ -321,7 +321,7 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
 
     def get_multiple_patches(_provider, token_handler, _model, **_kwargs):
         packed_handlers.append(token_handler)
-        return ([["@@ -1 +1 @@\n-old\n+new"]], [10], [], [], {}, [[]])
+        return ([["@@ -1 +1 @@\n-old\n+new"]], [10], [], [], {}, [["src/app.py"]])
 
     async def get_prediction(_model, patches_diff=None, prompt=None):
         prediction_calls.append((prompt, patches_diff, tool.vars))

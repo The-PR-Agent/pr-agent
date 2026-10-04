@@ -39,13 +39,13 @@ async def test_direct_auto_tool_notifies_and_reraises_incomplete_constructor_err
         def __init__(self, _pr_url):
             raise error
 
-    monkeypatch.setattr(github_action_runner, "publish_incomplete_github_files_comment", notify)
+    monkeypatch.setattr(github_action_runner, "publish_incomplete_files_comment", notify)
 
     with pytest.raises(IncompletePullRequestFilesError) as raised:
         await github_action_runner._run_auto_tool(IncompleteTool, "https://example/pr/1")
 
     assert raised.value is error
-    notify.assert_called_once_with("https://example/pr/1")
+    notify.assert_called_once_with("https://example/pr/1", error)
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_direct_auto_tool_leaves_unexpected_constructor_error_unchanged(mo
         def __init__(self, _pr_url):
             raise error
 
-    monkeypatch.setattr(github_action_runner, "publish_incomplete_github_files_comment", notify)
+    monkeypatch.setattr(github_action_runner, "publish_incomplete_files_comment", notify)
 
     with pytest.raises(RuntimeError) as raised:
         await github_action_runner._run_auto_tool(BrokenTool, "https://example/pr/1")
@@ -246,17 +246,7 @@ def _write_synchronize_event(tmp_path, before_sha="abc", after_sha="def", merge_
 
 
 def _write_issue_comment_event(tmp_path, sender_type):
-    event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps({
-        "action": "created",
-        "comment": {"body": "/review", "id": 123},
-        "issue": {
-            "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"},
-            "url": "https://api.github.com/repos/org/repo/issues/1",
-        },
-        "sender": {"type": sender_type},
-    }))
-    return event_path
+    return _write_issue_comment_event_with_body(tmp_path, "/review", sender_type)
 
 
 def _write_review_event(
@@ -272,6 +262,26 @@ def _write_review_event(
             "draft": False,
         },
         "sender": {"type": sender_type},
+    }))
+    return event_path
+
+
+def _write_review_comment_event_with_body(tmp_path, body):
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps({
+        "action": "created",
+        "comment": {
+            "body": body,
+            "id": 123,
+            "pull_request_url": "https://api.github.com/repos/org/repo/pulls/1",
+            "subject_type": "line",
+            "start_line": 10,
+            "line": 12,
+            "diff_hunk": "@@ -1,3 +1,4 @@\n+new line",
+            "path": "src/app.py",
+            "side": "RIGHT",
+        },
+        "sender": {"type": "User"},
     }))
     return event_path
 
@@ -514,6 +524,44 @@ async def test_issue_comment_calls_inject_artifact_context(monkeypatch, tmp_path
     await github_action_runner.run_action()
 
     assert inject_calls, "_inject_artifact_context was not called for issue_comment event"
+
+
+@pytest.mark.asyncio
+async def test_action_keeps_the_whole_question_in_a_quote_reply_with_two_asks(
+        monkeypatch, tmp_path, restore_github_settings):
+    """Apply the #3670 quote-reply fix in the Action too, keeping the text after a second /ask."""
+    body = "> ![image][image-1]\n\n/review please\n\n/ask why does /ask appear twice here?"
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "issue_comment")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_issue_comment_event_with_body(tmp_path, body)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled[0][1].startswith("/ask")
+    assert "why does /ask appear twice here?" in handled[0][1]
+
+
+@pytest.mark.asyncio
+async def test_review_comment_with_review_command_mentioning_ask_stays_review(
+    monkeypatch, tmp_path, restore_github_settings
+):
+    handled = []
+    _patch_issue_comment_deps(monkeypatch, handled)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_review_comment")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(_write_review_comment_event_with_body(tmp_path, "/review please, I will /ask later")),
+    )
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+    await github_action_runner.run_action()
+
+    assert handled == [(
+        "https://api.github.com/repos/org/repo/pulls/1",
+        "/review please, I will /ask later",
+    )]
 
 
 def _patch_synchronize_deps(monkeypatch, handled, push_commands, handle_push_trigger=True):
@@ -1287,7 +1335,7 @@ async def test_workflow_run_does_not_inject_ci_conclusion_when_absent(monkeypatc
     assert "CI status" not in str(get_settings().pr_reviewer.extra_instructions)
 
 
-def _write_issue_comment_event_with_body(tmp_path, body):
+def _write_issue_comment_event_with_body(tmp_path, body, sender_type="User"):
     event_path = tmp_path / "event.json"
     event_path.write_text(json.dumps({
         "action": "created",
@@ -1296,7 +1344,7 @@ def _write_issue_comment_event_with_body(tmp_path, body):
             "pull_request": {"url": "https://api.github.com/repos/org/repo/pulls/1"},
             "url": "https://api.github.com/repos/org/repo/issues/1",
         },
-        "sender": {"type": "User"},
+        "sender": {"type": sender_type},
     }))
     return event_path
 

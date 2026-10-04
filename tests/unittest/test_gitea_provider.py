@@ -1167,6 +1167,26 @@ class TestGiteaProviderInlineCommentStatus:
         assert result is True
         assert provider.repo_api.create_inline_comment.call_count == 3
 
+    def test_publish_code_suggestions_anchor_to_the_new_file(self):
+        # Gitea ignores new_position while old_position is non-zero and anchors the comment
+        # to the old side instead (services/pull.CreatePullReview). PR-Agent's relevant lines
+        # are new-file lines, so old_position must stay 0 for the anchor to be correct.
+        provider = self._provider(create_inline_comment_result=True)
+        suggestions = [
+            {"body": "**Suggestion:** one", "relevant_file": "a.py", "relevant_lines_start": 3},
+            {"body": "**Suggestion:** two", "relevant_file": "b.py", "relevant_lines_start": 12,
+             "original_suggestion": {"relevant_lines_start": 12}},
+        ]
+
+        assert provider.publish_code_suggestions(suggestions) is True
+
+        sent = [call.kwargs["comments"][0]
+                for call in provider.repo_api.create_inline_comment.call_args_list]
+        assert sent == [
+            {"body": "**Suggestion:** one", "path": "a.py", "old_position": 0, "new_position": 3},
+            {"body": "**Suggestion:** two", "path": "b.py", "old_position": 0, "new_position": 12},
+        ]
+
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     def test_create_inline_comment_submits_as_comment_not_pending(self, mock_api_client_cls):
         from pr_agent.git_providers.gitea_provider import RepoApi
@@ -1431,6 +1451,9 @@ class TestGiteaRepoIgnoreRules:
         repo's [ignore] rules into the request settings and confirm
         get_diff_files() drops the matching files."""
         provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
+        provider.git_files = provider.git_files + [
+            {"filename": "pnpm-lock.yaml", "additions": 1, "deletions": 1, "status": "modified"},
+        ]
 
         with request_cycle_context({}):
             context["settings"] = copy.deepcopy(global_settings)
@@ -1439,6 +1462,7 @@ class TestGiteaRepoIgnoreRules:
 
             diff_files = provider.get_diff_files()
             names = [f.filename for f in diff_files]
+            assert provider.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
 
             assert "src/application.py" in names
             assert "generated/client.py" not in names, \
@@ -1550,3 +1574,58 @@ class TestGiteaCommitMessages:
 
         assert result
         assert len(result) < len(long_message)
+
+
+def _gitea_provider_with_temp_comments(count: int) -> GiteaProvider:
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.repo_api = MagicMock()
+    provider.owner = "owner"
+    provider.repo = "repo"
+    provider.logger = MagicMock()
+    provider.comments_list = [
+        {"comment_id": i, "comment": f"working {i}", "is_temporary": True}
+        for i in range(1, count + 1)
+    ]
+    return provider
+
+
+def test_remove_initial_comment_deletes_every_temporary_comment():
+    provider = _gitea_provider_with_temp_comments(4)
+
+    provider.remove_initial_comment()
+
+    deleted = [
+        call.kwargs["comment_id"]
+        for call in provider.repo_api.remove_comment.call_args_list
+    ]
+    assert deleted == [1, 2, 3, 4]
+    assert provider.comments_list == []
+
+
+def test_remove_initial_comment_keeps_non_temporary_comments():
+    provider = _gitea_provider_with_temp_comments(2)
+    permanent = {"comment_id": 99, "comment": "final review", "is_temporary": False}
+    provider.comments_list.insert(0, permanent)
+
+    provider.remove_initial_comment()
+
+    assert provider.comments_list == [permanent]
+
+
+def test_remove_initial_comment_continues_after_a_failing_comment():
+    provider = _gitea_provider_with_temp_comments(3)
+    provider.repo_api.remove_comment.side_effect = [
+        ApiException(status=500, reason="boom"),
+        None,
+        None,
+    ]
+
+    provider.remove_initial_comment()
+
+    deleted = [
+        call.kwargs["comment_id"]
+        for call in provider.repo_api.remove_comment.call_args_list
+    ]
+    assert deleted == [1, 2, 3]
+    # The comment that failed to delete is kept so a later retry can clean it up.
+    assert [c["comment_id"] for c in provider.comments_list] == [1]

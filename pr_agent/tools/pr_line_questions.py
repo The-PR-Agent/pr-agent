@@ -2,7 +2,8 @@ import copy
 from functools import partial
 from urllib.parse import unquote
 
-from jinja2 import Environment, StrictUndefined, select_autoescape
+from jinja2 import StrictUndefined, select_autoescape
+from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -205,7 +206,7 @@ class PR_LineQuestions:
         return response
 
     def _render_prompts(self, variables):
-        environment = Environment(
+        environment = SandboxedEnvironment(
             autoescape=select_autoescape(default_for_string=False),
             undefined=StrictUndefined,
         )

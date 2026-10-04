@@ -742,8 +742,20 @@ class AzureDevopsProvider(GitProvider):
             )
             settings_files.append(("local", b"".join(list(contents))))
         except Exception as e:
-            if get_verbosity_level() >= 2:
-                get_logger().error(f"Failed to get repo settings, error: {e}")
+            # GitItemNotFoundException is the normal case here, a repository with no
+            # .pr_agent.toml, so it is not reported as a failure. It is not proof the file
+            # is absent though: Azure raises the same exception when the token lacks read
+            # permission for the path, which would silently drop the repository settings.
+            # The cause cannot be told apart from the exception, so leave a trace at a
+            # level that costs nothing per run and surfaces when someone goes looking.
+            if _is_not_found_error(e):
+                get_logger().debug(
+                    f"No repository .pr_agent.toml was read for {self.repo_slug}; it is absent or "
+                    f"not readable by this token, error: {e}")
+            else:
+                get_logger().error(
+                    f"Failed to get the repository's .pr_agent.toml; it will not be applied for this "
+                    f"run, error: {e}")
         return settings_files if settings_files else ""
 
     def get_owning_namespace(self) -> Optional[str]:
@@ -977,6 +989,8 @@ class AzureDevopsProvider(GitProvider):
                 version = GitVersionDescriptor(
                     version=head_sha.commit_id, version_type="commit"
                 )
+                new_fetch_failed = False
+                original_fetch_failed = False
                 try:
                     new_file_content_str = self.azure_devops_client.get_item(
                         repository_id=self.repo_slug,
@@ -996,6 +1010,7 @@ class AzureDevopsProvider(GitProvider):
                         error=error,
                     )
                     new_file_content_str = ""
+                    new_fetch_failed = True
 
                 edit_type = EDIT_TYPE.MODIFIED
                 if diff_types[file] == "add":
@@ -1050,12 +1065,14 @@ class AzureDevopsProvider(GitProvider):
                                     f"retry at {file} also failed: {retry_error}"
                                 )
                                 original_file_content_str = ""
+                                original_fetch_failed = True
                         else:
                             get_logger().warning(
                                 f"Failed to retrieve original of {old_filename or file} "
                                 f"at {self.incremental.last_seen_commit_sha}: {error}"
                             )
                             original_file_content_str = ""
+                            original_fetch_failed = True
                 else:
                     base_version = GitVersionDescriptor(
                         version=base_sha.commit_id, version_type="commit"
@@ -1078,10 +1095,28 @@ class AzureDevopsProvider(GitProvider):
                             error=error,
                         )
                         original_file_content_str = ""
+                        original_fetch_failed = True
 
-                patch = load_large_diff(
-                    file, new_file_content_str, original_file_content_str, show_warning=False
-                ).rstrip("\r\n")
+                # An empty side only renders as a whole-file add or delete when the edit type
+                # does not already imply it, so a deletion keeps its legitimately empty head
+                # side and an addition keeps its legitimately empty base side.
+                content_fetch_failed = (
+                    (new_fetch_failed and edit_type != EDIT_TYPE.DELETED)
+                    or original_fetch_failed
+                )
+                if content_fetch_failed:
+                    # A fetch failure leaves one side empty, and load_large_diff turns an empty
+                    # side into a whole-file addition or deletion. Keep the file in the diff (a
+                    # missing file is also a blind spot) but publish no patch, so the model is
+                    # never handed invented changes.
+                    patch = ""
+                    get_logger().error(
+                        f"Not emitting a patch for {file}: one side of the content could not be "
+                        f"read, and the partial read would render as a whole-file change")
+                else:
+                    patch = load_large_diff(
+                        file, new_file_content_str, original_file_content_str, show_warning=False
+                    ).rstrip("\r\n")
                 if incremental_active:
                     self.unreviewed_files_map[file] = patch
 
@@ -1100,10 +1135,12 @@ class AzureDevopsProvider(GitProvider):
                         old_filename=old_filename,
                         num_plus_lines=num_plus_lines,
                         num_minus_lines=num_minus_lines,
+                        content_fetch_failed=content_fetch_failed,
                     )
                 )
             get_logger().info(f"Invalid files: {invalid_files_names}")
 
+            self.filtered_diff_file_names = invalid_files_names
             self.diff_files = diff_files
             return diff_files
         except Exception as e:
@@ -1268,12 +1305,13 @@ class AzureDevopsProvider(GitProvider):
             for comment in comments:
                 if not comment:
                     continue
+                # Reset the name for each comment, including failures during lookup.
+                relevant_file = "unknown file"
                 try:
+                    relevant_file = comment.get("path") or comment.get("relevant_file") or "unknown file"
                     comment_body = comment["body"]
-                    relevant_file = comment.get("relevant_file") or "unknown file"
                     thread_context = None
                     if comment.get("path"):
-                        relevant_file = comment["path"]
                         thread_context = {"filePath": relevant_file}
                         if comment.get("subject_type", "LINE") == "LINE":
                             thread_context["rightFileStart"] = {
@@ -1297,8 +1335,9 @@ class AzureDevopsProvider(GitProvider):
                             f"Published code suggestion on {self.pr_num} at {relevant_file}"
                         )
                 except Exception as e:
-                    if get_verbosity_level() >= 2:
-                        get_logger().error(f"Failed to publish code suggestion, error: {e}")
+                    get_logger().error(
+                        f"Azure DevOps failed to publish code suggestion on {self.pr_num} at "
+                        f"{relevant_file}, error: {e}")
                     overall_success = False
             return overall_success
 
@@ -1791,7 +1830,7 @@ class AzureDevopsProvider(GitProvider):
             return ""
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
-        return self.pr_url+f"?_a=files&path={relevant_file}"
+        return f"{self.pr_url}?_a=files&path={quote(relevant_file, safe='')}"
 
     def get_comment_url(self, comment) -> str:
         return self.pr_url + "?discussionId=" + str(comment.thread_id)

@@ -12,13 +12,14 @@ from typing import Any, Optional, Tuple
 from urllib.parse import urlsplit
 
 from pr_agent.algo.comment_identity import (
+    PRCommandNoticeIdentity,
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
     render_hidden_marker,
 )
 from pr_agent.algo.inline_comment_dedup import strip_markers
-from pr_agent.algo.language_handler import numeric_languages
+from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
@@ -72,8 +73,51 @@ def _discussion_context_budget() -> int:
         return DEFAULT_DISCUSSION_CONTEXT_CHARS
 
 
-class IncompletePullRequestFilesError(RuntimeError):
-    """Represent an incomplete or inconsistent pull-request file set."""
+class IncompleteProviderPullRequestFilesError(RuntimeError):
+    """Provider-neutral base for incomplete-file failures with public notices."""
+
+    notice: str
+    notice_marker: str
+
+
+class IncompletePullRequestFilesError(IncompleteProviderPullRequestFilesError):
+    """Represent an incomplete or inconsistent GitHub pull-request file set."""
+
+    notice = (
+        "## PR-Agent command was not run\n\n"
+        "GitHub returned an incomplete or inconsistent changed-file set for this pull request, so PR-Agent stopped "
+        "instead of analyzing only part of it.\n\n"
+        "GitHub limits changed-file responses to 3,000 files. If this pull request changes more than 3,000 files, "
+        "split it into smaller pull requests and run the command again. Otherwise, retry the command."
+    )
+    notice_marker = "<!-- pr-agent:github-incomplete-files -->"
+
+
+class IncompleteBitbucketPullRequestFilesError(IncompleteProviderPullRequestFilesError):
+    """Represent Bitbucket aggregate patches that cannot align with its changed-file inventory."""
+
+    notice = (
+        "## PR-Agent command was not run\n\n"
+        "Bitbucket returned an incomplete or inconsistent pull-request diff, so PR-Agent stopped "
+        "instead of treating it as an empty change.\n\n"
+        "Retry the command and check the pull request's diff in Bitbucket if the problem persists."
+    )
+    notice_marker = PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value
+
+
+@dataclass(frozen=True)
+class FileContentSnapshot:
+    """Capture file contents and existence at one revision for a guarded write.
+
+    The revision is opaque and provider-owned; consumers must not interpret or refresh it.
+    """
+    contents: str
+    exists: bool
+    revision: str | None
+
+
+class ConcurrentFileUpdateError(RuntimeError):
+    """Signal that a file no longer matches the snapshot used to prepare its replacement."""
 
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
@@ -498,8 +542,12 @@ class GitProvider(ABC):
     def get_diff_files(self) -> list[FilePatchInfo]:
         pass
 
-    def get_incremental_commits(self, is_incremental):
-        pass
+    def get_filtered_diff_file_names(self) -> list[str]:
+        """Return changed paths omitted from the diff by file-type filtering."""
+        return getattr(self, "filtered_diff_file_names", [])
+
+    def get_incremental_commits(self, is_incremental) -> None:
+        return None
 
     @abstractmethod
     def publish_description(self, pr_title: str, pr_body: str) -> None:
@@ -583,10 +631,10 @@ class GitProvider(ABC):
         pass
 
     def edit_comment(self, comment, body: str):
-        pass
+        return None
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
-        pass
+        return None
 
     def get_pr_description(self, full: bool = True, split_changes_walkthrough=False) -> str | tuple:
         from pr_agent.algo.token_budget import clip_tokens
@@ -1026,7 +1074,7 @@ class GitProvider(ABC):
         return ""
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
-        pass
+        return []
 
     #### labels operations ####
     @abstractmethod
@@ -1158,28 +1206,42 @@ def get_main_pr_language(languages, files) -> str:
             return main_language_str
         top_language = max(languages, key=languages.get).lower()
 
-        # validate that the specific commit uses the main language
-        extension_list = []
-        for file in files:
-            if not file:
-                continue
-            if isinstance(file, str):
-                file = FilePatchInfo(base_file=None, head_file=None, patch=None, filename=file)
-            extension_list.append(file.filename.rsplit('.')[-1])
-
-        # get the most common extension; dict.fromkeys keeps file order, so a tie resolves the same way every run
-        most_common_extension = '.' + max(dict.fromkeys(extension_list), key=extension_list.count)
+        # Validate that the specific commit uses the main language. Resolve every
+        # filename through the shared classifier instead of its last suffix: a bare
+        # rsplit('.') turned "Config.cmake.in" into ".in", "module.bsl" into ".bsl"
+        # (the map stores the wildcard "*.bsl") and "handler.PY" into ".PY", so none of
+        # them matched and the function returned an empty language.
         try:
             language_extension_map_org = get_settings().language_extension_map_org
-            language_extension_map = {k.lower(): v for k, v in language_extension_map_org.items()}
+            get_language = build_language_file_matcher(language_extension_map_org)
 
-            if top_language in language_extension_map and most_common_extension in language_extension_map[top_language]:
+            language_list = []
+            for file in files:
+                if not file:
+                    continue
+                if isinstance(file, str):
+                    file = FilePatchInfo(base_file=None, head_file=None, patch=None, filename=file)
+                language = get_language(file.filename)
+                if language:
+                    language_list.append(language.lower())
+
+            if not language_list:
+                return main_language_str
+
+            # Count languages rather than suffixes so a stray README does not outvote
+            # the code. dict.fromkeys keeps file order, so a tie resolves the same way
+            # every run.
+            languages_in_diff = dict.fromkeys(language_list)
+            most_common_language = max(
+                languages_in_diff, key=lambda language: language_list.count(language)
+            )
+
+            # Keep the provider's spelling when it agrees with what the diff contains,
+            # and otherwise trust the diff.
+            if most_common_language == top_language:
                 main_language_str = top_language
             else:
-                for language, extensions in language_extension_map.items():
-                    if most_common_extension in extensions:
-                        main_language_str = language
-                        break
+                main_language_str = most_common_language
         except Exception as e:
             get_logger().exception(f"Failed to get main language: {e}")
 

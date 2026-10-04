@@ -407,9 +407,9 @@ __old hunk__
                     patch_with_lines_str += f'\n{prev_header_line}\n'
                 is_plus_lines = is_minus_lines = False
                 if new_content_lines:
-                    is_plus_lines = any([line.startswith('+') for line in new_content_lines])
+                    is_plus_lines = any(line.startswith('+') for line in new_content_lines)
                 if old_content_lines:
-                    is_minus_lines = any([line.startswith('-') for line in old_content_lines])
+                    is_minus_lines = any(line.startswith('-') for line in old_content_lines)
                 # Always present the new hunk for the section, otherwise the LLM gets confused
                 if is_plus_lines or is_minus_lines:
                     patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__new hunk__\n'
@@ -452,9 +452,9 @@ __old hunk__
         patch_with_lines_str += f'\n{header_line}\n'
         is_plus_lines = is_minus_lines = False
         if new_content_lines:
-            is_plus_lines = any([line.startswith('+') for line in new_content_lines])
+            is_plus_lines = any(line.startswith('+') for line in new_content_lines)
         if old_content_lines:
-            is_minus_lines = any([line.startswith('-') for line in old_content_lines])
+            is_minus_lines = any(line.startswith('-') for line in old_content_lines)
         # Always present the new hunk for the section, otherwise the LLM gets confused
         if is_plus_lines or is_minus_lines:
             patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__new hunk__\n'

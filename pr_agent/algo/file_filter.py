@@ -68,7 +68,10 @@ def filter_ignored(files, platform = 'github'):
                             files_o.append(f)
                     files = files_o
                 elif platform == 'azure':
-                    files = [f for f in files if not r.match(f)]
+                    # Azure DevOps returns item paths with a leading slash ("/src/app.cs").
+                    # The patterns are anchored, so strip it before matching; otherwise no
+                    # pattern ever matches and [ignore] is inert on Azure.
+                    files = [f for f in files if not r.match(f.lstrip('/'))]
                 elif platform == 'gitea':
                     files = [f for f in files if not r.match(f.get("filename", ""))]
                 elif platform == "gerrit":
@@ -78,10 +81,18 @@ def filter_ignored(files, platform = 'github'):
                         if path and not r.match(path):
                             files_o.append(f)
                     files = files_o
+                else:
+                    get_logger().warning(
+                        f'No ignore filtering is implemented for platform {platform!r}, so all '
+                        f'{len(files)} changed file(s) are being sent to the model.',
+                        artifact={'platform': platform, 'file_count': len(files)})
+                    break
 
 
     except Exception as e:
-        get_logger().error(f"Could not filter file list: {e}")
+        get_logger().error(
+            f'Could not filter file list; filtering did not complete, so the returned list may still '
+            f'contain files that the [ignore] rules should have excluded. {e}')
 
     return files
 

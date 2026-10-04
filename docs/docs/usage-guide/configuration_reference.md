@@ -54,8 +54,10 @@ to-do list.
 | `extra_config_url` | "" | optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url. |
 | `disable_auto_feedback` | false |  |
 | `enable_auto_approval` | false | when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out |
+| `max_webhook_request_body_bytes` | 5242880 | maximum accepted request body for webhook servers in bytes; must be positive. Configure reverse proxies with an equal or larger limit. |
 | `ai_timeout` | 120 | 2 minutes |
 | `retry_same_model_on_timeout` | true | when false, a timed-out call is not retried on the same model and moves on to fallback_models |
+| `retry_same_model_on_length` | false | when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models |
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
 | `response_language` | "en-US" | Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...) |
@@ -71,7 +73,7 @@ to-do list.
 | `max_description_tokens` | 500 |  |
 | `max_commits_tokens` | 500 |  |
 | `max_model_tokens` | 32000 | Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities. |
-| `custom_model_max_tokens` | -1 | for models not in the default list |
+| `custom_model_max_tokens` | -1 | Override unknown models or Sol/Luna on non-native custom providers. |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
 | `image_input_token_allowance` | 4096 | reserve tokens per image when provider counting omits or underestimates image cost |
@@ -119,8 +121,8 @@ to-do list.
 | `enable_ai_metadata` | false | will enable adding ai metadata |
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
-| `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here only when litellm does not know the model (custom OpenAI-compatible endpoints). Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
-| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Model IDs match exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, the suffix-free base ID also matches (for example, `future-model` matches `openrouter/vendor/future-model:nitro`), while other model variants keep their full ID. The defaults below preserve the former static registry entries that litellm's metadata still marks temperature-capable; the probe diff for this change is posted on the issue. |
+| `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here when litellm does not know the model (custom OpenAI-compatible endpoints), or when another provider hosts GPT-6 Sol/Luna under the same ID. Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
+| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, also match the suffix-free base ID (for example, match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm's metadata still marks them temperature-capable; see the issue for the probe diff. |
 **extended thinking for Claude reasoning models**
 
 | Key | Default | Description |
@@ -162,6 +164,7 @@ to-do list.
 | `persistent_comment` | true |  |
 | `review_heading` | "PR Reviewer Guide" | Visible base heading for full and incremental review comments. Identity is tracked separately. |
 | `persistent_finding_state` | true | Persist review finding state across complete review runs. |
+| `max_previous_findings_chars` | 8000 | Character budget for the findings stored by earlier reviews, given to /review as context so it keeps their wording instead of re-raising them reworded (needs persistent_finding_state); 0 disables it. |
 | `inline_key_issues` | false | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab). |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
@@ -242,7 +245,7 @@ to-do list.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `commitable_code_suggestions` | false |  |
+| `committable_code_suggestions` | false | Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions |
 | `dual_publishing_score_threshold` | -1 | -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
 | `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
@@ -258,6 +261,7 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `suggestions_score_threshold` | 0 | [0-10]\| recommend not to set this value above 8, since above it may clip highly relevant suggestions |
+| `score_on_reflection_failure` | 7 | [0-10]\| score assigned when self-reflection fails or its feedback cannot be parsed; set below suggestions_score_threshold to drop unvetted suggestions |
 | `new_score_mechanism` | true |  |
 | `new_score_mechanism_th_high` | 9 |  |
 | `new_score_mechanism_th_medium` | 7 |  |
@@ -277,8 +281,8 @@ to-do list.
 | --- | --- | --- |
 | `demand_code_suggestions_self_review` | false | add a checkbox for the author to self-review the code suggestions |
 | `code_suggestions_self_review_text` | "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones." |  |
-| `approve_pr_on_self_review` | false | if true, the PR will be auto-approved after the author clicks on the self-review checkbox |
-| `fold_suggestions_on_self_review` | true | if true, the code suggestions will be folded after the author clicks on the self-review checkbox |
+| `approve_pr_on_self_review` | false | no effect: the self-review checkbox is a visual marker only, and PR-Agent does not approve PRs (see the improve docs and the FAQ) |
+| `fold_suggestions_on_self_review` | true | no effect: the self-review checkbox is a visual marker only, and suggestions are not folded when it is ticked |
 
 
 ## `[pr_add_docs]` — /add_docs {#pr_add_docs-add_docs}
@@ -366,9 +370,9 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `expand_submodule_diffs` | false |  |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
-| `reply_to_trigger_comment` | false | On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available. |
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
-| `publish_code_suggestions_as_review` | false | When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
+| `reply_to_trigger_comment` | false | On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available. |
+| `publish_code_suggestions_as_review` | false | When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of posting each as its own live discussion - and its own notification - as soon as it's created. |
 | `resolve_outdated_inline_threads` | false | Resolve the bot's own inline threads that a later push left on an outdated diff version. |
 | `auto_resolve_fixed_inline_threads` | false | Resolve the bot's own inline threads whose flagged line was modified after the comment was posted - i.e. the diff between the comment's head sha and the current head sha removes/replaces that line. Unlike resolve_outdated_inline_threads this is content-based: threads on lines nobody touched (or merely shifted by unrelated insertions) stay open. |
 | `handle_push_trigger` | false |  |
@@ -384,6 +388,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `url` | "https://gitea.com" |  |
 | `handle_push_trigger` | false |  |
 | `push_commands` | ["/describe", "/review"] |  |
+
+
+## `[bitbucket]` {#bitbucket}
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `identity_request_timeout` | 30 | positive seconds for authenticated-account verification requests |
 
 
 ## `[bitbucket_app]` {#bitbucket_app}
@@ -434,7 +445,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
 | `force_streaming_api_base_substrings` | [] |  |
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
-| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (`litellm.enable_anthropic_prompt_caching`, env `LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING`, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
+| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
 
 
 ## `[openrouter]` {#openrouter}
@@ -445,7 +456,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `provider_order` | [] | preferred provider order; ignored when provider_only is set; empty = unset |
 | `allow_fallbacks` | true | when provider_order is set, allow routing beyond the listed providers |
 | `reasoning_effort` | "" | Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for reasoning-capable models (probed against litellm's bundled reasoning metadata or the Grok registry, or listed in additional_reasoning_effort_models). Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max". OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility. Model-specific support varies; mandatory reasoning models reject "none". |
-| `reasoning_max_tokens` | 0 | A positive value overrides global effort and non-none OpenRouter-specific efforts. Explicit openrouter.reasoning_effort = "none" keeps reasoning disabled, except on Grok 4.5/4.6: there "none" is clamped to the lowest supported effort first, so a positive budget wins over it. Some providers require max_tokens to be greater than the reasoning budget. |
+| `reasoning_max_tokens` | 0 | Use a positive value to override global effort and non-none OpenRouter-specific efforts. Keep reasoning disabled for explicit openrouter.reasoning_effort = "none", except on Grok 4.5/4.6 and Gemini 3.7/3.8 Flash. Clamp "none" to the lowest supported effort there before applying the budget, so a positive budget wins. Keep max_tokens greater than the reasoning budget where the provider requires it. |
 | `max_tokens` | 0 | hard cap on completion tokens for the request; 0 = unset |
 
 

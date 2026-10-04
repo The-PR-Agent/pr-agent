@@ -324,14 +324,14 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
         "pr_code_suggestions.decouple_hunks",
         "pr_code_suggestions.parallel_calls",
         "pr_code_suggestions.max_suggestions_per_file",
-        "pr_code_suggestions.commitable_code_suggestions",
+        "pr_code_suggestions.committable_code_suggestions",
         "config.publish_output",
     ))
     settings = get_settings()
     settings.pr_code_suggestions.decouple_hunks = True
     settings.pr_code_suggestions.parallel_calls = False
     settings.set("pr_code_suggestions.max_suggestions_per_file", 1)
-    settings.set("pr_code_suggestions.commitable_code_suggestions", committable)
+    settings.set("pr_code_suggestions.committable_code_suggestions", committable)
     settings.set("config.publish_output", publish_output)
     tool = _make_tool()
     tool.token_handler = MagicMock()
@@ -788,6 +788,64 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         call.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
         for call in get_pr_multi_diffs.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_suggestions_append_filtered_names_after_hunk_conversion():
+    settings = get_settings()
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    settings.pr_code_suggestions.decouple_hunks = False
+    tool = _make_tool()
+    tool.git_provider.get_filtered_diff_file_names.return_value = ["pnpm-lock.yaml"]
+    tool.convert_to_decoupled_with_line_numbers = AsyncMock(return_value=["numbered source hunk"])
+    received = []
+
+    async def predict(model, numbered, unnumbered):
+        received.append((numbered, unnumbered))
+        return {"code_suggestions": []}
+
+    tool._get_prediction = predict
+    try:
+        with patch.object(
+            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["raw source hunk"], []),
+        ) as get_pr_multi_diffs:
+            await tool.prepare_prediction_main("model")
+    finally:
+        restore_settings(snapshot)
+
+    assert get_pr_multi_diffs.call_args.kwargs["include_filtered_file_names"] is False
+    assert tool.convert_to_decoupled_with_line_numbers.call_args.args[0] == ["raw source hunk"]
+    assert len(received) == 1
+    assert all("pnpm-lock.yaml" in prompt for prompt in received[0])
+    assert received[0][0].startswith("numbered source hunk\n\nFiles changed")
+
+
+@pytest.mark.asyncio
+async def test_suggestions_preserve_digit_prefixed_filtered_names_in_unnumbered_hunks():
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    get_settings().pr_code_suggestions.decouple_hunks = True
+    tool = _make_tool()
+    tool.git_provider.get_filtered_diff_file_names.return_value = ["3rdparty/lib.min.js"]
+    received = []
+
+    async def predict(model, numbered, unnumbered):
+        received.append((numbered, unnumbered))
+        return {"code_suggestions": []}
+
+    tool._get_prediction = predict
+    try:
+        with patch.object(
+            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["1 +source change"], []),
+        ) as get_pr_multi_diffs:
+            await tool.prepare_prediction_main("model")
+    finally:
+        restore_settings(snapshot)
+
+    assert get_pr_multi_diffs.call_args.kwargs["include_filtered_file_names"] is False
+    assert len(received) == 1
+    assert received[0][0].startswith("1 +source change")
+    assert received[0][1].startswith("+source change")
+    assert all("3rdparty/lib.min.js" in prompt for prompt in received[0])
 
 
 def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():

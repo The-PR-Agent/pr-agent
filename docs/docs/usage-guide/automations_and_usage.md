@@ -383,7 +383,7 @@ Specifically, set the following values:
 [bitbucket_app]
 pr_commands = [
     "/review",
-    "/improve --pr_code_suggestions.commitable_code_suggestions=true --pr_code_suggestions.suggestions_score_threshold=7",
+    "/improve --pr_code_suggestions.committable_code_suggestions=true --pr_code_suggestions.suggestions_score_threshold=7",
 ]
 ```
 

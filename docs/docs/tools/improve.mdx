@@ -47,10 +47,16 @@ To edit [configurations](#configuration-options) related to the `improve` tool, 
 For example, you can present suggestions with verified replacement ranges as committable code comments by running:
 
 ```toml
-/improve --pr_code_suggestions.commitable_code_suggestions=true
+/improve --pr_code_suggestions.committable_code_suggestions=true
 ```
 
 Suggestions whose replacement ranges cannot be verified remain regular comments without an apply action.
+
+:::note
+The key was spelled `commitable_code_suggestions` until the pre-1.0 typo fix. That spelling keeps
+working but is deprecated: it logs a warning and will be removed in 1.0. Rename it to
+`committable_code_suggestions`.
+:::
 
 If batch publication fails, `/improve` retries each suggestion individually. If every retry fails,
 it reports a failure instead of silently removing the progress comment. With
@@ -239,7 +245,7 @@ In such cases, we recommend prioritizing the suggestion's detailed description, 
 
 ### Dual publishing mode
 
-Our recommended approach for presenting code suggestions is through a [table](./improve.mdx#overview) (`--pr_code_suggestions.commitable_code_suggestions=false`).
+Our recommended approach for presenting code suggestions is through a [table](./improve.mdx#overview) (`--pr_code_suggestions.committable_code_suggestions=false`).
 This method significantly reduces the PR footprint and allows for quick and easy digestion of multiple suggestions.
 
 We also offer a complementary **dual publishing mode**. When enabled, suggestions exceeding a certain score threshold are not only displayed in the table, but also presented as committable PR comments.
@@ -267,9 +273,13 @@ Azure DevOps fingerprints include the complete line range and normalized finding
 location remains eligible. Active suggestion threads are marked as fixed when their proposed code exactly matches the
 current file. Existing terminal statuses are preserved.
 
-Azure DevOps also includes earlier suggestion threads and their replies as context on the next suggestions pass. A
-regular `/improve` reviews the full current pull request while avoiding issues that were already raised, addressed,
-rejected, or deferred. Use `/improve -i` to review only changes since the previous suggestions pass.
+GitLab and Azure DevOps also include earlier suggestion threads and their replies as context on the next suggestions
+pass. A regular `/improve` reviews the full current pull request while avoiding issues that were already raised,
+addressed, rejected, or deferred. Use `/improve -i` to review only changes since the previous suggestions pass.
+On GitLab each thread carries a status: `open`, `auto_resolved` (closed by the authenticated PR-Agent user, for
+example through `resolve_outdated_inline_threads` or `auto_resolve_fixed_inline_threads`, so the finding may still
+apply), `resolved` (closed by anyone else, or when the PR-Agent user could not be verified) or `applied` (the
+suggestion was applied through the GitLab UI).
 
 Duplicate suppression and applied-suggestion reconciliation require `persistent_inline_comments`. Discussion context
 and threaded questions remain available without it.
@@ -285,7 +295,7 @@ persistent_inline_comments = true
 
 `Platforms supported: GitLab`
 
-By default, when `commitable_code_suggestions` is enabled, GitLab posts each suggestion as its own live discussion as soon as it's created - which means a separate notification (and email, if configured) per suggestion. To instead queue all suggestions and publish them together in a single batch, similar to using "start a review" in the GitLab UI, enable:
+By default, when `committable_code_suggestions` is enabled, GitLab posts each suggestion as its own live discussion as soon as it's created - which means a separate notification (and email, if configured) per suggestion. To instead queue all suggestions and publish them together in a single batch, similar to using "start a review" in the GitLab UI, enable:
 
 ```toml
 [gitlab]
@@ -345,6 +355,15 @@ This approach has two main benefits:
 
 Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 lines of code), PR-Agent will be able to process the entire code in a single call.
 
+While the chunks run, the animated `Work in progress ...` comment is edited in place with the
+number of chunks already analyzed, for example `analyzed 2 of 3 chunks`, plus `... 1 chunk
+failed` when a chunk gives up. The updates require `config.publish_output_progress` and a
+provider that supports both editing and removing a comment, so single-chunk runs, plain-diff
+providers, and automatic commands keep the frozen placeholder. A fallback model restores the
+placeholder before it starts, and every retry round is added to the total, so the visible count
+neither moves backward nor stops early. The comment is then edited into the final suggestions as
+usual.
+
 ## Configuration options
 
 The descriptions below explain each option's behavior. See the relevant sections in
@@ -371,8 +390,10 @@ for the authoritative default values.
     </td>
   </tr>
   <tr>
-    <td><b>commitable_code_suggestions</b></td>
-    <td>If set to true, the tool will display the suggestions as committable code comments.</td>
+    <td><b>committable_code_suggestions</b></td>
+    <td>If set to true, the tool will display the suggestions as committable code comments. The
+    deprecated spelling <code>commitable_code_suggestions</code> is still accepted and logs a
+    warning; it will be removed in 1.0, so rename it.</td>
   </tr>
   <tr>
     <td><b>dual_publishing_score_threshold</b></td>

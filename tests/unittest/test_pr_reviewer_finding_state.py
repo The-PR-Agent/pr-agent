@@ -1,8 +1,11 @@
 import inspect
+import json
+from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from jinja2 import Environment
 
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
@@ -16,8 +19,10 @@ from pr_agent.algo.review_finding_state import (
     normalize_finding,
     parse_review_state,
     reconcile_review_findings,
+    render_previous_findings,
     serialize_review_state,
 )
+from pr_agent.algo.token_budget import FallbackEligibleError
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
@@ -1552,3 +1557,110 @@ async def test_persistent_publish_exception_is_visible_for_auto_review(monkeypat
     assert [body for body, temporary, _ in provider.published if not temporary] == [
         "Failed to review PR",
     ]
+
+
+def test_previous_findings_context_gives_the_model_its_earlier_wording(monkeypatch):
+    settings = _settings(monkeypatch)
+    issue = {"relevant_file": "app.py", "issue_header": "Possible Bug",
+             "issue_content": "The lock is never released.", "start_line": 2, "end_line": 3}
+    fixed = {"relevant_file": "db.py", "issue_header": "Performance",
+             "issue_content": "The query runs once per row.", "start_line": 7, "end_line": 7}
+    first = reconcile_review_findings(
+        None,
+        [PRReviewer._review_finding_from_issue(issue), PRReviewer._review_finding_from_issue(fixed)],
+        allow_resolution=False,
+        head_sha="head-1",
+    ).state
+    state = reconcile_review_findings(
+        first, [PRReviewer._review_finding_from_issue(issue)], allow_resolution=True, head_sha="head-2",
+    ).state
+    body = f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n{serialize_review_state(state)}"
+    provider = MagicMock()
+    provider.get_issue_comments.return_value = [SimpleNamespace(body=body)]
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    reviewer = _reviewer(provider)
+
+    context = json.loads(reviewer._load_previous_findings_context())
+
+    assert context == [
+        {"state": "active", "relevant_file": "app.py", "start_line": 2, "end_line": 3,
+         "issue_header": "Possible Issue", "issue_content": "The lock is never released."},
+        {"state": "resolved", "relevant_file": "db.py", "start_line": 7, "end_line": 7,
+         "issue_header": "Performance", "issue_content": "The query runs once per row."},
+    ]
+    repeated = dict(issue, issue_header=context[0]["issue_header"], start_line=20, end_line=21)
+    assert (normalize_finding(PRReviewer._review_finding_from_issue(repeated))["finding_id"]
+            == normalize_finding(PRReviewer._review_finding_from_issue(issue))["finding_id"])
+
+    monkeypatch.setattr(settings.pr_reviewer, "max_previous_findings_chars", 0, raising=False)
+    assert reviewer._load_previous_findings_context() == ""
+
+
+def test_render_previous_findings_skips_an_entry_larger_than_the_budget():
+    state = {"findings": [
+        {"state": "ACTIVE", "path": "big.py", "body": "x" * 500},
+        {"state": "ACTIVE", "path": "small.py", "body": "**Possible Issue**\n\nThe lock is never released."},
+    ]}
+
+    context = json.loads(render_previous_findings(state, 300))
+
+    assert [entry["relevant_file"] for entry in context] == ["small.py"]
+
+
+@pytest.mark.asyncio
+async def test_incremental_fallback_to_full_review_loads_previous_findings(monkeypatch):
+    _settings(monkeypatch)
+    provider = MagicMock()
+    reviewer = _reviewer_for_run(provider)
+    reviewer.is_auto = False
+    reviewer.incremental = SimpleNamespace(is_incremental=True, commits_range=None)
+    reviewer._load_previous_findings_context = MagicMock(return_value="[stored findings]")
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    assert reviewer.incremental.is_incremental is False
+    assert reviewer._raw_prompt_vars["previous_findings"] == "[stored findings]"
+
+
+@pytest.mark.asyncio
+async def test_previous_findings_are_dropped_when_they_do_not_fit_the_model(monkeypatch):
+    reviewer = _reviewer_for_run(MagicMock())
+    reviewer._raw_prompt_vars = {"previous_findings": "[stored findings]", "related_tickets": []}
+    fitted_findings = []
+
+    def fit(_pr, raw_vars, _system, _user, _model, **_kwargs):
+        fitted_findings.append(raw_vars["previous_findings"])
+        if raw_vars["previous_findings"]:
+            raise FallbackEligibleError("no room")
+        return raw_vars, MagicMock()
+
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget", fit)
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.get_pr_diff", lambda *_args, **_kwargs: "")
+
+    with pytest.raises(FallbackEligibleError, match="No PR diff"):
+        await PRReviewer._prepare_prediction(reviewer, "small-model")
+
+    assert fitted_findings == ["[stored findings]", ""]
+    assert reviewer.vars["previous_findings"] == ""
+    assert reviewer._raw_prompt_vars["previous_findings"] == "[stored findings]"
+
+
+def test_render_previous_findings_keeps_the_most_recent_active_finding_within_the_budget():
+    state = {"findings": [
+        {"state": "ACTIVE", "path": "old.py", "body": "Stale finding.", "last_seen": "2026-01-01T00:00:00Z"},
+        {"state": "ACTIVE", "path": "new.py", "body": "Fresh finding.", "last_seen": "2026-02-01T00:00:00Z"},
+    ]}
+    one_entry = len(render_previous_findings({"findings": state["findings"][1:]}, 10_000))
+
+    context = json.loads(render_previous_findings(state, one_entry))
+
+    assert [entry["relevant_file"] for entry in context] == ["new.py"]
+
+
+def test_previous_findings_render_in_the_user_prompt_only():
+    prompts = get_settings().pr_review_prompt
+    variables = defaultdict(str, previous_findings='[{"issue_content": "stored finding"}]', num_max_findings=3)
+
+    assert "stored finding" not in Environment(autoescape=True).from_string(prompts.system).render(variables)
+    assert "stored finding" in Environment(autoescape=True).from_string(prompts.user).render(variables)

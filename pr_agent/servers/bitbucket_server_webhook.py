@@ -5,7 +5,7 @@ import os
 from typing import List
 
 import uvicorn
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import RedirectResponse
 from starlette import status
@@ -20,8 +20,10 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
+    is_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
     verify_signature,
@@ -160,7 +162,16 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             commands_to_run.extend(_get_commands_list_from_settings('BITBUCKET_SERVER.PUSH_COMMANDS'))
             is_push_event = True
     elif data["eventKey"] == "pr:comment:added":
-        commands_to_run.append(data["comment"]["text"])
+        comment_text = data["comment"]["text"]
+        if not is_command_comment(comment_text):
+            # A plain comment whose first word happens to be a command name must not
+            # dispatch a tool: the dispatcher strips an optional leading slash.
+            get_logger().info("Ignoring comment not starting with /")
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=jsonable_encoder({"message": "Comment ignored - not a command"}),
+            )
+        commands_to_run.append(comment_text)
     else:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -234,7 +245,7 @@ async def root():
     return {"status": "ok"}
 
 
-app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+app = create_server_app(middleware=[Middleware(RawContextMiddleware)])
 app.include_router(router)
 
 

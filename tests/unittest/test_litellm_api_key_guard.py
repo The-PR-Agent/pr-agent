@@ -29,6 +29,7 @@ def _make_settings(overrides=None):
             "custom_reasoning_model": False,
             "max_model_tokens": 32000,
             "verbosity_level": 0,
+            "model": overrides.get("config.model"),
             "seed": -1,
             "get": lambda self, key, default=None: default,
         })(),
@@ -8237,6 +8238,7 @@ async def test_native_bedrock_model_region_precedence(monkeypatch, model_source,
         native_params = {"api_key": "owned-bearer"}
     if model_source == "model_id":
         native_params["model_id"] = arn
+        overrides["config.model"] = model
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(overrides))
     seen = []
 

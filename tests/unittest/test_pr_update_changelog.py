@@ -2,9 +2,12 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from github import GithubException
 from requests.exceptions import HTTPError, Timeout
 
+from pr_agent.git_providers.git_provider import ConcurrentFileUpdateError, FileContentSnapshot
 from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.log import get_logger
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
 
 
@@ -55,6 +58,8 @@ class TestPRUpdateChangelog:
             tool = PRUpdateChangelog(
                 "https://gitlab.com/test/repo/-/merge_requests/1", ai_handler=lambda: mock_ai_handler
             )
+            # Supply the snapshot captured by an enabled push for direct write-helper tests.
+            tool.changelog_snapshot = FileContentSnapshot("old", True, "captured-revision")
             return tool
 
     def test_get_changelog_file_with_existing_content(self, changelog_tool, mock_git_provider):
@@ -169,8 +174,9 @@ class TestPRUpdateChangelog:
         return provider
 
     def _make_push_provider(self):
-        provider = self._make_no_push_provider(extra_spec=["create_or_update_pr_file"])
+        provider = self._make_no_push_provider(extra_spec=["create_or_update_pr_file", "get_pr_file_content_snapshot"])
         provider.is_supported.return_value = True
+        provider.get_pr_file_content_snapshot.return_value = FileContentSnapshot("", False, None)
         return provider
 
     @staticmethod
@@ -185,11 +191,71 @@ class TestPRUpdateChangelog:
         settings.get.return_value = {}
 
     @pytest.mark.asyncio
+    async def test_push_uses_the_snapshot_that_supplied_the_generated_body(self, mock_ai_handler):
+        provider = self._make_push_provider()
+        snapshot = FileContentSnapshot("# Existing changelog", True, "captured-revision")
+        provider.get_pr_file_content_snapshot.return_value = snapshot
+        with (
+            patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider),
+            patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"),
+            patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"),
+            patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock),
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
+        ):
+            self._configure_settings(mock_settings)
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+            assert tool.changelog_file_str == snapshot.contents
+            provider.get_pr_file_content_snapshot.return_value = FileContentSnapshot("concurrent edit", True, "newer")
+            tool.prediction = "## New entry"
+            await tool.run()
+        provider.get_pr_file_content_snapshot.assert_called_once_with("CHANGELOG.md", "feature-branch")
+        provider.get_pr_file_content.assert_not_called()
+        provider.create_or_update_pr_file.assert_called_once()
+        written = provider.create_or_update_pr_file.call_args.kwargs
+        assert written["expected_snapshot"] is snapshot
+        assert written["contents"] == "## New entry\n\n# Existing changelog"
+
+    @pytest.mark.asyncio
+    async def test_push_without_snapshot_fails_before_provider_write(self, changelog_tool, mock_git_provider):
+        changelog_tool.changelog_snapshot = None
+        with patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            with pytest.raises(ValueError, match="command-start file snapshot"):
+                await changelog_tool._push_changelog_update("new contents", "generated answer")
+        mock_git_provider.create_or_update_pr_file.assert_not_called()
+        mock_git_provider.pr.create_review.assert_not_called()
+        sleep.assert_not_awaited()
+        assert "generated answer" in mock_git_provider.publish_comment.call_args.args[0]
+
+    @pytest.mark.parametrize("status", [409, 422])
+    @pytest.mark.asyncio
+    async def test_final_create_race_preserves_output_and_cleanup(self, changelog_tool, mock_git_provider, status):
+        error = GithubException(status, {"message": "concurrent creation"}, {})
+        mock_git_provider.create_or_update_pr_file.side_effect = error
+        changelog_tool.commit_changelog = True
+        changelog_tool.prediction = "## Generated entry"
+        with (
+            patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"),
+            patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock) as sleep,
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
+        ):
+            self._configure_settings(mock_settings)
+            with pytest.raises(GithubException) as raised:
+                await changelog_tool.run()
+        assert raised.value is error
+        mock_git_provider.create_or_update_pr_file.assert_called_once()
+        mock_git_provider.pr.create_review.assert_not_called()
+        mock_git_provider.remove_initial_comment.assert_called_once_with()
+        sleep.assert_not_awaited()
+        fallbacks = [c.args[0] for c in mock_git_provider.publish_comment.call_args_list
+                     if "could not be confirmed" in c.args[0]]
+        assert len(fallbacks) == 1 and "Generated entry" in fallbacks[0]
+
+    @pytest.mark.asyncio
     async def test_strict_read_error_generates_one_fallback_never_writes_and_reraises_original(
             self, mock_ai_handler):
         provider = self._make_push_provider()
         read_error = RuntimeError("read unavailable")
-        provider.get_pr_file_content.side_effect = read_error
+        provider.get_pr_file_content_snapshot.side_effect = read_error
 
         with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
@@ -203,8 +269,8 @@ class TestPRUpdateChangelog:
                 await tool.run()
 
         assert exc_info.value is read_error
-        provider.get_pr_file_content.assert_called_once_with(
-            "CHANGELOG.md", "feature-branch", propagate_errors=True
+        provider.get_pr_file_content_snapshot.assert_called_once_with(
+            "CHANGELOG.md", "feature-branch"
         )
         provider.create_or_update_pr_file.assert_not_called()
         assert retry.await_count == 1
@@ -220,7 +286,7 @@ class TestPRUpdateChangelog:
     async def test_strict_read_error_skips_configuration_rendering(self, mock_ai_handler):
         provider = self._make_push_provider()
         read_error = RuntimeError("read unavailable")
-        provider.get_pr_file_content.side_effect = read_error
+        provider.get_pr_file_content_snapshot.side_effect = read_error
 
         with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
@@ -251,7 +317,7 @@ class TestPRUpdateChangelog:
         provider = self._make_push_provider()
         read_error = RuntimeError("read unavailable")
         setup_error = RuntimeError("handler unavailable")
-        provider.get_pr_file_content.side_effect = read_error
+        provider.get_pr_file_content_snapshot.side_effect = read_error
         handler_factory = MagicMock(side_effect=setup_error)
 
         with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
@@ -281,7 +347,7 @@ class TestPRUpdateChangelog:
         provider = self._make_push_provider()
         read_error = RuntimeError("read unavailable")
         fallback_error = RuntimeError("comment unavailable")
-        provider.get_pr_file_content.side_effect = read_error
+        provider.get_pr_file_content_snapshot.side_effect = read_error
 
         def publish_comment(_body, is_temporary=False):
             if not is_temporary:
@@ -313,7 +379,7 @@ class TestPRUpdateChangelog:
         provider = self._make_push_provider()
         read_error = RuntimeError("read unavailable")
         progress_error = RuntimeError("progress unavailable")
-        provider.get_pr_file_content.side_effect = read_error
+        provider.get_pr_file_content_snapshot.side_effect = read_error
 
         def publish_comment(_body, is_temporary=False):
             if is_temporary:
@@ -353,7 +419,7 @@ class TestPRUpdateChangelog:
         provider = self._make_push_provider()
         read_error = RuntimeError("read unavailable")
         generation_error = RuntimeError("generation unavailable")
-        provider.get_pr_file_content.side_effect = read_error
+        provider.get_pr_file_content_snapshot.side_effect = read_error
 
         with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
@@ -381,13 +447,10 @@ class TestPRUpdateChangelog:
             "Failed to generate changelog fallback after a read error: generation unavailable"
         )
 
-    def test_custom_provider_without_strict_keyword_fails_closed_without_retry(self, mock_ai_handler):
-        provider = self._make_push_provider()
-
-        def legacy_getter(_file_path, _branch):
-            return "existing content"
-
-        provider.get_pr_file_content.side_effect = legacy_getter
+    def test_custom_provider_without_snapshot_falls_back_to_comment(self, mock_ai_handler):
+        provider = self._make_no_push_provider(extra_spec=["create_or_update_pr_file"])
+        provider.is_supported.return_value = True
+        provider.get_pr_file_content.return_value = "existing content"
 
         with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
@@ -395,16 +458,17 @@ class TestPRUpdateChangelog:
             self._configure_settings(mock_settings)
             tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
 
-        assert isinstance(tool.changelog_read_error, TypeError)
-        assert provider.get_pr_file_content.call_count == 1
-        provider.get_pr_file_content.assert_called_once_with(
-            "CHANGELOG.md", "feature-branch", propagate_errors=True
-        )
+        assert tool.changelog_read_error is None
+        assert tool.commit_changelog is False
+        assert tool.changelog_snapshot is None
+        assert "guarded file writes" in tool.push_skipped_reason
+        provider.get_pr_file_content.assert_called_once_with("CHANGELOG.md", "feature-branch")
+        provider.create_or_update_pr_file.assert_not_called()
 
     @pytest.mark.parametrize("content", ["", "# Changelog\n\n## v1.0.0\n- Existing entry"])
     def test_strict_read_accepts_successful_empty_and_nonempty_content(self, mock_ai_handler, content):
         provider = self._make_push_provider()
-        provider.get_pr_file_content.return_value = content
+        provider.get_pr_file_content_snapshot.return_value = FileContentSnapshot(content, True, "start")
 
         with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
@@ -414,8 +478,8 @@ class TestPRUpdateChangelog:
 
         assert tool.changelog_read_error is None
         assert tool.changelog_file == content
-        provider.get_pr_file_content.assert_called_once_with(
-            "CHANGELOG.md", "feature-branch", propagate_errors=True
+        provider.get_pr_file_content_snapshot.assert_called_once_with(
+            "CHANGELOG.md", "feature-branch"
         )
 
     @pytest.mark.asyncio
@@ -474,7 +538,7 @@ class TestPRUpdateChangelog:
     async def test_run_restricted_mode_publishes_comment_instead_of_pushing(self, mock_ai_handler):
         """restricted_mode: the provider supports the push API, but is_supported('push_code') is
         False, so the changelog must be published as a comment rather than pushed to the repo."""
-        provider = self._make_no_push_provider(extra_spec=["create_or_update_pr_file"])
+        provider = self._make_no_push_provider(extra_spec=["create_or_update_pr_file", "get_pr_file_content_snapshot"])
         provider.is_supported.return_value = False  # restricted_mode disables push_code
 
         with patch('pr_agent.tools.pr_update_changelog.get_git_provider', return_value=lambda url: provider), \
@@ -552,6 +616,7 @@ class TestPRUpdateChangelog:
                 branch="feature-branch",
                 contents=new_content,
                 message="[skip ci] Update CHANGELOG.md",
+                expected_snapshot=changelog_tool.changelog_snapshot,
             )
             mock_git_provider.pr.create_review.assert_called_once_with(
                 commit="commit-123",
@@ -728,7 +793,7 @@ class TestPRUpdateChangelog:
         )
         mock_git_provider.pr.create_review.assert_not_called()
 
-    @pytest.mark.parametrize("error_type", [HTTPError, Timeout])
+    @pytest.mark.parametrize("error_type", [HTTPError, Timeout, ConcurrentFileUpdateError])
     @pytest.mark.asyncio
     async def test_push_changelog_update_retains_output_and_stops_success_follow_up_after_write_failure(
         self, changelog_tool, mock_git_provider, error_type
@@ -838,6 +903,7 @@ class TestPRUpdateChangelog:
                 branch="feature-branch",
                 contents=new_content,
                 message="[skip ci] Update CHANGELOG.md",
+                expected_snapshot=changelog_tool.changelog_snapshot,
             )
             mock_git_provider.pr.get_commits.assert_not_called()
             mock_git_provider.publish_comment.assert_not_called()
@@ -907,8 +973,121 @@ class TestPRUpdateChangelog:
                 file_path="CHANGELOG.md",
                 branch="feature-branch",
                 contents=new_content,
-                message="[skip ci] Update CHANGELOG.md"
+                message="[skip ci] Update CHANGELOG.md",
+                expected_snapshot=changelog_tool.changelog_snapshot,
             )
+
+    @pytest.mark.parametrize("has_commit", [True, False])
+    @pytest.mark.parametrize("fallback_raises", [True, False])
+    @pytest.mark.asyncio
+    async def test_push_changelog_update_failed_feedback_respects_write_receipt(
+        self, changelog_tool, mock_git_provider, has_commit, fallback_raises
+    ):
+        mock_git_provider.create_or_update_pr_file.return_value = object() if has_commit else None
+        mock_git_provider.supports_changelog_update_review.return_value = True
+        mock_git_provider.supports_comment_publish_confirmation.return_value = True
+        mock_git_provider.pr.create_review.side_effect = RuntimeError("review unavailable")
+        fallback_error = RuntimeError("comment unavailable")
+        if fallback_raises:
+            mock_git_provider.publish_comment.side_effect = fallback_error
+        else:
+            mock_git_provider.publish_comment.return_value = None
+
+        records = []
+        logger = get_logger()
+        sink = logger.add(lambda message: records.append(message.record), level="WARNING")
+        try:
+            with patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock):
+                if has_commit:
+                    await changelog_tool._push_changelog_update("new content", "answer")
+                    assert len(records) == 1
+                    warning = records[0]
+                    assert warning["level"].name == "WARNING"
+                    assert "CHANGELOG.md was updated" in warning["message"]
+                    assert "feedback" in warning["message"]
+                    assert warning["exception"].type is RuntimeError
+                    assert warning["exception"].traceback is not None
+                    if fallback_raises:
+                        assert warning["exception"].value is fallback_error
+                    else:
+                        assert str(warning["exception"].value) == "The changelog fallback comment was not confirmed"
+                else:
+                    with pytest.raises(ValueError, match="did not return a commit") as raised:
+                        await changelog_tool._push_changelog_update("new content", "answer")
+                    if fallback_raises:
+                        assert raised.value.__cause__ is fallback_error
+                    assert records == []
+        finally:
+            logger.remove(sink)
+
+        mock_git_provider.create_or_update_pr_file.assert_called_once()
+        assert mock_git_provider.pr.create_review.call_count == int(has_commit)
+        mock_git_provider.publish_comment.assert_called_once_with("**Changelog updates: 🔄**\n\nanswer")
+        mock_git_provider.pr.get_commits.assert_not_called()
+
+    @pytest.mark.parametrize("fallback_result,confirms", [(None, False), (False, True)])
+    @pytest.mark.asyncio
+    async def test_push_changelog_update_preserves_other_fallback_return_contracts(
+        self, changelog_tool, mock_git_provider, fallback_result, confirms
+    ):
+        mock_git_provider.create_or_update_pr_file.return_value = None
+        mock_git_provider.supports_changelog_update_review.return_value = True
+        mock_git_provider.supports_comment_publish_confirmation.return_value = confirms
+        mock_git_provider.publish_comment.return_value = fallback_result
+
+        with patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock):
+            await changelog_tool._push_changelog_update("new content", "answer")
+
+        mock_git_provider.publish_comment.assert_called_once()
+        mock_git_provider.pr.create_review.assert_not_called()
+
+    @pytest.mark.parametrize("cancel_during", ["review", "fallback"])
+    @pytest.mark.asyncio
+    async def test_push_changelog_update_feedback_cancellation_propagates(
+        self, changelog_tool, mock_git_provider, cancel_during
+    ):
+        cancellation = asyncio.CancelledError()
+        mock_git_provider.create_or_update_pr_file.return_value = object()
+        mock_git_provider.supports_changelog_update_review.return_value = True
+        mock_git_provider.pr.create_review.side_effect = (
+            cancellation if cancel_during == "review" else RuntimeError("review unavailable")
+        )
+        mock_git_provider.publish_comment.side_effect = cancellation
+
+        with (
+            patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock),
+            pytest.raises(asyncio.CancelledError) as raised,
+        ):
+            await changelog_tool._push_changelog_update("new content", "answer")
+
+        assert raised.value is cancellation
+        mock_git_provider.create_or_update_pr_file.assert_called_once()
+        assert mock_git_provider.publish_comment.call_count == int(cancel_during == "fallback")
+
+    @pytest.mark.asyncio
+    async def test_run_confirmed_changelog_write_survives_feedback_failure_and_cleans_up(
+        self, changelog_tool, mock_git_provider
+    ):
+        changelog_tool.commit_changelog = True
+        changelog_tool.prediction = "## v1.1.0\n- New feature"
+        mock_git_provider.create_or_update_pr_file.return_value = object()
+        mock_git_provider.supports_changelog_update_review.return_value = True
+        mock_git_provider.pr.create_review.side_effect = RuntimeError("review unavailable")
+        mock_git_provider.publish_comment.side_effect = [object(), RuntimeError("comment unavailable")]
+
+        with (
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as settings,
+            patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"),
+            patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            settings.return_value.config.publish_output = True
+            settings.return_value.get.return_value = {}
+            await changelog_tool.run()
+
+        mock_git_provider.create_or_update_pr_file.assert_called_once()
+        mock_git_provider.pr.create_review.assert_called_once()
+        assert mock_git_provider.publish_comment.call_count == 2
+        mock_git_provider.remove_initial_comment.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_push_changelog_update_never_calls_create_or_update_pr_file_when_push_code_is_unsupported(

@@ -3,6 +3,7 @@
 # Your repository configuration should only include options you wish to override from the defaults.
 
 [config]
+max_webhook_request_body_bytes = 5242880 # maximum request body accepted by webhook servers (5 MiB)
 # models
 model="gpt-5.6"
 fallback_models=["gpt-5.6-terra"]
@@ -29,6 +30,7 @@ disable_auto_feedback = false
 enable_auto_approval = false # when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out
 ai_timeout=120 # 2 minutes
 retry_same_model_on_timeout = true # when false, a timed-out call is not retried on the same model and moves on to fallback_models
+retry_same_model_on_length = false # when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models
 # num_retries = 0 # per-call retries inside the completion client itself; unset keeps the client's default. These multiply the handler's own retry attempts
 skip_keys = []
 custom_reasoning_model = false # when true, disables system messages and temperature controls for models that don't support chat-style inputs
@@ -45,8 +47,11 @@ repo_context_max_sibling_files = 5 # Maximum number of sibling-repository files 
 max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
-custom_model_max_tokens=-1 # for models not in the default list
-# Sent as max_completion_tokens for GPT-6 Astra, otherwise max_tokens; use a limit supported by the model.
+custom_model_max_tokens=-1 # Override unknown models or Sol/Luna on non-native custom providers.
+# Send max_completion_tokens for recognized Astra IDs, including bare IDs on custom providers,
+# and native OpenAI/Azure Sol/Luna. OpenRouter Astra uses it only without a routing suffix or with :nitro/:floor.
+# Use max_tokens for other routes, including azure_text and text-completion-openai.
+# Choose a limit supported by the selected model.
 max_output_tokens = 0 # 0 = unset (the provider's own default applies)
 model_token_count_estimate_factor=0.3 # factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate.
 image_input_token_allowance=4096 # reserve tokens per image when provider counting omits or underestimates image cost
@@ -100,9 +105,10 @@ add_user_to_requests = false # send the current command and PR URL in the OpenAI
 reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh", "max"
 # Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is
 # otherwise decided by litellm's bundled model metadata (and the maintained Grok registry),
-# so add an ID here only when litellm does not know the model (custom OpenAI-compatible
-# endpoints). Model IDs match exactly or through any provider prefix
-# (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists
+# so add an ID here when litellm does not know the model (custom OpenAI-compatible
+# endpoints), or when another provider hosts GPT-6 Sol/Luna under the same ID.
+# Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731"
+# matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists
 # reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not
 # recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by
 # providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom
@@ -114,9 +120,11 @@ additional_reasoning_effort_models = []
 # here when litellm reports temperature as supported but the provider rejects it, or
 # when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking
 # Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature.
-# Model IDs match exactly or through any provider prefix. The defaults below preserve
-# the former static registry entries that litellm's metadata still marks
-# temperature-capable; the probe diff for this change is posted on the issue.
+# Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro`
+# and `:floor` routing shortcuts, also match the suffix-free base ID (for example,
+# match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model
+# variants at their full ID. Preserve the former static registry entries below when
+# litellm's metadata still marks them temperature-capable; see the issue for the probe diff.
 no_temperature_models = ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"]
 # extended thinking for Claude reasoning models
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature
@@ -172,6 +180,9 @@ persistent_comment=true
 # Visible base heading for full and incremental review comments. Identity is tracked separately.
 review_heading = "PR Reviewer Guide"
 persistent_finding_state=true # Persist review finding state across complete review runs.
+# Character budget for the findings stored by earlier reviews, given to /review as context so it keeps their wording
+# instead of re-raising them reworded (needs persistent_finding_state); 0 disables it.
+max_previous_findings_chars = 8000
 
 inline_key_issues=false # Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab).
 extra_instructions = ""
@@ -232,7 +243,8 @@ extra_instructions = ""
 
 
 [pr_code_suggestions] # /improve #
-commitable_code_suggestions = false
+# Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions
+committable_code_suggestions = false
 dual_publishing_score_threshold=-1 # -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable
 focus_only_on_problems=true
 #
@@ -247,6 +259,7 @@ publish_output_no_suggestions=true
 enable_suggestions_coverage_footer=true # show failed chunks and files omitted by the token or AI-call budget
 # suggestions scoring
 suggestions_score_threshold=0 # [0-10]| recommend not to set this value above 8, since above it may clip highly relevant suggestions
+score_on_reflection_failure=7 # [0-10]| score assigned when self-reflection fails or its feedback cannot be parsed; set below suggestions_score_threshold to drop unvetted suggestions
 new_score_mechanism=true
 new_score_mechanism_th_high=9
 new_score_mechanism_th_medium=7
@@ -264,8 +277,8 @@ decouple_hunks = false
 # self-review checkbox
 demand_code_suggestions_self_review=false # add a checkbox for the author to self-review the code suggestions
 code_suggestions_self_review_text= "**Author self-review**: I have reviewed the PR code suggestions, and addressed the relevant ones."
-approve_pr_on_self_review=false # if true, the PR will be auto-approved after the author clicks on the self-review checkbox
-fold_suggestions_on_self_review=true # if true, the code suggestions will be folded after the author clicks on the self-review checkbox
+approve_pr_on_self_review=false # no effect: the self-review checkbox is a visual marker only, and PR-Agent does not approve PRs (see the improve docs and the FAQ)
+fold_suggestions_on_self_review=true # no effect: the self-review checkbox is a visual marker only, and suggestions are not folded when it is ticked
 
 [pr_add_docs] # /add_docs #
 extra_instructions = ""
@@ -353,9 +366,9 @@ feedback_on_draft_pr = false
 publish_review_as_thread = false
 # Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note.
 publish_improve_as_thread = false
-# Reply to the triggering GitLab note's discussion for /review and /improve output.
+# On GitLab, reply to the triggering note's discussion for `/review` and `/improve` output when a discussion ID is available.
 reply_to_trigger_comment = false
-# When pr_code_suggestions.commitable_code_suggestions is true, queue each suggestion as a GitLab draft
+# When pr_code_suggestions.committable_code_suggestions is true, queue each suggestion as a GitLab draft
 # note and publish them all together in one batch (like GitLab's own "start a review" flow) instead of
 # posting each as its own live discussion - and its own notification - as soon as it's created.
 publish_code_suggestions_as_review = false
@@ -393,6 +406,9 @@ push_commands = [
     "/describe",
     "/review",
 ]
+
+[bitbucket]
+identity_request_timeout = 30 # positive seconds for authenticated-account verification requests
 
 [bitbucket_app]
 avoid_full_files = false
@@ -461,6 +477,9 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 # Application inference profile ARN for classic `bedrock/` calls through the `bedrock-runtime` APIs.
 # Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
 # model_id = ""
+# Optional: set a profile per model (fallbacks included), keyed by the exact model name.
+# An entry here takes priority over model_id for that model.
+# model_ids = {"bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0" = "arn:aws:bedrock:...", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "arn:aws:bedrock:..."}
 # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}]
 # (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models
 # whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection
@@ -487,11 +506,11 @@ allow_fallbacks = true # when provider_order is set, allow routing beyond the li
 # OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility.
 # Model-specific support varies; mandatory reasoning models reject "none".
 reasoning_effort = ""
-# A positive value overrides global effort and non-none OpenRouter-specific efforts.
-# Explicit openrouter.reasoning_effort = "none" keeps reasoning disabled, except on
-# Grok 4.5/4.6: there "none" is clamped to the lowest supported
-# effort first, so a positive budget wins over it.
-# Some providers require max_tokens to be greater than the reasoning budget.
+# Use a positive value to override global effort and non-none OpenRouter-specific efforts.
+# Keep reasoning disabled for explicit openrouter.reasoning_effort = "none", except on
+# Grok 4.5/4.6 and Gemini 3.7/3.8 Flash. Clamp "none" to the lowest supported effort
+# there before applying the budget, so a positive budget wins.
+# Keep max_tokens greater than the reasoning budget where the provider requires it.
 reasoning_max_tokens = 0
 max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 

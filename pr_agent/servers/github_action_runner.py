@@ -7,7 +7,7 @@ from typing import Optional, Union
 
 import dynaconf
 
-from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_github_files_comment
+from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -19,8 +19,13 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
-from pr_agent.log import get_logger
-from pr_agent.servers.github_app import handle_line_comments, matches_review_state
+from pr_agent.log import get_logger, setup_logger
+from pr_agent.servers.github_common import (
+    _reformat_quote_ask_command,
+    handle_line_comments,
+    matches_review_state,
+)
+from pr_agent.servers.utils import is_ask_command_comment
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -115,8 +120,8 @@ async def _run_auto_tool(tool_class, pr_url):
     init_run_details()
     try:
         result = await tool_class(pr_url).run()
-    except IncompletePullRequestFilesError:
-        publish_incomplete_github_files_comment(pr_url)
+    except IncompletePullRequestFilesError as error:
+        await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
         raise
     if result is False:
         _mark_action_failed()
@@ -384,16 +389,16 @@ async def run_action():
             # in github_app.py. Otherwise a plain comment is lexed as an unknown
             # command, PRAgent.handle_request returns False and the action exits 1.
             if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
-                if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
-                    comment_body_split = comment_body.split('/ask')
-                    comment_body = '/ask' + comment_body_split[1] + ' \n' + comment_body_split[0].strip().lstrip('>')
+                reformatted = _reformat_quote_ask_command(comment_body) if '/ask' in comment_body else None
+                if reformatted is not None:
+                    comment_body = reformatted
                     get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
                 else:
                     get_logger().info("Ignoring comment not starting with /")
                     return
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
-                    if '/ask' in comment_body:
+                    if is_ask_command_comment(comment_body):
                         comment_body = handle_line_comments(event_payload, comment_body)
             except Exception as e:
                 get_logger().error(f"Failed to handle line comments: {e}")
@@ -558,6 +563,9 @@ async def _run_action_and_drain():
 
 
 def main():
+    # github_app is no longer imported here, so its JSON logging setup does not
+    # run; configure logging explicitly so the level and analytics filter work.
+    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
     asyncio.run(_run_action_and_drain())
 
 

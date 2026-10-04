@@ -70,7 +70,9 @@ _MODEL_WITHOUT_STOP = "perplexity/sonar"
 def restore_config_model():
     """Restore LLM settings exactly, including originally-absent state."""
     snapshot = snapshot_settings(
-        ["CONFIG.MODEL", "LITELLM.CUSTOM_LLM_PROVIDER", "OPENAI.KEY", "GROQ.KEY", "MOSAICO.HEALTH_TIMEOUT_SECONDS"]
+        ["CONFIG.MODEL", "LITELLM.CUSTOM_LLM_PROVIDER", "OPENAI.KEY", "GROQ.KEY", "MOSAICO.HEALTH_TIMEOUT_SECONDS",
+         "OPENAI.API_BASE", "LITELLM.FORCE_STREAMING_CUSTOM_LLM_PROVIDER",
+         "LITELLM.FORCE_STREAMING_API_BASE_SUBSTRINGS"]
     )
     yield get_settings()
     restore_settings(snapshot)
@@ -312,3 +314,52 @@ class TestHealthCheckGate:
 
         result = await health_check()
         assert result == "Unhealthy: no model configured"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "provider", "base", "streaming", "outcome"),
+    [
+        ("openai/qwq-plus", "", "", True, "empty"),
+        ("openai/qwq-plus", "", "", True, "failure"),
+        ("openai/qwq-plus", "", "", True, "timeout"),
+        ("hosted-model", "openai", "https://gateway.example/v1", True, "empty"),
+        ("hosted-model", "openai", "https://other.example/v1", False, "nonstream"),
+        ("openai/gpt-4o", "", "", False, "nonstream"),
+        ("openai/gpt-4o", "", "", False, "empty"),
+    ],
+)
+async def test_health_probe_streaming(monkeypatch, restore_config_model, model, provider, base, streaming, outcome):
+    restore_config_model.set("CONFIG.MODEL", model)
+    restore_config_model.set("OPENAI.KEY", "test-key")
+    restore_config_model.set("OPENAI.API_BASE", base)
+    restore_config_model.set("LITELLM.CUSTOM_LLM_PROVIDER", provider)
+    restore_config_model.set("LITELLM.FORCE_STREAMING_CUSTOM_LLM_PROVIDER", "openai")
+    restore_config_model.set("LITELLM.FORCE_STREAMING_API_BASE_SUBSTRINGS", ["gateway.example"])
+    if outcome == "timeout":
+        restore_config_model.set("MOSAICO.HEALTH_TIMEOUT_SECONDS", 0.05)
+    consumed = []
+
+    async def chunks():
+        for index in range(2):
+            consumed.append(index)
+            yield {"choices": []}
+        if outcome == "failure":
+            raise RuntimeError("stream iteration failed")
+        if outcome == "timeout":
+            await asyncio.Event().wait()
+
+    async def dispatch(**kwargs):
+        return {"choices": []} if outcome == "nonstream" else chunks()
+
+    completion = AsyncMock(side_effect=dispatch)
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    response = await _get_health(build_app())
+
+    failed = outcome in {"failure", "timeout"}
+    assert response.status_code == (503 if failed else 200)
+    assert response.json()["status"] == ("Unhealthy: LLM probe failed" if failed else "OK")
+    completion.assert_awaited_once()
+    assert completion.call_args.kwargs.get("stream", False) is streaming
+    assert completion.call_args.kwargs.get("stream_options") == ({"include_usage": True} if streaming else None)
+    assert consumed == ([] if outcome == "nonstream" else [0, 1])

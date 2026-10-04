@@ -16,6 +16,7 @@ from pr_agent.algo.output_models import PRDescriptionAssembled
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     FallbackEligibleError,
+    append_filtered_file_names,
     get_pr_diff,
     get_pr_diff_multiple_patchs,
     retry_with_fallback_models,
@@ -34,7 +35,7 @@ from pr_agent.algo.utils import (
 )
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider_with_context
-from pr_agent.git_providers.git_provider import get_main_pr_language
+from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 from pr_agent.tools.ticket_pr_compliance_check import (
@@ -222,15 +223,22 @@ class PRDescription:
                     and self.git_provider.is_supported("get_labels")
                 ):
                     original_labels = self.git_provider.get_pr_labels(update=True)
-                    get_logger().debug("original labels", artifact=original_labels)
-                    user_labels = get_user_labels(original_labels)
-                    new_labels = pr_labels + user_labels
-                    get_logger().debug("published labels", artifact=new_labels)
-                    if set(new_labels) != set(original_labels):
-                        get_logger().info(f"Setting describe labels:\n{new_labels}")
-                        self.git_provider.publish_labels(new_labels)
+                    if original_labels is None:
+                        # The read failed with no snapshot to fall back on. publish_labels
+                        # replaces the whole set, so publishing would delete human labels.
+                        get_logger().error(
+                            "Skipping label publish: existing labels could not be read, "
+                            "and publishing would remove them")
                     else:
-                        get_logger().debug("Labels are the same, not updating")
+                        get_logger().debug("original labels", artifact=original_labels)
+                        user_labels = get_user_labels(original_labels)
+                        new_labels = pr_labels + user_labels
+                        get_logger().debug("published labels", artifact=new_labels)
+                        if set(new_labels) != set(original_labels):
+                            get_logger().info(f"Setting describe labels:\n{new_labels}")
+                            self.git_provider.publish_labels(new_labels)
+                        else:
+                            get_logger().debug("Labels are the same, not updating")
 
                 # publish description
                 if get_settings().pr_description.publish_description_as_comment:
@@ -284,7 +292,10 @@ class PRDescription:
                                artifact={"traceback": traceback.format_exc()})
             # The status of the whole run must not read as success just because the error stopped here.
             record_command_failure()
-            if get_settings().config.get("propagate_tool_errors", False):
+            if (
+                isinstance(e, IncompleteProviderPullRequestFilesError)
+                or get_settings().config.get("propagate_tool_errors", False)
+            ):
                 raise
         finally:
             if progress_response is not None:
@@ -512,6 +523,20 @@ class PRDescription:
                 files_walkthrough_prompt += _build_unprocessed_files_block(
                     deleted_files_list, "Additional deleted files:",
                     max_files=MAX_EXTRA_FILES_TO_PROMPT)
+            filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
+            if isinstance(filtered_files, (list, tuple)) and filtered_files:
+                header_budget = AttemptTokenBudget.for_attempt(
+                    model, token_handler_only_description_prompt,
+                    output_token_reserve=output_token_reserve,
+                )
+                files_walkthrough_prompt = append_filtered_file_names(
+                    files_walkthrough_prompt,
+                    self.git_provider,
+                    header_budget.token_handler,
+                    header_budget.token_handler.prompt_tokens + header_budget.available_tokens(
+                        OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
+                    ),
+                )
             # PR header inference
             get_logger().debug("PR diff only description", artifact=files_walkthrough_prompt)
             prediction_headers = await self._get_prediction(model, patches_diff=files_walkthrough_prompt,

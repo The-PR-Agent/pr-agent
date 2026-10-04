@@ -28,8 +28,8 @@ The A2A server exposes three endpoints:
 Images with health-probe hardening return `Unhealthy: LLM probe failed` for provider
 failures; the health check's own warning records only the exception type.
 `mosaico.health_timeout_seconds` sets a finite positive deadline in seconds (default: 10)
-for cooperative asynchronous preparation and dispatch. Synchronous initialization and
-blocking SDK work can exceed this deadline. Older images may predate these protections.
+for cooperative asynchronous preparation, dispatch, and stream consumption. Synchronous
+initialization and blocking SDK work can exceed this deadline. Older images may predate these protections.
 Set `MOSAICO__HEALTH_TIMEOUT_SECONDS` in the server's environment to override the default.
 Invalid values produce the generic unhealthy response (503), rather than using the default.
 When increasing the budget, also allow sufficient time in any external health-check client

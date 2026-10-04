@@ -20,14 +20,15 @@ from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
-from pr_agent.git_providers.git_provider import get_main_pr_language
+from pr_agent.git_providers.git_provider import FileContentSnapshot, get_main_pr_language
 from pr_agent.log import get_logger
 
 CHANGELOG_LINES = 50
 # A whole answer wrapped in one fenced block, e.g. "```markdown\n...\n```". The opening fence
 # is optional: the prompt ends with a dangling open "```markdown", which primes the model to
 # answer with a closing fence and no opening one.
-_WRAPPING_CODE_FENCE_RE = re.compile(r"\A\s*(?:```[^\n]*\n)?(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
+_WRAPPING_CODE_FENCE_RE = re.compile(r"\A(?:\s*(?P<open>```[^\n]*\n))?(?P<body>.*?)\n?```\s*\Z", re.DOTALL)
+_FENCE_LINE_RE = re.compile(r"(?m)^[^\S\n]*```")
 
 
 def strip_wrapping_code_fence(text: str) -> str:
@@ -36,9 +37,17 @@ def strip_wrapping_code_fence(text: str) -> str:
     `str.strip("`")` would remove characters rather than the fence, so an entry ending in an
     inline code span (`` - Handle `None` in `parse()` ``) loses its closing backtick and the
     corrupted line is committed to CHANGELOG.md.
+
+    The function is idempotent, because the answer is stripped once when the model replies and
+    again before the changelog is built. Whether a trailing fence is a wrapper or the closer of a
+    code block the entry ends with comes down to whether the rest of the text is balanced: a
+    leftover fence either unterminates the block, or leaves a wrapper behind that then swallows
+    the rest of CHANGELOG.md when the file is committed.
     """
     match = _WRAPPING_CODE_FENCE_RE.match(text)
-    return match.group("body") if match else text
+    if match and (match.group("open") or len(_FENCE_LINE_RE.findall(match.group("body"))) % 2 == 0):
+        return match.group("body")
+    return text
 
 
 class PRUpdateChangelog:
@@ -56,6 +65,8 @@ class PRUpdateChangelog:
         if self.push_changelog_changes:
             if not hasattr(self.git_provider, "create_or_update_pr_file"):
                 self.push_skipped_reason = "not supported for this git provider"
+            elif not hasattr(self.git_provider, "get_pr_file_content_snapshot"):
+                self.push_skipped_reason = "guarded file writes are not supported for this git provider"
             elif not self.git_provider.is_supported("push_code"):
                 self.push_skipped_reason = "restricted by configuration (restricted_mode)"
         # Push only when it was requested AND is possible; otherwise fall back to a comment.
@@ -285,11 +296,14 @@ class PRUpdateChangelog:
         else:
             commit_message = "Update CHANGELOG.md"
         try:
+            if self.changelog_snapshot is None:
+                raise ValueError("Changelog write requires the command-start file snapshot")
             written_commit = self.git_provider.create_or_update_pr_file(
                 file_path="CHANGELOG.md",
                 branch=self.git_provider.get_pr_branch(),
                 contents=new_file_content,
                 message=commit_message,
+                expected_snapshot=self.changelog_snapshot,
             )
         except Exception:
             self._publish_changelog_write_error_fallback(answer)
@@ -321,7 +335,16 @@ class PRUpdateChangelog:
                 self.git_provider.pr.create_review(commit=written_commit, event="COMMENT", comments=[d])
         except Exception:
             # we can't create a review for some reason, let's just publish a comment
-            self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")
+            try:
+                fallback = self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")
+                if self.git_provider.supports_comment_publish_confirmation() and fallback is None:
+                    raise RuntimeError("The changelog fallback comment was not confirmed")
+            except Exception as feedback_error:
+                if written_commit is None:
+                    raise ValueError("The changelog write did not return a commit for review") from feedback_error
+                get_logger().opt(exception=feedback_error).warning(
+                    f"CHANGELOG.md was updated, but its automatic feedback could not be confirmed: {feedback_error}"
+                )
 
     def _get_default_changelog(self):
         example_changelog = \
@@ -340,17 +363,22 @@ Example:
 
     def _get_changelog_file(self):
         strict_read = self.commit_changelog and get_settings().config.publish_output
+        self.changelog_snapshot = None
         try:
             if strict_read:
-                self.changelog_file = self.git_provider.get_pr_file_content(
-                    "CHANGELOG.md", self.git_provider.get_pr_branch(), propagate_errors=True
+                snapshot = self.git_provider.get_pr_file_content_snapshot(
+                    "CHANGELOG.md", self.git_provider.get_pr_branch()
                 )
+                if not isinstance(snapshot, FileContentSnapshot) or not isinstance(snapshot.contents, str):
+                    raise TypeError("Changelog snapshot must contain text")
+                self.changelog_snapshot = snapshot
+                self.changelog_file = snapshot.contents
             else:
                 self.changelog_file = self.git_provider.get_pr_file_content(
                     "CHANGELOG.md", self.git_provider.get_pr_branch()
                 )
 
-            if isinstance(self.changelog_file, bytes):
+            if not strict_read and isinstance(self.changelog_file, bytes):
                 self.changelog_file = self.changelog_file.decode('utf-8')
 
             changelog_file_lines = self.changelog_file.splitlines()

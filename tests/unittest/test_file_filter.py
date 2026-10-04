@@ -19,6 +19,13 @@ def _capture_errors(call):
     return [line for line in _capture_logs(call).splitlines() if 'Could not filter file list' in line]
 
 
+def _capture_warnings(call):
+    return [
+        line for line in _capture_logs(call).splitlines()
+        if 'No ignore filtering is implemented for platform' in line
+    ]
+
+
 class _BitbucketSide:
     def __init__(self, path):
         self.path = path
@@ -450,3 +457,199 @@ class TestNoPatternsConfigured:
         files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
 
         assert filter_ignored(list(files), platform='gitlab') == [files[1]]
+
+    def test_azure_leading_slash_does_not_defeat_the_ignore_patterns(self, monkeypatch):
+        """Azure DevOps reports "/vendor/lib/x.js"; the anchored pattern must still match."""
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['/vendor/lib/jquery.min.js', '/src/app.cs']
+
+        assert filter_ignored(list(files), platform='azure') == ['/src/app.cs']
+
+    def test_azure_paths_without_a_leading_slash_still_filter(self, monkeypatch):
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['vendor/lib/jquery.min.js', 'src/app.cs']
+
+        assert filter_ignored(list(files), platform='azure') == ['src/app.cs']
+
+    def test_azure_keeps_unmatched_paths(self, monkeypatch):
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['/src/app.cs', '/docs/readme.md']
+
+        assert filter_ignored(list(files), platform='azure') == files
+
+
+# A changed-file entry per platform, built so that each carries the same path twice over.
+_ENTRY_SHAPES = {
+    'github': lambda p: type('', (object,), {'filename': p})(),
+    'codecommit': lambda p: type('', (object,), {'filename': p})(),
+    'bitbucket': lambda p: _BitbucketDiffstat(p, p),
+    'bitbucket_server': lambda p: {'path': {'toString': p}},
+    'gitlab': lambda p: _gitlab_change(p, p),
+    'azure': lambda p: p,
+    'gitea': lambda p: {'filename': p},
+    'gerrit': lambda p: type('', (object,), {'b_path': p, 'a_path': p})(),
+}
+
+
+class TestUnfilteredPlatformIsReported:
+    """A platform the dispatch cannot read passes every file through, so say so.
+
+    The dispatch's `else` breaks out for a platform name it does not recognise, which
+    leaves the list untouched. That is the safe direction to fail -- dropping
+    files the user never asked to exclude would hide real changes -- but it is only safe
+    while it is visible, because an unfiltered list inflates the prompt and pushes the
+    run into the token budget and fallback-model paths.
+    """
+
+    @staticmethod
+    def _ignore(monkeypatch):
+        monkeypatch.setattr(global_settings.ignore, 'regex', [r'^vendor/'])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+    def test_unrecognised_platform_warns_that_nothing_was_filtered(self, monkeypatch):
+        self._ignore(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1, f"Expected one warning, got {warnings}"
+
+    def test_unrecognised_platform_warning_names_the_platform(self, monkeypatch):
+        """The platform string is the only thing that identifies the bad call site.
+
+        It goes in the message rather than the artifact because the message is what a
+        reader scanning the log sees.
+        """
+        self._ignore(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1
+        assert 'giteaaa' in warnings[0]
+
+    def test_unrecognised_platform_warns_once_per_call_not_once_per_pattern(self, monkeypatch):
+        """The `break` after the warning keeps N patterns from producing N warnings."""
+        monkeypatch.setattr(global_settings.ignore, 'regex', [r'^vendor/', r'^secrets/', r'.*\.pem$'])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1, f"Expected one warning, got {warnings}"
+
+    def test_unrecognised_platform_does_not_warn_when_there_is_nothing_to_filter(self, monkeypatch):
+        """No compiled pattern means no filter was skipped, so warning would be noise."""
+        monkeypatch.setattr(global_settings.ignore, 'regex', [])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert warnings == []
+
+    def test_every_supported_platform_actually_drops_a_matching_file(self, monkeypatch):
+        """Each listed platform must reach its branch; an unreachable one is dead config."""
+        self._ignore(monkeypatch)
+
+        for platform, build in _ENTRY_SHAPES.items():
+            matching = build('vendor/lib.py')
+            kept = build('src/app.py')
+
+            assert filter_ignored([matching, kept], platform=platform) == [kept], (
+                f"platform {platform!r} did not apply the ignore pattern"
+            )
+
+    def test_supported_platforms_do_not_warn(self, monkeypatch):
+        self._ignore(monkeypatch)
+
+        for platform, build in _ENTRY_SHAPES.items():
+            files = [build('vendor/lib.py')]
+
+            assert _capture_warnings(lambda p=platform, f=files: filter_ignored(list(f), platform=p)) == [], (
+                f"platform {platform!r} should not warn"
+            )
+
+
+class TestFilterFailureIsReported:
+    """A failure leaves the list in whatever state the last completed pass left it.
+
+    Each pattern pass rebinds `files` only once that pass completes, so an exception
+    on a later pass returns the earlier passes' result; an exception before the first
+    pass returns the caller's list untouched. Both states may hold files the [ignore]
+    rules should have excluded, which is what the report has to say -- and what it
+    must not overstate, since no pass may have run at all.
+    """
+
+    @staticmethod
+    def _exploding_settings(monkeypatch):
+        class _Exploding:
+            @property
+            def ignore(self):
+                raise RuntimeError('settings unavailable')
+
+        monkeypatch.setattr('pr_agent.algo.file_filter.get_settings', lambda: _Exploding())
+
+    def test_failure_states_that_the_list_may_still_contain_ignored_files(self, monkeypatch):
+        """The message has to say what the caller now has, not just what went wrong."""
+        self._exploding_settings(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        errors = _capture_errors(lambda: filter_ignored(list(files), platform='github'))
+
+        assert len(errors) == 1, f"Expected one error, got {errors}"
+        assert 'filtering did not complete' in errors[0]
+        assert 'may still' in errors[0]
+
+    def test_failure_returns_every_file_when_no_pattern_pass_has_run(self, monkeypatch):
+        """A failure before the passes leaves the caller's list untouched."""
+        self._exploding_settings(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        assert filter_ignored(list(files), platform='github') == files
+
+    def test_failure_after_an_earlier_pass_returns_that_pass_s_result(self, monkeypatch):
+        """Pin the partly filtered state the message describes.
+
+        `filename` raises once two passes have read it, so the first pattern drops
+        `vendor/lib.py` and the second fails part-way. The result is the first pass's
+        list: shorter than the input, so "the unfiltered list is being used" would be
+        false, yet `vendor/lib.py` is gone, so it is not a safe list either.
+        """
+        monkeypatch.setattr(global_settings.ignore, 'regex', [r'^vendor/', r'^secrets/'])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        class _FailsOnThirdRead:
+            def __init__(self):
+                self.reads = 0
+
+            @property
+            def filename(self):
+                self.reads += 1
+                if self.reads > 2:
+                    raise RuntimeError('boom')
+                return 'src/app.py'
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})(), _FailsOnThirdRead()]
+
+        captured = {}
+        errors = _capture_errors(lambda: captured.setdefault('result', filter_ignored(list(files), 'github')))
+        result = captured['result']
+
+        assert len(result) == 1
+        assert result[0] is files[1]
+        assert len(errors) == 1, f"Expected the failure to be reported once, got {errors}"
+        assert 'filtering did not complete' in errors[0]
