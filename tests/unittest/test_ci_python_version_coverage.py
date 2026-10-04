@@ -47,11 +47,11 @@ UV_PYTHON_FLAG = re.compile(r"--python[ =](\d+\.\d+)")
 
 
 def _declared_python_versions() -> set[str]:
-    """Minors pyproject claims support for: the floor, plus every shipped pin marker."""
+    """Minors pyproject claims support for: the floor, plus every pin marker in the base or an extra."""
     project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
     shipped_dependencies = [
         *project["dependencies"],
-        *project["optional-dependencies"].get("all", []),
+        *(requirement for extra in project["optional-dependencies"].values() for requirement in extra),
     ]
     versions = set(PIN_MARKER_VERSION.findall(" ".join(shipped_dependencies)))
     versions.add(REQUIRES_PYTHON_MINIMUM.search(project["requires-python"]).group(1))

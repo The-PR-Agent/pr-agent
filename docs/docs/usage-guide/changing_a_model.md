@@ -98,7 +98,7 @@ model="" # the OpenAI model you've deployed on Azure (e.g. gpt-4o)
 fallback_models=["..."]
 ```
 
-To use Azure AD (Entra id) based authentication set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):
+Azure AD authentication needs the `azure` extra (`pip install "pr-agent[azure]"`). To use Azure AD (Entra id) based authentication set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):
 
 ```toml
 [azure_ad]
@@ -238,7 +238,7 @@ OpenRouter routes (`openrouter/x-ai/grok-4.5`, `openrouter/x-ai/grok-4.6`) apply
 
 ### Vertex AI
 
-To use Google's Vertex AI platform and its associated models (chat-bison/codechat-bison) set:
+Vertex AI needs the `google` extra (`pip install "pr-agent[google]"`). To use Google's Vertex AI platform and its associated models (chat-bison/codechat-bison) set:
 
 ```toml
 [config] # in configuration.toml

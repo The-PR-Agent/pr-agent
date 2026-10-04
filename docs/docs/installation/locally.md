@@ -102,8 +102,11 @@ Same goes for other providers, make sure to check the [documentation](../usage-g
 Install the package:
 
 ```bash
-pip install pr-agent
+pip install "pr-agent[github]"
 ```
+
+Git provider SDKs are optional extras, so install the one for your provider: `github`, `gitlab`, `bitbucket` (Bitbucket Cloud, Bitbucket Server and Jira), `azure`, `codecommit` or `gitea`.
+`google` adds Vertex AI, `mosaico` adds the Mosaico server, and `pr-agent[all]` installs every integration.
 
 Then run the relevant tool with the script below.
 <br>

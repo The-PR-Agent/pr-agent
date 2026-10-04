@@ -113,21 +113,7 @@ google = [
 ]
 mosaico = ["a2a-sdk[http-server]==1.0.3"]
 # Preserve the dependency set that the published Docker images shipped before provider SDKs became optional.
-all = [
-  "PyGithub>=2.10,<3",
-  "python-gitlab==8.3.0",
-  "atlassian-python-api==3.41.4",
-  "azure-devops==7.1.0b4",
-  "azure-identity==1.25.0",
-  "msrest==0.7.1",
-  "boto3==1.43.78",
-  "giteapy==1.0.8",
-  "google-cloud-aiplatform==1.154.0",
-  "google-cloud-storage==2.10.0; python_version < '3.13'",
-  "google-cloud-storage==3.12.0; python_version >= '3.13'",
-  "protobuf==6.33.6",
-  "a2a-sdk[http-server]==1.0.3",
-]
+all = ["pr-agent[github,gitlab,bitbucket,azure,codecommit,gitea,google,mosaico]"]
 # AWS Lambda deployment (docker/Dockerfile.lambda).
 # Keep mangum >=0.21.0 for Python 3.14: older releases call
 # asyncio.get_event_loop() with no fallback, which raises RuntimeError
@@ -149,21 +135,7 @@ pr-agent = "pr_agent.cli:run"
 
 [dependency-groups]
 # Keep the full optional integration matrix available to the unit suite without publishing it as a base dependency.
-integration-dev = [
-  "PyGithub>=2.10,<3",
-  "python-gitlab==8.3.0",
-  "atlassian-python-api==3.41.4",
-  "azure-devops==7.1.0b4",
-  "azure-identity==1.25.0",
-  "msrest==0.7.1",
-  "boto3==1.43.78",
-  "giteapy==1.0.8",
-  "google-cloud-aiplatform==1.154.0",
-  "google-cloud-storage==2.10.0; python_version < '3.13'",
-  "google-cloud-storage==3.12.0; python_version >= '3.13'",
-  "protobuf==6.33.6",
-  "a2a-sdk[http-server]==1.0.3",
-]
+integration-dev = ["pr-agent[all]"]
 # 'similar issue' tool. Install with: uv sync --group similar-issue.
 # Keep this a dependency group rather than a published extra so the vector
 # database drivers stay out of the base install.

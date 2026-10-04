@@ -152,6 +152,8 @@ the established ticket-extraction behavior of existing providers.
 
 ## Jira Integration
 
+Jira lookup needs the `bitbucket` extra: `pip install "pr-agent[bitbucket]"`. Without it the lookup is skipped with a warning.
+
 Only **Jira Cloud** is supported. The base URL is derived from a validated site name
 (`jira_site` → `https://<site>.atlassian.net`) rather than taken as a free-form URL, so
 the configured destination is always an Atlassian Cloud host. Jira Server / Data Center

@@ -32,14 +32,14 @@ def test_provider_sdks_are_not_base_dependencies_and_all_is_complete():
     base_dependencies = set(project["dependencies"])
     extras = project["optional-dependencies"]
 
-    expected_all = {
+    integration_requirements = {
         requirement
         for extra in INTEGRATION_EXTRAS
         for requirement in extras[extra]
     }
 
-    assert base_dependencies.isdisjoint(expected_all)
-    assert set(extras["all"]) == expected_all
+    assert base_dependencies.isdisjoint(integration_requirements)
+    assert extras["all"] == [f"pr-agent[{','.join(INTEGRATION_EXTRAS)}]"]
 
 
 def test_docker_syncs_keep_the_full_integration_set():
