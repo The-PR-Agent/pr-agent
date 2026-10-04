@@ -327,6 +327,99 @@ class TestGetIncrementalCommits:
         assert provider._pr_iteration_changes_cache == ["complete-current-iteration"]
 
 
+class TestIncrementalDiffHead:
+    """An incremental diff must read both sides from the source branch (#3757).
+
+    head_sha is the merge commit, i.e. the source branch already merged with the target, while the
+    old side comes from the source-side last_seen_commit_sha. Diffing those two mixes histories and
+    reports target-branch commits to the PR author.
+    """
+
+    PATH = "/data/schema.json"
+
+    def _provider(self, source_head="source-head"):
+        with patch.object(
+            AzureDevopsProvider, "_get_azure_devops_client",
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            provider = AzureDevopsProvider()
+        provider.workspace_slug = "ws"
+        provider.repo_slug = "repo"
+        provider.pr_num = 1
+        provider.pr_url = "https://dev.azure.com/o/ws/_git/repo/pullrequest/1"
+        provider.pr = SimpleNamespace(
+            last_merge_commit=SimpleNamespace(commit_id="merge-commit"),
+            last_merge_target_commit=SimpleNamespace(commit_id="target-tip"),
+            last_merge_source_commit=SimpleNamespace(commit_id=source_head),
+        )
+        provider._get_pr_iteration_changes = MagicMock(return_value=[
+            {"item": {"path": self.PATH, "gitObjectType": "blob"}, "changeType": "edit"},
+        ])
+        return provider
+
+    def _record_versions(self, provider):
+        requested = []
+
+        def get_item(**kwargs):
+            requested.append(kwargs["version_descriptor"].version)
+            return SimpleNamespace(content='{"a": 1}\n{"b": 2}\n')
+
+        provider.azure_devops_client.get_item = MagicMock(side_effect=get_item)
+        return requested
+
+    def _activate_incremental(self, provider):
+        provider.diff_files = None
+        provider.incremental = IncrementalPR(True)
+        provider.incremental.last_seen_commit = SimpleNamespace(sha="last-seen-source")
+        provider.unreviewed_files_map = {self.PATH: "stale patch"}
+
+    def test_incremental_reads_new_content_from_the_source_head(self):
+        provider = self._provider(source_head="source-head")
+        self._activate_incremental(provider)
+        requested = self._record_versions(provider)
+
+        provider.get_diff_files()
+
+        # old side stays on the source-side last_seen_commit, new side moves to the source head
+        assert requested == ["source-head", "last-seen-source"]
+
+    def test_full_review_still_uses_the_merge_commit(self):
+        provider = self._provider(source_head="source-head")
+        provider.diff_files = None
+        provider.incremental = IncrementalPR(False)
+        provider.unreviewed_files_map = {}
+        requested = self._record_versions(provider)
+
+        provider.get_diff_files()
+
+        # full review: target tip as the base, merge commit as the head (target changes cancel out)
+        assert requested == ["merge-commit", "target-tip"]
+
+    def test_missing_source_commit_falls_back_to_the_merge_commit(self):
+        provider = self._provider()
+        provider.pr.last_merge_source_commit = None
+        self._activate_incremental(provider)
+        requested = self._record_versions(provider)
+
+        provider.get_diff_files()
+
+        assert requested[0] == "merge-commit"
+
+    def test_missing_source_commit_warns(self):
+        provider = self._provider()
+        provider.pr.last_merge_source_commit = None
+        self._activate_incremental(provider)
+        self._record_versions(provider)
+
+        with patch("pr_agent.git_providers.azuredevops_provider.get_logger") as logger:
+            provider.get_diff_files()
+
+        assert any(
+            "last_merge_source_commit" in str(call)
+            for call in logger.return_value.warning.call_args_list
+        )
+
+
 class TestPrReviewerGuard:
     def test_can_run_returns_false_when_commits_range_none(self):
         from pr_agent.tools.pr_reviewer import PRReviewer

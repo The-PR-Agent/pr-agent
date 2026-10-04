@@ -19,6 +19,7 @@ from litellm.llms.openrouter.chat.transformation import OpenrouterConfig
 from litellm.utils import get_llm_provider, get_optional_params
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
+from pr_agent.algo import token_budget
 
 # Environment variables that LiteLLMAIHandler.__init__ reads or mutates: the AWS
 # credential path (entered when AWS_USE_IMDS is set) writes the AWS_* variables,
@@ -105,6 +106,44 @@ async def _run(monkeypatch, model, openrouter, reasoning_effort="medium", custom
 
 
 class TestOpenRouterControls:
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("suffix", ["", "_thinking"])
+    @pytest.mark.parametrize("provider", ["", "aiohttp_openai", "ollama"])
+    async def test_aiohttp_gpt6_prefix_keeps_native_transport_and_provider_overrides(
+        self, monkeypatch, model, suffix, provider
+    ):
+        settings = _make_settings(reasoning_effort="minimal", custom_llm_provider=provider)
+        settings.config.custom_model_max_tokens = 0
+        settings.config.max_model_tokens = 0
+        settings.config.get = lambda key, default=None: 4096 if key == "max_output_tokens" else default
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+        alias = f"aiohttp_openai/{model}{suffix}"
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            await handler.chat_completion(model=alias, system="sys", user="usr")
+            regular = completion.call_args.kwargs
+            completion.reset_mock()
+            await handler.probe_completion(alias, max_tokens=17, _completion=completion)
+            probe = completion.call_args.kwargs
+
+        if provider == "ollama":
+            assert regular["model"] == probe["model"] == alias
+            assert regular["max_tokens"] == 4096
+            assert probe["max_tokens"] == 17
+            assert "reasoning_effort" not in regular
+            assert token_budget.get_max_input_tokens(alias) is None
+        else:
+            assert regular["model"] == probe["model"] == f"aiohttp_openai/{model}"
+            assert regular["max_completion_tokens"] == 4096
+            assert probe["max_completion_tokens"] == 17
+            assert regular["reasoning_effort"] == "low"
+            assert token_budget.get_max_tokens(alias) == 1050000
+            assert token_budget.get_max_input_tokens(alias) == 922000
 
     @pytest.mark.asyncio
     async def test_provider_only_and_reasoning_effort_and_max_tokens(self, monkeypatch):
@@ -251,6 +290,37 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "openrouter/google/gemini-3.7-flash",
+            "openrouter/google/gemini-3.8-flash:nitro",
+        ],
+    )
+    async def test_gemini_none_uses_low_reasoning_floor(self, monkeypatch, model):
+        kwargs = await _run(monkeypatch, model, {"reasoning_effort": "none"})
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_gemini_inherited_none_uses_low_reasoning_floor(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-3.7-flash",
+            {},
+            reasoning_effort="none",
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_gemini_explicit_minimal_is_preserved(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-3.7-flash",
+            {"reasoning_effort": "minimal"},
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "minimal"}
+
+    @pytest.mark.asyncio
     async def test_reasoning_max_tokens(self, monkeypatch):
         """Verify that a token budget suppresses the mutually exclusive effort control."""
         kwargs = await _run(monkeypatch, "openrouter/z-ai/glm-5.2", {
@@ -351,6 +421,14 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
 
     @pytest.mark.asyncio
+    async def test_gemini_none_keeps_reasoning_budget(self, monkeypatch):
+        kwargs = await _run(monkeypatch, "openrouter/google/gemini-3.7-flash", {
+            "reasoning_effort": "none",
+            "reasoning_max_tokens": 2048,
+        })
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 2048}
+
+    @pytest.mark.asyncio
     async def test_reasoning_budget_overrides_global_none(self, monkeypatch):
         logger = MagicMock()
         monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
@@ -407,6 +485,272 @@ class TestOpenRouterControls:
         assert kwargs["max_tokens"] == 16000
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    async def test_custom_provider_gpt6_probe_matches_completion_limit(self, monkeypatch, model):
+        settings = _make_settings(custom_llm_provider="openrouter")
+        settings.config.get = lambda key, default=None: 4096 if key == "max_output_tokens" else default
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            await handler.chat_completion(model=model, system="sys", user="usr")
+            regular = completion.call_args.kwargs
+            completion.reset_mock()
+            await handler.probe_completion(model, max_tokens=17, _completion=completion)
+            probe = completion.call_args.kwargs
+
+        assert regular["max_tokens"] == 4096
+        assert probe["max_tokens"] == 17
+        assert "max_completion_tokens" not in regular
+        assert "max_completion_tokens" not in probe
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("suffix", ["", "_thinking"])
+    @pytest.mark.parametrize(("prefix", "custom_provider"), [
+        ("", "ollama"), ("ollama/", ""), ("", "azure_text"), ("", "text-completion-openai"),
+        ("azure_text/", ""), ("text-completion-openai/", ""),
+    ])
+    async def test_non_native_provider_preserves_gpt6_model(self, monkeypatch, model, suffix, prefix, custom_provider):
+        settings = _make_settings(custom_llm_provider=custom_provider)
+        settings.config.get = lambda key, default=None: 4096 if key == "max_output_tokens" else default
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        alias = f"{prefix}{model}{suffix}"
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            monkeypatch.setattr(handler, "_litellm_supports_reasoning", lambda model: True)
+            await handler.chat_completion(model=alias, system="sys", user="usr")
+            regular = completion.call_args.kwargs
+            completion.reset_mock()
+            await handler.probe_completion(alias, max_tokens=17, _completion=completion)
+            probe = completion.call_args.kwargs
+
+        assert regular["model"] == alias
+        assert probe["model"] == alias
+        assert regular["max_tokens"] == 4096
+        assert probe["max_tokens"] == 17
+        assert "max_completion_tokens" not in regular
+        assert "max_completion_tokens" not in probe
+        assert "reasoning_effort" not in regular
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("route", [":nitro", ":floor", ":online", ":exacto"])
+    async def test_custom_variant_token_budget_matches_request_model(self, monkeypatch, model, route):
+        settings = _make_settings(custom_llm_provider="ollama")
+        settings.config.custom_model_max_tokens = 0
+        settings.config.max_model_tokens = 0
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+        variant = f"{model}{route}"
+
+        with patch.object(litellm, "get_model_info", return_value={"max_input_tokens": 32768}) as metadata:
+            with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+                completion.return_value = _mock_response()
+                await litellm_handler.LiteLLMAIHandler().chat_completion(model=variant, system="sys", user="usr")
+                assert completion.call_args.kwargs["model"] == variant
+
+            metadata.reset_mock()
+            assert token_budget.get_max_tokens(variant) == 32768
+            metadata.assert_called_once_with(variant)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("alias", [
+        "{}_thinking", "openai/{}", "openrouter/openai/{}", "openrouter/openai/{}_thinking",
+        "openrouter/openai/{}_thinking:nitro", "openrouter/openai/{}_thinking:floor",
+        "openrouter/openai/{}_thinking:online", "openrouter/openai/{}_thinking:exacto",
+    ])
+    async def test_custom_alias_token_budget_matches_request_model(self, monkeypatch, model, alias):
+        settings = _make_settings(custom_llm_provider="ollama")
+        settings.config.custom_model_max_tokens = 0
+        settings.config.max_model_tokens = 0
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+        variant = alias.format(model)
+
+        with patch.object(litellm, "get_model_info", return_value={"max_input_tokens": 32768}) as metadata:
+            with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+                completion.return_value = _mock_response()
+                handler = litellm_handler.LiteLLMAIHandler()
+                await handler.chat_completion(model=variant, system="sys", user="usr")
+                assert completion.call_args.kwargs["model"] == variant
+                completion.reset_mock()
+                await handler.probe_completion(variant, _completion=completion)
+                assert completion.call_args.kwargs["model"] == variant
+
+            metadata.reset_mock()
+            assert token_budget.get_max_tokens(variant) == 32768
+            metadata.assert_called_once_with(variant)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("route", [":batch", ":free"])
+    @pytest.mark.parametrize(("prefix", "custom_provider"), [
+        ("openrouter/openai/", ""), ("openai/", "openrouter"), ("", "openrouter"),
+    ])
+    @pytest.mark.parametrize("registered", [False, True])
+    async def test_preserved_gpt6_thinking_variant_requires_explicit_reasoning(
+        self, monkeypatch, model, route, prefix, custom_provider, registered
+    ):
+        settings = _make_settings(custom_llm_provider=custom_provider)
+        settings.config.custom_model_max_tokens = 32768
+        variant = f"{prefix}{model}_thinking{route}"
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            handler.additional_reasoning_effort_models = [variant] if registered else [model]
+            monkeypatch.setattr(handler, "_litellm_supports_temperature", lambda *args: True)
+            monkeypatch.setattr(handler, "_litellm_supports_reasoning", lambda *args: True)
+            await handler.chat_completion(model=variant, system="sys", user="usr", temperature=0.2)
+            kwargs = completion.call_args.kwargs
+
+        assert kwargs["model"] == variant
+        assert kwargs["temperature"] == 0.2
+        assert "reasoning_effort" not in kwargs
+        reasoning = kwargs.get("extra_body", {}).get("reasoning")
+        assert reasoning == ({"effort": "medium"} if registered else None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider", ["azure_text", "text-completion-openai"])
+    async def test_text_completion_astra_probe_matches_completion_limit(self, monkeypatch, provider):
+        settings = _make_settings(custom_llm_provider=provider)
+        settings.config.get = lambda key, default=None: 4096 if key == "max_output_tokens" else default
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            await handler.chat_completion(model="gpt-6-astra", system="sys", user="usr")
+            regular = completion.call_args.kwargs
+            completion.reset_mock()
+            await handler.probe_completion("gpt-6-astra", max_tokens=17, _completion=completion)
+            probe = completion.call_args.kwargs
+
+        for kwargs, limit in [(regular, 4096), (probe, 17)]:
+            assert kwargs["model"] == "gpt-6-astra"
+            assert kwargs["max_tokens"] == limit
+            assert "max_completion_tokens" not in kwargs
+            optional_params = litellm.get_optional_params(
+                model=kwargs["model"], custom_llm_provider=provider, max_tokens=limit
+            )
+            assert optional_params["max_tokens"] == limit
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("route", [":nitro", ":floor"])
+    @pytest.mark.parametrize(("prefix", "custom_provider"), [
+        ("openrouter/openai/", ""), ("openai/", "openrouter"), ("", "openrouter"),
+    ])
+    async def test_openrouter_astra_routing_probe_matches_completion_limit(
+        self, monkeypatch, route, prefix, custom_provider
+    ):
+        settings = _make_settings(custom_llm_provider=custom_provider)
+        settings.config.get = lambda key, default=None: 4096 if key == "max_output_tokens" else default
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        model = f"{prefix}gpt-6-astra{route}"
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            await handler.chat_completion(model=model, system="sys", user="usr")
+            regular = completion.call_args.kwargs
+            completion.reset_mock()
+            await handler.probe_completion(model, max_tokens=17, _completion=completion)
+            probe = completion.call_args.kwargs
+
+        for kwargs, limit in [(regular, 4096), (probe, 17)]:
+            assert kwargs["model"] == model
+            assert kwargs["max_completion_tokens"] == limit
+            assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize(("provider", "suffix"), [("openai_like", ""), ("ollama", "_thinking")])
+    async def test_non_native_provider_respects_explicit_reasoning_opt_in(self, monkeypatch, model, provider, suffix):
+        settings = _make_settings(custom_llm_provider=provider)
+        settings.config.get = lambda key, default=None: (
+            [model] if key == "additional_reasoning_effort_models" else default
+        )
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            monkeypatch.setattr(handler, "_litellm_supports_reasoning", lambda model: False)
+            await handler.chat_completion(model=f"{model}{suffix}", system="sys", user="usr")
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["model"] == f"{model}{suffix}"
+        assert kwargs["custom_llm_provider"] == provider
+        assert kwargs["reasoning_effort"] == "medium"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize(("prefix", "custom_provider"), [("", "azure_ai"), ("azure_ai/", "")])
+    @pytest.mark.parametrize("effort", ["none", "medium", "max"])
+    async def test_azure_ai_gpt6_uses_native_request_parameters(
+        self, monkeypatch, model, prefix, custom_provider, effort
+    ):
+        settings = _make_settings(reasoning_effort=effort, custom_llm_provider=custom_provider)
+        settings.config.get = lambda key, default=None: 4096 if key == "max_output_tokens" else default
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+        alias = f"{prefix}{model}_thinking"
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            await handler.chat_completion(model=alias, system="sys", user="usr")
+            regular = completion.call_args.kwargs
+            completion.reset_mock()
+            await handler.probe_completion(alias, max_tokens=17, _completion=completion)
+            probe = completion.call_args.kwargs
+
+        assert regular["model"] == f"{prefix}{model}"
+        assert probe["model"] == f"{prefix}{model}"
+        assert regular["max_completion_tokens"] == 4096
+        assert probe["max_completion_tokens"] == 17
+        assert "max_tokens" not in regular
+        assert "max_tokens" not in probe
+        assert "temperature" not in regular
+        if effort in ("none", "max"):
+            assert "reasoning_effort" not in regular
+            assert regular["extra_body"]["reasoning_effort"] == ("xhigh" if effort == "max" else "none")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize(("prefix", "custom_provider"), [
+        ("openrouter/openai/", ""),
+        ("openrouter/openai/", "openrouter"),
+        ("openai/", "openrouter"),
+        ("", "openrouter"),
+    ])
+    @pytest.mark.parametrize("route", ["", ":nitro", ":floor", ":online", ":exacto"])
+    async def test_explicit_openrouter_gpt6_thinking_alias_is_normalized(
+        self, monkeypatch, model, prefix, custom_provider, route
+    ):
+        monkeypatch.setattr(
+            litellm_handler, "get_settings", lambda: _make_settings(custom_llm_provider=custom_provider)
+        )
+        alias = f"{prefix}{model}_thinking{route}"
+
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            await handler.chat_completion(model=alias, system="sys", user="usr")
+            regular = completion.call_args.kwargs
+            completion.reset_mock()
+            await handler.probe_completion(alias, _completion=completion)
+            probe = completion.call_args.kwargs
+
+        assert regular["model"] == f"{prefix}{model}{route}"
+        assert probe["model"] == regular["model"]
+
+    @pytest.mark.asyncio
     async def test_custom_provider_raw_gpt5_model_uses_only_openrouter_reasoning(self, monkeypatch):
         kwargs = await _run(
             monkeypatch,
@@ -450,6 +794,92 @@ class TestOpenRouterControls:
         assert "temperature" not in kwargs
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        (
+            "model",
+            "custom_llm_provider",
+            "expected_capability_model",
+            "expected_metadata_lookup",
+            "expected_output_param",
+        ),
+        [
+            (
+                "openrouter/openai/gpt-6-astra:nitro",
+                "",
+                "openrouter/openai/gpt-6-astra",
+                None,
+                "max_completion_tokens",
+            ),
+            (
+                "openai/gpt-5.1:floor",
+                "openrouter",
+                "openrouter/openai/gpt-5.1",
+                "gpt-5.1",
+                "max_tokens",
+            ),
+            (
+                "openrouter/openai/gpt-6-astra:batch",
+                "",
+                "openrouter/openai/gpt-6-astra:batch",
+                None,
+                "max_tokens",
+            ),
+            (
+                "openrouter/openai/gpt-5.1:batch",
+                "",
+                "openrouter/openai/gpt-5.1:batch",
+                "gpt-5.1",
+                "max_tokens",
+            ),
+        ],
+    )
+    async def test_openrouter_variant_separates_family_and_capability_identity(
+        self,
+        monkeypatch,
+        model,
+        custom_llm_provider,
+        expected_capability_model,
+        expected_metadata_lookup,
+        expected_output_param,
+    ):
+        probed_models = []
+        metadata_lookups = []
+
+        def supports_temperature(model, custom_llm_provider=None):
+            probed_models.append(model)
+            return True
+
+        def get_model_info(model):
+            metadata_lookups.append(model)
+            return {"supports_minimal_reasoning_effort": False}
+
+        monkeypatch.setattr(
+            litellm_handler.LiteLLMAIHandler,
+            "_litellm_supports_temperature",
+            staticmethod(supports_temperature),
+        )
+        monkeypatch.setattr(
+            litellm_handler.LiteLLMAIHandler,
+            "_litellm_supports_reasoning",
+            staticmethod(lambda model: False),
+        )
+        monkeypatch.setattr(litellm, "get_model_info", get_model_info)
+        kwargs = await _run(
+            monkeypatch,
+            model,
+            {"max_tokens": 4096},
+            reasoning_effort="minimal",
+            custom_llm_provider=custom_llm_provider,
+        )
+
+        assert kwargs["model"] == model
+        assert probed_models == [expected_capability_model]
+        assert metadata_lookups == ([] if expected_metadata_lookup is None else [expected_metadata_lookup])
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+        assert kwargs[expected_output_param] == 4096
+        assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
     async def test_openrouter_effort_overrides_global_effort(self, monkeypatch):
         kwargs = await _run(
             monkeypatch,
@@ -458,6 +888,62 @@ class TestOpenRouterControls:
             reasoning_effort="low",
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize(("prefix", "custom_provider", "route"), [
+        ("openrouter/openai/", "", ""),
+        ("openrouter/openai/", "", ":nitro"),
+        ("openrouter/openai/", "", ":floor"),
+        ("openrouter/openai/", "", ":online"),
+        ("openrouter/openai/", "", ":exacto"),
+        ("", "openrouter", ""),
+        ("openai/", "openrouter", ":nitro"),
+    ])
+    async def test_gpt6_minimal_openrouter_override_uses_low(
+        self, monkeypatch, model, prefix, custom_provider, route
+    ):
+        request_model = f"{prefix}{model}{route}"
+        kwargs = await _run(
+            monkeypatch,
+            request_model,
+            {"reasoning_effort": "minimal"},
+            reasoning_effort="high",
+            custom_llm_provider=custom_provider,
+        )
+
+        assert kwargs["model"] == request_model
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
+        assert "reasoning_effort" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    async def test_gpt6_openrouter_budget_keeps_precedence_over_minimal(self, monkeypatch, model):
+        logger = MagicMock()
+        monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+        kwargs = await _run(
+            monkeypatch,
+            f"openrouter/openai/{model}",
+            {"reasoning_effort": "minimal", "reasoning_max_tokens": 1024, "max_tokens": 4096},
+            reasoning_effort="high",
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 1024}
+        assert any(
+            "Ignoring openrouter.reasoning_effort='minimal'" in call.args[0]
+            for call in logger.warning.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_gpt5_openrouter_minimal_override_is_preserved(self, monkeypatch):
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/openai/gpt-5",
+            {"reasoning_effort": "minimal"},
+            reasoning_effort="high",
+        )
+
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "minimal"}
 
     @pytest.mark.asyncio
     async def test_invalid_openrouter_effort_falls_back_to_global_effort(self, monkeypatch):
@@ -473,6 +959,29 @@ class TestOpenRouterControls:
     async def test_registered_model_inherits_default_global_effort(self, monkeypatch):
         kwargs = await _run(monkeypatch, "openrouter/google/gemini-2.5-pro", {})
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+
+    @pytest.mark.asyncio
+    async def test_non_gpt_batch_variant_uses_base_for_reasoning_detection(self, monkeypatch):
+        probed_models = []
+
+        def supports_reasoning(model):
+            probed_models.append(model)
+            return True
+
+        monkeypatch.setattr(
+            litellm_handler.LiteLLMAIHandler,
+            "_litellm_supports_reasoning",
+            staticmethod(supports_reasoning),
+        )
+        kwargs = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-3.1-flash-lite:batch",
+            {},
+            reasoning_effort="low",
+        )
+
+        assert probed_models == ["openrouter/google/gemini-3.1-flash-lite"]
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "low"}
 
     @pytest.mark.asyncio
     async def test_global_none_disables_reasoning(self, monkeypatch):

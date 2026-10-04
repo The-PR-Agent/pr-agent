@@ -1,3 +1,8 @@
+---
+title: "GitHub Integration"
+sidebar_position: 4
+---
+
 In this page we will cover how to install and run PR-Agent as a GitHub Action or GitHub App, and how to configure it for your needs.
 
 ## Run as a GitHub Action
@@ -56,9 +61,9 @@ See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_
 
 #### Using with pull_request_target (fork/contribution support)
 
-By default, the `pull_request` event does not have access to repository secrets when the PR originates from a forked repository, which means PR-Agent won't be able to access your `OPENAI_KEY` and `GITHUB_TOKEN` secrets.
+By default, the `pull_request` event does not have access to repository or organization secrets when the PR originates from a forked repository, which means PR-Agent won't be able to access secrets such as `OPENAI_KEY`. The workflow still receives a `GITHUB_TOKEN`, but it has read-only permissions for fork pull requests by default. For private repositories, administrators can enable **Send secrets to workflows from pull requests** to make secrets available, but doing so exposes those secrets to workflows triggered by fork pull requests.
 
-To support PRs from external contributors (forks), use the `pull_request_target` event instead. This event runs in the context of the base repository and has access to secrets, while the PR code is checked out manually with `actions/checkout`.
+To support PRs from external contributors (forks), use the `pull_request_target` event instead. This event runs in the context of the base repository and has access to its secrets and `GITHUB_TOKEN` permissions. PR-Agent uses the GitHub API to fetch PR data and does not require a local checkout of the PR code.
 
 ```yaml
 name: PR Agent
@@ -83,11 +88,13 @@ jobs:
           github_action_config.pr_actions: '["opened", "reopened", "synchronize", "ready_for_review", "review_requested"]'
 ```
 
-!!! tip "No local checkout needed"
-    PR-Agent uses the GitHub API to fetch PR data directly from the event payload — it does not require a local checkout of the PR code. This means you can safely omit the `actions/checkout` step entirely, avoiding common pitfalls with `pull_request_target` like the `issue_comment` event lacking a `pull_request.head.sha` ref.
+:::tip[No local checkout needed]
+PR-Agent uses the GitHub API to fetch PR data directly from the event payload — it does not require a local checkout of the PR code. This means you can safely omit the `actions/checkout` step entirely, avoiding common pitfalls with `pull_request_target` like the `issue_comment` event lacking a `pull_request.head.sha` ref.
+:::
 
-!!! warning "Security considerations"
-    Using `pull_request_target` gives the workflow access to repository secrets. Unlike the `pull_request` event, the PR code is not automatically checked out, which is a security feature. Avoid adding an `actions/checkout` step unless you have a specific need for the local files — if you do add one, review the [GitHub security guide on pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
+:::warning[Security considerations]
+Using `pull_request_target` gives the workflow access to repository secrets. Neither event checks out code on its own, but under `pull_request_target` a plain `actions/checkout` fetches the default branch rather than the pull request, which is a security feature. Checking out the pull request head alone does not execute untrusted code, but do not build, test, install, or otherwise execute that content in the same job with secrets or elevated token permissions. If local files are required, review the [GitHub security guide on pull_request_target](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target) before checking out the pull request head.
+:::
 
 ### Configuration Examples
 
@@ -439,8 +446,9 @@ target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 max_artifact_size = 50000                                   # characters; longer files are truncated with a marker
 ```
 
-!!! note
-    A path that resolves outside `GITHUB_WORKSPACE` is rejected, and a missing or unreadable file is skipped with a warning — in both cases the tools still run, just without the artifact context.
+:::note
+A path that resolves outside `GITHUB_WORKSPACE` is rejected, and a missing or unreadable file is skipped with a warning — in both cases the tools still run, just without the artifact context.
+:::
 
 The same settings apply when PR-Agent runs as a CLI from another CI system, with `ARTIFACT_PATH` set in the job's environment; see the [GitLab pipeline example](./gitlab.md#ci-artifact-context).
 
@@ -611,45 +619,47 @@ For more detailed configuration options, see:
 
 ### Using a specific release
 
-!!! tip ""
-    if you want to pin your action to a specific release (v0.41.0 for example) for stability reasons, use:
-    ```yaml
-    ...
-        steps:
-          - name: PR Agent action step
-            id: pragent
-            uses: docker://pragent/pr-agent:0.41.0-github_action
-    ...
-    ```
+:::tip
+if you want to pin your action to a specific release (v0.41.0 for example) for stability reasons, use:
+```yaml
+...
+    steps:
+      - name: PR Agent action step
+        id: pragent
+        uses: docker://pragent/pr-agent:0.41.0-github_action
+...
+```
 
-    For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/r/pragent/pr-agent/tags). Resolve the digest for the version you are pinning with `docker buildx imagetools inspect pragent/pr-agent:0.41.0-github_action --format '{{.Manifest.Digest}}'`, then use it in place of the tag:
-    ```yaml
-    ...
-        steps:
-          - name: PR Agent action step
-            id: pragent
-            uses: docker://pragent/pr-agent@sha256:<digest>
-    ...
-    ```
+For enhanced security, you can also specify the Docker image by its [digest](https://hub.docker.com/r/pragent/pr-agent/tags). Resolve the digest for the version you are pinning with `docker buildx imagetools inspect pragent/pr-agent:0.41.0-github_action --format '{{.Manifest.Digest}}'`, then use it in place of the tag:
+```yaml
+...
+    steps:
+      - name: PR Agent action step
+        id: pragent
+        uses: docker://pragent/pr-agent@sha256:<digest>
+...
+```
 
-    Official Docker Hub release images also publish GitHub Artifact Attestations, so you can verify that a pinned digest was built from this repository before using it:
-    ```sh
-    gh attestation verify \
-      "oci://index.docker.io/pragent/pr-agent@sha256:<digest>" \
-      --repo The-PR-Agent/pr-agent
-    ```
+Official Docker Hub release images also publish GitHub Artifact Attestations, so you can verify that a pinned digest was built from this repository before using it:
+```sh
+gh attestation verify \
+  "oci://index.docker.io/pragent/pr-agent@sha256:<digest>" \
+  --repo The-PR-Agent/pr-agent
+```
+:::
 
 ### Action for GitHub enterprise server
 
-!!! tip ""
-    To use the action with a GitHub enterprise server, add an environment variable `GITHUB__BASE_URL` with the API URL of your GitHub server.
+:::tip
+To use the action with a GitHub enterprise server, add an environment variable `GITHUB__BASE_URL` with the API URL of your GitHub server.
 
-    For example, if your GitHub server is at `https://github.mycompany.com`, add the following to your workflow file:
-    ```yaml
-          env:
-            # ... previous environment values
-            GITHUB__BASE_URL: "https://github.mycompany.com/api/v3"
-    ```
+For example, if your GitHub server is at `https://github.mycompany.com`, add the following to your workflow file:
+```yaml
+      env:
+        # ... previous environment values
+        GITHUB__BASE_URL: "https://github.mycompany.com/api/v3"
+```
+:::
 
 ---
 

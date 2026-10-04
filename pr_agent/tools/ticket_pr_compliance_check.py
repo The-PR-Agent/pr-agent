@@ -366,7 +366,9 @@ MAX_ASANA_REQUEST_TIMEOUT = 60
 MAX_ASANA_TICKETS = 3
 MAX_GITHUB_TICKETS = 3
 MAX_GITHUB_TICKET_LOOKUPS = 30
+MAX_SUB_ISSUES_PER_TICKET = 10
 MAX_GITLAB_TICKETS = 3
+MAX_GITLAB_TICKET_LOOKUPS = 10
 GITLAB_TICKET_PATTERN = re.compile(
     r"(?P<url>https?://[^\s<>(),;]+)"
     r"|(?<![\w./-])(?P<project>[\w.-]+(?:/[\w.-]+)+)#(?P<project_issue>\d+)\b"
@@ -615,7 +617,7 @@ def _get_user_description_for_asana(git_provider) -> str:
     return description if isinstance(description, str) else ""
 
 
-def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
+def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_tickets=MAX_GITLAB_TICKETS):
     """Extract ``(project_path, issue_iid)`` references from a GitLab MR description."""
     if not isinstance(pr_description, str) or not pr_description:
         return []
@@ -665,9 +667,9 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
             seen.add(dedupe_key)
             references.append(reference)
 
-    if len(references) > MAX_GITLAB_TICKETS:
+    if len(references) > max_tickets:
         get_logger().info(f"Too many GitLab tickets found in MR description: {len(references)}")
-    return references[:MAX_GITLAB_TICKETS]
+    return references[:max_tickets]
 
 
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com',
@@ -762,7 +764,8 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
     settings = get_settings()
     if not settings.get("extract_issue_from_branch", settings.get("config.extract_issue_from_branch", True)):
         return []
-    github_tickets = set()
+    seen = set()
+    github_tickets = []
     custom_regex_str = settings.get("branch_issue_regex") or settings.get("config.branch_issue_regex", "") or ""
     if custom_regex_str:
         try:
@@ -784,10 +787,11 @@ def extract_ticket_links_from_branch_name(branch_name, repo_path, base_url_html=
         except IndexError:
             continue
         if issue_number and issue_number.isdigit():
-            github_tickets.add(
-                f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"
-            )
-    return list(github_tickets)
+            ticket_url = f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"
+            if ticket_url not in seen:
+                seen.add(ticket_url)
+                github_tickets.append(ticket_url)
+    return github_tickets
 
 
 def _normalize_github_host(url):
@@ -933,8 +937,12 @@ async def extract_tickets(git_provider):
                     # Extract sub-issues
                     sub_issues_content = []
                     try:
-                        sub_issues = git_provider.fetch_sub_issues(ticket)
-                        for sub_issue_url in sub_issues:
+                        raw_sub_issues = git_provider.fetch_sub_issues(ticket) or []
+                        valid_sub_issues = [
+                            url for url in raw_sub_issues
+                            if isinstance(url, str) and url.strip()
+                        ]
+                        for sub_issue_url in sorted(valid_sub_issues)[:MAX_SUB_ISSUES_PER_TICKET]:
                             try:
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = _get_repo_obj_for_ticket(git_provider, sub_issue_url, sub_repo,
@@ -994,6 +1002,7 @@ async def extract_tickets(git_provider):
                 user_description,
                 git_provider.id_project,
                 git_provider.gitlab_url,
+                max_tickets=MAX_GITLAB_TICKET_LOOKUPS,
             )
             tickets_content = []
             for project_path, issue_iid in references:
@@ -1001,6 +1010,20 @@ async def extract_tickets(git_provider):
                     # Only the issue manager is needed; avoid fetching unused project metadata.
                     project = git_provider.gl.projects.get(project_path, lazy=True)
                     issue = project.issues.get(issue_iid)
+
+                    issue_body = issue.description or ""
+                    if len(issue_body) > MAX_TICKET_CHARACTERS:
+                        issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
+
+                    tickets_content.append(
+                        {
+                            "ticket_id": issue.iid,
+                            "ticket_url": issue.web_url,
+                            "title": issue.title,
+                            "body": issue_body,
+                            "labels": ", ".join(issue.labels or []),
+                        }
+                    )
                 except Exception as e:
                     get_logger().error(
                         f"Error getting GitLab issue {project_path}#{issue_iid}: {e}",
@@ -1008,19 +1031,8 @@ async def extract_tickets(git_provider):
                     )
                     continue
 
-                issue_body = issue.description or ""
-                if len(issue_body) > MAX_TICKET_CHARACTERS:
-                    issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
-
-                tickets_content.append(
-                    {
-                        "ticket_id": issue.iid,
-                        "ticket_url": issue.web_url,
-                        "title": issue.title,
-                        "body": issue_body,
-                        "labels": ", ".join(issue.labels or []),
-                    }
-                )
+                if len(tickets_content) >= MAX_GITLAB_TICKETS:
+                    break
 
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
@@ -1093,13 +1105,12 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
         tickets_content = await extract_tickets(git_provider)
 
         if tickets_content:
-            # Store sub-issues along with main issues
+            # Store main tickets along with their sub-issues (main ticket first so prompt clipping preserves the parent)
             for ticket in tickets_content:
+                related_tickets.append(ticket)
                 if "sub_issues" in ticket and ticket["sub_issues"]:
                     for sub_issue in ticket["sub_issues"]:
                         related_tickets.append(sub_issue)  # Add sub-issues content
-
-                related_tickets.append(ticket)
 
             get_logger().info("Extracted tickets and sub-issues from PR description",
                               artifact={"tickets": related_tickets})

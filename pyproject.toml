@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-agent"
-version = "0.46.0"
+version = "0.47.0"
 
 authors = [
   { name = "QodoAI", email = "ofir.f@qodo.ai" },
@@ -38,24 +38,27 @@ dependencies = [
   "GitPython>=3.1.62,<4",
   "starlette>=1.6.0,<2",
   "Jinja2==3.1.6",
-  "litellm==1.102.1",
+  "litellm==1.103.0",
   "loguru==0.7.3",
   "openai>=1.55.3",
-  "PyJWT>=2.13.0,<3",
-  "PyYAML==6.0.1",
+  "PyJWT>=2.15.1,<3",
+  "PyYAML==6.0.3",
   "retry==0.9.2",
   "starlette-context==0.3.6",
   "tiktoken==0.14.0",
   "ujson>=5.13.0,<6",
   "unidiff==0.7.5",
+  # Declare urllib3 directly because gerrit_provider.py imports urllib3.util; the >=2.8.0
+  # floor is a security requirement and follows the >=patched,<next-major convention above.
+  "urllib3>=2.8.0,<3",
   "uvicorn>=0.31.1,<1",
   "tenacity==8.2.3",
   "langfuse==3.14.5",
   "gunicorn==23.0.0",
   "pydantic==2.13.3",
-  # litellm 1.102.1 declares pydantic-settings as a base dependency and imports it unconditionally from
+  # LiteLLM declares pydantic-settings as a base dependency and imports it unconditionally from
   # litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
-  # Version matches litellm's own constraint (>=2.14.1,<3.0); the existing observability guard covers the callback import.
+  # Recheck LiteLLM's declared constraint on upgrade; the observability guard covers callback imports.
   "pydantic-settings==2.14.2",
   "html2text==2024.2.26",
   # pr_agent/telemetry imports these directly; already resolved transitively via
@@ -177,7 +180,7 @@ dev = [
   "pytest-cov==7.1.0",
   "httpx==0.28.1",
   "pre-commit>=4,<5",
-  "ruff==0.16.8",
+  "ruff==0.16.10",
 ]
 
 [tool.uv]
@@ -211,11 +214,8 @@ lint.exclude = ["api/code_completions"]
 # violation deferred so ruff runs green on adoption — fix the code and drop
 # the entry. TODO: burn this list down.
 lint.ignore = [
-  "E402", # import not at top of file
   "E722", # bare `except`
-  "B017", # assertRaises(Exception)
   "B023", # function definition uses loop variable
-  "B027", # empty method without @abstractmethod
   "B904", # raise without `from` inside `except`
 ]
 

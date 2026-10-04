@@ -20,6 +20,25 @@ class TestFindLineNumberOfRelevantLineInFile:
         expected = (3, 2) # (position in patch, absolute_position in new file)
         assert find_line_number_of_relevant_line_in_file(diff_files, relevant_file, relevant_line_in_file) == expected
 
+    def test_exact_raw_patch_line_skips_difflib(self, monkeypatch):
+        diff_files = [
+            FilePatchInfo(
+                base_file="file1",
+                head_file="file1",
+                patch="@@ -1 +1 @@\n-old\n+new\n",
+                filename="file1",
+            )
+        ]
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("difflib should not run for an exact raw patch-line match")
+
+        monkeypatch.setattr("pr_agent.algo.utils.difflib.get_close_matches", fail_if_called)
+
+        assert find_line_number_of_relevant_line_in_file(
+            diff_files, "file1", "+new"
+        ) == (2, 1)
+
     # Returns the correct line number when a similar line is found using difflib
     def test_similar_line_found_using_difflib(self):
         diff_files = [

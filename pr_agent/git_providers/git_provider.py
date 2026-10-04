@@ -1,21 +1,25 @@
 import base64
+import json
 import os
 import re
 import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
-from typing import Optional, Tuple
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
+from typing import Any, Optional, Tuple
 from urllib.parse import urlsplit
 
 from pr_agent.algo.comment_identity import (
+    PRCommandNoticeIdentity,
     add_pr_review_identity,
     comment_carries_other_identity,
     comment_matches_identity,
     render_hidden_marker,
 )
-from pr_agent.algo.language_handler import numeric_languages
+from pr_agent.algo.inline_comment_dedup import strip_markers
+from pr_agent.algo.language_handler import build_language_file_matcher, numeric_languages
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
@@ -36,9 +40,84 @@ def get_config_branch() -> str:
 
 MAX_FILES_ALLOWED_FULL = 50
 
+DEFAULT_DISCUSSION_CONTEXT_CHARS = 24000
+DISCUSSION_CONTEXT_MAX_REPLIES = 10
+DISCUSSION_CONTEXT_MAX_THREADS = 50
+DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS = 750
 
-class IncompletePullRequestFilesError(RuntimeError):
-    """Represent an incomplete or inconsistent pull-request file set."""
+
+@dataclass
+class CodeSuggestionThread:
+    """One prior code-suggestion thread, as a provider reports it for the /improve discussion context.
+
+    `suggestion` is the raw opener body. `replies` holds (author, message) pairs, oldest first, with
+    provider-specific noise (system notes, progress messages) already removed. `authored_by_agent` is
+    None when the provider cannot verify who opened the thread.
+    """
+    thread_id: Any
+    status: Any
+    file: Optional[str]
+    start_line: Optional[int]
+    end_line: Optional[int]
+    suggestion: str
+    replies: list[tuple[str, str]] = field(default_factory=list)
+    authored_by_agent: Optional[bool] = None
+
+
+def _discussion_context_budget() -> int:
+    value = get_settings().get("pr_code_suggestions.max_discussion_context_chars", DEFAULT_DISCUSSION_CONTEXT_CHARS)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        get_logger().warning(f"Invalid pr_code_suggestions.max_discussion_context_chars: {value!r}")
+        return DEFAULT_DISCUSSION_CONTEXT_CHARS
+
+
+class IncompleteProviderPullRequestFilesError(RuntimeError):
+    """Provider-neutral base for incomplete-file failures with public notices."""
+
+    notice: str
+    notice_marker: str
+
+
+class IncompletePullRequestFilesError(IncompleteProviderPullRequestFilesError):
+    """Represent an incomplete or inconsistent GitHub pull-request file set."""
+
+    notice = (
+        "## PR-Agent command was not run\n\n"
+        "GitHub returned an incomplete or inconsistent changed-file set for this pull request, so PR-Agent stopped "
+        "instead of analyzing only part of it.\n\n"
+        "GitHub limits changed-file responses to 3,000 files. If this pull request changes more than 3,000 files, "
+        "split it into smaller pull requests and run the command again. Otherwise, retry the command."
+    )
+    notice_marker = "<!-- pr-agent:github-incomplete-files -->"
+
+
+class IncompleteBitbucketPullRequestFilesError(IncompleteProviderPullRequestFilesError):
+    """Represent Bitbucket aggregate patches that cannot align with its changed-file inventory."""
+
+    notice = (
+        "## PR-Agent command was not run\n\n"
+        "Bitbucket returned an incomplete or inconsistent pull-request diff, so PR-Agent stopped "
+        "instead of treating it as an empty change.\n\n"
+        "Retry the command and check the pull request's diff in Bitbucket if the problem persists."
+    )
+    notice_marker = PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value
+
+
+@dataclass(frozen=True)
+class FileContentSnapshot:
+    """Capture file contents and existence at one revision for a guarded write.
+
+    The revision is opaque and provider-owned; consumers must not interpret or refresh it.
+    """
+    contents: str
+    exists: bool
+    revision: str | None
+
+
+class ConcurrentFileUpdateError(RuntimeError):
+    """Signal that a file no longer matches the snapshot used to prepare its replacement."""
 
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
@@ -193,6 +272,11 @@ class GitProvider(ABC):
     def is_supported(self, capability: str) -> bool:
         pass
 
+    def reset_diff_cache_for_command(self) -> None:
+        """Reset diff state that should not survive an automatic command boundary."""
+        if getattr(self, "diff_files", None) == []:
+            self.diff_files = None
+
     def supports_incremental_kind(self, kind: str) -> bool:
         """Whether `get_incremental_commits()` can scope an incremental run to `kind`
         (e.g. "suggestions" for `/improve -i`). Providers implementing kind-aware
@@ -227,6 +311,44 @@ class GitProvider(ABC):
 
     def supports_code_suggestion_state(self) -> bool:
         return False
+
+    def get_code_suggestion_thread_context(self) -> str:
+        """Return prior code-suggestion threads as a JSON block for the /improve prompt.
+
+        Threads come newest first from `_iter_code_suggestion_threads()`. The block stays within
+        `pr_code_suggestions.max_discussion_context_chars` (0 disables it) and is empty when no thread fits.
+        """
+        budget = _discussion_context_budget()
+        if budget <= 0:
+            return ""
+        discussions, context = [], ""
+        for thread in self._iter_code_suggestion_threads():
+            if thread.authored_by_agent is False:
+                continue
+            replies = [(author, message.strip()) for author, message in thread.replies
+                       if isinstance(message, str) and message.strip()]
+            discussion = {
+                "thread_id": thread.thread_id,
+                "status": thread.status,
+                "file": thread.file,
+                "start_line": thread.start_line,
+                "end_line": thread.end_line,
+                "suggestion": strip_markers(thread.suggestion).strip()[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS],
+                "replies": [{"author": author or "Unknown", "message": message[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS]}
+                            for author, message in replies[-DISCUSSION_CONTEXT_MAX_REPLIES:]],
+            }
+            candidate = json.dumps(discussions + [discussion], ensure_ascii=False, indent=2)
+            if len(candidate) > budget:
+                break
+            discussions.append(discussion)
+            context = candidate
+            if len(discussions) >= DISCUSSION_CONTEXT_MAX_THREADS:
+                break
+        return context
+
+    def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
+        """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this."""
+        return iter(())
 
     def supports_threaded_pr_questions(self) -> bool:
         return False
@@ -420,8 +542,12 @@ class GitProvider(ABC):
     def get_diff_files(self) -> list[FilePatchInfo]:
         pass
 
-    def get_incremental_commits(self, is_incremental):
-        pass
+    def get_filtered_diff_file_names(self) -> list[str]:
+        """Return changed paths omitted from the diff by file-type filtering."""
+        return getattr(self, "filtered_diff_file_names", [])
+
+    def get_incremental_commits(self, is_incremental) -> None:
+        return None
 
     @abstractmethod
     def publish_description(self, pr_title: str, pr_body: str) -> None:
@@ -435,9 +561,58 @@ class GitProvider(ABC):
         # title in that case.
         pass
 
-    @abstractmethod
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        pass
+        """Publish code suggestions through provider-specific preparation and payload hooks."""
+        post_parameters_list = []
+        for suggestion in self._prepare_code_suggestions(code_suggestions):
+            suggestion = self._prepare_code_suggestion(suggestion)
+            if not suggestion:
+                continue
+            if not self._is_valid_code_suggestion(suggestion):
+                continue
+            post_parameters = self._build_code_suggestion_payload(suggestion)
+            if not post_parameters:
+                continue
+            post_parameters_list.append(post_parameters)
+
+        try:
+            return bool(self.publish_inline_comments(post_parameters_list))
+        except self._code_suggestion_publish_exceptions as e:
+            self._log_code_suggestion_publish_error(e)
+            return False
+
+    _code_suggestion_publish_exceptions = (Exception,)
+
+    def _prepare_code_suggestions(self, code_suggestions: list) -> list:
+        return code_suggestions
+
+    def _prepare_code_suggestion(self, suggestion: dict) -> dict | None:
+        return suggestion
+
+    def _is_valid_code_suggestion(self, suggestion: dict) -> bool:
+        relevant_lines_start = suggestion["relevant_lines_start"]
+        relevant_lines_end = suggestion["relevant_lines_end"]
+        if not relevant_lines_start or relevant_lines_start == -1:
+            self._log_invalid_code_suggestion(
+                f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}"
+            )
+            return False
+        if relevant_lines_end < relevant_lines_start:
+            self._log_invalid_code_suggestion(
+                f"Failed to publish code suggestion, relevant_lines_end is {relevant_lines_end} and "
+                f"relevant_lines_start is {relevant_lines_start}"
+            )
+            return False
+        return True
+
+    def _build_code_suggestion_payload(self, suggestion: dict) -> dict | None:
+        raise NotImplementedError
+
+    def _log_invalid_code_suggestion(self, message: str) -> None:
+        get_logger().exception(message)
+
+    def _log_code_suggestion_publish_error(self, error: Exception) -> None:
+        get_logger().error(f"Failed to publish code suggestion, error: {error}")
 
     @abstractmethod
     def get_languages(self):
@@ -456,10 +631,10 @@ class GitProvider(ABC):
         pass
 
     def edit_comment(self, comment, body: str):
-        pass
+        return None
 
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
-        pass
+        return None
 
     def get_pr_description(self, full: bool = True, split_changes_walkthrough=False) -> str | tuple:
         from pr_agent.algo.token_budget import clip_tokens
@@ -711,6 +886,9 @@ class GitProvider(ABC):
         """Return whether HTML comment identity markers render invisibly."""
         return True
 
+    def should_reply_to_trigger_comment(self) -> bool:
+        return False
+
     def supports_review_comment_identity(self) -> bool:
         return False
 
@@ -896,7 +1074,7 @@ class GitProvider(ABC):
         return ""
 
     def get_review_thread_comments(self, comment_id: int) -> list[dict]:
-        pass
+        return []
 
     #### labels operations ####
     @abstractmethod
@@ -1028,28 +1206,42 @@ def get_main_pr_language(languages, files) -> str:
             return main_language_str
         top_language = max(languages, key=languages.get).lower()
 
-        # validate that the specific commit uses the main language
-        extension_list = []
-        for file in files:
-            if not file:
-                continue
-            if isinstance(file, str):
-                file = FilePatchInfo(base_file=None, head_file=None, patch=None, filename=file)
-            extension_list.append(file.filename.rsplit('.')[-1])
-
-        # get the most common extension
-        most_common_extension = '.' + max(set(extension_list), key=extension_list.count)
+        # Validate that the specific commit uses the main language. Resolve every
+        # filename through the shared classifier instead of its last suffix: a bare
+        # rsplit('.') turned "Config.cmake.in" into ".in", "module.bsl" into ".bsl"
+        # (the map stores the wildcard "*.bsl") and "handler.PY" into ".PY", so none of
+        # them matched and the function returned an empty language.
         try:
             language_extension_map_org = get_settings().language_extension_map_org
-            language_extension_map = {k.lower(): v for k, v in language_extension_map_org.items()}
+            get_language = build_language_file_matcher(language_extension_map_org)
 
-            if top_language in language_extension_map and most_common_extension in language_extension_map[top_language]:
+            language_list = []
+            for file in files:
+                if not file:
+                    continue
+                if isinstance(file, str):
+                    file = FilePatchInfo(base_file=None, head_file=None, patch=None, filename=file)
+                language = get_language(file.filename)
+                if language:
+                    language_list.append(language.lower())
+
+            if not language_list:
+                return main_language_str
+
+            # Count languages rather than suffixes so a stray README does not outvote
+            # the code. dict.fromkeys keeps file order, so a tie resolves the same way
+            # every run.
+            languages_in_diff = dict.fromkeys(language_list)
+            most_common_language = max(
+                languages_in_diff, key=lambda language: language_list.count(language)
+            )
+
+            # Keep the provider's spelling when it agrees with what the diff contains,
+            # and otherwise trust the diff.
+            if most_common_language == top_language:
                 main_language_str = top_language
             else:
-                for language, extensions in language_extension_map.items():
-                    if most_common_extension in extensions:
-                        main_language_str = language
-                        break
+                main_language_str = most_common_language
         except Exception as e:
             get_logger().exception(f"Failed to get main language: {e}")
 

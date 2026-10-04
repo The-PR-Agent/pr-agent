@@ -7,6 +7,8 @@ from setuptools.command.build_py import build_py as _build_py
 PROJECT_ROOT = Path(__file__).resolve().parent
 HELP_DOCS_SOURCE = PROJECT_ROOT / "docs" / "docs"
 HELP_DOCS_PACKAGE = Path("pr_agent") / "_help_docs"
+# Pages needing a JSX component are stored as '.mdx'; both suffixes ship.
+HELP_DOCS_SUFFIXES = ("*.md", "*.mdx")
 
 
 class BuildPy(_build_py):
@@ -15,7 +17,11 @@ class BuildPy(_build_py):
     def _help_docs_output_mapping(self) -> dict[str, str]:
         return {
             str(Path(self.build_lib) / HELP_DOCS_PACKAGE / source.relative_to(HELP_DOCS_SOURCE)): str(source)
-            for source in sorted(HELP_DOCS_SOURCE.rglob("*.md"))
+            for source in sorted(
+                source
+                for pattern in HELP_DOCS_SUFFIXES
+                for source in HELP_DOCS_SOURCE.rglob(pattern)
+            )
             if source.is_file()
         }
 

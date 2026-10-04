@@ -21,6 +21,26 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 )
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
+
+class _ReverseIterationSet(set):
+    """Use a set double whose iteration order cannot accidentally match insertion order."""
+
+    def __init__(self):
+        super().__init__()
+        self._insertion_order = []
+
+    def add(self, item):
+        if item not in self:
+            self._insertion_order.append(item)
+        super().add(item)
+
+    def __iter__(self):
+        return iter(reversed(self._insertion_order))
+
+    def __eq__(self, other):
+        return set.__eq__(self, other)
+
+
 # ---------------------------------------------------------------------------
 # Test doubles
 # ---------------------------------------------------------------------------
@@ -289,6 +309,26 @@ class TestGithubExtractionMerging:
         # The branch-derived #13 must be the one dropped: description tickets
         # come first in the merge order, so the cap drops the trailing entry.
         assert ids == [10, 11, 12]
+
+    def test_branch_candidates_fill_remaining_slots_in_first_seen_order(self, settings_snapshot, monkeypatch):
+        repo_obj = _FakeRepoObj({
+            10: _FakeIssue(10),
+            11: _FakeIssue(11),
+            123: _FakeIssue(123),
+            456: _FakeIssue(456),
+        })
+        repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+        provider = _make_github_provider(
+            user_description="Fixes #10 and #11",
+            branch="feature/123-fix/456-followup",
+            repo_obj=repo_obj,
+        )
+        monkeypatch.setattr(tpc, "set", _ReverseIterationSet, raising=False)
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["ticket_id"] for ticket in result] == [10, 11, 123]
+        assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == [10, 11, 123]
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +608,47 @@ class TestSubIssues:
         subs = result[0]["sub_issues"]
         assert [s["ticket_url"] for s in subs] == [sub_good]
 
+    def test_sub_issues_capped_at_max_limit(self, settings_snapshot):
+        # 15 sub-issues linked to main issue #1; only MAX_SUB_ISSUES_PER_TICKET (10) should be fetched
+        issues_dict = {1: _FakeIssue(1, title="Main", body="m")}
+        sub_urls = []
+        for i in range(101, 116):
+            issues_dict[i] = _FakeIssue(i, title=f"Sub {i}", body=f"body {i}")
+            sub_urls.append(f"https://github.com/org/repo/issues/{i}")
+
+        repo_obj = _FakeRepoObj(issues_dict)
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo_obj=repo_obj,
+            sub_issues_map={"https://github.com/org/repo/issues/1": sub_urls},
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert result and len(result) == 1
+        subs = result[0]["sub_issues"]
+        assert len(subs) == 10
+        expected_urls = sorted(sub_urls)[:10]
+        assert [s["ticket_url"] for s in subs] == expected_urls
+
+    def test_malformed_sub_issue_entries_skipped_safely(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({
+            1: _FakeIssue(1, title="Main", body="m"),
+            101: _FakeIssue(101, title="Sub 101", body="b1"),
+            102: _FakeIssue(102, title="Sub 102", body="b2"),
+        })
+        sub_valid_1 = "https://github.com/org/repo/issues/101"
+        sub_valid_2 = "https://github.com/org/repo/issues/102"
+        provider = _make_github_provider(
+            user_description="Fixes #1",
+            repo_obj=repo_obj,
+            sub_issues_map={
+                "https://github.com/org/repo/issues/1": [None, sub_valid_2, 12345, sub_valid_1, ""]
+            },
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert result and len(result) == 1
+        subs = result[0]["sub_issues"]
+        assert [s["ticket_url"] for s in subs] == [sub_valid_1, sub_valid_2]
+
 
 # ---------------------------------------------------------------------------
 # Scenario 6: labels — supports both object-style and string-style
@@ -653,6 +734,15 @@ class TestAzureDevopsExtraction:
 # ---------------------------------------------------------------------------
 
 class TestGitLabExtraction:
+    def test_reference_limit_defaults_to_three_and_can_expand_for_lookup_refill(self):
+        description = "#1 GROUP/REPO#1 " + " ".join(f"#{iid}" for iid in range(2, 12))
+        assert extract_gitlab_ticket_references(description, "group/repo", "https://gitlab.com") == [
+            ("group/repo", iid) for iid in range(1, 4)
+        ]
+        assert extract_gitlab_ticket_references(description, "group/repo", "https://gitlab.com", max_tickets=10) == [
+            ("group/repo", iid) for iid in range(1, 11)
+        ]
+
     @pytest.mark.parametrize(
         ("description", "repo_path", "gitlab_url", "expected"),
         [
@@ -790,7 +880,7 @@ class TestExtractAndCachePrTickets:
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
         assert vars_["related_tickets"] == cached
 
-    def test_stores_sub_issues_before_main_issue_in_related_tickets(
+    def test_stores_main_issue_before_sub_issues_in_related_tickets(
         self, settings_snapshot, monkeypatch
     ):
         settings_snapshot.set("pr_reviewer.require_ticket_analysis_review", True)
@@ -815,9 +905,10 @@ class TestExtractAndCachePrTickets:
         vars_ = {}
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
 
-        # Per current production order: sub-issues are appended first, then main.
+        # Main ticket is appended first, followed by its sub-issues,
+        # so prompt clipping preserving a prefix keeps the primary ticket.
         stored = vars_["related_tickets"]
-        assert stored == [sub_a, sub_b, main_ticket]
+        assert stored == [main_ticket, sub_a, sub_b]
         # Settings cache is also populated
         assert get_settings().get("related_tickets") == stored
 
@@ -950,20 +1041,23 @@ class TestFetchSubIssuesNullGraphQLFields:
         assert "Invalid sub-issues response structure" in logs
 
     def test_sub_issues_are_returned_when_present(self):
-        """Happy path stays intact."""
+        """The complete supported direct-child set is requested and returned."""
+        sub_issue_urls = {
+            f"https://github.com/org/repo/issues/{number}"
+            for number in range(1, 12)
+        }
         responses = [
             {"data": {"repository": {"issue": {"id": "I_kwDO_fake"}}}},
             {"data": {"node": {"subIssues": {"nodes": [
-                {"url": "https://github.com/org/repo/issues/1"},
-                {"url": "https://github.com/org/repo/issues/2"},
+                {"url": url} for url in sub_issue_urls
             ]}}}},
         ]
         provider = _provider_with_graphql(responses)
 
         result, logs = _capture_logs(lambda: provider.fetch_sub_issues(ISSUE_URL))
 
-        assert result == {
-            "https://github.com/org/repo/issues/1",
-            "https://github.com/org/repo/issues/2",
-        }
+        assert result == sub_issue_urls
         assert "Failed to fetch sub-issues" not in logs
+        queries = provider.github_client._Github__requester.queries
+        assert len(queries) == 2
+        assert "subIssues(first: 100)" in queries[1]

@@ -27,6 +27,31 @@ updates:
     commit-message:
       prefix: chore(deps)
 
+  # Documentation site. The Docusaurus toolchain is the repository's only Node
+  # dependency surface; without this it would sit outside security updates.
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      docs-minor-and-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      docs-major:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - major
+    commit-message:
+      prefix: chore(deps)
+
   # GitHub Actions. Every `uses:` here is `@<sha>  # vX.Y.Z` on one line, which
   # is the format Dependabot rewrites, comment included.
   - package-ecosystem: github-actions

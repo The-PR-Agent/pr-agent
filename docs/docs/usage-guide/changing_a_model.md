@@ -1,3 +1,8 @@
+---
+title: "Changing a Model"
+sidebar_position: 8
+---
+
 ## Changing a model in PR-Agent
 
 See [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py) for a list of supported models in PR-Agent.
@@ -16,14 +21,16 @@ To send small pull requests to a cheaper model, see [Routing small pull requests
 For models and environments not from OpenAI, you might need to provide additional keys and other parameters.
 You can give parameters via a configuration file, or from environment variables.
 
-!!! note "Model-specific environment variables"
-    See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
-    Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
+:::note[Model-specific environment variables]
+See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
+Failing to set the needed keys of a specific model will usually result in litellm not identifying the model type, and failing to utilize it.
+:::
 
-!!! warning "Credential isolation boundary"
-    PR-Agent captures request settings and supported provider environment values per handler. Deployment-owned LiteLLM secret managers are outside this request-isolation boundary; their credentials are not snapshotted by PR-Agent. Keep process environment variables and LiteLLM globals stable while requests run. The handler does not isolate arbitrary changes made by embedding applications during a request. Use separate processes when workloads require different deployment-owned credential sources or mutable global authentication and routing state.
+:::warning[Credential isolation boundary]
+PR-Agent captures request settings and supported provider environment values per handler. Deployment-owned LiteLLM secret managers are outside this request-isolation boundary; their credentials are not snapshotted by PR-Agent. Keep process environment variables and LiteLLM globals stable while requests run. The handler does not isolate arbitrary changes made by embedding applications during a request. Use separate processes when workloads require different deployment-owned credential sources or mutable global authentication and routing state.
 
-    Process-wide routing fallbacks such as `litellm.api_base`, `litellm.api_version`, `litellm.organization`, `litellm.vertex_project`, and `litellm.vertex_location` can be rejected even when unchanged. Use the corresponding PR-Agent settings (`OPENAI.API_BASE`, `OPENAI.API_VERSION`, `OPENAI.ORG`, `VERTEXAI.VERTEX_PROJECT`, and `VERTEXAI.VERTEX_LOCATION`) or supported provider environment variables, and clear the corresponding LiteLLM globals even when they match the intended routing. Use `LITELLM.EXTRA_HEADERS` instead of `litellm.headers`.
+Process-wide routing fallbacks such as `litellm.api_base`, `litellm.api_version`, `litellm.organization`, `litellm.vertex_project`, and `litellm.vertex_location` can be rejected even when unchanged. Use the corresponding PR-Agent settings (`OPENAI.API_BASE`, `OPENAI.API_VERSION`, `OPENAI.ORG`, `VERTEXAI.VERTEX_PROJECT`, and `VERTEXAI.VERTEX_LOCATION`) or supported provider environment variables, and clear the corresponding LiteLLM globals even when they match the intended routing. Use `LITELLM.EXTRA_HEADERS` instead of `litellm.headers`.
+:::
 
 ### OpenAI like API
 
@@ -52,6 +59,23 @@ extra_body='{"service_tier": "flex"}'
 ```
 
 See [OpenAI Flex Processing docs](https://platform.openai.com/docs/guides/flex-processing) for details.
+
+### Chat template options
+
+For OpenAI-compatible endpoints that accept `chat_template_kwargs`, such as a
+[vLLM deployment serving Qwen](https://docs.vllm.ai/en/latest/features/reasoning_outputs/),
+pass a JSON object through the existing global option:
+
+```toml
+[litellm]
+extra_body='{"chat_template_kwargs": {"enable_thinking": false}}'
+```
+
+PR-Agent sends this object in the request body and preserves generated OpenRouter
+routing, reasoning, and request-attribution fields. The setting applies to every
+configured model, including fallback models, so use it only when all selected
+endpoints support the field. Existing `service_tier` and `processing_mode` options
+can be included in the same JSON object.
 
 ### Azure
 
@@ -120,14 +144,15 @@ By default, Ollama uses a context window size of 2048 tokens. In most cases this
 
 Please note that the `custom_model_max_tokens` setting should be configured in accordance with the `OLLAMA_CONTEXT_LENGTH`. Failure to do so may result in unexpected model output.
 
-!!! note "Local models vs commercial models"
-    PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
+:::note[Local models vs commercial models]
+PR-Agent is compatible with almost any AI model, but analyzing complex code repositories and pull requests requires a model specifically optimized for code analysis.
 
-    Commercial models such as GPT-5, Claude Sonnet, and Gemini have demonstrated robust capabilities in generating structured output for code analysis tasks with large input. In contrast, most open-source models currently available (as of January 2025) face challenges with these complex tasks.
+Commercial models such as GPT-5, Claude Sonnet, and Gemini have demonstrated robust capabilities in generating structured output for code analysis tasks with large input. In contrast, most open-source models currently available (as of January 2025) face challenges with these complex tasks.
 
-    Based on our testing, local open-source models are suitable for experimentation and learning purposes (mainly for the `ask` command), but they are not suitable for production-level code analysis tasks.
+Based on our testing, local open-source models are suitable for experimentation and learning purposes (mainly for the `ask` command), but they are not suitable for production-level code analysis tasks.
 
-    Hence, for production workflows and real-world usage, we recommend using commercial models.
+Hence, for production workflows and real-world usage, we recommend using commercial models.
+:::
 
 ### Hugging Face
 
@@ -292,6 +317,19 @@ model="bedrock/us.meta.llama4-scout-17b-instruct-v1:0"
 fallback_models=["bedrock/us.meta.llama4-maverick-17b-instruct-v1:0"]
 ```
 
+Kimi K3 is also available on Amazon Bedrock:
+
+```toml
+[config] # in configuration.toml
+model="bedrock/moonshotai.kimi-k3"
+fallback_models=["bedrock/us.moonshotai.kimi-k3"]
+```
+
+Use the bare `bedrock/moonshotai.kimi-k3` id where it's directly available, the `us.` cross-region
+prefix to route across US regions, or the `global.` prefix to let Bedrock route across all
+supported regions. To call it through the Bedrock Converse API instead of the classic runtime,
+prefix the model id with `bedrock/converse/`, e.g. `bedrock/converse/us.moonshotai.kimi-k3`.
+
 Grok 4.3 is available through Amazon Bedrock Mantle rather than the classic Bedrock runtime:
 
 ```toml
@@ -401,6 +439,32 @@ model_id = "your-application-inference-profile-arn"
 ```
 
 The `litellm.model_id` parameter applies only to classic `bedrock/` calls made through the `bedrock-runtime` APIs. It does not apply to `bedrock_mantle/`; for cost allocation with the Mantle Chat Completions and Responses APIs, use [Amazon Bedrock Projects](https://docs.aws.amazon.com/bedrock/latest/userguide/cost-mgmt-projects.html).
+
+The profile is sent only with requests for the model set in `config.model`. Models in `config.fallback_models` do not use it, so a fallback is never routed to the primary model's inference profile.
+
+To give a fallback its own application inference profile, list it in `litellm.model_ids`, keyed by the exact model name. An entry in `model_ids` takes priority for that model; `model_id` still applies to `config.model` when it has no entry. A model that is in neither gets no profile.
+
+```toml
+[litellm]
+model_ids = {"bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0" = "your-primary-profile-arn", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "your-fallback-profile-arn"}
+```
+
+##### Prompt caching and run cost with an ARN
+
+Prompt caching and run-cost estimation identify the model by name, so an opaque application
+inference profile ARN needs extra configuration:
+
+- Add the ARN to `claude_adaptive_thinking_models_override` (or
+  `claude_extended_thinking_models_override` for extended thinking) so PR-Agent treats it as
+  Claude and forwards `cache_control_injection_points`. See [Claude 5 thinking with an
+  application inference profile ARN](#claude-5-thinking-with-an-application-inference-profile-arn).
+- Map the ARN to a LiteLLM-priced model id in `[litellm] base_models`, so run cost is estimated
+  instead of reported as unavailable:
+
+```toml
+[litellm.base_models]
+"bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>" = "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+```
 
 #### Claude 5 thinking with an application inference profile ARN
 
@@ -642,7 +706,7 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 # max_tokens = 16000                   # hard cap on completion tokens for the request
 ```
 
-`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6 clamp `"none"` before precedence is applied, so a positive budget wins there; otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6 and Gemini 3.7/3.8 Flash clamp `"none"` to `"low"` before precedence is applied, so a positive budget wins for those models; explicit Openrouter `"minimal"` remains unchanged for Gemini. Otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
 ### OrcaRouter
 
@@ -700,8 +764,9 @@ Keep the `openai/` prefix on the model name, whichever Neon model ID you use: th
 
 Create the credential per branch in the [Neon Console](https://console.neon.tech/) with the `ai_gateway:invoke` scope. The credential also works on branches descended from the one it was created on. The gateway is in beta and requires a paid Neon plan. It runs only in AWS US East (Ohio), `aws-us-east-2`.
 
-!!! note "Chat completions only"
-    Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
+:::note[Chat completions only]
+Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
+:::
 
 ### GitHub Copilot
 
@@ -713,7 +778,7 @@ model = "github_copilot/gpt-4o"
 fallback_models = ["github_copilot/gpt-4.1"]
 ```
 
-The GitHub identity behind the model needs an active Copilot subscription. The token budget for a Copilot model is resolved automatically from litellm's model metadata (verified against the pinned litellm 1.102.1), so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the full context window of the model (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
+The GitHub identity behind the model needs an active Copilot subscription. The token budgets for these models are resolved automatically from litellm's model metadata, so `custom_model_max_tokens` is not required. However, `get_max_tokens` clamps the effective window to `config.max_model_tokens`, which defaults to 32000. To use the input limits recorded for these Copilot routes (e.g., 64000 for gpt-4o, 128000 for gpt-4.1), raise `config.max_model_tokens` accordingly.
 
 Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/providers/github_copilot) flow:
 
@@ -751,8 +816,9 @@ OPENAI__KEY=...
 
 Keep the `openai/` prefix on the model name, whichever Atlas model ID you use (`openai/deepseek-ai/deepseek-v4-pro`, `openai/zai-org/glm-5`, `openai/moonshotai/kimi-k2.6`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Atlas's [model catalog](https://www.atlascloud.ai/models).
 
-!!! note "Reasoning models need output headroom"
-    Several Atlas models are reasoning models that spend completion tokens on a hidden chain of thought before writing the answer. `deepseek-ai/deepseek-v4-pro` with `max_tokens = 16` returns `finish_reason = "length"` and an **empty** `message.content` — all 16 completion tokens were reasoning tokens. If a tool comes back blank, raise the output budget rather than assuming the request failed. Non-reasoning IDs such as `deepseek-ai/DeepSeek-V3.1` are unaffected.
+:::note[Reasoning models need output headroom]
+Several Atlas models are reasoning models that spend completion tokens on a hidden chain of thought before writing the answer. `deepseek-ai/deepseek-v4-pro` with `max_tokens = 16` returns `finish_reason = "length"` and an **empty** `message.content` — all 16 completion tokens were reasoning tokens. If a tool comes back blank, raise the output budget rather than assuming the request failed. Non-reasoning IDs such as `deepseek-ai/DeepSeek-V3.1` are unaffected.
+:::
 
 ### Custom models
 
@@ -791,6 +857,39 @@ With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you ca
 
 For a model served through an OpenAI-compatible endpoint that litellm does not recognize as reasoning-capable, add its ID to `config.additional_reasoning_effort_models`. For known models support is decided by litellm's bundled reasoning metadata plus the maintained Grok registry (Grok ids resolve through their `xai/` prefix) with Claude models left out of the metadata path (their reasoning comes from the dedicated extended/adaptive thinking settings; an explicit entry in the list above still applies to them). Config IDs match exactly or through any provider prefix (e.g. `"deepseek-v4-flash-0731"` matches `"openai/deepseek-v4-flash-0731"`). When LiteLLM does not recognize the model, PR-Agent sets `allowed_openai_params = ["reasoning_effort"]` so the parameter reaches the endpoint. Note the default `"medium"` may be rejected by providers that accept a different subset (e.g. `"none"/"low"/"high"/"max"`); adding a custom model ID surfaces that provider-side error instead of silently dropping the setting.
 
+For GPT-6 Sol or Luna hosted outside OpenAI, Azure, or OpenRouter under the same
+model ID, add the ID to this list to explicitly enable `reasoning_effort`.
+
+To use [GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol) or
+[GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna):
+
+```toml
+[config]
+model = "gpt-6-sol" # or "gpt-6-luna"
+reasoning_effort = "medium" # "none", "low", "medium", "high", "xhigh", "max"
+```
+
+For recognized native GPT-6 Sol/Luna IDs on OpenAI, Azure, and OpenRouter routes,
+PR-Agent omits temperature.
+On OpenAI routes, their native `none` and `max` reasoning efforts are passed through
+unchanged. Azure routes preserve `none` and map `max` to `xhigh` for Chat Completions.
+OpenRouter maps `none` to disabled reasoning and `max` to `xhigh`.
+The legacy `minimal` setting is mapped to `low` on all three routes.
+Both models have a 1,050,000-token context window, a 922,000-token input ceiling,
+and support up to 128,000 output tokens. PR-Agent also applies `config.max_model_tokens` unless
+a tool bypasses that configured cap, as `/help` does; the native input ceiling still applies.
+The existing Chat Completions path is used for PR-Agent's
+text requests. OpenAI requires the Responses API for built-in tools and function calling with
+reasoning; Chat Completions function calling is limited to `reasoning_effort = "none"`.
+
+Unrecognized OpenRouter `_thinking` variants, such as `_thinking:batch` or `_thinking:free`,
+keep their literal IDs without native GPT-6 temperature or effort normalization.
+Add the full ID to `config.additional_reasoning_effort_models` to explicitly enable reasoning.
+For unregistered literal IDs, prompt budgeting requires usable LiteLLM metadata or
+`config.custom_model_max_tokens`.
+For bare Sol/Luna IDs on non-native custom providers, a positive `config.custom_model_max_tokens`
+takes precedence over the native registry value.
+
 To use [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra):
 
 ```toml
@@ -825,14 +924,15 @@ When `claude_extended_thinking_models_override` is non-empty, it fully replaces 
 include every model that should receive extended thinking. Leave it empty (the default) to use the
 built-in defaults.
 
-!!! note "Only models that accept a thinking budget are supported"
-    PR-Agent enables extended thinking through the manual
-    `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-    (e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
-    intentionally excluded from the built-in defaults. If you add one to
-    `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
-    for it and logs a warning rather than sending a request the provider would reject — use
-    `enable_claude_adaptive_thinking` for those models instead.
+:::note[Only models that accept a thinking budget are supported]
+PR-Agent enables extended thinking through the manual
+`thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
+(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+intentionally excluded from the built-in defaults. If you add one to
+`claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
+for it and logs a warning rather than sending a request the provider would reject — use
+`enable_claude_adaptive_thinking` for those models instead.
+:::
 
 Both thinking gates only fire when the model id itself is recognizable: an opaque id such as a
 Bedrock application inference profile ARN matches neither gate, and PR-Agent logs a warning
@@ -851,8 +951,12 @@ provider's own default applies. On some providers that default is low — for ex
 (Converse API) can cap Claude reasoning models at 4096 output tokens, and since reasoning tokens
 count against that budget, the visible answer can come back empty or truncated. Set
 `config.max_output_tokens` to a positive value (e.g. `16000`) to send it to LiteLLM as
-`max_completion_tokens` for GPT-6 Astra or `max_tokens` for other models. Use a value supported by
-the selected model; GPT-6 Astra supports at most 128,000 output tokens, including reasoning tokens.
+`max_completion_tokens` for native OpenAI/Azure GPT-6 models and recognized Astra IDs,
+including bare Astra IDs on custom providers. OpenRouter Astra uses this parameter only
+without a routing suffix or with `:nitro`/`:floor`. Other routes use `max_tokens`, and
+the `azure_text` and `text-completion-openai` routes always use `max_tokens`.
+Use a value supported by the selected model. GPT-6 Astra, Sol, and Luna support at most
+128,000 output tokens, including reasoning tokens.
 PR-Agent does not automatically clamp this setting to the model's output limit.
 When Claude extended thinking is enabled, `extended_thinking_max_output_tokens` takes precedence.
 For models with small context windows, keep in mind that prompt and completion tokens share the
@@ -888,6 +992,7 @@ Routing applies only to calls that ask for the regular model: `/review`, `/impro
 alone, and a dedicated `config.model_reasoning` is still used for self-reflection. With `config.output_run_details`
 enabled, the run details show which model a routed pull request ended up on.
 
-!!! note "Azure deployments"
-    An Azure deployment is tied to one model, so when `openai.deployment_id` is set each rule also needs its own
-    `deployment_id`. A rule without one is skipped with a warning and the next rule is tried.
+:::note[Azure deployments]
+An Azure deployment is tied to one model, so when `openai.deployment_id` is set each rule also needs its own
+`deployment_id`. A rule without one is skipped with a warning and the next rule is tried.
+:::

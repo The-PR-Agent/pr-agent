@@ -1,0 +1,139 @@
+/* Lay out /maintainers/ as an intro and a grid of people, using the tokens from custom.css. */
+
+/* Keep `width: 100%`: inside Docusaurus' flex wrapper, `margin: auto` alone
+   would shrink the page to its content instead of filling up to max-width. */
+.page {
+  width: 100%;
+  max-width: 52rem;
+  margin: 0 auto;
+  padding: 4rem 1.5rem 5rem;
+}
+
+.header {
+  max-width: 44rem;
+  margin-bottom: 3rem;
+}
+
+.title {
+  margin: 0 0 1rem;
+  font-size: clamp(2.25rem, 1.6rem + 2.2vw, 3.25rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.045em;
+}
+
+.lede {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+  line-height: 1.6;
+  color: var(--pra-muted);
+}
+
+.join {
+  margin: 0;
+  font-size: 0.925rem;
+  color: var(--pra-muted);
+}
+
+.lede a,
+.join a {
+  color: var(--pra-text);
+  text-decoration: underline;
+  text-decoration-color: var(--pra-line-strong);
+  text-underline-offset: 0.2em;
+}
+
+.lede a:hover,
+.join a:hover {
+  text-decoration-color: var(--pra-accent);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
+  gap: 0.9rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.6rem 1rem 1.3rem;
+  border: 1px solid var(--pra-line);
+  border-radius: 14px;
+  background: var(--pra-surface);
+  text-align: center;
+  transition: border-color 120ms ease;
+}
+
+.card:hover {
+  border-color: var(--pra-line-strong);
+}
+
+/* Outline the whole card when keyboard focus lands on the name link. */
+.card:has(.name:focus-visible) {
+  outline: 2px solid var(--pra-accent);
+  outline-offset: 2px;
+}
+
+.avatar {
+  width: 5rem;
+  height: 5rem;
+  margin-bottom: 1rem;
+  border-radius: 50%;
+  background: var(--pra-surface-2);
+  box-shadow: 0 0 0 1px var(--pra-line);
+}
+
+.name {
+  font-weight: 600;
+  color: var(--pra-text);
+  text-decoration: none;
+}
+
+.name:hover {
+  color: var(--pra-text);
+  text-decoration: none;
+}
+
+.name:focus-visible {
+  outline: none;
+}
+
+/* Make the whole card the link target. */
+.name::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.role {
+  margin-top: 0.2rem;
+  font-size: 0.85rem;
+  color: var(--pra-muted);
+}
+
+.handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.85rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+  color: var(--pra-muted);
+}
+
+.card:hover .handle {
+  color: var(--pra-text);
+}
+
+@media (max-width: 480px) {
+  .page {
+    padding-top: 2.5rem;
+  }
+}

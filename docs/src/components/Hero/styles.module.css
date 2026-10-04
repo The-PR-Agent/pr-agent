@@ -1,0 +1,519 @@
+/* Landing hero for the Overview page at `/`.
+   It renders inside `.markdown`, whose global rules (link underlines, list
+   margins, code borders, heading sizes) would otherwise leak in, so every
+   selector here is scoped under `.hero` to win on specificity. */
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 3.5rem;
+  align-items: center;
+  padding: 3.5rem 0 4.5rem;
+  margin-bottom: 3rem;
+  border-bottom: 1px solid var(--pra-line);
+}
+
+/* ---------------------------------------------------------------- intro */
+
+.hero .title {
+  margin: 0 0 1.25rem;
+  font-size: clamp(2.75rem, 1.5rem + 3.4vw, 4.5rem);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  color: var(--pra-text);
+}
+
+.hero .lede {
+  max-width: 34ch;
+  margin: 0 0 2rem;
+  font-size: 1.15rem;
+  line-height: 1.55;
+  color: var(--pra-muted);
+}
+
+.hero .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 1.75rem;
+}
+
+.hero .primary,
+.hero .secondary {
+  display: inline-flex;
+  align-items: center;
+  height: 2.625rem;
+  padding: 0 1.15rem;
+  border-radius: 8px;
+  font-size: 0.925rem;
+  font-weight: 550;
+  text-decoration: none;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.hero .primary {
+  background: var(--pra-accent);
+  color: var(--pra-on-accent);
+}
+
+.hero .primary:hover {
+  background: var(--ifm-color-primary-dark);
+  color: var(--pra-on-accent);
+}
+
+.hero .secondary {
+  border: 1px solid var(--pra-line-strong);
+  color: var(--pra-text);
+}
+
+.hero .secondary:hover {
+  border-color: var(--pra-muted);
+  color: var(--pra-text);
+}
+
+.hero .providers {
+  font-size: 0.85rem;
+  color: var(--pra-muted);
+}
+
+.hero .providersLabel {
+  display: block;
+  margin-bottom: 0.6rem;
+}
+
+.hero .providerList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 1.1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hero .providerList li {
+  margin: 0;
+  color: var(--pra-text);
+  font-weight: 500;
+}
+
+.hero .providerList :global(.pra-logo) {
+  width: 1.05rem;
+  height: 1.05rem;
+  color: var(--pra-muted);
+}
+
+/* --------------------------------------------------------------- thread */
+
+.hero .thread {
+  margin: 0;
+  border: 1px solid var(--pra-line);
+  border-radius: 14px;
+  background: var(--pra-surface);
+  overflow: hidden;
+}
+
+.hero .threadHead {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.85rem 1.25rem;
+  border-bottom: 1px solid var(--pra-line);
+  font-size: 0.875rem;
+}
+
+.hero .prTitle {
+  font-weight: 550;
+  color: var(--pra-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hero .prNumber {
+  color: var(--pra-muted);
+}
+
+.hero .tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 1rem;
+  border-bottom: 1px solid var(--pra-line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.hero .tab {
+  position: relative;
+  padding: 0.7rem 0.6rem;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.82rem;
+  color: var(--pra-muted);
+  white-space: nowrap;
+  transition: color 120ms ease;
+}
+
+.hero .tab:hover {
+  color: var(--pra-text);
+}
+
+.hero .tab[aria-selected='true'] {
+  color: var(--pra-text);
+}
+
+.hero .tab[aria-selected='true']::after {
+  content: '';
+  position: absolute;
+  left: 0.6rem;
+  right: 0.6rem;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--pra-accent);
+}
+
+.hero .panel {
+  display: grid;
+  gap: 1.25rem;
+  /* Sized to the tallest reply (/review), so switching commands never shifts
+     the layout or re-centres the intro column beside it. */
+  min-height: 24.25rem;
+  padding: 1.35rem 1.25rem 1.25rem;
+  align-content: start;
+}
+
+.hero .comment {
+  display: grid;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  gap: 0.75rem;
+  animation: pra-rise 220ms ease both;
+}
+
+.hero .reply {
+  animation-delay: 60ms;
+}
+
+.hero .avatar {
+  display: grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--pra-surface-2);
+  border: 1px solid var(--pra-line);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--pra-muted);
+}
+
+.hero .botAvatar {
+  background: var(--pra-accent-soft);
+  border-color: transparent;
+  color: var(--pra-accent);
+}
+
+.hero .botMark {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.hero .commentBody {
+  min-width: 0;
+}
+
+.hero .author {
+  display: block;
+  margin-bottom: 0.3rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--pra-text);
+}
+
+.hero .bot {
+  margin-left: 0.3rem;
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--pra-line-strong);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--pra-muted);
+}
+
+.hero .typed {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 0.85rem;
+  color: var(--pra-accent);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.hero .output {
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--pra-line);
+  border-radius: 10px;
+  background: var(--pra-bg);
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--pra-text);
+}
+
+.hero .output p,
+.hero .output ul,
+.hero .output dl,
+.hero .output pre {
+  margin: 0;
+}
+
+.hero .output li + li {
+  margin-top: 0;
+}
+
+.hero .output code {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  padding: 0.05em 0.3em;
+  border: 1px solid var(--pra-line);
+  border-radius: 4px;
+  background: var(--pra-surface);
+  font-size: 0.8rem;
+}
+
+.hero .heading {
+  margin-bottom: 0.6rem !important;
+  font-weight: 600;
+}
+
+.hero .sub {
+  margin: 0.85rem 0 0.45rem !important;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--pra-muted);
+}
+
+/* describe */
+.hero .fields {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+}
+
+.hero .fields dt {
+  font-weight: 400;
+  color: var(--pra-muted);
+}
+
+.hero .fields dd {
+  margin: 0;
+}
+
+.hero .bullets {
+  padding-left: 1rem;
+}
+
+.hero .files {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0;
+  list-style: none;
+}
+
+.hero .files li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.hero .files li code {
+  margin-right: auto;
+}
+
+.hero .add,
+.hero .del {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+}
+
+.hero .add {
+  color: var(--pra-add);
+}
+
+.hero .del {
+  color: var(--pra-del);
+}
+
+/* review */
+.hero .checks {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0;
+  list-style: none;
+}
+
+.hero .checks li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.hero .meter {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.hero .meter i {
+  width: 1rem;
+  height: 0.35rem;
+  border-radius: 2px;
+  background: var(--pra-line-strong);
+}
+
+.hero .meter i.on {
+  background: var(--pra-accent);
+}
+
+.hero .finding {
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--pra-warn);
+}
+
+.hero .finding p {
+  margin-top: 0.3rem;
+  color: var(--pra-muted);
+}
+
+.hero .lines {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.75rem;
+  color: var(--pra-muted);
+}
+
+/* improve */
+.hero .suggestion > p {
+  margin: 0.4rem 0 0.75rem;
+  color: var(--pra-muted);
+}
+
+.hero .suggestionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-weight: 600;
+}
+
+.hero .tags {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.hero .tags span {
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--pra-line-strong);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--pra-muted);
+}
+
+.hero .diff {
+  display: grid;
+  padding: 0;
+  border: 1px solid var(--pra-line);
+  border-radius: 8px;
+  background: var(--pra-surface);
+  overflow-x: auto;
+  font-size: 0.78rem;
+  line-height: 1.7;
+}
+
+.hero .diff span {
+  padding: 0 0.75rem;
+  white-space: pre;
+}
+
+.hero .diffFile {
+  padding-top: 0.3rem !important;
+  padding-bottom: 0.3rem !important;
+  border-bottom: 1px solid var(--pra-line);
+  color: var(--pra-muted);
+}
+
+.hero .diffDel {
+  background: color-mix(in srgb, var(--pra-del) 12%, transparent);
+  color: var(--pra-del);
+}
+
+.hero .diffAdd {
+  background: color-mix(in srgb, var(--pra-add) 12%, transparent);
+  color: var(--pra-add);
+}
+
+/* ask */
+.hero .answer {
+  color: var(--pra-text);
+}
+
+.hero .threadFoot {
+  display: block;
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--pra-line);
+  font-size: 0.8rem;
+  color: var(--pra-muted);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+
+.hero .threadFoot:hover {
+  color: var(--pra-accent);
+}
+
+@keyframes pra-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------------ responsive */
+
+@media (max-width: 996px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2.5rem;
+    padding: 2rem 0 3rem;
+  }
+
+  .hero .lede {
+    max-width: 40ch;
+  }
+}
+
+@media (max-width: 480px) {
+  .hero .panel {
+    min-height: 0;
+    padding: 1.1rem 1rem;
+  }
+
+  .hero .actions a {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero .comment {
+    animation: none;
+  }
+}

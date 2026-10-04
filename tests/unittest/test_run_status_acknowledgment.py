@@ -15,6 +15,7 @@ import pr_agent.servers.github_app as github_app
 from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.tools import pr_add_docs, pr_generate_labels, pr_help_message
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -366,6 +367,51 @@ async def test_a_clean_run_still_reports_success(check_runs_enabled, auto_comman
 
     assert events[-1] == ("finish", "review", "success", "PR-Agent ran /review")
     assert result is True
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "module"),
+    [
+        pytest.param("add_docs", pr_add_docs, id="add_docs"),
+        pytest.param("generate_labels", pr_generate_labels, id="generate_labels"),
+        pytest.param("help", pr_help_message, id="help"),
+    ],
+)
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.asyncio
+async def test_swallowed_tool_failures_are_recorded(
+    tool_name, module, propagate_tool_errors, monkeypatch, restored_config
+):
+    restored_config("publish_output", False)
+    restored_config("propagate_tool_errors", propagate_tool_errors)
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("injected tool failure")
+
+    monkeypatch.setattr(module, "retry_with_fallback_models", fail)
+
+    if tool_name == "add_docs":
+        tool = module.PRAddDocs.__new__(module.PRAddDocs)
+        tool.git_provider = MagicMock()
+    elif tool_name == "generate_labels":
+        tool = module.PRGenerateLabels.__new__(module.PRGenerateLabels)
+        tool.pr_id = "org/repo#1"
+        tool.git_provider = MagicMock()
+    else:
+        monkeypatch.setattr(module, "_load_help_docs_prompt", lambda: ("docs", {"tools/review.md"}))
+        tool = module.PRHelpMessage.__new__(module.PRHelpMessage)
+        tool.question_str = "How does review work?"
+        tool.vars = {"question": tool.question_str, "snippets": ""}
+        tool.git_provider = SimpleNamespace(pr_url=API_URL)
+
+    init_run_details()
+    if propagate_tool_errors:
+        with pytest.raises(RuntimeError, match="injected tool failure"):
+            await tool.run()
+    else:
+        await tool.run()
+
+    assert command_failed() is True
 
 
 async def test_the_reviewer_records_a_swallowed_failure(monkeypatch, restored_config):

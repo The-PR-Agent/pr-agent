@@ -1,4 +1,7 @@
-# Agent Skills
+---
+title: "Agent Skills"
+sidebar_position: 2
+---
 
 `Supported Tools: Review, Improve, Describe, Ask`
 
@@ -38,10 +41,11 @@ max_skills_tokens = 8000  # token budget for the combined skills block
 - `paths` — a list of directories (scanned recursively for `*/SKILL.md`) or direct paths to a `SKILL.md` file. `~` and `$VAR`/`${VAR}` are expanded.
 - `max_skills_tokens` — caps the combined size of the injected skills block. Skills past the cap are dropped from the end with a warning; if the first skill alone exceeds the budget it is clipped and marked `[truncated]`.
 
-!!! warning "`skills.paths` is host-level only"
-    `skills.paths` **cannot be set from a repository's `.pr_agent.toml`** and is configurable only where the deployment is administered. Because it reads files from the PR-Agent host's filesystem, allowing a repository to set it would let a malicious repo point PR-Agent at sensitive host files (e.g. `~/.ssh/*`) and exfiltrate their contents into the model prompt. A repo-supplied `skills.paths` is ignored with a warning.
+:::warning[`skills.paths` is host-level only]
+`skills.paths` **cannot be set from a repository's `.pr_agent.toml`** and is configurable only where the deployment is administered. Because it reads files from the PR-Agent host's filesystem, allowing a repository to set it would let a malicious repo point PR-Agent at sensitive host files (e.g. `~/.ssh/*`) and exfiltrate their contents into the model prompt. A repo-supplied `skills.paths` is ignored with a warning.
 
-    A repository *may* set the safe per-repo preferences `skills.enabled` and `skills.max_skills_tokens` in its own `.pr_agent.toml` — e.g. to opt in to (or size) the host's admin-curated skill library for that repo. It can never redirect the filesystem scan.
+A repository *may* set the safe per-repo preferences `skills.enabled` and `skills.max_skills_tokens` in its own `.pr_agent.toml` — e.g. to opt in to (or size) the host's admin-curated skill library for that repo. It can never redirect the filesystem scan.
+:::
 
 ## Bundled resources
 

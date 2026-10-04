@@ -1,4 +1,7 @@
-# Extending PR-Agent
+---
+title: "Extending PR-Agent"
+sidebar_position: 9
+---
 
 Contributors extending a model, git provider, or tool start here. To only change
 the model, use [Changing a Model](./changing_a_model.md).
@@ -45,7 +48,7 @@ Implement a `GitProvider` subclass and register it:
 1. Create `pr_agent/git_providers/<name>_provider.py`, extending the interface in `pr_agent/git_providers/git_provider.py` (`gitlab_provider.py` is the reference).
 2. Add the built-in provider to `_BUILTIN_GIT_PROVIDERS` in `pr_agent/git_providers/__init__.py` as a `(module_path, class_name)` pair. Built-ins are imported lazily when selected. Keys already used: `github`, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, `plain-diff`.
 3. Select it via `[config]` → `git_provider="<name>"` in `pr_agent/settings/configuration.toml`.
-4. Add `docs/docs/installation/<name>.md` (see [`gitlab.md`](../installation/gitlab.md)) and register it under `Installation` in both `docs/mkdocs.yml` and `docs/docs/summary.md`.
+4. Add `docs/docs/installation/<name>.md` (see [`gitlab.md`](../installation/gitlab.md)) and register it under `Installation` in `docs/sidebars.js`.
 5. Select provider-dependent behavior with capability checks like `provider.is_supported("feature")` rather than provider-type checks.
 6. Add unit tests under `tests/unittest/test_<name>_provider.py` (see `test_bitbucket_provider.py`) and list the required env vars in `pr_agent/settings/.secrets_template.toml`.
 
@@ -70,5 +73,5 @@ Then select it with `git_provider="forge"` under `[config]`. The class must exte
 3. Add a prompt TOML under `pr_agent/settings/` and register it in the `settings_files=[...]` list in `pr_agent/config_loader.py` — it is not loaded otherwise.
 4. Match the TOML section name to the settings key the tool reads: `[pr_review_prompt]` in `pr_reviewer_prompts.toml` ↔ `get_settings().pr_review_prompt` in `pr_reviewer.py`.
 5. Register the tool in `command2class` in `pr_agent/agent/pr_agent.py` under a command name, e.g. `"my_tool": PRMyTool`. Then add it to the hardcoded help surfaces, or it will not show up in `/help`: `pr_agent/tools/pr_help_message.py`, `pr_agent/servers/help.py`, and the command list in `pr_agent/cli.py`.
-6. Add a row to the tool list in `docs/docs/tools/index.md`, a page `docs/docs/tools/<name>.md` (see [`review.md`](../tools/review.md)), and register the page under `Tools` in both `docs/mkdocs.yml` and `docs/docs/summary.md`.
+6. Add a row to the tool list in `docs/docs/tools/index.md`, a page `docs/docs/tools/<name>.md` (see [`review.md`](../tools/review.md)), and register the page under `Tools` in `docs/sidebars.js`.
 7. Add tests under `tests/unittest/` and verify with `PYTHONPATH=. uv run pytest tests/unittest`.

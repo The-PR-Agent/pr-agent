@@ -1,3 +1,8 @@
+---
+title: "BitBucket Integration"
+sidebar_position: 6
+---
+
 ## Run as a Bitbucket Pipeline
 
 You can use the Bitbucket Pipeline system to run PR-Agent on every pull request open or update.
@@ -33,6 +38,18 @@ Note that comments on a PR are not supported in Bitbucket Pipeline.
 Review and code-suggestion identity markers use invisible Markdown link references on Bitbucket Cloud.
 Existing comments with older HTML identity markers are still recognized and updated in place.
 No configuration change is required.
+
+### Incomplete pull-request diff
+
+PR-Agent stops when Bitbucket Cloud returns a different number of patches than
+entries in the filtered changed-file list, instead of treating the diff as empty.
+An affected `/add_docs`, `/generate_labels`, `/describe`, `/review`, or `/improve`
+run may post **PR-Agent command was not run** with a Bitbucket-specific explanation
+when `CONFIG.PUBLISH_OUTPUT` is enabled. This provider-specific notice replaces the
+generic `/review` and `/improve` failure output to avoid duplicate comments.
+
+Retry the command. If the problem persists, check the pull request's diff in
+Bitbucket. PR-Agent does not recover missing patches automatically.
 
 ## Bitbucket Server and Data Center
 
@@ -84,3 +101,5 @@ Navigate to `Projects` or `Repositories`, `Settings`, `Webhooks`, `Create Webhoo
 Fill in the name and URL. For Authentication, select 'None'. Select the 'Pull Request Opened' checkbox to receive that event as a webhook.
 
 The URL should end with `/webhook`, for example: https://domain.com/webhook
+
+The webhook server runs under gunicorn with multiple worker processes. See [Sizing a self-hosted webhook server](./index.md#sizing-a-self-hosted-webhook-server) for the `GUNICORN_WORKERS` / `GUNICORN_MAX_WORKERS` knobs and memory guidance — worth reading before setting a memory limit.

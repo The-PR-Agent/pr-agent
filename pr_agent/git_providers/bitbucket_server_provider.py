@@ -159,71 +159,51 @@ class BitbucketServerProvider(GitProvider):
     def get_pr_id(self):
         return self.pr_num
 
-    def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        """
-        Publishes code suggestions as comments on the PR.
-        """
-        post_parameters_list = []
-        for suggestion in code_suggestions:
-            body = suggestion["body"]
-            original_suggestion = suggestion.get('original_suggestion', None)  # needed for diff code
-            if original_suggestion:
-                try:
-                    existing_code = original_suggestion['existing_code'].rstrip() + "\n"
-                    improved_code = original_suggestion['improved_code'].rstrip() + "\n"
-                    diff = difflib.unified_diff(existing_code.split('\n'),
-                                                improved_code.split('\n'), n=999)
-                    patch_orig = "\n".join(diff)
-                    patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
-                    diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                    # replace ```suggestion ... ``` with diff_code, using regex:
-                    body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
-                except Exception as e:
-                    get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
-                    continue
-            relevant_file = suggestion["relevant_file"]
-            relevant_lines_start = suggestion["relevant_lines_start"]
-            relevant_lines_end = suggestion["relevant_lines_end"]
+    def _prepare_code_suggestion(self, suggestion: dict) -> dict | None:
+        body = suggestion["body"]
+        original_suggestion = suggestion.get('original_suggestion', None)  # needed for diff code
+        if original_suggestion:
+            try:
+                existing_code = original_suggestion['existing_code'].rstrip() + "\n"
+                improved_code = original_suggestion['improved_code'].rstrip() + "\n"
+                diff = difflib.unified_diff(existing_code.split('\n'), improved_code.split('\n'), n=999)
+                patch_orig = "\n".join(diff)
+                patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
+                diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
+                body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
+            except Exception as e:
+                get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
+                return None
+            return {**suggestion, "body": body}
+        return suggestion
 
-            if not relevant_lines_start or relevant_lines_start == -1:
-                get_logger().warning(
-                    f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}"
-                )
-                continue
+    def _build_code_suggestion_payload(self, suggestion: dict) -> dict:
+        body = suggestion["body"]
+        relevant_lines_start = suggestion["relevant_lines_start"]
+        relevant_lines_end = suggestion["relevant_lines_end"]
+        if relevant_lines_end > relevant_lines_start:
+            # Render multi-line suggestions as a code block because Bitbucket does not support them.
+            # See https://jira.atlassian.com/browse/BSERV-4553.
+            body = body.replace("```suggestion", "```")
+            return {
+                "body": body,
+                "path": suggestion["relevant_file"],
+                "line": relevant_lines_end,
+                "start_line": relevant_lines_start,
+                "start_side": "RIGHT",
+            }
+        return {
+            "body": body,
+            "path": suggestion["relevant_file"],
+            "line": relevant_lines_start,
+            "side": "RIGHT",
+        }
 
-            if relevant_lines_end < relevant_lines_start:
-                get_logger().warning(
-                    f"Failed to publish code suggestion, "
-                    f"relevant_lines_end is {relevant_lines_end} and "
-                    f"relevant_lines_start is {relevant_lines_start}"
-                )
-                continue
+    def _log_invalid_code_suggestion(self, message: str) -> None:
+        get_logger().warning(message)
 
-            if relevant_lines_end > relevant_lines_start:
-                # Bitbucket does not support multi-line suggestions so use a code block instead - https://jira.atlassian.com/browse/BSERV-4553
-                body = body.replace("```suggestion", "```")
-                post_parameters = {
-                    "body": body,
-                    "path": relevant_file,
-                    "line": relevant_lines_end,
-                    "start_line": relevant_lines_start,
-                    "start_side": "RIGHT",
-                }
-            else:  # API is different for single line comments
-                post_parameters = {
-                    "body": body,
-                    "path": relevant_file,
-                    "line": relevant_lines_start,
-                    "side": "RIGHT",
-                }
-            post_parameters_list.append(post_parameters)
-
-        try:
-            return self.publish_inline_comments(post_parameters_list)
-        except Exception as e:
-            if get_verbosity_level() >= 2:
-                get_logger().error(f"Failed to publish code suggestion, error: {e}")
-            return False
+    def _log_code_suggestion_publish_error(self, error: Exception) -> None:
+        get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
         if capability in ['get_labels', 'gfm_markdown']:
@@ -305,6 +285,7 @@ class BitbucketServerProvider(GitProvider):
                     raise e
 
         diff_files = []
+        invalid_files_names = []
         original_file_content_str = ""
         new_file_content_str = ""
 
@@ -316,6 +297,7 @@ class BitbucketServerProvider(GitProvider):
             file_path = change['path']['toString']
             if not is_valid_file(file_path.split("/")[-1]):
                 get_logger().info(f"Skipping a non-code file: {file_path}")
+                invalid_files_names.append(file_path)
                 continue
 
             old_filename = None
@@ -348,6 +330,7 @@ class BitbucketServerProvider(GitProvider):
 
             patch = load_large_diff(file_path, new_file_content_str, original_file_content_str, show_warning=False)
 
+            patch_lines = patch.splitlines(keepends=True)
             diff_files.append(
                 FilePatchInfo(
                     original_file_content_str,
@@ -356,9 +339,12 @@ class BitbucketServerProvider(GitProvider):
                     file_path,
                     edit_type=edit_type,
                     old_filename=old_filename,
+                    num_plus_lines=len([line for line in patch_lines if line.startswith('+')]),
+                    num_minus_lines=len([line for line in patch_lines if line.startswith('-')]),
                 )
             )
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 

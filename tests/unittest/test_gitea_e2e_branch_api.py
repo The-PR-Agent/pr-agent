@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from uuid import UUID
 
 import pytest
 
@@ -34,6 +35,9 @@ def _assert_native_create_contract(http):
     assert create_call.kwargs["json"]["old_ref_name"] == "main"
     new_branch = create_call.kwargs["json"]["new_branch_name"]
     assert new_branch.startswith("gitea_app_e2e_test-")
+    branch_id = new_branch.removeprefix("gitea_app_e2e_test-")
+    assert UUID(branch_id).hex == branch_id
+    assert create_call.kwargs["timeout"] == 30
     assert set(create_call.kwargs["json"]) == {"new_branch_name", "old_ref_name"}
     return new_branch
 
@@ -80,6 +84,7 @@ def test_gitea_e2e_cleans_up_branch_after_confirmed_creation(monkeypatch):
     http.delete.assert_called_once_with(
         f"https://gitea.example.test/api/v1/repos/codiumai/pr-agent-tests/branches/{new_branch}",
         headers=_expected_headers(),
+        timeout=30,
     )
     http.delete.return_value.raise_for_status.assert_called_once_with()
 
@@ -98,11 +103,17 @@ def test_gitea_e2e_branch_cleanup_survives_pr_cleanup_failure(monkeypatch):
         gitea_e2e.test_e2e_run_gitea_app()
 
     new_branch = _assert_native_create_contract(http)
-    http.patch.assert_called_once()
+    http.patch.assert_called_once_with(
+        "https://gitea.example.test/api/v1/repos/codiumai/pr-agent-tests/pulls/123",
+        headers=_expected_headers(),
+        json={"state": "closed"},
+        timeout=30,
+    )
     http.patch.return_value.raise_for_status.assert_called_once_with()
     http.delete.assert_called_once_with(
         f"https://gitea.example.test/api/v1/repos/codiumai/pr-agent-tests/branches/{new_branch}",
         headers=_expected_headers(),
+        timeout=30,
     )
     http.delete.return_value.raise_for_status.assert_called_once_with()
     test_logger.error.assert_any_call(f"Failed to clean up after test: {close_failure}")
@@ -124,6 +135,7 @@ def test_gitea_e2e_reports_branch_cleanup_http_failure(monkeypatch):
     http.delete.assert_called_once_with(
         f"https://gitea.example.test/api/v1/repos/codiumai/pr-agent-tests/branches/{new_branch}",
         headers=_expected_headers(),
+        timeout=30,
     )
     http.delete.return_value.raise_for_status.assert_called_once_with()
     test_logger.error.assert_any_call(f"Failed to clean up after test: {cleanup_failure}")
@@ -155,6 +167,9 @@ def test_gitea_e2e_does_not_repeat_successful_pr_cleanup(monkeypatch):
 
     assert caught.value is cleanup_failure
     new_branch = _assert_native_create_contract(http)
+    assert http.get.call_args.kwargs["timeout"] == 30
+    assert http.put.call_args.kwargs["timeout"] == 30
+    assert http.post.call_args_list[1].kwargs["timeout"] == 30
     results.assert_called_once_with(
         "https://gitea.example.test/api/v1/repos/codiumai/pr-agent-tests", 123, _expected_headers()
     )
@@ -162,8 +177,11 @@ def test_gitea_e2e_does_not_repeat_successful_pr_cleanup(monkeypatch):
         "https://gitea.example.test/api/v1/repos/codiumai/pr-agent-tests/pulls/123",
         headers=_expected_headers(),
         json={"state": "closed"},
+        timeout=30,
     )
     assert http.delete.call_count == 2
     assert http.delete.call_args_list[0].args[0].endswith(f"/branches/{new_branch}")
+    assert http.delete.call_args_list[0].kwargs["timeout"] == 30
     assert http.delete.call_args_list[1].args[0].endswith(f"/branches/{new_branch}")
+    assert http.delete.call_args_list[1].kwargs["timeout"] == 30
     successful_fallback_delete.raise_for_status.assert_called_once_with()

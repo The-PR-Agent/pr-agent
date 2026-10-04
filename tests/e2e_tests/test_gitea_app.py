@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime
+from uuid import uuid4
 
 import requests
 
@@ -51,7 +51,7 @@ def test_e2e_run_gitea_app():
     repo_name = 'pr-agent-tests'
     owner = 'codiumai'
     base_branch = "main"
-    new_branch = f"gitea_app_e2e_test-{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
+    new_branch = f"gitea_app_e2e_test-{uuid4().hex}"
     get_settings().config.git_provider = "gitea"
 
     headers = None
@@ -87,7 +87,8 @@ def test_e2e_run_gitea_app():
         response = requests.post(
             f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/branches",
             headers=headers,
-            json=branch_data
+            json=branch_data,
+            timeout=30,
         )
         response.raise_for_status()
         branch_created = True
@@ -99,7 +100,8 @@ def test_e2e_run_gitea_app():
 
         response = requests.get(
             f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/contents/{FILE_PATH}?ref={new_branch}",
-            headers=headers
+            headers=headers,
+            timeout=30,
         )
         file_data = {
             "message": "Update cli_pip.py",
@@ -117,7 +119,8 @@ def test_e2e_run_gitea_app():
         response = write_file(
             f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/contents/{FILE_PATH}",
             headers=headers,
-            json=file_data
+            json=file_data,
+            timeout=30,
         )
         response.raise_for_status()
 
@@ -131,7 +134,8 @@ def test_e2e_run_gitea_app():
         response = requests.post(
             f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/pulls",
             headers=headers,
-            json=pr_data
+            json=pr_data,
+            timeout=30,
         )
         response.raise_for_status()
         pr = response.json()
@@ -157,14 +161,16 @@ def test_e2e_run_gitea_app():
         response = requests.patch(
             f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/pulls/{pr_number}",
             headers=headers,
-            json=close_data
+            json=close_data,
+            timeout=30,
         )
         response.raise_for_status()
         pr_number = None
 
         response = requests.delete(
             f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/branches/{new_branch}",
-            headers=headers
+            headers=headers,
+            timeout=30,
         )
         response.raise_for_status()
         branch_created = False
@@ -180,7 +186,8 @@ def test_e2e_run_gitea_app():
                     response = requests.patch(
                         f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/pulls/{pr_number}",
                         headers=headers,
-                        json={'state': 'closed'}
+                        json={'state': 'closed'},
+                        timeout=30,
                     )
                     response.raise_for_status()
                 except Exception as cleanup_error:
@@ -190,7 +197,8 @@ def test_e2e_run_gitea_app():
                 try:
                     response = requests.delete(
                         f"{gitea_url}/api/v1/repos/{owner}/{repo_name}/branches/{new_branch}",
-                        headers=headers
+                        headers=headers,
+                        timeout=30,
                     )
                     response.raise_for_status()
                 except Exception as cleanup_error:

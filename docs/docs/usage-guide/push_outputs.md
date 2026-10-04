@@ -1,4 +1,7 @@
-# Push outputs to external sinks
+---
+title: "Push outputs to external sinks"
+sidebar_position: 7
+---
 
 The `[push_outputs]` feature routes finished tool output to external sinks — stdout, a JSONL file, a
 generic webhook, or Slack — without calling git-provider APIs. It is disabled by default, and is
@@ -51,13 +54,14 @@ slack_webhook_url = ""                 # Slack Incoming Webhook; must be an abso
 - `webhook_url` — the endpoint the `webhook` channel POSTs the generic record to.
 - `slack_webhook_url` — a Slack Incoming Webhook URL that the `slack` channel posts a `{"text": ...}` payload to.
 
-!!! danger "Host-only configuration"
-    The whole `[push_outputs]` section is **host-only**. A repository cannot set these keys:
-    keys supplied through a repo's local `.pr_agent.toml` are dropped, and CLI arguments
-    (`--push_outputs.webhook_url=...`, `--push_outputs={...}`) are blocked. This prevents a
-    pull request from redirecting review output to an attacker-controlled host, reaching
-    internal endpoints, or appending to arbitrary host files. Configure these values in the
-    PR-Agent host's own settings.
+:::danger[Host-only configuration]
+The whole `[push_outputs]` section is **host-only**. A repository cannot set these keys:
+keys supplied through a repo's local `.pr_agent.toml` are dropped, and CLI arguments
+(`--push_outputs.webhook_url=...`, `--push_outputs={...}`) are blocked. This prevents a
+pull request from redirecting review output to an attacker-controlled host, reaching
+internal endpoints, or appending to arbitrary host files. Configure these values in the
+PR-Agent host's own settings.
+:::
 
 ### URL requirements
 
@@ -88,3 +92,20 @@ does not prevent later destinations from receiving the output.
 Failures are non-fatal: `push_outputs` never raises, so a sink outage does not break the review
 flow. Exceptions and non-2xx HTTP responses are logged with the destination and only the exception
 type or status code, since request error messages can embed the (secret-bearing) URL.
+
+## Extending delivery
+
+`push_outputs()` in `pr_agent/algo/run_output.py` builds the record once and isolates failures
+for each selected destination. Delivery strategies live in `pr_agent/algo/output_sinks.py`:
+each implements `OutputSink.send(record, cfg)`, and `create_output_sink()` selects the strategy
+from `OUTPUT_SINK_TYPES`. Registry order determines delivery order, with local writes first;
+duplicate channel entries still result in a single delivery.
+
+To add a destination, implement its strategy and register it, then add any required host-only
+settings, documentation, and provider-specific tests. HTTP strategies must validate destinations
+and preserve the shared HTTPS, timeout, redirect, and secret-safe logging policy. Provider-specific
+payload formatting belongs in the strategy, so the generic webhook record remains unchanged.
+
+This interface organizes provider implementations; it does not remove the work of maintaining
+their APIs. Retries, rate limiting, idempotency, and background delivery are separate policy
+decisions and are not introduced by this structure.

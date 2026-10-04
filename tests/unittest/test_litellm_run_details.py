@@ -3,6 +3,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import openai
 import pytest
 
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -88,6 +89,47 @@ def test_record_completion_metadata_prices_routed_model_and_records_configured_m
 
     assert completion_cost.call_args.kwargs["model"] == "azure/gpt-5"
     assert get_run_details().model_costs_usd == {"gpt-5_thinking": Decimal("0.0842")}
+
+
+def test_record_completion_metadata_prices_mapped_base_model(monkeypatch):
+    """An opaque id such as a Bedrock inference profile ARN is priced through litellm.base_models."""
+    arn = "bedrock/converse/arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc"
+    base_model = "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
+    usage = _Usage(100, 10, 110)
+    response = _Response(usage)
+    settings = SimpleNamespace(
+        get=lambda key, default=None: (
+            True if key == "config.output_run_cost"
+            else {arn: base_model} if key == "litellm.base_models"
+            else default
+        )
+    )
+    monkeypatch.setattr("pr_agent.algo.ai_handlers.litellm_ai_handler.get_settings", lambda: settings)
+    init_run_details()
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.completion_cost",
+        return_value=0.0842,
+    ) as completion_cost:
+        LiteLLMAIHandler._record_completion_metadata(response, model=arn)
+
+    assert completion_cost.call_args.kwargs["model"] == arn
+    assert completion_cost.call_args.kwargs["base_model"] == base_model
+
+
+def test_record_completion_metadata_without_base_models_mapping_omits_base_model(monkeypatch):
+    usage = _Usage(100, 10, 110)
+    response = _Response(usage)
+    _set_cost_collection(monkeypatch, True)
+    init_run_details()
+
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.litellm.completion_cost",
+        return_value=0.0842,
+    ) as completion_cost:
+        LiteLLMAIHandler._record_completion_metadata(response, model="model-a")
+
+    assert "base_model" not in completion_cost.call_args.kwargs
 
 
 def test_record_completion_metadata_uses_positive_finalized_inline_cost(monkeypatch):
@@ -359,8 +401,11 @@ async def test_chat_completion_does_not_record_when_the_call_fails(monkeypatch):
     monkeypatch.setattr(handler, "_get_completion", failing_get_completion)
 
     init_run_details()
-    with pytest.raises(Exception):
+    with pytest.raises(openai.APIError) as raised:
         await handler.chat_completion(model="some-model", system="sys", user="usr")
+
+    # The handler wraps the provider failure; the original cause must survive for diagnostics.
+    assert isinstance(raised.value.__cause__, ValueError)
 
     details = get_run_details()
     assert details.num_ai_calls == 0

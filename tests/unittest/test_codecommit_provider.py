@@ -196,8 +196,9 @@ class TestCodeCommitProvider:
 
     def test_get_diff_files_filters_invalid_extension_before_fetching_content(self):
         ignored_file = CodeCommitFile("image.png", "before-id", "image.png", "after-id", EDIT_TYPE.MODIFIED)
+        lockfile = CodeCommitFile("pnpm-lock.yaml", "before-id", "pnpm-lock.yaml", "after-id", EDIT_TYPE.MODIFIED)
         valid_file = CodeCommitFile("good.py", "before-id", "good.py", "after-id", EDIT_TYPE.MODIFIED)
-        provider = self._make_diff_provider([ignored_file, valid_file])
+        provider = self._make_diff_provider([ignored_file, lockfile, valid_file])
         provider.codecommit_client.get_file.side_effect = (
             lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
         )
@@ -205,6 +206,7 @@ class TestCodeCommitProvider:
         diff_files = provider.get_diff_files()
 
         assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert provider.get_filtered_diff_file_names() == ["image.png", "pnpm-lock.yaml"]
         assert provider.codecommit_client.get_file.call_args_list == [
             call("my_test_repo", "good.py", "destination-commit"),
             call("my_test_repo", "good.py", "source-commit"),
@@ -229,6 +231,7 @@ class TestCodeCommitProvider:
             diff_files = provider.get_diff_files()
 
         assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert provider.get_filtered_diff_file_names() == []
         assert provider.codecommit_client.get_file.call_args_list == [
             call("my_test_repo", "good.py", "destination-commit"),
             call("my_test_repo", "good.py", "source-commit"),
@@ -1109,6 +1112,154 @@ class TestCodeCommitProvider:
             annotation_line=4,
         )
 
+    def test_publish_code_suggestions_continues_after_one_failure(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider.codecommit_client.publish_comment.side_effect = [
+            None, RuntimeError("network down"), None
+        ]
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {"body": "Use a constant", "relevant_file": "one.py", "relevant_lines_start": 1},
+            {"body": "Use a helper", "relevant_file": "two.py", "relevant_lines_start": 2},
+            {"body": "Use a factory", "relevant_file": "three.py", "relevant_lines_start": 3},
+        ])
+
+        # A partial failure must not abort the later suggestions or report
+        # failure, or the caller would republish the already-posted ones.
+        assert result is True
+        assert provider.codecommit_client.publish_comment.call_count == 3
+
+    def test_publish_code_suggestions_reports_total_failure(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider.codecommit_client.publish_comment.side_effect = RuntimeError("network down")
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {"body": "Use a constant", "relevant_file": "one.py", "relevant_lines_start": 1},
+        ])
+
+        assert result is False
+        assert provider.codecommit_client.publish_comment.called
+
+    def test_publish_code_suggestions_prepares_markdown_and_html(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": "<details><summary>Suggestion</summary>\nLine 1\nLine 2</details>",
+                "relevant_file": "one.py",
+                "relevant_lines_start": 10,
+            }
+        ])
+
+        assert result is True
+        provider.codecommit_client.publish_comment.assert_called_once_with(
+            repo_name="source-repository",
+            pr_number=321,
+            destination_commit="destination-commit-1",
+            source_commit="source-commit-1",
+            comment="Suggestion\n\nLine 1\n\nLine 2",
+            annotation_file="one.py",
+            annotation_line=10,
+        )
+
+    def test_publish_code_suggestions_preserves_multiline_code_fence(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": (
+                    "<details><summary>Suggestion</summary>\n"
+                    "```suggestion\n"
+                    "def calculate(a, b):\n"
+                    "    res = a + b\n"
+                    "    return res\n"
+                    "```\n"
+                    "Explanation line 1\n"
+                    "Explanation line 2</details>"
+                ),
+                "relevant_file": "math_ops.py",
+                "relevant_lines_start": 42,
+            }
+        ])
+
+        assert result is True
+        expected_comment = (
+            "Suggestion\n\n"
+            "```suggestion\n"
+            "def calculate(a, b):\n"
+            "    res = a + b\n"
+            "    return res\n"
+            "```\n\n"
+            "Explanation line 1\n\n"
+            "Explanation line 2"
+        )
+        provider.codecommit_client.publish_comment.assert_called_once_with(
+            repo_name="source-repository",
+            pr_number=321,
+            destination_commit="destination-commit-1",
+            source_commit="source-commit-1",
+            comment=expected_comment,
+            annotation_file="math_ops.py",
+            annotation_line=42,
+        )
+
+    def test_publish_code_suggestions_sends_capped_body(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": "\n".join(["x" * 100] * 120),
+                "relevant_file": "one.py",
+                "relevant_lines_start": 5,
+            }
+        ])
+
+        assert result is True
+        sent = provider.codecommit_client.publish_comment.call_args.kwargs["comment"]
+        assert len(sent) <= 10240
+        assert sent.endswith("...")
+        assert "\n\n" in sent
+
     def test_get_title(self):
         # Test that the get_title() function returns the PR title
         with patch.object(CodeCommitProvider, "__init__", lambda x, y: None):
@@ -1130,6 +1281,75 @@ class TestCodeCommitProvider:
         repo_name, pr_number = CodeCommitProvider._parse_pr_url(url)
         assert repo_name == "my_test_repo"
         assert pr_number == 321
+
+    def test_set_pr_binds_valid_url_region_before_lookup_and_clears_caches(self):
+        provider = self._make_persistent_provider()
+        old_client = provider.codecommit_client
+        old_pr = provider.pr
+        provider.diff_files = ["old diff"]
+        provider.git_files = ["old file"]
+        staged_client = MagicMock()
+        staged_client.get_pr.return_value = SimpleNamespace(
+            title="West PR",
+            description="New regional PR",
+            targets=[SimpleNamespace(
+                repository_name="west-repository",
+                source_commit="west-source",
+                source_branch="refs/heads/feature",
+                destination_commit="west-destination",
+                destination_branch="refs/heads/main",
+                merge_base="west-merge-base",
+            )],
+        )
+        pr_url = (
+            "https://us-west-2.console.aws.amazon.com/codesuite/codecommit/"
+            "repositories/west-repository/pull-requests/456"
+        )
+
+        with patch("pr_agent.git_providers.codecommit_provider.CodeCommitClient", return_value=staged_client) as client:
+            provider.set_pr(pr_url)
+
+        client.assert_called_once_with(region_name="us-west-2")
+        staged_client.get_pr.assert_called_once_with("west-repository", 456)
+        assert provider.codecommit_client is staged_client
+        assert provider.codecommit_client is not old_client
+        assert provider.pr_url == pr_url
+        assert provider.repo_name == "west-repository"
+        assert provider.pr_num == 456
+        assert provider.pr is not old_pr
+        assert provider.pr.diff_files is None
+        assert provider.diff_files is None
+        assert provider.git_files is None
+
+    def test_set_pr_keeps_selected_state_when_regional_lookup_fails(self):
+        provider = self._make_persistent_provider()
+        provider.diff_files = ["old diff"]
+        provider.git_files = ["old file"]
+        old_client = provider.codecommit_client
+        old_pr_url = provider.pr_url
+        old_repo_name = provider.repo_name
+        old_pr_num = provider.pr_num
+        old_pr = provider.pr
+        old_diff_files = provider.diff_files
+        old_git_files = provider.git_files
+        staged_client = MagicMock()
+        staged_client.get_pr.side_effect = ValueError("west region lookup failed")
+
+        with patch("pr_agent.git_providers.codecommit_provider.CodeCommitClient", return_value=staged_client) as client:
+            with pytest.raises(ValueError, match="west region lookup failed"):
+                provider.set_pr(
+                    "https://us-west-2.console.aws.amazon.com/codesuite/codecommit/"
+                    "repositories/west-repository/pull-requests/456"
+                )
+
+        client.assert_called_once_with(region_name="us-west-2")
+        assert provider.codecommit_client is old_client
+        assert provider.pr_url == old_pr_url
+        assert provider.repo_name == old_repo_name
+        assert provider.pr_num == old_pr_num
+        assert provider.pr is old_pr
+        assert provider.diff_files is old_diff_files
+        assert provider.git_files is old_git_files
 
     def test_is_valid_codecommit_hostname(self):
         # Test the various AWS regions
@@ -1170,9 +1390,27 @@ class TestCodeCommitProvider:
     # Error is raised when set_pr() receives an invalid CodeCommit URL.
     # Generated by CodiumAI
     def test_invalid_codecommit_url(self):
-        provider = CodeCommitProvider()
-        with pytest.raises(ValueError):
-            provider.set_pr("https://example.com/codecommit/repositories/my_test_repo/pull-requests/4321")
+        provider = self._make_persistent_provider()
+        old_client = provider.codecommit_client
+        old_pr_url = provider.pr_url
+        old_repo_name = provider.repo_name
+        old_pr_num = provider.pr_num
+        old_pr = provider.pr
+        old_diff_files = provider.diff_files
+        old_git_files = provider.git_files
+
+        with patch("pr_agent.git_providers.codecommit_provider.CodeCommitClient") as client:
+            with pytest.raises(ValueError):
+                provider.set_pr("https://example.com/codecommit/repositories/my_test_repo/pull-requests/4321")
+
+        client.assert_not_called()
+        assert provider.codecommit_client is old_client
+        assert provider.pr_url == old_pr_url
+        assert provider.repo_name == old_repo_name
+        assert provider.pr_num == old_pr_num
+        assert provider.pr is old_pr
+        assert provider.diff_files is old_diff_files
+        assert provider.git_files is old_git_files
 
     def test_get_languages_matches_packing_and_combines_language_extensions(self):
         filenames = [
@@ -1241,6 +1479,34 @@ class TestCodeCommitProvider:
             "`bar`: The bar script has been updated to list stopped servers.\n\n"
         )
         assert CodeCommitProvider._add_additional_newlines(input) == expect
+
+        # Fenced code block (e.g. suggestion) preserves internal newlines verbatim
+        code_suggestion = (
+            "**Suggestion:** Use helper\n"
+            "```suggestion\n"
+            "def foo():\n"
+            "    x = 1\n"
+            "    return x\n"
+            "```\n"
+            "Follow-up note line 1\n"
+            "Follow-up note line 2"
+        )
+        expected_suggestion = (
+            "**Suggestion:** Use helper\n\n"
+            "```suggestion\n"
+            "def foo():\n"
+            "    x = 1\n"
+            "    return x\n"
+            "```\n\n"
+            "Follow-up note line 1\n\n"
+            "Follow-up note line 2"
+        )
+        assert CodeCommitProvider._add_additional_newlines(code_suggestion) == expected_suggestion
+
+        # Tilde-fenced code block also preserved verbatim
+        tilde_fence = "Intro:\n~~~python\na = 1\nb = 2\n~~~\nOutro"
+        expected_tilde = "Intro:\n\n~~~python\na = 1\nb = 2\n~~~\n\nOutro"
+        assert CodeCommitProvider._add_additional_newlines(tilde_fence) == expected_tilde
 
     def test_remove_markdown_html(self):
         input = "## PR Feedback\n<details><summary>Code feedback:</summary>\nfile foo\n</summary>\n"

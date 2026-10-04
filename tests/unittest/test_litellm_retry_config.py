@@ -8,10 +8,12 @@ an escaping ValueError would be wrapped and retried as an API error.
 """
 
 import httpx
+import litellm
 import openai
 import pytest
 
 from pr_agent.algo.ai_handlers.litellm_ai_handler import (
+    EmptyTruncatedResponseError,
     _as_bool,
     _configured_client_retries,
     _should_retry_same_model,
@@ -19,7 +21,11 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import (
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
-KEYS = ("config.retry_same_model_on_timeout", "config.num_retries")
+KEYS = (
+    "config.retry_same_model_on_timeout",
+    "config.retry_same_model_on_length",
+    "config.num_retries",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +41,14 @@ def _timeout_error():
 
 def _api_error():
     return openai.APIError("boom", request=httpx.Request("POST", "http://model.invalid"), body=None)
+
+
+def _empty_truncated_error():
+    return EmptyTruncatedResponseError(
+        "Empty content in model response (finish_reason: length)",
+        request=httpx.Request("POST", "http://model.invalid"),
+        body=None,
+    )
 
 
 class TestShouldRetrySameModel:
@@ -60,6 +74,45 @@ class TestShouldRetrySameModel:
 
     def test_other_api_errors_still_retry(self):
         assert _should_retry_same_model(_api_error()) is True
+
+    def test_length_truncation_does_not_retry_same_model_by_default(self):
+        # An empty, length-capped response is deterministic for the same request and cap.
+        assert _should_retry_same_model(_empty_truncated_error()) is False
+
+    @pytest.mark.parametrize("value", [True, "true", "TRUE", "1", "yes", "on"])
+    def test_length_truncation_retries_when_enabled(self, value):
+        get_settings().set("config.retry_same_model_on_length", value)
+        assert _should_retry_same_model(_empty_truncated_error()) is True
+
+    @pytest.mark.parametrize("value", [False, "false", "False", "0", "no", "off"])
+    def test_length_truncation_hands_to_fallback_when_disabled(self, value):
+        get_settings().set("config.retry_same_model_on_length", value)
+        assert _should_retry_same_model(_empty_truncated_error()) is False
+
+    def test_empty_truncated_error_is_an_api_error(self):
+        # retry_with_fallback_models advances to the next model only for openai.APIError subclasses.
+        assert isinstance(_empty_truncated_error(), openai.APIError)
+
+    @pytest.mark.parametrize("error_type,status", [
+        (openai.BadRequestError, 400),
+        (openai.UnprocessableEntityError, 422),
+    ])
+    def test_request_validation_errors_do_not_retry(self, error_type, status):
+        error = error_type(
+            "invalid request",
+            response=httpx.Response(status, request=httpx.Request("POST", "http://model.invalid")),
+            body=None,
+        )
+        assert _should_retry_same_model(error) is False
+
+    @pytest.mark.parametrize("error_type", [
+        litellm.BadRequestError,
+        litellm.ContextWindowExceededError,
+        litellm.ContentPolicyViolationError,
+    ])
+    def test_litellm_bad_request_subtypes_do_not_retry(self, error_type):
+        error = error_type("rejected request", model="gpt-4o", llm_provider="openai")
+        assert _should_retry_same_model(error) is False
 
     def test_non_api_errors_never_retry(self):
         assert _should_retry_same_model(ValueError("not an API error")) is False

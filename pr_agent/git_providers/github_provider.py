@@ -7,7 +7,6 @@ import os
 import re
 import time
 import traceback
-from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
@@ -47,6 +46,8 @@ from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
+    ConcurrentFileUpdateError,
+    FileContentSnapshot,
     FilePatchInfo,
     GitProvider,
     IncompletePullRequestFilesError,
@@ -123,8 +124,18 @@ class GithubProvider(GitProvider):
                                    f"belonging to owner/repo: {repo_name}")
             return None
 
+    def reset_diff_cache_for_command(self) -> None:
+        self.diff_files = None
+        if context.exists():
+            context.pop("diff_files", None)
+        self.incremental = IncrementalPR(False)
+
     def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None):
         # Constructed per call: a default in the signature is one object shared by every provider that omits it.
+        # Invalidate completed diffs when the file scope is being reconfigured.
+        self.diff_files = None
+        if context.exists():
+            context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
         if self.incremental.is_incremental:
             self.unreviewed_files_map = dict()
@@ -291,6 +302,17 @@ class GithubProvider(GitProvider):
                 return self.comments[index]
         return None
 
+    @staticmethod
+    def _file_collection_marker(pr) -> tuple[str, str, str, int]:
+        head = getattr(pr, "head", None)
+        base = getattr(pr, "base", None)
+        revision = (getattr(head, "sha", None), getattr(base, "sha", None), getattr(base, "ref", None))
+        count = getattr(pr, "changed_files", None)
+        if (not all(isinstance(value, str) and value for value in revision)
+                or isinstance(count, bool) or not isinstance(count, int) or count < 0):
+            raise IncompletePullRequestFilesError("GitHub returned invalid pull-request revision metadata")
+        return (*revision, count)
+
     def _get_complete_files(self):
         if context.exists():
             context_files = context.get("git_files", None)
@@ -301,14 +323,18 @@ class GithubProvider(GitProvider):
         if git_files is not None:
             return git_files
 
+        original_marker = None
         for attempt in range(2):
             try:
+                if original_marker is None:
+                    original_marker = self._file_collection_marker(self.pr)
                 git_files = list(self.pr.get_files())  # 'list' to handle pagination
-                changed_files = self.pr.changed_files
-                if isinstance(changed_files, bool) or not isinstance(changed_files, int):
+                fresh_marker = self._file_collection_marker(self._get_pr())
+                if fresh_marker != original_marker:
                     raise IncompletePullRequestFilesError(
-                        f"GitHub returned an invalid changed_files count: {changed_files!r}"
+                        "GitHub pull-request revision changed while collecting files"
                     )
+                changed_files = original_marker[3]
                 if len(git_files) != changed_files:
                     raise IncompletePullRequestFilesError(
                         f"GitHub returned {len(git_files)} pull-request files but reported {changed_files}"
@@ -375,12 +401,13 @@ class GithubProvider(GitProvider):
             try:
                 diff_files = context.get("diff_files", None)
                 if diff_files:
+                    self.filtered_diff_file_names = context.get("filtered_diff_file_names", [])
                     return diff_files
             except ContextDoesNotExistError:
                 # Skip the per-request cache outside a request cycle; fall through and compute the files.
                 pass
 
-            if self.diff_files:
+            if self.diff_files is not None:
                 return self.diff_files
 
             # filter files using [ignore] patterns
@@ -492,9 +519,11 @@ class GithubProvider(GitProvider):
             if invalid_files_names:
                 get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
+            self.filtered_diff_file_names = invalid_files_names
             self.diff_files = diff_files
             try:
                 context["diff_files"] = diff_files
+                context["filtered_diff_file_names"] = invalid_files_names
             except ContextDoesNotExistError:
                 # Skip caching outside a request cycle; the value is already on self.
                 pass
@@ -797,23 +826,30 @@ class GithubProvider(GitProvider):
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
                                original_suggestion=None):
         body = self.limit_output_characters(body, self.max_comment_chars)
-        self.publish_inline_comments([self.create_inline_comment(body, relevant_file, relevant_line_in_file)])
+        comment = self.create_inline_comment(body, relevant_file, relevant_line_in_file)
+        if comment.get("subject_type") == "file":
+            # File-level comments use the single review-comment endpoint. The
+            # create_review endpoint does not accept subject_type in its payload.
+            self.pr.create_review_comment(
+                comment["body"], self.last_commit_id, comment["path"], subject_type="file"
+            )
+            return
+        self.publish_inline_comments([comment])
 
 
     def create_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
                               absolute_position: int = None):
         body = self.limit_output_characters(body, self.max_comment_chars)
+        path = relevant_file.strip().strip('`').strip()
         position, absolute_position = find_line_number_of_relevant_line_in_file(self.diff_files,
-                                                                                relevant_file.strip('`'),
+                                                                                path,
                                                                                 relevant_line_in_file,
                                                                                 absolute_position)
         if position == -1:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
-            subject_type = "FILE"
-        else:
-            subject_type = "LINE"
-        path = relevant_file.strip()
-        return dict(body=body, path=path, position=position) if subject_type == "LINE" else {}
+            # Preserve the finding as a file-level review comment when no line can be anchored.
+            return dict(body=body, path=path, subject_type="file")
+        return dict(body=body, path=path, position=position)
 
     def publish_inline_comments(self, comments: list[dict], disable_fallback: bool = False):
         store = None
@@ -1162,59 +1198,36 @@ class GithubProvider(GitProvider):
                 get_logger().error(f"Failed to fix inline comment, error: {e}")
         return fixed_comments
 
-    def publish_code_suggestions(self, code_suggestions: list) -> bool:
-        """
-        Publishes code suggestions as comments on the PR.
-        """
-        post_parameters_list = []
+    _code_suggestion_publish_exceptions = (GithubException, RequestException)
 
+    def _prepare_code_suggestions(self, code_suggestions: list) -> list:
         code_suggestions_with_fingerprints = copy.deepcopy(code_suggestions)
         for suggestion in code_suggestions_with_fingerprints:
             suggestion["_dedup_code_fp"] = code_fingerprint(
                 suggestion.get("relevant_file", ""), None, suggestion.get("body", ""))
-        code_suggestions_validated = self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
+        return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
-        for suggestion in code_suggestions_validated:
-            body = suggestion['body']
-            relevant_file = suggestion['relevant_file']
-            relevant_lines_start = suggestion['relevant_lines_start']
-            relevant_lines_end = suggestion['relevant_lines_end']
-
-            if not relevant_lines_start or relevant_lines_start == -1:
-                get_logger().exception(
-                    f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}")
-                continue
-
-            if relevant_lines_end < relevant_lines_start:
-                get_logger().exception(f"Failed to publish code suggestion, "
-                                  f"relevant_lines_end is {relevant_lines_end} and "
-                                  f"relevant_lines_start is {relevant_lines_start}")
-                continue
-
-            if relevant_lines_end > relevant_lines_start:
-                post_parameters = {
-                    "body": body,
-                    "path": relevant_file,
-                    "line": relevant_lines_end,
-                    "start_line": relevant_lines_start,
-                    "start_side": "RIGHT",
-                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
-                }
-            else:  # API is different for single line comments
-                post_parameters = {
-                    "body": body,
-                    "path": relevant_file,
-                    "line": relevant_lines_start,
-                    "side": "RIGHT",
-                    "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
-                }
-            post_parameters_list.append(post_parameters)
-
-        try:
-            return bool(self.publish_inline_comments(post_parameters_list))
-        except (GithubException, RequestException) as e:
-            get_logger().error(f"Failed to publish code suggestion, error: {e}")
-            return False
+    def _build_code_suggestion_payload(self, suggestion: dict) -> dict:
+        body = suggestion["body"]
+        relevant_file = suggestion["relevant_file"]
+        relevant_lines_start = suggestion["relevant_lines_start"]
+        relevant_lines_end = suggestion["relevant_lines_end"]
+        if relevant_lines_end > relevant_lines_start:
+            return {
+                "body": body,
+                "path": relevant_file,
+                "line": relevant_lines_end,
+                "start_line": relevant_lines_start,
+                "start_side": "RIGHT",
+                "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
+            }
+        return {
+            "body": body,
+            "path": relevant_file,
+            "line": relevant_lines_start,
+            "side": "RIGHT",
+            "_dedup_code_fp": suggestion.get("_dedup_code_fp"),
+        }
 
     def edit_comment(self, comment, body: str):
         try:
@@ -1294,15 +1307,6 @@ class GithubProvider(GitProvider):
             except (KeyError, TypeError, AttributeError) as e:
                 get_logger().warning(f"Could not read the login from the user payload: {e}")
         return self.github_user_id
-
-    def get_notifications(self, since: datetime):
-        deployment_type = get_settings().get("GITHUB.DEPLOYMENT_TYPE", "user")
-
-        if deployment_type != 'user':
-            raise ValueError("Deployment mode must be set to 'user' to get notifications")
-
-        notifications = self.github_client.get_user().get_notifications(since=since)
-        return notifications
 
     def get_issue_comments(self):
         return self.pr.get_issue_comments()
@@ -1775,35 +1779,47 @@ class GithubProvider(GitProvider):
             file_content_str = ""
         return file_content_str
 
-    def create_or_update_pr_file(
-        self, file_path: str, branch: str, contents="", message=""
-    ) -> Commit:
-        repo = self._get_repo()
+    def get_pr_file_content_snapshot(self, file_path: str, branch: str) -> FileContentSnapshot:
         try:
-            file_obj = repo.get_contents(file_path, ref=branch)
+            file_obj = self._get_repo().get_contents(file_path, ref=branch)
         except GithubException as e:
             if e.status != 404:
                 raise
-            if not self._pr_head_in_base_repo():
-                # A fork pull request resolves the bare branch name against the base
-                # repository, so creating the file here would write to the base
-                # repository's same-named branch (e.g. its main). Keep the previous
-                # fork behavior instead: the missing file fails the push.
-                raise
-            response = repo.create_file(
-                path=file_path,
-                message=message,
-                content=contents,
-                branch=branch,
-            )
-        else:
+            return FileContentSnapshot("", False, None)
+        contents = file_obj.decoded_content.decode()
+        if not isinstance(file_obj.sha, str) or not file_obj.sha:
+            raise ValueError("GitHub file snapshot is missing its blob SHA")
+        return FileContentSnapshot(contents, True, file_obj.sha)
+
+    def create_or_update_pr_file(
+        self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
+    ) -> Commit:
+        repo = self._get_repo()
+        if expected_snapshot.exists:
+            if not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision:
+                raise ValueError("GitHub file update requires the captured blob SHA")
             response = repo.update_file(
                 path=file_path,
                 message=message,
                 content=contents,
-                sha=file_obj.sha,
+                sha=expected_snapshot.revision,
                 branch=branch,
             )
+        else:
+            try:
+                repo.get_contents(file_path, ref=branch)
+            except GithubException as e:
+                if e.status != 404 or not self._pr_head_in_base_repo():
+                    # Keep missing-file writes disabled for bare fork branches: the
+                    # contents API resolves them against the base repository.
+                    raise
+                # Do not retry the final creation conflict as an update; GitHub
+                # rejects a file created after the preliminary absence check.
+                response = repo.create_file(
+                    path=file_path, message=message, content=contents, branch=branch
+                )
+            else:
+                raise ConcurrentFileUpdateError("The file appeared after the changelog snapshot")
         return response["commit"]
 
     def _pr_head_in_base_repo(self) -> bool:
@@ -1835,6 +1851,11 @@ class GithubProvider(GitProvider):
             get_logger().warning(f"Failed to publish labels, error: {e}")
 
     def get_pr_labels(self, update=False):
+        # A failed read must never look like "this PR has no labels": publish_labels issues a PUT
+        # that replaces the whole set, so an empty result would wipe every label a human added.
+        # Report None so callers skip publishing. A previously read set is deliberately not reused
+        # here: it can already be out of date, and publishing against it would drop any label
+        # added since that read, which is the same data loss this guards against.
         # Fetch and read under separate handlers: the response-shape errors below would otherwise
         # also swallow the same types raised by the fetch, where they mean a programming error.
         if not update:
@@ -1842,12 +1863,12 @@ class GithubProvider(GitProvider):
                 labels = self.pr.labels
             except (GithubException, RequestException) as e:
                 get_logger().exception(f"Failed to get labels, error: {e}")
-                return []
+                return None
             try:
                 return [label.name for label in labels]
             except (TypeError, AttributeError) as e:
                 get_logger().exception(f"Failed to read the labels payload, error: {e}")
-                return []
+                return None
 
         # obtain the latest labels. Maybe they changed while the AI was running
         try:
@@ -1855,12 +1876,12 @@ class GithubProvider(GitProvider):
                 "GET", f"{self.pr.issue_url}/labels")
         except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to get labels, error: {e}")
-            return []
+            return None
         try:
             return [label['name'] for label in labels]
         except (KeyError, TypeError) as e:
             get_logger().exception(f"Failed to read the labels payload, error: {e}")
-            return []
+            return None
 
     def get_commit_messages(self) -> str:
         """
@@ -1974,7 +1995,7 @@ class GithubProvider(GitProvider):
             query {{
                 node(id: "{issue_id}") {{
                     ... on Issue {{
-                        subIssues(first: 10) {{
+                        subIssues(first: 100) {{
                             nodes {{
                                 url
                             }}
@@ -2007,8 +2028,9 @@ class GithubProvider(GitProvider):
             for sub_issue in nodes:
                 if not sub_issue:
                     continue
-                if "url" in sub_issue:
-                    sub_issues.add(sub_issue["url"])
+                url = sub_issue.get("url") if isinstance(sub_issue, dict) else None
+                if isinstance(url, str) and url.strip():
+                    sub_issues.add(url)
 
         except (GithubException, RequestException, ValueError, AttributeError, KeyError, TypeError) as e:
             # Cover json.JSONDecodeError through ValueError, and a payload that parses but is not a

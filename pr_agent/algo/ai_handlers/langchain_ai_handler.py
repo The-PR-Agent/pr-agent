@@ -1,3 +1,11 @@
+import openai
+from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
+
+from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.run_details import record_ai_call
+from pr_agent.config_loader import get_settings
+from pr_agent.log import get_logger
+
 _LANGCHAIN_INSTALLED = False
 
 try:
@@ -7,15 +15,6 @@ try:
     _LANGCHAIN_INSTALLED = True
 except:  # we don't enforce langchain as a dependency, so if it's not installed, just move on
     pass
-
-
-import openai
-from tenacity import retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt
-
-from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
-from pr_agent.algo.run_details import record_ai_call
-from pr_agent.config_loader import get_settings
-from pr_agent.log import get_logger
 
 OPENAI_RETRIES = 5
 
@@ -64,7 +63,9 @@ class LangChainOpenAIHandler(BaseAiHandler):
             raise ValueError(error_msg) from e
 
     @retry(
-        retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(openai.RateLimitError),
+        retry=retry_if_exception_type(openai.APIError) & retry_if_not_exception_type(
+            (openai.RateLimitError, openai.BadRequestError, openai.UnprocessableEntityError)
+        ),
         stop=stop_after_attempt(OPENAI_RETRIES),
     )
     async def chat_completion(

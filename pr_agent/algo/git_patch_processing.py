@@ -234,14 +234,22 @@ def check_if_hunk_lines_matches_to_file(i, original_lines, patch_lines, start1):
                             f"Detected different encoding in hunk header line {start1}, needed encoding: {encoding}"
                         )
                             return False # we still want to avoid extending the hunk. But we don't want to log an error
-                    except:
+                    except (UnicodeError, LookupError):
+                        # this encoding cannot represent the line, so it is not a match.
+                        # Fall through and try the next candidate encoding.
                         pass
 
                 is_valid_hunk = False
                 get_logger().info(
                     f"Invalid hunk in PR, line {start1} in hunk header doesn't match the original file content")
-    except:
-        pass
+    except Exception as e:
+        # the check itself failed (for example a hunk header pointing past the end of the
+        # original file), so the hunk cannot be trusted. Report it as invalid rather than
+        # silently leaving is_valid_hunk at its True default and extending a bogus hunk.
+        is_valid_hunk = False
+        get_logger().info(
+            f"Could not validate hunk starting at line {start1} against the original file content",
+            artifact={"error": str(e)})
     return is_valid_hunk
 
 
@@ -321,7 +329,7 @@ def handle_patch_deletions(patch: str, original_file_content_str: str,
     else:
         patch_lines = patch.splitlines()
         patch_new = omit_deletion_hunks(patch_lines)
-        if patch != patch_new:
+        if patch_new and patch != patch_new:
             if get_verbosity_level() > 0:
                 get_logger().info(f"Processing file: {file_name}, hunks were deleted")
             patch = patch_new
@@ -399,9 +407,9 @@ __old hunk__
                     patch_with_lines_str += f'\n{prev_header_line}\n'
                 is_plus_lines = is_minus_lines = False
                 if new_content_lines:
-                    is_plus_lines = any([line.startswith('+') for line in new_content_lines])
+                    is_plus_lines = any(line.startswith('+') for line in new_content_lines)
                 if old_content_lines:
-                    is_minus_lines = any([line.startswith('-') for line in old_content_lines])
+                    is_minus_lines = any(line.startswith('-') for line in old_content_lines)
                 # Always present the new hunk for the section, otherwise the LLM gets confused
                 if is_plus_lines or is_minus_lines:
                     patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__new hunk__\n'
@@ -444,9 +452,9 @@ __old hunk__
         patch_with_lines_str += f'\n{header_line}\n'
         is_plus_lines = is_minus_lines = False
         if new_content_lines:
-            is_plus_lines = any([line.startswith('+') for line in new_content_lines])
+            is_plus_lines = any(line.startswith('+') for line in new_content_lines)
         if old_content_lines:
-            is_minus_lines = any([line.startswith('-') for line in old_content_lines])
+            is_minus_lines = any(line.startswith('-') for line in old_content_lines)
         # Always present the new hunk for the section, otherwise the LLM gets confused
         if is_plus_lines or is_minus_lines:
             patch_with_lines_str = patch_with_lines_str.rstrip('\r\n') + '\n__new hunk__\n'

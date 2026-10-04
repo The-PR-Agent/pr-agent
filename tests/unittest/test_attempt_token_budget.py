@@ -37,7 +37,7 @@ def token_settings(monkeypatch):
         lambda model=None: SimpleNamespace(
             model=model,
             encode=lambda text, disallowed_special=(): list(text),
-            decode=lambda tokens: "".join(tokens),
+            decode=lambda tokens, errors="replace": "".join(tokens),
         ),
     )
     return settings
@@ -174,6 +174,105 @@ def test_input_token_limit_uses_attempt_reserve_and_extra_headroom(monkeypatch):
     assert budget.input_token_limit(100, additional_input_reserve=50) == 700
     assert budget.input_token_limit(300, preserve_minimum=True) == 700
     assert budget.input_token_limit(100, additional_input_reserve=True) == 750
+
+
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+@pytest.mark.parametrize(("prefix", "suffix", "provider"), [
+    ("", "", ""), ("openai/", "_thinking", ""), ("azure/openai/", "_thinking", ""),
+    ("azure_ai/", "_thinking", ""), ("openrouter/openai/", "_thinking:nitro", ""),
+    ("aiohttp_openai/", "_thinking", ""),
+    ("", "_thinking:online", "openrouter"), ("", "", "aiohttp_openai"),
+])
+@pytest.mark.parametrize("output_reserve, expected", [(4096, 922000), (128000, 922000), (200000, 850000)])
+def test_native_gpt6_input_ceiling_is_independent_of_output_reserve(
+    monkeypatch, model, prefix, suffix, provider, output_reserve, expected
+):
+    settings = SimpleNamespace(
+        config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=0),
+        litellm=SimpleNamespace(custom_llm_provider=provider),
+    )
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
+        f"{prefix}{model}{suffix}", FakeTokenHandler(prompt_tokens=100),
+        output_token_reserve=lambda _model, _default: output_reserve,
+    )
+
+    assert budget.context_window == 1050000
+    assert budget.max_input_tokens == 922000
+    assert budget.input_token_limit(4096) == expected
+    assert budget.input_token_limit(4096, additional_input_reserve=50) == expected - 50
+    assert budget.available_tokens(4096) == expected - 100
+    assert budget.require_input_capacity(4096) == expected - 100
+
+
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+def test_gpt6_input_ceiling_applies_with_global_cap_bypass(monkeypatch, model):
+    settings = SimpleNamespace(
+        config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=32000),
+        litellm=SimpleNamespace(custom_llm_provider="openai"),
+    )
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(
+        model, FakeTokenHandler(), ignore_max_model_tokens=True,
+    )
+    assert budget.input_token_limit(4096) == 922000
+    capped = token_budget_module.AttemptTokenBudget.for_attempt(model, FakeTokenHandler())
+    assert capped.input_token_limit(4096) == 27904
+
+
+@pytest.mark.parametrize("provider", ["ollama", "openai_like", "azure_text"])
+def test_custom_gpt6_budget_uses_custom_capacity_without_native_input_ceiling(monkeypatch, provider):
+    settings = SimpleNamespace(
+        config=SimpleNamespace(custom_model_max_tokens=16000, max_model_tokens=0),
+        litellm=SimpleNamespace(custom_llm_provider=provider),
+    )
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt("gpt-6-sol", FakeTokenHandler())
+    assert budget.context_window == 16000
+    assert budget.max_input_tokens is None
+    assert budget.input_token_limit(4096) == 11904
+
+
+def test_input_ceiling_is_frozen_and_rejects_required_prompt_at_boundary(monkeypatch):
+    settings = SimpleNamespace(
+        config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=0),
+        litellm=SimpleNamespace(custom_llm_provider="openai"),
+    )
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+    handler = FakeTokenHandler(prompt_tokens=922000)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt("gpt-6-sol", handler)
+    settings.litellm.custom_llm_provider = "ollama"
+
+    assert budget.max_input_tokens == 922000
+    assert budget.available_tokens(4096) == 0
+    with pytest.raises(token_budget_module.FallbackEligibleError, match="leaves no input capacity"):
+        budget.require_input_capacity(4096)
+
+
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+@pytest.mark.parametrize("provider, ceiling", [("", 922000), ("aiohttp_openai", 922000), ("ollama", None)])
+def test_aiohttp_prefixed_input_budget_honors_actual_route(monkeypatch, model, provider, ceiling):
+    settings = SimpleNamespace(
+        config=SimpleNamespace(custom_model_max_tokens=1000000, max_model_tokens=0),
+        litellm=SimpleNamespace(custom_llm_provider=provider),
+    )
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt(f"aiohttp_openai/{model}", FakeTokenHandler())
+
+    assert budget.max_input_tokens == ceiling
+    assert budget.input_token_limit(4096) == (ceiling or 995904)
+
+
+def test_optional_prompt_fitting_honors_input_ceiling(monkeypatch):
+    monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 1000)
+    monkeypatch.setattr(token_budget_module, "get_max_input_tokens", lambda _model: 100)
+    budget = token_budget_module.AttemptTokenBudget.for_attempt("gpt-6-sol", FakeTokenHandler())
+    fitted = budget.fit_optional_text(
+        "x" * 150, lambda text: ("", text), ai_handler=object(), default_output_tokens=10,
+    )
+
+    assert fitted.input_tokens <= 100
+    assert fitted.optional_text != "x" * 150
 
 
 def test_require_input_capacity_rejects_an_exhausted_attempt():
@@ -436,7 +535,7 @@ def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatc
     handler = FakeTokenHandler()
     handler.encoder = SimpleNamespace(
         encode=lambda text, disallowed_special=(): text.split("|"),
-        decode=lambda tokens: "|".join(tokens),
+        decode=lambda tokens, errors="replace": "|".join(tokens),
     )
     budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 75)
 
@@ -451,6 +550,53 @@ def test_fit_optional_text_truncates_only_at_attempt_token_boundaries(monkeypatc
     retained = fitted.optional_text.removesuffix("[cut]").rstrip("|")
     assert retained in {"alpha", "alpha|bravo", "alpha|bravo|charlie"}
     assert fitted.input_tokens <= 73
+
+
+def _o200k_encoder():
+    from tiktoken import get_encoding
+
+    return get_encoding("o200k_base")
+
+
+def test_fit_optional_text_prefix_cut_drops_dangling_multibyte_fragments(monkeypatch):
+    # Real BPE encoding: the emoji span multiple tokens, so the fitting cut at
+    # this window lands inside one and would decode to U+FFFD (verified against
+    # the pre-fix behavior; the framing allowances shift the exact cut point).
+    handler = FakeTokenHandler()
+    handler.encoder = _o200k_encoder()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 85)
+    optional_text = ("done 🎉🚀 shipped check this out\n") * 20
+
+    fitted = budget.fit_optional_text(
+        optional_text,
+        lambda optional: ("fixed", f"body:{optional}"),
+        ai_handler=object(),
+        default_output_tokens=5,
+        keep="prefix",
+    )
+
+    assert "\ufffd" not in fitted.optional_text
+    assert fitted.optional_text.endswith(token_budget_module.DEFAULT_TRUNCATION_MARKER)
+    assert len(fitted.optional_text) < len(optional_text)
+
+
+def test_fit_optional_text_suffix_cut_drops_dangling_multibyte_fragments(monkeypatch):
+    handler = FakeTokenHandler()
+    handler.encoder = _o200k_encoder()
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 106)
+    optional_text = ("done 🎉🚀 shipped check this out\n") * 20
+
+    fitted = budget.fit_optional_text(
+        optional_text,
+        lambda optional: ("fixed", f"body:{optional}"),
+        ai_handler=object(),
+        default_output_tokens=5,
+        keep="suffix",
+    )
+
+    assert "\ufffd" not in fitted.optional_text
+    assert fitted.optional_text.startswith(token_budget_module.DEFAULT_TRUNCATION_MARKER)
+    assert len(fitted.optional_text) < len(optional_text)
 
 
 def test_fit_optional_text_rejects_required_prompt_that_cannot_fit(monkeypatch):

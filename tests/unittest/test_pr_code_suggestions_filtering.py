@@ -10,7 +10,7 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.tools.pr_code_suggestions import _REFLECTION_FAILURE_SCORE_WHY, PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (
@@ -246,7 +246,7 @@ def test_remove_line_numbers_returns_original_on_exception():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_analyze_self_reflection_length_mismatch_leaves_data_untouched():
+async def test_analyze_self_reflection_length_mismatch_applies_fallback_score():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
     tool = _make_tool(git_provider)
@@ -255,7 +255,7 @@ async def test_analyze_self_reflection_length_mismatch_leaves_data_untouched():
     settings.config.publish_output = False
     try:
         data = {"code_suggestions": [_valid_suggestion(), _valid_suggestion(one_sentence_summary="Second")]}
-        # Only one feedback item for two suggestions -> mismatch, all skipped.
+        # One feedback item for two suggestions is a mismatch, so neither was vetted.
         response_reflect = """
 code_suggestions:
   - suggestion_score: 9
@@ -265,8 +265,52 @@ code_suggestions:
         await tool.analyze_self_reflection_response(data, response_reflect)
 
         for suggestion in data["code_suggestions"]:
-            assert "score" not in suggestion
-            assert "score_why" not in suggestion
+            assert suggestion["score"] == 7
+            assert suggestion["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
+    finally:
+        settings.config.publish_output = original_publish_output
+
+
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_non_mapping_applies_fallback_score():
+    git_provider = MagicMock()
+    git_provider.get_diff_files.return_value = []
+    tool = _make_tool(git_provider)
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    settings.config.publish_output = False
+    try:
+        data = {"code_suggestions": [_valid_suggestion()]}
+        # A YAML sequence parses to a list, never the expected mapping.
+        response_reflect = "- suggestion_score: 9\n- why: top-level list\n"
+
+        await tool.analyze_self_reflection_response(data, response_reflect)
+
+        suggestion = data["code_suggestions"][0]
+        assert suggestion["score"] == 7
+        assert suggestion["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
+    finally:
+        settings.config.publish_output = original_publish_output
+
+
+@pytest.mark.asyncio
+async def test_analyze_self_reflection_non_list_feedback_applies_fallback_score():
+    git_provider = MagicMock()
+    git_provider.get_diff_files.return_value = []
+    tool = _make_tool(git_provider)
+    settings = get_settings()
+    original_publish_output = settings.config.publish_output
+    settings.config.publish_output = False
+    try:
+        data = {"code_suggestions": [_valid_suggestion()]}
+        # A mapping where a list is expected cannot be indexed per suggestion.
+        response_reflect = "code_suggestions:\n  suggestion_score: 9\n  why: not a list\n"
+
+        await tool.analyze_self_reflection_response(data, response_reflect)
+
+        suggestion = data["code_suggestions"][0]
+        assert suggestion["score"] == 7
+        assert suggestion["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
     finally:
         settings.config.publish_output = original_publish_output
 
@@ -281,8 +325,8 @@ async def test_analyze_self_reflection_invalid_feedback_assigns_default_score_se
     settings.config.publish_output = False
     try:
         data = {"code_suggestions": [_valid_suggestion()]}
-        # Missing required keys ('suggestion_score', 'why') triggers the
-        # fallback branch which assigns score=7 and clears score_why.
+        # Missing required keys ('suggestion_score', 'why'): apply the configured
+        # fallback score and explain why it was not model-assigned.
         response_reflect = """
 code_suggestions:
   - irrelevant_key: 1
@@ -291,7 +335,7 @@ code_suggestions:
         await tool.analyze_self_reflection_response(data, response_reflect)
 
         assert data["code_suggestions"][0]["score"] == 7
-        assert data["code_suggestions"][0]["score_why"] == ""
+        assert data["code_suggestions"][0]["score_why"] == _REFLECTION_FAILURE_SCORE_WHY
     finally:
         settings.config.publish_output = original_publish_output
 
@@ -303,9 +347,9 @@ async def test_analyze_self_reflection_clears_existing_code_when_equal_to_improv
     tool = _make_tool(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
-    snapshot = snapshot_settings(["pr_code_suggestions.commitable_code_suggestions"])
+    snapshot = snapshot_settings(["pr_code_suggestions.committable_code_suggestions"])
     settings.config.publish_output = False
-    settings.set("pr_code_suggestions.commitable_code_suggestions", False)
+    settings.set("pr_code_suggestions.committable_code_suggestions", False)
     try:
         data = {"code_suggestions": [_valid_suggestion(existing_code="same()", improved_code="same()")]}
         response_reflect = """
@@ -318,7 +362,7 @@ code_suggestions:
 
         suggestion = data["code_suggestions"][0]
         assert suggestion["score"] == 6
-        # Non-commitable mode clears existing_code so the rendered suggestion
+        # Non-committable mode clears existing_code so the rendered suggestion
         # doesn't show an identical before/after block.
         assert suggestion["existing_code"] == ""
         assert suggestion["improved_code"] == "same()"
@@ -328,15 +372,15 @@ code_suggestions:
 
 
 @pytest.mark.asyncio
-async def test_analyze_self_reflection_clears_improved_code_in_commitable_mode():
+async def test_analyze_self_reflection_clears_improved_code_in_committable_mode():
     git_provider = MagicMock()
     git_provider.get_diff_files.return_value = []
     tool = _make_tool(git_provider)
     settings = get_settings()
     original_publish_output = settings.config.publish_output
-    snapshot = snapshot_settings(["pr_code_suggestions.commitable_code_suggestions"])
+    snapshot = snapshot_settings(["pr_code_suggestions.committable_code_suggestions"])
     settings.config.publish_output = False
-    settings.set("pr_code_suggestions.commitable_code_suggestions", True)
+    settings.set("pr_code_suggestions.committable_code_suggestions", True)
     try:
         data = {"code_suggestions": [_valid_suggestion(existing_code="same()", improved_code="same()")]}
         response_reflect = """
@@ -348,7 +392,7 @@ code_suggestions:
         await tool.analyze_self_reflection_response(data, response_reflect)
 
         suggestion = data["code_suggestions"][0]
-        # Commitable mode keeps existing_code (used to locate the line in PR)
+        # committable mode keeps existing_code (used to locate the line in PR)
         # and clears improved_code instead.
         assert suggestion["existing_code"] == "same()"
         assert suggestion["improved_code"] == ""

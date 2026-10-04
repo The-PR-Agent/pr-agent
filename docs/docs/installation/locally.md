@@ -1,13 +1,18 @@
+---
+title: "Locally"
+sidebar_position: 3
+---
+
 To run PR-Agent locally, you first need to acquire two keys:
 
 Local execution has two distinct cases: use the hosted-provider examples below for an existing PR/MR URL, or use the [Local Git Provider guide](../usage-guide/local_git_provider.md) for branch comparisons without a hosted PR/MR.
 
-1. An API key for your configured [language model provider](../usage-guide/changing_a_model.md). For OpenAI, create one [here](https://platform.openai.com/api-keys){:target="_blank"}.
-2. A personal access token from your Git platform (GitHub, GitLab, BitBucket, Gitea) with repo scope. GitHub token, for example, can be issued from [here](https://github.com/settings/tokens){:target="_blank"}
+1. An API key for your configured [language model provider](../usage-guide/changing_a_model.md). For OpenAI, create one <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">here</a>.
+2. A personal access token from your Git platform (GitHub, GitLab, BitBucket, Gitea) with repo scope. GitHub token, for example, can be issued from <a href="https://github.com/settings/tokens" target="_blank" rel="noopener noreferrer">here</a>
 
 ## Using Docker image
 
-A list of the relevant tools can be found in the [tools guide](../tools/).
+A list of the relevant tools can be found in the [tools guide](../tools/index.md).
 
 To invoke a tool (for example `review`), you can run PR-Agent directly from the Docker image. Here's how:
 
@@ -90,7 +95,7 @@ Carefully check the api keys and tokens you provided and make sure they are corr
 Adjustments may be needed depending on your llm provider.
 
 For example, for Azure OpenAI, additional keys are [needed](../usage-guide/changing_a_model.md#azure).
-Same goes for other providers, make sure to check the [documentation](../usage-guide/changing_a_model.md#changing-a-model)
+Same goes for other providers, make sure to check the [documentation](../usage-guide/changing_a_model.md#changing-a-model-in-pr-agent)
 
 ## Using pip package
 

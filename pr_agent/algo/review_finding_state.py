@@ -20,6 +20,7 @@ _STATE_MARKER_RE = re.compile(
 _STATE_MARKER_NAMESPACE = "<!-- pr-agent-review-state"
 _WHITESPACE_RE = re.compile(r"\s+")
 _VALID_STATES = {"ACTIVE", "RESOLVED"}
+_FINDING_HEADER_RE = re.compile(r"\*\*(?P<header>[^*\n]+)\*\*\n\n(?P<content>.*)", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -128,8 +129,9 @@ def _is_valid_state(state: Any) -> bool:
         reopened_count = finding.get("reopened_count", 0)
         if type(reopened_count) is not int or reopened_count < 0:
             return False
-        if not finding.get("path") or not finding.get("body"):
-            return False
+        for key in ("path", "body"):
+            if not isinstance(finding.get(key), str) or not finding[key]:
+                return False
     return True
 
 
@@ -299,6 +301,39 @@ def reconcile_review_findings(
         resolved_ids=tuple(sorted(resolved_ids)),
         reopened_ids=tuple(sorted(reopened_ids)),
     )
+
+
+def render_previous_findings(state: Mapping[str, Any] | None, max_chars: int) -> str:
+    """Return the stored findings as a JSON block for the /review prompt, empty when none fit.
+
+    Active findings come first, then resolved ones, each newest first. Each finding is split back into the
+    `issue_header` and `issue_content` the model emitted, so it can repeat a still-valid finding verbatim
+    and keep its identity across runs. The block stays within `max_chars` (0 disables it).
+    """
+    if not state or max_chars <= 0:
+        return ""
+    findings = list(state.get("findings", []))
+    active = [finding for finding in findings if finding.get("state") == "ACTIVE"]
+    active.sort(key=lambda finding: str(finding.get("last_seen") or ""), reverse=True)
+    resolved = [finding for finding in findings if finding.get("state") == "RESOLVED"]
+    resolved.sort(key=lambda finding: str(finding.get("resolved_at") or ""), reverse=True)
+    entries, context = [], ""
+    for finding in active + resolved:
+        match = _FINDING_HEADER_RE.fullmatch(finding["body"])
+        entry = {
+            "state": finding["state"].lower(),
+            "relevant_file": finding["path"],
+            "start_line": finding.get("line_start"),
+            "end_line": finding.get("line_end"),
+            "issue_header": match.group("header") if match else "",
+            "issue_content": match.group("content") if match else finding["body"],
+        }
+        candidate = json.dumps(entries + [entry], ensure_ascii=False, indent=2)
+        if len(candidate) > max_chars:
+            continue
+        entries.append(entry)
+        context = candidate
+    return context
 
 
 def _render_resolved_section(state: Mapping[str, Any]) -> str:

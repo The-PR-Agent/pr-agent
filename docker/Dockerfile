@@ -29,7 +29,7 @@ CMD ["python", "pr_agent/servers/bitbucket_app.py"]
 
 FROM base AS bitbucket_server_webhook
 COPY pr_agent pr_agent
-CMD ["python", "pr_agent/servers/bitbucket_server_webhook.py"]
+CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-c", "pr_agent/servers/gunicorn_config.py", "--forwarded-allow-ips", "*", "pr_agent.servers.bitbucket_server_webhook:app"]
 
 FROM base AS github_polling
 COPY pr_agent pr_agent
@@ -72,6 +72,12 @@ COPY .github/workflows/build-and-test.yaml .github/workflows/build-and-test.yaml
 COPY docker/Dockerfile docker/Dockerfile
 COPY docker/Dockerfile.lambda docker/Dockerfile.lambda
 COPY docker/mosaico docker/mosaico
+# Read by the docs guards: the URL checker, the pages that link into the docs site,
+# and the packaging inputs that must ship every /help page suffix. Kept last so a
+# README edit only rebuilds these final layers.
+COPY scripts/check_docs_urls.py scripts/check_docs_urls.py
+COPY README.md CONTRIBUTING.md SECURITY.md ./
+COPY MANIFEST.in setup.py ./
 
 FROM base AS cli
 COPY pr_agent pr_agent

@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, status
+from fastapi import APIRouter, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTasks
@@ -16,13 +16,17 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
+    is_ask_command_comment,
+    is_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
 )
@@ -54,7 +58,7 @@ def get_fork_safe_secret_provider():
     return _secret_provider_state["provider"]
 
 
-async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None):
+async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None) -> bool:
     log_context["action"] = body
     log_context["event"] = "pull_request" if body == "/review" else "comment"
     log_context["api_url"] = api_url
@@ -69,7 +73,7 @@ async def handle_request(api_url: str, body: str, log_context: dict, sender_id: 
             provider.set_command_actor(sender_id)
 
     with get_logger().contextualize(**log_context):
-        await PRAgent().handle_request(api_url, body, notify)
+        return await PRAgent().handle_request(api_url, body, notify)
 
 async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
                                    log_context: dict, data: dict):
@@ -408,11 +412,45 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 get_logger().info(f"A comment has been added to a merge request: {url}")
                 body = data.get('object_attributes', {}).get('note')
-                if data.get('object_attributes', {}).get('type') == 'DiffNote' and '/ask' in body: # /ask_line
+                if not is_command_comment(body):
+                    # A plain comment whose first word happens to be a command name must not
+                    # dispatch a tool: the dispatcher strips an optional leading slash.
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
+                discussion_id = data.get('object_attributes', {}).get('discussion_id')
+                command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
+                if (discussion_id and not data.get('object_attributes', {}).get('type')
+                        and command in ("/review", "/review_pr", "/improve", "/improve_code")):
+                    body = f"{body} --comment_id={discussion_id}"
+                if (data.get('object_attributes', {}).get('type') == 'DiffNote'
+                        and is_ask_command_comment(body)):  # /ask_line
                     body = handle_ask_line(body, data)
 
-                await handle_request(
-                    url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))
+                # A fresh collector, so the verdict below can only come from this command.
+                init_run_details()
+                dispatched = False
+
+                def notify_start_reaction():
+                    # Use `notify` as the gate on "was this a command": `PRAgent` calls it only
+                    # once it decides to run something. Re-parsing the comment here would be a
+                    # second opinion, and the dispatcher reads it with shlex and rewrites `/ask` on
+                    # a diff line into `/ask_line`.
+                    nonlocal dispatched
+                    dispatched = True
+                    # Keep start acknowledgement synchronous because notify is not awaitable.
+                    provider.add_eyes_reaction(comment_id)
+
+                result = await handle_request(
+                    url, body, log_context, sender_id, notify=notify_start_reaction)
+                if not dispatched:
+                    return
+                # `propagate_tool_errors` is off, so a tool that failed internally still returns
+                # normally. Reading that as success would tick a comment whose command never ran.
+                # `bool()` rather than `result is not False`, so a `None` reads as failure here the
+                # same way it does in `pr_reviewer` and the GitHub App
+                # Offload outcome HTTP requests while preserving request-scoped settings.
+                await asyncio.to_thread(
+                    provider.react_to_outcome, comment_id, bool(result) and not command_failed())
 
     background_tasks.add_task(inner, request_json)
     end_time = datetime.now()
@@ -461,7 +499,7 @@ get_settings().config.git_provider = "gitlab"
 middleware = [Middleware(RawContextMiddleware)]
 if prometheus_metrics_enabled():
     attach_metrics_endpoint(router)
-app = FastAPI(middleware=middleware)
+app = create_server_app(middleware=middleware)
 app.include_router(router)
 
 

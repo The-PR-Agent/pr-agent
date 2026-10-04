@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, parse_qsl, unquote, urlsplit
 
 import pytest
 
@@ -44,6 +44,7 @@ class ProviderContract:
 
 
 FILE = "src/app.py"
+RESERVED_FILE = "src/a#b?c&d space-☃.py"
 BRANCH = "feature/test"
 COMMON_INPUTS = (
     LinkCase("file", -1, None),
@@ -274,3 +275,61 @@ def test_get_line_link_follows_provider_contract(
         pytest.fail("get_line_link returned an empty URL", pytrace=False)
     assert contract.file_reference in unquote(link)
     assert contract.extract_anchor(link) == expected_anchor
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected_query"),
+    [
+        pytest.param(_gitlab_provider, "ref_type=heads", id="gitlab"),
+        pytest.param(_gitea_provider, "", id="gitea"),
+    ],
+)
+def test_path_line_links_encode_reserved_filename(factory, expected_query):
+    link = factory().get_line_link(RESERVED_FILE, -1)
+    parsed = urlsplit(link)
+
+    assert unquote(parsed.path).endswith(f"/{RESERVED_FILE}")
+    assert parsed.query == expected_query
+    assert parsed.fragment == ""
+    assert "%23" in parsed.path
+    assert "%3F" in parsed.path
+    assert "%26" in parsed.path
+    assert "%20" in parsed.path
+    assert "%E2%98%83" in parsed.path
+
+
+@pytest.mark.parametrize("case", COMMON_INPUTS, ids=lambda case: case.name)
+@pytest.mark.parametrize(
+    ("filename", "encoded_filename"),
+    [
+        (RESERVED_FILE, "src/a%23b%3Fc%26d%20space-%E2%98%83.py"),
+        ("docs/literal%23.md", "docs/literal%2523.md"),
+        ("src/function(arg).py", "src/function%28arg%29.py"),
+    ],
+)
+def test_bitbucket_cloud_line_links_encode_filename_in_fragment(case, filename, encoded_filename):
+    provider = _bitbucket_provider()
+    link = provider.get_line_link(filename, case.start, case.end)
+    parsed = urlsplit(link)
+    line_anchor = "" if case.start == -1 else f"T{case.start}"
+
+    assert link == f"{provider.pr_url}/#L{encoded_filename}{line_anchor}"
+    assert parsed.path == "/owner/repo/pull-requests/7/"
+    assert parsed.query == ""
+    assert unquote(parsed.fragment) == f"L{filename}{line_anchor}"
+
+
+def test_azure_line_link_encodes_reserved_filename_as_one_ordered_query_value():
+    provider = _azure_devops_provider()
+    links = {
+        provider.get_line_link(RESERVED_FILE, case.start, case.end)
+        for case in COMMON_INPUTS
+    }
+
+    assert len(links) == 1
+    parsed = urlsplit(links.pop())
+    assert parse_qsl(parsed.query, keep_blank_values=True) == [
+        ("_a", "files"),
+        ("path", RESERVED_FILE),
+    ]
+    assert parsed.fragment == ""

@@ -5,7 +5,8 @@ import re
 from functools import partial
 from tempfile import TemporaryDirectory
 
-from jinja2 import Environment, StrictUndefined
+from jinja2 import StrictUndefined
+from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -319,7 +320,7 @@ class PredictionPreparator:
         self._system_prompt = system_prompt
         self._user_prompt = user_prompt
         try:
-            environment = Environment(undefined=StrictUndefined)
+            environment = SandboxedEnvironment(undefined=StrictUndefined)
             environment.from_string(system_prompt).render(self._vars)
             environment.from_string(user_prompt).render(self._vars)
         except Exception:
@@ -683,7 +684,8 @@ class PRHelpDocs(object):
             # Do this via the file index and not its name, which may be altered by the model.
             valid_indices = get_valid_ranking_indices(response_yaml.get("relevant_files_ranking"),
                                                       len(docs_filepath_to_contents))
-            valid_file_paths = [list(docs_filepath_to_contents.keys())[idx] for idx in valid_indices]
+            doc_file_paths = list(docs_filepath_to_contents)
+            valid_file_paths = [doc_file_paths[idx] for idx in valid_indices]
             selected_docs_dict = {file_path: docs_filepath_to_contents[file_path] for file_path in valid_file_paths}
             docs_prompt = aggregate_documentation_files_for_prompt_contents(selected_docs_dict)
             docs_prompt_to_send_to_model = docs_prompt

@@ -6,7 +6,6 @@ import html
 import json
 import re
 import textwrap
-from datetime import datetime
 from enum import Enum
 from typing import Any, List, Tuple, TypedDict
 from urllib.parse import quote, unquote
@@ -14,6 +13,19 @@ from urllib.parse import quote, unquote
 import html2text
 import yaml
 from pydantic import BaseModel
+from yaml.tokens import (
+    BlockEndToken,
+    BlockEntryToken,
+    BlockMappingStartToken,
+    BlockSequenceStartToken,
+    FlowMappingEndToken,
+    FlowMappingStartToken,
+    FlowSequenceEndToken,
+    FlowSequenceStartToken,
+    KeyToken,
+    ScalarToken,
+    TagToken,
+)
 
 import pr_agent.algo.comment_identity as _ci
 from pr_agent.algo.git_patch_processing import (
@@ -22,11 +34,17 @@ from pr_agent.algo.git_patch_processing import (
     extract_hunk_lines_from_patch,
     to_hunk_only_patch,
 )
+from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 _ENCODED_USER_TEXT_PREFIX = "__pr_agent_encoded_text__:"
+_YAML_C_SAFE_LOADER = getattr(yaml, "CSafeLoader", None)
+_YAML_MAX_C_NESTING = 256
+_YAML_BLOCK_PREFIX_RE = re.compile(r"(?:^|(?<=[\n\r\x85\u2028\u2029]))( *)((?:[-?] +)*)")
+_YAML_INDENTED_LINE_RE = re.compile(r"[\n\r\x85\u2028\u2029] ")
+_YAML_UNSEPARATED_BLOCK_SCALAR_COMMENT_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?#")
 
 
 def encode_user_text_arg(value: str) -> str:
@@ -89,6 +107,28 @@ def _expand_minute_suffix(text: str) -> str:
     "30ms" or "30min" unchanged.
     """
     return re.sub(r'(\d+)m\b', r'\1 minutes', text)
+
+
+def _get_fence(content: str) -> str:
+    """Return the shortest fence string (minimum 3) that does not appear in content.
+
+    Considers both backtick and tilde fences and picks whichever yields a shorter
+    safe fence, reducing the risk that a very long backtick run in the content
+    produces an extremely long fence line that gets truncated by the provider.
+    """
+    max_backticks = 2
+    for m in re.finditer(r"`+", content):
+        max_backticks = max(max_backticks, len(m.group()))
+    backtick_len = max_backticks + 1
+
+    max_tildes = 2
+    for m in re.finditer(r"~+", content):
+        max_tildes = max(max_tildes, len(m.group()))
+    tilde_len = max_tildes + 1
+
+    if tilde_len < backtick_len:
+        return "~" * tilde_len
+    return "`" * backtick_len
 
 
 def convert_to_markdown_v2(output_data: dict,
@@ -399,7 +439,9 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
                     if dedent and relevant_lines_str:
                         # Remove the longest leading string of spaces and tabs common to all lines.
                         relevant_lines_str = textwrap.dedent(relevant_lines_str)
-                    relevant_lines_str = f"```{file.language}\n{relevant_lines_str}\n```"
+                    if relevant_lines_str:
+                        fence = _get_fence(relevant_lines_str)
+                        relevant_lines_str = f"{fence}{file.language}\n{relevant_lines_str}\n{fence}"
                     break
 
         return relevant_lines_str
@@ -723,24 +765,6 @@ def fix_json_escape_char(json_message=None):
     return result
 
 
-def convert_str_to_datetime(date_str):
-    """
-    Convert a string representation of a date and time into a datetime object.
-
-    Args:
-        date_str (str): A string representation of a date and time in the format '%a, %d %b %Y %H:%M:%S %Z'
-
-    Returns:
-        datetime: A datetime object representing the input date and time.
-
-    Example:
-        >>> convert_str_to_datetime('Mon, 01 Jan 2022 12:00:00 UTC')
-        datetime.datetime(2022, 1, 1, 12, 0, 0)
-    """
-    datetime_format = '%a, %d %b %Y %H:%M:%S %Z'
-    return datetime.strptime(date_str, datetime_format)
-
-
 def load_large_diff(filename, new_file_content_str: str,
                     original_file_content_str: str, show_warning: bool = True) -> str:
     """
@@ -758,6 +782,8 @@ def load_large_diff(filename, new_file_content_str: str,
             original_file_content_str += "\n"
         if new_file_content_str and not new_file_content_str.endswith("\n"):
             new_file_content_str += "\n"
+        if original_file_content_str == new_file_content_str:
+            return ""
         diff = difflib.unified_diff(original_file_content_str.splitlines(keepends=True),
                                     new_file_content_str.splitlines(keepends=True))
         if get_verbosity_level() >= 2 and show_warning:
@@ -891,6 +917,109 @@ def drop_sign_off_after_wrapper_fence(text: str) -> str:
     return text
 
 
+def _has_yaml_c_loader_risk(response_text: str) -> bool:
+    """Detect inputs that should stay on Python SafeLoader for compatibility or stack safety."""
+    check_tag = "!" in response_text
+    flow_openers = response_text.count("[") + response_text.count("{")
+    check_flow_question = "?" in response_text and flow_openers > 0
+    check_nesting = flow_openers >= _YAML_MAX_C_NESTING
+    if not check_nesting and (
+        "- " in response_text
+        or "? " in response_text
+        or _YAML_INDENTED_LINE_RE.search(response_text)
+    ):
+        remaining_depth = _YAML_MAX_C_NESTING - flow_openers
+        for match in _YAML_BLOCK_PREFIX_RE.finditer(response_text):
+            block_prefix = match.group(2)
+            block_depth_hint = len(match.group(1)) + block_prefix.count("-") + block_prefix.count("?")
+            if block_depth_hint >= remaining_depth:
+                check_nesting = True
+                break
+    if not check_tag and not check_flow_question and not check_nesting:
+        return False
+
+    flow_depth = 0
+    nesting_depth = 0
+    block_stack = []
+    indentless_sequence_indents = []
+    loader = _YAML_C_SAFE_LOADER or yaml.SafeLoader
+    try:
+        for token in yaml.scan(response_text, Loader=loader):
+            if isinstance(token, KeyToken):
+                while indentless_sequence_indents and token.start_mark.column <= indentless_sequence_indents[-1]:
+                    indentless_sequence_indents.pop()
+
+            if isinstance(token, (BlockMappingStartToken, BlockSequenceStartToken)):
+                block_stack.append(token)
+                nesting_depth += 1
+            elif isinstance(token, BlockEntryToken):
+                entry_indent = token.start_mark.column
+                explicit_sequence = any(
+                    isinstance(block_token, BlockSequenceStartToken)
+                    and block_token.start_mark.column == entry_indent
+                    for block_token in block_stack
+                )
+                if not explicit_sequence:
+                    while indentless_sequence_indents and indentless_sequence_indents[-1] > entry_indent:
+                        indentless_sequence_indents.pop()
+                    if not indentless_sequence_indents or indentless_sequence_indents[-1] < entry_indent:
+                        indentless_sequence_indents.append(entry_indent)
+            elif isinstance(token, (FlowMappingStartToken, FlowSequenceStartToken)):
+                flow_depth += 1
+                nesting_depth += 1
+            elif isinstance(token, BlockEndToken):
+                if block_stack:
+                    block_stack.pop()
+                while (
+                    indentless_sequence_indents
+                    and token.start_mark.column <= indentless_sequence_indents[-1]
+                ):
+                    indentless_sequence_indents.pop()
+                nesting_depth = max(0, nesting_depth - 1)
+            elif isinstance(token, (FlowMappingEndToken, FlowSequenceEndToken)):
+                flow_depth = max(0, flow_depth - 1)
+                nesting_depth = max(0, nesting_depth - 1)
+
+            effective_nesting_depth = nesting_depth + len(indentless_sequence_indents)
+            if effective_nesting_depth > _YAML_MAX_C_NESTING:
+                return True
+            if check_tag and isinstance(token, TagToken):
+                return True
+            if check_flow_question and flow_depth:
+                if isinstance(token, ScalarToken) and token.plain and "?" in token.value:
+                    return True
+                if (
+                    isinstance(token, KeyToken)
+                    and response_text[token.start_mark.index:token.end_mark.index] == "?"
+                ):
+                    return True
+    except yaml.YAMLError:
+        return False
+    return False
+
+
+def _load_yaml_initial(response_text: str) -> Any:
+    """Parse initial YAML with LibYAML while preserving SafeLoader edge-case semantics."""
+    if _YAML_C_SAFE_LOADER is None:
+        return yaml.safe_load(response_text)
+    # Keep non-initial BOMs on SafeLoader because LibYAML consumes them at document boundaries.
+    if response_text.find("\ufeff", 1) != -1:
+        return yaml.safe_load(response_text)
+    # Keep known parser divergences and unsafe native nesting on the original SafeLoader path.
+    if (
+        "\t" in response_text
+        or _YAML_UNSEPARATED_BLOCK_SCALAR_COMMENT_RE.search(response_text)
+        or _has_yaml_c_loader_risk(response_text)
+    ):
+        return yaml.safe_load(response_text)
+    try:
+        return yaml.load(response_text, Loader=_YAML_C_SAFE_LOADER)
+    except yaml.YAMLError:
+        # Keep the existing Python SafeLoader behavior as a compatibility fallback
+        # before handing malformed model output to the repair pipeline.
+        return yaml.safe_load(response_text)
+
+
 def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_key="", last_key="") -> dict:
     if keys_fix_yaml is None:
         keys_fix_yaml = []
@@ -915,7 +1044,7 @@ def load_yaml(response_text: str, keys_fix_yaml: List[str] | None = None, first_
         # through the same exception handling as a normal parse failure instead.
         if response_text_original.strip() and not response_text.strip():
             raise ValueError("Preprocessing/sanitization removed all content from a non-empty AI prediction")
-        data = yaml.safe_load(response_text)
+        data = _load_yaml_initial(response_text)
     except Exception as e:
         get_logger().warning(f"Initial failure to parse AI prediction: {e}")
         data = try_fix_yaml(response_text, keys_fix_yaml=keys_fix_yaml, first_key=first_key, last_key=last_key,
@@ -1185,18 +1314,23 @@ def try_fix_yaml(response_text: str,
 
 
 
+_DEFAULT_CUSTOM_LABELS = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
+# Mirrors the hardcoded enum the prompts render when custom labels are disabled.
+_BUILTIN_LABELS = ['Bug fix', 'Tests', 'Enhancement', 'Documentation', 'Other']
+
+
 def set_custom_labels(variables, git_provider=None):
     if not get_settings().config.enable_custom_labels:
         return
 
     labels = get_settings().get('custom_labels', {})
     if not labels:
-        # set default labels
-        labels = ['Bug fix', 'Tests', 'Bug fix with tests', 'Enhancement', 'Documentation', 'Other']
-        labels_list = "\n      - ".join(labels) if labels else ""
-        labels_list = f"      - {labels_list}" if labels_list else ""
-        variables["custom_labels"] = labels_list
-        return
+        # No [custom_labels] section is configured, so fall back to the default set. The
+        # templates read custom_labels_class, so the enum has to be built here; writing a
+        # bullet list to an unused key left the prompt declaring `List[Label]` with no
+        # `Label` class at all. The loop below builds the same structure from a description
+        # map, so reuse it.
+        labels = {label: label for label in _DEFAULT_CUSTOM_LABELS}
 
     # Set custom labels
     variables["custom_labels_class"] = "class Label(str, Enum):"
@@ -1221,12 +1355,15 @@ def get_user_labels(current_labels: List[str] = None):
         if current_labels is None:
             current_labels = []
         user_labels = []
+        # /describe publishes the built-in PRType whatever the configuration, so those are
+        # always bot-owned. A configured set adds to them rather than replacing them, else a
+        # stale "Bug fix" would survive every /describe re-run.
+        bot_labels = {label.lower() for label in _BUILTIN_LABELS}
+        if enable_custom_labels:
+            bot_labels |= {str(label).lower() for label in custom_labels or _DEFAULT_CUSTOM_LABELS}
         for label in current_labels:
-            if label.lower() in ['bug fix', 'tests', 'enhancement', 'documentation', 'other']:
+            if label.lower() in bot_labels:
                 continue
-            if enable_custom_labels:
-                if label in custom_labels:
-                    continue
             user_labels.append(label)
         if user_labels:
             get_logger().debug(f"Keeping user labels: {user_labels}")
@@ -1301,12 +1438,14 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                                      artifact={"relevant_file": relevant_file})
                 continue
             else:
-                # try to find the line in the patch using difflib, with some margin of error
+                # Skip fuzzy normalization when the raw patch line matches exactly.
                 fuzzy_match_candidates = [line for line in patch_lines if line != NO_NEWLINE_AT_EOF_MARKER]
-                matches_difflib: list[str | Any] = difflib.get_close_matches(relevant_line_in_file,
-                                                                             fuzzy_match_candidates, n=3, cutoff=0.93)
-                if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
-                    relevant_line_in_file = matches_difflib[0]
+                if relevant_line_in_file not in fuzzy_match_candidates:
+                    matches_difflib: list[str | Any] = difflib.get_close_matches(
+                        relevant_line_in_file, fuzzy_match_candidates, n=3, cutoff=0.93
+                    )
+                    if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
+                        relevant_line_in_file = matches_difflib[0]
 
 
                 def scan_patch_lines(is_match):
@@ -1492,18 +1631,13 @@ def set_file_languages(diff_files) -> List[FilePatchInfo]:
         if hasattr(diff_files[0], 'language') and diff_files[0].language:
             return diff_files
 
-        # map file extensions to programming languages
-        language_extension_map_org = get_settings().language_extension_map_org
-        extension_to_language = {}
-        for language, extensions in language_extension_map_org.items():
-            for ext in extensions:
-                extension_to_language[ext] = language
+        # Reuse the shared classifier. Matching on the last suffix alone missed every
+        # multi-part key (Config.cmake.in -> ".in"), every wildcard key (module.bsl ->
+        # ".bsl" where the map stores "*.bsl") and every uppercase suffix (handler.PY).
+        get_language = build_language_file_matcher(get_settings().language_extension_map_org)
         for file in diff_files:
-            extension_s = '.' + file.filename.rsplit('.')[-1]
-            language_name = "txt"
-            if extension_s and (extension_s in extension_to_language):
-                language_name = extension_to_language[extension_s]
-            file.language = language_name.lower()
+            language_name = get_language(file.filename)
+            file.language = (language_name or "txt").lower()
     except Exception as e:
         get_logger().exception(f"Failed to set file languages: {e}")
 
@@ -1518,12 +1652,19 @@ def format_todo_item(todo_item: TodoItem | str, git_provider, gfm_supported) -> 
     if not isinstance(todo_item, dict):
         return str(todo_item).strip() if todo_item is not None else ""
     relevant_file = str(todo_item.get('relevant_file', '') or '').strip()
-    line_number = todo_item.get('line_number', '')
+    try:
+        line_number = int(str(todo_item.get('line_number')).strip())
+    except (TypeError, ValueError):
+        line_number = 0
     content = str(todo_item.get('content', '') or '')
     if not relevant_file:
         return content.strip()
-    reference_link = git_provider.get_line_link(relevant_file, line_number, line_number)
-    file_ref = f"{relevant_file} [{line_number}]"
+    if line_number < 1:
+        reference_link = git_provider.get_line_link(relevant_file, -1)
+        file_ref = relevant_file
+    else:
+        reference_link = git_provider.get_line_link(relevant_file, line_number, line_number)
+        file_ref = f"{relevant_file} [{line_number}]"
     if reference_link:
         if gfm_supported:
             file_ref = f"<a href='{reference_link}'>{file_ref}</a>"

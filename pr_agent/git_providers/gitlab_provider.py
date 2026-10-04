@@ -4,7 +4,7 @@ import re
 import urllib.parse
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Optional, Tuple
+from typing import Iterator, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import gitlab
@@ -42,6 +42,9 @@ from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
+    CodeSuggestionThread,
+    ConcurrentFileUpdateError,
+    FileContentSnapshot,
     GitProvider,
     IncrementalPR,
     get_config_branch,
@@ -56,6 +59,11 @@ class DiffNotFoundError(Exception):
 
 class IncompleteGitLabDiffError(DiffNotFoundError):
     """Represent an incomplete GitLab merge-request diff response."""
+
+
+def _is_stale_file_update_error(error: GitlabUpdateError) -> bool:
+    message = str(getattr(error, "error_message", error)).lower()
+    return getattr(error, "response_code", None) == 400 and "changed since you started editing" in message
 
 
 def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
@@ -127,6 +135,28 @@ def _eligible_own_inline_thread(discussion, own_user_id: int):
         if author_id != own_user_id:
             return None
     return position
+
+
+def _suggestion_thread_location(position: dict) -> tuple:
+    """Return (path, start, end) of an inline note, or (None, None, None) when it is not anchored to a line.
+
+    Use the multi-line `line_range` when GitLab reports one, else the single anchored line. Prefer new-file
+    coordinates over old-file ones and pick the path from the same side, so renamed files map correctly.
+    """
+    line_range = position.get('line_range') if isinstance(position.get('line_range'), dict) else {}
+    for side, path_key in (('new_line', 'new_path'), ('old_line', 'old_path')):
+        edges = []
+        for key in ('start', 'end'):
+            edge = line_range.get(key) if isinstance(line_range.get(key), dict) else {}
+            edges.append(edge.get(side))
+        start, end = edges
+        if isinstance(start, int) and isinstance(end, int):
+            return position.get(path_key), min(start, end), max(start, end)
+    for side, path_key in (('new_line', 'new_path'), ('old_line', 'old_path')):
+        line = position.get(side)
+        if isinstance(line, int):
+            return position.get(path_key), line, line
+    return None, None, None
 
 
 def _flagged_line_removed(position: dict, removed_lines: dict) -> bool:
@@ -263,6 +293,7 @@ class GitLabProvider(GitProvider):
         self.diff_files = None
         self.git_files = None
         self.temp_comments = []
+        self._published_inline_comment_bodies: list[str] = []
         self._submodule_cache: dict[tuple[str, str, str], list[dict]] = {}
         self.pr_url = merge_request_url
         self._set_merge_request(merge_request_url)
@@ -470,6 +501,20 @@ class GitLabProvider(GitProvider):
             cmp = proj.repository_compare(old_sha, new_sha)
             if isinstance(cmp, dict):
                 diffs = cmp.get("diffs", []) or []
+                incomplete_reason = None
+                if cmp.get("compare_timeout") is True:
+                    incomplete_reason = "compare timed out"
+                elif any(isinstance(diff, dict) and diff.get("collapsed") is True for diff in diffs):
+                    incomplete_reason = "a child diff is collapsed"
+                elif any(isinstance(diff, dict) and diff.get("too_large") is True for diff in diffs):
+                    incomplete_reason = "a child diff is too large"
+                if incomplete_reason:
+                    get_logger().warning(
+                        f"[submodule] compare incomplete for {proj_path} {old_sha}..{new_sha}: "
+                        f"{incomplete_reason}; child expansion skipped and parent submodule change remains"
+                    )
+                    self._submodule_cache[key] = []
+                    return []
             else:
                 diffs = []
             self._submodule_cache[key] = diffs
@@ -620,7 +665,7 @@ class GitLabProvider(GitProvider):
             return ("", "")
         if not repo_git_url: #Use PR url as context
             try:
-                desired_branch = self.gl.projects.get(self.id_project).default_branch
+                desired_branch = self._project_default_branch()
             except (GitlabError, RequestException, AttributeError):
                 get_logger().exception(f"Cannot get PR: {self.pr_url} default branch. "
                                        f"Tried project ID: {self.id_project}")
@@ -638,6 +683,20 @@ class GitLabProvider(GitProvider):
         '''The GitLab terminology is merge request (MR) instead of pull request (PR)'''
         return self.mr
 
+    _default_branch: str | None  # set on first read; annotation only, so `hasattr` means "read it"
+
+    def _project_default_branch(self) -> str | None:
+        """Return this project's default branch, fetching it at most once per provider.
+
+        `id_project` is already known, so this one field is the only reason to download a project.
+        The answer is cached for the lifetime of this provider instance, so a caller that outlives
+        a default-branch change has to build a new provider to see the new one. Keyed on `hasattr`,
+        not on the value, so that a repository with no default branch caches that answer too.
+        """
+        if not hasattr(self, "_default_branch"):
+            self._default_branch = self.gl.projects.get(self.id_project).default_branch
+        return self._default_branch
+
     def _set_merge_request(self, merge_request_url: str):
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
         self.mr = self._get_merge_request()
@@ -653,7 +712,7 @@ class GitLabProvider(GitProvider):
     _SUGGESTIONS_STABLE_ANCHORS = (
         PRCodeSuggestionsIdentity.SUMMARY.value,
         PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
-        "**Suggestion:**",  # commitable-suggestions inline mode
+        "**Suggestion:**",  # committable-suggestions inline mode
     )
     _SUGGESTIONS_LEGACY_ANCHORS = (PRCodeSuggestionsHeader.SUMMARY.value,)
     _INCREMENTAL_ANCHOR_PREFIXES = {
@@ -935,9 +994,29 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Error retrieving file {file_path} from branch {branch}: {e}")
             return ''
 
-    def create_or_update_pr_file(self, file_path: str, branch: str, contents="", message="") -> None:
-        """Create or update a file in the GitLab repository."""
+    def get_pr_file_content_snapshot(self, file_path: str, branch: str) -> FileContentSnapshot:
         try:
+            file_obj = self.gl.projects.get(self.id_project, lazy=True).files.get(file_path, branch)
+        except GitlabGetError as e:
+            if getattr(e, "response_code", None) != 404:
+                raise
+            return FileContentSnapshot("", False, None)
+        contents = decode_if_bytes(file_obj.decode())
+        if not isinstance(contents, str):
+            raise TypeError("GitLab file snapshot must contain text")
+        if not isinstance(file_obj.last_commit_id, str) or not file_obj.last_commit_id:
+            raise ValueError("GitLab file snapshot is missing its last commit ID")
+        return FileContentSnapshot(contents, True, file_obj.last_commit_id)
+
+    def create_or_update_pr_file(
+        self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
+    ) -> None:
+        """Create or replace a file only against the captured file state."""
+        try:
+            if expected_snapshot.exists and (
+                not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision
+            ):
+                raise ValueError("GitLab file update requires the captured last commit ID")
             project = self.gl.projects.get(self.id_project)
 
             if not message:
@@ -946,17 +1025,47 @@ class GitLabProvider(GitProvider):
 
             try:
                 existing_file = project.files.get(file_path, branch)
-                existing_file.content = contents
-                existing_file.save(branch=branch, commit_message=message)
-                get_logger().debug(f"Updated file {file_path} in branch {branch}")
-            except GitlabGetError:
-                project.files.create({
-                    'file_path': file_path,
-                    'branch': branch,
-                    'content': contents,
-                    'commit_message': message
-                })
+            except GitlabGetError as e:
+                if getattr(e, "response_code", None) != 404:
+                    raise
+                if expected_snapshot.exists:
+                    raise ConcurrentFileUpdateError("The file disappeared after the changelog snapshot") from e
+                try:
+                    project.files.create({
+                        'file_path': file_path,
+                        'branch': branch,
+                        'content': contents,
+                        'commit_message': message
+                    })
+                except GitlabCreateError as create_error:
+                    error_message = str(getattr(create_error, "error_message", create_error)).strip().lower()
+                    if (getattr(create_error, "response_code", None) == 400
+                            and error_message == "a file with this name already exists"):
+                        get_logger().warning(
+                            f"Concurrent changelog creation rejected for file {file_path} in branch {branch}"
+                        )
+                        raise ConcurrentFileUpdateError(
+                            "The file appeared after the changelog snapshot"
+                        ) from create_error
+                    raise
                 get_logger().debug(f"Created file {file_path} in branch {branch}")
+            else:
+                if not expected_snapshot.exists:
+                    raise ConcurrentFileUpdateError("The file appeared after the changelog snapshot")
+                existing_file.content = contents
+                existing_file.last_commit_id = expected_snapshot.revision
+                try:
+                    existing_file.save(branch=branch, commit_message=message)
+                except GitlabUpdateError as e:
+                    if _is_stale_file_update_error(e):
+                        get_logger().warning(
+                            f"Concurrent changelog edit rejected for file {file_path} in branch {branch}: {e}"
+                        )
+                        raise ConcurrentFileUpdateError(
+                            "The file changed after the changelog snapshot"
+                        ) from e
+                    raise
+                get_logger().debug(f"Updated file {file_path} in branch {branch}")
         except GitlabAuthenticationError as e:
             get_logger().error(f"Authentication failed while creating/updating file {file_path} "
                                f"in branch {branch}: {e}")
@@ -1028,8 +1137,16 @@ class GitLabProvider(GitProvider):
             # allow only a limited number of files to be fully loaded. We can manage the rest with diffs only
             counter_valid += 1
             if counter_valid < MAX_FILES_ALLOWED_FULL or not diff['diff']:
-                original_file_content_str = self.get_pr_file_content(diff['old_path'], base_sha_for_content)
-                new_file_content_str = self.get_pr_file_content(diff['new_path'], head_sha_for_content)
+                original_file_content_str = (
+                    ''
+                    if not incremental_active and diff['new_file']
+                    else self.get_pr_file_content(diff['old_path'], base_sha_for_content)
+                )
+                new_file_content_str = (
+                    ''
+                    if not incremental_active and diff['deleted_file']
+                    else self.get_pr_file_content(diff['new_path'], head_sha_for_content)
+                )
             else:
                 if counter_valid == MAX_FILES_ALLOWED_FULL:
                     get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
@@ -1069,6 +1186,7 @@ class GitLabProvider(GitProvider):
         if invalid_files_names:
             get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 
@@ -1132,6 +1250,9 @@ class GitLabProvider(GitProvider):
     def should_publish_improve_as_thread(self) -> bool:
         return bool(get_settings().get("GITLAB.PUBLISH_IMPROVE_AS_THREAD", False))
 
+    def should_reply_to_trigger_comment(self) -> bool:
+        return bool(get_settings().get("GITLAB.REPLY_TO_TRIGGER_COMMENT", False))
+
     def supports_review_comment_identity(self) -> bool:
         return True
 
@@ -1141,8 +1262,56 @@ class GitLabProvider(GitProvider):
     def supports_code_suggestion_state(self) -> bool:
         return True
 
-    def get_code_suggestion_thread_context(self) -> str:
-        return ""
+    def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
+        try:
+            discussions = self.mr.discussions.list(get_all=True)
+        except (GitlabError, RequestException) as e:
+            get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
+            return
+        for discussion in reversed(discussions):
+            notes = discussion.attributes.get('notes') or []
+            opener = notes[0] if notes and isinstance(notes[0], dict) else {}
+            body = opener.get('body')
+            position = opener.get('position') if isinstance(opener.get('position'), dict) else {}
+            path, start_line, end_line = _suggestion_thread_location(position)
+            if not isinstance(body, str) or not is_agent_inline_comment(body) or start_line is None:
+                continue
+            try:
+                authored_by_agent = self.is_comment_authored_by_pr_agent(opener)
+            except RuntimeError:
+                authored_by_agent = None
+            replies = []
+            for note in notes[1:]:
+                if not isinstance(note, dict) or note.get('system'):
+                    continue
+                author = note.get('author') or {}
+                replies.append((author.get('name') or author.get('username'), note.get('body')))
+            yield CodeSuggestionThread(
+                thread_id=discussion.id,
+                status=self._code_suggestion_thread_status(opener),
+                file=path,
+                start_line=start_line,
+                end_line=end_line,
+                suggestion=body,
+                replies=replies,
+                authored_by_agent=authored_by_agent,
+            )
+
+    def _code_suggestion_thread_status(self, opener: dict) -> str:
+        """Return `applied` (suggestion applied through the GitLab UI), `auto_resolved` (closed by the verified
+        PR-Agent user, e.g. the outdated/fixed thread sweeps), `resolved` (closed by anyone else, or by an
+        unverifiable user) or `open`."""
+        suggestions = opener.get('suggestions') or []
+        if any(isinstance(suggestion, dict) and suggestion.get('applied') for suggestion in suggestions):
+            return "applied"
+        if opener.get('resolved') is not True:
+            return "open"
+        resolved_by = opener.get('resolved_by') if isinstance(opener.get('resolved_by'), dict) else {}
+        own_user_id = self._get_own_user_id()
+        if own_user_id is not None and resolved_by.get('id') is not None \
+                and str(resolved_by.get('id')) == str(own_user_id):
+            return "auto_resolved"
+        return "resolved"
 
     def is_comment_authored_by_pr_agent(self, comment) -> bool:
         if isinstance(comment, dict):
@@ -1165,6 +1334,14 @@ class GitLabProvider(GitProvider):
             get_logger().debug(f"Skipping publish_comment for temporary comment: {mr_comment}")
             return None
         mr_comment = self.limit_output_characters(mr_comment, self.max_comment_chars)
+        # Reply to the triggering GitLab discussion only when explicitly enabled and available.
+        if (not is_temporary and self.should_reply_to_trigger_comment()
+                and (comment_id := get_settings().get("comment_id", ""))):
+            try:
+                return self.reply_to_comment_from_comment_id(comment_id, mr_comment)
+            except Exception as e:
+                get_logger().warning(f"Failed to reply to trigger discussion, falling back to a note: {e}")
+
         # When as_thread is set (only the review's final comment requests this), post it as a resolvable
         # thread (discussion) instead of a plain note. Temporary progress comments are never threaded.
         if as_thread and not is_temporary:
@@ -1359,7 +1536,7 @@ class GitLabProvider(GitProvider):
     def reply_to_comment_from_comment_id(self, comment_id: int, body: str):
         body = self.limit_output_characters(body, self.max_comment_chars)
         discussion = self.mr.discussions.get(comment_id)
-        discussion.notes.create({'body': body})
+        return discussion.notes.create({'body': body})
 
     def publish_inline_comment(self, body: str, relevant_file: str, relevant_line_in_file: str,
                                original_suggestion=None):
@@ -1373,11 +1550,52 @@ class GitLabProvider(GitProvider):
                               absolute_position: int = None):
         raise NotImplementedError("GitLab provider does not support creating inline comments yet")
 
+    def get_recent_inline_comment_bodies(self) -> list[str]:
+        """Return inline comment bodies published during this provider run."""
+        return list(getattr(self, "_published_inline_comment_bodies", []))
+
+    def get_persistent_comment_bodies(self) -> list[str]:
+        """Return existing GitLab MR note bodies for inline deduplication."""
+        bodies = list(getattr(self, "_published_inline_comment_bodies", []))
+        seen = set(bodies)
+        if self.mr is None:
+            return bodies
+        for discussion in self.mr.discussions.list(get_all=True):
+            attrs = getattr(discussion, "attributes", None) or {}
+            for note in attrs.get("notes", []) or []:
+                if isinstance(note, dict):
+                    body = note.get("body", "") or ""
+                    if body and body not in seen:
+                        bodies.append(body)
+                        seen.add(body)
+        for note in self.mr.notes.list(get_all=True):
+            body = getattr(note, "body", "") or ""
+            if body and body not in seen:
+                bodies.append(body)
+                seen.add(body)
+        try:
+            for draft in self.mr.draft_notes.list(get_all=True):
+                body = getattr(draft, "note", "") or ""
+                if body and body not in seen:
+                    bodies.append(body)
+                    seen.add(body)
+        except (GitlabError, RequestException) as e:
+            get_logger().warning(f"Could not list pending draft notes for MR {self.id_mr}: {e}")
+        return bodies
+
+    def _remember_published_inline_comment_body(self, body: str) -> None:
+        recent = getattr(self, "_published_inline_comment_bodies", None)
+        if recent is None:
+            recent = []
+            self._published_inline_comment_bodies = recent
+        if body and body not in recent:
+            recent.append(body)
+
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
-                            original_suggestion=None, as_draft: bool = False) -> bool:
-        """Returns True iff a comment (live or draft, primary or fallback) was created."""
+                            original_suggestion=None, as_draft: bool = False) -> Optional[bool]:
+        """Return True for creation, None for deduplication, and False for failure."""
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
             return False
@@ -1396,7 +1614,7 @@ class GitLabProvider(GitProvider):
                     get_logger().info(
                         f"Persistent inline comments: skipping duplicate inline "
                         f"comment on {relevant_file}:{anchor_line}")
-                    return False
+                    return None
                 body = body_with_markers(
                     body, body_fp, code_fp, getattr(self, "max_comment_chars", None))
             # in order to have exact sha's we have to find correct diff for this change
@@ -1439,8 +1657,10 @@ class GitLabProvider(GitProvider):
         try:
             if as_draft:
                 self.mr.draft_notes.create({'note': body, 'position': pos_obj})
+                self._code_suggestion_draft_queued = True
             else:
                 self.mr.discussions.create({'body': body, 'position': pos_obj})
+                self._remember_published_inline_comment_body(body)
             if store is not None:
                 store.add(body_fp)
                 store.add(code_fp)
@@ -1468,8 +1688,11 @@ class GitLabProvider(GitProvider):
                     label = original_suggestion['label']
                     score = original_suggestion.get('score', 7)
 
+                score_why = str(original_suggestion.get('score_why') or "").strip()
                 link = self.get_line_link(relevant_file, line_start, line_end)
                 body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                if score_why:
+                    body_fallback += f"Why: {score_why}\n\n"
                 body_fallback += (f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"
                                   f"</summary>\n\n")
                 body_fallback += ("\n\n___\n\n`(Cannot implement directly - GitLab API allows committable "
@@ -1495,8 +1718,10 @@ class GitLabProvider(GitProvider):
                 }
                 if as_draft:
                     self.mr.draft_notes.create({'note': body_fallback, 'position': fallback_position})
+                    self._code_suggestion_draft_queued = True
                 else:
                     self.mr.notes.create({'body': body_fallback, 'position': fallback_position})
+                    self._remember_published_inline_comment_body(body_fallback)
                 get_logger().debug(f"Created fallback comment in MR {self.id_mr} with position {pos_obj}")
                 if store is not None:
                     store.add(body_fp)
@@ -1525,10 +1750,35 @@ class GitLabProvider(GitProvider):
             f'No relevant diff found for {relevant_file} {relevant_line_in_file}. Falling back to latest diff.')
         return self.last_diff  # fallback to the latest diff if no relevant diff is found
 
+    def _publish_suggestion_drafts(self, pending) -> None:
+        if pending:
+            self.mr.draft_notes.bulk_publish()
+            for draft in pending:
+                body = getattr(draft, "note", "") or ""
+                if body:
+                    self._remember_published_inline_comment_body(body)
+
     def publish_code_suggestions(self, code_suggestions: list) -> bool:
         # Runs first so the fingerprints it frees are in the store before any dedup lookup.
         self.resolve_outdated_inline_threads()
         self.reconcile_code_suggestion_threads()
+        if not code_suggestions:
+            return True
+        retry = getattr(self, "_failed_draft_batch", None) is not None and all(
+                suggestion in self._failed_draft_inputs for suggestion in code_suggestions)
+        if retry and all(suggestion in self._failed_draft_settled for suggestion in code_suggestions):
+            # Caller retries publish the queued batch without recreating its suggestions.
+            if not self._failed_draft_batch:
+                try:
+                    self._publish_suggestion_drafts(self.mr.draft_notes.list(get_all=True))
+                    self._failed_draft_batch = True
+                except (GitlabError, RequestException) as e:
+                    get_logger().warning(f"Retrying draft publication for MR {self.id_mr} failed: {e}")
+            return self._failed_draft_batch
+        if not retry:
+            self._failed_draft_batch = None
+        landed, settled = False, []
+        self._code_suggestion_draft_queued = False
         # When true, suggestions are queued as GitLab draft notes and published together in a single
         # batch at the end, instead of each one going out as its own live discussion (and its own
         # notification/email) as soon as it's created.
@@ -1552,6 +1802,12 @@ class GitLabProvider(GitProvider):
                         break
                 if target_file is None:
                     get_logger().warning(f"Skipping suggestion: file '{relevant_file}' not found in diff")
+                    continue
+                if relevant_lines_start < 1 or relevant_lines_end < relevant_lines_start:
+                    get_logger().warning(
+                        f"Skipping suggestion: invalid line range "
+                        f"{relevant_lines_start}-{relevant_lines_end} for '{relevant_file}'"
+                    )
                     continue
                 range = relevant_lines_end - relevant_lines_start # no need to add 1
                 body = body.replace('```suggestion', f'```suggestion:-0+{range}')
@@ -1599,9 +1855,12 @@ class GitLabProvider(GitProvider):
                     found = True
                     edit_type = 'addition'
 
-                self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
-                                         source_line_no, target_file, target_line_no, original_suggestion,
-                                         as_draft=as_review)
+                created = self.send_inline_comment(body, edit_type, found, relevant_file, relevant_line_in_file,
+                                                   source_line_no, target_file, target_line_no, original_suggestion,
+                                                   as_draft=as_review)
+                landed = landed or bool(created)
+                if created is not False:
+                    settled.append(suggestion)
             except Exception as e:
                 # Deliberately broad: suggestions are published one by one, so the loop has to
                 # survive a single bad one - whatever went wrong with it - and still land the rest.
@@ -1609,22 +1868,17 @@ class GitLabProvider(GitProvider):
 
         if as_review:
             try:
-                # Check the MR's actual pending drafts rather than tracking creations from this call
-                # alone: this correctly skips bulk-publish when nothing is pending (e.g. an empty or
-                # all-failed suggestion list, which would otherwise publish unrelated drafts already on
-                # the MR from a previous run or a manual draft review in progress), while still
-                # retrying to publish drafts left over from an earlier run whose bulk_publish failed -
-                # even if every suggestion in this run was skipped as a dedup-detected duplicate of one
-                # of those still-pending drafts.
+                # Dedup-only runs may still refer to pending drafts from an earlier operation.
                 try:
                     pending = self.mr.draft_notes.list(get_all=True)
                 except (GitlabError, RequestException) as e:
-                    # Draft notes are unusable on this instance/token; send_inline_comment has
-                    # already degraded every suggestion to a live comment, so nothing is pending.
+                    if self._code_suggestion_draft_queued:
+                        raise
+                    # Draft-unsupported instances already fell back to live comments.
                     get_logger().warning(f"Could not list draft notes for MR {self.id_mr}: {e}")
                     pending = []
-                if pending:
-                    self.mr.draft_notes.bulk_publish()
+                if settled:
+                    self._publish_suggestion_drafts(pending)
             except (GitlabError, RequestException) as e:
                 # Draft notes are only visible to the posting user until published, so a failure here
                 # leaves the suggestions invisible to everyone else. They aren't lost: GitLab keeps
@@ -1635,11 +1889,23 @@ class GitLabProvider(GitProvider):
                     f"Failed to bulk-publish draft code-suggestion notes for MR {self.id_mr}; they remain "
                     f"as pending drafts, visible only to the posting user, until published manually from "
                     f"the GitLab UI or by a subsequent successful run: {e}")
+                self._failed_draft_batch = False
+                if not retry:
+                    self._failed_draft_inputs, self._failed_draft_settled = code_suggestions, []
+                self._failed_draft_settled += settled
+                return False
 
         # note that we publish suggestions one-by-one. so, if one fails, the rest will still be published
-        return True
+        return landed or len(settled) == len(code_suggestions)
 
     def search_line(self, relevant_file, relevant_line_in_file):
+        # A relevant_file that is absent from the diff (filtered out by [ignore]/bad-extension
+        # rules, renamed or deleted upstream, or simply hallucinated by the model) leaves the
+        # loop body unentered. Seed every return value with find_in_file's "not found" defaults
+        # so the caller degrades to a skipped inline comment instead of UnboundLocalError.
+        found = False
+        source_line_no = 0
+        target_line_no = 0
         target_file = None
 
         edit_type = self.get_edit_type(relevant_line_in_file)
@@ -1647,6 +1913,7 @@ class GitLabProvider(GitProvider):
             if file.filename == relevant_file:
                 edit_type, found, source_line_no, target_file, target_line_no = self.find_in_file(file,
                                                                                                   relevant_line_in_file)
+                break
         return edit_type, found, source_line_no, target_file, target_line_no
 
     def find_in_file(self, file, relevant_line_in_file):
@@ -1752,7 +2019,7 @@ class GitLabProvider(GitProvider):
         if global_settings:
             settings_files.append(("global", global_settings))
         try:
-            project = self.gl.projects.get(self.id_project)
+            project = self.gl.projects.get(self.id_project, lazy=True)
             contents = None
             config_branch = get_config_branch()
             if config_branch:
@@ -1768,7 +2035,7 @@ class GitLabProvider(GitProvider):
                     get_logger().debug(
                         f"No .pr_agent.toml on branch '{config_branch}', falling back to default branch")
             if contents is None:
-                main_branch = project.default_branch
+                main_branch = self._project_default_branch()
                 contents = project.files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
                 self._resolved_config_branch = main_branch or ""
             if contents:
@@ -1796,9 +2063,9 @@ class GitLabProvider(GitProvider):
         """
         if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
             return [], ""
-        project = self.gl.projects.get(self.id_project)
+        project = self.gl.projects.get(self.id_project, lazy=True)
         root_branch = getattr(self, "_resolved_config_branch", "")
-        resolved_ref = root_branch or ref or project.default_branch
+        resolved_ref = root_branch or ref or self._project_default_branch()
         try:
             return self._list_config_tree_paths(project, resolved_ref), resolved_ref
         except GitlabGetError as e:
@@ -1809,7 +2076,7 @@ class GitLabProvider(GitProvider):
                     f"No repository tree for branch '{resolved_ref}' that supplied the root .pr_agent.toml; "
                     "skipping per-directory settings instead of reading them from another branch")
                 return [], ""
-            if resolved_ref == project.default_branch:
+            if resolved_ref == self._project_default_branch():
                 get_logger().debug("No repository tree found for per-directory settings; skipping")
                 return [], ""
         # Match the root config fallback for a caller-provided branch hint: a missing branch/tree is an
@@ -1817,7 +2084,7 @@ class GitLabProvider(GitProvider):
         get_logger().debug(
             f"No repository tree for branch '{resolved_ref}' while listing per-directory settings; "
             "falling back to default branch")
-        resolved_ref = project.default_branch
+        resolved_ref = self._project_default_branch()
         try:
             return self._list_config_tree_paths(project, resolved_ref), resolved_ref
         except GitlabGetError as e:
@@ -1855,7 +2122,7 @@ class GitLabProvider(GitProvider):
         """Fetch raw content of per-directory settings files at *ref*."""
         if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
             return {}
-        project = self.gl.projects.get(self.id_project)
+        project = self.gl.projects.get(self.id_project, lazy=True)  # one handle for the whole loop
         result: dict[str, bytes] = {}
         for path in paths:
             try:
@@ -1886,14 +2153,14 @@ class GitLabProvider(GitProvider):
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         try:
-            project = self.gl.projects.get(self.id_project)
+            project = self.gl.projects.get(self.id_project, lazy=True)
             # Read from the MR target branch (the branch being merged into), matching the other
             # providers; fall back to the project default branch outside of an MR context, or
             # always when from_default_branch is requested.
             if from_default_branch:
-                ref = project.default_branch
+                ref = self._project_default_branch()
             else:
-                ref = getattr(self.mr, "target_branch", None) or project.default_branch
+                ref = getattr(self.mr, "target_branch", None) or self._project_default_branch()
             contents = project.files.get(file_path=file_path, ref=ref).decode()
             return decode_if_bytes(contents)
         except GitlabGetError as e:
@@ -1998,9 +2265,7 @@ class GitLabProvider(GitProvider):
             target_branch = getattr(self.mr, "target_branch", None)
             if target_branch:
                 return target_branch
-        if not hasattr(self, "_repo_context_default_branch"):
-            self._repo_context_default_branch = self.gl.projects.get(self.id_project).default_branch
-        return self._repo_context_default_branch
+        return self._project_default_branch()
 
     def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
         try:
@@ -2008,8 +2273,10 @@ class GitLabProvider(GitProvider):
                 get_logger().warning("Cannot add a reaction: merge request ID is not set.")
                 return None
 
-            mr = self.gl.projects.get(self.id_project).mergerequests.get(self.id_mr)
-            comment = mr.notes.get(issue_comment_id)
+            # lazy: the ids are already known, so fetching the project, the merge request and
+            # the note first would spend three GETs on objects the emoji endpoint does not need
+            mr = self.gl.projects.get(self.id_project, lazy=True).mergerequests.get(self.id_mr, lazy=True)
+            comment = mr.notes.get(issue_comment_id, lazy=True)
 
             if not comment:
                 get_logger().warning(f"Comment with ID {issue_comment_id} not found in merge request {self.id_mr}.")
@@ -2023,27 +2290,26 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
             return None
 
-    def remove_reaction(self, issue_comment_id: int, reaction_id: str) -> bool:
+    def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         try:
             if not self.id_mr:
                 get_logger().warning("Cannot remove reaction: merge request ID is not set.")
                 return False
 
-            mr = self.gl.projects.get(self.id_project).mergerequests.get(self.id_mr)
-            comment = mr.notes.get(issue_comment_id)
+            # lazy: the ids are already known, so fetching the project, the merge request and
+            # the note first would spend three GETs on objects the emoji endpoint does not need
+            mr = self.gl.projects.get(self.id_project, lazy=True).mergerequests.get(self.id_mr, lazy=True)
+            comment = mr.notes.get(issue_comment_id, lazy=True)
 
             if not comment:
                 get_logger().warning(f"Comment with ID {issue_comment_id} not found in merge request {self.id_mr}.")
                 return False
 
-            reactions = comment.awardemojis.list()
-            for reaction in reactions:
-                if reaction.name == reaction_id:
-                    reaction.delete()
-                    return True
-
-            get_logger().warning(f"Reaction '{reaction_id}' not found in comment {issue_comment_id}.")
-            return False
+            # Delete by id: that is the value `add_reaction` hands back and what
+            # `_remove_start_reaction` passes on, so matching on the emoji's name could never find
+            # it. Use a lazy emoji handle to delete directly without listing first.
+            comment.awardemojis.get(reaction_id, lazy=True).delete()
+            return True
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to remove reaction, error: {e}")
             return False
@@ -2208,19 +2474,20 @@ class GitLabProvider(GitProvider):
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
         project_web_url = self._get_project_web_url()
+        encoded_file = quote(relevant_file, safe="/")
         relevant_line_start, relevant_line_end = self._normalize_line_range(
             relevant_line_start, relevant_line_end
         )
         if relevant_line_start == -1:
-            link = f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{relevant_file}?ref_type=heads"
+            link = f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
         elif relevant_line_end:
             link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{relevant_file}?ref_type=heads"
+                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
                 f"#L{relevant_line_start}-{relevant_line_end}"
             )
         else:
             link = (
-                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{relevant_file}?ref_type=heads"
+                f"{project_web_url}/-/blob/{quote(self.mr.source_branch)}/{encoded_file}?ref_type=heads"
                 f"#L{relevant_line_start}"
             )
         return link

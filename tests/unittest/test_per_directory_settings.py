@@ -665,10 +665,14 @@ static_questions = ["default"]
 use_conversation_history = true
 
 [pr_code_suggestions]
+committable_code_suggestions = true
+# Deprecated alias of the key above: it must be denied per directory too, otherwise a nested
+# file could flip /improve to inline publishing through the spelling the fallback still reads.
 commitable_code_suggestions = true
 num_code_suggestions_per_chunk = 2
 max_number_of_calls = 99
 parallel_calls = true
+max_discussion_context_chars = 999999
 demand_code_suggestions_self_review = true
 approve_pr_on_self_review = true
 
@@ -725,6 +729,7 @@ skip_comments = true
         assert get_settings().pr_description.async_ai_calls is True
         assert get_settings().pr_code_suggestions.max_number_of_calls != 99
         assert get_settings().pr_code_suggestions.parallel_calls is True
+        assert get_settings().pr_code_suggestions.max_discussion_context_chars != 999999
         # The self-review approval workflow stays root-controlled: a nested file cannot
         # demand a self-review checklist and then auto-approve on the author's tick.
         assert get_settings().pr_code_suggestions.demand_code_suggestions_self_review is False
@@ -736,7 +741,8 @@ skip_comments = true
         assert get_settings().pr_reviewer.num_max_findings == 4
         assert get_settings().pr_description.use_ai_title is True
         assert get_settings().pr_questions.static_questions == ["default"]
-        assert get_settings().pr_code_suggestions.commitable_code_suggestions is False
+        assert get_settings().pr_code_suggestions.committable_code_suggestions is False
+        assert get_settings().pr_code_suggestions.get("commitable_code_suggestions") is None
         assert get_settings().pr_code_suggestions.num_code_suggestions_per_chunk == 2
         assert get_settings().pr_similar_issue.use_original_title is False
 

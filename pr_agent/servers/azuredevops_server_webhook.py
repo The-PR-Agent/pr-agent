@@ -9,7 +9,7 @@ import re
 from urllib.parse import quote, unquote
 
 import uvicorn
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette import status
@@ -26,6 +26,7 @@ from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MARKER, AzureDevopsProvider
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import basic_auth_matches, get_pr_commands
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
@@ -66,12 +67,16 @@ async def handle_request_comment(url: str, body: str, thread_id: int, comment_id
                 return
             is_question = body.startswith("/ask")
             handled = await agent.handle_request(
-                url, body, notify=lambda: provider.reply_to_thread(thread_id, "On it! ⏳", True)
-            )
+                url, body, notify=lambda: provider.reply_to_thread(thread_id, "On it! ⏳", True),
+                # A tool that fails internally returns normally while `propagate_tool_errors` is
+                # false, and then a resolved discussion thread plus a deleted progress comment would
+                # read as "review done" for a review that was never published.
+                propagate_tool_errors=True)
             if handled and not is_question:
                 provider.set_thread_status(thread_id, "closed")
-            if handled:
-                provider.remove_initial_comment()
+            # The progress reply was posted before the command ran, so a failed run still has to
+            # take it back; only closing the thread depends on the outcome.
+            provider.remove_initial_comment()
     except Exception as e:
         get_logger().exception("Failed to handle webhook", artifact={"url": url, "body": body}, error=str(e))
 
@@ -304,7 +309,7 @@ async def root():
     return {"status": "ok"}
 
 def start():
-    app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+    app = create_server_app(middleware=[Middleware(RawContextMiddleware)])
     if prometheus_metrics_enabled():
         attach_metrics_endpoint(router)
     app.include_router(router)

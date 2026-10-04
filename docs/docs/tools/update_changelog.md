@@ -1,3 +1,8 @@
+---
+title: "Update Changelog"
+sidebar_position: 11
+---
+
 ## Overview
 
 The `update_changelog` tool automatically updates the CHANGELOG.md file with the PR changes.
@@ -9,9 +14,9 @@ It can be invoked manually by commenting on any PR:
 
 ## Example usage
 
-![update_changelog_comment](../assets/update_changelog_comment.png){width=768}
+<img src="/img/update_changelog_comment.png" alt="update_changelog_comment" width="768" />
 
-![update_changelog](../assets/update_changelog.png){width=768}
+<img src="/img/update_changelog.png" alt="update_changelog" width="768" />
 
 ## Configuration options
 

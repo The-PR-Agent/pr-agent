@@ -87,6 +87,11 @@ def _strip_markers(body: str) -> str:
     return body
 
 
+def strip_markers(body: str) -> str:
+    """Remove well-formed dedup markers from a comment body, keeping any text that merely quotes them."""
+    return _strip_markers(body)
+
+
 def _body_fingerprint(relevant_file: str, target_line_no, body: str, max_chars: Optional[int]) -> str:
     normalised = _LEAD_RE.sub("", _strip_markers(body))
     normalised = _TAG_RE.sub("", normalised)
@@ -190,14 +195,6 @@ def key_issue_body_with_markers(body: str, body_fp: str, location_fp: str,
     markers = (f"{build_markers(body_fp, None, git_provider)}\n"
                f"{_render_marker('pr-agent-key-issue-location', location_fp, git_provider)}")
     return _append_markers(body, markers, max_chars)
-
-
-def inline_comment_line(comment: dict):
-    """Best-effort anchor line for a GitHub inline-comment dict."""
-    for key in ("line", "position", "start_line"):
-        if comment.get(key) is not None:
-            return comment[key]
-    return None
 
 
 def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:

@@ -29,6 +29,7 @@ def _make_settings(overrides=None):
             "custom_reasoning_model": False,
             "max_model_tokens": 32000,
             "verbosity_level": 0,
+            "model": overrides.get("config.model"),
             "seed": -1,
             "get": lambda self, key, default=None: default,
         })(),
@@ -6962,9 +6963,9 @@ async def test_image_wait_preserves_native_endpoint_isolation(monkeypatch, initi
         monkeypatch.setenv("GROQ_API_BASE", initial_base)
     captured = []
 
-    def image_wait(*args, **kwargs):
+    async def image_wait(*args, **kwargs):
         monkeypatch.setenv("GROQ_API_BASE", "https://another-handler.example/v1")
-        return MagicMock(status_code=200)
+        return 200
 
     class TransportReached(BaseException):
         pass
@@ -6974,7 +6975,7 @@ async def test_image_wait_preserves_native_endpoint_isolation(monkeypatch, initi
         raise TransportReached
 
     # Run real LiteLLM dispatch/authentication; intercept only image I/O and HTTP transport.
-    monkeypatch.setattr(litellm_handler.requests, "head", image_wait)
+    monkeypatch.setattr(litellm_handler, "with_safe_redirects", image_wait)
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
     handler = LiteLLMAIHandler()
     try:
@@ -8237,6 +8238,7 @@ async def test_native_bedrock_model_region_precedence(monkeypatch, model_source,
         native_params = {"api_key": "owned-bearer"}
     if model_source == "model_id":
         native_params["model_id"] = arn
+        overrides["config.model"] = model
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _make_settings(overrides))
     seen = []
 

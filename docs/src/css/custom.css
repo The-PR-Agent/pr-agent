@@ -1,0 +1,614 @@
+/* ==========================================================================
+   PR-Agent documentation theme
+
+   Graphite surfaces, one signal blue, Geist for text and Geist Mono for
+   anything you type. Diff green/red appear only where they mean a diff.
+   Everything else stays out of the way of the content.
+
+   Brand tokens are `--pra-*`; Infima tokens map onto them. Contrast of every
+   text pairing is WCAG AA or better in both themes.
+   ========================================================================== */
+
+/* ------------------------------------------------------------ tokens: dark */
+
+/* `html[...]` matches Infima's own dark selector, so these win on source order. */
+html[data-theme='dark'] {
+  --pra-bg: #0a0c10;
+  --pra-surface: #11141a;
+  --pra-surface-2: #171b23;
+  --pra-line: #222733;
+  --pra-line-strong: #2e3442;
+  --pra-text: #e8eaef;          /* 16.26:1 on bg */
+  --pra-muted: #8e96a6;         /*  6.58:1 on bg */
+  --pra-accent: #5ea8ff;        /*  7.94:1 on bg */
+  --pra-accent-soft: rgba(94, 168, 255, 0.12);
+  --pra-on-accent: #04101f;     /*  7.75:1 on accent */
+  --pra-add: #3fc27f;
+  --pra-del: #f0646f;
+  --pra-warn: #e2a336;
+
+  --ifm-color-primary: #5ea8ff;
+  --ifm-color-primary-dark: #3b95ff;
+  --ifm-color-primary-darker: #2a8cff;
+  --ifm-color-primary-darkest: #0070f4;
+  --ifm-color-primary-light: #81bbff;
+  --ifm-color-primary-lighter: #92c4ff;
+  --ifm-color-primary-lightest: #c7e1ff;
+}
+
+/* ----------------------------------------------------------- tokens: light */
+
+:root {
+  --pra-bg: #ffffff;
+  --pra-surface: #f5f6f8;
+  --pra-surface-2: #eceef2;
+  --pra-line: #e3e6eb;
+  --pra-line-strong: #cfd4dc;
+  --pra-text: #11141a;          /* 18.44:1 on bg */
+  --pra-muted: #5a6376;         /*  6.03:1 on bg */
+  --pra-accent: #2459db;        /*  5.95:1 on bg */
+  --pra-accent-soft: rgba(36, 89, 219, 0.08);
+  --pra-on-accent: #ffffff;
+  --pra-add: #1a7f45;
+  --pra-del: #c62f3c;
+  --pra-warn: #9a6200;
+
+  --ifm-color-primary: #2459db;
+  --ifm-color-primary-dark: #2050c5;
+  --ifm-color-primary-darker: #1f4cba;
+  --ifm-color-primary-darkest: #193e99;
+  --ifm-color-primary-light: #3a6adf;
+  --ifm-color-primary-lighter: #4572e0;
+  --ifm-color-primary-lightest: #668be6;
+}
+
+/* ------------------------------------------------- Infima, both themes */
+
+:root,
+html[data-theme] {
+  --ifm-background-color: var(--pra-bg);
+  --ifm-background-surface-color: var(--pra-bg);
+  --ifm-font-color-base: var(--pra-text);
+  --ifm-heading-color: var(--pra-text);
+  --ifm-color-content-secondary: var(--pra-muted);
+  --ifm-link-color: var(--pra-accent);
+  --ifm-link-hover-color: var(--pra-accent);
+  --ifm-link-hover-decoration: none;
+  --ifm-hover-overlay: var(--pra-surface);
+  --ifm-color-emphasis-300: var(--pra-line);
+  --ifm-toc-border-color: var(--pra-line);
+  --ifm-hr-background-color: var(--pra-line);
+  --ifm-global-radius: 8px;
+
+  --ifm-font-family-base: 'Geist Variable', 'Geist', system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+  --ifm-font-family-monospace: 'Geist Mono Variable', 'Geist Mono', ui-monospace,
+    SFMono-Regular, Menlo, monospace;
+  --ifm-font-size-base: 15.5px;
+  --ifm-line-height-base: 1.7;
+  --ifm-heading-font-weight: 600;
+  --ifm-heading-line-height: 1.2;
+  --ifm-h1-font-size: 2.5rem;
+  --ifm-h2-font-size: 1.5rem;
+  --ifm-h3-font-size: 1.15rem;
+  --ifm-h4-font-size: 1rem;
+
+  --ifm-code-font-size: 86%;
+  --ifm-code-background: var(--pra-surface);
+  --ifm-code-border-radius: 5px;
+  --ifm-code-padding-horizontal: 0.35em;
+  --ifm-code-padding-vertical: 0.12em;
+  --ifm-pre-border-radius: 10px;
+  --ifm-pre-line-height: 1.65;
+  --docusaurus-highlighted-code-line-bg: rgba(94, 168, 255, 0.12);
+
+  --ifm-navbar-height: 3.75rem;
+  --ifm-navbar-background-color: color-mix(in srgb, var(--pra-bg) 82%, transparent);
+  --ifm-navbar-shadow: none;
+  --ifm-navbar-link-color: var(--pra-muted);
+  --ifm-navbar-link-hover-color: var(--pra-text);
+  --ifm-navbar-link-active-color: var(--pra-text);
+  --ifm-navbar-search-input-background-color: var(--pra-surface);
+  --ifm-navbar-search-input-color: var(--pra-text);
+  --ifm-navbar-search-input-placeholder-color: var(--pra-muted);
+
+  --ifm-menu-color: var(--pra-muted);
+  --ifm-menu-color-active: var(--pra-text);
+  --ifm-menu-color-background-active: var(--pra-surface-2);
+  --ifm-menu-color-background-hover: var(--pra-surface);
+  --ifm-menu-link-padding-vertical: 0.35rem;
+  --ifm-menu-link-padding-horizontal: 0.75rem;
+
+  --ifm-table-border-color: var(--pra-line);
+  --ifm-table-head-background: var(--pra-surface);
+  --ifm-table-head-color: var(--pra-text);
+  --ifm-table-stripe-background: transparent;
+  --ifm-table-cell-padding: 0.6rem 0.85rem;
+
+  --ifm-footer-background-color: var(--pra-bg);
+  --ifm-footer-color: var(--pra-muted);
+  --ifm-footer-link-color: var(--pra-muted);
+  --ifm-footer-link-hover-color: var(--pra-text);
+  --ifm-footer-title-color: var(--pra-text);
+
+  --ifm-blockquote-color: var(--pra-muted);
+  --ifm-blockquote-border-color: var(--pra-line-strong);
+
+  --search-local-modal-background: var(--pra-bg);
+  --search-local-modal-shadow: 0 0 0 1px var(--pra-line), 0 24px 60px -20px rgba(0, 0, 0, 0.5);
+  --search-local-hit-background: var(--pra-surface);
+  --search-local-hit-shadow: none;
+  --search-local-hit-color: var(--pra-text);
+  --search-local-highlight-color: var(--pra-accent);
+  --search-local-hit-active-color: var(--pra-on-accent);
+  --search-local-muted-color: var(--pra-muted);
+  --search-local-input-active-border-color: var(--pra-accent);
+}
+
+/* ------------------------------------------------------------------ base */
+
+html {
+  /* Anchors land below the sticky navbar, including the README's /#features. */
+  scroll-padding-top: calc(var(--ifm-navbar-height) + 1.25rem);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--pra-accent-soft);
+}
+
+:focus-visible {
+  outline: 2px solid var(--pra-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.markdown h1 {
+  letter-spacing: -0.035em;
+  font-weight: 650;
+}
+
+.markdown h2 {
+  letter-spacing: -0.025em;
+  margin-top: 2.75rem;
+}
+
+.markdown h3 {
+  letter-spacing: -0.015em;
+  margin-top: 2rem;
+}
+
+.markdown a {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--pra-accent) 35%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+  transition: text-decoration-color 120ms ease;
+}
+
+.markdown a:hover {
+  text-decoration-color: var(--pra-accent);
+}
+
+.hash-link {
+  opacity: 0;
+  text-decoration: none !important;
+}
+
+:is(h1, h2, h3, h4):hover > .hash-link,
+.hash-link:focus-visible {
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- navbar */
+
+.navbar {
+  border-bottom: 1px solid var(--pra-line);
+  backdrop-filter: saturate(160%) blur(12px);
+  -webkit-backdrop-filter: saturate(160%) blur(12px);
+}
+
+.navbar__brand {
+  gap: 0.15rem;
+}
+
+.navbar__logo {
+  height: 1.4rem;
+}
+
+.navbar__title {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--pra-text);
+}
+
+.navbar__link {
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.navbar__link--active {
+  color: var(--pra-text);
+}
+
+.navbar__search-input {
+  border: 1px solid var(--pra-line);
+  font-size: 0.875rem;
+}
+
+.navbar-sidebar {
+  background: var(--pra-bg);
+}
+
+/* --------------------------------------------------------------- sidebar */
+
+.theme-doc-sidebar-container {
+  border-right: 1px solid var(--pra-line) !important;
+}
+
+.menu {
+  padding: 1rem 0.75rem !important;
+  font-size: 0.9rem;
+}
+
+.menu__link {
+  border-radius: 6px;
+  line-height: 1.45;
+}
+
+.menu__link--active:not(.menu__link--sublist) {
+  color: var(--pra-accent);
+  background: var(--pra-accent-soft);
+  font-weight: 500;
+}
+
+.menu__list-item-collapsible:hover {
+  background: var(--pra-surface);
+}
+
+/* Category rows read as headings of their group. */
+.menu__link--sublist,
+.menu__list-item-collapsible .menu__link {
+  color: var(--pra-text);
+  font-weight: 550;
+}
+
+/* Groups without a page of their own (e.g. "Other ways to run") are labels,
+   not links: no hover state, no pointer. */
+.menu__list-item-collapsible:has(> .menu__link:not([href])):hover,
+.menu__list-item-collapsible > .menu__link:not([href]):hover {
+  background: none;
+}
+
+.menu__list-item-collapsible > .menu__link:not([href]) {
+  cursor: default;
+}
+
+/* Breathing room between groups. */
+.theme-doc-sidebar-item-category-level-1 {
+  margin-top: 0.6rem;
+}
+
+/* ------------------------------------------------------------------- TOC */
+
+.table-of-contents {
+  font-size: 0.8rem;
+}
+
+.table-of-contents__link {
+  color: var(--pra-muted);
+}
+
+.table-of-contents__link:hover,
+.table-of-contents__link--active {
+  color: var(--pra-text);
+}
+
+.table-of-contents__link--active {
+  font-weight: 500;
+}
+
+/* ----------------------------------------------------------- breadcrumbs */
+
+.breadcrumbs__link {
+  font-size: 0.8rem;
+  color: var(--pra-muted);
+  background: none !important;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.breadcrumbs__item--active .breadcrumbs__link {
+  color: var(--pra-text);
+}
+
+/* ------------------------------------------------------------------ code */
+
+.markdown :not(pre) > code {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  border: 1px solid var(--pra-line);
+  color: var(--pra-text);
+  font-weight: 450;
+}
+
+.markdown a > code {
+  color: var(--pra-accent);
+}
+
+/* One graphite code surface in both themes: no popular light Prism theme
+   passes AA on a light background, and these docs are mostly TOML and YAML. */
+.theme-code-block {
+  border-radius: var(--ifm-pre-border-radius);
+  box-shadow: none;
+  margin-bottom: 1.4rem;
+}
+
+[data-theme='dark'] .theme-code-block {
+  box-shadow: 0 0 0 1px var(--pra-line);
+}
+
+.theme-code-block pre {
+  font-size: 0.84rem;
+  font-variant-ligatures: none;
+}
+
+.theme-code-block pre code {
+  border: 0;
+}
+
+.theme-code-block button {
+  color: #aab2c0;
+}
+
+/* ----------------------------------------------------------- admonitions */
+
+.theme-admonition {
+  --pra-tone: var(--pra-muted);
+  background: var(--pra-surface);
+  border: 1px solid var(--pra-line);
+  border-left: 2px solid var(--pra-tone);
+  border-radius: 8px;
+  box-shadow: none;
+  color: var(--pra-text);
+  padding: 0.9rem 1.1rem;
+}
+
+.theme-admonition-tip {
+  --pra-tone: var(--pra-add);
+}
+
+.theme-admonition-info {
+  --pra-tone: var(--pra-accent);
+}
+
+.theme-admonition-warning,
+.theme-admonition-caution {
+  --pra-tone: var(--pra-warn);
+}
+
+.theme-admonition-danger {
+  --pra-tone: var(--pra-del);
+}
+
+.theme-admonition > div:first-child {
+  color: var(--pra-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.theme-admonition > div:first-child svg {
+  fill: var(--pra-tone);
+}
+
+.theme-admonition a {
+  color: var(--pra-accent);
+}
+
+/* --------------------------------------------------------------- details */
+
+.markdown details.alert {
+  --ifm-alert-background-color: var(--pra-surface);
+  --ifm-alert-background-color-highlight: transparent;
+  --ifm-alert-foreground-color: var(--pra-text);
+  --ifm-alert-border-color: var(--pra-line);
+  --docusaurus-details-decoration-color: var(--pra-muted);
+  border: 1px solid var(--pra-line);
+  border-radius: 8px;
+  box-shadow: none;
+  padding: 0.8rem 1.1rem;
+}
+
+.markdown details.alert > summary {
+  font-weight: 550;
+}
+
+/* ---------------------------------------------------------------- tables */
+
+/* configuration_reference is a 400-row table: it scrolls inside itself on
+   narrow screens instead of pushing the whole page sideways. */
+.markdown table {
+  display: block;
+  width: 100%;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  line-height: 1.55;
+  border: 1px solid var(--pra-line);
+  border-radius: 8px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.markdown table thead tr {
+  border: 0;
+}
+
+.markdown table th,
+.markdown table td {
+  border: 0;
+  border-bottom: 1px solid var(--pra-line);
+  vertical-align: top;
+}
+
+.markdown table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--pra-surface);
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.markdown table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* ---------------------------------------------------------------- images */
+
+/* Frame doc images; add `no-frame` to opt an image out (it also skips zoom). */
+.markdown img:not(.no-frame) {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px var(--pra-line);
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown img.medium-zoom-image {
+  cursor: zoom-in;
+}
+
+/* ---------------------------------------------------------------- footer */
+
+.footer {
+  border-top: 1px solid var(--pra-line);
+  padding: 2rem 0;
+  font-size: 0.85rem;
+}
+
+.footer__links {
+  margin-bottom: 0.5rem;
+  text-align: center;
+}
+
+.footer__col {
+  flex-basis: 100%;
+}
+
+.footer__title {
+  display: none;
+}
+
+/* ------------------------------------------------------------ pagination */
+
+.pagination-nav__link {
+  border: 1px solid var(--pra-line);
+  border-radius: 8px;
+  transition: border-color 120ms ease;
+}
+
+.pagination-nav__link:hover {
+  border-color: var(--pra-accent);
+}
+
+.pagination-nav__sublabel {
+  color: var(--pra-muted);
+  font-size: 0.8rem;
+}
+
+/* ---------------------------------------------------------------- search */
+
+/* The search results page draws its dividers in a fixed light grey. */
+article[class*='searchResultItem'] {
+  border-bottom-color: var(--pra-line);
+}
+
+mark {
+  background: var(--pra-accent-soft);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 0.1em;
+}
+
+/* ------------------------------------------------ landing page (/ only) */
+
+/* The Overview doc is the site root and renders without a sidebar or TOC.
+   Below the hero there is only a quick start. The hero keeps the only filled
+   buttons; the quick start's are outlined so the hierarchy stays clear. */
+.pra-landing-body {
+  max-width: 52rem;
+  margin: 0 auto;
+}
+
+.pra-landing-body > h2 {
+  margin: 3.25rem 0 0.35rem;
+  font-size: 1.2rem;
+  letter-spacing: -0.02em;
+}
+
+.pra-landing-body > h2:first-child {
+  margin-top: 0;
+}
+
+.pra-landing-body > p {
+  color: var(--pra-muted);
+}
+
+.pra-landing-body > h2 + p {
+  margin-bottom: 1.1rem;
+}
+
+.pra-landing-body > p:last-of-type {
+  font-size: 0.875rem;
+}
+
+/* Calls to action under the quick start. */
+.pra-cta-row p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 1.1rem 0 1.4rem;
+}
+
+.pra-cta-row a {
+  display: inline-flex;
+  align-items: center;
+  height: 2.35rem;
+  padding: 0 0.95rem;
+  border: 1px solid var(--pra-line-strong);
+  border-radius: 8px;
+  color: var(--pra-text);
+  font-size: 0.875rem;
+  font-weight: 550;
+  text-decoration: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.pra-cta-row a::after {
+  content: '→';
+  margin-left: 0.45rem;
+  color: var(--pra-muted);
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.pra-cta-row a:hover {
+  border-color: var(--pra-muted);
+  background: var(--pra-surface);
+}
+
+.pra-cta-row a:hover::after {
+  color: var(--pra-accent);
+  transform: translateX(2px);
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

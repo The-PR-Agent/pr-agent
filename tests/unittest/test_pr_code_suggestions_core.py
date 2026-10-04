@@ -8,6 +8,7 @@ import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
+from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -247,13 +248,41 @@ async def test_convert_to_decoupled_uses_fallback_model_budget_and_tokenizer(mon
 
     result = await tool.convert_to_decoupled_with_line_numbers([patch_prompt], "fallback-model")
 
-    assert len(result) == 1
-    assert result[0]
-    assert len(result[0]) <= 90
-    assert "replacement " * 40 not in result[0]
+    assert result == []
     assert counted_models and set(counted_models) == {"fallback-model"}
     assert reserve_calls == [("fallback-model", 2_000)]
     assert window_calls == [("fallback-model", True)]
+
+
+@pytest.mark.asyncio
+async def test_convert_to_decoupled_falls_back_when_numbering_exceeds_multifile_budget():
+    tool = _make_tool()
+    chunks = [
+        f"## File: '{name}.py'\n\n@@ -0,0 +1,8 @@\n"
+        + "\n".join(f"+{name}_{line}" for line in range(8))
+        for name in ("first", "second")
+    ]
+    patch_prompt = "\n\n".join(chunks)
+    max_input_tokens = len(patch_prompt) + 1
+    counted = []
+
+    def count_tokens(text):
+        counted.append(text)
+        return len(text)
+
+    attempt_budget = SimpleNamespace(
+        available_tokens=MagicMock(return_value=max_input_tokens),
+        count_tokens=count_tokens,
+    )
+
+    result = await tool.convert_to_decoupled_with_line_numbers(
+        [patch_prompt], "model", attempt_budget=attempt_budget
+    )
+
+    assert len(patch_prompt) < max_input_tokens
+    assert len(counted[0]) > max_input_tokens
+    assert "8 +second_7" in counted[0]
+    assert result == []
 
 
 @pytest.mark.asyncio
@@ -296,14 +325,14 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
         "pr_code_suggestions.decouple_hunks",
         "pr_code_suggestions.parallel_calls",
         "pr_code_suggestions.max_suggestions_per_file",
-        "pr_code_suggestions.commitable_code_suggestions",
+        "pr_code_suggestions.committable_code_suggestions",
         "config.publish_output",
     ))
     settings = get_settings()
     settings.pr_code_suggestions.decouple_hunks = True
     settings.pr_code_suggestions.parallel_calls = False
     settings.set("pr_code_suggestions.max_suggestions_per_file", 1)
-    settings.set("pr_code_suggestions.commitable_code_suggestions", committable)
+    settings.set("pr_code_suggestions.committable_code_suggestions", committable)
     settings.set("config.publish_output", publish_output)
     tool = _make_tool()
     tool.token_handler = MagicMock()
@@ -730,7 +759,9 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
             pr_code_suggestions_module,
             "get_pr_multi_diffs",
             side_effect=[(["stale unnumbered chunk"], ["stale.py"]),
-                         (["1 fallback-a", "2 fallback-b"], ["fallback-left-out.py"])],
+                         (["## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n1 +first",
+                           "## File: 'second.py'\n@@ -0,0 +8 @@\n__new hunk__\n8 +second"],
+                          ["fallback-left-out.py"])],
         ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
@@ -740,8 +771,10 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         settings.pr_code_suggestions.parallel_calls = original_parallel_calls
 
     assert chunk_pairs == [
-        ("1 fallback-a", "fallback-a"),
-        ("2 fallback-b", "fallback-b"),
+        ("## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n1 +first",
+         "## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n+first"),
+        ("## File: 'second.py'\n@@ -0,0 +8 @@\n__new hunk__\n8 +second",
+         "## File: 'second.py'\n@@ -0,0 +8 @@\n__new hunk__\n+second"),
     ]
     assert tool.total_chunk_count == 2
     assert len(data["code_suggestions"]) == 2
@@ -756,6 +789,64 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         call.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
         for call in get_pr_multi_diffs.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_suggestions_append_filtered_names_after_hunk_conversion():
+    settings = get_settings()
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    settings.pr_code_suggestions.decouple_hunks = False
+    tool = _make_tool()
+    tool.git_provider.get_filtered_diff_file_names.return_value = ["pnpm-lock.yaml"]
+    tool.convert_to_decoupled_with_line_numbers = AsyncMock(return_value=["numbered source hunk"])
+    received = []
+
+    async def predict(model, numbered, unnumbered):
+        received.append((numbered, unnumbered))
+        return {"code_suggestions": []}
+
+    tool._get_prediction = predict
+    try:
+        with patch.object(
+            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["raw source hunk"], []),
+        ) as get_pr_multi_diffs:
+            await tool.prepare_prediction_main("model")
+    finally:
+        restore_settings(snapshot)
+
+    assert get_pr_multi_diffs.call_args.kwargs["include_filtered_file_names"] is False
+    assert tool.convert_to_decoupled_with_line_numbers.call_args.args[0] == ["raw source hunk"]
+    assert len(received) == 1
+    assert all("pnpm-lock.yaml" in prompt for prompt in received[0])
+    assert received[0][0].startswith("numbered source hunk\n\nFiles changed")
+
+
+@pytest.mark.asyncio
+async def test_suggestions_preserve_digit_prefixed_filtered_names_in_unnumbered_hunks():
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    get_settings().pr_code_suggestions.decouple_hunks = True
+    tool = _make_tool()
+    tool.git_provider.get_filtered_diff_file_names.return_value = ["3rdparty/lib.min.js"]
+    received = []
+
+    async def predict(model, numbered, unnumbered):
+        received.append((numbered, unnumbered))
+        return {"code_suggestions": []}
+
+    tool._get_prediction = predict
+    try:
+        with patch.object(
+            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["1 +source change"], []),
+        ) as get_pr_multi_diffs:
+            await tool.prepare_prediction_main("model")
+    finally:
+        restore_settings(snapshot)
+
+    assert get_pr_multi_diffs.call_args.kwargs["include_filtered_file_names"] is False
+    assert len(received) == 1
+    assert received[0][0].startswith("1 +source change")
+    assert received[0][1].startswith("+source change")
+    assert all("3rdparty/lib.min.js" in prompt for prompt in received[0])
 
 
 def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():
@@ -2424,6 +2515,7 @@ async def test_azure_no_suggestions_uses_current_result_identity():
 
 
 def test_persistent_update_removes_progress_after_status_edit_failure():
+    details = init_run_details()
     initial_header = "## PR Code Suggestions"
     existing = MagicMock()
     existing.body = f"{initial_header}\n<!-- aaa1111 -->\n<table>old suggestions</table>"
@@ -2444,6 +2536,7 @@ def test_persistent_update_removes_progress_after_status_edit_failure():
     assert provider.edit_comment.call_count == 2
     provider.remove_comment.assert_called_once_with(progress_note)
     provider.publish_comment.assert_not_called()
+    assert details.command_failed is False
 
 
 def _persistent_provider(existing_comments):
@@ -2605,6 +2698,7 @@ def test_custom_heading_is_kept_when_a_history_section_already_exists():
 
 @pytest.mark.parametrize("raises", [False, True], ids=["returns-false", "raises"])
 def test_first_persistent_improve_edit_failure_publishes_visible_fallback(raises):
+    details = init_run_details()
     provider = MagicMock()
     provider.get_issue_comments.return_value = []
     provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
@@ -2637,6 +2731,7 @@ def test_first_persistent_improve_edit_failure_publishes_visible_fallback(raises
     provider.edit_comment.assert_called_once_with(progress, new_comment)
     provider.publish_comment.assert_called_once()
     provider.remove_comment.assert_called_once_with(progress)
+    assert details.command_failed is False
 
 
 class _LifecycleSuggestionProvider:
@@ -2740,10 +2835,13 @@ def test_persistent_improve_uses_newest_matching_comment():
     assert provider.published == []
 
 
-def test_persistent_improve_edit_failure_does_not_publish_duplicate_summary():
+@pytest.mark.parametrize("edit_result", [False, RuntimeError("edit failed")])
+def test_persistent_improve_edit_failure_does_not_publish_duplicate_summary(edit_result):
+    details = init_run_details()
     existing = _lifecycle_suggestion_comment("existing")
+    old_body = existing.body
     progress = SimpleNamespace(body="Preparing suggestions...", name="progress")
-    provider = _LifecycleSuggestionProvider([existing], edit_results=[False, False])
+    provider = _LifecycleSuggestionProvider([existing], edit_results=[edit_result, False])
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(
         provider,
@@ -2759,8 +2857,62 @@ def test_persistent_improve_edit_failure_does_not_publish_duplicate_summary():
     assert len(provider.published) == 1
     failure_body = provider.published[0][0]
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
-    assert "previous suggestions remain unchanged" in failure_body
+    assert "update could not be confirmed" in failure_body
     assert provider.removed == [progress]
+    assert existing.body == old_body
+    assert details.command_failed is True
+
+
+def test_failed_persistent_improve_update_relabels_retained_progress():
+    details = init_run_details()
+    existing = _lifecycle_suggestion_comment("existing")
+    progress = SimpleNamespace(body="Preparing suggestions...", name="progress")
+    provider = _persistent_provider([existing])
+    provider.supports_code_suggestion_state.return_value = False
+    provider.edit_comment.side_effect = [False, None]
+    provider.remove_comment.side_effect = RuntimeError("delete unavailable")
+
+    PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider, "new suggestions", PRCodeSuggestionsHeader.SUMMARY.value,
+        name="suggestions", progress_response=progress,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    provider.edit_comment.assert_called_with(
+        progress,
+        "The persistent suggestions update could not be confirmed. Check the existing suggestions before retrying."
+    )
+    provider.remove_comment.assert_called_once_with(progress)
+    provider.publish_comment.assert_called_once()
+    assert details.command_failed is True
+
+
+@pytest.mark.parametrize("cancel_at", ["primary", "progress_edit", "progress_remove", "warning"])
+def test_persistent_improve_update_failure_preserves_cancellation(cancel_at):
+    details = init_run_details()
+    existing = _lifecycle_suggestion_comment("existing")
+    progress = SimpleNamespace(body="Preparing suggestions...", name="progress")
+    provider = _persistent_provider([existing])
+    provider.supports_code_suggestion_state.return_value = False
+    provider.edit_comment.side_effect = (
+        [asyncio.CancelledError()] if cancel_at == "primary" else
+        [False, asyncio.CancelledError()] if cancel_at == "progress_edit" else [False, None]
+    )
+    if cancel_at == "progress_remove":
+        provider.remove_comment.side_effect = asyncio.CancelledError()
+    elif cancel_at == "warning":
+        provider.publish_comment.side_effect = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        PRCodeSuggestions.publish_persistent_comment_with_history(
+            provider, "new suggestions", PRCodeSuggestionsHeader.SUMMARY.value,
+            name="suggestions", progress_response=progress,
+            identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+            legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+        )
+
+    assert details.command_failed is (cancel_at != "primary")
 
 
 @pytest.mark.asyncio
@@ -2796,6 +2948,7 @@ async def test_no_suggestions_failure_removes_stale_progress_comment():
 
 
 def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary():
+    details = init_run_details()
     existing = _lifecycle_suggestion_comment("existing")
     provider = _LifecycleSuggestionProvider(
         [existing],
@@ -2818,4 +2971,36 @@ def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary
     assert len(provider.published) == 1
     failure_body = provider.published[0][0]
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
-    assert "previous suggestions remain unchanged" in failure_body
+    assert "update could not be confirmed" in failure_body
+    assert details.command_failed is True
+
+
+def test_stateful_unconfirmed_edit_does_not_claim_previous_summary_is_unchanged(monkeypatch):
+    details = init_run_details()
+    existing = _lifecycle_suggestion_comment("existing")
+    provider = _LifecycleSuggestionProvider([existing], supports_state=True)
+
+    def applied_edit_with_lost_response(comment, body):
+        comment.body = body
+        raise RuntimeError("edit response unavailable")
+
+    monkeypatch.setattr(provider, "edit_comment", applied_edit_with_lost_response)
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n<table>new suggestions</table>",
+        PRCodeSuggestionsHeader.SUMMARY.value,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert "new suggestions" in existing.body
+    assert result is provider.published[0][2]
+    assert len(provider.published) == 1
+    warning = provider.published[0][0]
+    assert "update could not be confirmed" in warning
+    assert "remain unchanged" not in warning
+    assert PRCodeSuggestionsIdentity.SUMMARY.value not in warning
+    assert details.command_failed is True

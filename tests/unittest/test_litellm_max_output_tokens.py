@@ -263,6 +263,20 @@ class TestMaxOutputTokens:
         assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 8000}
 
     @pytest.mark.asyncio
+    async def test_openrouter_gemini_clamped_none_still_reserves_reasoning(self, monkeypatch):
+        kwargs, exposed_limit, exposed_reserve = await _run(
+            monkeypatch,
+            "openrouter/google/gemini-3.7-flash",
+            {},
+            openrouter={"reasoning_max_tokens": 4096, "reasoning_effort": "none"},
+            reserve_default=2000,
+        )
+
+        assert exposed_limit == 0
+        assert exposed_reserve == 6096
+        assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 4096}
+
+    @pytest.mark.asyncio
     async def test_openrouter_astra_uses_one_capped_output_limit(self, monkeypatch):
         kwargs, exposed_limit = await _run(
             monkeypatch,

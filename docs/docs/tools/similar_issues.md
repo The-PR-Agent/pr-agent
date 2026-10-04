@@ -1,3 +1,8 @@
+---
+title: "Similar Issues"
+sidebar_position: 8
+---
+
 ## Overview
 
 > **Note**: `/similar_issue` is an **experimental** feature. It works only on GitHub, carries a disproportionately large share of the project's dependency and configuration surface for a single-provider tool, and is therefore excluded from the v1 stability guarantees. No backend is tested against its real driver.
@@ -11,11 +16,11 @@ It is an issue-scoped command: comment `/similar_issue` on the issue (served by 
 
 ## Example usage
 
-![similar_issue_original_issue](../assets/similar_issue_original_issue.png){width=768}
+<img src="/img/similar_issue_original_issue.png" alt="similar_issue_original_issue" width="768" />
 
-![similar_issue_comment](../assets/similar_issue_comment.png){width=768}
+<img src="/img/similar_issue_comment.png" alt="similar_issue_comment" width="768" />
 
-![similar_issue](../assets/similar_issue.png){width=768}
+<img src="/img/similar_issue.png" alt="similar_issue" width="768" />
 
 ### Indexing and re-runs
 
@@ -74,17 +79,19 @@ existing deployment to the new configuration does not lose the stored vectors.
 
 On re-runs, the first run creates the index and upserts up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` re-indexes the whole repository.
 
-!!! note "No backend is tested against its real driver"
+:::note[No backend is tested against its real driver]
 
-    The `similar-issue` dependency group is not installed in CI, so the pinecone tests run
-    against a faked module, the qdrant tests never construct a client, and the lancedb tests
-    run against a fake table.
+The `similar-issue` dependency group is not installed in CI, so the pinecone tests run
+against a faked module, the qdrant tests never construct a client, and the lancedb tests
+run against a fake table.
+:::
 
-!!! note "Default vector database"
+:::note[Default vector database]
 
-    `vectordb` defaults to `lancedb`, which works with no external credentials. To use
-    qdrant or pinecone, set `vectordb = "qdrant"` or `vectordb = "pinecone"` under
-    `[pr_similar_issue]`.
+`vectordb` defaults to `lancedb`, which works with no external credentials. To use
+qdrant or pinecone, set `vectordb = "qdrant"` or `vectordb = "pinecone"` under
+`[pr_similar_issue]`.
+:::
 
 #### Qdrant Configuration
 
@@ -111,18 +118,19 @@ Qdrant points are stored in a collection named `codium-ai-pr-agent-issues-v2`, d
 
 On re-runs, the first run creates the collection and stores up to `max_issues_to_scan` issues; later runs index any missing issue among the newest `max_issues_to_scan`; `force_update_dataset = true` re-indexes the whole repository.
 
-!!! note "Upgrading an index created before the point-id fix"
+:::note[Upgrading an index created before the point-id fix]
 
-    Earlier versions derived the point id from the issue id alone, so the same issue number collided
-    across repositories. The id is now seeded with the repository name, which means points written by
-    an earlier version are never rewritten or deleted - they still carry a matching `metadata.repo`
-    payload, so they stay queryable and can surface alongside their replacements.
+Earlier versions derived the point id from the issue id alone, so the same issue number collided
+across repositories. The id is now seeded with the repository name, which means points written by
+an earlier version are never rewritten or deleted - they still carry a matching `metadata.repo`
+payload, so they stay queryable and can surface alongside their replacements.
 
-    The `-v2` collection suffix sidesteps this: the new index is written to
-    `codium-ai-pr-agent-issues-v2`, leaving the pre-existing `codium-ai-pr-agent-issues` collection
-    untouched. Nothing is deleted, and the first run after the upgrade re-indexes the repository into
-    the new collection. Once you are satisfied with the results, you can delete the old
-    `codium-ai-pr-agent-issues` collection from Qdrant by hand to reclaim the storage.
+The `-v2` collection suffix sidesteps this: the new index is written to
+`codium-ai-pr-agent-issues-v2`, leaving the pre-existing `codium-ai-pr-agent-issues` collection
+untouched. Nothing is deleted, and the first run after the upgrade re-indexes the repository into
+the new collection. Once you are satisfied with the results, you can delete the old
+`codium-ai-pr-agent-issues` collection from Qdrant by hand to reclaim the storage.
+:::
 
 ## How to use
 

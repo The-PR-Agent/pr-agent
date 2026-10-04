@@ -15,7 +15,7 @@ _TRACKED_SETTINGS = (
     "config.publish_output",
     "config.publish_output_progress",
     "config.is_auto_command",
-    "pr_code_suggestions.commitable_code_suggestions",
+    "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.demand_code_suggestions_self_review",
     "pr_code_suggestions.enable_chat_text",
     "pr_code_suggestions.enable_help_text",
@@ -137,7 +137,7 @@ async def test_pr_chat_link_depends_on_provider_capability(monkeypatch, supports
         settings.config.publish_output = True
         settings.config.publish_output_progress = False
         settings.config.is_auto_command = True
-        settings.pr_code_suggestions.commitable_code_suggestions = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
         settings.pr_code_suggestions.demand_code_suggestions_self_review = False
         settings.pr_code_suggestions.enable_chat_text = True
         settings.pr_code_suggestions.enable_help_text = False

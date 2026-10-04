@@ -1,5 +1,44 @@
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.config_loader import global_settings
+from pr_agent.log import get_logger
+
+
+def _capture_logs(call):
+    import io
+
+    buffer = io.StringIO()
+    handler_id = get_logger().add(buffer, level='DEBUG', format='{message}', colorize=False)
+    try:
+        call()
+    finally:
+        get_logger().remove(handler_id)
+    return buffer.getvalue()
+
+
+def _capture_errors(call):
+    return [line for line in _capture_logs(call).splitlines() if 'Could not filter file list' in line]
+
+
+def _capture_warnings(call):
+    return [
+        line for line in _capture_logs(call).splitlines()
+        if 'No ignore filtering is implemented for platform' in line
+    ]
+
+
+class _BitbucketSide:
+    def __init__(self, path):
+        self.path = path
+
+
+class _BitbucketDiffstat:
+    def __init__(self, new_path, old_path):
+        self.new = _BitbucketSide(new_path)
+        self.old = _BitbucketSide(old_path)
+
+
+def _gitlab_change(new_path, old_path):
+    return {'new_path': new_path, 'old_path': old_path, 'diff': 'diff --git a/x b/x'}
 
 
 class TestIgnoreFilter:
@@ -167,3 +206,450 @@ class TestIgnoreFilter:
             assert filtered == [files[0]]
 
         assert configured_regex == ['^docs/']
+
+
+class TestRenameFiltering:
+    """A rename names one file by a destination and a source path.
+
+    The destination decides, the way providers label the file. Keeping the entry
+    because its other path does not match lets a rename into an ignored path
+    reach the model, and matching only the first available path with no
+    destination to fall back on drops nothing it should keep.
+    """
+
+    @staticmethod
+    def _ignore(monkeypatch, regex):
+        monkeypatch.setattr(global_settings.ignore, 'regex', regex)
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+    def test_gitlab_rename_into_ignored_path_is_ignored(self, monkeypatch):
+        self._ignore(monkeypatch, [r'.*\.lock$'])
+
+        renamed_in = _gitlab_change('poetry.lock', 'notes.txt')
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+        ignored = _gitlab_change('yarn.lock', 'yarn.lock')
+
+        assert filter_ignored([renamed_in, untouched, ignored], platform='gitlab') == [untouched]
+
+    def test_gitlab_rename_out_of_ignored_path_is_kept(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        renamed_out = _gitlab_change('docs/app.yaml', 'secrets/app.yaml')
+        untouched = _gitlab_change('docs/readme.md', 'docs/readme.md')
+
+        assert filter_ignored([renamed_out, untouched], platform='gitlab') == [renamed_out, untouched]
+
+    def test_gitlab_rename_falls_back_to_source_path(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        no_destination = _gitlab_change('', 'secrets/app.yaml')
+        no_destination_kept = _gitlab_change(None, 'src/app.py')
+
+        kept = filter_ignored([no_destination, no_destination_kept], platform='gitlab')
+
+        assert kept == [no_destination_kept]
+
+    def test_gitlab_added_file_is_ignored_by_destination_path(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        added = _gitlab_change('secrets/app.yaml', '')
+        added_outside = _gitlab_change('src/app.py', '')
+
+        assert filter_ignored([added, added_outside], platform='gitlab') == [added_outside]
+
+    def test_gitlab_entry_without_any_path_is_ignored(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        pathless = {'diff': 'diff --git a/x b/x'}
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+
+        assert filter_ignored([pathless, untouched], platform='gitlab') == [untouched]
+
+    def test_bitbucket_rename_into_ignored_path_is_ignored(self, monkeypatch):
+        self._ignore(monkeypatch, [r'.*\.pem$'])
+
+        renamed_in = _BitbucketDiffstat('id_rsa.pem', 'notes.txt')
+        untouched = _BitbucketDiffstat('src/app.py', 'src/app.py')
+        ignored = _BitbucketDiffstat('id_rsa.pem', 'id_rsa.pem')
+
+        assert filter_ignored([renamed_in, untouched, ignored], platform='bitbucket') == [untouched]
+
+    def test_bitbucket_rename_out_of_ignored_path_is_kept(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        renamed_out = _BitbucketDiffstat('docs/app.yaml', 'secrets/app.yaml')
+        untouched = _BitbucketDiffstat('docs/readme.md', 'docs/readme.md')
+
+        assert filter_ignored([renamed_out, untouched], platform='bitbucket') == [renamed_out, untouched]
+
+    def test_bitbucket_rename_falls_back_to_source_path(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        no_destination = _BitbucketDiffstat(None, 'secrets/app.yaml')
+        no_destination_kept = _BitbucketDiffstat(None, 'src/app.py')
+
+        kept = filter_ignored([no_destination, no_destination_kept], platform='bitbucket')
+
+        assert kept == [no_destination_kept]
+
+    def test_bitbucket_entry_without_any_path_is_ignored(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/'])
+
+        pathless = _BitbucketDiffstat(None, None)
+        untouched = _BitbucketDiffstat('src/app.py', 'src/app.py')
+
+        assert filter_ignored([pathless, untouched], platform='bitbucket') == [untouched]
+
+    def test_rename_between_unignored_paths_is_kept(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^secrets/', r'.*\.lock$'])
+
+        renamed = _gitlab_change('src/renamed.py', 'src/original.py')
+        other_renamed = _BitbucketDiffstat('src/renamed.py', 'src/original.py')
+
+        assert filter_ignored([renamed], platform='gitlab') == [renamed]
+        assert filter_ignored([other_renamed], platform='bitbucket') == [other_renamed]
+
+    def test_rename_is_filtered_against_every_pattern(self, monkeypatch):
+        """Each pattern tests the chosen path, so a later pattern can still match."""
+        self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$'])
+
+        renamed = _gitlab_change('src/api_generated.py', 'src/api.py')
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+
+        assert filter_ignored([renamed, untouched], platform='gitlab') == [untouched]
+
+
+class TestMultiplePatterns:
+    """Every pattern has to run, including after an earlier one drops entries.
+
+    A file is matched against one path per entry, and each pass removes entries,
+    so the file and its path must stay paired across passes. When a pass shortened
+    the file list without shortening the path list, the next pass raised and the
+    remaining patterns never ran, leaving later matches in the result.
+    """
+
+    @staticmethod
+    def _ignore(monkeypatch, regex):
+        monkeypatch.setattr(global_settings.ignore, 'regex', regex)
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+    def test_gitlab_later_pattern_still_applies_after_an_earlier_one_drops_entries(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$', r'^secrets/'])
+
+        dropped_first = _gitlab_change('vendor/lib.py', 'vendor/lib.py')
+        dropped_second = _gitlab_change('src/api_generated.py', 'src/api.py')
+        dropped_third = _gitlab_change('secrets/app.yaml', 'secrets/app.yaml')
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+
+        files = [dropped_first, dropped_second, dropped_third, untouched]
+
+        assert filter_ignored(list(files), platform='gitlab') == [untouched]
+
+    def test_bitbucket_later_pattern_still_applies_after_an_earlier_one_drops_entries(self, monkeypatch):
+        self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$', r'^secrets/'])
+
+        dropped_first = _BitbucketDiffstat('vendor/lib.py', 'vendor/lib.py')
+        dropped_second = _BitbucketDiffstat('src/api_generated.py', 'src/api.py')
+        dropped_third = _BitbucketDiffstat('secrets/app.yaml', 'secrets/app.yaml')
+        untouched = _BitbucketDiffstat('src/app.py', 'src/app.py')
+
+        files = [dropped_first, dropped_second, dropped_third, untouched]
+
+        assert filter_ignored(list(files), platform='bitbucket') == [untouched]
+
+    def test_renamed_entry_survives_earlier_pattern_passes(self, monkeypatch):
+        """A rename that an earlier pattern drops must not shift later matches.
+
+        The entry before the rename in the list is what an earlier pattern removes;
+        if its removal shifts the path list relative to the file list, the rename
+        that a later pattern should drop is left in the result.
+        """
+        self._ignore(monkeypatch, [r'^vendor/', r'.*\.pem$'])
+
+        dropped_first = _gitlab_change('vendor/lib.py', 'vendor/lib.py')
+        dropped_later = _gitlab_change('id_rsa.pem', 'notes.txt')
+        untouched = _gitlab_change('src/app.py', 'src/app.py')
+
+        assert filter_ignored([dropped_first, dropped_later, untouched], platform='gitlab') == [untouched]
+
+    def test_no_filter_error_is_logged_across_pattern_passes(self, monkeypatch):
+        """A mismatch between the file and path lists must surface, not be swallowed."""
+        self._ignore(monkeypatch, [r'^vendor/', r'.*_generated\.py$'])
+
+        files = [
+            _gitlab_change('vendor/lib.py', 'vendor/lib.py'),
+            _gitlab_change('src/api_generated.py', 'src/api.py'),
+        ]
+
+        errors = _capture_errors(lambda: filter_ignored(list(files), platform='gitlab'))
+
+        assert errors == []
+
+    def test_every_pattern_can_drop_an_entry_one_at_a_time(self, monkeypatch):
+        """Narrow down to a single survivor so each pass has something to drop."""
+        self._ignore(monkeypatch, [r'^a/', r'^b/', r'^c/', r'^d/', r'^e/'])
+
+        files = [
+            _gitlab_change('a/1.py', 'a/1.py'),
+            _gitlab_change('b/2.py', 'b/2.py'),
+            _gitlab_change('c/3.py', 'c/3.py'),
+            _gitlab_change('d/4.py', 'd/4.py'),
+            _gitlab_change('e/5.py', 'e/5.py'),
+            _gitlab_change('src/keep.py', 'src/keep.py'),
+        ]
+
+        assert filter_ignored(list(files), platform='gitlab') == [files[-1]]
+
+
+class TestNoPatternsConfigured:
+    """No compiled pattern means there is nothing to match, so nothing is filtered.
+
+    This holds for every platform, including one whose entry names no path: the
+    filter is a no-op, not an opportunity to drop entries the user never asked to
+    exclude. It also means a pathless entry is only ever dropped by a pattern pass.
+    """
+
+    @staticmethod
+    def _no_patterns(monkeypatch, regex=None):
+        monkeypatch.setattr(global_settings.ignore, 'regex', regex if regex is not None else [])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+    def test_gitlab_pathless_entry_survives_when_no_pattern_is_configured(self, monkeypatch):
+        self._no_patterns(monkeypatch)
+
+        pathless = {'diff': 'diff --git a/x b/x'}
+        files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
+
+        assert filter_ignored(list(files), platform='gitlab') == files
+
+    def test_bitbucket_pathless_entry_survives_when_no_pattern_is_configured(self, monkeypatch):
+        self._no_patterns(monkeypatch)
+
+        pathless = _BitbucketDiffstat(None, None)
+        files = [pathless, _BitbucketDiffstat('src/app.py', 'src/app.py')]
+
+        assert filter_ignored(list(files), platform='bitbucket') == files
+
+    def test_gitlab_rename_survives_when_no_pattern_is_configured(self, monkeypatch):
+        self._no_patterns(monkeypatch)
+
+        renamed = _gitlab_change('poetry.lock', 'notes.txt')
+
+        assert filter_ignored([renamed], platform='gitlab') == [renamed]
+
+    def test_nothing_is_filtered_when_every_pattern_fails_to_compile(self, monkeypatch):
+        """An unusable pattern leaves no pattern to match, so the list is untouched."""
+        self._no_patterns(monkeypatch, regex=['(((||', '[[['])
+
+        pathless = {'diff': 'diff --git a/x b/x'}
+        files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
+
+        assert filter_ignored(list(files), platform='gitlab') == files
+
+    def test_pathless_entry_is_dropped_once_a_pattern_exists(self, monkeypatch):
+        """The drop belongs to a pattern pass, which is the only thing that excludes."""
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        pathless = {'diff': 'diff --git a/x b/x'}
+        files = [pathless, _gitlab_change('src/app.py', 'src/app.py')]
+
+        assert filter_ignored(list(files), platform='gitlab') == [files[1]]
+
+    def test_azure_leading_slash_does_not_defeat_the_ignore_patterns(self, monkeypatch):
+        """Azure DevOps reports "/vendor/lib/x.js"; the anchored pattern must still match."""
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['/vendor/lib/jquery.min.js', '/src/app.cs']
+
+        assert filter_ignored(list(files), platform='azure') == ['/src/app.cs']
+
+    def test_azure_paths_without_a_leading_slash_still_filter(self, monkeypatch):
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['vendor/lib/jquery.min.js', 'src/app.cs']
+
+        assert filter_ignored(list(files), platform='azure') == ['src/app.cs']
+
+    def test_azure_keeps_unmatched_paths(self, monkeypatch):
+        self._no_patterns(monkeypatch, regex=[r'^vendor/'])
+
+        files = ['/src/app.cs', '/docs/readme.md']
+
+        assert filter_ignored(list(files), platform='azure') == files
+
+
+# A changed-file entry per platform, built so that each carries the same path twice over.
+_ENTRY_SHAPES = {
+    'github': lambda p: type('', (object,), {'filename': p})(),
+    'codecommit': lambda p: type('', (object,), {'filename': p})(),
+    'bitbucket': lambda p: _BitbucketDiffstat(p, p),
+    'bitbucket_server': lambda p: {'path': {'toString': p}},
+    'gitlab': lambda p: _gitlab_change(p, p),
+    'azure': lambda p: p,
+    'gitea': lambda p: {'filename': p},
+    'gerrit': lambda p: type('', (object,), {'b_path': p, 'a_path': p})(),
+}
+
+
+class TestUnfilteredPlatformIsReported:
+    """A platform the dispatch cannot read passes every file through, so say so.
+
+    The dispatch's `else` breaks out for a platform name it does not recognise, which
+    leaves the list untouched. That is the safe direction to fail -- dropping
+    files the user never asked to exclude would hide real changes -- but it is only safe
+    while it is visible, because an unfiltered list inflates the prompt and pushes the
+    run into the token budget and fallback-model paths.
+    """
+
+    @staticmethod
+    def _ignore(monkeypatch):
+        monkeypatch.setattr(global_settings.ignore, 'regex', [r'^vendor/'])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+    def test_unrecognised_platform_warns_that_nothing_was_filtered(self, monkeypatch):
+        self._ignore(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1, f"Expected one warning, got {warnings}"
+
+    def test_unrecognised_platform_warning_names_the_platform(self, monkeypatch):
+        """The platform string is the only thing that identifies the bad call site.
+
+        It goes in the message rather than the artifact because the message is what a
+        reader scanning the log sees.
+        """
+        self._ignore(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1
+        assert 'giteaaa' in warnings[0]
+
+    def test_unrecognised_platform_warns_once_per_call_not_once_per_pattern(self, monkeypatch):
+        """The `break` after the warning keeps N patterns from producing N warnings."""
+        monkeypatch.setattr(global_settings.ignore, 'regex', [r'^vendor/', r'^secrets/', r'.*\.pem$'])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert len(warnings) == 1, f"Expected one warning, got {warnings}"
+
+    def test_unrecognised_platform_does_not_warn_when_there_is_nothing_to_filter(self, monkeypatch):
+        """No compiled pattern means no filter was skipped, so warning would be noise."""
+        monkeypatch.setattr(global_settings.ignore, 'regex', [])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
+
+        assert warnings == []
+
+    def test_every_supported_platform_actually_drops_a_matching_file(self, monkeypatch):
+        """Each listed platform must reach its branch; an unreachable one is dead config."""
+        self._ignore(monkeypatch)
+
+        for platform, build in _ENTRY_SHAPES.items():
+            matching = build('vendor/lib.py')
+            kept = build('src/app.py')
+
+            assert filter_ignored([matching, kept], platform=platform) == [kept], (
+                f"platform {platform!r} did not apply the ignore pattern"
+            )
+
+    def test_supported_platforms_do_not_warn(self, monkeypatch):
+        self._ignore(monkeypatch)
+
+        for platform, build in _ENTRY_SHAPES.items():
+            files = [build('vendor/lib.py')]
+
+            assert _capture_warnings(lambda p=platform, f=files: filter_ignored(list(f), platform=p)) == [], (
+                f"platform {platform!r} should not warn"
+            )
+
+
+class TestFilterFailureIsReported:
+    """A failure leaves the list in whatever state the last completed pass left it.
+
+    Each pattern pass rebinds `files` only once that pass completes, so an exception
+    on a later pass returns the earlier passes' result; an exception before the first
+    pass returns the caller's list untouched. Both states may hold files the [ignore]
+    rules should have excluded, which is what the report has to say -- and what it
+    must not overstate, since no pass may have run at all.
+    """
+
+    @staticmethod
+    def _exploding_settings(monkeypatch):
+        class _Exploding:
+            @property
+            def ignore(self):
+                raise RuntimeError('settings unavailable')
+
+        monkeypatch.setattr('pr_agent.algo.file_filter.get_settings', lambda: _Exploding())
+
+    def test_failure_states_that_the_list_may_still_contain_ignored_files(self, monkeypatch):
+        """The message has to say what the caller now has, not just what went wrong."""
+        self._exploding_settings(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        errors = _capture_errors(lambda: filter_ignored(list(files), platform='github'))
+
+        assert len(errors) == 1, f"Expected one error, got {errors}"
+        assert 'filtering did not complete' in errors[0]
+        assert 'may still' in errors[0]
+
+    def test_failure_returns_every_file_when_no_pattern_pass_has_run(self, monkeypatch):
+        """A failure before the passes leaves the caller's list untouched."""
+        self._exploding_settings(monkeypatch)
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
+
+        assert filter_ignored(list(files), platform='github') == files
+
+    def test_failure_after_an_earlier_pass_returns_that_pass_s_result(self, monkeypatch):
+        """Pin the partly filtered state the message describes.
+
+        `filename` raises once two passes have read it, so the first pattern drops
+        `vendor/lib.py` and the second fails part-way. The result is the first pass's
+        list: shorter than the input, so "the unfiltered list is being used" would be
+        false, yet `vendor/lib.py` is gone, so it is not a safe list either.
+        """
+        monkeypatch.setattr(global_settings.ignore, 'regex', [r'^vendor/', r'^secrets/'])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        class _FailsOnThirdRead:
+            def __init__(self):
+                self.reads = 0
+
+            @property
+            def filename(self):
+                self.reads += 1
+                if self.reads > 2:
+                    raise RuntimeError('boom')
+                return 'src/app.py'
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})(), _FailsOnThirdRead()]
+
+        captured = {}
+        errors = _capture_errors(lambda: captured.setdefault('result', filter_ignored(list(files), 'github')))
+        result = captured['result']
+
+        assert len(result) == 1
+        assert result[0] is files[1]
+        assert len(errors) == 1, f"Expected the failure to be reported once, got {errors}"
+        assert 'filtering did not complete' in errors[0]

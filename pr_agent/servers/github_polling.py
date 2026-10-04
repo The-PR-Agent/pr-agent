@@ -25,10 +25,22 @@ NOTIFICATION_URL = "https://api.github.com/notifications"
 DEFAULT_POLLING_REQUEST_TIMEOUT = 10
 MAX_POLLING_REQUEST_TIMEOUT = 60
 POLLING_CAPACITY_CHECK_INTERVAL = 0.25
+POLLING_COMMENT_SCAN_LIMIT = 4
 
 
 class _PollingWorkerStartError(RuntimeError):
     """Stop dispatch when child startup leaves process state uncertain."""
+
+
+class _InvalidPaginationMetadata(ValueError):
+    """Reject untrusted pagination metadata without retaining its contents."""
+
+
+class _CommentPaginationDrift(_InvalidPaginationMetadata):
+    """Keep a notification retryable when bounded scans cannot obtain one stable tail."""
+
+
+_RETRY_POLLING_NOTIFICATION = object()
 
 
 def _get_polling_request_timeout() -> float:
@@ -48,20 +60,88 @@ def _get_polling_request_timeout() -> float:
     return min(timeout, float(MAX_POLLING_REQUEST_TIMEOUT))
 
 
-async def _fetch_comment_history(session, url, headers) -> list:
-    """Fetch fallback comments without retaining a response or blocking the event loop."""
+def _remaining_polling_timeout(deadline: float) -> float:
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise asyncio.TimeoutError("Comment history request timed out")
+    return remaining
+
+
+def _comment_page_number(response, relation: str) -> int | None:
+    links = response.links.getall(relation, [])
+    if not links:
+        return None
+    if len(links) != 1:
+        raise _InvalidPaginationMetadata("Ambiguous comment page relation")
+    values = links[0]["url"].query.getall("page", [])
+    if (len(values) != 1 or not values[0].isascii() or not values[0].isdecimal()
+            or int(values[0]) < 1):
+        raise _InvalidPaginationMetadata("Invalid comment page number")
+    return int(values[0])
+
+
+async def _fetch_comment_page(session, url, headers, deadline: float, page=None) -> tuple[list, int | None, int | None]:
+    """Read page numbers from Link while requesting only the original endpoint."""
+    params = {"per_page": 100}
+    if page is not None:
+        params["page"] = page
     async with session.get(
-        url,
-        headers=headers,
-        timeout=aiohttp.ClientTimeout(total=_get_polling_request_timeout()),
-        allow_redirects=True,
-        max_redirects=30,
+        url, headers=headers, params=params,
+        timeout=aiohttp.ClientTimeout(total=_remaining_polling_timeout(deadline)),
+        allow_redirects=True, max_redirects=30,
     ) as response:
         response.raise_for_status()
+        if not 200 <= response.status < 300:
+            raise _InvalidPaginationMetadata("Unexpected comment history response status")
         comments = await response.json(content_type=None)
+        last_page = _comment_page_number(response, "last")
+        next_page = _comment_page_number(response, "next")
+        _remaining_polling_timeout(deadline)
     if not isinstance(comments, list):
         raise ValueError("Expected a list of pull request comments")
-    return comments
+    return comments, last_page, next_page
+
+
+async def _fetch_comment_history_scan(session, url, headers, deadline: float) -> list | None:
+    """Return a tail, or retry if the requested pages changed during the scan."""
+    comments, last_page, next_page = await _fetch_comment_page(session, url, headers, deadline)
+    if next_page is None:
+        if last_page not in (None, 1):
+            raise _InvalidPaginationMetadata("Missing next comment page")
+        return comments[-POLLING_COMMENT_SCAN_LIMIT:]
+    if last_page is None or next_page != 2 or last_page < next_page:
+        raise _InvalidPaginationMetadata("Missing or invalid last comment page")
+
+    comments, current_last, next_page = await _fetch_comment_page(session, url, headers, deadline, last_page)
+    if not comments or next_page is not None or current_last not in (None, last_page):
+        return None
+    if len(comments) >= POLLING_COMMENT_SCAN_LIMIT:
+        return comments[-POLLING_COMMENT_SCAN_LIMIT:]
+
+    previous, current_last, next_page = await _fetch_comment_page(session, url, headers, deadline, last_page - 1)
+    if not previous or next_page != last_page or current_last not in (None, last_page):
+        return None
+    refreshed, current_last, next_page = await _fetch_comment_page(session, url, headers, deadline, last_page)
+    if (next_page is not None or current_last not in (None, last_page)
+            or [comment["id"] for comment in refreshed] != [comment["id"] for comment in comments]
+            or {comment["id"] for comment in previous} & {comment["id"] for comment in refreshed}):
+        return None
+    return (previous + refreshed)[-POLLING_COMMENT_SCAN_LIMIT:]
+
+
+async def _fetch_comment_history(session, url, headers) -> list:
+    """Fetch the newest four comments, retrying one changed scan within one deadline."""
+    deadline = asyncio.get_running_loop().time() + _get_polling_request_timeout()
+    for attempt in range(2):
+        try:
+            comments = await _fetch_comment_history_scan(session, url, headers, deadline)
+        except asyncio.TimeoutError as error:
+            if attempt:
+                raise _CommentPaginationDrift("Comment history changed during polling") from error
+            raise
+        if comments is not None:
+            return comments
+    raise _CommentPaginationDrift("Comment history changed during polling")
 
 
 async def mark_notification_as_read(headers, notification, session):
@@ -168,7 +248,9 @@ async def process_comment(pr_url, rest_of_comment, comment_id):
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
-async def is_valid_notification(notification, headers, handled_ids, session, user_id):
+async def is_valid_notification(
+    notification, headers, handled_ids, session, user_id, added_handled_ids=None
+):
     try:
         if 'reason' in notification and notification['reason'] == 'mention':
             if 'subject' in notification and notification['subject']['type'] == 'PullRequest':
@@ -188,6 +270,8 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                                 return False, handled_ids
                             else:
                                 handled_ids.add(comment['id'])
+                                if added_handled_ids is not None:
+                                    added_handled_ids.add(comment['id'])
                         if 'user' in comment and 'login' in comment['user']:
                             if comment['user']['login'] == user_id:
                                 get_logger().debug("comment['user']['login'] == user_id")
@@ -209,9 +293,24 @@ async def is_valid_notification(notification, headers, handled_ids, session, use
                         else: # we could not find the user tag in the latest comment. Check previous comments
                             # get all comments in the PR
                             requests_url = f"{pr_url}/comments".replace("pulls", "issues")
-                            comments = (await _fetch_comment_history(session, requests_url, headers))[::-1]
-                            max_comment_to_scan = 4
-                            for comment in comments[:max_comment_to_scan]:
+                            try:
+                                comments = (await _fetch_comment_history(session, requests_url, headers))[::-1]
+                            except _CommentPaginationDrift:
+                                if 'id' in comment:
+                                    handled_ids.discard(comment['id'])
+                                    if added_handled_ids is not None:
+                                        added_handled_ids.discard(comment['id'])
+                                get_logger().warning(
+                                    f"Deferring polling notification after concurrent comment changes for PR: "
+                                    f"{pr_url}"
+                                )
+                                return False, handled_ids, _RETRY_POLLING_NOTIFICATION
+                            except _InvalidPaginationMetadata:
+                                get_logger().warning(
+                                    f"Ignoring invalid comment pagination metadata for PR: {pr_url}"
+                                )
+                                return False, handled_ids
+                            for comment in comments[:POLLING_COMMENT_SCAN_LIMIT]:
                                 if 'user' in comment and 'login' in comment['user']:
                                     if comment['user']['login'] == user_id:
                                         continue
@@ -341,11 +440,34 @@ async def polling_loop():
                         for notification in notifications:
                             if not notification:
                                 continue
-                            # mark notification as read
-                            await mark_notification_as_read(headers, notification, session)
+                            added_handled_ids = set()
+                            output = await is_valid_notification(
+                                notification,
+                                headers,
+                                handled_ids,
+                                session,
+                                user_id,
+                                added_handled_ids,
+                            )
+                            if (
+                                len(output) > 2
+                                and output[0] is False
+                                and output[2] is _RETRY_POLLING_NOTIFICATION
+                            ):
+                                # Force an unconditional notification fetch next iteration because
+                                # unread notifications may not update GitHub's Last-Modified.
+                                last_modified[0] = None
+                                continue
 
+                            try:
+                                await mark_notification_as_read(headers, notification, session)
+                            except Exception:
+                                handled_ids.difference_update(added_handled_ids)
+                                # Reset conditional-fetch state because an unread notification may
+                                # retain its modification timestamp.
+                                last_modified[0] = None
+                                raise
                             handled_ids.add(notification['id'])
-                            output = await is_valid_notification(notification, headers, handled_ids, session, user_id)
                             if output[0]:
                                 _, handled_ids, comment, comment_body, pr_url, user_tag = output
                                 rest_of_comment = comment_body.split(user_tag)[1].strip()

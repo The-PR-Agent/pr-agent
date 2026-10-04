@@ -5,3 +5,6 @@ pics/
 pr_agent.egg-info/
 build/
 **/.env
+docs/node_modules/
+docs/build/
+docs/.docusaurus/

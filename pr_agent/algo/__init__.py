@@ -226,6 +226,11 @@ _claude_tokens, _claude_extended_thinking = (
 )
 
 
+GPT6_MODELS = ('gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna')
+GPT6_OPENROUTER_ROUTING_SUFFIXES = (":nitro", ":floor", ":online", ":exacto")
+GPT6_MAX_INPUT_TOKENS = {"gpt-6-sol": 922000, "gpt-6-luna": 922000}
+
+
 # MAX_TOKENS holds only entries that deliberately deviate from (or are absent
 # from) LiteLLM's model registry. Exact LiteLLM duplicates were removed because
 # get_max_tokens() already falls back to litellm.get_model_info() with the same
@@ -255,6 +260,8 @@ MAX_TOKENS = {
     'gpt-5.6-terra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-5.6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-6-astra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'o1-mini': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-mini-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-2024-12-17': 204800,  # 200K, but may be limited by config.max_model_tokens
@@ -323,6 +330,16 @@ MAX_TOKENS = {
     'dashscope/qwen3.8-max': 1000000,
     # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata),
     # but may be limited by config.max_model_tokens
+    # -- Bedrock Kimi K3 (cross-region) --
+    # https://aws.amazon.com/blogs/machine-learning/introducing-kimi-k3-on-amazon-bedrock/
+    'bedrock/moonshotai.kimi-k3': 1000000,
+    # Keep this pinned at 1M context: absent from LiteLLM's bundled cost map
+    'bedrock/us.moonshotai.kimi-k3': 1000000,
+    'bedrock/global.moonshotai.kimi-k3': 1000000,
+    # Register the same models through Bedrock Converse; keep them pinned for the same reason
+    'bedrock/converse/moonshotai.kimi-k3': 1000000,
+    'bedrock/converse/us.moonshotai.kimi-k3': 1000000,
+    'bedrock/converse/global.moonshotai.kimi-k3': 1000000,
     'groq/moonshotai/kimi-k2-instruct': 131072,
     'groq/deepseek-r1-distill-llama-70b': 128000,
     'groq/llama-3.3-70b-versatile': 128000,

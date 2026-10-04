@@ -1,0 +1,25 @@
+/* Show the maintainers as a row of round avatars under the landing's "Maintained by". */
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1.1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Reset Infima's `li + li` top margin; the flex gap handles spacing. */
+.item,
+.item + .item {
+  margin: 0;
+}
+
+.avatar {
+  display: block;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 50%;
+  background: var(--pra-surface-2);
+  box-shadow: 0 0 0 1px var(--pra-line);
+}

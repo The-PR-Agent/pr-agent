@@ -1,0 +1,49 @@
+---
+title: "Overview"
+sidebar_position: 1
+description: "Open-source AI agent that reviews, describes and improves pull requests on GitHub, GitLab, Bitbucket, Azure DevOps and Gitea."
+hide_title: true
+hide_table_of_contents: true
+displayed_sidebar: null
+custom_edit_url: null
+pagination_prev: null
+pagination_next: null
+---
+
+import Hero from '@site/src/components/Hero';
+import MaintainerAvatars from '@site/src/components/MaintainerAvatars';
+
+<Hero />
+
+<div className="pra-landing-body">
+
+## Quick start
+
+Review a pull request from your terminal. All you need is an OpenAI key and a GitHub token.
+
+```bash
+docker run --rm -it \
+  -e OPENAI__KEY=<your_openai_key> \
+  -e GITHUB__USER_TOKEN=<your_github_token> \
+  pragent/pr-agent:latest --pr_url <pr_url> review
+```
+
+<div className="pra-cta-row">
+
+[Install it on your repositories](./installation/index.md) [Other ways to run it locally](./installation/locally.md)
+
+</div>
+
+Already installed? Comment `/help "your question"` on a pull request and PR-Agent answers from these docs.
+
+## Maintained by
+
+<MaintainerAvatars />
+
+<div className="pra-cta-row">
+
+[Meet the team](/maintainers/)
+
+</div>
+
+</div>

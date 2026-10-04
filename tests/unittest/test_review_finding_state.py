@@ -338,6 +338,16 @@ def test_invalid_state_marker_fails_closed(body):
     assert parsed.state is None
 
 
+@pytest.mark.parametrize("field", ["path", "body"])
+def test_non_string_finding_field_fails_closed(field):
+    finding = {"finding_id": "abc", "state": "ACTIVE", "body": "body", "path": "app.py", field: ["not", "text"]}
+    payload = {"schema_version": 1, "findings": [finding], "last_run": {}}
+
+    parsed = parse_review_state(f"<!-- pr-agent-review-state:v1\n{json.dumps(payload)}\n-->")
+
+    assert parsed.valid is False
+
+
 def test_unknown_finding_state_fails_closed():
     payload = {
         "schema_version": 1,

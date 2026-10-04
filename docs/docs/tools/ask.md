@@ -1,3 +1,8 @@
+---
+title: "Ask"
+sidebar_position: 5
+---
+
 ## Overview
 
 The `ask` tool answers questions about the PR, based on the PR code changes. Make sure to be specific and clear in your questions.
@@ -9,9 +14,9 @@ It can be invoked manually by commenting on any PR:
 
 ## Example usage
 
-![Ask Comment](../assets/ask_comment.png){width=512}
+<img src="/img/ask_comment.png" alt="Ask Comment" width="512" />
 
-![Ask](../assets/ask.png){width=512}
+<img src="/img/ask.png" alt="Ask" width="512" />
 
 ## Ask lines
 
@@ -21,7 +26,7 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 - To select multiple lines, click on the '+' sign of the first line and then hold and drag to select the rest of the lines.
 - write `/ask "..."` in the comment box and press `Add single comment` button.
 
-![Ask Line](../assets/Ask_line.png){width=512}
+<img src="/img/Ask_line.png" alt="Ask Line" width="512" />
 
 Note that the tool does not have "memory" of previous questions, and answers each question independently.
 
@@ -44,50 +49,53 @@ To get a direct link to an image, we recommend using the following scheme:
 
 1\. First, post a comment that contains **only** the image:
 
-![Ask image1](../assets/ask_images1.png){width=512}
+<img src="/img/ask_images1.png" alt="Ask image1" width="512" />
 
 2\. Quote reply to that comment:
 
-![Ask image2](../assets/ask_images2.png){width=512}
+<img src="/img/ask_images2.png" alt="Ask image2" width="512" />
 
 3\. In the screen opened, type the question below the image:
 
-![Ask image3](../assets/ask_images3.png){width=512}
-![Ask image4](../assets/ask_images4.png){width=512}
+<img src="/img/ask_images3.png" alt="Ask image3" width="512" />
+<img src="/img/ask_images4.png" alt="Ask image4" width="512" />
 
 4\. Post the comment, and receive the answer:
 
-![Ask image5](../assets/ask_images5.png){width=512}
+<img src="/img/ask_images5.png" alt="Ask image5" width="512" />
 
 See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_video.mov)
 
 ## Configuration options
 
-???+ example "General options"
+<details open>
+<summary>General options</summary>
 
-    <table>
-      <tr>
-        <td><b>ask_heading</b></td>
-        <td>
-          Plain-text heading for top-level <code>/ask</code> answers. The default is <code>Ask</code>.
-          Markdown renderers escape punctuation to keep the surrounding formatting and ❓ emoji fixed,
-          while plain-text converters publish the configured text without escape characters.
-          This does not affect <code>/ask_line</code> replies or the <code>Answer</code> section heading.
-        </td>
-      </tr>
-      <tr>
-        <td><b>extra_instructions</b></td>
-        <td>Optional extra instructions to the tool. For example: "Do not answer questions that ask to rate PR quality on a scale of 1 to 10. Instead, tell the user this type of question is not allowed."</td>
-      </tr>
-      <tr>
-        <td><b>enable_help_text</b></td>
-        <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
-      </tr>
-      <tr>
-        <td><b>use_conversation_history</b></td>
-        <td>If set to true, the tool will use the conversation history when answering questions on specific code lines (GitHub only). Default is true.</td>
-      </tr>
-    </table>
+<table>
+  <tr>
+    <td><b>ask_heading</b></td>
+    <td>
+      Plain-text heading for top-level <code>/ask</code> answers. The default is <code>Ask</code>.
+      Markdown renderers escape punctuation to keep the surrounding formatting and ❓ emoji fixed,
+      while plain-text converters publish the configured text without escape characters.
+      This does not affect <code>/ask_line</code> replies or the <code>Answer</code> section heading.
+    </td>
+  </tr>
+  <tr>
+    <td><b>extra_instructions</b></td>
+    <td>Optional extra instructions to the tool. For example: "Do not answer questions that ask to rate PR quality on a scale of 1 to 10. Instead, tell the user this type of question is not allowed."</td>
+  </tr>
+  <tr>
+    <td><b>enable_help_text</b></td>
+    <td>If set to true, the tool will display a help text in the comment. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>use_conversation_history</b></td>
+    <td>If set to true, the tool will use the conversation history when answering questions on specific code lines (GitHub only). Default is true.</td>
+  </tr>
+</table>
+
+</details>
 
 Example usage in a configuration file:
 

@@ -1,4 +1,7 @@
-# Plain-diff local mode
+---
+title: "Plain-diff local mode"
+sidebar_position: 12
+---
 
 Run PR-Agent against a raw unified diff with no platform API token and no PR URL.
 Results are printed to stdout (and optionally saved to a file). This suits security-first

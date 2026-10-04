@@ -7,19 +7,25 @@ from typing import Optional, Union
 
 import dynaconf
 
-from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_github_files_comment
+from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
-from pr_agent.log import get_logger
-from pr_agent.servers.github_app import handle_line_comments, matches_review_state
+from pr_agent.log import get_logger, setup_logger
+from pr_agent.servers.github_common import (
+    _reformat_quote_ask_command,
+    handle_line_comments,
+    matches_review_state,
+)
+from pr_agent.servers.utils import is_ask_command_comment
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -69,11 +75,13 @@ def get_list_setting_or_env(key, fallback=None):
 
 
 async def _handle_request(url, body, notify=None):
+    # Install a fresh collector so `command_failed()` below cannot read a verdict left
+    # behind by a previous command; the tool replaces it with its own on entry.
+    init_run_details()
     result = await PRAgent().handle_request(url, body, notify=notify)
     if result is False:
-        status = _action_status.get()
-        if status is not None:
-            status.failed = True
+        _mark_action_failed()
+    _fail_on_recorded_tool_error()
 
 
 async def _handle_configured_command(url, command):
@@ -83,20 +91,41 @@ async def _handle_configured_command(url, command):
             raise ValueError("Empty configured command")
     except ValueError:
         get_logger().error("Failed to parse a configured command; skipping it.")
-        status = _action_status.get()
-        if status is not None:
-            status.failed = True
+        _mark_action_failed()
         return
     await _handle_request(url, command_args)
 
 
+def _mark_action_failed():
+    status = _action_status.get()
+    if status is not None:
+        status.failed = True
+
+
+def _fail_on_recorded_tool_error():
+    # Fail the Action on a failure the tool recorded but swallowed (propagate_tool_errors=false),
+    # so a PR that got no review is not reported green (#3705). The operator opts out with
+    # GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false; comment arguments cannot change it.
+    if not is_true(get_setting_or_env("GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS", True)):
+        return
+    if command_failed():
+        get_logger().warning("Tool reported success but recorded a failure; failing the action")
+        _mark_action_failed()
+
+
 async def _run_auto_tool(tool_class, pr_url):
     """Run a direct auto tool while preserving GitHub Action failure semantics."""
+    # Install a fresh collector so `command_failed()` below cannot read a verdict left
+    # behind by a previous tool; the tool replaces it with its own on entry.
+    init_run_details()
     try:
-        await tool_class(pr_url).run()
-    except IncompletePullRequestFilesError:
-        publish_incomplete_github_files_comment(pr_url)
+        result = await tool_class(pr_url).run()
+    except IncompletePullRequestFilesError as error:
+        await asyncio.to_thread(publish_incomplete_files_comment, pr_url, error)
         raise
+    if result is False:
+        _mark_action_failed()
+    _fail_on_recorded_tool_error()
 
 async def _run_review_commands(event_payload):
     action = event_payload.get("action")
@@ -360,16 +389,16 @@ async def run_action():
             # in github_app.py. Otherwise a plain comment is lexed as an unknown
             # command, PRAgent.handle_request returns False and the action exits 1.
             if comment_body and isinstance(comment_body, str) and not comment_body.lstrip().startswith("/"):
-                if '/ask' in comment_body and comment_body.strip().startswith('> ![image]'):
-                    comment_body_split = comment_body.split('/ask')
-                    comment_body = '/ask' + comment_body_split[1] + ' \n' + comment_body_split[0].strip().lstrip('>')
+                reformatted = _reformat_quote_ask_command(comment_body) if '/ask' in comment_body else None
+                if reformatted is not None:
+                    comment_body = reformatted
                     get_logger().info(f"Reformatting comment_body so command is at the beginning: {comment_body}")
                 else:
                     get_logger().info("Ignoring comment not starting with /")
                     return
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
-                    if '/ask' in comment_body:
+                    if is_ask_command_comment(comment_body):
                         comment_body = handle_line_comments(event_payload, comment_body)
             except Exception as e:
                 get_logger().error(f"Failed to handle line comments: {e}")
@@ -534,6 +563,9 @@ async def _run_action_and_drain():
 
 
 def main():
+    # github_app is no longer imported here, so its JSON logging setup does not
+    # run; configure logging explicitly so the level and analytics filter work.
+    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
     asyncio.run(_run_action_and_drain())
 
 
