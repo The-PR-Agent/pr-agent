@@ -990,7 +990,8 @@ class PRCodeSuggestions:
                                         model,
                                         add_line_numbers_to_hunks=True,
                                         disable_extra_lines=False,
-                                        output_token_reserve=output_token_reserve)
+                                        output_token_reserve=output_token_reserve,
+                                        handle_deletions=True)
         self.patches_diff_list = [self.patches_diff]
         self.patches_diff_no_line_number = self.remove_line_numbers([self.patches_diff])[0]
 

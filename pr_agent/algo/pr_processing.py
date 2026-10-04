@@ -186,7 +186,10 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
                 large_pr_handling=False,
                 return_remaining_files=False,
                 return_prepared=False,
-                output_token_reserve: Callable[[str, int], int] | None = None):
+                output_token_reserve: Callable[[str, int], int] | None = None,
+                remove_delete_only_files: bool = False,
+                remove_delete_only_hunks: bool = False,
+                handle_deletions: bool = False):
     budget = AttemptTokenBudget.for_attempt(
         model, token_handler, output_token_reserve=output_token_reserve
     )
@@ -222,7 +225,8 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
     # generate a standard diff string, with patch extension
     patches_extended, total_tokens, patches_extended_tokens = pr_generate_extended_diff(
         pr_languages, token_handler, add_line_numbers_to_hunks,
-        patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
+        patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE, patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
+        handle_deletions=handle_deletions)
 
     # if we are under the limit, return the full diff
     if not patches_extended:
@@ -565,7 +569,8 @@ def pr_generate_extended_diff(pr_languages: list,
                               token_handler: TokenHandler,
                               add_line_numbers_to_hunks: bool,
                               patch_extra_lines_before: int = 0,
-                              patch_extra_lines_after: int = 0) -> Tuple[list, int, list]:
+                              patch_extra_lines_after: int = 0,
+                              handle_deletions: bool = False) -> Tuple[list, int, list]:
     total_tokens = token_handler.prompt_tokens  # initial tokens
     patches_extended = []
     patches_extended_tokens = []
@@ -592,6 +597,17 @@ def pr_generate_extended_diff(pr_languages: list,
             if not extended_patch:
                 get_logger().warning(f"Failed to extend patch for file: {file.filename}")
                 continue
+
+            if handle_deletions:
+                extended_patch = handle_patch_deletions(
+                    extended_patch,
+                    original_file_content_str,
+                    new_file_content_str,
+                    file.filename,
+                    file.edit_type,
+                )
+                if extended_patch is None:
+                    continue
 
             if add_line_numbers_to_hunks:
                 full_extended_patch = decouple_and_convert_to_hunks_with_lines_numbers(extended_patch, file)
