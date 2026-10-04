@@ -288,164 +288,45 @@ class TestOmittedHunkCount:
 
 
 class TestExtendedDiffDeletionHandling:
-    """The extended diff must drop deletion-only content when the caller asks for it."""
+    def _deleted_file(self):
+        return FilePatchInfo(base_file="one\ntwo\n", head_file="", patch="@@ -1,2 +0,0 @@\n-one\n-two",
+                             filename="gone.py", edit_type=EDIT_TYPE.DELETED)
 
-    def _languages(self, *files):
-        return [{"language": "Python", "files": list(files)}]
+    def _mixed_file(self):
+        base = "\n".join(["a", "b", "c", "d", "e", "f", "drop", "g"]) + "\n"
+        head = "\n".join(["a", "B", "c", "d", "e", "f", "g"]) + "\n"
+        patch = "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -6,3 +6,2 @@\n f\n-drop\n g"
+        return FilePatchInfo(base_file=base, head_file=head, patch=patch, filename="mixed.py",
+                             edit_type=EDIT_TYPE.MODIFIED)
 
-    def _deleted_file(self, filename="gone.py"):
-        return FilePatchInfo(
-            base_file="one\ntwo\nthree\n",
-            head_file="",
-            patch="@@ -1,3 +0,0 @@\n-one\n-two\n-three",
-            filename=filename,
-            edit_type=EDIT_TYPE.DELETED,
-        )
+    def _render(self, deleted_files=None):
+        languages = [{"language": "Python", "files": [self._deleted_file(), self._mixed_file()]}]
+        patches, _, _ = pr_generate_extended_diff(languages, TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+                                                  deleted_files=deleted_files)
+        return "\n".join(patches)
 
-    def test_deleted_file_body_is_dropped_and_named(self):
-        languages = self._languages(self._deleted_file())
-        deleted: list = []
-
-        patches, _, _ = pr_generate_extended_diff(
-            languages, TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
-            handle_deletions=True, deleted_files_out=deleted,
-        )
-
-        assert patches == []
+    def test_deletions_dropped_and_named_when_requested(self):
+        deleted = []
+        diff = self._render(deleted)
         assert deleted == ["gone.py"]
+        assert "-one" not in diff and "-drop" not in diff
+        assert "+B" in diff
 
-    def test_deleted_file_body_is_kept_by_default(self):
-        languages = self._languages(self._deleted_file())
+    def test_deletions_kept_by_default(self):
+        diff = self._render()
+        assert "-one" in diff and "-drop" in diff
 
-        patches, _, _ = pr_generate_extended_diff(
-            languages, TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
-        )
-
-        assert len(patches) == 1
-        assert "-one" in patches[0]
-
-    def test_file_with_only_deletions_is_named_and_dropped(self):
-        # Nothing is left to anchor a suggestion on, so the file goes entirely and is named.
-        file = FilePatchInfo(
-            base_file="keep\ndrop\n",
-            head_file="keep\n",
-            patch="@@ -1,2 +1 @@\n keep\n-drop",
-            filename="trimmed.py",
-            edit_type=EDIT_TYPE.MODIFIED,
-        )
-        deleted: list = []
-
-        patches, _, _ = pr_generate_extended_diff(
-            self._languages(file), TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
-            handle_deletions=True, deleted_files_out=deleted,
-        )
-
-        assert patches == []
-        assert deleted == ["trimmed.py"]
-
-    def test_delete_only_hunk_is_kept_by_default(self):
-        file = FilePatchInfo(
-            base_file="keep\ndrop\n",
-            head_file="keep\n",
-            patch="@@ -1,2 +1 @@\n keep\n-drop",
-            filename="trimmed.py",
-            edit_type=EDIT_TYPE.MODIFIED,
-        )
-
-        patches, _, _ = pr_generate_extended_diff(
-            self._languages(file), TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
-        )
-
-        assert "-drop" in patches[0]
-
-    def test_over_budget_diff_still_names_deleted_files(self):
-        """A large /improve diff packs chunks, so the names must survive that path too.
-
-        Otherwise whether a deletion is reported would depend on the pull request size, which is
-        the inconsistency this change exists to remove.
-        """
-        files = [self._deleted_file()]
-        files += [
-            FilePatchInfo(
-                base_file="x\n",
-                head_file="y\n",
-                patch="@@ -1 +1 @@\n-x\n+" + ("y " * 3000),
-                filename=f"big{index}.py",
-                edit_type=EDIT_TYPE.MODIFIED,
-            )
+    def test_over_budget_diff_collects_deleted_names(self):
+        files = [self._deleted_file()] + [
+            FilePatchInfo(base_file="x\n", head_file="y\n", patch="@@ -1 +1 @@\n-x\n+" + ("y " * 3000),
+                          filename=f"big{index}.py", edit_type=EDIT_TYPE.MODIFIED)
             for index in range(4)
         ]
-
-        class Provider:
-            def get_diff_files(self):
-                return files
-
-            def get_languages(self):
-                return {"Python": len(files)}
-
-            def get_filtered_diff_file_names(self):
-                return []
-
-        chunks = get_pr_multi_diffs(Provider(), TokenHandler("gpt-4"), "gpt-4",
-                                    handle_deletions=True)
-        text = "\n".join(chunks)
-
-        assert len(chunks) > 1, "expected the packed path, not the under-budget fast path"
-        assert "gone.py" in text
-        assert text.count("Deleted files:") == 1, "name the files once, not in every chunk"
-        assert "-one" not in text
-
-    def test_over_budget_diff_keeps_deletions_by_default(self):
-        files = [self._deleted_file(), FilePatchInfo(
-            base_file="x\n", head_file="y\n",
-            patch="@@ -1 +1 @@\n-x\n+" + ("y " * 3000), filename="big.py",
-            edit_type=EDIT_TYPE.MODIFIED,
-        )]
-
-        class Provider:
-            def get_diff_files(self):
-                return files
-
-            def get_languages(self):
-                return {"Python": len(files)}
-
-            def get_filtered_diff_file_names(self):
-                return []
-
-        chunks = get_pr_multi_diffs(Provider(), TokenHandler("gpt-4"), "gpt-4")
-        assert "Deleted files:" not in "\n".join(chunks)
-
-    def test_added_line_starting_with_two_plus_signs_is_kept(self):
-        # The source line "++tok" renders as "+++tok", which must not be mistaken for a header.
-        file = FilePatchInfo(
-            base_file="x\n",
-            head_file="x\n++tok\n",
-            patch="@@ -1 +1,2 @@\n x\n+++tok",
-            filename="pp.py",
-            edit_type=EDIT_TYPE.MODIFIED,
-        )
-
-        patches, _, _ = pr_generate_extended_diff(
-            self._languages(file), TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
-            handle_deletions=True,
-        )
-
-        assert len(patches) == 1
-        assert "++tok" in patches[0]
-
-    def test_added_lines_survive_beside_a_dropped_hunk(self):
-        file = FilePatchInfo(
-            base_file="keep\ndrop\nadd\n",
-            head_file="keep\nadded\n",
-            patch="@@ -1,3 +1,2 @@\n keep\n-drop\n+added",
-            filename="both.py",
-            edit_type=EDIT_TYPE.MODIFIED,
-        )
-
-        patches, _, _ = pr_generate_extended_diff(
-            self._languages(file), TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
-            handle_deletions=True,
-        )
-
-        assert len(patches) == 1
-        assert "+added" in patches[0]
+        provider = type("Provider", (), {"get_diff_files": lambda self: files,
+                                         "get_languages": lambda self: {"Python": len(files)}})()
+        deleted = []
+        chunks = get_pr_multi_diffs(provider, TokenHandler("gpt-4"), "gpt-4", deleted_files=deleted,
+                                    include_filtered_file_names=False)
+        assert len(chunks) > 1
+        assert deleted == ["gone.py"]
+        assert "-one" not in "\n".join(chunks)
