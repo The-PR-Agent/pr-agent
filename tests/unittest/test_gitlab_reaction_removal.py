@@ -7,8 +7,8 @@ process. It also cost a listing request on every removal.
 
 The client here is a real `gitlab.Gitlab` with only its transport replaced, so what is asserted
 is the endpoint traffic rather than the object graph a mock of `gl.projects` would fake. The
-assertions name the emoji endpoint only: how many objects are fetched on the way there is a
-separate concern with its own change.
+assertions name the emoji endpoint only; parent-resource request counts are covered separately
+in test_gitlab_reaction_requests.py.
 """
 
 import json
@@ -47,11 +47,10 @@ class _Response:
 
 
 def _provider(error=None):
-    """A provider on a client that answers the object lookups and records the emoji calls.
+    """Record emoji calls while answering parent-object lookups if they occur.
 
-    The project, merge request and note are fetched on the way to the emoji endpoint, so those
-    are answered with just enough data to build the objects; only the emoji calls are kept,
-    since that is what this change is about.
+    Only emoji calls are counted here; test_gitlab_reaction_requests.py checks that lazy
+    parent handles avoid those lookups altogether.
     """
     emoji_calls = []
 

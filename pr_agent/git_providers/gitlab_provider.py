@@ -2307,8 +2307,7 @@ class GitLabProvider(GitProvider):
 
             # Delete by id: that is the value `add_reaction` hands back and what
             # `_remove_start_reaction` passes on, so matching on the emoji's name could never find
-            # it, and listing the emoji first bought a fourth request on every removal. The three
-            # GETs above are a separate concern and are left as they are.
+            # it. Use a lazy emoji handle to delete directly without listing first.
             comment.awardemojis.get(reaction_id, lazy=True).delete()
             return True
         except (GitlabError, RequestException) as e:
