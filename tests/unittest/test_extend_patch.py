@@ -6,7 +6,7 @@ from pr_agent.algo.git_patch_processing import (
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
 )
-from pr_agent.algo.pr_processing import pr_generate_extended_diff
+from pr_agent.algo.pr_processing import get_pr_multi_diffs, pr_generate_extended_diff
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
@@ -357,6 +357,81 @@ class TestExtendedDiffDeletionHandling:
         )
 
         assert "-drop" in patches[0]
+
+    def test_over_budget_diff_still_names_deleted_files(self):
+        """A large /improve diff packs chunks, so the names must survive that path too.
+
+        Otherwise whether a deletion is reported would depend on the pull request size, which is
+        the inconsistency this change exists to remove.
+        """
+        files = [self._deleted_file()]
+        files += [
+            FilePatchInfo(
+                base_file="x\n",
+                head_file="y\n",
+                patch="@@ -1 +1 @@\n-x\n+" + ("y " * 3000),
+                filename=f"big{index}.py",
+                edit_type=EDIT_TYPE.MODIFIED,
+            )
+            for index in range(4)
+        ]
+
+        class Provider:
+            def get_diff_files(self):
+                return files
+
+            def get_languages(self):
+                return {"Python": len(files)}
+
+            def get_filtered_diff_file_names(self):
+                return []
+
+        chunks = get_pr_multi_diffs(Provider(), TokenHandler("gpt-4"), "gpt-4",
+                                    handle_deletions=True)
+        text = "\n".join(chunks)
+
+        assert len(chunks) > 1, "expected the packed path, not the under-budget fast path"
+        assert "gone.py" in text
+        assert text.count("Deleted files:") == 1, "name the files once, not in every chunk"
+        assert "-one" not in text
+
+    def test_over_budget_diff_keeps_deletions_by_default(self):
+        files = [self._deleted_file(), FilePatchInfo(
+            base_file="x\n", head_file="y\n",
+            patch="@@ -1 +1 @@\n-x\n+" + ("y " * 3000), filename="big.py",
+            edit_type=EDIT_TYPE.MODIFIED,
+        )]
+
+        class Provider:
+            def get_diff_files(self):
+                return files
+
+            def get_languages(self):
+                return {"Python": len(files)}
+
+            def get_filtered_diff_file_names(self):
+                return []
+
+        chunks = get_pr_multi_diffs(Provider(), TokenHandler("gpt-4"), "gpt-4")
+        assert "Deleted files:" not in "\n".join(chunks)
+
+    def test_added_line_starting_with_two_plus_signs_is_kept(self):
+        # The source line "++tok" renders as "+++tok", which must not be mistaken for a header.
+        file = FilePatchInfo(
+            base_file="x\n",
+            head_file="x\n++tok\n",
+            patch="@@ -1 +1,2 @@\n x\n+++tok",
+            filename="pp.py",
+            edit_type=EDIT_TYPE.MODIFIED,
+        )
+
+        patches, _, _ = pr_generate_extended_diff(
+            self._languages(file), TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+            handle_deletions=True,
+        )
+
+        assert len(patches) == 1
+        assert "++tok" in patches[0]
 
     def test_added_lines_survive_beside_a_dropped_hunk(self):
         file = FilePatchInfo(

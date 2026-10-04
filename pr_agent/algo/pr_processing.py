@@ -573,13 +573,40 @@ def _unreadable_file_notice(file) -> str:
     )
 
 
+def _name_deleted_files_in_chunks(chunks: list, deleted_files: list,
+                                  token_handler: TokenHandler, max_tokens: int) -> list:
+    """Name the files whose diff body was dropped, in the first chunk with room for them.
+
+    Without this the omission is invisible: the model would report on the pull request while
+    never learning that a file was deleted. The names go in one chunk only, so they are not
+    repeated across every chunk of a large pull request.
+    """
+    section = DELETED_FILES_ + "\n".join(deleted_files)
+    candidates = list(chunks) if chunks else [""]
+    for index, chunk in enumerate(candidates):
+        curr_token = token_handler.prompt_tokens + token_handler.count_tokens(chunk)
+        updated, _, _ = _append_metadata_section(chunk, curr_token, section, max_tokens, token_handler)
+        if updated != chunk:
+            candidates[index] = updated
+            return candidates
+    return chunks
+
+
 def _has_added_line(patch: str) -> bool:
     """True when a patch still carries at least one added line.
 
     A suggestion has to anchor to a line that exists in the new file, so a patch with no
-    additions cannot host one, however much removed code it still shows.
+    additions cannot host one, however much removed code it still shows. Only lines inside a
+    hunk count: an added source line beginning with "++" renders as "+++", so testing the
+    prefix on its own would reject a real addition, and a "+++ b/file" header is not one either.
     """
-    return any(line.startswith("+") and not line.startswith("+++") for line in patch.splitlines())
+    inside_hunk = False
+    for line in patch.splitlines():
+        if line.startswith("@@"):
+            inside_hunk = True
+        elif inside_hunk and line.startswith("+"):
+            return True
+    return False
 
 
 def pr_generate_extended_diff(pr_languages: list,
@@ -1024,6 +1051,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
     # descending token order established above. The shared packer then owns chunk boundaries,
     # large-patch policy, and remaining-file tracking for both paths.
     file_dict = {}
+    deleted_files_packed: list = []
     for file in sorted_files:
         original_file_content_str = file.base_file
         new_file_content_str = file.head_file
@@ -1036,6 +1064,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             patch, original_file_content_str, new_file_content_str, file.filename, file.edit_type
         )
         if patch is None:
+            # The diff body is gone, so record the name for the deleted-files section below.
+            deleted_files_packed.append(file.filename)
             continue
 
         # Add line numbers and metadata to the patch
@@ -1054,13 +1084,27 @@ def get_pr_multi_diffs(git_provider: GitProvider,
             'edit_type': file.edit_type,
         }
 
-    return include_filtered_files(_pack_pr_multi_diffs(
+    packed = _pack_pr_multi_diffs(
         file_dict,
         token_handler,
         max_calls,
         return_remaining_files,
         soft_token_budget,
-    ))
+    )
+    if handle_deletions and deleted_files_packed:
+        # The packed path drops these bodies too, so it has to name them as well. Otherwise a
+        # large pull request would silently lose the deletions that a small one still reports.
+        chunks, remaining = packed if return_remaining_files else (packed, None)
+        chunks = _name_deleted_files_in_chunks(
+            chunks,
+            deleted_files_packed,
+            token_handler,
+            token_handler.prompt_tokens + budget.available_tokens(
+                OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False
+            ),
+        )
+        packed = (chunks, remaining) if return_remaining_files else chunks
+    return include_filtered_files(packed)
 
 
 def add_ai_metadata_to_diff_files(git_provider, pr_description_files):
