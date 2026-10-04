@@ -378,3 +378,52 @@ def test_add_jira_tickets_scans_local_branch_name(tmp_path, monkeypatch):
     assert tickets.add_jira_tickets(provider, []) == []
     assert len(scanned) == 1
     assert "feature/PROJ-123-fix" in scanned[0]
+
+
+def _make_repo_context_provider(tmp_path, monkeypatch):
+    # AGENTS.md says "base rules" on the target branch and "head rules" on the
+    # checked-out feature branch, so a test can tell which revision was read.
+    repo = _make_repo(tmp_path, ["a.py", "docs/guide.md"])
+    target_branch_name = repo.active_branch.name
+    (tmp_path / "AGENTS.md").write_bytes(b"base rules\n")
+    repo.index.add(["AGENTS.md"])
+    target_commit = repo.index.commit("add AGENTS.md")
+    repo.git.checkout("-b", "feature")
+    (tmp_path / "AGENTS.md").write_bytes(b"head rules\n")
+    repo.index.add(["AGENTS.md"])
+    repo.index.commit("change AGENTS.md")
+    monkeypatch.chdir(tmp_path)
+    return target_commit, LocalGitProvider(target_branch_name)
+
+
+def test_get_repo_file_content_reads_target_branch_not_head(tmp_path, monkeypatch):
+    # Like the hosted providers, repo context must come from the target branch so
+    # the reviewed changes cannot rewrite the instructions used to review them.
+    target_commit, provider = _make_repo_context_provider(tmp_path, monkeypatch)
+
+    assert provider.get_repo_file_content("AGENTS.md") == "base rules\n"
+    assert provider.get_repo_file_content("AGENTS.md", from_default_branch=True) == "base rules\n"
+    assert provider.get_repo_context_ref() == target_commit.hexsha
+
+
+@pytest.mark.parametrize("file_path", ["MISSING.md", "docs", "docs/missing.md", "../AGENTS.md"])
+def test_get_repo_file_content_returns_empty_for_non_file_paths(tmp_path, monkeypatch, file_path):
+    _, provider = _make_repo_context_provider(tmp_path, monkeypatch)
+
+    assert provider.get_repo_file_content(file_path) == ""
+
+
+def test_build_repo_context_includes_local_agents_file(tmp_path, monkeypatch):
+    from pr_agent.algo.repo_context import build_repo_context
+
+    _, provider = _make_repo_context_provider(tmp_path, monkeypatch)
+    snapshot = snapshot_settings(["config.repo_context_files"])
+    try:
+        get_settings().set("config.repo_context_files", ["AGENTS.md"])
+        repo_context = build_repo_context(provider)
+    finally:
+        restore_settings(snapshot)
+
+    assert "AGENTS.md" in repo_context
+    assert "base rules" in repo_context
+    assert "head rules" not in repo_context
