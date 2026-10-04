@@ -145,14 +145,12 @@ async def test_image_probe_allows_reachable_https_image(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [403, 500])
-async def test_image_probe_reports_failed_status(monkeypatch, status):
-    _patch_session(monkeypatch, [_Resp(status)])
+async def test_image_probe_allows_forbidden_head(monkeypatch):
+    # GitHub attachments redirect to S3 URLs signed for GET only, so HEAD answers 403.
+    _patch_session(monkeypatch, [_Resp(403)])
     _patch_public_dns(monkeypatch)
 
-    error = await LiteLLMAIHandler._image_url_error("https://example.com/a.png")
-
-    assert error == _IMAGE_NOT_ALIVE_MESSAGE
+    assert await LiteLLMAIHandler._image_url_error("https://example.com/a.png") is None
 
 
 @pytest.mark.asyncio

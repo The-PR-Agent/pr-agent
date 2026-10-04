@@ -2626,7 +2626,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if status is None:
             get_logger().error(f"Blocked unsafe or over-redirecting image URL: {img_path}")
             return _IMAGE_NOT_ALIVE_MESSAGE
-        if status >= 400:
+        if status == 404:
             return _IMAGE_NOT_ALIVE_MESSAGE
         return None
 
