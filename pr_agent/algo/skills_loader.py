@@ -273,19 +273,31 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
         tokens = _count_tokens(formatted)
         addition = (sep_tokens if pieces else 0) + tokens
         if used + addition > max_tokens:
+            # The skills budget is a correctness setting: a dropped skill is
+            # review guidance missing from this run, so operators must be able
+            # to see at WARNING level exactly which guidance was lost.
             if not pieces:
                 budget = max(1, max_tokens - marker_tokens)
                 truncated = clip_tokens(formatted, budget, add_three_dots=False)
                 while truncated and _count_tokens(truncated + truncate_marker) > max_tokens:
                     truncated = truncated[: int(len(truncated) * 0.9)]
                 pieces.append(truncated + truncate_marker)
-                if len(skills) > 1:
-                    get_logger().info(
-                        f"First skill exceeded budget; truncated and dropped {len(skills) - 1} skill(s)"
+                message = (
+                    f"Skills context budget reached; truncated {skill.name} to "
+                    f"{_count_tokens(truncated)} of {tokens} tokens"
+                )
+                dropped = skills[1:]
+                if dropped:
+                    message += (
+                        f" and dropped {len(dropped)} skill(s): "
+                        f"{', '.join(dropped_skill.name for dropped_skill in dropped)}"
                     )
+                get_logger().warning(message)
             else:
-                get_logger().info(
-                    f"Skills context budget reached; dropping {len(skills) - len(pieces)} skill(s)"
+                dropped = skills[len(pieces):]
+                get_logger().warning(
+                    f"Skills context budget reached; dropping {len(dropped)} skill(s): "
+                    f"{', '.join(dropped_skill.name for dropped_skill in dropped)}"
                 )
             break
         pieces.append(formatted)

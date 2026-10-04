@@ -491,3 +491,59 @@ class TestResourceGathering:
         out = format_skills_context(skills, max_tokens=200)  # 800-char budget
         assert "Skill: first" in out
         assert "Skill: second" not in out
+
+
+class TestBudgetDropLogging:
+    """Dropped skills must be named at WARNING level (#3862)."""
+
+    @staticmethod
+    def _skill(name: str, description: str) -> Skill:
+        return Skill(name=name, description=description, body="guidance")
+
+    @pytest.fixture()
+    def warning_messages(self):
+        from loguru import logger as loguru_logger
+
+        messages: list = []
+        handler_id = loguru_logger.add(
+            lambda message: messages.append(message.record["message"]), level="WARNING"
+        )
+        yield messages
+        loguru_logger.remove(handler_id)
+
+    def test_drop_path_names_the_dropped_skills(self, warning_messages):
+        alpha = self._skill("a-release-notes", "Use when writing release notes.")
+        zulu = self._skill("z-terraform-standards", "Use when reviewing Terraform code.")
+        # Exactly enough budget for alpha alone, so zulu is dropped.
+        budget = skills_loader._count_tokens(skills_loader._format_skill(alpha))
+
+        out = format_skills_context([alpha, zulu], max_tokens=budget)
+
+        assert "Skill: a-release-notes" in out
+        assert "Skill: z-terraform-standards" not in out
+        assert len(warning_messages) == 1
+        assert "dropping 1 skill(s): z-terraform-standards" in warning_messages[0]
+
+    def test_clip_path_names_the_skill_and_the_dropped_rest(self, warning_messages):
+        alpha = self._skill("a-release-notes", "Use when writing release notes.")
+        zulu = self._skill("z-terraform-standards", "Use when reviewing Terraform code.")
+        full = skills_loader._count_tokens(skills_loader._format_skill(alpha))
+        # Too small for even the first skill, so it is clipped and the rest dropped.
+        budget = max(1, full - 10)
+
+        format_skills_context([alpha, zulu], max_tokens=budget)
+
+        assert len(warning_messages) == 1
+        assert "truncated a-release-notes to " in warning_messages[0]
+        assert f"of {full} tokens" in warning_messages[0]
+        assert "dropped 1 skill(s): z-terraform-standards" in warning_messages[0]
+
+    def test_in_budget_run_produces_no_warning(self, warning_messages):
+        alpha = self._skill("a-release-notes", "Use when writing release notes.")
+        zulu = self._skill("z-terraform-standards", "Use when reviewing Terraform code.")
+
+        out = format_skills_context([alpha, zulu], max_tokens=8000)
+
+        assert "Skill: a-release-notes" in out
+        assert "Skill: z-terraform-standards" in out
+        assert warning_messages == []
