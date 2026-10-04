@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, urlparse
 
@@ -16,6 +17,7 @@ from pr_agent.git_providers.git_provider import (
     MAX_FILES_ALLOWED_FULL,
     FilePatchInfo,
     GitProvider,
+    IncompleteProviderPullRequestFilesError,
     IncrementalPR,
     redact_credentials,
 )
@@ -26,6 +28,18 @@ from pr_agent.log import get_logger
 # URL: the default is always present in production, so a bare truthiness check
 # on GITEA.URL would make the pr.html_url derivation unreachable.
 DEFAULT_GITEA_URL = "https://gitea.com"
+
+
+class IncompleteGiteaPullRequestFilesError(IncompleteProviderPullRequestFilesError):
+    """Represent an unavailable or malformed Gitea changed-file inventory."""
+
+    notice = (
+        "## PR-Agent command was not run\n\n"
+        "Gitea returned incomplete or unavailable pull-request change data, so PR-Agent stopped "
+        "instead of analyzing only part of it.\n\n"
+        "Retry the command and check the pull request's changed files and diff in Gitea if the problem persists."
+    )
+    notice_marker = "<!-- pr-agent:gitea-incomplete-files -->"
 
 
 class _GiteaCommitAdapter:
@@ -79,7 +93,7 @@ class GiteaProvider(GitProvider):
         self.enabled_issue = False
         self.temp_comments = []
         self.pr = None
-        self.git_files = []
+        self.git_files = None
         self.file_contents = {}
         self.file_diffs = {}
         self.sha = None
@@ -99,12 +113,6 @@ class GiteaProvider(GitProvider):
                 repo=self.repo,
                 pr_number=self.pr_number
             )
-            self.git_files = self.repo_api.get_change_file_pull_request(
-                owner=self.owner,
-                repo=self.repo,
-                pr_number=self.pr_number
-            )
-
             self.sha = self.pr.head.sha if self.pr.head.sha else ""
             self.__add_file_diff()
             self._set_pr_commits()
@@ -558,19 +566,19 @@ class GiteaProvider(GitProvider):
 
     def get_diff_files(self) -> List[FilePatchInfo]:
         """Get files that were modified in the PR"""
-        if self.diff_files:
+        if self.diff_files is not None:
             return self.diff_files
 
         # Apply [ignore] rules at diff time, after apply_repo_settings() has merged
         # the repository-level .pr_agent.toml (the provider is constructed before
         # those settings exist). This matches the other providers, which filter
         # lazily inside their diff fetch. See #2620.
-        self.git_files = filter_ignored(self.git_files, platform="gitea")
+        diff_git_files = filter_ignored(list(self._get_changed_files()), platform="gitea")
 
         invalid_files_names = []
         counter_valid = 0
         diff_files = []
-        for file in self.git_files:
+        for file in diff_git_files:
             filename = file.get("filename")
             if not filename:
                 continue
@@ -663,13 +671,27 @@ class GiteaProvider(GitProvider):
         except:
             return ""
 
-    def get_files(self) -> List[Dict[str, Any]]:
+    def _get_changed_files(self) -> List[Dict[str, Any]]:
+        """Cache only a complete changed-file inventory, including a valid empty one."""
+        if self.git_files is None:
+            try:
+                files = self.repo_api.get_change_file_pull_request(
+                    owner=self.owner, repo=self.repo, pr_number=self.pr_number
+                )
+            except Exception as exc:
+                raise IncompleteGiteaPullRequestFilesError(
+                    "Gitea changed-file inventory is unavailable or incomplete"
+                ) from exc
+            self.git_files = files
+        return self.git_files
+
+    def get_files(self) -> List[str]:
         """Get all files in the PR"""
-        return [file.get("filename","") for file in self.git_files]
+        return [file["filename"] for file in self._get_changed_files()]
 
     def get_num_of_files(self) -> int:
         """Get number of files changed in the PR"""
-        return len(self.git_files)
+        return len(self._get_changed_files())
 
     def get_issue_comments(self) -> List[Dict[str, Any]]:
         """Get all comments in the PR"""
@@ -1108,14 +1130,34 @@ class RepoApi(giteapy.RepositoryApi):
 
     def get_change_file_pull_request(self, owner: str, repo: str, pr_number: int):
         """Get changed files in the pull request"""
-        try:
-            return self._list_all_pages(f'/repos/{owner}/{repo}/pulls/{pr_number}/files')
-        except ApiException as e:
-            self.logger.error(f"Error getting changed files: {e}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Unexpected error: {e}")
-            return []
+        files = []
+        page = 1
+        while True:
+            response = self.api_client.call_api(
+                f'/repos/{owner}/{repo}/pulls/{pr_number}/files',
+                'GET',
+                path_params={},
+                query_params=[('page', page), ('limit', 50)],
+                response_type=None,
+                _return_http_data_only=False,
+                _preload_content=False,
+                auth_settings=['AuthorizationHeaderToken']
+            )
+            raw_response = response[0] if isinstance(response, tuple) else response.data
+            page_items = json.loads(raw_response.read().decode('utf-8'))
+            if not isinstance(page_items, list):
+                raise ValueError("Invalid Gitea changed-files page")
+            if any(
+                not isinstance(item, Mapping)
+                or not isinstance(item.get("filename"), str)
+                or not item["filename"]
+                for item in page_items
+            ):
+                raise ValueError("Invalid Gitea changed-file entry")
+            if not page_items:
+                return files
+            files.extend(page_items)
+            page += 1
 
     def get_languages(self, owner: str, repo: str):
         """Get programming languages used in the repository"""

@@ -5,8 +5,8 @@ but each used to fetch all three objects first: three GETs whose only purpose wa
 emoji endpoint that needs none of them. On a busy instance that is avoidable rate-limit spend on
 every acknowledged command.
 
-Measured against `main`, that is four requests down to one for `add_reaction`, five down to two
-for a `remove_reaction` that finds the emoji, and four down to one for one that does not.
+Adding a reaction needs only its POST. Removing the returned reaction ID needs only its DELETE,
+without listing emojis or fetching any parent objects.
 
 The client here is a real `gitlab.Gitlab` with only its transport replaced, so the count is the
 count python-gitlab would make on the wire. A test built on a mock of `gl.projects` could not
@@ -14,7 +14,6 @@ tell a lazy handle from a fetched one, and would keep passing if the fetches cam
 """
 
 import json
-from urllib.parse import urlparse
 
 import gitlab
 import pytest
@@ -24,8 +23,6 @@ from requests.exceptions import RequestException
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 EMOJI_PATH = "/projects/group%2Frepo/merge_requests/7/notes/99/award_emoji"
-# python-gitlab hands http_list an absolute URL with the API prefix; the other calls pass the path
-LIST_URL_PATH = f"/api/v4{EMOJI_PATH}"
 
 
 class _Response:
@@ -84,73 +81,53 @@ def test_add_reaction_posts_the_emoji_without_fetching_the_objects():
     assert calls == [("POST", EMOJI_PATH)]
 
 
-def test_remove_reaction_deletes_the_named_emoji_without_fetching_the_objects():
-    """Reaching the emoji takes one list and one DELETE; the three fetches are gone.
+def test_remove_reaction_deletes_by_id_without_fetching_the_objects_or_listing():
+    provider, calls = _provider_with_recorded_calls([])
 
-    A name is what this pins, and it is not what `_remove_start_reaction` passes - it hands over
-    the id `add_reaction` returned, which the name lookup cannot match. Nothing here pins that
-    mismatch, and fixing it is a separate change; either way the three fetches stay saved.
-    """
+    assert provider.remove_reaction(99, 42) is True
+    assert calls == [("DELETE", f"{EMOJI_PATH}/42")]
+
+
+def test_remove_reaction_reports_a_missing_id_without_listing():
     provider, calls = _provider_with_recorded_calls(
-        [{"id": 7, "name": "tada"}, {"id": 42, "name": "eyes"}])
+        [], error=GitlabDeleteError("404 Award Emoji Not Found", response_code=404))
 
-    assert provider.remove_reaction(99, "eyes") is True
-    assert [method for method, _ in calls] == ["GET", "DELETE"]
-    assert urlparse(calls[0][1]).path == LIST_URL_PATH
-    assert calls[1][1] == f"{EMOJI_PATH}/42", "the emoji that matched, not the first one listed"
-
-
-def test_remove_reaction_reports_a_name_that_is_not_there_without_deleting():
-    provider, calls = _provider_with_recorded_calls(
-        [{"id": 7, "name": "tada"}, {"id": 42, "name": "eyes"}])
-
-    assert provider.remove_reaction(99, "rocket") is False
-    assert [method for method, _ in calls] == ["GET"], "nothing to delete, so nothing was deleted"
+    assert provider.remove_reaction(99, 42) is False
+    assert calls == [("DELETE", f"{EMOJI_PATH}/42")]
 
 
 @pytest.mark.parametrize("error", [GitlabCreateError("404 note not found"),
                                    RequestException("connection reset")])
 def test_an_api_error_on_the_emoji_endpoint_is_swallowed(error):
-    """The pre-existing narrowing test fires on object construction, which does no I/O any more.
-
-    The one request that is left is the emoji endpoint, so this is where the contract that a
-    GitLab or transport error is swallowed has to hold.
-    """
+    """Return None for GitLab or transport errors at the only remaining request endpoint."""
     provider, calls = _provider_with_recorded_calls([], error=error)
 
     assert provider.add_reaction(99, "eyes") is None
     assert calls == [("POST", EMOJI_PATH)], "the failure came from the emoji call, not from a handle"
 
 
-def test_a_delete_that_fails_after_a_successful_list_is_swallowed():
-    """`remove_reaction` has two requests; the second one can fail on its own."""
+def test_a_delete_that_fails_is_swallowed():
+    """Keep an award-emoji deletion failure cosmetic after reaching it without fetches."""
     calls = []
 
     def http_request(method, path, **kwargs):
         calls.append(method.upper())
-        if method == "get":
-            return _Response(200, [{"id": 42, "name": "eyes"}])
         raise GitlabDeleteError("500 internal error")
 
     client = gitlab.Gitlab("https://example.invalid", private_token="token")
     client.http_request = http_request
 
-    assert _provider(client).remove_reaction(99, "eyes") is False
-    assert calls == ["GET", "DELETE"]
+    assert _provider(client).remove_reaction(99, 42) is False
+    assert calls == ["DELETE"]
 
 
-def test_a_bug_in_our_own_code_is_not_reported_as_an_api_failure():
-    """The emoji endpoint is where the work happens, so a TypeError there must not be swallowed.
-
-    Before `lazy=True` the two object fetches sat in the same `try`, so the narrowing was
-    reachable. `tests/unittest/test_gitlab_provider_exception_narrowing.py` still exercises it
-    there, but that call no longer performs any I/O.
-    """
-    provider, _ = _provider_with_recorded_calls(
-        [], error=TypeError("unhashable type"))
+@pytest.mark.parametrize(("method", "reaction"), [("add_reaction", "eyes"), ("remove_reaction", 42)])
+def test_a_bug_in_our_own_code_is_not_reported_as_an_api_failure(method, reaction):
+    """Propagate unexpected errors from either reaction operation."""
+    provider, _ = _provider_with_recorded_calls([], error=TypeError("unhashable type"))
 
     with pytest.raises(TypeError):
-        provider.add_reaction(99, "eyes")
+        getattr(provider, method)(99, reaction)
 
 
 @pytest.mark.parametrize("id_mr", [None, 0])
@@ -159,5 +136,5 @@ def test_reactions_need_no_api_call_without_a_merge_request(id_mr):
     provider.id_mr = id_mr
 
     assert provider.add_reaction(99, "eyes") is None
-    assert provider.remove_reaction(99, "eyes") is False
+    assert provider.remove_reaction(99, 42) is False
     assert calls == []

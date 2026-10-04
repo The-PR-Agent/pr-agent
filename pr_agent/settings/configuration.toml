@@ -84,10 +84,14 @@ ignore_pr_authors = [] # authors to ignore from PR agent when an PR is created
 # Reactions added to the comment that triggered a command. Names are provider-specific:
 # GitHub accepts only +1, -1, laugh, confused, heart, hooray, rocket, eyes; GitLab and Gitea
 # take any award-emoji name. An empty value disables that reaction. When an outcome reaction
-# is configured it replaces the start reaction rather than joining it.
+# is configured it replaces the start reaction rather than joining it. The GitHub App and the
+# GitLab webhook both apply the outcome reactions. They differ on auto_review, which runs without
+# the notify hook the start reaction hangs off: the GitLab webhook gives it nothing, because it
+# gates the outcome on that hook too, while the GitHub App still gives it the outcome reaction. A
+# comment that is not a command gets no reaction at all on the GitLab webhook.
 reaction_on_start = "eyes"   # added before the command runs
-reaction_on_success = ""     # added when the command finished successfully
-reaction_on_failure = ""     # added when the command failed
+reaction_on_success = ""     # replaces the start reaction when the command succeeded (GitHub App, GitLab webhook)
+reaction_on_failure = ""     # replaces the start reaction when the command failed (GitHub App, GitLab webhook)
 ignore_repositories = [] # a list of regular expressions of repository full names (e.g. "org/repo") to ignore from PR agent processing
 ignore_language_framework = [] # a list of code-generation languages or frameworks (e.g. 'protobuf', 'go_gen') whose auto-generated source files will be excluded from analysis
 # Substring indicators used to skip bot users on webhook events. Currently consumed by
@@ -477,12 +481,17 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 # Application inference profile ARN for classic `bedrock/` calls through the `bedrock-runtime` APIs.
 # Not used by `bedrock_mantle/`, which uses Projects for cost allocation.
 # model_id = ""
+# Optional: map an opaque request model id (for example a Bedrock application inference profile ARN)
+# to a LiteLLM-priced model id, so run cost is reported instead of unavailable. Default empty; named
+# models are priced by LiteLLM directly and need no entry here.
+base_models = {}
 # Optional: set a profile per model (fallbacks included), keyed by the exact model name.
 # An entry here takes priority over model_id for that model.
 # model_ids = {"bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0" = "arn:aws:bedrock:...", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "arn:aws:bedrock:..."}
 # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}]
 # (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models
-# whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection
+# whose name contains "claude" or that are listed in a Claude thinking override; LiteLLM adds the
+# cache_control blocks. LiteLLM's own default injection
 # (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default)
 # applies only when no points are configured here, so the two never double-inject. A warning is logged
 # once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or

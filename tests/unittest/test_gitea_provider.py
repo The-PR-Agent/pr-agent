@@ -10,7 +10,7 @@ from starlette_context import context, request_cycle_context
 
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers.git_provider import GitProvider
-from pr_agent.git_providers.gitea_provider import GiteaProvider
+from pr_agent.git_providers.gitea_provider import GiteaProvider, IncompleteGiteaPullRequestFilesError
 
 
 def test_gitea_comment_url_accepts_dict_fields():
@@ -1255,6 +1255,10 @@ def _page(items):
     return SimpleNamespace(data=BytesIO(json.dumps(items).encode("utf-8")))
 
 
+def _raw_page(raw):
+    return SimpleNamespace(data=BytesIO(raw))
+
+
 class TestGiteaRepoApiPagination:
     """Gitea answers list endpoints one page at a time (30 items by default), so the PR
     files and commits must be collected across every page."""
@@ -1323,10 +1327,101 @@ class TestGiteaRepoApiPagination:
         repo_api = self._repo_api([])
         repo_api.api_client.call_api.side_effect = [_page([{"filename": "a.py"}]), ApiException(status=502)]
 
-        files = repo_api.get_change_file_pull_request(owner="owner", repo="repo", pr_number=7)
+        with pytest.raises(ApiException):
+            repo_api.get_change_file_pull_request(owner="owner", repo="repo", pr_number=7)
+        assert self._requested_pages(repo_api) == [1, 2]
 
-        assert files == []
-        repo_api.logger.error.assert_called_once()
+    def test_valid_empty_and_tuple_responses(self):
+        repo_api = self._repo_api([])
+        repo_api.api_client.call_api.side_effect = [(_page([{"filename": "a.py"}]).data, 200, {}),
+                                                      (_page([]).data, 200, {})]
+
+        assert repo_api.get_change_file_pull_request("owner", "repo", 7) == [{"filename": "a.py"}]
+        assert self._requested_pages(repo_api) == [1, 2]
+
+        repo_api.api_client.call_api.reset_mock()
+        repo_api.api_client.call_api.side_effect = [_page([])]
+        assert repo_api.get_change_file_pull_request("owner", "repo", 7) == []
+        assert self._requested_pages(repo_api) == [1]
+
+    @pytest.mark.parametrize("bad_payload", [
+        b"not json", {"filename": "a.py"}, None,
+        [42], [{}], [{"filename": ""}], [{"filename": 42}],
+    ])
+    @pytest.mark.parametrize("after_prefix", [False, True])
+    def test_malformed_pages_never_return_an_empty_or_partial_inventory(self, bad_payload, after_prefix):
+        repo_api = self._repo_api([])
+        pages = [_page([{"filename": "a.py"}])] if after_prefix else []
+        if bad_payload is None:
+            bad_page = object()
+        elif isinstance(bad_payload, bytes):
+            bad_page = _raw_page(bad_payload)
+        else:
+            bad_page = _page(bad_payload)
+        repo_api.api_client.call_api.side_effect = [*pages, bad_page]
+
+        with pytest.raises((ValueError, AttributeError, TypeError)):
+            repo_api.get_change_file_pull_request("owner", "repo", 7)
+        assert self._requested_pages(repo_api) == ([1, 2] if after_prefix else [1])
+
+
+class TestGiteaChangedFileInventory:
+    @staticmethod
+    def _provider(responses):
+        from pr_agent.git_providers.gitea_provider import RepoApi
+
+        repo_api = RepoApi(MagicMock())
+        repo_api.api_client.call_api.side_effect = responses
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.repo_api = repo_api
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 7
+        provider.git_files = None
+        return provider, repo_api
+
+    def test_complete_inventory_is_shared_by_all_consumers_and_cached(self):
+        provider, api = self._provider([
+            _page([{"filename": "a.py"}]), _page([{"filename": "b.py"}]), _page([]),
+        ])
+        assert provider.get_num_of_files() == 2
+        assert provider.get_files() == ["a.py", "b.py"]
+        assert provider.get_pr_file_paths() == ["a.py", "b.py"]
+        assert provider._get_changed_files() == [{"filename": "a.py"}, {"filename": "b.py"}]
+        assert api.api_client.call_api.call_count == 3
+
+    def test_valid_empty_inventory_is_cached(self):
+        provider, api = self._provider([_page([])])
+        assert provider.get_files() == []
+        assert provider.get_num_of_files() == 0
+        assert api.api_client.call_api.call_count == 1
+
+    def test_first_page_failure_does_not_cache_empty_inventory(self):
+        provider, api = self._provider([ApiException(status=502), _page([])])
+        provider.diff_files = None
+        with pytest.raises(IncompleteGiteaPullRequestFilesError):
+            provider.get_diff_files()
+        assert provider.git_files is None
+        assert provider.get_num_of_files() == 0
+        assert api.api_client.call_api.call_count == 2
+
+    @pytest.mark.parametrize("failed_page", [ApiException(status=502), _raw_page(b"not json"),
+                                            _page({"message": "failure"}), _page([{}])])
+    def test_failure_is_not_cached_and_same_instance_can_recover(self, failed_page):
+        provider, api = self._provider([_page([{"filename": "a.py"}]), failed_page,
+                                        _page([{"filename": "b.py"}]), _page([])])
+        with pytest.raises(IncompleteGiteaPullRequestFilesError):
+            provider.get_files()
+        assert provider.git_files is None
+        assert provider.get_files() == ["b.py"]
+        assert provider.get_num_of_files() == 1
+        assert api.api_client.call_api.call_count == 4
+
+    def test_process_control_exception_is_not_translated(self):
+        provider, _ = self._provider([KeyboardInterrupt()])
+        with pytest.raises(KeyboardInterrupt):
+            provider.get_files()
+        assert provider.git_files is None
 
 
 class TestBaseUrlHtmlIsResolvedOnFirstUse:
@@ -1394,8 +1489,7 @@ class TestBaseUrlHtmlIsResolvedOnFirstUse:
 
 class TestGiteaRepoIgnoreRules:
     """Regression for #2620: repository-level [ignore] rules from .pr_agent.toml
-    are merged into settings AFTER GiteaProvider is constructed (so the eager
-    filter in __init__ could never see them). The filter now runs inside
+    are merged into settings AFTER GiteaProvider is constructed. The filter runs inside
     get_diff_files(), at diff time, when the merged repo settings are in effect.
     """
 
@@ -1438,7 +1532,9 @@ class TestGiteaRepoIgnoreRules:
 
         from pr_agent.git_providers.gitea_provider import GiteaProvider
 
-        return GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+        provider = GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+        repo_api.get_change_file_pull_request.assert_not_called()
+        return provider
 
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     @patch("pr_agent.git_providers.gitea_provider.RepoApi")
@@ -1451,9 +1547,10 @@ class TestGiteaRepoIgnoreRules:
         repo's [ignore] rules into the request settings and confirm
         get_diff_files() drops the matching files."""
         provider = self._build_provider(mock_repo_api_cls, mock_get_settings, mock_api_client_cls)
-        provider.git_files = provider.git_files + [
+        raw_files = self.FILES + [
             {"filename": "pnpm-lock.yaml", "additions": 1, "deletions": 1, "status": "modified"},
         ]
+        mock_repo_api_cls.return_value.get_change_file_pull_request.return_value = raw_files
 
         with request_cycle_context({}):
             context["settings"] = copy.deepcopy(global_settings)
@@ -1469,6 +1566,10 @@ class TestGiteaRepoIgnoreRules:
                 "repo-level glob 'generated/**' must exclude generated/client.py"
             assert "api/schema.d.ts" not in names, \
                 "repo-level glob 'api/schema.d.ts' must exclude api/schema.d.ts"
+            assert provider.get_num_of_files() == 4
+            assert provider.get_files() == [file["filename"] for file in raw_files]
+            assert provider.get_pr_file_paths() == provider.get_files()
+            mock_repo_api_cls.return_value.get_change_file_pull_request.assert_called_once()
 
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     @patch("pr_agent.git_providers.gitea_provider.RepoApi")

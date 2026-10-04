@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
+from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
@@ -23,6 +25,7 @@ _TRACKED_SETTINGS = (
     "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.dual_publishing_score_threshold",
     "pr_code_suggestions.persistent_comment",
+    "pr_code_suggestions.max_history_len",
     "github.publish_as_check_run",
 )
 
@@ -77,6 +80,127 @@ def _configure_published_run():
     settings.config.publish_output = True
     settings.config.publish_output_progress = True
     settings.config.is_auto_command = False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("history_len", [0, 4])
+@pytest.mark.parametrize("warning_result", ["comment", "none", "error"])
+async def test_run_records_failed_persistent_update_without_duplicate_summary(
+    monkeypatch, history_len, warning_result
+):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        existing = SimpleNamespace(
+            body=(
+                f"{PRCodeSuggestionsHeader.SUMMARY.value}\n"
+                f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n<table>old</table>"
+            )
+        )
+        provider = _provider_with_anchored_diff(MagicMock())
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = True
+        provider.supports_code_suggestion_state.return_value = history_len == 0
+        provider.get_issue_comments.return_value = [existing]
+        provider.get_issue_comments_newest_first.return_value = [existing]
+        provider.get_latest_commit_url.return_value = "https://example.invalid/commit/deadbee"
+        provider.get_comment_url.return_value = "https://example.invalid/comment/1"
+        provider.edit_comment.return_value = False
+        if warning_result == "error":
+            provider.publish_comment.side_effect = RuntimeError("warning unavailable")
+        elif warning_result == "none":
+            provider.publish_comment.return_value = None
+        tool = _make_tool(provider)
+        tool.generate_summarized_suggestions = MagicMock(return_value="new suggestions")
+        monkeypatch.setattr(
+            pr_code_suggestions_module, "retry_with_fallback_models",
+            AsyncMock(return_value={"code_suggestions": [_anchored_suggestion()]}),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.publish_output_progress = False
+        settings.github.publish_as_check_run = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
+        settings.pr_code_suggestions.persistent_comment = True
+        settings.pr_code_suggestions.max_history_len = history_len
+
+        await tool.run()
+
+        assert command_failed() is True
+        assert tool._output_published is True
+        assert "<table>old</table>" in existing.body
+        provider.edit_comment.assert_called_once()
+        provider.publish_comment.assert_called_once()
+        warning = provider.publish_comment.call_args.args[0]
+        assert "update could not be confirmed" in warning
+        assert PRCodeSuggestionsIdentity.SUMMARY.value not in warning
+        assert "Failed to generate code suggestions" not in warning
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_chunk_progress_does_not_hide_failed_persistent_summary_update(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        original_body = (
+            f"{PRCodeSuggestionsHeader.SUMMARY.value}\n{PRCodeSuggestionsIdentity.SUMMARY.value}\n<table>old</table>"
+        )
+        existing = SimpleNamespace(body=original_body)
+        progress = SimpleNamespace(body="Preparing suggestions...")
+        provider = _provider_with_anchored_diff(MagicMock())
+        provider.get_files.return_value = [object()]
+        provider.is_supported.return_value = True
+        provider.supports_code_suggestion_state.return_value = False
+        provider.get_issue_comments.return_value = [existing]
+        provider.get_issue_comments_newest_first.return_value = [existing]
+        provider.get_latest_commit_url.return_value = "https://example.invalid/commit/deadbee"
+        provider.get_comment_url.return_value = "https://example.invalid/comment/1"
+        provider.publish_comment.side_effect = [progress, SimpleNamespace(body="warning")]
+        progress_updates = []
+
+        def edit_comment(comment, body):
+            if comment is existing:
+                return False
+            assert comment is progress
+            progress_updates.append(body)
+            progress.body = body
+            return True
+
+        provider.edit_comment.side_effect = edit_comment
+        tool = _make_tool(provider)
+        tool.progress = progress.body
+        tool.generate_summarized_suggestions = MagicMock(return_value="new suggestions")
+
+        async def generate_with_chunk_progress(*args, **kwargs):
+            reporter = tool._chunk_progress_reporter(2)
+            assert reporter is not None
+            await reporter.record_settled()
+            await reporter.record_settled()
+            return {"code_suggestions": [_anchored_suggestion()]}
+
+        monkeypatch.setattr(pr_code_suggestions_module, "retry_with_fallback_models", generate_with_chunk_progress)
+        _configure_published_run()
+        settings = get_settings()
+        settings.github.publish_as_check_run = False
+        settings.pr_code_suggestions.committable_code_suggestions = False
+        settings.pr_code_suggestions.persistent_comment = True
+        settings.pr_code_suggestions.max_history_len = 4
+
+        await tool.run()
+
+        assert "analyzed 1 of 2 chunks" in progress_updates[0]
+        assert "analyzed 2 of 2 chunks" in progress_updates[1]
+        assert "update could not be confirmed" in progress_updates[2]
+        assert command_failed() is True
+        assert existing.body == original_body
+        assert sum(call.args[0] is existing for call in provider.edit_comment.call_args_list) == 1
+        provider.remove_comment.assert_called_once_with(progress)
+        assert provider.publish_comment.call_count == 2
+        warning = provider.publish_comment.call_args.args[0]
+        assert "update could not be confirmed" in warning
+        assert PRCodeSuggestionsIdentity.SUMMARY.value not in warning
+    finally:
+        restore_settings(settings_snapshot)
 
 
 @pytest.mark.parametrize(

@@ -92,3 +92,20 @@ does not prevent later destinations from receiving the output.
 Failures are non-fatal: `push_outputs` never raises, so a sink outage does not break the review
 flow. Exceptions and non-2xx HTTP responses are logged with the destination and only the exception
 type or status code, since request error messages can embed the (secret-bearing) URL.
+
+## Extending delivery
+
+`push_outputs()` in `pr_agent/algo/run_output.py` builds the record once and isolates failures
+for each selected destination. Delivery strategies live in `pr_agent/algo/output_sinks.py`:
+each implements `OutputSink.send(record, cfg)`, and `create_output_sink()` selects the strategy
+from `OUTPUT_SINK_TYPES`. Registry order determines delivery order, with local writes first;
+duplicate channel entries still result in a single delivery.
+
+To add a destination, implement its strategy and register it, then add any required host-only
+settings, documentation, and provider-specific tests. HTTP strategies must validate destinations
+and preserve the shared HTTPS, timeout, redirect, and secret-safe logging policy. Provider-specific
+payload formatting belongs in the strategy, so the generic webhook record remains unchanged.
+
+This interface organizes provider implementations; it does not remove the work of maintaining
+their APIs. Retries, rate limiting, idempotency, and background delivery are separate policy
+decisions and are not introduced by this structure.

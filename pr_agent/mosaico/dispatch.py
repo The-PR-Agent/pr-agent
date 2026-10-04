@@ -14,16 +14,19 @@ Inbound text may be a whole forwarded conversation, one part per turn: "{role}: 
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
 (several tool paths never set it, and handle_request swallows exceptions -> False).
 route_and_run NEVER raises; on failure/empty it returns an honest fallback string."""
-import asyncio
-import ipaddress
 import re
-import socket
 from typing import NamedTuple, Optional
-from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
 from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.url_safety import (
+    MAX_SAFE_REDIRECTS,
+    with_safe_redirects,
+)
+from pr_agent.algo.url_safety import (
+    url_is_safe as _url_is_safe,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.mosaico.diff_provider import parse_unified_diff
@@ -33,7 +36,7 @@ _DEFAULT_VERB = "review"
 
 _DIFF_FETCH_TIMEOUT_S = 20
 _DIFF_FETCH_MAX_BYTES = 4_000_000  # ~4 MB; larger diffs exceed model context anyway
-_DIFF_FETCH_MAX_REDIRECTS = 5
+_DIFF_FETCH_MAX_REDIRECTS = MAX_SAFE_REDIRECTS
 
 # PR-URL detection: github/gitlab/bitbucket/azure-style hosts with a PR/MR path.
 _PR_URL_RE = re.compile(
@@ -216,46 +219,6 @@ def _ask_needs_context_fallback() -> str:
     return "PR-Agent requires a PR URL or a supplied diff."
 
 
-def _ip_is_blocked(addr) -> bool:
-    """Reject non-public IP ranges (SSRF guard): private/loopback/link-local (incl. cloud
-    metadata 169.254.0.0/16), reserved, multicast, unspecified."""
-    return (addr.is_private or addr.is_loopback or addr.is_link_local
-            or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
-
-
-async def _host_resolves_public(host: str) -> bool:
-    """True only if `host` resolves and EVERY resolved IP is public. DNS runs in a thread
-    so it does not block the event loop. Any failure -> False (fail closed)."""
-    if not host:
-        return False
-    try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
-    except Exception:
-        return False
-    saw = False
-    for info in infos:
-        ip = info[4][0].split("%")[0]  # strip IPv6 zone id
-        try:
-            addr = ipaddress.ip_address(ip)
-        except ValueError:
-            return False
-        saw = True
-        if _ip_is_blocked(addr):
-            return False
-    return saw
-
-
-async def _url_is_safe(url: str) -> bool:
-    """SSRF gate for one URL: https scheme + a hostname that resolves only to public IPs."""
-    try:
-        u = urlparse(url)
-    except Exception:
-        return False
-    if u.scheme != "https" or not u.hostname:
-        return False
-    return await _host_resolves_public(u.hostname)
-
-
 async def _fetch_public_diff(pr_url: str) -> Optional[str]:
     """Fetch the public unified diff for a GitHub/GitLab PR/MR URL by appending '.diff'.
     Returns the diff text, or None on any failure. No auth - public repos only. SSRF-guarded:
@@ -266,35 +229,33 @@ async def _fetch_public_diff(pr_url: str) -> Optional[str]:
     try:
         timeout = aiohttp.ClientTimeout(total=_DIFF_FETCH_TIMEOUT_S)
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            url = diff_url
-            for _ in range(_DIFF_FETCH_MAX_REDIRECTS + 1):
-                if not await _url_is_safe(url):
-                    get_logger().info(f"MOSAICO: diff fetch blocked unsafe/non-public URL: {url}")
+            async def _consume(response, url):
+                if response.status != 200:
+                    get_logger().info(f"MOSAICO: diff fetch {url} -> HTTP {response.status}")
                     return None
-                async with session.get(url, allow_redirects=False) as resp:
-                    if resp.status in (301, 302, 303, 307, 308):
-                        loc = resp.headers.get("Location")
-                        if not loc:
-                            return None
-                        url = urljoin(url, loc)
-                        continue
-                    if resp.status != 200:
-                        get_logger().info(f"MOSAICO: diff fetch {url} -> HTTP {resp.status}")
+                # StreamReader.read(n) returns only buffered bytes; drain in chunks with a cap.
+                chunks = []
+                total = 0
+                async for chunk in response.content.iter_chunked(65536):
+                    total += len(chunk)
+                    if total > _DIFF_FETCH_MAX_BYTES:
+                        get_logger().info(f"MOSAICO: diff fetch {url} exceeds size cap; skipping.")
                         return None
-                    # StreamReader.read(n) returns only buffered bytes; drain in chunks with a cap.
-                    chunks = []
-                    total = 0
-                    async for chunk in resp.content.iter_chunked(65536):
-                        total += len(chunk)
-                        if total > _DIFF_FETCH_MAX_BYTES:
-                            get_logger().info(f"MOSAICO: diff fetch {url} exceeds size cap; skipping.")
-                            return None
-                        chunks.append(chunk)
-                    raw = b"".join(chunks)
-                    text = raw.decode("utf-8", errors="replace")
-                    return text if text.strip() else None
-            get_logger().info(f"MOSAICO: diff fetch exceeded redirect limit: {diff_url}")
-            return None
+                    chunks.append(chunk)
+                raw = b"".join(chunks)
+                text = raw.decode("utf-8", errors="replace")
+                return text if text.strip() else None
+
+            result = await with_safe_redirects(
+                session,
+                diff_url,
+                _consume,
+                max_redirects=_DIFF_FETCH_MAX_REDIRECTS,
+                validator=_url_is_safe,
+            )
+            if result is None:
+                get_logger().info(f"MOSAICO: diff fetch produced no diff for {diff_url}")
+            return result
     except Exception as e:
         get_logger().info(f"MOSAICO: diff fetch failed for {diff_url}: {e}")
         return None

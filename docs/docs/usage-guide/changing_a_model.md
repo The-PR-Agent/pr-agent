@@ -98,7 +98,7 @@ model="" # the OpenAI model you've deployed on Azure (e.g. gpt-4o)
 fallback_models=["..."]
 ```
 
-To use Azure AD (Entra id) based authentication set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):
+Azure AD authentication needs the `azure` extra (`pip install "pr-agent[azure]"`). To use Azure AD (Entra id) based authentication set in your `.secrets.toml` (working from CLI), or in the GitHub `Settings > Secrets and variables` (working from GitHub App or GitHub Action):
 
 ```toml
 [azure_ad]
@@ -238,7 +238,7 @@ OpenRouter routes (`openrouter/x-ai/grok-4.5`, `openrouter/x-ai/grok-4.6`) apply
 
 ### Vertex AI
 
-To use Google's Vertex AI platform and its associated models (chat-bison/codechat-bison) set:
+Vertex AI needs the `google` extra (`pip install "pr-agent[google]"`). To use Google's Vertex AI platform and its associated models (chat-bison/codechat-bison) set:
 
 ```toml
 [config] # in configuration.toml
@@ -447,6 +447,23 @@ To give a fallback its own application inference profile, list it in `litellm.mo
 ```toml
 [litellm]
 model_ids = {"bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0" = "your-primary-profile-arn", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "your-fallback-profile-arn"}
+```
+
+##### Prompt caching and run cost with an ARN
+
+Prompt caching and run-cost estimation identify the model by name, so an opaque application
+inference profile ARN needs extra configuration:
+
+- Add the ARN to `claude_adaptive_thinking_models_override` (or
+  `claude_extended_thinking_models_override` for extended thinking) so PR-Agent treats it as
+  Claude and forwards `cache_control_injection_points`. See [Claude 5 thinking with an
+  application inference profile ARN](#claude-5-thinking-with-an-application-inference-profile-arn).
+- Map the ARN to a LiteLLM-priced model id in `[litellm] base_models`, so run cost is estimated
+  instead of reported as unavailable:
+
+```toml
+[litellm.base_models]
+"bedrock/converse/arn:aws:bedrock:eu-central-1:<account-id>:application-inference-profile/<profile-id>" = "bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0"
 ```
 
 #### Claude 5 thinking with an application inference profile ARN

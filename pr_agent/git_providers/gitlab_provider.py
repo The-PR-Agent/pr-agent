@@ -2290,7 +2290,7 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to add the {reaction} reaction, error: {e}")
             return None
 
-    def remove_reaction(self, issue_comment_id: int, reaction_id: str) -> bool:
+    def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         try:
             if not self.id_mr:
                 get_logger().warning("Cannot remove reaction: merge request ID is not set.")
@@ -2305,14 +2305,11 @@ class GitLabProvider(GitProvider):
                 get_logger().warning(f"Comment with ID {issue_comment_id} not found in merge request {self.id_mr}.")
                 return False
 
-            reactions = comment.awardemojis.list()
-            for reaction in reactions:
-                if reaction.name == reaction_id:
-                    reaction.delete()
-                    return True
-
-            get_logger().warning(f"Reaction '{reaction_id}' not found in comment {issue_comment_id}.")
-            return False
+            # Delete by id: that is the value `add_reaction` hands back and what
+            # `_remove_start_reaction` passes on, so matching on the emoji's name could never find
+            # it. Use a lazy emoji handle to delete directly without listing first.
+            comment.awardemojis.get(reaction_id, lazy=True).delete()
+            return True
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to remove reaction, error: {e}")
             return False

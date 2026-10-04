@@ -110,8 +110,8 @@ to-do list.
 | `ignore_pr_labels` | [] | labels to ignore from PR agent when an PR is created |
 | `ignore_pr_authors` | [] | authors to ignore from PR agent when an PR is created |
 | `reaction_on_start` | "eyes" | added before the command runs |
-| `reaction_on_success` | "" | added when the command finished successfully |
-| `reaction_on_failure` | "" | added when the command failed |
+| `reaction_on_success` | "" | replaces the start reaction when the command succeeded (GitHub App, GitLab webhook) |
+| `reaction_on_failure` | "" | replaces the start reaction when the command failed (GitHub App, GitLab webhook) |
 | `ignore_repositories` | [] | a list of regular expressions of repository full names (e.g. "org/repo") to ignore from PR agent processing |
 | `ignore_language_framework` | [] | a list of code-generation languages or frameworks (e.g. 'protobuf', 'go_gen') whose auto-generated source files will be excluded from analysis |
 | `bot_user_indicators` | ["codium", "bot_", "bot-", "_bot", "-bot"] | Substring indicators used to skip bot users on webhook events. Currently consumed by the GitLab webhook (`is_bot_user`); other providers may adopt this list in future. The match is case-insensitive against the sender's display name. Overriding this setting REPLACES the default list — include the entries below in your override if you want to keep them (e.g. `["codium", "bot_", "bot-", "_bot", "-bot", "renovate"]`). |
@@ -445,7 +445,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `force_streaming_custom_llm_provider` | "" | Force streaming when the request matches this provider AND its api_base contains one of the substrings below. Some OpenAI-compatible endpoints return a response that LiteLLM cannot normalize in non-streaming mode. Both must be set for the workaround to apply. |
 | `force_streaming_api_base_substrings` | [] |  |
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
-| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude"; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
+| `base_models` | {} | Optional: map an opaque request model id (for example a Bedrock application inference profile ARN) to a LiteLLM-priced model id, so run cost is reported instead of unavailable. Default empty; named models are priced by LiteLLM directly and need no entry here. |
+| `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude" or that are listed in a Claude thinking override; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
 
 
 ## `[openrouter]` {#openrouter}

@@ -21,6 +21,15 @@ _BUILTIN_GIT_PROVIDERS: dict[str, tuple[str, str]] = {
     "plain-diff": ("pr_agent.git_providers.plain_diff_provider", "PlainDiffGitProvider"),
 }
 _PROVIDER_CLASS_NAMES = {class_name: provider_id for provider_id, (_, class_name) in _BUILTIN_GIT_PROVIDERS.items()}
+_PROVIDER_EXTRAS = {
+    "github": "github",
+    "gitlab": "gitlab",
+    "bitbucket": "bitbucket",
+    "bitbucket_server": "bitbucket",
+    "azure": "azure",
+    "codecommit": "codecommit",
+    "gitea": "gitea",
+}
 
 
 class _LazyGitProviderRegistry(MutableMapping[str, type[GitProvider]]):
@@ -36,9 +45,15 @@ class _LazyGitProviderRegistry(MutableMapping[str, type[GitProvider]]):
             module = import_module(module_name)
         except ModuleNotFoundError as e:
             missing_module = e.name or "unknown dependency"
+            extra = _PROVIDER_EXTRAS.get(provider_id)
+            install_hint = (
+                f"Install it with `pip install 'pr-agent[{extra}]'` before selecting this provider."
+                if extra
+                else "Install the dependencies required by that provider before selecting it."
+            )
             raise ImportError(
                 f"Git provider {provider_id!r} could not be loaded because module {missing_module!r} is not installed. "
-                "Install the dependencies required by that provider before selecting it."
+                f"{install_hint}"
             ) from e
 
         provider_class = getattr(module, class_name)

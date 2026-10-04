@@ -378,7 +378,7 @@ class TestFindAsanaTickets:
                     return {"fields": {"summary": f"Ticket {key}", "description": "body",
                                        "labels": []}}
 
-            monkeypatch.setattr(tpc, "Jira", lambda **kwargs: _FakeJira())
+            monkeypatch.setattr("atlassian.Jira", lambda **kwargs: _FakeJira())
             provider = _GenericProvider(
                 "Related Asana tasks: "
                 "https://app.asana.com/0/99/111111111111 "

@@ -22,6 +22,7 @@ from pr_agent.algo.review_finding_state import (
     render_previous_findings,
     serialize_review_state,
 )
+from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.token_budget import FallbackEligibleError
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
@@ -1488,6 +1489,26 @@ async def test_review_run_surfaces_failed_persistent_write(monkeypatch, is_auto_
         comment_matches_identity(non_temporary[0], identifier)
         for identifier in get_pr_review_comment_identifiers(full=True, incremental=False)
     )
+    # The error was swallowed to publish that comment instead, so the run still has to say it
+    # failed: `command_failed()` is what the GitHub Action runner and the outcome reactions read,
+    # and without this a review that never reached the pull request reported success.
+    assert command_failed() is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_auto_command", [True, False])
+async def test_a_successful_run_is_not_recorded_as_failed(monkeypatch, is_auto_command):
+    """The control: recording on failure must not turn every run into a failure."""
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.config, "is_auto_command", is_auto_command, raising=False)
+    provider = _ReviewRunProvider(comments=[], supports_state=True, authored=True)
+    reviewer = _reviewer_for_run(provider)
+    reviewer._review_state_result = SimpleNamespace(changed=True)
+    _patch_run_dependencies(monkeypatch, reviewer)
+
+    await reviewer.run()
+
+    assert command_failed() is False
 
 
 def test_persistent_publish_success_rejects_none_and_false():

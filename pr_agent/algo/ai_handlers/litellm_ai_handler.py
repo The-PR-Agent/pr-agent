@@ -10,10 +10,10 @@ import shutil  # noqa: F401  (module attribute asserted by tests)
 import stat
 import threading
 
+import aiohttp
 import httpx
 import litellm
 import openai
-import requests
 from litellm import acompletion
 from tenacity import retry, retry_if_exception, stop_after_attempt
 
@@ -127,6 +127,7 @@ from pr_agent.algo.ai_handlers.cloud_auth import (
 )
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     EmptyTruncatedResponseError,
+    _close_stream,
     _get_azure_ad_credential,
     _get_azure_ad_token,
     _handle_streaming_response,
@@ -136,12 +137,18 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 )
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
+from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
+_IMAGE_NOT_ALIVE_MESSAGE = (
+    "The image link is not [alive](img_path).\n"
+    "Please repost the original image as a comment, and send the question again with 'quote reply' "
+    "(see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
+)
 OPENAI_DEFAULT_API_BASE = "https://api.openai.com/v1"
 
 # Token-count allowances used when estimating the cached prompt prefix for the
@@ -1201,19 +1208,26 @@ class LiteLLMAIHandler(BaseAiHandler):
         return fingerprints
 
     @contextlib.asynccontextmanager
-    async def _snapshot_aws_request_credentials(self, enabled):
+    async def _snapshot_aws_request_credentials(self, enabled, stream_cleanup=None):
         """Refresh off-loop and serialize this handler's AWS call and static fallback."""
-        if not enabled:
-            yield dict(self._aws_active_creds), False
-            return
-        async with self._aws_bedrock_lock:
-            if not self._aws_imds_fell_back:
-                self._validate_aws_credential_chain_environment()
-                if self._aws_imds_mode and not await self._refresh_aws_imds_credentials() and self._aws_static_creds:
-                    self._activate_static_aws_fallback()
-                    get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
-            can_fallback = self._aws_imds_mode and not self._aws_imds_fell_back and bool(self._aws_static_creds)
-            yield dict(self._aws_active_creds), can_fallback
+        try:
+            if not enabled:
+                yield dict(self._aws_active_creds), False
+                return
+            async with self._aws_bedrock_lock:
+                if not self._aws_imds_fell_back:
+                    self._validate_aws_credential_chain_environment()
+                    if (self._aws_imds_mode and not await self._refresh_aws_imds_credentials()
+                            and self._aws_static_creds):
+                        self._activate_static_aws_fallback()
+                        get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
+                can_fallback = self._aws_imds_mode and not self._aws_imds_fell_back and bool(self._aws_static_creds)
+                yield dict(self._aws_active_creds), can_fallback
+        finally:
+            if stream_cleanup is not None:
+                # Close any queued stream after releasing the AWS lock; each snapshot dispatches at most one.
+                for response in stream_cleanup:
+                    await _close_stream(response)
 
     def _should_use_aws_imds(self, provider: str | None) -> bool:
         """Return whether this request needs SigV4 credentials from the ambient AWS chain."""
@@ -1805,7 +1819,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                     cost_response = response
                     if not isinstance(response, dict) and not hasattr(response, "model_dump"):
                         cost_response = response.dict()
-                    cost_usd = litellm.completion_cost(completion_response=cost_response, model=model)
+                    base_models = get_settings().get("litellm.base_models") or {}
+                    base_model = base_models.get(model) if isinstance(base_models, dict) else None
+                    extra = {"base_model": base_model} if base_model else {}
+                    cost_usd = litellm.completion_cost(completion_response=cost_response, model=model, **extra)
             except Exception as e:
                 # Treat missing model pricing or insufficient usage as an unavailable call cost.
                 # Retain the successful call so the collector marks the aggregate safely.
@@ -2379,6 +2396,14 @@ class LiteLLMAIHandler(BaseAiHandler):
             and model.strip() in self.claude_adaptive_thinking_models_override
         ) or self._is_claude_adaptive_thinking_model(model)
 
+    def _is_claude_model(self, model: str) -> bool:
+        """Treat models listed in a Claude thinking override as Claude, for opaque Bedrock ARNs."""
+        return isinstance(model, str) and (
+            "claude" in model.lower()
+            or model.strip() in self.claude_adaptive_thinking_models_override
+            or model.strip() in self.claude_extended_thinking_models
+        )
+
     def _configure_claude_adaptive_thinking(self, model: str, kwargs: dict) -> dict:
         """Configure thinking for Claude models that reject token budgets."""
         kwargs["thinking"] = {"type": "adaptive"}
@@ -2598,6 +2623,32 @@ class LiteLLMAIHandler(BaseAiHandler):
         cached_framing = _CACHE_MESSAGE_FRAMING_ALLOWANCE * (2 if targets_user else 1) + _CACHE_REPLY_FRAMING_ALLOWANCE
         return cached_tokens + cached_framing
 
+    @staticmethod
+    async def _image_url_error(img_path: str) -> str | None:
+        """Return an error message when the image URL is unsafe or unreachable, else None.
+
+        The probe is https-only and follows at most MAX_SAFE_REDIRECTS redirects, validating
+        every hop against the SSRF guard, so a comment cannot aim PR-Agent at an internal
+        address or a long redirect chain.
+        """
+
+        async def _status(response, _url):
+            return response.status
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=_IMAGE_HEAD_TIMEOUT_SECONDS)
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+                status = await with_safe_redirects(session, img_path, _status, method="HEAD")
+        except Exception as e:
+            get_logger().error(f"Error fetching image: {img_path}", e)
+            return f"Error fetching image: {img_path}"
+        if status is None:
+            get_logger().error(f"Blocked unsafe or over-redirecting image URL: {img_path}")
+            return _IMAGE_NOT_ALIVE_MESSAGE
+        if status == 404:
+            return _IMAGE_NOT_ALIVE_MESSAGE
+        return None
+
     async def chat_completion(self, model: str, system: str, user: str, temperature: float = 0.2, img_path: str = None):
         configured_deployment_id = self.deployment_id
         return await self._chat_completion_with_retry(
@@ -2635,28 +2686,16 @@ class LiteLLMAIHandler(BaseAiHandler):
         request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
         deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
         if img_path:
-            try:
-                # Finish external image I/O before validating mutable credential fallbacks.
-                r = await asyncio.to_thread(
-                    requests.head,
-                    img_path,
-                    allow_redirects=True,
-                    timeout=_IMAGE_HEAD_TIMEOUT_SECONDS,
-                )
-                if r.status_code == 404:
-                    error_msg = (
-                    "The image link is not [alive](img_path).\n"
-                    "Please repost the original image as a comment, and send the question again with 'quote reply' "
-                    "(see [instructions](https://docs.pr-agent.ai/tools/ask/#ask-on-images))."
-                )
-                    get_logger().error(error_msg)
-                    return f"{error_msg}", "error"
-            except Exception as e:
-                get_logger().error(f"Error fetching image: {img_path}", e)
-                return f"Error fetching image: {img_path}", "error"
+            # Finish external image I/O before validating mutable credential fallbacks.
+            image_error = await self._image_url_error(img_path)
+            if image_error is not None:
+                get_logger().error(image_error)
+                return image_error, "error"
 
         _aws_imds = self._should_use_aws_imds(request_provider)
-        async with self._snapshot_aws_request_credentials(_aws_imds) as (
+        stream_cleanup = [] if _aws_imds else None
+        fallback_kwargs = None
+        async with self._snapshot_aws_request_credentials(_aws_imds, stream_cleanup=stream_cleanup) as (
             aws_request_credentials,
             aws_can_fallback,
         ):
@@ -3010,7 +3049,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 # silently skipped debug line. setdefault guards against overwriting a value already
                 # merged into kwargs.
                 if cache_control_injection_points:
-                    if isinstance(model, str) and "claude" in model.lower():
+                    if self._is_claude_model(model):
                         kwargs.setdefault("cache_control_injection_points", cache_control_injection_points)
                     self._warn_prompt_cache_conditions(
                         model, system, user, cache_control_injection_points, request_provider=request_provider
@@ -3045,7 +3084,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["custom_llm_provider"] = custom_llm_provider
 
                 # Get completion with automatic streaming detection
-                resp, finish_reason, response_obj = await self._get_completion(**kwargs)
+                resp, finish_reason, response_obj = await self._get_completion(
+                    _stream_cleanup=stream_cleanup, **kwargs,
+                )
 
             except openai.RateLimitError as e:
                 get_logger().error(f"Rate limit error during LLM inference: {e}")
@@ -3054,7 +3095,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 if aws_can_fallback:
                     if not self._aws_imds_fell_back:
                         self._activate_static_aws_fallback()
-                        get_logger().warning(AWS_PROVIDER_CALL_FALLBACK_MESSAGE)
+                        get_logger().warning(f"{AWS_PROVIDER_CALL_FALLBACK_MESSAGE}: {type(e).__name__}")
                     fallback_credentials = dict(self._aws_active_creds)
                     request_region = kwargs.get("aws_region_name")
                     for key in AWS_REQUEST_CREDENTIAL_KEYS:
@@ -3067,7 +3108,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                         ))
                     ):
                         kwargs["aws_region_name"] = request_region
-                    resp, finish_reason, response_obj = await self._get_completion(**kwargs)
+                    fallback_kwargs = kwargs
                 else:
                     get_logger().warning(f"Error during LLM inference: {e}")
                     raise
@@ -3078,6 +3119,15 @@ class LiteLLMAIHandler(BaseAiHandler):
                     request=httpx.Request("POST", model),
                     body=None,
                 ) from e
+
+        if fallback_kwargs is not None:
+            fallback_stream_cleanup = []
+            async with self._snapshot_aws_request_credentials(
+                _aws_imds, stream_cleanup=fallback_stream_cleanup,
+            ):
+                resp, finish_reason, response_obj = await self._get_completion(
+                    _stream_cleanup=fallback_stream_cleanup, **fallback_kwargs,
+                )
 
         # Post-response bookkeeping happens outside the Bedrock IMDS lock above: it
         # touches no os.environ credentials, and in IMDS mode the lock serializes
@@ -3104,7 +3154,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
         request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
         deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
-        async with self._snapshot_aws_request_credentials(self._should_use_aws_imds(request_provider)) as (
+        use_aws_imds = self._should_use_aws_imds(request_provider)
+        stream_cleanup = [] if use_aws_imds else None
+        async with self._snapshot_aws_request_credentials(
+            use_aws_imds, stream_cleanup=stream_cleanup,
+        ) as (
             aws_request_credentials,
             _,
         ):
@@ -3149,10 +3203,16 @@ class LiteLLMAIHandler(BaseAiHandler):
             kwargs["model"] = normalize_litellm_model(kwargs["model"], custom_llm_provider)
             response = await self._acompletion(_completion=_completion, **kwargs)
             if streaming or hasattr(response, "__aiter__"):
-                async for _ in response:
-                    pass
+                try:
+                    async for _ in response:
+                        pass
+                finally:
+                    if stream_cleanup is None:
+                        await _close_stream(response)
+                    else:
+                        stream_cleanup.append(response)
 
-    async def _get_completion(self, **kwargs):
+    async def _get_completion(self, *, _stream_cleanup=None, **kwargs):
         """
         Wrapper that automatically handles streaming for required models.
         """
@@ -3177,7 +3237,9 @@ class LiteLLMAIHandler(BaseAiHandler):
             else:
                 get_logger().info(f"Using streaming mode for model {model}")
             response = await self._acompletion(**kwargs)
-            return await _handle_streaming_response(response, model=model)
+            if _stream_cleanup is None:
+                return await _handle_streaming_response(response, model=model)
+            return await _handle_streaming_response(response, model=model, stream_cleanup=_stream_cleanup)
         else:
             response = await self._acompletion(**kwargs)
             if response is None or len(response["choices"]) == 0:

@@ -242,6 +242,24 @@ class LocalGitProvider(GitProvider):
     def get_pr_branch(self):
         return self.head_branch_name
 
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False) -> str:
+        """Get content of a file from the target branch.
+
+        Reads the committed target-branch version, never HEAD or the working tree, so the
+        reviewed changes cannot supply their own instruction files. A local checkout has no
+        separate default branch, so from_default_branch reads the target branch as well.
+        """
+        try:
+            blob = self.repo.commit(self.target_branch_name).tree / file_path
+        except KeyError:
+            return ""
+        if blob.type != "blob":
+            return ""
+        return blob.data_stream.read().decode("utf-8", errors="replace")
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        return self.repo.commit(self.target_branch_name).hexsha
+
     def get_user_id(self):
         return -1  # Not used anywhere for the local provider, but required by the interface
 

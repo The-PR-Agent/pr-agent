@@ -421,7 +421,7 @@ Notes:
 
 ## Bringing per-repo context files to PR-Agent
 
-`Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
+`Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Local`
 
 To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
 
@@ -443,6 +443,8 @@ repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
 By default (`repo_context_from_default_branch = true`), instruction files are read from the repository's **default branch** — a single trusted source — so neither the PR nor its target branch can alter the guidance used to review it. This matches how Qodo Merge reads these files.
 
 Set `repo_context_from_default_branch = false` to instead read from the PR's **target (base) branch**. This respects branch-specific instructions (for example a release branch, or a stacked PR that carries its own `AGENTS.md`), at the cost of trusting whoever can write to that target branch. Even then, files are never read from the PR's own head.
+
+The local git provider has no separate default branch, so it always reads instruction files from the committed target branch (the branch passed as `--pr_url`), never from `HEAD` or uncommitted changes.
 
 ```toml
 [config]

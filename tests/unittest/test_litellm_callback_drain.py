@@ -10,6 +10,7 @@ we drain them first.
 """
 
 import asyncio
+import gc
 import importlib
 import inspect
 import time
@@ -94,6 +95,16 @@ def clean_litellm_callbacks():
         if value is not None:
             setattr(litellm, attr, value)
     global_settings.set("LITELLM.ENABLE_CALLBACKS", enable_callbacks)
+
+
+@pytest.fixture(autouse=True)
+def no_gc_pauses():
+    """Keep full collections, which take ~0.5 s late in the CI suite, out of the drain deadlines."""
+    enabled = gc.isenabled()
+    gc.disable()
+    yield
+    if enabled:
+        gc.enable()
 
 
 class _CountingLogger(litellm.integrations.custom_logger.CustomLogger):
