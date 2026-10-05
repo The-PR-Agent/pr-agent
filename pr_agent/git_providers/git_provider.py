@@ -64,7 +64,7 @@ class CodeSuggestionThread:
     authored_by_agent: Optional[bool] = None
 
     def text_replies(self) -> list[tuple[str, str]]:
-        """Replies with a non-blank text message, stripped."""
+        """Return the replies that have a non-blank text message, stripped."""
         return [(author, message.strip()) for author, message in self.replies
                 if isinstance(message, str) and message.strip()]
 

@@ -303,6 +303,21 @@ def reconcile_review_findings(
     )
 
 
+def _previous_finding_entry(finding: Mapping[str, Any]) -> dict[str, Any]:
+    match = _FINDING_HEADER_RE.fullmatch(finding["body"])
+    entry = {
+        "state": finding["state"].lower(),
+        "relevant_file": finding["path"],
+        "start_line": finding.get("line_start"),
+        "end_line": finding.get("line_end"),
+        "issue_header": match.group("header") if match else "",
+        "issue_content": match.group("content") if match else finding["body"],
+    }
+    if finding.get("reply"):
+        entry["reply"] = finding["reply"]
+    return entry
+
+
 def render_previous_findings(
     state: Mapping[str, Any] | None,
     max_chars: int,
@@ -312,9 +327,10 @@ def render_previous_findings(
 
     Active findings come first, then dismissed ones (inline threads a human resolved without a fix, given as
     findings with an optional `reply`), then resolved ones, each newest first. A dismissed finding replaces
-    the stored finding with the same id. Each finding is split back into the `issue_header` and
-    `issue_content` the model emitted, so it can repeat a still-valid finding verbatim and keep its identity
-    across runs. The block stays within `max_chars` (0 disables it).
+    the stored finding with the same id, which is rendered instead when the dismissed entry does not fit.
+    Each finding is split back into the `issue_header` and `issue_content` the model emitted, so it can
+    repeat a still-valid finding verbatim and keep its identity across runs. The block stays within
+    `max_chars` (0 disables it).
     """
     if max_chars <= 0:
         return ""
@@ -326,30 +342,24 @@ def render_previous_findings(
             if finding.get("reply"):
                 normalized["reply"] = finding["reply"]
             dismissed_by_id.setdefault(normalized["finding_id"], normalized)
-    findings = [finding for finding in (state or {}).get("findings", [])
-                if finding.get("finding_id") not in dismissed_by_id]
+    stored = list((state or {}).get("findings", []))
+    replaced = {finding["finding_id"]: finding for finding in stored if finding.get("finding_id") in dismissed_by_id}
+    findings = [finding for finding in stored if finding.get("finding_id") not in replaced]
     active = [finding for finding in findings if finding.get("state") == "ACTIVE"]
     active.sort(key=lambda finding: str(finding.get("last_seen") or ""), reverse=True)
     resolved = [finding for finding in findings if finding.get("state") == "RESOLVED"]
     resolved.sort(key=lambda finding: str(finding.get("resolved_at") or ""), reverse=True)
     entries, context = [], ""
     for finding in active + list(dismissed_by_id.values()) + resolved:
-        match = _FINDING_HEADER_RE.fullmatch(finding["body"])
-        entry = {
-            "state": finding["state"].lower(),
-            "relevant_file": finding["path"],
-            "start_line": finding.get("line_start"),
-            "end_line": finding.get("line_end"),
-            "issue_header": match.group("header") if match else "",
-            "issue_content": match.group("content") if match else finding["body"],
-        }
-        if finding.get("reply"):
-            entry["reply"] = finding["reply"]
-        candidate = json.dumps(entries + [entry], ensure_ascii=False, indent=2)
-        if len(candidate) > max_chars:
-            continue
-        entries.append(entry)
-        context = candidate
+        options = [finding]
+        if finding["state"] == "DISMISSED" and finding["finding_id"] in replaced:
+            options.append(replaced[finding["finding_id"]])
+        for option in options:
+            candidate = json.dumps(entries + [_previous_finding_entry(option)], ensure_ascii=False, indent=2)
+            if len(candidate) <= max_chars:
+                entries.append(_previous_finding_entry(option))
+                context = candidate
+                break
     return context
 
 
