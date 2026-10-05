@@ -706,7 +706,7 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 # max_tokens = 16000                   # hard cap on completion tokens for the request
 ```
 
-`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6 and Gemini 3.7/3.8 Flash clamp `"none"` to `"low"` before precedence is applied, so a positive budget wins for those models; explicit Openrouter `"minimal"` remains unchanged for Gemini. Otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model, and models whose metadata marks reasoning as mandatory reject `"none"`. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
+`provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6, Gemini 3.7/3.8 Flash, and the GPT-6 models whose pages omit `"none"` (GPT-6 Astra and GPT-6.1 Sol) clamp it to `"low"` before precedence is applied, so a positive budget wins for those models; explicit Openrouter `"minimal"` remains unchanged for Gemini. Otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model. For models not covered by these clamps, do not assume `"none"` disables reasoning; check the selected model and provider's support. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
 ### OrcaRouter
 
@@ -904,10 +904,11 @@ reasoning_effort = "medium" # "low", "medium", "high", "xhigh", "max"
 GPT-6.1 Sol shares the routing above: same temperature handling, same `max`/`minimal` mapping,
 and the same 1,050,000-token context window, 922,000-token input ceiling, and 128,000-token
 output limit. Its model page lists `low`, `medium` (default), `high`, `xhigh`, and `max` only,
-so `none` is **not** supported and PR-Agent clamps a configured `none` to `low` rather than
-sending a value the endpoint rejects. That clamp covers the OpenAI, Azure, Azure AI, aiohttp
-and OpenRouter routes; an explicit `openrouter.reasoning_effort` is a separate setting and is
-still passed through, so avoid setting it to `none` for this model.
+so `none` is **not** supported and PR-Agent clamps a configured `none` to `low`.
+For `config.reasoning_effort`, this covers the OpenAI, Azure, Azure AI, aiohttp
+and OpenRouter routes. On OpenRouter, it also applies to an explicit
+`openrouter.reasoning_effort = "none"`; a positive `openrouter.reasoning_max_tokens`
+then takes precedence.
 
 On a non-native custom provider the ID is treated as an unknown model: nothing is sent unless
 you list it in `config.additional_reasoning_effort_models`, and if you do, the configured

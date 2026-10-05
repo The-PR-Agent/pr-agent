@@ -2020,6 +2020,59 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
 
     @classmethod
+    def _clamp_openrouter_reasoning_effort(
+        cls, model: str, reasoning_effort: str, reasoning_max_tokens: int = 0
+    ) -> str:
+        """Apply every OpenRouter-side reasoning-effort clamp and return the level requested.
+
+        Both the request builder and get_output_token_reserve route through this, so a clamp
+        added for one model family cannot be missing from the output-token reserve and leave
+        it disagreeing with the reasoning object actually sent.
+        """
+        if not reasoning_effort:
+            return reasoning_effort
+
+        if reasoning_effort == ReasoningEffort.MINIMAL.value and reasoning_max_tokens <= 0:
+            # Every GPT-6 model page omits "minimal", so PR-Agent corrects an explicit
+            # "minimal" to "low". A positive budget still takes precedence below, which is why
+            # this is skipped when one is configured.
+            gpt6_model = model.removeprefix("openrouter/")
+            if gpt6_model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES):
+                gpt6_model = gpt6_model.rsplit(":", 1)[0]
+            if cls._gpt6_model_name(gpt6_model) in GPT6_MODELS:
+                get_logger().info(
+                    f"{model} does not support reasoning_effort='minimal'; using 'low' instead."
+                )
+                reasoning_effort = ReasoningEffort.LOW.value
+
+        if reasoning_effort == ReasoningEffort.NONE.value:
+            # The pages of GPT6_MODELS_WITHOUT_NONE_EFFORT members omit "none", so PR-Agent
+            # corrects an explicit "none" to "low". That branch would otherwise be reached
+            # ahead of the token budget and win, discarding the budget, so correcting the value
+            # is what lets a configured budget apply. Clamp regardless of budget.
+            gpt6_model = model.removeprefix("openrouter/")
+            if gpt6_model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES):
+                gpt6_model = gpt6_model.rsplit(":", 1)[0]
+            if cls._gpt6_model_name(gpt6_model) in GPT6_MODELS_WITHOUT_NONE_EFFORT:
+                get_logger().info(
+                    f"{model} does not support reasoning_effort='none'; using 'low' instead."
+                )
+                reasoning_effort = ReasoningEffort.LOW.value
+
+        clamped_effort = cls._clamp_grok_reasoning_effort(model, reasoning_effort)
+        if clamped_effort != reasoning_effort:
+            get_logger().info(
+                f"Grok model {model} does not support reasoning_effort="
+                f"'{reasoning_effort}'; using '{clamped_effort}' instead."
+            )
+            reasoning_effort = clamped_effort
+
+        if reasoning_effort == "none" and cls._uses_gemini_low_reasoning_floor(model):
+            get_logger().info(f"Gemini model {model} does not support reasoning_effort='none'; using 'low' instead.")
+            reasoning_effort = "low"
+        return reasoning_effort
+
+    @classmethod
     def _clamp_grok_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
         """Clamp a configured reasoning effort to the closest supported Grok level."""
         grok_levels = cls._grok_reasoning_levels_for(model)
@@ -2112,23 +2165,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 effective_reasoning_effort = inherited_reasoning_effort or ""
 
         if effective_reasoning_effort:
-            if effective_reasoning_effort == ReasoningEffort.MINIMAL.value and reasoning_max_tokens <= 0:
-                gpt6_model = model.removeprefix("openrouter/")
-                if gpt6_model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES):
-                    gpt6_model = gpt6_model.rsplit(":", 1)[0]
-                if self._gpt6_model_name(gpt6_model) in GPT6_SOL_TIER_MODELS:
-                    effective_reasoning_effort = ReasoningEffort.LOW.value
-            clamped_effort = self._clamp_grok_reasoning_effort(model, effective_reasoning_effort)
-            if clamped_effort != effective_reasoning_effort:
-                get_logger().info(
-                    f"Grok model {model} does not support reasoning_effort="
-                    f"'{effective_reasoning_effort}'; using '{clamped_effort}' instead."
-                )
-                effective_reasoning_effort = clamped_effort
-
-        if effective_reasoning_effort == "none" and self._uses_gemini_low_reasoning_floor(model):
-            get_logger().info(f"Gemini model {model} does not support reasoning_effort='none'; using 'low' instead.")
-            effective_reasoning_effort = "low"
+            effective_reasoning_effort = self._clamp_openrouter_reasoning_effort(
+                model, effective_reasoning_effort, reasoning_max_tokens
+            )
 
         # Preserve explicit disablement; otherwise keep effort and max_tokens
         # mutually exclusive by preferring the token budget.
@@ -2266,16 +2305,15 @@ class LiteLLMAIHandler(BaseAiHandler):
         if not openrouter_model:
             return default_output_tokens
 
-        reasoning_effort = str(
-            self._openrouter_controls.get("reasoning_effort", "") or ""
-        ).strip().lower()
-        reasoning_effort = self._clamp_grok_reasoning_effort(
-            openrouter_model, reasoning_effort
-        )
-        if reasoning_effort == "none" and self._uses_gemini_low_reasoning_floor(openrouter_model):
-            reasoning_effort = "low"
         reasoning_tokens = self._coerce_token_value(
             self._openrouter_controls.get("reasoning_max_tokens", 0)
+        )
+        # Route through the same clamp the request builder uses: if that request will send a
+        # reasoning token budget, this reserve has to account for it.
+        reasoning_effort = self._clamp_openrouter_reasoning_effort(
+            openrouter_model,
+            str(self._openrouter_controls.get("reasoning_effort", "") or "").strip().lower(),
+            reasoning_tokens,
         )
         if reasoning_effort == "none" or reasoning_tokens <= 0:
             return default_output_tokens

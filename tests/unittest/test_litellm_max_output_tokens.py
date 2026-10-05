@@ -277,6 +277,34 @@ class TestMaxOutputTokens:
         assert kwargs["extra_body"]["reasoning"] == {"max_tokens": 4096}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("model", "expected_reserve", "expected_reasoning"), [
+        # GPT6_MODELS_WITHOUT_NONE_EFFORT members' pages omit "none", so the request clamps it
+        # to "low" and still sends the token budget. The reserve has to count those tokens, the
+        # same failure the Grok and Gemini tests above guard against.
+        ("openrouter/openai/gpt-6-astra", 4048, {"max_tokens": 2048}),
+        ("openrouter/openai/gpt-6-astra:nitro", 4048, {"max_tokens": 2048}),
+        ("openrouter/openai/gpt-6.1-sol", 4048, {"max_tokens": 2048}),
+        # Control: GPT-6 Sol and GPT-6 Luna accept "none", so reasoning is off and the
+        # budget is deliberately not spent.
+        ("openrouter/openai/gpt-6-sol", 2000, {"enabled": False}),
+        ("openrouter/openai/gpt-6-luna", 2000, {"enabled": False}),
+    ])
+    async def test_openrouter_clamped_none_still_reserves_reasoning(
+        self, monkeypatch, model, expected_reserve, expected_reasoning
+    ):
+        kwargs, exposed_limit, exposed_reserve = await _run(
+            monkeypatch,
+            model,
+            {},
+            openrouter={"reasoning_max_tokens": 2048, "reasoning_effort": "none"},
+            reserve_default=2000,
+        )
+
+        assert exposed_limit == 0
+        assert exposed_reserve == expected_reserve
+        assert kwargs["extra_body"]["reasoning"] == expected_reasoning
+
+    @pytest.mark.asyncio
     async def test_openrouter_astra_uses_one_capped_output_limit(self, monkeypatch):
         kwargs, exposed_limit = await _run(
             monkeypatch,

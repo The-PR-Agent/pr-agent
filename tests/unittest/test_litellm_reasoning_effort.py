@@ -1263,7 +1263,7 @@ class TestLiteLLMReasoningEffortGPT6:
         """The native GPT-6 clamp in _chat_completion_with_retry reaches this registry through
         _gpt6_model_name, which returns None for an id missing from GPT6_MODELS, so a member
         registered only here never matches. An explicit openrouter.reasoning_effort bypasses
-        that clamp."""
+        that native clamp and is clamped separately by _clamp_openrouter_reasoning_effort."""
         assert set(GPT6_MODELS_WITHOUT_NONE_EFFORT) <= set(GPT6_MODELS)
 
     @pytest.mark.parametrize("model", sorted(GPT6_MODELS_WITHOUT_NONE_EFFORT))
@@ -1298,9 +1298,10 @@ class TestLiteLLMReasoningEffortGPT6:
     ):
         """config.reasoning_effort="none" on an OpenRouter route must respect model support.
 
-        The explicit openrouter.reasoning_effort source bypasses this clamp, which is
-        documented in changing_a_model.md and out of scope here; this covers the inherited
-        config source, where the native GPT-6 clamp runs before the reasoning object is built.
+        This test covers the inherited config source, where the native GPT-6 clamp runs
+        before the reasoning object is built. An explicit openrouter.reasoning_effort is a
+        separate setting that bypasses this native clamp; it is clamped separately by
+        _clamp_openrouter_reasoning_effort, covered in test_litellm_openrouter_controls.py.
         """
         fake_settings = create_mock_settings("none")
         monkeypatch.setattr(fake_settings.litellm, "custom_llm_provider", "openrouter", raising=False)

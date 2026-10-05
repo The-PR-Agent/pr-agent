@@ -900,7 +900,7 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"])
     @pytest.mark.parametrize(("prefix", "custom_provider", "route"), [
         ("openrouter/openai/", "", ""),
         ("openrouter/openai/", "", ":nitro"),
@@ -964,6 +964,39 @@ class TestOpenRouterControls:
             reasoning_effort="high",
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("model", "no_budget", "with_budget"), [
+        # The pages of GPT6_MODELS_WITHOUT_NONE_EFFORT members omit "none", so PR-Agent
+        # corrects an explicit OpenRouter "none" to "low". With a budget that then applies.
+        # Expectations are spelled out rather than derived from the registry, so a wrong
+        # registry entry fails here instead of moving the expectation with it.
+        ("openrouter/openai/gpt-6-astra", {"effort": "low"}, {"max_tokens": 2048}),
+        ("openrouter/openai/gpt-6-astra:nitro", {"effort": "low"}, {"max_tokens": 2048}),
+        ("openrouter/openai/gpt-6.1-sol", {"effort": "low"}, {"max_tokens": 2048}),
+        # Control: GPT-6 Sol and GPT-6 Luna do list "none", which wins over the budget.
+        ("openrouter/openai/gpt-6-sol", {"enabled": False}, {"enabled": False}),
+        ("openrouter/openai/gpt-6-luna", {"enabled": False}, {"enabled": False}),
+    ])
+    @pytest.mark.parametrize("reasoning_max_tokens", [0, 2048])
+    async def test_gpt6_explicit_none_effort_respects_model_support(
+        self, monkeypatch, model, no_budget, with_budget, reasoning_max_tokens
+    ):
+        """openrouter.reasoning_effort is an independent config source and needs the clamp too.
+
+        The inherited config.reasoning_effort path is clamped before this stage, but an explicit
+        openrouter.reasoning_effort reaches it verbatim. An unclamped "none" is checked ahead of
+        the token budget and requests reasoning disablement, discarding the budget, so the clamp is
+        what lets a configured budget take effect.
+        """
+        kwargs = await _run(
+            monkeypatch,
+            model,
+            {"reasoning_effort": "none", "reasoning_max_tokens": reasoning_max_tokens},
+        )
+
+        expected = with_budget if reasoning_max_tokens else no_budget
+        assert kwargs["extra_body"]["reasoning"] == expected
 
     @pytest.mark.asyncio
     async def test_registered_model_inherits_default_global_effort(self, monkeypatch):
