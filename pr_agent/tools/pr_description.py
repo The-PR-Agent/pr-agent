@@ -29,6 +29,7 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
+    filter_generated_labels,
     get_user_labels,
     load_yaml,
     set_custom_labels,
@@ -770,7 +771,7 @@ class PRDescription:
                         pr_labels[i] = d[label_i]
         except Exception as e:
             get_logger().error(f"Error converting labels to original case {self.pr_id}: {e}")
-        return pr_labels
+        return filter_generated_labels(pr_labels)
 
     def _prepare_pr_answer_with_markers(self) -> Tuple[str, str]:
         get_logger().info(f"Using description marker replacements {self.pr_id}")

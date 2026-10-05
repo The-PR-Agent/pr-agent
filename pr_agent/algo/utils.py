@@ -35,6 +35,7 @@ from pr_agent.algo.git_patch_processing import (
     to_hunk_only_patch,
 )
 from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.output_models import PRType
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
@@ -1344,6 +1345,24 @@ def set_custom_labels(variables, git_provider=None):
         labels_minimal_to_labels_dict[k.lower().replace(' ', '_')] = k
         counter += 1
     variables["labels_minimal_to_labels_dict"] = labels_minimal_to_labels_dict
+
+def filter_generated_labels(labels: List[str]) -> List[str]:
+    """Keep model-generated labels within the enabled vocabulary, not user labels."""
+    allowed = {label.value.lower() for label in PRType}
+    if get_settings().config.get("enable_custom_labels", False):
+        custom_labels = get_settings().get("custom_labels", {}) or _DEFAULT_CUSTOM_LABELS
+        allowed.update(str(label).lower() for label in custom_labels)
+    accepted = []
+    dropped = []
+    for label in labels:
+        if isinstance(label, str) and label.strip().lower() in allowed:
+            accepted.append(label.strip())
+        else:
+            dropped.append(label)
+    if dropped:
+        get_logger().warning("Dropping model-generated labels outside the configured set", artifact=dropped)
+    return accepted
+
 
 def get_user_labels(current_labels: List[str] = None):
     """

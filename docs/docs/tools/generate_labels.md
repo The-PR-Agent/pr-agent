@@ -62,6 +62,14 @@ description = "Code refactoring without functional changes"
 3. Labels are automatically applied to the PR (if the git provider supports it)
 4. If labels cannot be applied directly, they are published as a comment
 
+Both `/generate_labels` and `/describe` filter model-generated labels before publishing.
+The allowed set contains the built-in PR types (`Bug fix`, `Tests`, `Enhancement`,
+`Documentation`, `Other`) plus the configured custom label names when custom labels
+are enabled. With custom labels enabled but no custom set configured, the default
+set also includes `Bug fix with tests`. Matching ignores case, and unknown generated
+labels are dropped with a warning. Existing human-added labels are preserved and
+are not restricted by this filter.
+
 ## Comparison with `/describe` labels
 
 The `/describe` tool also generates labels as part of its output. The key differences are:
