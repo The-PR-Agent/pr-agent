@@ -71,10 +71,10 @@ By default, configuration is read from the **default branch**, so only users who
 :::
 
 :::note[Provider branch behavior]
-Branch selection is currently implemented for GitHub and GitLab. Gitea and Gerrit ignore the
-`--config-branch` flag and `PR_AGENT_CONFIG_BRANCH` variable and instead read the local `.pr_agent.toml`
-from the pull request or change target ref, which may differ from the default branch. Other platforms
-also ignore these options and retain their provider-specific settings source.
+Branch selection is currently implemented for GitHub and GitLab. Gitea ignores these options and reads
+the local `.pr_agent.toml` from the pull request target ref, which may differ from the default branch.
+Gerrit also ignores these options, but reads the file from the cloned default branch. Other platforms
+retain their provider-specific settings source.
 :::
 
 ## Global configuration file

@@ -56,6 +56,25 @@ def test_get_repo_settings_is_empty_when_the_settings_path_is_a_directory(tmp_pa
     assert provider.get_repo_settings() == b""
 
 
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("settings/review.toml", b"settings/review.toml\n"),
+        (".pr_agent.toml", b""),
+        ("../outside.toml", b""),
+    ],
+)
+def test_get_repo_settings_resolves_only_safe_symlinks(tmp_path, target, expected):
+    repo = _make_repo(tmp_path, ["settings/review.toml"])
+    (tmp_path / ".pr_agent.toml").symlink_to(target)
+    repo.index.add([".pr_agent.toml"])
+    repo.index.commit("link settings")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == expected
+
+
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
     repo = _make_repo(tmp_path, ["keep.py", "gone.py"])
     (tmp_path / "gone.py").unlink()

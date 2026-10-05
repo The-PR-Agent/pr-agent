@@ -1,8 +1,10 @@
 import json
 import os
 import pathlib
+import posixpath
 import re
 import shutil
+import stat
 import string
 import subprocess
 import uuid
@@ -269,11 +271,26 @@ class GerritProvider(GitProvider):
 
     def get_repo_settings(self):
         try:
-            settings_entry = self.repo.branches[0].commit.tree / ".pr_agent.toml"
-            if settings_entry.type != "blob":
-                return b""
-            return settings_entry.data_stream.read()
-        except (IndexError, KeyError, OSError):
+            settings_tree = self.repo.branches[0].commit.tree
+            settings_path = ".pr_agent.toml"
+            visited_paths = set()
+            while settings_path not in visited_paths:
+                visited_paths.add(settings_path)
+                settings_entry = settings_tree / settings_path
+                if settings_entry.type != "blob":
+                    return b""
+                contents = settings_entry.data_stream.read()
+                if not stat.S_ISLNK(settings_entry.mode):
+                    return contents
+
+                target = contents.decode("utf-8")
+                if posixpath.isabs(target):
+                    return b""
+                settings_path = posixpath.normpath(posixpath.join(posixpath.dirname(settings_path), target))
+                if settings_path == ".." or settings_path.startswith("../"):
+                    return b""
+            return b""
+        except (IndexError, KeyError, OSError, UnicodeDecodeError, ValueError):
             return b""
 
     def get_diff_files(self) -> list[FilePatchInfo]:
