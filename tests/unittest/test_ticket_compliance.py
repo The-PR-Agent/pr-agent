@@ -49,6 +49,7 @@ def _make_github_provider(description, repo_obj=None):
     provider.repo = "owner/repo"
     provider.base_url_html = "https://github.com"
     provider.repo_obj = repo_obj if repo_obj is not None else _Repo()
+    provider.get_issue_content = lambda repository, number: repository.get_issue(number)
     provider.get_user_description = lambda: description
     provider.get_pr_branch = lambda: ""
     provider._parse_issue_url = lambda ticket: (
