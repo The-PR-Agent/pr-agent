@@ -437,9 +437,22 @@ def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypat
 
 @pytest.mark.parametrize(
     ("section", "key"),
-    [("github", "base_url"), ("gerrit", "patch_server_endpoint"),
-     ("azure_devops", "org"), ("anthropic", "key"), ("gitlab", "private_token")],
+    [
+        ("github", "base_url"),
+        ("gerrit", "patch_server_endpoint"),
+        ("azure_devops", "org"),
+        ("azure_devops", "pat"),
+        ("aws", "aws_access_key_id"),
+        ("aws", "aws_region_name"),
+        ("anthropic", "key"),
+        ("gitlab", "private_token"),
+    ],
 )
 def test_provider_connection_keys_are_host_only_for_repo_and_cli(section, key):
     assert key in REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
     assert CliArgs.validate_user_args([f"--{section}.{key}=untrusted"])[0] is False
+
+
+def test_progress_gif_url_remains_repo_and_cli_configurable():
+    assert "progress_gif_url" not in REPO_HOST_ONLY_KEYS_BY_SECTION.get("config", frozenset())
+    assert CliArgs.validate_user_args(["--config.progress_gif_url=https://example.com/progress.gif"])[0] is True

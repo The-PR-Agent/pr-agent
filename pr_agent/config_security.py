@@ -32,7 +32,9 @@ class _HostOnlyKeys(frozenset):
     def __contains__(self, key):
         normalized = key.lower() if isinstance(key, str) else key
         return super().__contains__(normalized) or (
-            isinstance(normalized, str) and normalized.endswith(_CONNECTION_KEY_SUFFIXES)
+            isinstance(normalized, str)
+            and normalized.endswith(_CONNECTION_KEY_SUFFIXES)
+            and normalized != "progress_gif_url"
         )
 
 
@@ -46,8 +48,10 @@ class _HostOnlyKeysBySection(dict):
 # host-only. Generic provider connection locations and credentials are protected
 # in every section, while the mapping below lists section-specific controls.
 REPO_HOST_ONLY_KEYS_BY_SECTION = _HostOnlyKeysBySection({
+    "aws": frozenset({"aws_access_key_id", "aws_region_name"}),
     # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
+    "azure_devops": frozenset({"pat"}),
     "databricks": frozenset({"api_base"}),
     "huggingface": frozenset({"api_base"}),
     "moonshot": frozenset({"api_base"}),
