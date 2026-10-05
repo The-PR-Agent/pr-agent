@@ -113,18 +113,18 @@ class PR_LineQuestions:
             model_answer_sanitized = _sanitize_slash_commands(model_answer.strip())
 
             get_logger().info('Preparing answer...')
-            if get_settings().config.publish_output:
-                if comment_id:
-                    self.git_provider.reply_to_comment_from_comment_id(comment_id, model_answer_sanitized)
-                    if should_resolve:
-                        if self.git_provider.resolve_comment_thread(comment_id):
-                            get_logger().info(f"Resolved review thread for comment {comment_id}")
-                        else:
-                            get_logger().warning(f"Failed to resolve review thread for comment {comment_id}")
-                else:
-                    self.git_provider.publish_comment(model_answer_sanitized)
-            else:
+            if not get_settings().config.publish_output:
                 get_logger().info(f"Answer:\n{model_answer_sanitized}")
+                return ""
+            if comment_id:
+                self.git_provider.reply_to_comment_from_comment_id(comment_id, model_answer_sanitized)
+                if should_resolve:
+                    if self.git_provider.resolve_comment_thread(comment_id):
+                        get_logger().info(f"Resolved review thread for comment {comment_id}")
+                    else:
+                        get_logger().warning(f"Failed to resolve review thread for comment {comment_id}")
+            else:
+                self.git_provider.publish_comment(model_answer_sanitized)
         else:
             get_logger().info("No hunk matched the requested range for "
                               f"'{file_name}'; skipping the /ask_line model call")
@@ -132,13 +132,13 @@ class PR_LineQuestions:
             # broken bot, so say why nothing was answered.
             no_hunk_message = (f"Could not find the requested lines of `{file_name}` in this "
                                "pull request's diff, so there is nothing to answer about.")
-            if get_settings().config.publish_output:
-                if comment_id:
-                    self.git_provider.reply_to_comment_from_comment_id(comment_id, no_hunk_message)
-                else:
-                    self.git_provider.publish_comment(no_hunk_message)
-            else:
+            if not get_settings().config.publish_output:
                 get_logger().info(no_hunk_message)
+                return ""
+            if comment_id:
+                self.git_provider.reply_to_comment_from_comment_id(comment_id, no_hunk_message)
+            else:
+                self.git_provider.publish_comment(no_hunk_message)
 
         return ""
 
