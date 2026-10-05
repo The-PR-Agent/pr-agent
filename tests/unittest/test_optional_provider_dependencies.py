@@ -98,5 +98,8 @@ def test_provider_context_error_keeps_optional_dependency_install_hint(monkeypat
             "https://gitlab.com/org/repo/-/merge_requests/1"
         )
 
-    assert "Failed to get git provider for https://gitlab.com/org/repo/-/merge_requests/1" in str(exc_info.value)
+    message = str(exc_info.value)
+    assert "Failed to get git provider for https://gitlab.com/org/repo/-/merge_requests/1" in message
+    assert "module 'gitlab'" in message
+    assert "Install it with `pip install 'pr-agent[gitlab]'` before selecting this provider." in message
     assert exc_info.value.__cause__ is not None
