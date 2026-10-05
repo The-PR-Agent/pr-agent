@@ -9,6 +9,7 @@ import pytest
 
 from pr_agent.tools.ticket_pr_compliance_check import (
     BRANCH_ISSUE_PATTERN,
+    MAX_GITHUB_TICKET_LOOKUPS,
     MAX_SHORTHAND_ISSUE_DIGITS,
     extract_ticket_links_from_pr_description,
 )
@@ -112,6 +113,26 @@ def test_enterprise_full_url_custom_capture_does_not_create_a_local_duplicate(de
 def test_full_issue_link_with_benign_suffix_keeps_canonical_issue_pointer(base, suffix):
     issue = f"{base}/{REPO}/issues/7"
     assert extract_ticket_links_from_pr_description(f"See {issue}{suffix}", REPO, base) == [issue]
+
+
+@pytest.mark.parametrize("base", ["https://github.com", "https://ghe.example.test"])
+@pytest.mark.parametrize("number", ["1٢", "1２"])
+def test_full_issue_url_requires_ascii_digits(base, number):
+    assert extract_ticket_links_from_pr_description(f"{base}/{REPO}/issues/{number}", REPO, base) == []
+    valid = f"{base}/{REPO}/issues/12"
+    assert extract_ticket_links_from_pr_description(valid, REPO, base) == [valid]
+
+
+@pytest.mark.parametrize("base,lookalike", [
+    ("https://github.com", "https://gİthub.com"),
+    ("https://ghe.example.test", "https://ghe.example.teſt"),
+])
+def test_unicode_host_lookalikes_do_not_consume_lookup_budget(base, lookalike):
+    description = " ".join(f"{lookalike}/{REPO}/issues/{number}"
+                           for number in range(1, MAX_GITHUB_TICKET_LOOKUPS + 1)) + " then #42"
+    assert extract_ticket_links_from_pr_description(description, REPO, base) == [f"{base}/{REPO}/issues/42"]
+    valid = f"{base.upper()}/{REPO}/issues/12"
+    assert extract_ticket_links_from_pr_description(valid, REPO, base) == [valid]
 
 
 @pytest.mark.parametrize(

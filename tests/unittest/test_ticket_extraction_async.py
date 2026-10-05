@@ -614,6 +614,17 @@ class TestCrossRepoTicketResolution:
 
 class TestTicketRepositoryAuthorization:
     @pytest.mark.parametrize("origin", ["https://github.com", "https://ghe.example.test"])
+    def test_invalid_full_url_number_never_fetches_content(self, settings_snapshot, origin):
+        provider = _make_github_provider(
+            user_description=f"{origin}/org/repo/issues/1٢",
+            base_url_html=origin,
+            repo_obj=_FakeRepoObj({12: _FakeIssue(12)}),
+        )
+        provider.get_issue_content = MagicMock()
+        assert asyncio.run(extract_tickets(provider)) == []
+        provider.get_issue_content.assert_not_called()
+
+    @pytest.mark.parametrize("origin", ["https://github.com", "https://ghe.example.test"])
     @pytest.mark.parametrize("full_url", [False, True])
     def test_unapproved_repository_is_never_resolved(self, settings_snapshot, origin, full_url):
         other = _FakeRepoObj({5: _FakeIssue(5)})
