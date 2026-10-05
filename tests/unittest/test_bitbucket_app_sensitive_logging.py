@@ -1,5 +1,4 @@
 import json
-from types import SimpleNamespace
 
 import pytest
 from starlette.background import BackgroundTasks
@@ -8,25 +7,14 @@ from pr_agent.servers import bitbucket_app
 
 
 class _Request:
-    """A request double that records whether the body was read or parsed.
-
-    The webhook verifies the JWT before touching the body, so a request that fails
-    verification must never reach the parser.
-    """
-
     def __init__(self, headers, payload):
         self.headers = headers
         self._payload = payload
         self.json_calls = 0
-        self.body_calls = 0
 
     async def json(self):
         self.json_calls += 1
         return self._payload
-
-    async def body(self):
-        self.body_calls += 1
-        return json.dumps(self._payload).encode()
 
 
 class _RecordingLogger:
@@ -46,17 +34,7 @@ def _route_endpoint(path, method):
     )
 
 
-@pytest.fixture
-def accepted_jwt(monkeypatch):
-    """Let a well-formed JWT through so the request reaches the payload handling."""
-    monkeypatch.setattr(
-        bitbucket_app,
-        "_verify_webhook_jwt",
-        lambda input_jwt: ("shared-secret", "client-key"),
-    )
-
-
-async def test_webhook_does_not_log_authorization_header(monkeypatch, accepted_jwt):
+async def test_webhook_does_not_log_authorization_header(monkeypatch):
     token = "webhook-authorization-sentinel"
     authorization = f"jWt {token}"
     logger = _RecordingLogger()
@@ -87,43 +65,8 @@ async def test_webhook_rejects_malformed_authorization_header(monkeypatch, heade
 
     assert result == "OK"
     assert request.json_calls == 0
-    assert request.body_calls == 0
     assert not background_tasks.tasks
     assert "Bitbucket webhook authorization header is malformed" in repr(logger.calls)
-
-
-@pytest.mark.parametrize("token", ["not-a-jwt", "e30.signature", "e30.eyJpc3MiOiJjbGllbnQifQ.forged"])
-async def test_webhook_rejects_a_bad_jwt_before_reading_the_body(monkeypatch, token):
-    """A forged JWT must not reach the JSON parser or any payload log line.
-
-    The signature check used to run in the background task, after the body was parsed and
-    "OK" was already returned, so unauthenticated traffic got a free parse and a log entry.
-    """
-    logger = _RecordingLogger()
-    background_tasks = BackgroundTasks()
-    request = _Request({"authorization": f"jwt {token}"}, {"event": "pullrequest:created", "data": {}})
-    monkeypatch.setattr(bitbucket_app, "get_logger", lambda: logger)
-    monkeypatch.setattr(
-        bitbucket_app,
-        "get_fork_safe_secret_provider",
-        lambda: SimpleNamespace(get_secret=lambda client_key: json.dumps({"shared_secret": "shared-secret"})),
-    )
-    monkeypatch.setattr(
-        bitbucket_app,
-        "get_settings",
-        lambda: SimpleNamespace(
-            get=lambda *a: "app",
-            bitbucket=SimpleNamespace(base_url="https://app.example"),
-        ),
-    )
-
-    result = await _route_endpoint("/webhook", "POST")(background_tasks, request)
-
-    assert result == "OK"
-    assert request.json_calls == 0
-    assert request.body_calls == 0
-    assert not background_tasks.tasks
-    assert "pullrequest:created" not in repr(logger.calls)
 
 
 async def test_installed_webhook_does_not_log_credentials(monkeypatch):
@@ -258,7 +201,7 @@ async def test_installed_webhook_does_not_log_store_secret_error(monkeypatch):
     assert "Failed to register user: secret provider failure (RuntimeError)" in logged
 
 
-async def test_webhook_logs_only_selected_payload_fields(monkeypatch, accepted_jwt):
+async def test_webhook_logs_only_selected_payload_fields(monkeypatch):
     logger = _RecordingLogger()
     background_tasks = BackgroundTasks()
     payload = {

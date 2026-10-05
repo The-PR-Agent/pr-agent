@@ -253,70 +253,6 @@ def should_process_pr_logic(data) -> bool:
     return shared_should_process_pr_logic(data, provider="bitbucket_app")
 
 
-def _verify_webhook_jwt(input_jwt: str) -> tuple[str, str] | None:
-    """Validate the Atlassian Connect JWT, returning (shared_secret, client_key) or None.
-
-    Return None after logging the reason when the token cannot be trusted, so the caller
-    drops the request before its body is parsed.
-
-    Decode the claims first so we can look up the shared secret, but treat the JWT as
-    untrusted until jwt.decode() validates its signature against that secret. Using the
-    unverified iss claim as the audience parameter (the previous behavior) meant the
-    audience check was effectively tautological: an attacker could forge a JWT with
-    iss == aud and skip signature verification by supplying their own secret via
-    secret_provider. Look up the secret by the unverified iss, then validate the JWT
-    with a fixed audience so the signature check actually rejects forged tokens.
-    """
-    jwt_parts = input_jwt.split(".")
-    if len(jwt_parts) < 2:
-        get_logger().error("Bitbucket webhook JWT is malformed (missing segments)")
-        return None
-    try:
-        claim_part = jwt_parts[1]
-        claim_part += "=" * (-len(claim_part) % 4)
-        decoded_claims = json.loads(base64.urlsafe_b64decode(claim_part))
-    except (binascii.Error, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
-        get_logger().error(f"Bitbucket webhook JWT claims could not be decoded: {e}")
-        return None
-    if not isinstance(decoded_claims, dict):
-        get_logger().error("Bitbucket webhook JWT claims are not a JSON object")
-        return None
-    client_key = decoded_claims.get("iss", "")
-    if not client_key or not isinstance(client_key, str):
-        get_logger().error("Bitbucket webhook JWT is missing 'iss' claim")
-        return None
-    try:
-        secrets = json.loads(get_fork_safe_secret_provider().get_secret(client_key))
-        shared_secret = secrets["shared_secret"]
-    except Exception as e:
-        get_logger().error(f"Failed to look up Bitbucket shared secret: {e}")
-        return None
-    # Atlassian Connect issues JWTs with aud == uri of the app descriptor.
-    # Pin the audience to the configured base_url so a forged JWT cannot
-    # satisfy the audience check by mirroring its own iss. Guard against
-    # the key being absent (it's not in the shipped .secrets_template.toml)
-    # so a missing-config deployment fails cleanly instead of raising
-    # AttributeError on every webhook and rejecting valid tokens.
-    try:
-        expected_audience = get_settings().bitbucket.base_url
-    except AttributeError:
-        get_logger().error(
-            "Bitbucket webhook JWT validation skipped: bitbucket.base_url is not configured"
-        )
-        return None
-    if not expected_audience:
-        get_logger().error(
-            "Bitbucket webhook JWT validation skipped: bitbucket.base_url is empty"
-        )
-        return None
-    try:
-        jwt.decode(input_jwt, shared_secret, audience=expected_audience, algorithms=["HS256"])
-    except jwt.InvalidTokenError as e:
-        get_logger().error(f"Bitbucket webhook JWT validation failed: {e}")
-        return None
-    return shared_secret, client_key
-
-
 @router.post("/webhook")
 async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Request):
     app_name = get_settings().get("CONFIG.APP_NAME", "Unknown")
@@ -327,13 +263,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
         get_logger().error("Bitbucket webhook authorization header is malformed")
         return "OK"
     input_jwt = jwt_parts[1]
-    # Validate the JWT before the body is parsed: a forged request must not reach the
-    # JSON parser or the log, and the caller must not get a 200 that means "accepted".
-    verified = _verify_webhook_jwt(input_jwt)
-    if verified is None:
-        return "OK"
-    shared_secret, client_key = verified
-    data = json.loads(await request.body())
+    data = await request.json()
     get_logger().debug(payload_log_summary(data, ("clientKey", "event")))
 
     async def inner():
@@ -352,6 +282,62 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
 
             sender_id = data.get("data", {}).get("actor", {}).get("account_id", "")
             log_context["sender_id"] = sender_id
+            # Decode the claims first so we can look up the shared secret, but
+            # treat the JWT as untrusted until jwt.decode() validates its
+            # signature against that secret. Using the unverified iss claim as
+            # the audience parameter (the previous behavior) meant the audience
+            # check was effectively tautological: an attacker could forge a JWT
+            # with iss == aud and skip signature verification by supplying their
+            # own secret via secret_provider. Look up the secret by the
+            # unverified iss, then validate the JWT with a fixed audience so
+            # the signature check actually rejects forged tokens.
+            jwt_parts = input_jwt.split(".")
+            if len(jwt_parts) < 2:
+                get_logger().error("Bitbucket webhook JWT is malformed (missing segments)")
+                return
+            try:
+                claim_part = jwt_parts[1]
+                claim_part += "=" * (-len(claim_part) % 4)
+                decoded_claims = json.loads(base64.urlsafe_b64decode(claim_part))
+            except (binascii.Error, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                get_logger().error(f"Bitbucket webhook JWT claims could not be decoded: {e}")
+                return
+            if not isinstance(decoded_claims, dict):
+                get_logger().error("Bitbucket webhook JWT claims are not a JSON object")
+                return
+            client_key = decoded_claims.get("iss", "")
+            if not client_key or not isinstance(client_key, str):
+                get_logger().error("Bitbucket webhook JWT is missing 'iss' claim")
+                return
+            try:
+                secrets = json.loads(get_fork_safe_secret_provider().get_secret(client_key))
+                shared_secret = secrets["shared_secret"]
+            except Exception as e:
+                get_logger().error(f"Failed to look up Bitbucket shared secret: {e}")
+                return
+            # Atlassian Connect issues JWTs with aud == uri of the app descriptor.
+            # Pin the audience to the configured base_url so a forged JWT cannot
+            # satisfy the audience check by mirroring its own iss. Guard against
+            # the key being absent (it's not in the shipped .secrets_template.toml)
+            # so a missing-config deployment fails cleanly instead of raising
+            # AttributeError on every webhook and rejecting valid tokens.
+            try:
+                expected_audience = get_settings().bitbucket.base_url
+            except AttributeError:
+                get_logger().error(
+                    "Bitbucket webhook JWT validation skipped: bitbucket.base_url is not configured"
+                )
+                return
+            if not expected_audience:
+                get_logger().error(
+                    "Bitbucket webhook JWT validation skipped: bitbucket.base_url is empty"
+                )
+                return
+            try:
+                jwt.decode(input_jwt, shared_secret, audience=expected_audience, algorithms=["HS256"])
+            except jwt.InvalidTokenError as e:
+                get_logger().error(f"Bitbucket webhook JWT validation failed: {e}")
+                return
             bearer_token = await get_bearer_token(shared_secret, client_key)
             context['bitbucket_bearer_token'] = bearer_token
             context["settings"] = copy.deepcopy(global_settings)

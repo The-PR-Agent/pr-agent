@@ -1,5 +1,4 @@
 import copy
-import json
 import os
 from typing import Any, Dict
 
@@ -43,17 +42,7 @@ async def handle_gitea_webhooks(background_tasks: BackgroundTasks, request: Requ
     return {}
 
 async def get_body(request: Request):
-    """Verify then parse the webhook request body.
-
-    The raw bytes are read and verified before the body is parsed, so an unauthenticated
-    request never reaches the JSON parser or any log line that would echo its content.
-    """
-    try:
-        body_bytes = await request.body()
-    except Exception as e:
-        get_logger().error("Error reading request body", artifact={'error': e})
-        raise HTTPException(status_code=400, detail="Error reading request body") from e
-
+    """Verify and parse webhook request body"""
     # Verify webhook signature
     webhook_secret = getattr(get_settings().gitea, 'webhook_secret', None)
     if not webhook_secret:
@@ -62,6 +51,7 @@ async def get_body(request: Request):
         # Gitea events and trigger expensive AI commands against arbitrary PRs.
         get_logger().error("Rejecting Gitea webhook: GITEA.WEBHOOK_SECRET is not configured")
         raise HTTPException(status_code=403, detail="Webhook secret not configured")
+    body_bytes = await request.body()
     signature_header = request.headers.get('x-gitea-signature', None)
     if not signature_header:
         get_logger().error("Missing signature header")
@@ -74,10 +64,11 @@ async def get_body(request: Request):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
-        return json.loads(body_bytes)
+        body = await request.json()
     except Exception as e:
         get_logger().error("Error parsing request body", artifact={'error': e})
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
+    return body
 
 async def handle_request(body: Dict[str, Any], event: str):
     """Process Gitea webhook events"""
