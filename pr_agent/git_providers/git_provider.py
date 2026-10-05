@@ -806,6 +806,10 @@ class GitProvider(ABC):
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
 
+    def get_issue_content(self, repo_obj, issue_number: int):
+        """Fetch issue content within this provider's authorized repository boundary."""
+        raise NotImplementedError("This provider cannot fetch GitHub issue content")
+
     def get_sibling_repo(self, repo_id: str):
         """Resolve a host-approved sibling repository the requester may read."""
         return None

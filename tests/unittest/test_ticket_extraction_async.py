@@ -120,6 +120,7 @@ def _make_github_provider(
     provider.repo = repo
     provider.base_url_html = base_url_html
     provider.repo_obj = repo_obj
+    provider.get_issue_content = lambda repository, number: repository.get_issue(number)
     provider.get_owning_namespace = lambda resolved=False: repo.split("/")[0]
     provider.github_client = github_client
     provider.get_user_description = lambda: user_description

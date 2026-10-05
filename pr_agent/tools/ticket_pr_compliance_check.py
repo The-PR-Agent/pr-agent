@@ -946,7 +946,7 @@ async def extract_tickets(git_provider):
                     try:
                         repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
-                        issue_main = repo_obj.get_issue(original_issue_number)
+                        issue_main = git_provider.get_issue_content(repo_obj, original_issue_number)
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
@@ -972,7 +972,7 @@ async def extract_tickets(git_provider):
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = _get_repo_obj_for_ticket(git_provider, sub_issue_url, sub_repo,
                                                                         repo_obj_cache)
-                                sub_issue = sub_repo_obj.get_issue(sub_issue_number)
+                                sub_issue = git_provider.get_issue_content(sub_repo_obj, sub_issue_number)
 
                                 sub_body = sub_issue.body or ""
                                 if len(sub_body) > MAX_TICKET_CHARACTERS:

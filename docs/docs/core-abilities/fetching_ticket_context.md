@@ -113,6 +113,7 @@ repositories, the command requester must also have read access; CLI runs use the
 is available. Repository settings and comment arguments cannot change this allowlist. An empty list disables
 cross-repository ticket reads, including public repositories. Approve only content that may be included in the
 consuming PR's review or description. Ticket lookup limits are separate from the sibling-file limit.
+Issue redirects are skipped; reference a transferred issue by its current repository and number.
 
 ## Asana Integration
 
