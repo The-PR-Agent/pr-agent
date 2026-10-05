@@ -72,3 +72,31 @@ def test_missing_provider_dependency_points_to_the_matching_extra(monkeypatch):
 
     with pytest.raises(ImportError, match=r"pr-agent\[github\]"):
         registry["github"]
+
+
+def test_provider_context_error_keeps_optional_dependency_install_hint(monkeypatch):
+    registry = git_providers._LazyGitProviderRegistry(
+        {"gitlab": ("pr_agent.git_providers.gitlab_provider", "GitLabProvider")}
+    )
+
+    def missing_dependency(_module_name):
+        raise ModuleNotFoundError("No module named 'gitlab'", name="gitlab")
+
+    class Settings:
+        config = type("Config", (), {"git_provider": "gitlab"})()
+
+        @staticmethod
+        def get(_key, default=None):
+            return default
+
+    monkeypatch.setattr(git_providers, "import_module", missing_dependency)
+    monkeypatch.setattr(git_providers, "_GIT_PROVIDERS", registry)
+    monkeypatch.setattr(git_providers, "get_settings", lambda: Settings())
+
+    with pytest.raises(ValueError, match=r"pr-agent\[gitlab\]") as exc_info:
+        git_providers.get_git_provider_with_context(
+            "https://gitlab.com/org/repo/-/merge_requests/1"
+        )
+
+    assert "Failed to get git provider for https://gitlab.com/org/repo/-/merge_requests/1" in str(exc_info.value)
+    assert exc_info.value.__cause__ is not None
