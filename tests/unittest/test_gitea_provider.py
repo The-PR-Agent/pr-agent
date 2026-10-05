@@ -8,6 +8,7 @@ import pytest
 from giteapy.rest import ApiException
 from starlette_context import context, request_cycle_context
 
+from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider, IncompleteGiteaPullRequestFilesError
@@ -1735,3 +1736,135 @@ def test_remove_initial_comment_continues_after_a_failing_comment():
     assert deleted == [1, 2, 3]
     # The comment that failed to delete is kept so a later retry can clean it up.
     assert [c["comment_id"] for c in provider.comments_list] == [1]
+
+
+class TestGiteaAddedFileBaseFetch:
+    """Skip the base-content fetch for added files, which cannot exist at base_sha.
+
+    Fetching one there costs a request per added file and logs an error from
+    RepoApi.get_file_content. GithubProvider.get_diff_files() already guards this case
+    with `if avoid_load or file.status == "added"`.
+    """
+
+    GITEA_SETTINGS = {
+        "GITEA.URL": "https://gitea.example.com",
+        "GITEA.PERSONAL_ACCESS_TOKEN": "test-token",
+        "GITEA.REPO_SETTING": None,
+        "GITEA.SKIP_SSL_VERIFICATION": False,
+        "GITEA.SSL_CA_CERT": None,
+    }
+
+    def _provider(self, files, mock_get_settings, mock_repo_api_cls):
+        settings = MagicMock()
+        settings.get.side_effect = lambda k, d=None: self.GITEA_SETTINGS.get(k, d)
+        mock_get_settings.return_value = settings
+
+        repo_api = mock_repo_api_cls.return_value
+        repo_api.get_pull_request.return_value = SimpleNamespace(
+            head=SimpleNamespace(sha="head-sha"),
+            base=SimpleNamespace(sha="base-sha", ref="main"),
+        )
+        repo_api.get_change_file_pull_request.return_value = files
+        repo_api.get_file_content.return_value = "file content"
+        repo_api.get_pr_commits.return_value = [{"sha": "head-sha"}]
+        repo_api.get_pull_request_diff.return_value = "".join(
+            f"diff --git a/{f['filename']} b/{f['filename']}\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n"
+            for f in files
+        )
+
+        provider = GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+        provider.diff_files = None
+        return provider, repo_api
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_added_file_does_not_fetch_base_content(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [
+            {"filename": "added.py", "additions": 3, "deletions": 0, "status": "added"},
+            {"filename": "changed.py", "additions": 1, "deletions": 1, "status": "modified"},
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+
+        diff_files = provider.get_diff_files()
+
+        # Only the modified file is read at the base revision; the added one is skipped.
+        base_reads = [
+            call.kwargs["filepath"]
+            for call in repo_api.get_file_content.call_args_list
+            if call.kwargs.get("commit_sha") == "base-sha"
+        ]
+        assert base_reads == ["changed.py"]
+        assert [f.filename for f in diff_files] == ["added.py", "changed.py"]
+        assert diff_files[0].base_file == ""
+        assert diff_files[1].base_file == "file content"
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_added_file_edit_type_is_unchanged(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [{"filename": "added.py", "additions": 3, "deletions": 0, "status": "added"}]
+        provider, _ = self._provider(files, mock_get_settings, mock_repo_api_cls)
+
+        diff_files = provider.get_diff_files()
+
+        assert diff_files[0].edit_type == EDIT_TYPE.ADDED
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_only_added_files_skip_the_base_fetch(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        """The skip set is exactly {added}.
+
+        deleted and renamed files are left fetching, matching GithubProvider. A rename
+        still resolves to "" today because the new path is absent at base_sha, and
+        fetching the pre-rename path is a separate gap; this test deliberately does not
+        assert on that content so it cannot block that follow-up.
+        """
+        files = [
+            {"filename": "gone.py", "additions": 0, "deletions": 3, "status": "deleted"},
+            {"filename": "renamed.py", "additions": 1, "deletions": 1, "status": "renamed"},
+            {"filename": "changed.py", "additions": 1, "deletions": 1, "status": "modified"},
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+
+        diff_files = provider.get_diff_files()
+
+        base_reads = sorted(
+            call.kwargs["filepath"]
+            for call in repo_api.get_file_content.call_args_list
+            if call.kwargs.get("commit_sha") == "base-sha"
+        )
+        assert base_reads == ["changed.py", "gone.py", "renamed.py"]
+        assert [f.edit_type for f in diff_files] == [
+            EDIT_TYPE.DELETED, EDIT_TYPE.RENAMED, EDIT_TYPE.MODIFIED,
+        ]
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_file_without_status_still_fetches_base_content(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        # file.get("status", "") defaults to "", which is not in the skip set.
+        files = [{"filename": "mystery.py", "additions": 1, "deletions": 1}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+
+        diff_files = provider.get_diff_files()
+
+        base_reads = [
+            call.kwargs["filepath"]
+            for call in repo_api.get_file_content.call_args_list
+            if call.kwargs.get("commit_sha") == "base-sha"
+        ]
+        assert base_reads == ["mystery.py"]
+        assert diff_files[0].edit_type == EDIT_TYPE.UNKNOWN

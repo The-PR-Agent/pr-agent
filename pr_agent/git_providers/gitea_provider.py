@@ -605,18 +605,21 @@ class GiteaProvider(GitProvider):
                 self.__add_file_content(filename)
                 head_file = self.file_contents.get(filename,"")
 
+            status = file.get("status","")
+
             if self.incremental.is_incremental and self.unreviewed_files_map:
                 base_file = self._get_file_content_from_latest_commit(filename)
                 self.unreviewed_files_map[filename] = patch
             else:
-                if avoid_load:
+                # An added file cannot exist at base_sha, so fetching it there only costs a
+                # request and logs an error. Matches GithubProvider.get_diff_files().
+                if avoid_load or status == 'added':
                     base_file = ""
                 else:
                     base_file = self._get_file_content_from_base(filename)
 
             num_plus_lines = file.get("additions",0)
             num_minus_lines = file.get("deletions",0)
-            status = file.get("status","")
 
             if status == 'added':
                 edit_type = EDIT_TYPE.ADDED
