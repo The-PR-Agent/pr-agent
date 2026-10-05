@@ -16,14 +16,9 @@ To print all the available configurations as a comment on your PR, you can use t
 
 <img src="/img/possible_config1.png" alt="possible_config1" width="512" />
 
-To view the **actual** configurations used for a specific tool, after all the user settings are applied, you can add for each tool a `--config.output_relevant_configurations=true` suffix.
-For example:
-
-```
-/improve --config.output_relevant_configurations=true
-```
-
-Will output an additional field showing the actual configurations used for the `improve` tool.
+To view the **actual** configurations used for a specific tool after all user settings are applied,
+an authorized operator can set `config.output_relevant_configurations=true` in `.pr_agent.toml`.
+Comment-supplied arguments cannot enable this output because it may disclose host-controlled settings.
 
 <img src="/img/possible_config2.png" alt="possible_config2" width="512" />
 
