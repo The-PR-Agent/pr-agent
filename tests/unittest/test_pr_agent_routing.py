@@ -45,7 +45,8 @@ async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypat
     }.get(key, default)
     monkeypatch.setattr(gitea_module, "get_settings", lambda: settings)
     transport = Mock()
-    transport.call_api.side_effect = ApiException(status=502, reason="private/repo secret failure")
+    call_api = transport.call_api
+    call_api.side_effect = ApiException(status=502, reason="private/repo secret failure")
     monkeypatch.setattr(gitea_module.giteapy, "ApiClient", lambda _config: transport)
     monkeypatch.setattr(
         gitea_module.RepoApi, "get_pull_request", lambda *_args, **_kwargs: SimpleNamespace(
@@ -89,7 +90,7 @@ async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypat
     assert handled is False
     model_factory.assert_not_called()
     assert len(providers) == (1 if outcome == "disabled" else 2)
-    assert transport.call_api.call_count == 1
+    assert call_api.call_count == 1
     if outcome == "disabled":
         assert published == []
     else:

@@ -62,10 +62,13 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # would otherwise repoint that fetch to an arbitrary internal URL (SSRF), exfiltrate the
     # auth header, and override secrets/model routing/output sinks wholesale. CLI arguments
     # for it are already blocked; the repo-settings entry point now matches.
+    # Provider request timeouts stay host-controlled so repository settings cannot lengthen
+    # worker occupancy across SDK retries. Command arguments enforce this same boundary.
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
         "global_settings_repo",
+        "http_request_timeout",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
     }),

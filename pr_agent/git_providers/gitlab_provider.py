@@ -50,6 +50,7 @@ from .git_provider import (
     get_config_branch,
     redact_credentials,
 )
+from .request_timeout import get_http_request_timeout, refresh_session_request_timeout
 
 
 class DiffNotFoundError(Exception):
@@ -275,14 +276,17 @@ class GitLabProvider(GitProvider):
                 self.gl = gitlab.Gitlab(
                     url=gitlab_url,
                     oauth_token=gitlab_access_token,
-                    ssl_verify=ssl_verify
+                    ssl_verify=ssl_verify,
+                    timeout=get_http_request_timeout(),
                 )
             else:  # private_token
                 self.gl = gitlab.Gitlab(
                     url=gitlab_url,
                     private_token=gitlab_access_token,
-                    ssl_verify=ssl_verify
+                    ssl_verify=ssl_verify,
+                    timeout=get_http_request_timeout(),
                 )
+            refresh_session_request_timeout(self.gl)
         except (GitlabError, RequestException, ValueError) as e:
             get_logger().error(f"Failed to create GitLab instance: {e}")
             raise ValueError(f"Unable to authenticate with GitLab: {e}")

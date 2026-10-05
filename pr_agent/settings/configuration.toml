@@ -30,6 +30,7 @@ extra_config_url="" # optional URL or path to an additional .pr_agent.toml merge
 disable_auto_feedback = false
 enable_auto_approval = false # when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out
 ai_timeout=120 # 2 minutes
+http_request_timeout=60 # host-only connect/read inactivity seconds for GitLab/Gitea and direct Bitbucket/Gerrit HTTP attempts; capped at 600
 retry_same_model_on_timeout = true # when false, a timed-out call is not retried on the same model and moves on to fallback_models
 retry_same_model_on_length = false # when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models
 # num_retries = 0 # per-call retries inside the completion client itself; unset keeps the client's default. These multiply the handler's own retry attempts

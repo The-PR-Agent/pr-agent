@@ -21,6 +21,7 @@ from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.local_git_provider import PullRequestMimic
+from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
 
 
@@ -205,7 +206,8 @@ def upload_patch(patch, path):
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {patch_server_token}",
-        }
+        },
+        timeout=get_http_request_timeout(),
     )
     response.raise_for_status()
     patch_server_endpoint = patch_server_endpoint.rstrip("/")
