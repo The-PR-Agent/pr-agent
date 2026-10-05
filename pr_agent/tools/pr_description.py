@@ -320,6 +320,12 @@ class PRDescription:
         self.description_total_chunk_count = 0
         self.description_failed_chunk_count = 0
         self.description_failed_files = []
+        previous_progress = getattr(self, "_chunk_progress", None)
+        if previous_progress is not None:
+            # A fallback-model retry starts over, whatever path it takes next; restore the
+            # placeholder so a failing attempt's counts are not shown until new ones exist.
+            await previous_progress.reset_to_base()
+        self._chunk_progress = None
         if get_settings().pr_description.use_description_markers and 'pr_agent:' not in self.user_description:
             get_logger().info(
                 "Markers were enabled, but user description does not contain "
@@ -414,13 +420,7 @@ class PRDescription:
             chunk_pairs = list(zip(patches_compressed_list, files_in_patches_list, strict=True))
             self.description_total_chunk_count = len(chunk_pairs)
             results = [None] * len(chunk_pairs)
-            progress = self._chunk_progress_reporter(total=len(chunk_pairs))
-            if progress is None:
-                previous = getattr(self, "_chunk_progress", None)
-                if previous is not None:
-                    # A fallback-model retry starts over; drop the previous attempt's counts.
-                    await previous.reset_to_base()
-            self._chunk_progress = progress
+            progress = self._chunk_progress = self._chunk_progress_reporter(total=len(chunk_pairs))
             if not get_settings().pr_description.get("async_ai_calls", True):
                 for i, (patches, _files_in_patch) in enumerate(chunk_pairs):  # sync calls
                     if not patches:
@@ -671,7 +671,9 @@ class PRDescription:
         """
         comment = getattr(self, "progress_response", None)
         settings = get_settings()
-        if comment is None or not settings.config.get("publish_output_progress", True):
+        # A single chunk has nothing to report: one "1 of 1" edit is a provider
+        # write with no information, so skip the reporter like /improve does.
+        if comment is None or total < 2 or not settings.config.get("publish_output_progress", True):
             return None
         return ChunkProgressReporter.create(
             self.git_provider,

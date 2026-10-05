@@ -573,7 +573,7 @@ async def _run_chunked_describe(tool, chunk_count=2, **overrides):
                 [],
                 [],
                 {},
-                [["a.py"], ["b.py"]],
+                [[f"file-{index}.py"] for index in range(chunk_count)],
             ),
         ),
         patch(
@@ -657,6 +657,35 @@ async def test_describe_progress_reports_sync_chunk_settlement(published_describ
         "Preparing PR description... analyzed 1 of 2 chunks",
         "Preparing PR description... analyzed 2 of 2 chunks",
     ]
+
+
+@pytest.mark.asyncio
+async def test_describe_fallback_attempt_restores_the_placeholder(published_describe):
+    provider, edits = _review_progress_editor()
+    provider.get_filtered_diff_file_names.return_value = []
+    error = RuntimeError("model refused")
+    tool = _make_describe_tool(provider, [error, error, _DESCRIBE_CHUNK, _DESCRIBE_CHUNK])
+
+    with pytest.raises(RuntimeError):
+        await _run_chunked_describe(tool)
+    await _run_chunked_describe(tool)
+
+    assert edits[3:] == [
+        DESCRIBE_PROGRESS_COMMENT,
+        "Preparing PR description... analyzed 1 of 2 chunks",
+        "Preparing PR description... analyzed 2 of 2 chunks",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_describe_progress_is_skipped_for_a_single_chunk(published_describe):
+    provider, edits = _review_progress_editor()
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_describe_tool(provider, [_DESCRIBE_CHUNK])
+
+    await _run_chunked_describe(tool, chunk_count=1)
+
+    assert edits == []
 
 
 @pytest.mark.asyncio
