@@ -49,9 +49,12 @@ sidebar_position: 8
     GITEA__URL=https://gitea.com # Or self host
     GITEA__WEB_URL=https://git.example.com # Optional: user-facing URL for links published in comments (see below)
     OPENAI__KEY=<your_openai_api_key>
-    GITEA__SKIP_SSL_VERIFICATION=false # or true
+    GITEA__SKIP_SSL_VERIFICATION=false
     GITEA__SSL_CA_CERT=/path/to/cacert.pem
     ```
+
+    > **Note:** SSL verification can be disabled by setting `GITEA__SKIP_SSL_VERIFICATION=true`, although this is not
+    > recommended.
 
     Links published in comments are built from `GITEA__WEB_URL` when set, else from `GITEA__URL`
     when it differs from the shipped default (`https://gitea.com`), else derived from the PR's

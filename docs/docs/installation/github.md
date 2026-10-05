@@ -23,8 +23,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      contents: write
-      checks: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -78,7 +76,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -119,7 +116,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -145,7 +141,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -176,7 +171,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -206,7 +200,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      contents: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -485,7 +478,6 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-      contents: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -556,14 +548,12 @@ If you encounter rate limiting:
   permissions:
     issues: write
     pull-requests: write
-    contents: write
   ```
-  If you cannot grant `contents: write`, set `config.restricted_mode = true` in your configuration. In that case you only need:
-  ```yaml
-  permissions:
-    issues: write
-    pull-requests: write
-  ```
+  The default tools need no additional scopes. Add `checks: write` only when
+  `github.publish_as_check_run` is enabled. Features that push repository contents, such as
+  `pr_update_changelog.push_changelog_changes`, require `contents: write`. Thread resolution uses
+  the existing pull-request permission. If you omit `contents: write`, enable
+  `config.restricted_mode` so operations that need it are skipped or fall back safely.
   See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
 
 **Error: "PR-Agent command was not run" for incomplete GitHub files**
