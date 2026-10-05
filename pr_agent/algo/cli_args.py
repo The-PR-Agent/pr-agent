@@ -29,7 +29,7 @@ class CliArgs:
         if allowed_keys is not None and key not in allowed_keys:
             return f'.{section}.{key}'
         host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
-        if key.split('.', 1)[0] in host_only_keys:
+        if any(part in host_only_keys for part in key.split('.')):
             return f'.{section}.{key}'
         cli_host_only_keys = CLI_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
         if key.split('.', 1)[0] in cli_host_only_keys:

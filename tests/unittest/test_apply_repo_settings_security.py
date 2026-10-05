@@ -453,6 +453,14 @@ def test_provider_connection_keys_are_host_only_for_repo_and_cli(section, key):
     assert CliArgs.validate_user_args([f"--{section}.{key}=untrusted"])[0] is False
 
 
+@pytest.mark.parametrize(
+    "arg",
+    ["--gerrit.connection.secret=untrusted", '--qdrant={replicas: [{base_url: "https://evil.example"}]}'],
+)
+def test_nested_provider_connection_keys_are_host_only_for_cli(arg):
+    assert CliArgs.validate_user_args([arg])[0] is False
+
+
 def test_progress_gif_url_remains_repo_and_cli_configurable():
     assert "progress_gif_url" not in REPO_HOST_ONLY_KEYS_BY_SECTION.get("config", frozenset())
     assert CliArgs.validate_user_args(["--config.progress_gif_url=https://example.com/progress.gif"])[0] is True
