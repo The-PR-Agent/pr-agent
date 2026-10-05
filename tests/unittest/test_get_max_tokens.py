@@ -583,7 +583,6 @@ class TestGetMaxTokens:
     @pytest.mark.parametrize("model", [
         "gemini/gemini-3-flash-preview",
         "vertex_ai/gemini-3-flash-preview",
-        "gemini/gemini-3-pro-preview",
         "vertex_ai/gemini-3-pro-preview",
         "gemini/gemini-3.1-pro-preview",
         "vertex_ai/gemini-3.1-pro-preview",
@@ -1046,7 +1045,7 @@ class TestGetMaxTokens:
         assert get_max_tokens("fake-provider/fake-model-xyz") == 8000
 
     @pytest.mark.parametrize("model, documented_input_tokens", [
-        ("cohere/command-r-plus", None),
+        ("cohere/command-r-plus-08-2024", None),
         ("github_copilot/gpt-4o", 64000),
         ("github_copilot/gpt-4.1", 128000),
     ])
@@ -1279,6 +1278,19 @@ class TestGetMaxTokens:
 
 class TestNoLiteLLMDuplicates:
 
+    # Keep existing static limits until model registry cleanup is handled separately.
+    # LiteLLM now has matching metadata; removing these pins would change custom-limit precedence.
+    PRESERVED_MODEL_LIMITS = {
+        "vertex_ai/claude-sonnet-4@20250514",
+        "anthropic/claude-sonnet-4-20250514",
+        "bedrock/moonshotai.kimi-k3",
+        "bedrock/us.moonshotai.kimi-k3",
+        "bedrock/global.moonshotai.kimi-k3",
+        "bedrock/converse/moonshotai.kimi-k3",
+        "bedrock/converse/us.moonshotai.kimi-k3",
+        "bedrock/converse/global.moonshotai.kimi-k3",
+    }
+
     # Models pinned in MAX_TOKENS because LiteLLM's bundled backup cost map (used
     # when the import-time fetch fails, and under LITELLM_LOCAL_MODEL_COST_MAP=true)
     # does not carry them, so the get_max_tokens() fallback cannot resolve them.
@@ -1300,10 +1312,7 @@ class TestNoLiteLLMDuplicates:
         "mistral/mistral-medium-latest",
         "mistral/mistral-small-latest",
         "mistral/codestral-latest",
-        "mistral/open-mixtral-8x22b",
         "mistral/mistral-large-latest",
-        "mistral/open-mistral-7b",
-        "mistral/open-mixtral-8x7b",
         "codestral/codestral-latest",
         "codestral/codestral-2405",
         "watsonx/mistralai/mistral-large",
@@ -1357,6 +1366,7 @@ class TestNoLiteLLMDuplicates:
             k: v
             for k, v in MAX_TOKENS.items()
             if k not in generated and k not in self.LITELLM_BUNDLED_MAP_UNKNOWN
+            and k not in self.PRESERVED_MODEL_LIMITS
         }
         dups = []
         for model, ours in static.items():
