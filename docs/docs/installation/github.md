@@ -736,6 +736,9 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
                   name: settings-volume
     ```
 
+    > Service images run as UID/GID `10001`: mounted secrets must be readable, and mounted data paths writable, by that user.
+    > Home-relative mounts belong under `/home/pragent`.
+
     > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI.KEY` and `GITHUB.USER_TOKEN`.
 
 6) Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
