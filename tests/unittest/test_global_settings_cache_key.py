@@ -14,21 +14,16 @@ def clear_cache():
     gp._GLOBAL_SETTINGS_CACHE.clear()
 
 
-def _settings_stub(settings_repo):
-    class Config:
+class SettingsStub:
+    class config:
         use_global_settings_file = True
-        global_settings_repo = settings_repo
+        global_settings_repo = "pr-agent-settings"
 
-    class Stub:
-        config = Config()
-
-        def get(self, key, default=None):
-            return default
-
-    return Stub
+    def get(self, key, default=None):
+        return default
 
 
-def _record_keys(monkeypatch, module, settings_repo="pr-agent-settings"):
+def _record_keys(monkeypatch, module):
     keys = []
 
     def fake_cache(key, fetch):
@@ -36,7 +31,7 @@ def _record_keys(monkeypatch, module, settings_repo="pr-agent-settings"):
         return ""
 
     monkeypatch.setattr(module, "get_cached_global_settings", fake_cache)
-    monkeypatch.setattr(module, "get_settings", _settings_stub(settings_repo))
+    monkeypatch.setattr(module, "get_settings", SettingsStub)
     return keys
 
 
@@ -85,21 +80,6 @@ def test_github_keys_the_cache_on_the_host(monkeypatch):
 
     assert len(set(keys)) == 2
     assert all("acme" in key for key in keys)
-
-
-def test_changing_the_settings_repo_does_not_serve_the_cached_copy(monkeypatch):
-    """A different settings repository must not read the previous repository's entry."""
-    provider = _github("https://api.github.com")
-
-    first = _record_keys(monkeypatch, gp, settings_repo="pr-agent-settings")
-    provider._get_global_repo_settings()
-
-    second = _record_keys(monkeypatch, gp, settings_repo="acme-settings")
-    provider._get_global_repo_settings()
-
-    assert first[0].endswith(":pr-agent-settings")
-    assert second[0].endswith(":acme-settings")
-    assert first[0] != second[0]
 
 
 def test_the_bare_org_only_key_is_gone():

@@ -763,7 +763,7 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 
 > **Note:** When running PR-Agent from GitHub app, the default configuration file (configuration.toml) will be loaded.
 > However, you can override the default tool parameters by uploading a local configuration file `.pr_agent.toml`
-> To use organization-level global configuration, set `global_settings_repo` in your configuration, create that repository (e.g. `<organization>/pr-agent-settings`) with a `.pr_agent.toml` file, and install the GitHub App on that repository too. Nothing is adopted by name alone: without `global_settings_repo` no namespace-level settings file is read.
+> To use organization-level global configuration, set `config.global_settings_repo = "pr-agent-settings"`, create `<organization>/pr-agent-settings` with a `.pr_agent.toml` file, and install the GitHub App on that repository too.
 > The app needs read access to the settings repository as well as the pull request repositories. This applies to both GitHub.com and GitHub Enterprise Server.
 > For more information please check out the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-app)
 ---

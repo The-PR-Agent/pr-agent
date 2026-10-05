@@ -80,6 +80,23 @@ def _global_settings_repo(repo):
         settings.config.global_settings_repo = original
 
 
+@pytest.mark.parametrize("configured, expected", [("", ""), ("acme-settings", b"[pr_reviewer]\n")])
+def test_global_settings_read_only_the_configured_repo(configured, expected):
+    provider = _provider()
+    provider.github_client.repos = {
+        "org/pr-agent-settings": FakeRepo({".pr_agent.toml": b"[config]\n"}),
+        "org/acme-settings": FakeRepo({".pr_agent.toml": b"[pr_reviewer]\n"}),
+    }
+    settings = get_settings()
+    original = settings.config.use_global_settings_file
+    settings.config.use_global_settings_file = True
+    try:
+        with _global_settings_repo(configured):
+            assert provider._get_global_repo_settings() == expected
+    finally:
+        settings.config.use_global_settings_file = original
+
+
 def test_get_global_repo_settings_repo_less_provider_does_not_crash():
     # A provider built via __new__ (no repo/github_client) must not raise from _get_global_repo_settings.
     provider = GithubProvider.__new__(GithubProvider)
