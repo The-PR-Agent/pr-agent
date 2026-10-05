@@ -26,28 +26,17 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
 }
 
 _CONNECTION_KEY_SUFFIXES = ("url", "base_url", "endpoint", "org", "key", "token", "secret")
+_REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION = {
+    "config": frozenset({"progress_gif_url"}),
+    "gitea": frozenset({"web_url"}),
+}
+_REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"language_extension_map_org"})
 
 
-class _HostOnlyKeys(frozenset):
-    def __contains__(self, key):
-        normalized = key.lower() if isinstance(key, str) else key
-        return super().__contains__(normalized) or (
-            isinstance(normalized, str)
-            and normalized.endswith(_CONNECTION_KEY_SUFFIXES)
-            and normalized != "progress_gif_url"
-        )
-
-
-class _HostOnlyKeysBySection(dict):
-    def get(self, section, default=None):
-        keys = super().get(section, default)
-        return _HostOnlyKeys(keys) if keys is not None else None
-
-
-# Individual settings in otherwise repository-configurable sections may also be
-# host-only. Generic provider connection locations and credentials are protected
-# in every section, while the mapping below lists section-specific controls.
-REPO_HOST_ONLY_KEYS_BY_SECTION = _HostOnlyKeysBySection({
+# Keep individual settings in otherwise repository-configurable sections host-only.
+# Protect generic provider connection locations and credentials in every section,
+# using the exceptions above only for documented repository preferences.
+REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "aws": frozenset({"aws_access_key_id", "aws_region_name"}),
     # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
@@ -87,7 +76,21 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = _HostOnlyKeysBySection({
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
     }),
-})
+}
+
+
+def is_repo_host_only_key(section: str, key: str) -> bool:
+    """Return whether a repository must not override a setting."""
+    section = section.lower()
+    key = key.lower()
+    if key in REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset()):
+        return True
+    return (
+        section not in _REPO_OVERRIDABLE_SUFFIX_SECTIONS
+        and key not in _REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION.get(section, frozenset())
+        and key.endswith(_CONNECTION_KEY_SUFFIXES)
+    )
+
 
 # Keys that repositories may still configure from their own default-branch settings but that
 # comment/CLI *arguments* must never override. repo_context_files selects which repository and

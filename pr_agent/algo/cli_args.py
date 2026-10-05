@@ -5,6 +5,7 @@ from pr_agent.config_security import (
     CLI_HOST_ONLY_KEYS_BY_SECTION,
     REPO_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
+    is_repo_host_only_key,
 )
 
 _MAPPING_MAX_DEPTH = 32
@@ -28,8 +29,7 @@ class CliArgs:
         allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section)
         if allowed_keys is not None and key not in allowed_keys:
             return f'.{section}.{key}'
-        host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
-        if any(part in host_only_keys for part in key.split('.')):
+        if any(is_repo_host_only_key(section, part) for part in key.split('.')):
             return f'.{section}.{key}'
         cli_host_only_keys = CLI_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
         if key.split('.', 1)[0] in cli_host_only_keys:

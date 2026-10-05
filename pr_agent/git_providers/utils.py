@@ -17,9 +17,9 @@ from starlette_context import context
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
-    REPO_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
     REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS,
+    is_repo_host_only_key,
 )
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
@@ -484,13 +484,12 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
             if not contents:
                 continue
         else:
-            host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section.lower(), frozenset())
-            rejected = [k for k in contents if k.lower() in host_only_keys]
+            rejected = [k for k in contents if is_repo_host_only_key(section, k)]
             if rejected:
                 get_logger().warning(
                     f"Ignoring host-only key(s) {rejected} in section [{section}] from repo settings"
                 )
-                contents = {k: v for k, v in contents.items() if k.lower() not in host_only_keys}
+                contents = {k: v for k, v in contents.items() if not is_repo_host_only_key(section, k)}
                 if not contents:
                     continue
         section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))

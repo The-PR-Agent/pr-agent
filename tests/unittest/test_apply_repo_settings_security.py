@@ -21,7 +21,7 @@ import pytest
 
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.config_loader import get_settings
-from pr_agent.config_security import REPO_HOST_ONLY_KEYS_BY_SECTION
+from pr_agent.config_security import is_repo_host_only_key
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.utils import apply_repo_settings
 
@@ -68,6 +68,8 @@ SNAPSHOT_SECTIONS = (
     "MOONSHOT",
     "DATABRICKS",
     "OPENROUTER",
+    "GITEA",
+    "LANGUAGE_EXTENSION_MAP_ORG",
 )
 
 
@@ -449,7 +451,7 @@ def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypat
     ],
 )
 def test_provider_connection_keys_are_host_only_for_repo_and_cli(section, key):
-    assert key in REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
+    assert is_repo_host_only_key(section, key)
     assert CliArgs.validate_user_args([f"--{section}.{key}=untrusted"])[0] is False
 
 
@@ -462,5 +464,31 @@ def test_nested_provider_connection_keys_are_host_only_for_cli(arg):
 
 
 def test_progress_gif_url_remains_repo_and_cli_configurable():
-    assert "progress_gif_url" not in REPO_HOST_ONLY_KEYS_BY_SECTION.get("config", frozenset())
+    assert not is_repo_host_only_key("config", "progress_gif_url")
     assert CliArgs.validate_user_args(["--config.progress_gif_url=https://example.com/progress.gif"])[0] is True
+
+
+def test_repo_settings_apply_section_specific_safe_suffix_keys(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b"""
+[gitea]
+url = "https://repo-api.example"
+web_url = "https://repo-public.example"
+[language_extension_map_org]
+AutoHotkey = [".repo-ahk"]
+Monkey = [".repo-monkey"]
+Org = [".repo-org"]
+""")
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("gitea.url", "https://host-api.example")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert _section(settings, "gitea").get("url") == "https://host-api.example"
+    assert _section(settings, "gitea").get("web_url") == "https://repo-public.example"
+    language_map = _section(settings, "language_extension_map_org")
+    assert {key: language_map.get(key) for key in ("AutoHotkey", "Monkey", "Org")} == {
+        "AutoHotkey": [".repo-ahk"], "Monkey": [".repo-monkey"], "Org": [".repo-org"]
+    }
+    assert CliArgs.validate_user_args(["--gitea.web_url=https://comment.example"])[0] is False

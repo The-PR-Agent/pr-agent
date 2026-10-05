@@ -88,7 +88,7 @@ For example, if you want to edit the `review` tool configurations, you can run:
 /review --pr_reviewer.extra_instructions="..." --pr_reviewer.require_score_review=false
 ```
 
-Any configuration value in [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) file can be similarly edited. Comment `/config` to see the list of available configurations.
+Most values in the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) can be similarly edited. Host-controlled settings, including provider connection locations and credentials, cannot be changed through PR comments. Comment `/config` to see the list of available configurations.
 
 ## PR-Agent Automatic Feedback
 
