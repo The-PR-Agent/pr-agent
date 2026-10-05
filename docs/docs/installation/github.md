@@ -21,6 +21,7 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     name: Run pr agent on every pull request, respond to user comments
@@ -74,6 +75,7 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' && (github.event_name == 'pull_request_target' || github.event.issue.pull_request) }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     steps:
@@ -114,6 +116,7 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     steps:
@@ -139,6 +142,7 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     steps:
@@ -169,6 +173,7 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     steps:
@@ -198,6 +203,7 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     name: Run pr agent on every pull request, respond to user comments
@@ -476,6 +482,7 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     name: Run pr agent on every pull request, respond to user comments
@@ -546,6 +553,7 @@ If you encounter rate limiting:
 - **Solution**: Ensure your workflow has the correct permissions set:
   ```yaml
   permissions:
+    contents: read
     issues: write
     pull-requests: write
   ```
