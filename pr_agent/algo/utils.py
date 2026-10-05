@@ -1353,7 +1353,7 @@ def filter_generated_labels(labels: List[str]) -> List[str]:
         custom_labels = get_settings().get("custom_labels", {}) or _DEFAULT_CUSTOM_LABELS
         names.extend(str(label) for label in custom_labels)
     allowed = {name.lower() for name in names}
-    # Prompts ask for enum keys (e.g. bug_fix), not just display names.
+    # Resolve prompt enum keys (e.g. bug_fix) to allowed display names.
     aliases = {name.lower().replace(" ", "_"): name for name in names}
     accepted = []
     dropped = []

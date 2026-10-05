@@ -91,7 +91,7 @@ class PRGenerateLabels:
 
             pr_labels = self._prepare_labels()
             if not pr_labels and self.data and self.data.get("labels"):
-                # Rejected model output is not an intentional request to clear labels.
+                # Preserve existing labels when all generated values are rejected.
                 get_logger().warning("Skipping label publish: all generated labels were rejected")
                 return ""
 
