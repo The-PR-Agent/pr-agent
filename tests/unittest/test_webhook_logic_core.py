@@ -141,7 +141,7 @@ async def _post_gitlab_webhook(app, data):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         return await client.post(
-            "/webhook", headers={"X-Gitlab-Token": "secret-id"}, json=data
+            "/webhook", headers={"X-Gitlab-Token": "secret-id:webhook-token"}, json=data
         )
 
 
@@ -160,7 +160,7 @@ async def _record_gitlab_note_request(gitlab_webhook_module, monkeypatch, note, 
     monkeypatch.setattr(
         gitlab_webhook_module,
         "get_fork_safe_secret_provider",
-        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token"}'),
+        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token", "webhook_token": "webhook-token"}'),
     )
     data = _gitlab_payload(note=note, discussion_id="discussion-42", id=99, type=note_type)
     data.update({"object_kind": "note", "event_type": "note",
@@ -682,7 +682,7 @@ async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, even
     monkeypatch.setattr(module, "apply_repo_settings", apply_repo_settings)
     monkeypatch.setattr(module, "PRAgent", lambda: agent)
     secret_provider = SimpleNamespace(
-        get_secret=lambda _: '{"gitlab_token": "token"}'
+        get_secret=lambda _: '{"gitlab_token": "token", "webhook_token": "webhook-token"}'
     )
     monkeypatch.setattr(
         module, "get_fork_safe_secret_provider", lambda: secret_provider
@@ -988,7 +988,7 @@ async def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_modu
     monkeypatch.setattr(
         gitlab_webhook_module,
         "get_fork_safe_secret_provider",
-        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token"}'),
+        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token", "webhook_token": "webhook-token"}'),
     )
     monkeypatch.setattr(
         gitlab_webhook_module,
@@ -1230,7 +1230,7 @@ async def _run_gitlab_update(module, monkeypatch, *, oldrev, draft_ready, handle
     monkeypatch.setattr(
         module,
         "get_fork_safe_secret_provider",
-        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token"}'),
+        lambda: SimpleNamespace(get_secret=lambda _: '{"gitlab_token": "token", "webhook_token": "webhook-token"}'),
     )
 
     object_attributes = {
