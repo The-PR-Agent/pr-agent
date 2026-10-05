@@ -80,8 +80,20 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
-    "config": frozenset({"repo_context_files"}),
+    "config": frozenset({
+        "branch_issue_regex",
+        "fallback_models",
+        "num_retries",
+        "output_relevant_configurations",
+        "repo_context_files",
+    }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
+    "ignore": frozenset({"regex"}),
+    "pr_code_suggestions": frozenset({"parallel_calls"}),
+    "pr_questions": frozenset({"resolve_threads"}),
+    "pr_reviewer": frozenset({"max_number_of_calls"}),
+    "pr_similar_issue": frozenset({"force_update_dataset"}),
+    "pr_update_changelog": frozenset({"push_changelog_changes"}),
 }
 
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is
