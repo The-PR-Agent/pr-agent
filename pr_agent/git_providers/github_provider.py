@@ -1533,8 +1533,9 @@ class GithubProvider(GitProvider):
             requester.auth.authentication(headers)
         if requester.api_version:
             headers["X-GitHub-Api-Version"] = requester.api_version
+        # Preserve SDK authentication instead of letting Requests replace it from .netrc.
         response = requests.get(issue_url, headers=headers, timeout=options["timeout"],
-                                verify=options["verify"], allow_redirects=False)
+                                verify=options["verify"], allow_redirects=False, auth=lambda request: request)
         try:
             if response.status_code != 200:
                 raise GithubException(response.status_code, {"message": "GitHub ticket request did not return 200"},

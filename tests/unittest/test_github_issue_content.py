@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
+import requests
 from github import Auth, Github, GithubException
 from requests.exceptions import Timeout
 
@@ -49,7 +50,7 @@ def test_issue_uses_configured_api_and_auth_without_lazy_requests(provider, monk
     assert [label.name for label in issue.labels] == ["bug"]
     assert issue.completed is True
     get.assert_called_once_with(
-        f"{base_url}/repos/org/repo/issues/1", allow_redirects=False, timeout=17, verify="custom-ca.pem",
+        f"{base_url}/repos/org/repo/issues/1", allow_redirects=False, timeout=17, verify="custom-ca.pem", auth=ANY,
         headers={"Accept": "application/vnd.github+json", "User-Agent": "test-agent",
                  "Authorization": "token stub-token", "X-GitHub-Api-Version": "2022-11-28"},
     )
@@ -70,6 +71,20 @@ def test_installation_auth_refreshes_token(provider, monkeypatch):
     provider.get_issue_content(provider.repo_obj, 1)
     assert get.call_args.kwargs["headers"]["Authorization"] == "token installation-token"
     refresh.assert_called_once_with()
+
+
+def test_netrc_cannot_replace_sdk_authentication(provider, monkeypatch):
+    netrc_auth = Mock(return_value=("netrc-user", "netrc-password"))
+    monkeypatch.setattr(requests.sessions, "get_netrc_auth", netrc_auth)
+    send = Mock(return_value=_response(provider))
+    monkeypatch.setattr(requests.Session, "send", send)
+
+    issue = provider.get_issue_content(provider.repo_obj, 1)
+
+    assert issue.number == 1
+    send.assert_called_once()
+    assert send.call_args.args[0].headers["Authorization"] == "token stub-token"
+    netrc_auth.assert_not_called()
 
 
 @pytest.mark.parametrize("status", [301, 302, 307, 308, 403, 404, 429, 500])
