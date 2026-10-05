@@ -1794,6 +1794,8 @@ class GithubProvider(GitProvider):
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
     ) -> Commit:
+        if not self._pr_head_in_base_repo():
+            raise ValueError("Cannot write to a fork pull request")
         repo = self._get_repo()
         if expected_snapshot.exists:
             if not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision:
@@ -1809,9 +1811,7 @@ class GithubProvider(GitProvider):
             try:
                 repo.get_contents(file_path, ref=branch)
             except GithubException as e:
-                if e.status != 404 or not self._pr_head_in_base_repo():
-                    # Keep missing-file writes disabled for bare fork branches: the
-                    # contents API resolves them against the base repository.
+                if e.status != 404:
                     raise
                 # Do not retry the final creation conflict as an update; GitHub
                 # rejects a file created after the preliminary absence check.

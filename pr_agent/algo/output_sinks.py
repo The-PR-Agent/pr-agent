@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Protocol
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import requests
 
@@ -77,6 +77,28 @@ class SlackSink:
         _post_json("slack", url, {"text": text})
 
 
+class TelegramSink:
+    def send(self, record: dict, cfg: dict) -> None:
+        bot_token = str(cfg.get("telegram_bot_token") or "").strip()
+        chat_id = str(cfg.get("telegram_chat_id") or "").strip()
+        missing_keys = [
+            key for key, value in (("telegram_bot_token", bot_token), ("telegram_chat_id", chat_id))
+            if not value
+        ]
+        if missing_keys:
+            get_logger().warning(f"push_outputs: telegram channel missing {', '.join(missing_keys)}")
+            return
+
+        text = record.get("markdown")
+        if text is None:
+            text = json.dumps(record["payload"], ensure_ascii=False)
+        # Keep the host fixed and encode the token as a path component, not a URL.
+        url = f"https://api.telegram.org/bot{quote(bot_token, safe=':')}/sendMessage"
+        # Limit to 4096 UTF-16 code units, dropping an incomplete surrogate pair at the boundary.
+        text = text.encode("utf-16-le", "surrogatepass")[:8192].decode("utf-16-le", "ignore")
+        _post_json("telegram", url, {"chat_id": chat_id, "text": text})
+
+
 # Keep local channels before network channels, regardless of configuration order.
 # Attempt each selected channel once.
 OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
@@ -84,6 +106,7 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
     "file": FileSink,
     "webhook": WebhookSink,
     "slack": SlackSink,
+    "telegram": TelegramSink,
 }
 
 
