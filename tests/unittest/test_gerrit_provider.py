@@ -30,6 +30,25 @@ def test_get_commit_messages_returns_text(tmp_path):
     assert provider.get_commit_messages() == "initial files"
 
 
+def test_get_repo_settings_reads_the_default_branch_not_the_change(tmp_path):
+    repo = _make_repo(tmp_path, [".pr_agent.toml"])
+    repo.git.checkout("--detach")
+    (tmp_path / ".pr_agent.toml").write_text("from the change\n")
+    repo.index.add([".pr_agent.toml"])
+    repo.index.commit("change edits settings")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == b".pr_agent.toml\n"
+
+
+def test_get_repo_settings_is_empty_when_the_default_branch_has_none(tmp_path):
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = _make_repo(tmp_path, ["app.py"]), tmp_path
+
+    assert provider.get_repo_settings() == b""
+
+
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
     repo = _make_repo(tmp_path, ["keep.py", "gone.py"])
     (tmp_path / "gone.py").unlink()
