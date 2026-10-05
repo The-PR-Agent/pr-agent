@@ -14,9 +14,9 @@ inputs:
     default: ''
 runs:
   using: 'docker'
-  # An action commit SHA pins this wrapper, but its github_action image tag rolls.
-  # To pin the runtime image, use docker://pragent/pr-agent@sha256:<digest> as in
-  # SECURITY.md#enhanced-security-with-docker-digest.
+  # Pin this wrapper with an action commit SHA; pin its rolling github_action
+  # runtime image separately with docker://pragent/pr-agent@sha256:<digest>.
+  # Follow SECURITY.md#enhanced-security-with-docker-digest.
   image: 'Dockerfile.github_action_dockerhub'
   env:
     ARTIFACT_PATH: ${{ inputs.artifact_path }}

@@ -19,9 +19,9 @@ RUN uv sync --frozen --no-install-project --no-dev --extra all
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONPATH=/app
 
-# Long-running services use a dedicated identity; runner, CLI and test stages
-# keep their existing mount/install contracts. Give mounted secrets and custom
-# output, analytics or database paths permissions for UID/GID 10001.
+# Use a dedicated identity for long-running services; preserve the runner, CLI
+# and test mount/install contracts. Grant UID/GID 10001 read access to mounted
+# secrets and write access to custom output, analytics and database paths.
 FROM base AS service
 RUN groupadd --gid 10001 pragent && \
     useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin pragent && \
