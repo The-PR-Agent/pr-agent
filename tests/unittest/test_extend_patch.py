@@ -6,8 +6,9 @@ from pr_agent.algo.git_patch_processing import (
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
 )
-from pr_agent.algo.pr_processing import pr_generate_extended_diff
+from pr_agent.algo.pr_processing import get_pr_multi_diffs, pr_generate_extended_diff
 from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
 
@@ -284,3 +285,48 @@ class TestOmittedHunkCount:
                  "@@ -20,3 +20,3 @@\n ctx20\n-old21\n+new21\n ctx22")
         full, _ = extract_hunk_lines_from_patch(patch, "f.py", 13, 13, "right")
         assert "@@ -10,1 +12 @@" not in full
+
+
+class TestExtendedDiffDeletionHandling:
+    def _deleted_file(self):
+        return FilePatchInfo(base_file="one\ntwo\n", head_file="", patch="@@ -1,2 +0,0 @@\n-one\n-two",
+                             filename="gone.py", edit_type=EDIT_TYPE.DELETED)
+
+    def _mixed_file(self):
+        base = "\n".join(["a", "b", "c", "d", "e", "f", "drop", "g"]) + "\n"
+        head = "\n".join(["a", "B", "c", "d", "e", "f", "g"]) + "\n"
+        patch = "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -6,3 +6,2 @@\n f\n-drop\n g"
+        return FilePatchInfo(base_file=base, head_file=head, patch=patch, filename="mixed.py",
+                             edit_type=EDIT_TYPE.MODIFIED)
+
+    def _render(self, deleted_files=None):
+        languages = [{"language": "Python", "files": [self._deleted_file(), self._mixed_file()]}]
+        patches, _, _ = pr_generate_extended_diff(languages, TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+                                                  deleted_files=deleted_files)
+        return "\n".join(patches)
+
+    def test_deletions_dropped_and_named_when_requested(self):
+        deleted = []
+        diff = self._render(deleted)
+        assert deleted == ["gone.py"]
+        assert "-one" not in diff and "-drop" not in diff
+        assert "+B" in diff
+
+    def test_deletions_kept_by_default(self):
+        diff = self._render()
+        assert "-one" in diff and "-drop" in diff
+
+    def test_over_budget_diff_collects_deleted_names(self):
+        files = [self._deleted_file()] + [
+            FilePatchInfo(base_file="x\n", head_file="y\n", patch="@@ -1 +1 @@\n-x\n+" + ("y " * 3000),
+                          filename=f"big{index}.py", edit_type=EDIT_TYPE.MODIFIED)
+            for index in range(4)
+        ]
+        provider = type("Provider", (), {"get_diff_files": lambda self: files,
+                                         "get_languages": lambda self: {"Python": len(files)}})()
+        deleted = []
+        chunks = get_pr_multi_diffs(provider, TokenHandler("gpt-4"), "gpt-4", deleted_files=deleted,
+                                    include_filtered_file_names=False)
+        assert len(chunks) > 1
+        assert deleted == ["gone.py"]
+        assert "-one" not in "\n".join(chunks)

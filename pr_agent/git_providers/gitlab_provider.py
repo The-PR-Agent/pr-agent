@@ -1012,6 +1012,8 @@ class GitLabProvider(GitProvider):
         self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
     ) -> None:
         """Create or replace a file only against the captured file state."""
+        if int(self.mr.source_project_id) != int(self.mr.target_project_id):
+            raise ValueError("Cannot write to a fork merge request")
         try:
             if expected_snapshot.exists and (
                 not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision

@@ -565,7 +565,8 @@ def pr_generate_extended_diff(pr_languages: list,
                               token_handler: TokenHandler,
                               add_line_numbers_to_hunks: bool,
                               patch_extra_lines_before: int = 0,
-                              patch_extra_lines_after: int = 0) -> Tuple[list, int, list]:
+                              patch_extra_lines_after: int = 0,
+                              deleted_files: list | None = None) -> Tuple[list, int, list]:
     total_tokens = token_handler.prompt_tokens  # initial tokens
     patches_extended = []
     patches_extended_tokens = []
@@ -584,6 +585,13 @@ def pr_generate_extended_diff(pr_languages: list,
                 patches_extended_tokens.append(file.tokens)
                 patches_extended.append(full_extended_patch)
                 continue
+
+            if deleted_files is not None:
+                patch = handle_patch_deletions(patch, original_file_content_str, new_file_content_str,
+                                               file.filename, file.edit_type)
+                if patch is None:
+                    deleted_files.append(file.filename)
+                    continue
 
             # extend each patch with extra lines of context
             extended_patch = extend_patch(original_file_content_str, patch,
@@ -853,7 +861,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
                        return_remaining_files: bool = False,
                        prepared_diff: PreparedPRDiff | None = None,
                        output_token_reserve: Callable[[str, int], int] | None = None,
-                       include_filtered_file_names: bool = True):
+                       include_filtered_file_names: bool = True,
+                       deleted_files: list | None = None):
     """
     Retrieves the diff files from a Git provider, sorts them by main language, and generates patches for each file.
     The patches are split into multiple groups based on the maximum number of tokens allowed for the given model.
@@ -943,7 +952,8 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         pr_languages, token_handler,
         add_line_numbers_to_hunks=add_line_numbers,
         patch_extra_lines_before=PATCH_EXTRA_LINES_BEFORE,
-        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER)
+        patch_extra_lines_after=PATCH_EXTRA_LINES_AFTER,
+        deleted_files=deleted_files)
 
     # if we are under the limit, return the full diff
     if total_tokens - token_handler.prompt_tokens < soft_token_budget:

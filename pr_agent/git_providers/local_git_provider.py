@@ -133,7 +133,7 @@ class LocalGitProvider(GitProvider):
         return diff_files
 
     def publish_description(self, pr_title: str, pr_body: str):
-        with open(self.description_path, "w") as file:
+        with open(self.description_path, "w", encoding="utf-8") as file:
             title = self.get_pr_title() if pr_title is None else pr_title
             file.write(title + '\n' + pr_body)
 

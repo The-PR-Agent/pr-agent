@@ -36,7 +36,8 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
 
     Controlled by the [push_outputs] config section (disabled by default). Supported channels:
     "stdout" (one JSON line), "file" (append JSONL), "webhook" (POST the generic record),
-    "slack" (POST {"text": ...} to a Slack Incoming Webhook). Non-fatal: never raises.
+    "slack" (POST {"text": ...} to a Slack Incoming Webhook), and "telegram"
+    (sendMessage to a configured chat). Non-fatal: never raises.
     """
     try:
         cfg = get_settings().get("push_outputs", {}) or {}

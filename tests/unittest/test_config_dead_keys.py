@@ -139,6 +139,14 @@ _ALLOWLIST = {
         "push_outputs",
         "slack_webhook_url",
     ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "telegram_bot_token",
+    ): "cfg.get(\"telegram_bot_token\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "telegram_chat_id",
+    ): "cfg.get(\"telegram_chat_id\") in pr_agent/algo/output_sinks.py",
 }
 
 

@@ -849,6 +849,59 @@ async def test_suggestions_preserve_digit_prefixed_filtered_names_in_unnumbered_
     assert all("3rdparty/lib.min.js" in prompt for prompt in received[0])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decouple_hunks", [False, True])
+async def test_suggestions_send_deleted_names_without_deleted_lines(decouple_hunks):
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    get_settings().pr_code_suggestions.decouple_hunks = decouple_hunks
+    base = "a\nb\nc\nd\ne\nf\ndrop\ng\n"
+    files = [
+        FilePatchInfo(base_file="gone body\n", head_file="", patch="@@ -1 +0,0 @@\n-gone body",
+                      filename="123.py", edit_type=EDIT_TYPE.DELETED),
+        FilePatchInfo(base_file=base, head_file=base.replace("b\n", "B\n").replace("drop\n", ""),
+                      patch="@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -6,3 +6,2 @@\n f\n-drop\n g",
+                      filename="mixed.py", edit_type=EDIT_TYPE.MODIFIED),
+    ]
+    provider = MagicMock()
+    provider.get_diff_files.return_value = files
+    provider.get_languages.return_value = {"Python": 2}
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_tool(provider)
+    received = []
+
+    async def predict(model, numbered, unnumbered):
+        received.append((numbered, unnumbered))
+        return {"code_suggestions": []}
+
+    tool._get_prediction = predict
+    try:
+        await tool.prepare_prediction_main("model")
+    finally:
+        restore_settings(snapshot)
+
+    assert len(received) == 1
+    for prompt in received[0]:
+        assert "+B" in prompt
+        assert "gone body" not in prompt and "-drop" not in prompt
+        assert prompt.endswith("\n\nDeleted files:\n\n123.py") and prompt.count("123.py") == 1
+
+
+@pytest.mark.asyncio
+async def test_suggestions_skip_the_model_when_the_pr_only_deletes_files():
+    tool = _make_tool()
+    tool._get_prediction = AsyncMock()
+
+    def multi_diffs(*args, deleted_files, **kwargs):
+        deleted_files.append("gone.py")
+        return [], []
+
+    with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=multi_diffs):
+        data = await tool.prepare_prediction_main("model")
+
+    assert data == {"code_suggestions": []}
+    tool._get_prediction.assert_not_awaited()
+
+
 def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():
     settings = get_settings()
     snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])

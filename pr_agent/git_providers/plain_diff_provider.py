@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from collections import Counter
 from typing import List, Optional
 
@@ -106,7 +107,18 @@ class PlainDiffGitProvider(GitProvider):
         incremental.is_incremental = False
 
     def _write_output(self, content: str):
-        print(content)
+        try:
+            print(content)
+        except UnicodeEncodeError:
+            # Emit UTF-8 bytes when a redirected stdout uses a locale encoding (cp1252 on
+            # Windows) that cannot encode the emoji in tool output, so publishing does not
+            # abort before --output is written.
+            buffer = getattr(sys.stdout, "buffer", None)
+            if buffer is None:
+                raise
+            sys.stdout.flush()
+            buffer.write((content + "\n").encode("utf-8"))
+            buffer.flush()
         if self.output_path:
             # --output is always an explicit user request, so a write failure
             # must surface (fail fast) rather than be silently swallowed.
