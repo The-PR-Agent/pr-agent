@@ -1365,7 +1365,7 @@ def filter_generated_labels(labels: List[str]) -> List[str]:
         else:
             dropped.append(label)
     if dropped:
-        get_logger().warning("Dropping model-generated labels outside the configured set", artifact=dropped)
+        get_logger().warning(f"Dropping model-generated labels outside the configured set: {dropped}", artifact=dropped)
     return accepted
 
 

@@ -51,7 +51,10 @@ def test_describe_type_fallback_is_filtered_and_dropped_values_are_logged():
     tool.variables = {}
     with patch("pr_agent.algo.utils.get_logger") as logger:
         assert tool._prepare_labels() == ["Bug fix"]
-    assert "deploy-production" in str(logger.return_value.warning.call_args)
+    logger.return_value.warning.assert_called_once()
+    warning = logger.return_value.warning.call_args
+    assert "deploy-production" in warning.args[0]
+    assert warning.kwargs["artifact"] == ["deploy-production"]
 
 
 def test_existing_human_labels_are_not_subject_to_model_allowlist():
