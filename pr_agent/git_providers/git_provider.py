@@ -63,6 +63,11 @@ class CodeSuggestionThread:
     replies: list[tuple[str, str]] = field(default_factory=list)
     authored_by_agent: Optional[bool] = None
 
+    def text_replies(self) -> list[tuple[str, str]]:
+        """Replies with a non-blank text message, stripped."""
+        return [(author, message.strip()) for author, message in self.replies
+                if isinstance(message, str) and message.strip()]
+
 
 def _discussion_context_budget() -> int:
     value = get_settings().get("pr_code_suggestions.max_discussion_context_chars", DEFAULT_DISCUSSION_CONTEXT_CHARS)
@@ -325,8 +330,7 @@ class GitProvider(ABC):
         for thread in self._iter_code_suggestion_threads():
             if thread.authored_by_agent is False:
                 continue
-            replies = [(author, message.strip()) for author, message in thread.replies
-                       if isinstance(message, str) and message.strip()]
+            replies = thread.text_replies()
             discussion = {
                 "thread_id": thread.thread_id,
                 "status": thread.status,
@@ -347,7 +351,10 @@ class GitProvider(ABC):
         return context
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
-        """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this."""
+        """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this.
+
+        Inline /review key-issue threads carry the same dedup marker, so a provider may yield them too;
+        /review reads them to learn which findings a human resolved."""
         return iter(())
 
     def supports_threaded_pr_questions(self) -> bool:

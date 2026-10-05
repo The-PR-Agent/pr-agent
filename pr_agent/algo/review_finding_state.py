@@ -303,22 +303,37 @@ def reconcile_review_findings(
     )
 
 
-def render_previous_findings(state: Mapping[str, Any] | None, max_chars: int) -> str:
+def render_previous_findings(
+    state: Mapping[str, Any] | None,
+    max_chars: int,
+    dismissed: Iterable[Mapping[str, Any]] = (),
+) -> str:
     """Return the stored findings as a JSON block for the /review prompt, empty when none fit.
 
-    Active findings come first, then resolved ones, each newest first. Each finding is split back into the
-    `issue_header` and `issue_content` the model emitted, so it can repeat a still-valid finding verbatim
-    and keep its identity across runs. The block stays within `max_chars` (0 disables it).
+    Active findings come first, then dismissed ones (inline threads a human resolved without a fix, given as
+    findings with an optional `reply`), then resolved ones, each newest first. A dismissed finding replaces
+    the stored finding with the same id. Each finding is split back into the `issue_header` and
+    `issue_content` the model emitted, so it can repeat a still-valid finding verbatim and keep its identity
+    across runs. The block stays within `max_chars` (0 disables it).
     """
-    if not state or max_chars <= 0:
+    if max_chars <= 0:
         return ""
-    findings = list(state.get("findings", []))
+    dismissed_by_id = {}
+    for finding in dismissed:
+        normalized = normalize_finding(finding)
+        if normalized is not None:
+            normalized["state"] = "DISMISSED"
+            if finding.get("reply"):
+                normalized["reply"] = finding["reply"]
+            dismissed_by_id.setdefault(normalized["finding_id"], normalized)
+    findings = [finding for finding in (state or {}).get("findings", [])
+                if finding.get("finding_id") not in dismissed_by_id]
     active = [finding for finding in findings if finding.get("state") == "ACTIVE"]
     active.sort(key=lambda finding: str(finding.get("last_seen") or ""), reverse=True)
     resolved = [finding for finding in findings if finding.get("state") == "RESOLVED"]
     resolved.sort(key=lambda finding: str(finding.get("resolved_at") or ""), reverse=True)
     entries, context = [], ""
-    for finding in active + resolved:
+    for finding in active + list(dismissed_by_id.values()) + resolved:
         match = _FINDING_HEADER_RE.fullmatch(finding["body"])
         entry = {
             "state": finding["state"].lower(),
@@ -328,6 +343,8 @@ def render_previous_findings(state: Mapping[str, Any] | None, max_chars: int) ->
             "issue_header": match.group("header") if match else "",
             "issue_content": match.group("content") if match else finding["body"],
         }
+        if finding.get("reply"):
+            entry["reply"] = finding["reply"]
         candidate = json.dumps(entries + [entry], ensure_ascii=False, indent=2)
         if len(candidate) > max_chars:
             continue
