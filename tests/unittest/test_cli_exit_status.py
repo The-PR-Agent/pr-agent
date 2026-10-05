@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tomllib
+from contextvars import copy_context
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -12,6 +13,7 @@ import pytest
 from starlette_context import context, request_cycle_context
 
 from pr_agent import cli
+from pr_agent.algo.run_details import init_run_details, record_command_failure
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider
 
@@ -43,11 +45,13 @@ def _run_with_result(monkeypatch, result, *, propagate_tool_errors, recorded_fai
     )
 
     async def fake_handle_request(*_args, **_kwargs):
+        init_run_details()
+        if recorded_failure:
+            record_command_failure()
         return result
 
     monkeypatch.setattr(cli, "get_settings", lambda: fake_settings)
     monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
-    monkeypatch.setattr(cli, "command_failed", lambda: recorded_failure)
     monkeypatch.setattr(
         cli,
         "PRAgent",
@@ -103,6 +107,19 @@ def test_run_maps_recorded_tool_failure_to_status(monkeypatch, propagate_tool_er
     )
 
     assert status == expected_status
+
+
+def test_run_does_not_inherit_caller_or_previous_command_failure(monkeypatch):
+    def run_commands():
+        init_run_details()
+        record_command_failure()
+        assert _run_with_result(monkeypatch, True, propagate_tool_errors=True) is None
+        assert _run_with_result(
+            monkeypatch, True, propagate_tool_errors=True, recorded_failure=True
+        ) == 1
+        assert _run_with_result(monkeypatch, True, propagate_tool_errors=True) is None
+
+    copy_context().run(run_commands)
 
 
 def test_run_reads_effective_setting_after_dispatch(monkeypatch):
@@ -167,11 +184,13 @@ def test_run_drains_callbacks_before_returning_failure_status(monkeypatch):
         (True, False, None),
     ],
 )
+@pytest.mark.parametrize("recorded_failure", [False, True])
 def test_real_request_failure_uses_effective_propagation_setting(
     monkeypatch,
     repo_value,
     cli_value,
     expected_status,
+    recorded_failure,
 ):
     from pr_agent.agent import pr_agent as pr_agent_module
 
@@ -188,6 +207,9 @@ def test_real_request_failure_uses_effective_propagation_setting(
                 get_settings().config.get("propagate_tool_errors")
                 is expected_effective_value
             )
+            if recorded_failure:
+                record_command_failure()
+                return
             raise RuntimeError("controlled tool failure")
 
     async def fake_drain(*_args, **_kwargs):
