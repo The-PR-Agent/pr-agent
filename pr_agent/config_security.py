@@ -25,10 +25,27 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "prompt_fragments": frozenset(),
 }
 
+_CONNECTION_KEY_SUFFIXES = ("url", "base_url", "endpoint", "org", "key", "token", "secret")
+
+
+class _HostOnlyKeys(frozenset):
+    def __contains__(self, key):
+        normalized = key.lower() if isinstance(key, str) else key
+        return super().__contains__(normalized) or (
+            isinstance(normalized, str) and normalized.endswith(_CONNECTION_KEY_SUFFIXES)
+        )
+
+
+class _HostOnlyKeysBySection(dict):
+    def get(self, section, default=None):
+        keys = super().get(section, default)
+        return _HostOnlyKeys(keys) if keys is not None else None
+
+
 # Individual settings in otherwise repository-configurable sections may also be
-# host-only. publish_error_details controls what service-side failure state is
-# disclosed in a PR comment, so the PR author must not be able to enable it.
-REPO_HOST_ONLY_KEYS_BY_SECTION = {
+# host-only. Generic provider connection locations and credentials are protected
+# in every section, while the mapping below lists section-specific controls.
+REPO_HOST_ONLY_KEYS_BY_SECTION = _HostOnlyKeysBySection({
     # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
     "databricks": frozenset({"api_base"}),
@@ -66,7 +83,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
     }),
-}
+})
 
 # Keys that repositories may still configure from their own default-branch settings but that
 # comment/CLI *arguments* must never override. repo_context_files selects which repository and

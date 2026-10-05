@@ -19,7 +19,9 @@ from contextlib import suppress
 
 import pytest
 
+from pr_agent.algo.cli_args import CliArgs
 from pr_agent.config_loader import get_settings
+from pr_agent.config_security import REPO_HOST_ONLY_KEYS_BY_SECTION
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.utils import apply_repo_settings
 
@@ -416,18 +418,28 @@ def test_repo_settings_cannot_override_provider_endpoint_keys(monkeypatch, setti
     assert _section(settings, section).get(key) == "host-controlled"
 
 
-def test_repo_settings_still_apply_allowed_provider_keys(monkeypatch, settings_snapshot):
+def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(
-        repo_settings_bytes=(b'[ollama]\napi_base = "https://repo-controlled.example"\napi_key = "repo-key"\n')
+        repo_settings_bytes=(b'[ollama]\napi_key = "repo-key"\ntimeout = 30\n')
     )
     _install_provider(monkeypatch, provider)
 
     settings = get_settings()
     settings.set("config.use_repo_settings_file", True)
-    settings.set("ollama.api_base", "https://host-controlled.example")
+    settings.set("ollama.api_key", "host-key")
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
     ollama = _section(settings, "ollama")
-    assert ollama.get("api_base") == "https://host-controlled.example"
-    assert ollama.get("api_key") == "repo-key"
+    assert ollama.get("api_key") == "host-key"
+    assert ollama.get("timeout") == 30
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [("github", "base_url"), ("gerrit", "patch_server_endpoint"),
+     ("azure_devops", "org"), ("anthropic", "key"), ("gitlab", "private_token")],
+)
+def test_provider_connection_keys_are_host_only_for_repo_and_cli(section, key):
+    assert key in REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset())
+    assert CliArgs.validate_user_args([f"--{section}.{key}=untrusted"])[0] is False
