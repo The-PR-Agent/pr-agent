@@ -215,7 +215,7 @@ class PRDescription:
             if get_settings().config.publish_output:
                 # Emit to the optional external sinks before touching the provider, so a sink
                 # still receives the description if publishing it to the PR fails.
-                push_outputs("describe", payload=self.data or {}, markdown=pr_body)
+                push_outputs("describe", payload=self._prepare_output_payload(), markdown=pr_body)
 
                 # publish labels
                 if (
@@ -745,6 +745,18 @@ class PRDescription:
             )
             return False
         return True
+
+    def _prepare_output_payload(self) -> dict:
+        """Filter generated label fields for external sinks without mutating model data."""
+        payload = dict(self.data or {})
+        for field in ("labels", "type"):
+            if field not in payload:
+                continue
+            values = payload[field]
+            if isinstance(values, str):
+                values = values.split(",")
+            payload[field] = filter_generated_labels(values if isinstance(values, list) else [])
+        return payload
 
     def _prepare_labels(self) -> List[str]:
         pr_labels = []

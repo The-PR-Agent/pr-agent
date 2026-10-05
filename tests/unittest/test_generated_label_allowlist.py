@@ -1,4 +1,5 @@
 """Model-generated labels must stay inside the configured label vocabulary."""
+import copy
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -111,5 +112,57 @@ async def test_rejected_output_preserves_existing_labels_but_explicit_empty_can_
         else:
             tool.git_provider.publish_labels.assert_called_once_with(expected)
         tool.git_provider.remove_initial_comment.assert_called_once_with()
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.parametrize("publish_labels", [True, False])
+@pytest.mark.asyncio
+async def test_describe_external_payload_filters_each_label_field_without_mutating_data(publish_labels):
+    settings_values = {
+        "config.publish_output": True,
+        "pr_description.publish_labels": publish_labels,
+        "pr_description.use_description_markers": False,
+        "pr_description.enable_semantic_files_types": False,
+    }
+    snapshot = snapshot_settings(tuple(settings_values))
+    for key, value in settings_values.items():
+        get_settings().set(key, value)
+    get_settings().set("config.enable_custom_labels", True)
+    get_settings().set("custom_labels", {"Release ready": "ready"})
+    try:
+        tool = PRDescription.__new__(PRDescription)
+        tool.pr_id = "repo#1"
+        tool.vars = {"title": "Title"}
+        tool.variables = {}
+        set_custom_labels(tool.variables)
+        tool.prediction = "model response"
+        tool.data = {
+            "labels": ["RELEASE_READY", "deploy-production"],
+            "type": "bug_fix, unexpected-type",
+            "description": "Preserve this description",
+        }
+        original = copy.deepcopy(tool.data)
+        tool.git_provider = MagicMock()
+        tool.git_provider.is_supported.return_value = True
+        tool.git_provider.get_pr_labels.return_value = ["P0"]
+        tool._prepare_data = MagicMock()
+        tool._prepare_pr_answer = MagicMock(return_value=("Title", "Body", ""))
+        tool._get_description_coverage_footer = MagicMock(return_value="")
+        with (
+            patch("pr_agent.tools.pr_description.extract_and_cache_pr_tickets", new=AsyncMock()),
+            patch("pr_agent.tools.pr_description.retry_with_fallback_models", new=AsyncMock()),
+            patch("pr_agent.tools.pr_description.push_outputs") as push,
+        ):
+            await tool.run()
+        push.assert_called_once()
+        assert push.call_args.kwargs["payload"] == {
+            **original, "labels": ["Release ready"], "type": ["Bug fix"],
+        }
+        assert tool.data == original
+        if publish_labels:
+            tool.git_provider.publish_labels.assert_called_once_with(["Release ready", "P0"])
+        else:
+            tool.git_provider.publish_labels.assert_not_called()
     finally:
         restore_settings(snapshot)
