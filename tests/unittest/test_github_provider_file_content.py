@@ -6,6 +6,7 @@ from github import GithubException
 
 from pr_agent.git_providers.git_provider import ConcurrentFileUpdateError, FileContentSnapshot
 from pr_agent.git_providers.github_provider import GithubProvider
+from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 
 def _provider_with_result(result=None, error=None):
@@ -16,6 +17,7 @@ def _provider_with_result(result=None, error=None):
     else:
         repo.get_contents.return_value = SimpleNamespace(decoded_content=result)
     provider._get_repo = MagicMock(return_value=repo)
+    provider._pr_head_in_base_repo = MagicMock(return_value=True)
     return provider
 
 
@@ -55,6 +57,7 @@ def test_create_or_update_pr_file_returns_written_commit():
     provider.repo_obj = MagicMock()
     provider.repo_obj.get_contents.return_value.sha = "file-sha"
     provider._get_repo = MagicMock(return_value=provider.repo_obj)
+    provider._pr_head_in_base_repo = MagicMock(return_value=True)
     written_commit = object()
     provider.repo_obj.update_file.return_value = {"content": object(), "commit": written_commit}
 
@@ -107,11 +110,13 @@ def test_create_or_update_pr_file_creates_missing_file():
     provider.repo_obj.update_file.assert_not_called()
 
 
-def test_create_or_update_pr_file_does_not_create_for_fork_pr():
+@pytest.mark.parametrize("snapshot", [
+    FileContentSnapshot("", False, None),
+    FileContentSnapshot("old", True, "file-sha"),
+])
+def test_create_or_update_pr_file_does_not_write_for_fork_pr(snapshot):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo_obj = MagicMock()
-    read_error = GithubException(404, {"message": "Not Found"}, {})
-    provider.repo_obj.get_contents.side_effect = read_error
     provider._get_repo = MagicMock(return_value=provider.repo_obj)
     # Fork pull request: the head branch lives in the fork, so the bare branch name
     # resolves against the base repository; the file must not be created there.
@@ -120,16 +125,16 @@ def test_create_or_update_pr_file_does_not_create_for_fork_pr():
         base=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")),
     )
 
-    with pytest.raises(GithubException) as exc_info:
+    with pytest.raises(ValueError, match="fork pull request"):
         provider.create_or_update_pr_file(
             file_path="CHANGELOG.md",
             branch="main",
             contents="new content",
             message="Add CHANGELOG.md",
-            expected_snapshot=FileContentSnapshot("", False, None),
+            expected_snapshot=snapshot,
         )
 
-    assert exc_info.value is read_error
+    provider.repo_obj.get_contents.assert_not_called()
     provider.repo_obj.create_file.assert_not_called()
     provider.repo_obj.update_file.assert_not_called()
 
@@ -137,8 +142,6 @@ def test_create_or_update_pr_file_does_not_create_for_fork_pr():
 def test_create_or_update_pr_file_does_not_create_for_deleted_fork():
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo_obj = MagicMock()
-    read_error = GithubException(404, {"message": "Not Found"}, {})
-    provider.repo_obj.get_contents.side_effect = read_error
     provider._get_repo = MagicMock(return_value=provider.repo_obj)
     # GitHub reports head.repo as null when the fork was deleted.
     provider.pr = SimpleNamespace(
@@ -146,7 +149,7 @@ def test_create_or_update_pr_file_does_not_create_for_deleted_fork():
         base=SimpleNamespace(repo=SimpleNamespace(full_name="owner/repo")),
     )
 
-    with pytest.raises(GithubException) as exc_info:
+    with pytest.raises(ValueError, match="fork pull request"):
         provider.create_or_update_pr_file(
             file_path="CHANGELOG.md",
             branch="main",
@@ -155,7 +158,7 @@ def test_create_or_update_pr_file_does_not_create_for_deleted_fork():
             expected_snapshot=FileContentSnapshot("", False, None),
         )
 
-    assert exc_info.value is read_error
+    provider.repo_obj.get_contents.assert_not_called()
     provider.repo_obj.create_file.assert_not_called()
     provider.repo_obj.update_file.assert_not_called()
 
@@ -166,6 +169,7 @@ def test_create_or_update_pr_file_does_not_write_after_read_failure():
     read_error = GithubException(500, {"message": "upstream failure"}, {})
     provider.repo_obj.get_contents.side_effect = read_error
     provider._get_repo = MagicMock(return_value=provider.repo_obj)
+    provider._pr_head_in_base_repo = MagicMock(return_value=True)
 
     with pytest.raises(GithubException) as exc_info:
         provider.create_or_update_pr_file(
@@ -179,6 +183,20 @@ def test_create_or_update_pr_file_does_not_write_after_read_failure():
     assert exc_info.value is read_error
     provider.repo_obj.create_file.assert_not_called()
     provider.repo_obj.update_file.assert_not_called()
+
+
+def test_gitlab_create_or_update_pr_file_does_not_write_for_fork_mr():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.mr = SimpleNamespace(source_project_id=2, target_project_id=1)
+    provider.gl = MagicMock()
+    provider.id_project = 1
+
+    with pytest.raises(ValueError, match="fork merge request"):
+        provider.create_or_update_pr_file(
+            "CHANGELOG.md", "feature", "new content", expected_snapshot=FileContentSnapshot("old", True, "sha")
+        )
+
+    provider.gl.projects.get.assert_not_called()
 
 
 @pytest.mark.parametrize("content", [b"", b"existing content"])
