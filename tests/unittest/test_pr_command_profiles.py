@@ -1,4 +1,6 @@
 import copy
+import hashlib
+import hmac
 import json
 import tomllib
 from contextlib import asynccontextmanager
@@ -217,7 +219,12 @@ async def _dispatch_default_pr_commands(provider, monkeypatch, agent):
             },
         }
         background_tasks = BackgroundTasks()
-        response = await bitbucket_server_webhook.handle_webhook(background_tasks, _Request(payload))
+        get_settings().set("BITBUCKET_SERVER.WEBHOOK_SECRET", "test-webhook-secret")
+        request = _Request(payload)
+        request.headers["x-hub-signature"] = "sha256=" + hmac.new(
+            b"test-webhook-secret", await request.body(), hashlib.sha256,
+        ).hexdigest()
+        response = await bitbucket_server_webhook.handle_webhook(background_tasks, request)
         assert response.status_code == 200
         await background_tasks()
         agent.commands.extend(recorded)

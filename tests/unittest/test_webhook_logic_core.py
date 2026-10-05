@@ -1,4 +1,6 @@
 import copy
+import hashlib
+import hmac
 import importlib
 import json
 from contextlib import asynccontextmanager
@@ -76,7 +78,7 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
     original_webhook_secret = settings.get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
     original_handle_push_trigger = settings.get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", None)
     original_url = settings.get("BITBUCKET_SERVER.URL", None)
-    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", "test-webhook-secret")
     settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", True)
     settings.set("BITBUCKET_SERVER.URL", "https://bitbucket.example.com")
 
@@ -104,6 +106,9 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
     payload = _bitbucket_server_payload()
     payload["eventKey"] = event_key
     request = _StubRequest(payload)
+    request.headers["x-hub-signature"] = "sha256=" + hmac.new(
+        b"test-webhook-secret", await request.body(), hashlib.sha256,
+    ).hexdigest()
     background_tasks = BackgroundTasks()
 
     try:

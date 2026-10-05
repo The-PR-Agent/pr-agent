@@ -5,7 +5,7 @@ import os
 from typing import List
 
 import uvicorn
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import RedirectResponse
 from starlette import status
@@ -101,18 +101,21 @@ async def redirect_to_webhook():
 @router.post("/webhook")
 async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     log_context = {"server_type": "bitbucket_server"}
+    webhook_secret = get_settings().get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    if not webhook_secret:
+        get_logger().error("Rejecting Bitbucket Server webhook: BITBUCKET_SERVER.WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=403, detail="Webhook authentication is not configured.")
+
     data = await request.json()
     get_logger().info(json.dumps(data))
 
-    webhook_secret = get_settings().get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
-    if webhook_secret:
-        body_bytes = await request.body()
-        if body_bytes.decode('utf-8') == '{"test": true}':
-            return JSONResponse(
-                status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "connection test successful"})
-            )
-        signature_header = request.headers.get("x-hub-signature", None)
-        verify_signature(body_bytes, webhook_secret, signature_header)
+    body_bytes = await request.body()
+    if body_bytes.decode('utf-8') == '{"test": true}':
+        return JSONResponse(
+            status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "connection test successful"})
+        )
+    signature_header = request.headers.get("x-hub-signature", None)
+    verify_signature(body_bytes, webhook_secret, signature_header)
 
     # Install a per-request settings clone only after auth/connection-test checks, so
     # rejected traffic doesn't pay the deepcopy cost. Must precede apply_repo_settings(),

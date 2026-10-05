@@ -1,6 +1,10 @@
+from unittest.mock import AsyncMock, Mock
+
 import httpx
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
+from starlette.middleware import Middleware
+from starlette_context.middleware import RawContextMiddleware
 
 import pr_agent.servers.azuredevops_server_webhook as azure_webhook
 
@@ -55,26 +59,28 @@ async def test_correct_credentials_are_accepted(app):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("unset", [None, ""])
-async def test_auth_is_skipped_when_no_credentials_are_configured(monkeypatch, unset):
-    monkeypatch.setattr(azure_webhook, "WEBHOOK_USERNAME", unset)
-    monkeypatch.setattr(azure_webhook, "WEBHOOK_PASSWORD", unset)
-
-    response = await _post(_build_app())
-
-    assert response.status_code == 200
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("username, password", [("admin", None), (None, "s3cret"), ("admin", "")])
-async def test_a_half_configured_pair_fails_closed(monkeypatch, username, password):
-    """Only one credential set is a misconfiguration, not a request to skip auth."""
+@pytest.mark.parametrize("username, password", [
+    (None, None), ("", ""), ("admin", None), (None, "s3cret"), ("admin", ""), ("", "s3cret"),
+])
+async def test_an_unconfigured_pair_rejects_requests_before_dispatch(monkeypatch, username, password):
     monkeypatch.setattr(azure_webhook, "WEBHOOK_USERNAME", username)
     monkeypatch.setattr(azure_webhook, "WEBHOOK_PASSWORD", password)
-    app = _build_app()
+    dispatch = AsyncMock()
+    logger = Mock()
+    monkeypatch.setattr(azure_webhook, "handle_request_azure", dispatch)
+    monkeypatch.setattr(azure_webhook, "get_logger", lambda: logger)
+    app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
+    app.include_router(azure_webhook.router)
 
-    assert (await _post(app)).status_code == 500
-    assert (await _post(app, auth=("admin", "s3cret"))).status_code == 500
+    for auth in (None, ("admin", "s3cret")):
+        response = await _post(app, json={"eventType": "git.pullrequest.created"}, auth=auth)
+        assert response.status_code == 403
+        assert response.json() == {"detail": "Webhook authentication is not configured."}
+    dispatch.assert_not_awaited()
+    assert logger.error.call_count == 2
+    for call in logger.error.call_args_list:
+        assert "azure_devops_server.webhook_username" in call.args[0]
+        assert "azure_devops_server.webhook_password" in call.args[0]
 
 
 @pytest.mark.asyncio
