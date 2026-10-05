@@ -394,6 +394,7 @@ class TestGiteaProvider:
         provider.owner = 'owner'
         provider.repo = 'repo'
         provider.sha = 'sha1'
+        provider.base_sha = 'base-sha'
         provider.repo_settings = '.pr_agent.toml'
         provider.repo_api = MagicMock()
         provider.repo_api.get_file_content.return_value = toml  # API decodes to str
@@ -403,6 +404,7 @@ class TestGiteaProvider:
             result = provider.get_repo_settings()
 
         assert result == [("local", toml.encode('utf-8'))]
+        assert provider.repo_api.get_file_content.call_args.kwargs["commit_sha"] == "base-sha"
         # The bytes must survive the exact operations utils.py performs on them.
         assert result[0][1].decode() == toml
 
@@ -424,12 +426,23 @@ class TestGiteaProvider:
         empty.owner = 'owner'
         empty.repo = 'repo'
         empty.sha = 'sha1'
+        empty.base_sha = 'base-sha'
         empty.repo_settings = '.pr_agent.toml'
         empty.repo_api = MagicMock()
         empty.repo_api.get_file_content.return_value = ''
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = False
             assert empty.get_repo_settings() == ""
+
+        untargeted = GiteaProvider.__new__(GiteaProvider)
+        untargeted.__dict__.update(
+            logger=MagicMock(), owner='owner', repo='repo', repo_settings='.pr_agent.toml',
+            base_sha='', base_ref='', repo_api=MagicMock(),
+        )
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = False
+            assert untargeted.get_repo_settings() == ""
+        untargeted.repo_api.get_file_content.assert_not_called()
 
     def test_get_repo_file_content_loads_from_base_sha(self):
         provider = GiteaProvider.__new__(GiteaProvider)
@@ -556,6 +569,7 @@ class TestGiteaGlobalSettings:
         provider.owner = "owner"
         provider.repo = "repo"
         provider.sha = "head-sha"
+        provider.base_sha = "base-sha"
         provider.repo_settings = repo_settings
         provider.repo_api = MagicMock()
         return provider

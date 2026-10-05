@@ -36,13 +36,13 @@ def _call(*command, **kwargs) -> (int, str, str):
 
 
 def clone(url, directory):
-    get_logger().info("Cloning %s to %s", url, directory)
+    get_logger().info("Cloning {} to {}", url, directory)
     stdout = _call('git', 'clone', "--depth", "1", url, directory)
     get_logger().info(stdout)
 
 
 def fetch(url, refspec, cwd):
-    get_logger().info("Fetching %s %s", url, refspec)
+    get_logger().info("Fetching {} {}", url, refspec)
     stdout = _call(
         'git', 'fetch', '--depth', '2', url, refspec,
         cwd=cwd
@@ -269,10 +269,8 @@ class GerritProvider(GitProvider):
 
     def get_repo_settings(self):
         try:
-            with open(self.repo_path / ".pr_agent.toml", 'rb') as f:
-                contents = f.read()
-            return contents
-        except OSError:
+            return (self.repo.branches[0].commit.tree / ".pr_agent.toml").data_stream.read()
+        except (IndexError, KeyError, OSError):
             return b""
 
     def get_diff_files(self) -> list[FilePatchInfo]:

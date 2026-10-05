@@ -766,10 +766,15 @@ class GiteaProvider(GitProvider):
             self.logger.error("Repository settings not found")
             return settings_files if settings_files else ""
 
+        target_ref = self.base_sha or self.base_ref
+        if not target_ref:
+            self.logger.warning("Cannot get repository settings: no target/base ref available")
+            return settings_files if settings_files else ""
+
         response = self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.sha,
+            commit_sha=target_ref,
             filepath=self.repo_settings
         )
         if not response:
