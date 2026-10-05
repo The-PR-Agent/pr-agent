@@ -259,7 +259,7 @@ async def test_gitlab_installs_the_settings_copy_only_once_authenticated(monkeyp
     """The copy is installed after authentication, and carries the token the secret resolved."""
     payload = {"object_kind": "merge_request"}
     request = _Request(payload, headers={})
-    monkeypatch.setattr(gitlab_webhook, "get_logger", lambda: _RecordingLogger())
+    monkeypatch.setattr(gitlab_webhook, "get_logger", _RecordingLogger)
     monkeypatch.setattr(
         gitlab_webhook, "authenticate_gitlab_webhook", lambda *args, **kwargs: (None, "secret-provider-token")
     )
@@ -276,7 +276,7 @@ async def test_gitlab_installs_the_settings_copy_only_once_authenticated(monkeyp
 
 async def test_gitlab_leaves_no_settings_copy_behind_a_rejected_request(monkeypatch):
     request = _Request({"object_kind": "merge_request"}, headers={})
-    monkeypatch.setattr(gitlab_webhook, "get_logger", lambda: _RecordingLogger())
+    monkeypatch.setattr(gitlab_webhook, "get_logger", _RecordingLogger)
     monkeypatch.setattr(
         gitlab_webhook,
         "authenticate_gitlab_webhook",
