@@ -1,9 +1,8 @@
-# Keep :3.14 floating: AWS publishes no CPython patch tags for Lambda
-# bases, only the minor tag and per-build dated tags that rotate almost
-# daily. Chasing dated tags adds bump churn for no real benefit; minor
-# alignment with docker/Dockerfile is enforced by the CI version guard.
-FROM public.ecr.aws/lambda/python:3.14 AS base
-COPY --from=ghcr.io/astral-sh/uv:0.12.10 /uv /uvx /bin/
+# AWS publishes minor tags rather than CPython patch tags for Lambda. Keep the
+# readable minor tag with an immutable image digest; Dependabot updates the pin.
+# Minor alignment with docker/Dockerfile is enforced by the CI version guard.
+FROM public.ecr.aws/lambda/python:3.14@sha256:b81a4aa3bc1d56999090333cefea611e5a84bb4e2638c1ae4107fdc9b8622da3 AS base
+COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /uvx /bin/
 
 # Use the cost map bundled with the litellm pinned in uv.lock so lambda images
 # behave as built rather than fetching today's remote data at import time.
