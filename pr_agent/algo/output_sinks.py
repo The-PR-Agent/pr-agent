@@ -94,7 +94,9 @@ class TelegramSink:
             text = json.dumps(record["payload"], ensure_ascii=False)
         # Keep the host fixed and encode the token as a path component, not a URL.
         url = f"https://api.telegram.org/bot{quote(bot_token, safe=':')}/sendMessage"
-        _post_json("telegram", url, {"chat_id": chat_id, "text": text[:4096]})
+        # Limit to 4096 UTF-16 code units, dropping an incomplete surrogate pair at the boundary.
+        text = text.encode("utf-16-le", "surrogatepass")[:8192].decode("utf-16-le", "ignore")
+        _post_json("telegram", url, {"chat_id": chat_id, "text": text})
 
 
 # Keep local channels before network channels, regardless of configuration order.

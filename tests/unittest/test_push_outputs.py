@@ -161,6 +161,22 @@ class TestPushOutputs:
 
         assert posts == [{'chat_id': 'chat', 'text': '文' * min(length, 4096)}]
 
+    @pytest.mark.parametrize("prefix", ["", "a"])
+    @pytest.mark.parametrize("length", [2047, 2048, 3000])
+    def test_telegram_text_limit_counts_utf16_units(self, monkeypatch, prefix, length):
+        posts = []
+        monkeypatch.setattr(output_sinks.requests, 'post',
+                            lambda url, **kwargs: posts.append(kwargs['json']) or SimpleNamespace(status_code=200))
+
+        output_sinks.TelegramSink().send(
+            {'markdown': prefix + '\U0001f512' * length, 'payload': {}},
+            {'telegram_bot_token': 'token', 'telegram_chat_id': 'chat'},
+        )
+
+        expected = prefix + '\U0001f512' * min(length, (4096 - len(prefix)) // 2)
+        assert posts == [{'chat_id': 'chat', 'text': expected}]
+        assert len(posts[0]['text'].encode('utf-16-le')) <= 8192
+
     def test_telegram_token_cannot_change_host_or_request_path(self, monkeypatch):
         posts = []
         monkeypatch.setattr(output_sinks.requests, 'post',

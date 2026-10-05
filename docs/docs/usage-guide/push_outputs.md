@@ -86,7 +86,7 @@ credential.
 | `file` | Appends one JSON line per run (JSONL) to `file_path`, creating parent directories as needed. |
 | `webhook` | POSTs the generic record as JSON to `webhook_url` (5-second timeout, redirects not followed). |
 | `slack` | POSTs `{"text": ...}` to a Slack Incoming Webhook; the text is the markdown, or the payload JSON when the tool produces no markdown. |
-| `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`. Text is truncated to 4096 characters. |
+| `telegram` | Sends the markdown, or the payload JSON when no markdown is present, as plain text to `telegram_chat_id`. Text is truncated to at most 4096 UTF-16 code units without splitting surrogate pairs. |
 
 Local channels (`stdout`, `file`) run before network channels (`webhook`, `slack`, `telegram`), and network
 posts never follow redirects. Each configured destination is attempted independently, so one failure
