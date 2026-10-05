@@ -16,7 +16,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
-from pr_agent.algo.utils import get_user_labels, load_yaml, set_custom_labels
+from pr_agent.algo.utils import filter_generated_labels, get_user_labels, load_yaml, set_custom_labels
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, get_main_pr_language
@@ -90,6 +90,10 @@ class PRGenerateLabels:
                 return None
 
             pr_labels = self._prepare_labels()
+            if not pr_labels and self.data and self.data.get("labels"):
+                # Preserve existing labels when all generated values are rejected.
+                get_logger().warning("Skipping label publish: all generated labels were rejected")
+                return ""
 
             if get_settings().config.publish_output:
                 get_logger().info(f"Pushing labels {self.pr_id}")
@@ -237,4 +241,4 @@ class PRGenerateLabels:
         except Exception as e:
             get_logger().error(f"Error converting labels to original case {self.pr_id}: {e}")
 
-        return pr_types
+        return filter_generated_labels(pr_types)
