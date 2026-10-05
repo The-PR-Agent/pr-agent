@@ -333,11 +333,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     if verified is None:
         return "OK"
     shared_secret, client_key = verified
-    try:
-        data = json.loads(await request.body())
-    except Exception as e:
-        get_logger().error("Error parsing Bitbucket App webhook body", artifact={"error": e})
-        return "OK"
+    data = json.loads(await request.body())
     get_logger().debug(payload_log_summary(data, ("clientKey", "event")))
 
     async def inner():

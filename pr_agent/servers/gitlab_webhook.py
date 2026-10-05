@@ -321,12 +321,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     if provider_token:
         context["settings"].gitlab.personal_access_token = provider_token
 
-    try:
-        request_json = json.loads(await request.body())
-    except Exception as e:
-        get_logger().error("Error parsing GitLab webhook body", artifact={"error": e})
-        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
-                            content=jsonable_encoder({"message": "invalid request body"}))
+    request_json = json.loads(await request.body())
 
     async def inner(data: dict):
         get_logger().info("GitLab data", artifact=payload_log_summary(data, ("object_kind", "event_type")))

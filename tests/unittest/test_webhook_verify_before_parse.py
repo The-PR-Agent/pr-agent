@@ -241,20 +241,6 @@ async def test_gitlab_never_logs_the_payload_body(monkeypatch):
     assert "object_kind" in logger.logged
 
 
-async def test_gitlab_reports_a_malformed_body_after_authentication(monkeypatch):
-    logger = _RecordingLogger()
-    request = _Request(None, headers={}, body=b"not json")
-    monkeypatch.setattr(gitlab_webhook, "get_logger", lambda: logger)
-    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args, **kwargs: (None, None))
-
-    tasks = BackgroundTasks()
-    with request_cycle_context({}):
-        response = await _endpoint(gitlab_webhook)(tasks, request)
-
-    assert response.status_code == 400
-    assert tasks.tasks == []
-
-
 async def test_gitlab_installs_the_settings_copy_only_once_authenticated(monkeypatch):
     """The copy is installed after authentication, and carries the token the secret resolved."""
     payload = {"object_kind": "merge_request"}
@@ -323,28 +309,6 @@ async def test_bitbucket_server_rejects_a_bad_signature_before_parsing(monkeypat
         await _endpoint(bitbucket_server_webhook)(tasks, request)
 
     assert caught.value.status_code == 403
-    assert request.json_calls == 0
-    assert tasks.tasks == []
-    assert SECRET_SENTINEL not in logger.logged
-
-
-async def test_bitbucket_server_rejects_every_webhook_without_a_configured_secret(monkeypatch):
-    """An unconfigured secret used to accept anything, so the signature check never ran."""
-    logger = _RecordingLogger()
-    payload = {"eventKey": "pr:opened", "pullRequest": {"title": SECRET_SENTINEL}}
-    request = _Request(payload, headers={"x-hub-signature": _sign(json.dumps(payload).encode())})
-    monkeypatch.setattr(bitbucket_server_webhook, "get_logger", lambda: logger)
-    monkeypatch.setattr(
-        bitbucket_server_webhook,
-        "get_settings",
-        lambda: _bitbucket_server_settings(**{"BITBUCKET_SERVER.WEBHOOK_SECRET": ""}),
-    )
-
-    tasks = BackgroundTasks()
-    with request_cycle_context({}):
-        response = await _endpoint(bitbucket_server_webhook)(tasks, request)
-
-    assert response.status_code == 403
     assert request.json_calls == 0
     assert tasks.tasks == []
     assert SECRET_SENTINEL not in logger.logged

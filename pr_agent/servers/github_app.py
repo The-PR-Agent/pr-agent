@@ -1,5 +1,4 @@
 import copy
-import json
 import os
 import time
 import uuid
@@ -112,11 +111,11 @@ async def get_body(request):
     signature_header = request.headers.get('x-hub-signature-256', None)
     verify_signature(body_bytes, webhook_secret, signature_header)
     try:
-        # Parse the bytes that were just verified rather than reading the request again.
-        return json.loads(body_bytes)
+        body = await request.json()
     except Exception as e:
         get_logger().error("Error parsing request body", artifact={"error": e})
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
+    return body
 
 
 async def handle_comments_on_pr(body: Dict[str, Any],

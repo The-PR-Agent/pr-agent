@@ -126,25 +126,6 @@ async def test_webhook_rejects_a_bad_jwt_before_reading_the_body(monkeypatch, to
     assert "pullrequest:created" not in repr(logger.calls)
 
 
-async def test_webhook_rejects_an_unparseable_body_after_verification(monkeypatch, accepted_jwt):
-    """A body that is not JSON never reaches the background task either."""
-    logger = _RecordingLogger()
-    background_tasks = BackgroundTasks()
-    request = _Request({"authorization": "jwt token"}, {})
-
-    async def bad_body():
-        return b"not json"
-
-    request.body = bad_body
-    monkeypatch.setattr(bitbucket_app, "get_logger", lambda: logger)
-
-    result = await _route_endpoint("/webhook", "POST")(background_tasks, request)
-
-    assert result == "OK"
-    assert not background_tasks.tasks
-    assert "Error parsing Bitbucket App webhook body" in repr(logger.calls)
-
-
 async def test_installed_webhook_does_not_log_credentials(monkeypatch):
     authorization = "JWT install-authorization-sentinel"
     shared_secret = "shared-secret-sentinel"

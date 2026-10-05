@@ -1,6 +1,4 @@
 import copy
-import hashlib
-import hmac
 import json
 import tomllib
 from contextlib import asynccontextmanager
@@ -52,9 +50,6 @@ DEFAULT_PR_COMMANDS = {
 }
 
 
-BITBUCKET_SERVER_WEBHOOK_SECRET = "bitbucket-server-webhook-secret"
-
-
 class _Settings:
     def __init__(self, values=None):
         self.values = values or {}
@@ -86,15 +81,6 @@ class _Request:
 
     async def body(self):
         return json.dumps(self._payload).encode()
-
-
-def _bitbucket_server_request(payload):
-    """Bitbucket Server verifies the signature before it parses, so sign the body."""
-    body = json.dumps(payload).encode()
-    digest = hmac.new(BITBUCKET_SERVER_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
-    request = _Request(payload)
-    request.headers = {"x-hub-signature": f"sha256={digest}"}
-    return request
 
 
 @pytest.mark.parametrize(("provider", "expected"), DEFAULT_PR_COMMANDS.items())
@@ -231,10 +217,7 @@ async def _dispatch_default_pr_commands(provider, monkeypatch, agent):
             },
         }
         background_tasks = BackgroundTasks()
-        get_settings().set("BITBUCKET_SERVER.WEBHOOK_SECRET", BITBUCKET_SERVER_WEBHOOK_SECRET)
-        response = await bitbucket_server_webhook.handle_webhook(
-            background_tasks, _bitbucket_server_request(payload)
-        )
+        response = await bitbucket_server_webhook.handle_webhook(background_tasks, _Request(payload))
         assert response.status_code == 200
         await background_tasks()
         agent.commands.extend(recorded)

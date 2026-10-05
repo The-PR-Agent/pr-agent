@@ -98,18 +98,7 @@ docker push <your-registry>/pr-agent:bitbucket_server_webhook
 ```
 
 Navigate to `Projects` or `Repositories`, `Settings`, `Webhooks`, `Create Webhook`.
-Fill in the name and URL. Select the 'Pull Request Opened' checkbox to receive that event as a webhook.
-
-The webhook secret is required: if `BITBUCKET_SERVER.WEBHOOK_SECRET` is not configured, the server rejects every incoming webhook with HTTP 403. For example, you can use:
-
-```bash
-WEBHOOK_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
-echo "export BITBUCKET_SERVER__WEBHOOK_SECRET=${WEBHOOK_SECRET}"
-```
-
-:::note
-Set the same secret as the webhook's `Secret` in the Bitbucket UI. For example: `BITBUCKET_SERVER.WEBHOOK_SECRET` --> `BITBUCKET_SERVER__WEBHOOK_SECRET`
-:::
+Fill in the name and URL. For Authentication, select 'None'. Select the 'Pull Request Opened' checkbox to receive that event as a webhook.
 
 The URL should end with `/webhook`, for example: https://domain.com/webhook
 
