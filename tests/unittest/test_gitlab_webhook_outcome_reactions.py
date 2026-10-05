@@ -11,6 +11,7 @@ Both outcome reactions default to empty, so this path is inert until an operator
 """
 
 import asyncio
+import json
 import shlex
 import threading
 from types import SimpleNamespace
@@ -189,7 +190,11 @@ async def test_outcome_reaction_preserves_settings_without_blocking_the_event_lo
     monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args: None)
     monkeypatch.setattr(gitlab_webhook, "handle_request", handle_request)
     background = BackgroundTasks()
-    request = SimpleNamespace(json=AsyncMock(return_value=_note_event()))
+    # The webhook authenticates first and only then reads and parses the body.
+    request = SimpleNamespace(
+        headers={},
+        body=AsyncMock(return_value=json.dumps(_note_event()).encode()),
+    )
 
     with request_cycle_context({}):
         await gitlab_webhook.gitlab_webhook(background, request)

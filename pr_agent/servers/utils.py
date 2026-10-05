@@ -38,6 +38,30 @@ _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
 _MISSING = object()
 
 
+def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
+    """Summarize a parsed webhook payload for logging.
+
+    Webhook bodies carry comment text, pull request descriptions and installation
+    credentials, so log the payload's top-level keys plus the few identifying string
+    fields a reader needs to tell events apart, never the values themselves. Anything
+    that is not a JSON object is reported by its type alone.
+
+    Args:
+        data: the parsed webhook payload
+        identifying_fields: payload keys whose string value is safe and useful to log,
+            such as the event name or the app client key
+    """
+    if not isinstance(data, dict):
+        return {"payload_type": type(data).__name__}
+
+    summary = {"payload_keys": sorted(data.keys())}
+    for name in identifying_fields:
+        value = data.get(name)
+        if isinstance(value, str):
+            summary[name] = value
+    return summary
+
+
 def is_command_comment(body) -> bool:
     """Return True when a comment body is a slash-command comment.
 
