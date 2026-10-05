@@ -20,6 +20,9 @@ to-do list.
 
 ## `[config]` {#config}
 
+| Key | Default | Description |
+| --- | --- | --- |
+| `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
 **models**
 
 | Key | Default | Description |
@@ -54,7 +57,6 @@ to-do list.
 | `extra_config_url` | "" | optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url. |
 | `disable_auto_feedback` | false |  |
 | `enable_auto_approval` | false | when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out |
-| `max_webhook_request_body_bytes` | 5242880 | maximum accepted request body for webhook servers in bytes; must be positive. Configure reverse proxies with an equal or larger limit. |
 | `ai_timeout` | 120 | 2 minutes |
 | `retry_same_model_on_timeout` | true | when false, a timed-out call is not retried on the same model and moves on to fallback_models |
 | `retry_same_model_on_length` | false | when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models |
@@ -568,7 +570,9 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable` | false |  |
-| `channels` | [] | any of: "stdout", "file", "webhook", "slack". Nothing is emitted until a channel is listed here |
+| `channels` | [] | any of: "stdout", "file", "webhook", "slack", "telegram". Nothing is emitted until a channel is listed here |
 | `file_path` | "pr-agent-outputs/reviews.jsonl" | used by the "file" channel |
 | `webhook_url` | "" | used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL |
 | `slack_webhook_url` | "" | used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL |
+| `telegram_bot_token` | "" | used by the "telegram" channel; kept in the fixed api.telegram.org URL path |
+| `telegram_chat_id` | "" | used by the "telegram" channel as sendMessage's destination chat |

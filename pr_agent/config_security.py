@@ -11,7 +11,7 @@
 # PR-Agent host's filesystem, so letting a repo set it would allow a malicious repo to read
 # sensitive host files (e.g. ~/.ssh/*) into the LLM prompt. `paths` therefore stays host-only.
 #
-# push_outputs: routes review data to operator-controlled sinks (webhook/slack/file). Letting a
+# push_outputs: routes review data to operator-controlled sinks (webhook/slack/telegram/file). Letting a
 # repo set any of these would let a malicious repo exfiltrate review data to an arbitrary host,
 # reach internal endpoints (SSRF), or append to arbitrary host files. The whole section is
 # therefore host-only (empty allowlist -> every key dropped).

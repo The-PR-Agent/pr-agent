@@ -610,7 +610,9 @@ agent_identity = "" # empty: discover the identity from earlier agent comments o
 
 [push_outputs] # push tool outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
-channels = [] # any of: "stdout", "file", "webhook", "slack". Nothing is emitted until a channel is listed here
+channels = [] # any of: "stdout", "file", "webhook", "slack", "telegram". Nothing is emitted until a channel is listed here
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL
+telegram_bot_token = "" # used by the "telegram" channel; kept in the fixed api.telegram.org URL path
+telegram_chat_id = "" # used by the "telegram" channel as sendMessage's destination chat
