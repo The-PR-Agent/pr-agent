@@ -107,13 +107,21 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     body_bytes = await request.body()
 
     webhook_secret = get_settings().get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
-    if webhook_secret:
-        if body_bytes.decode('utf-8', errors="replace") == '{"test": true}':
-            return JSONResponse(
-                status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "connection test successful"})
-            )
-        signature_header = request.headers.get("x-hub-signature", None)
-        verify_signature(body_bytes, webhook_secret, signature_header)
+    if not webhook_secret:
+        # Refuse unauthenticated webhooks, as github_app and gitea_app already do. Verifying
+        # only when a secret happens to be configured left any deployment that had not set
+        # one accepting forged events from any internet caller.
+        get_logger().error("Rejecting Bitbucket Server webhook: BITBUCKET_SERVER.WEBHOOK_SECRET is not configured")
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content=jsonable_encoder({"message": "webhook secret not configured"}),
+        )
+    if body_bytes.decode('utf-8', errors="replace") == '{"test": true}':
+        return JSONResponse(
+            status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "connection test successful"})
+        )
+    signature_header = request.headers.get("x-hub-signature", None)
+    verify_signature(body_bytes, webhook_secret, signature_header)
 
     try:
         data = json.loads(body_bytes)

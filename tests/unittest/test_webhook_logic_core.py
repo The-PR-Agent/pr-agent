@@ -1,4 +1,6 @@
 import copy
+import hashlib
+import hmac
 import importlib
 import json
 from contextlib import asynccontextmanager
@@ -53,17 +55,24 @@ def _bitbucket_server_payload(**overrides):
 
 
 class _StubRequest:
-    """Minimal stand-in for a starlette Request, exposing only what handle_webhook reads."""
+    """Minimal stand-in for a starlette Request, exposing only what handle_webhook reads.
 
-    def __init__(self, payload: dict):
+    Signs the body when a secret is given, because handle_webhook verifies before it parses.
+    """
+
+    def __init__(self, payload: dict, secret: str | None = None):
         self._payload = payload
+        self._body = json.dumps(payload).encode()
         self.headers = {}
+        if secret:
+            digest = hmac.new(secret.encode(), self._body, hashlib.sha256).hexdigest()
+            self.headers["x-hub-signature"] = f"sha256={digest}"
 
     async def json(self):
         return self._payload
 
     async def body(self):
-        return json.dumps(self._payload).encode()
+        return self._body
 
 
 @pytest.mark.asyncio
@@ -76,7 +85,8 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
     original_webhook_secret = settings.get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
     original_handle_push_trigger = settings.get("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", None)
     original_url = settings.get("BITBUCKET_SERVER.URL", None)
-    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    webhook_secret = "bitbucket-server-webhook-secret"
+    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", webhook_secret)
     settings.set("BITBUCKET_SERVER.HANDLE_PUSH_TRIGGER", True)
     settings.set("BITBUCKET_SERVER.URL", "https://bitbucket.example.com")
 
@@ -103,7 +113,7 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
 
     payload = _bitbucket_server_payload()
     payload["eventKey"] = event_key
-    request = _StubRequest(payload)
+    request = _StubRequest(payload, secret=webhook_secret)
     background_tasks = BackgroundTasks()
 
     try:

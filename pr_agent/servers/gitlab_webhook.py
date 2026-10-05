@@ -254,7 +254,14 @@ def should_process_pr_logic(data) -> bool:
     return shared_should_process_pr_logic(data, provider="gitlab")
 
 
-def authenticate_gitlab_webhook(request: Request, log_context: dict):
+def authenticate_gitlab_webhook(request: Request, log_context: dict) -> tuple[JSONResponse | None, str | None]:
+    """Authenticate a webhook request, returning (unauthorized_response, provider_token).
+
+    Read only the headers and the host settings, so a rejected request never pays for a
+    per-request settings copy. `provider_token` is the token a secret-provider secret
+    resolved to, or None when the shared secret authenticated the request; the caller
+    applies it to the copy it installs once the request is authenticated.
+    """
     request_token = request.headers.get("X-Gitlab-Token")
     # Built only for a request that will actually consult it, so a cloud client that
     # fails to initialize or read cannot drop webhooks authenticated by shared secret instead.
@@ -265,47 +272,54 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
             secret = secret_provider.get_secret(request_token) if secret_provider else None
         except Exception as e:
             get_logger().warning(f"Secret provider failed ({type(e).__name__}), falling back to the shared secret")
+    provider_token = None
     if secret:
         try:
             secret_dict = json.loads(secret)
-            context["settings"].gitlab.personal_access_token = secret_dict["gitlab_token"]
+            provider_token = secret_dict["gitlab_token"]
             log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
         except Exception as e:
             get_logger().error(
                 f"Failed to validate the secret for the provided webhook token: {type(e).__name__}")
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                                content=jsonable_encoder({"message": "unauthorized"}))
+                                content=jsonable_encoder({"message": "unauthorized"})), None
     elif get_settings().get("GITLAB.SHARED_SECRET"):
         secret = get_settings().get("GITLAB.SHARED_SECRET")
         if not hmac.compare_digest(str(request_token or ""), str(secret)):
             get_logger().error("Failed to validate secret")
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                                content=jsonable_encoder({"message": "unauthorized"}))
+                                content=jsonable_encoder({"message": "unauthorized"})), None
     else:
         get_logger().error("Failed to validate secret")
         return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                            content=jsonable_encoder({"message": "unauthorized"}))
-    gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
+                            content=jsonable_encoder({"message": "unauthorized"})), None
+    # A secret-provider secret carries its own token, so it satisfies this check even when the
+    # host has no GITLAB.PERSONAL_ACCESS_TOKEN of its own.
+    gitlab_token = provider_token or get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
     if not gitlab_token:
         get_logger().error("No gitlab token found")
         return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                            content=jsonable_encoder({"message": "unauthorized"}))
-    return None
+                            content=jsonable_encoder({"message": "unauthorized"})), None
+    return None, provider_token
 
 
 @router.post("/webhook")
 async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     start_time = datetime.now()
-    context["settings"] = copy.deepcopy(global_settings)
 
     log_context = {"server_type": "gitlab_app"}
     get_logger().debug("Received a GitLab webhook")
-    # Authenticate before parsing: an unauthenticated request must not reach the JSON
-    # parser, and its content must not reach the log. authenticate_gitlab_webhook reads
-    # only headers and the request-scoped settings copy installed above.
-    unauthorized_response = authenticate_gitlab_webhook(request, log_context)
+    # Authenticate before anything else: an unauthenticated request must not pay for a
+    # settings copy, reach the JSON parser, or have its content reach the log.
+    unauthorized_response, provider_token = authenticate_gitlab_webhook(request, log_context)
     if unauthorized_response is not None:
         return unauthorized_response
+
+    # Install a per-request settings clone only for an authenticated request. Must precede
+    # apply_repo_settings(), which mutates get_settings() (context["settings"] when present).
+    context["settings"] = copy.deepcopy(global_settings)
+    if provider_token:
+        context["settings"].gitlab.personal_access_token = provider_token
 
     try:
         request_json = json.loads(await request.body())

@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 from unittest import mock
 
@@ -11,6 +13,21 @@ from pr_agent.config_loader import global_settings
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, github_app
 from pr_agent.servers.utils import is_ask_command_comment, is_command_comment
+
+WEBHOOK_SECRET = "bitbucket-server-webhook-secret"
+
+
+class _Settings:
+    def __init__(self, values):
+        self._values = values
+
+    def get(self, key, default=None):
+        return self._values.get(key, default)
+
+
+def _signature(payload):
+    body = json.dumps(payload).encode()
+    return f"sha256={hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()}"
 
 
 class _Request:
@@ -98,7 +115,10 @@ async def _run_gitlab_note_webhook(monkeypatch, note_body, note_type=None):
         "object_attributes": object_attributes,
     }
 
-    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *_args, **_kwargs: None)
+    # Authenticated, with no provider token: the shared secret carries no gitlab_token.
+    monkeypatch.setattr(
+        gitlab_webhook, "authenticate_gitlab_webhook", lambda *_args, **_kwargs: (None, None)
+    )
     monkeypatch.setattr(gitlab_webhook, "get_git_provider_with_context", lambda **_kwargs: mock.MagicMock())
     monkeypatch.setattr(gitlab_webhook, "handle_request", record_request)
 
@@ -319,13 +339,21 @@ async def _run_bitbucket_server_comment_webhook(monkeypatch, comment_text):
     }
 
     monkeypatch.setattr(bitbucket_server_webhook, "_run_commands_sequentially", record_commands)
+    monkeypatch.setattr(
+        bitbucket_server_webhook,
+        "get_settings",
+        lambda: _Settings({"BITBUCKET_SERVER.WEBHOOK_SECRET": WEBHOOK_SECRET}),
+    )
 
     endpoint = next(
         route.endpoint for route in bitbucket_server_webhook.router.routes if route.path == "/webhook"
     )
     background_tasks = BackgroundTasks()
     with request_cycle_context({}):
-        response = await endpoint(background_tasks, _Request(payload, headers={}))
+        response = await endpoint(
+            background_tasks,
+            _Request(payload, headers={"x-hub-signature": _signature(payload)}),
+        )
         await background_tasks()
     return response, recorded
 

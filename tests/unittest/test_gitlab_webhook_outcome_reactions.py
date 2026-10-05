@@ -187,7 +187,7 @@ async def test_outcome_reaction_preserves_settings_without_blocking_the_event_lo
     monkeypatch.setattr(provider, "react_to_outcome", blocking_reaction)
     monkeypatch.setattr(gitlab_webhook, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(gitlab_webhook, "is_bot_user", lambda data: False)
-    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args: None)
+    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args: (None, None))
     monkeypatch.setattr(gitlab_webhook, "handle_request", handle_request)
     background = BackgroundTasks()
     # The webhook authenticates first and only then reads and parses the body.

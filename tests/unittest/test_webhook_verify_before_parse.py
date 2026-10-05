@@ -12,9 +12,10 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTasks
 from starlette.responses import Response
-from starlette_context import request_cycle_context
+from starlette_context import context, request_cycle_context
 
 from pr_agent.servers import bitbucket_server_webhook, gitea_app, gitlab_webhook
 from pr_agent.servers.utils import payload_log_summary
@@ -228,7 +229,7 @@ async def test_gitlab_never_logs_the_payload_body(monkeypatch):
     payload = {"object_kind": "merge_request", "object_attributes": {"title": SECRET_SENTINEL}}
     request = _Request(payload, headers={})
     monkeypatch.setattr(gitlab_webhook, "get_logger", lambda: logger)
-    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args, **kwargs: (None, None))
     monkeypatch.setattr(gitlab_webhook, "is_bot_user", lambda data: True)
 
     tasks = BackgroundTasks()
@@ -244,7 +245,7 @@ async def test_gitlab_reports_a_malformed_body_after_authentication(monkeypatch)
     logger = _RecordingLogger()
     request = _Request(None, headers={}, body=b"not json")
     monkeypatch.setattr(gitlab_webhook, "get_logger", lambda: logger)
-    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args, **kwargs: (None, None))
 
     tasks = BackgroundTasks()
     with request_cycle_context({}):
@@ -252,6 +253,51 @@ async def test_gitlab_reports_a_malformed_body_after_authentication(monkeypatch)
 
     assert response.status_code == 400
     assert tasks.tasks == []
+
+
+async def test_gitlab_installs_the_settings_copy_only_once_authenticated(monkeypatch):
+    """The copy is installed after authentication, and carries the token the secret resolved."""
+    payload = {"object_kind": "merge_request"}
+    request = _Request(payload, headers={})
+    monkeypatch.setattr(gitlab_webhook, "get_logger", lambda: _RecordingLogger())
+    monkeypatch.setattr(
+        gitlab_webhook, "authenticate_gitlab_webhook", lambda *args, **kwargs: (None, "secret-provider-token")
+    )
+    monkeypatch.setattr(gitlab_webhook, "is_bot_user", lambda data: True)
+    monkeypatch.setattr(gitlab_webhook, "global_settings", _gitlab_host_settings())
+
+    tasks = BackgroundTasks()
+    with request_cycle_context({}):
+        await _endpoint(gitlab_webhook)(tasks, request)
+        installed = context["settings"]
+
+    assert installed.gitlab.personal_access_token == "secret-provider-token"
+
+
+async def test_gitlab_leaves_no_settings_copy_behind_a_rejected_request(monkeypatch):
+    request = _Request({"object_kind": "merge_request"}, headers={})
+    monkeypatch.setattr(gitlab_webhook, "get_logger", lambda: _RecordingLogger())
+    monkeypatch.setattr(
+        gitlab_webhook,
+        "authenticate_gitlab_webhook",
+        lambda *args, **kwargs: (
+            JSONResponse(status_code=401, content={"message": "unauthorized"}),
+            None,
+        ),
+    )
+    monkeypatch.setattr(gitlab_webhook, "global_settings", _gitlab_host_settings())
+
+    tasks = BackgroundTasks()
+    with request_cycle_context({}):
+        response = await _endpoint(gitlab_webhook)(tasks, request)
+        assert "settings" not in context
+
+    assert response.status_code == 401
+    assert tasks.tasks == []
+
+
+def _gitlab_host_settings():
+    return SimpleNamespace(gitlab=SimpleNamespace(personal_access_token="host-token"))
 
 
 # Bitbucket Server: the whole payload used to be logged at INFO before verification.
@@ -269,7 +315,7 @@ async def test_bitbucket_server_rejects_a_bad_signature_before_parsing(monkeypat
     monkeypatch.setattr(
         bitbucket_server_webhook,
         "get_settings",
-        lambda: _bitbucket_server_settings(),
+        _bitbucket_server_settings,
     )
 
     tasks = BackgroundTasks()
@@ -277,7 +323,28 @@ async def test_bitbucket_server_rejects_a_bad_signature_before_parsing(monkeypat
         await _endpoint(bitbucket_server_webhook)(tasks, request)
 
     assert caught.value.status_code == 403
+    assert request.json_calls == 0
+    assert tasks.tasks == []
+    assert SECRET_SENTINEL not in logger.logged
 
+
+async def test_bitbucket_server_rejects_every_webhook_without_a_configured_secret(monkeypatch):
+    """An unconfigured secret used to accept anything, so the signature check never ran."""
+    logger = _RecordingLogger()
+    payload = {"eventKey": "pr:opened", "pullRequest": {"title": SECRET_SENTINEL}}
+    request = _Request(payload, headers={"x-hub-signature": _sign(json.dumps(payload).encode())})
+    monkeypatch.setattr(bitbucket_server_webhook, "get_logger", lambda: logger)
+    monkeypatch.setattr(
+        bitbucket_server_webhook,
+        "get_settings",
+        lambda: _bitbucket_server_settings(**{"BITBUCKET_SERVER.WEBHOOK_SECRET": ""}),
+    )
+
+    tasks = BackgroundTasks()
+    with request_cycle_context({}):
+        response = await _endpoint(bitbucket_server_webhook)(tasks, request)
+
+    assert response.status_code == 403
     assert request.json_calls == 0
     assert tasks.tasks == []
     assert SECRET_SENTINEL not in logger.logged
@@ -299,7 +366,7 @@ async def test_bitbucket_server_logs_only_the_event_key_of_a_verified_payload(mo
     monkeypatch.setattr(
         bitbucket_server_webhook,
         "get_settings",
-        lambda: _bitbucket_server_settings(),
+        _bitbucket_server_settings,
     )
     monkeypatch.setattr(
         bitbucket_server_webhook,
@@ -327,7 +394,7 @@ async def test_bitbucket_server_keeps_the_connection_test_pass(monkeypatch):
     monkeypatch.setattr(
         bitbucket_server_webhook,
         "get_settings",
-        lambda: _bitbucket_server_settings(),
+        _bitbucket_server_settings,
     )
 
     tasks = BackgroundTasks()
