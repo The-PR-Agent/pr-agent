@@ -5,6 +5,9 @@ on:
 #  schedule:
 #    - cron: '0 0 * * *' # This cron expression runs the workflow every night at midnight UTC
 
+permissions:
+  contents: read
+
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
