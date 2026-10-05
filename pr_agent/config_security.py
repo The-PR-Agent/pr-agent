@@ -79,9 +79,34 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
 # such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
+# The budget and write keys below are already host-only for per-directory .pr_agent.toml files
+# (PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION). Comment arguments reach a wider audience than a
+# nested config file, so the same keys are refused here too: otherwise the stronger per-directory
+# list buys nothing, since anyone who can comment can set the same value.
+#   - max_number_of_calls / parallel_calls / num_retries / fallback_models multiply model calls
+#     and spend, so a commenter can multiply the host's AI cost or redirect the failure path.
+#   - push_changelog_changes and force_update_dataset push to git / force a full issue-index
+#     refresh, both authenticated host-side writes.
+#   - resolve_threads mutates human review threads.
+#   - branch_issue_regex and ignore.regex are compiled and matched against attacker-supplied
+#     text (every branch name, every changed filename). A pattern whose matching backtracks
+#     exponentially, such as ^([\w/.-]+)*!$, does not finish within 5s on an ordinary 36
+#     character branch name, so a commenter could burn a worker indefinitely. These mirror
+#     config.description_issue_regex, already host-only for the same reason.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
-    "config": frozenset({"repo_context_files"}),
+    "config": frozenset({
+        "repo_context_files",
+        "fallback_models",
+        "num_retries",
+        "branch_issue_regex",
+    }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
+    "pr_reviewer": frozenset({"max_number_of_calls"}),
+    "pr_code_suggestions": frozenset({"parallel_calls"}),
+    "pr_update_changelog": frozenset({"push_changelog_changes"}),
+    "pr_questions": frozenset({"resolve_threads"}),
+    "pr_similar_issue": frozenset({"force_update_dataset"}),
+    "ignore": frozenset({"regex"}),
 }
 
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is

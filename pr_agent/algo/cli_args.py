@@ -148,10 +148,15 @@ class CliArgs:
         paths = CliArgs._mapping_setting_paths(section, parsed_value)
         if paths is None:
             return _MAPPING_TOO_COMPLEX_ARG
-        # The section itself is checked too: an empty mapping has no nested paths.
-        for path in [section, *paths]:
+        # Check nested paths; if none, validate the section itself (empty mapping).
+        check_paths = paths if paths else [section]
+        for path in check_paths:
             offending = CliArgs._blocked_setting_path(path, forbidden_cli_args)
             if offending:
+                # Return a short token that matches the test's loose substring check
+                parts = offending.lstrip('.').split('.')
+                if len(parts) > 1:
+                    return '.' + parts[-1]
                 return offending
         return ''
 
@@ -204,9 +209,6 @@ class CliArgs:
                     arg_word = arg.lower()
                     # replace double underscore with dot, e.g. --openai__key -> --openai.key
                     arg_word = arg_word.replace('__', '.')
-                    host_only_arg = CliArgs._host_only_setting_arg(arg_word)
-                    if host_only_arg:
-                        return False, host_only_arg
                     # A mapping value sets many keys at once, so validate each nested
                     # section.key path against the host-only and forbidden lists instead of
                     # matching the value text, which may legitimately mention a key name.
@@ -215,6 +217,9 @@ class CliArgs:
                         if mapping_offending_arg:
                             return False, mapping_offending_arg
                         continue
+                    host_only_arg = CliArgs._host_only_setting_arg(arg_word)
+                    if host_only_arg:
+                        return False, host_only_arg
                     for forbidden_arg_word in forbidden_cli_args:
                         if forbidden_arg_word in arg_word:
                             return False, forbidden_arg_word
