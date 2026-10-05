@@ -21,6 +21,7 @@ bad-URL assertion to TASK_STATE_COMPLETED — making test_bad_url_roundtrip fail
 Note: import pr_agent.config_loader first to avoid the pr_agent.log <->
 custom_merge_loader circular import (mirrors server.py)."""
 import asyncio
+import json
 import os
 from contextlib import suppress
 
@@ -586,3 +587,209 @@ class TestA2ARoundTripLiveLLM:
         assert text, "live agent returned empty artifacts"
         assert "(no output produced)" not in text
         assert not text.startswith("Error:")
+
+
+@pytest.fixture
+def mosaico_boundary_settings():
+    from pr_agent.config_loader import global_settings
+
+    keys = ("MOSAICO.BEARER_TOKENS", "CONFIG.MAX_WEBHOOK_REQUEST_BODY_BYTES")
+    before = {key: global_settings.get(key) for key in keys}
+    global_settings.set("MOSAICO.BEARER_TOKENS", {"alice": "alice-secret", "bob": "bob-secret"})
+    yield global_settings
+    for key, value in before.items():
+        global_settings.set(key, value)
+
+
+class TestMosaicoRequestBoundaries:
+    @pytest.mark.parametrize("authorization", [
+        [], [("Authorization", "Basic alice-secret")], [("Authorization", "Bearer wrong-secret")],
+        [("Authorization", "Bearer")], [("Authorization", "Bearer alice-secret extra")],
+        [("Authorization", "Bearer alice-secret"), ("Authorization", "Bearer bob-secret")],
+    ])
+    async def test_unauthorized_calls_reject_before_reading_body_or_running_health(
+        self, monkeypatch, mosaico_boundary_settings, authorization,
+    ):
+        from pr_agent.mosaico import server
+
+        async def must_not_run(*args, **kwargs):
+            raise AssertionError("unauthorized caller reached model work")
+
+        async def must_not_read():
+            raise AssertionError("unauthorized request body was read")
+            yield b""  # make this an async body iterator
+
+        monkeypatch.setattr(server, "health_check", must_not_run)
+        monkeypatch.setattr(executor_mod, "route_and_run_result", must_not_run)
+        async with _build_client(server.build_app()) as client:
+            response = await client.post("/", content=must_not_read(), headers=authorization)
+            assert response.status_code == 401
+            assert response.headers["www-authenticate"] == "Bearer"
+            assert response.json() == {"detail": "Unauthorized"}
+            assert (await client.get("/health", headers=authorization)).status_code == 401
+
+    async def test_public_card_advertises_auth_and_valid_health_remains_live(
+        self, monkeypatch, mosaico_boundary_settings,
+    ):
+        from pr_agent.mosaico import server
+
+        calls = []
+
+        async def healthy():
+            calls.append("probe")
+            return "OK"
+
+        monkeypatch.setattr(server, "health_check", healthy)
+        async with _build_client(server.build_app()) as client:
+            card = (await client.get("/.well-known/agent-card.json")).json()
+            assert card["securitySchemes"]["bearerAuth"]["httpAuthSecurityScheme"]["scheme"] == "bearer"
+            assert "bearerAuth" in card["securityRequirements"][0]["schemes"]
+            assert "alice-secret" not in json.dumps(card)
+            assert "bob-secret" not in json.dumps(card)
+            health = await client.get("/health", headers={"Authorization": "bearer alice-secret"})
+            assert health.status_code == 200
+            assert health.json()["is_healthy"] is True
+        assert calls == ["probe"]
+
+    @pytest.mark.parametrize("declared_length", [None, "invalid", "10000000"])
+    async def test_declared_and_streamed_body_limits_precede_executor(
+        self, monkeypatch, mosaico_boundary_settings, declared_length,
+    ):
+        from pr_agent.mosaico.server import build_app
+
+        mosaico_boundary_settings.set("CONFIG.MAX_WEBHOOK_REQUEST_BODY_BYTES", 8)
+
+        async def must_not_run(*args, **kwargs):
+            raise AssertionError("oversized body reached executor")
+
+        async def chunks():
+            yield b"12345678"
+            yield b"9"
+
+        monkeypatch.setattr(executor_mod, "route_and_run_result", must_not_run)
+        headers = {"Authorization": "Bearer alice-secret"}
+        if declared_length is not None:
+            headers["Content-Length"] = declared_length
+        async with _build_client(build_app()) as client:
+            response = await client.post("/", content=chunks(), headers=headers)
+        assert response.status_code == 413
+        assert response.json() == {"detail": "Request body too large"}
+
+    async def test_exact_body_limit_reaches_real_a2a_executor(self, monkeypatch, mosaico_boundary_settings):
+        from pr_agent.mosaico.server import build_app
+
+        body = json.dumps(_message_send_body("review this")).encode()
+        mosaico_boundary_settings.set("CONFIG.MAX_WEBHOOK_REQUEST_BODY_BYTES", len(body))
+
+        async def route(text):
+            assert text == "review this"
+            return RouteResult("review output", True)
+
+        monkeypatch.setattr(executor_mod, "route_and_run_result", route)
+        async with _build_client(build_app()) as client:
+            response = await client.post("/", content=body, headers={"Authorization": "Bearer alice-secret"})
+        assert response.status_code == 200
+        assert _extract_artifact_text(response.json()["result"]) == "review output"
+
+    async def test_task_history_and_artifacts_are_scoped_to_authenticated_principal(
+        self, monkeypatch, mosaico_boundary_settings,
+    ):
+        from pr_agent.mosaico import dispatch
+        from pr_agent.mosaico.server import build_app
+
+        fetched = []
+
+        async def fetch(url):
+            fetched.append(url)
+            return _DIFF_TEXT
+
+        async def run_diff(*args, **kwargs):
+            return RouteResult("alice private review", True)
+
+        monkeypatch.setattr(dispatch, "_fetch_public_diff", fetch)
+        monkeypatch.setattr(dispatch, "_run_on_diff", run_diff)
+        alice = {"Authorization": "Bearer alice-secret"}
+        bob = {"Authorization": "Bearer bob-secret", "X-User": "alice"}
+        async with _build_client(build_app()) as client:
+            first = (await client.post(
+                "/", json=_message_send_body("Review https://github.com/acme/private-context/pull/1"), headers=alice,
+            )).json()["result"]["task"]
+            listing = {"jsonrpc": "2.0", "id": "list", "method": "ListTasks", "params": {"includeArtifacts": True}}
+            listed = (await client.post("/", json=listing, headers=alice)).json()["result"]
+            assert [task["id"] for task in listed["tasks"]] == [first["id"]]
+            assert _extract_artifact_text(listed["tasks"][0]) == "alice private review"
+            assert listed["tasks"][0]["history"]
+            other = (await client.post("/", json=listing, headers=bob)).json()["result"]
+            assert not other.get("tasks")
+            assert not other.get("totalSize")
+            for method in ("GetTask", "CancelTask"):
+                request = {"jsonrpc": "2.0", "id": "other", "method": method, "params": {"id": first["id"]}}
+                rejected = (await client.post("/", json=request, headers=bob)).json()
+                assert "error" in rejected, rejected
+                assert rejected["error"]["code"] == -32001
+            missing = (await client.post("/", json=_cancel_task_body("missing-task"), headers=bob)).json()
+            assert rejected["error"] == missing["error"]
+            for headers in (alice, bob):
+                subscription = {
+                    "jsonrpc": "2.0", "id": "subscribe", "method": "SubscribeToTask", "params": {"id": first["id"]},
+                }
+                assert (await client.post("/", json=subscription, headers=headers)).json()["error"]["code"] == -32004
+            resume = _message_send_body("continue")
+            resume["params"]["message"]["taskId"] = first["id"]
+            assert (await client.post("/", json=resume, headers=bob)).json()["error"]["code"] == -32001
+            bob_follow_up = (await client.post(
+                "/", json=_message_send_body("What changed?", context_id=first["contextId"]), headers=bob,
+            )).json()["result"]
+            assert "requires a PR URL" in _extract_artifact_text(bob_follow_up)
+            alice_follow_up = (await client.post(
+                "/", json=_message_send_body("What changed?", context_id=first["contextId"]), headers=alice,
+            )).json()["result"]
+            assert _extract_artifact_text(alice_follow_up) == "alice private review"
+        assert fetched == ["https://github.com/acme/private-context/pull/1"] * 2
+
+    async def test_other_principal_cannot_cancel_working_task(self, monkeypatch, mosaico_boundary_settings):
+        from pr_agent.mosaico.server import build_app
+
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def route(text):
+            started.set()
+            await release.wait()
+            return RouteResult("finished", True)
+
+        monkeypatch.setattr(executor_mod, "route_and_run_result", route)
+        async with _build_client(build_app()) as client:
+            try:
+                first = (await client.post(
+                    "/", json=_message_send_body("review this", return_immediately=True),
+                    headers={"Authorization": "Bearer alice-secret"},
+                )).json()["result"]["task"]
+                await asyncio.wait_for(started.wait(), timeout=1)
+                rejected = (await client.post(
+                    "/", json=_cancel_task_body(first["id"]), headers={"Authorization": "Bearer bob-secret"},
+                )).json()
+                assert "error" in rejected, rejected
+                assert rejected["error"]["code"] == -32001
+                still_working = (await client.post(
+                    "/", json=_get_task_body(first["id"]), headers={"Authorization": "Bearer alice-secret"},
+                )).json()["result"]
+                assert _get_task_state(still_working) == "TASK_STATE_WORKING"
+                canceled = (await client.post(
+                    "/", json=_cancel_task_body(first["id"]), headers={"Authorization": "Bearer alice-secret"},
+                )).json()["result"]
+                assert _get_task_state(canceled) == "TASK_STATE_CANCELED"
+                persisted = (await client.post(
+                    "/", json=_get_task_body(first["id"]), headers={"Authorization": "Bearer alice-secret"},
+                )).json()["result"]
+                assert _get_task_state(persisted) == "TASK_STATE_CANCELED"
+            finally:
+                release.set()
+
+    @pytest.mark.parametrize("params, code", [({"id": "missing-task"}, -32001), ({}, -32602)])
+    async def test_cancel_preserves_missing_task_and_required_id_errors(self, mosaico_boundary_settings, params, code):
+        from pr_agent.mosaico.server import build_app
+
+        request = {"jsonrpc": "2.0", "id": "cancel", "method": "CancelTask", "params": params}
+        async with _build_client(build_app()) as client:
+            response = await client.post("/", json=request, headers={"Authorization": "Bearer alice-secret"})
+        assert response.json()["error"]["code"] == code

@@ -598,6 +598,8 @@ target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 max_artifact_size = 50000
 
 [mosaico]
+bearer_tokens = {} # principal names to distinct bearer secrets; empty permits anonymous trusted-network use
+routing_scan_max_chars = 65536 # positive character limit for PR URL and command detection; does not truncate diffs
 health_timeout_seconds = 10 # finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work
 context_history_max_tasks = 100 # maximum prior tasks considered for a context follow-up; set from 1 to 1000
 
