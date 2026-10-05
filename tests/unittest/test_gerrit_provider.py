@@ -49,6 +49,13 @@ def test_get_repo_settings_is_empty_when_the_default_branch_has_none(tmp_path):
     assert provider.get_repo_settings() == b""
 
 
+def test_get_repo_settings_is_empty_when_the_settings_path_is_a_directory(tmp_path):
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = _make_repo(tmp_path, [".pr_agent.toml/nested"]), tmp_path
+
+    assert provider.get_repo_settings() == b""
+
+
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
     repo = _make_repo(tmp_path, ["keep.py", "gone.py"])
     (tmp_path / "gone.py").unlink()

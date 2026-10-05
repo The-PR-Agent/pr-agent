@@ -269,7 +269,10 @@ class GerritProvider(GitProvider):
 
     def get_repo_settings(self):
         try:
-            return (self.repo.branches[0].commit.tree / ".pr_agent.toml").data_stream.read()
+            settings_entry = self.repo.branches[0].commit.tree / ".pr_agent.toml"
+            if settings_entry.type != "blob":
+                return b""
+            return settings_entry.data_stream.read()
         except (IndexError, KeyError, OSError):
             return b""
 
