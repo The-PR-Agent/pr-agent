@@ -161,6 +161,16 @@ def _clone_authorization_header(repo_url: str) -> str | None:
     encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
     return f"Authorization: Basic {encoded}"
 
+def _is_plain_path_segment(value: str) -> bool:
+    """True when `value` is a single repository/path segment safe to interpolate.
+
+    Rejects separators, traversal, whitespace, control characters and URL punctuation,
+    so a misconfigured (or attacker-influenced) settings-repository name cannot redirect
+    the lookup to another path or host.
+    """
+    return bool(value) and not set(value) & set("/\\?#%@: \t\n\r\x00")
+
+
 _GLOBAL_SETTINGS_CACHE: dict = {}
 _GLOBAL_SETTINGS_CACHE_TTL_SECONDS = 15 * 60
 _GLOBAL_SETTINGS_CACHE_MAX_SIZE = 256
@@ -764,30 +774,76 @@ class GitProvider(ABC):
         the provider has no organisation-level home for global settings.
 
         This is the hook that `_get_global_repo_settings` uses to decide which
-        namespace's `pr-agent-settings` repository (or equivalent) to consult.
+        namespace's configured settings repository to consult.
         Providers that support global settings override this; the default is None,
         which disables global settings for the provider.
         """
         return None
 
+    def _resolve_global_settings_repo(self, namespace: str) -> Optional[str]:
+        """Return the settings repository the host configured for `namespace`, or None.
+
+        Namespace-wide settings are only read from the repository named by
+        `config.global_settings_repo` (host-only). An empty value disables the lookup,
+        so a repository cannot be adopted at namespace scope by naming itself: anyone able
+        to create a repository in a namespace must not be able to decide the configuration
+        of every repository in it. Accepts a bare name (resolved inside `namespace`) or
+        `<namespace>/<name>`, which must name the same namespace.
+        """
+        configured = getattr(get_settings().config, "global_settings_repo", "")
+        if not isinstance(configured, str):
+            get_logger().warning(
+                "Ignoring config.global_settings_repo: expected a repository name, got "
+                f"{type(configured).__name__}"
+            )
+            return None
+        configured = configured.strip()
+        if not configured:
+            get_logger().debug(
+                "Skipping global settings: config.global_settings_repo is not set"
+            )
+            return None
+
+        parts = configured.split("/")
+        owner, name = (namespace, parts[0]) if len(parts) == 1 else (
+            (parts[0], parts[1]) if len(parts) == 2 else ("", "")
+        )
+        # Refuse rather than guess: a malformed value or one pointing outside the namespace
+        # would read a repository the host did not name for this namespace.
+        if not (_is_plain_path_segment(owner) and _is_plain_path_segment(name)):
+            get_logger().warning(f"Ignoring invalid config.global_settings_repo: {configured}")
+            return None
+        if owner != namespace:
+            get_logger().warning(
+                f"Ignoring config.global_settings_repo: {configured} is not in namespace {namespace}"
+            )
+            return None
+        return name
+
     def _get_global_repo_settings(self):
-        """Load the namespace-wide `pr-agent-settings` .pr_agent.toml, if enabled.
+        """Load the namespace-wide .pr_agent.toml from the configured settings repository.
 
         This is a concrete template: it gates on `use_global_settings_file`, resolves
-        the owning namespace via `get_owning_namespace()`, and delegates the actual
-        provider API call (and its 403/404 mapping) to `_fetch_global_repo_settings`,
-        all behind the shared TTL cache. Providers build the cache key through
-        `_get_global_settings_cache_key` so instance-specific keys (e.g. GitHub
-        enterprise hosts) stay distinct.
+        the owning namespace via `get_owning_namespace()` and the settings repository via
+        `_resolve_global_settings_repo`, then delegates the actual provider API call
+        (and its 403/404 mapping) to `_fetch_global_repo_settings`, all behind the shared
+        TTL cache. Providers build the cache key through `_get_global_settings_cache_key`
+        so instance-specific keys (e.g. GitHub enterprise hosts) stay distinct.
         """
         if not get_settings().config.use_global_settings_file:
             return ""
         namespace = self.get_owning_namespace()
         if not namespace:
             return ""
+        settings_repo = self._resolve_global_settings_repo(namespace)
+        if not settings_repo:
+            return ""
+        # The repository name is part of the key so switching config.global_settings_repo
+        # does not serve the previous repository's settings from the TTL cache.
+        cache_key = self._get_global_settings_cache_key(namespace)
         return get_cached_global_settings(
-            self._get_global_settings_cache_key(namespace),
-            lambda: self._fetch_global_repo_settings(namespace))
+            f"{cache_key}:{settings_repo}" if cache_key else "",
+            lambda: self._fetch_global_repo_settings(namespace, settings_repo))
 
     def _get_global_settings_cache_key(self, namespace: str) -> str:
         """Cache key for a namespace's global settings.
@@ -797,9 +853,9 @@ class GitProvider(ABC):
         """
         return f"{type(self).__name__}:{namespace}"
 
-    def _fetch_global_repo_settings(self, namespace: str):
-        """Fetch the raw `.pr_agent.toml` from the namespace's `pr-agent-settings`
-        repository. Return "" for an expected "not found"/no-access result (so it is
+    def _fetch_global_repo_settings(self, namespace: str, settings_repo: str):
+        """Fetch the raw `.pr_agent.toml` from the configured `settings_repo` in
+        `namespace`. Return "" for an expected "not found"/no-access result (so it is
         cached) and let transient/unexpected errors propagate. Overridden per provider."""
         return ""
 

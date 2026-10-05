@@ -1840,6 +1840,7 @@ class TestGitLabGlobalSettings:
         provider.gl.projects.get.return_value = proj
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider._get_global_repo_settings()
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
         provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
@@ -1856,6 +1857,7 @@ class TestGitLabGlobalSettings:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider._get_global_repo_settings()
 
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
@@ -1872,6 +1874,7 @@ class TestGitLabGlobalSettings:
         provider.gl.projects.get.return_value = proj
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider._get_global_repo_settings()
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
         provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
@@ -1891,6 +1894,7 @@ class TestGitLabGlobalSettings:
         provider.gl.projects.get.return_value = proj
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             provider._get_global_repo_settings()
             provider._get_global_repo_settings()
         # Only one lookup for the settings project despite two calls (cached).

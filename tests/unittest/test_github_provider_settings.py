@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,6 +15,14 @@ def _clear_global_settings_cache():
     _gp._GLOBAL_SETTINGS_CACHE.clear()
     yield
     _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _named_global_settings_repo():
+    # Namespace-wide settings are off unless the host names the repository, so the tests
+    # below that exercise the global path set it explicitly.
+    with _global_settings_repo("pr-agent-settings"):
+        yield
 
 
 def _not_found(name):
@@ -57,6 +66,18 @@ def _provider(local_settings=None, global_settings=None):
         else {}
     )
     return provider
+
+
+@contextmanager
+def _global_settings_repo(repo):
+    """Point config.global_settings_repo at `repo` for the duration of the block."""
+    settings = get_settings()
+    original = getattr(settings.config, "global_settings_repo", "")
+    settings.config.global_settings_repo = repo
+    try:
+        yield
+    finally:
+        settings.config.global_settings_repo = original
 
 
 def test_get_global_repo_settings_repo_less_provider_does_not_crash():

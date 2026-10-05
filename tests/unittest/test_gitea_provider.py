@@ -579,6 +579,7 @@ class TestGiteaGlobalSettings:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider.get_repo_settings()
 
         assert result == [("global", global_toml.encode('utf-8')), ("local", local_toml.encode('utf-8'))]
@@ -591,6 +592,7 @@ class TestGiteaGlobalSettings:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider.get_repo_settings()
 
         assert result == [("local", local_toml.encode('utf-8'))]
@@ -602,6 +604,7 @@ class TestGiteaGlobalSettings:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider.get_repo_settings()
 
         assert result == [("local", b"[pr_reviewer]\ntemperature = 0.2\n")]
@@ -612,6 +615,7 @@ class TestGiteaGlobalSettings:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider.get_repo_settings()
 
         assert result == ""
@@ -623,6 +627,7 @@ class TestGiteaGlobalSettings:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
 
@@ -633,7 +638,7 @@ class TestGiteaGlobalSettings:
         provider.repo_api.repo_get.side_effect = ApiException(status=500)
 
         with pytest.raises(ApiException):
-            provider._fetch_global_repo_settings("owner")
+            provider._fetch_global_repo_settings("owner", "pr-agent-settings")
 
 
 class TestGiteaProviderPRCommits:

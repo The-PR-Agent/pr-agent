@@ -89,6 +89,11 @@ FORBIDDEN_ARGS = [
     "--config.description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
     "--config__description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
     '--config={"description_issue_regex": "(?:[A-Za-z ]+)+X(d+)"}',
+    # global_settings_repo names the repository whose .pr_agent.toml is applied to a whole
+    # namespace, so a comment must not be able to choose it either.
+    "--config.global_settings_repo=evil-settings",
+    "--config__global_settings_repo=evil-settings",
+    '--config={"global_settings_repo": "evil-settings"}',
     # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_tool_errors=false",

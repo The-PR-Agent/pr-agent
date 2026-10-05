@@ -145,10 +145,10 @@ class BitbucketProvider(GitProvider):
     def _get_global_settings_cache_key(self, workspace: str) -> str:
         return f"bitbucket:{workspace}"
 
-    def _fetch_global_repo_settings(self, workspace):
+    def _fetch_global_repo_settings(self, workspace, settings_repo):
         # A missing settings repo/file (404) is an expected fallback -> return "" (cached). Other
         # errors raise (via raise_for_status) so the caller does not cache a transient failure.
-        repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/pr-agent-settings"
+        repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/{settings_repo}"
         repo_resp = requests.request("GET", repo_url, headers=self.headers)
         if repo_resp.status_code in (403, 404):  # missing repo or no access -> expected, cacheable
             return ""

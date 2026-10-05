@@ -2128,6 +2128,7 @@ class TestBitbucketServerGlobalSettings:
         provider = self._make_provider(get_content)
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider.get_repo_settings()
 
         assert result == [("global", global_content), ("local", local_content)]
@@ -2141,6 +2142,7 @@ class TestBitbucketServerGlobalSettings:
         provider = self._make_provider(get_content)
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider.get_repo_settings()
 
         assert result == [("local", b"[pr_reviewer]\ntemperature = 0.2\n")]
@@ -2160,6 +2162,7 @@ class TestBitbucketServerGlobalSettings:
         provider = self._make_provider(lambda *a, **k: b"[pr_reviewer]\nnum_max_findings = 5\n")
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
 
@@ -2193,6 +2196,7 @@ class TestBitbucketGlobalSettings:
                    side_effect=[repo_resp, ref_resp, file_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider._get_global_repo_settings()
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
         assert rq.call_count == 3  # repo info + default-branch ref + file
@@ -2210,6 +2214,7 @@ class TestBitbucketGlobalSettings:
                    side_effect=[repo_resp, ref_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             assert provider._get_global_repo_settings() == ""
             assert provider._get_global_repo_settings() == ""  # served from cache
         assert rq.call_count == 2
@@ -2224,6 +2229,7 @@ class TestBitbucketGlobalSettings:
                    side_effect=[repo_resp, ref_resp, repo_resp, ref_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             assert provider._get_global_repo_settings() == ""
             assert provider._get_global_repo_settings() == ""
         assert rq.call_count == 4
@@ -2235,6 +2241,7 @@ class TestBitbucketGlobalSettings:
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=repo_resp) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             assert provider._get_global_repo_settings() == ""
             assert provider._get_global_repo_settings() == ""  # served from cache
         assert rq.call_count == 1
@@ -2246,6 +2253,7 @@ class TestBitbucketGlobalSettings:
                    return_value=repo_resp), \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             assert provider._get_global_repo_settings() == ""
 
     def test_disabled_returns_empty(self):
@@ -2268,6 +2276,7 @@ class TestBitbucketGlobalSettings:
                    side_effect=[repo_resp, ref_resp, file_resp]) as rq, \
              patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             provider._get_global_repo_settings()
             provider._get_global_repo_settings()
         # Three HTTP calls total (first fetch), none on the cached second call.

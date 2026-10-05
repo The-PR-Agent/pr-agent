@@ -54,6 +54,11 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # an operator choice, and this is what makes it one: without it, [config] is otherwise
     # repo-configurable, so a reviewed repo's .pr_agent.toml or a comment argument could
     # supply the pattern. The operator still sets it through host configuration.
+    # global_settings_repo names the repository whose .pr_agent.toml is applied at namespace
+    # scope to every repository in that namespace. Host-only: whoever can create a repository
+    # in a namespace must not be able to choose the configuration applied to the rest of it,
+    # so this stays an operator decision (repository settings and comment arguments cannot
+    # set it). Empty (the default) means no namespace-wide settings are read.
     # extra_config_url is host-only: the next apply_repo_settings() call fetches it over
     # HTTP(S) (attaching PR_AGENT_EXTRA_CONFIG_AUTH_HEADER) and merges *every* section of the
     # response into runtime settings without host-key filtering. A malicious reviewed repo
@@ -63,6 +68,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
+        "global_settings_repo",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
     }),
@@ -79,8 +85,11 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
 # such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
+# global_settings_repo names the repository whose .pr_agent.toml is applied at namespace scope
+# to every repository in that namespace, so a comment argument must not be able to choose it
+# either; see the REPO_HOST_ONLY_KEYS_BY_SECTION note above for why.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
-    "config": frozenset({"repo_context_files"}),
+    "config": frozenset({"global_settings_repo", "repo_context_files"}),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
 }
 

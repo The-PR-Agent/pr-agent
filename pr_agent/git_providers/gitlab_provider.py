@@ -2142,12 +2142,12 @@ class GitLabProvider(GitProvider):
     def _get_global_settings_cache_key(self, group: str) -> str:
         return f"gitlab:{getattr(self, 'gitlab_url', '')}:{group}"
 
-    def _fetch_global_repo_settings(self, group):
+    def _fetch_global_repo_settings(self, group, settings_repo):
         try:
-            project = self.gl.projects.get(f"{group}/pr-agent-settings")
+            project = self.gl.projects.get(f"{group}/{settings_repo}")
             return project.files.get(file_path='.pr_agent.toml', ref=project.default_branch).decode()
         except GitlabGetError:
-            # A missing pr-agent-settings project/file is an expected fallback -> return "" (cached).
+            # A missing settings project/file is an expected fallback -> return "" (cached).
             return ""
         # Transient/unexpected errors propagate so the caller does not cache the failure.
 

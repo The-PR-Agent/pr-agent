@@ -22,6 +22,7 @@ log_level="DEBUG"
 # Configurations
 use_repo_settings_file=true
 use_global_settings_file=true
+global_settings_repo="" # repository that holds the namespace-wide .pr_agent.toml, resolved inside the owning namespace (org/group/workspace, or the same project on Azure DevOps). Empty (the default) disables the namespace-wide lookup, so the feature is a deliberate host choice and no repository can be picked up by name alone. Set to "pr-agent-settings" to keep the previous convention. Host-only: repository settings and comment arguments cannot set it
 enable_per_directory_settings=false # when true, merge per-directory .pr_agent.toml files found by walking up from the PR's changed files (monorepo support). Adds bounded recursive tree discovery per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Nearest (deepest) directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path; when more files match than the per_directory_settings_max_files cap, shallower files are applied first and a partially capped depth keeps its later-path (winning) siblings; any overlap is logged as a warning.
 per_directory_settings_max_files=20 # hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning)
 per_directory_settings_max_tree_pages=10 # maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap.

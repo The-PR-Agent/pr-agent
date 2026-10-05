@@ -789,17 +789,17 @@ class GiteaProvider(GitProvider):
     def _get_global_settings_cache_key(self, owner: str) -> str:
         return f"gitea:{getattr(self, 'base_url', '')}:{owner}"
 
-    def _fetch_global_repo_settings(self, owner):
-        # Owner-wide global settings live in an <owner>/pr-agent-settings repository.
+    def _fetch_global_repo_settings(self, owner, settings_repo):
+        # Owner-wide global settings live in the configured <owner>/<settings_repo> repository.
         # A missing settings repo/file (404) is an expected fallback -> return "" (cached).
         try:
-            settings_repo = self.repo_api.repo_get(owner, "pr-agent-settings")
-            default_branch = getattr(settings_repo, "default_branch", None)
+            repo = self.repo_api.repo_get(owner, settings_repo)
+            default_branch = getattr(repo, "default_branch", None)
             if not default_branch:
                 return ""
             content = self.repo_api.get_file_content(
                 owner=owner,
-                repo="pr-agent-settings",
+                repo=settings_repo,
                 commit_sha=default_branch,
                 filepath=".pr_agent.toml",
             )
