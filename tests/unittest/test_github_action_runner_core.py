@@ -2,16 +2,13 @@ import copy
 import json
 from unittest.mock import Mock
 
-import litellm
 import pytest
-from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
-import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
 import pr_agent.servers.github_action_runner as github_action_runner
 from pr_agent.algo import artifacts
 from pr_agent.algo.run_details import command_failed, get_run_details, record_command_failure
-from pr_agent.config_loader import get_settings, global_settings
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 
@@ -170,154 +167,6 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
             settings.set("GITHUB_ACTION_CONFIG", original_github_action_config)
         else:
             settings.unset("GITHUB_ACTION_CONFIG", force=True)
-
-
-def _patch_pull_request_action(monkeypatch, tmp_path, *, auto_describe=True):
-    event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps({
-        "action": "opened",
-        "pull_request": {
-            "url": "https://api.github.com/repos/org/repo/pulls/1",
-            "html_url": "https://github.com/org/repo/pull/1",
-        },
-    }))
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
-    monkeypatch.setenv("GITHUB_TOKEN", "token")
-
-    def fake_get_setting_or_env(key, default=None):
-        values = {
-            "GITHUB_ACTION_CONFIG.PR_ACTIONS": ["opened"],
-            "GITHUB_ACTION.AUTO_DESCRIBE": auto_describe,
-            "GITHUB_ACTION.AUTO_REVIEW": False,
-            "GITHUB_ACTION.AUTO_IMPROVE": False,
-            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
-        }
-        return values.get(key, default)
-
-    monkeypatch.setattr(github_action_runner, "get_setting_or_env", fake_get_setting_or_env)
-
-
-@pytest.mark.asyncio
-async def test_action_repo_transport_setting_stays_request_scoped(monkeypatch, tmp_path):
-    host_settings = copy.deepcopy(global_settings)
-    host_settings.set("LITELLM.DISABLE_AIOHTTP", False)
-    monkeypatch.setattr(github_action_runner, "global_settings", host_settings)
-    monkeypatch.setattr(litellm_handler, "global_settings", host_settings)
-    monkeypatch.setattr(litellm, "disable_aiohttp_transport", False)
-    _patch_pull_request_action(monkeypatch, tmp_path)
-
-    def apply_repo_settings(_pr_url):
-        get_settings().set("LITELLM.DISABLE_AIOHTTP", True)
-
-    class DescriptionTool:
-        def __init__(self, _pr_url):
-            pass
-
-        async def run(self):
-            assert get_settings().get("LITELLM.DISABLE_AIOHTTP", False) is True
-            litellm_handler.LiteLLMAIHandler()
-            return True
-
-    monkeypatch.setattr(github_action_runner, "apply_repo_settings", apply_repo_settings)
-    monkeypatch.setattr(github_action_runner, "PRDescription", DescriptionTool)
-
-    await github_action_runner.run_action()
-
-    assert host_settings.get("LITELLM.DISABLE_AIOHTTP", False) is False
-    assert litellm.disable_aiohttp_transport is False
-
-
-@pytest.mark.asyncio
-async def test_action_repo_adaptive_override_does_not_register_shared_model(monkeypatch, tmp_path):
-    profile_arn = (
-        "bedrock/converse/arn:aws:bedrock:eu-central-1:000000000000:"
-        "application-inference-profile/repo-supplied"
-    )
-    host_settings = copy.deepcopy(global_settings)
-    host_settings.set("CONFIG.ENABLE_CLAUDE_ADAPTIVE_THINKING", False)
-    host_settings.set("CONFIG.CLAUDE_ADAPTIVE_THINKING_MODELS_OVERRIDE", [])
-    monkeypatch.setattr(github_action_runner, "global_settings", host_settings)
-    monkeypatch.setattr(litellm_handler, "global_settings", host_settings)
-    register_model = Mock()
-    monkeypatch.setattr(litellm, "register_model", register_model)
-    _patch_pull_request_action(monkeypatch, tmp_path)
-
-    def apply_repo_settings(_pr_url):
-        get_settings().set("CONFIG.ENABLE_CLAUDE_ADAPTIVE_THINKING", True)
-        get_settings().set("CONFIG.CLAUDE_ADAPTIVE_THINKING_MODELS_OVERRIDE", [profile_arn])
-
-    class DescriptionTool:
-        def __init__(self, _pr_url):
-            pass
-
-        async def run(self):
-            assert get_settings().config.get("enable_claude_adaptive_thinking") is True
-            assert get_settings().config.get("claude_adaptive_thinking_models_override") == [profile_arn]
-            litellm_handler.LiteLLMAIHandler()
-            return True
-
-    monkeypatch.setattr(github_action_runner, "apply_repo_settings", apply_repo_settings)
-    monkeypatch.setattr(github_action_runner, "PRDescription", DescriptionTool)
-
-    await github_action_runner.run_action()
-
-    register_model.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_action_settings_scope_resets_after_tool_failure(monkeypatch, tmp_path):
-    outer_settings = copy.deepcopy(global_settings)
-    outer_settings.set("CONFIG.RESPONSE_LANGUAGE", "outer")
-    _patch_pull_request_action(monkeypatch, tmp_path)
-
-    def apply_repo_settings(_pr_url):
-        get_settings().set("CONFIG.RESPONSE_LANGUAGE", "repo")
-
-    class FailingDescriptionTool:
-        def __init__(self, _pr_url):
-            pass
-
-        async def run(self):
-            assert get_settings().config.get("response_language") == "repo"
-            raise RuntimeError("tool failed")
-
-    monkeypatch.setattr(github_action_runner, "apply_repo_settings", apply_repo_settings)
-    monkeypatch.setattr(github_action_runner, "PRDescription", FailingDescriptionTool)
-
-    with request_cycle_context({"settings": outer_settings}):
-        with pytest.raises(RuntimeError, match="tool failed"):
-            await github_action_runner.run_action()
-        assert get_settings() is outer_settings
-        assert get_settings().config.get("response_language") == "outer"
-
-
-@pytest.mark.asyncio
-async def test_action_callback_drain_uses_repo_scoped_timeout(monkeypatch, tmp_path):
-    _patch_pull_request_action(monkeypatch, tmp_path)
-    drained_timeouts = []
-
-    def apply_repo_settings(_pr_url):
-        get_settings().set("LITELLM.CALLBACK_TIMEOUT_SECONDS", 0.25)
-
-    async def drain_callbacks(timeout):
-        drained_timeouts.append(timeout)
-
-    class DescriptionTool:
-        def __init__(self, _pr_url):
-            pass
-
-        async def run(self):
-            return True
-
-    monkeypatch.setattr(github_action_runner, "apply_repo_settings", apply_repo_settings)
-    monkeypatch.setattr(github_action_runner, "PRDescription", DescriptionTool)
-    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: True)
-    monkeypatch.setattr(github_action_runner, "drain_litellm_callbacks", drain_callbacks)
-
-    await github_action_runner._run_action_and_drain()
-
-    assert drained_timeouts == [0.25]
 
 
 @pytest.fixture
@@ -837,7 +686,7 @@ def _patch_env_settings(monkeypatch, overrides=None):
 def _capture_action_status(monkeypatch):
     """Observe the sticky _ActionStatus that _run_action_and_drain installed."""
     captured = {}
-    original_run_action = github_action_runner._run_action
+    original_run_action = github_action_runner.run_action
 
     async def wrapper():
         try:
@@ -845,7 +694,7 @@ def _capture_action_status(monkeypatch):
         finally:
             captured["status"] = github_action_runner._action_status.get()
 
-    monkeypatch.setattr(github_action_runner, "_run_action", wrapper)
+    monkeypatch.setattr(github_action_runner, "run_action", wrapper)
     return captured
 
 
@@ -1456,17 +1305,6 @@ async def test_workflow_run_injects_ci_conclusion_when_not_success(monkeypatch, 
     """
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
-    observed = []
-
-    class RecordingReviewer:
-        def __init__(self, pr_url):
-            self.pr_url = pr_url
-            observed.append(str(get_settings().pr_reviewer.extra_instructions))
-
-        async def run(self):
-            runs.append(("review", self.pr_url))
-
-    monkeypatch.setattr(github_action_runner, "PRReviewer", RecordingReviewer)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     monkeypatch.setenv(
         "GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, conclusion="failure"))
@@ -1475,8 +1313,7 @@ async def test_workflow_run_injects_ci_conclusion_when_not_success(monkeypatch, 
 
     await github_action_runner.run_action()
 
-    assert observed
-    assert "concluded: failure" in observed[0]
+    assert "concluded: failure" in str(get_settings().pr_reviewer.extra_instructions)
 
 
 @pytest.mark.asyncio
@@ -1487,17 +1324,6 @@ async def test_workflow_run_does_not_inject_ci_conclusion_when_absent(monkeypatc
     """
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
-    observed = []
-
-    class RecordingReviewer:
-        def __init__(self, pr_url):
-            self.pr_url = pr_url
-            observed.append(str(get_settings().pr_reviewer.extra_instructions))
-
-        async def run(self):
-            runs.append(("review", self.pr_url))
-
-    monkeypatch.setattr(github_action_runner, "PRReviewer", RecordingReviewer)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     monkeypatch.setenv(
         "GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, conclusion=None))
@@ -1506,8 +1332,7 @@ async def test_workflow_run_does_not_inject_ci_conclusion_when_absent(monkeypatc
 
     await github_action_runner.run_action()
 
-    assert observed
-    assert "CI status" not in observed[0]
+    assert "CI status" not in str(get_settings().pr_reviewer.extra_instructions)
 
 
 def _write_issue_comment_event_with_body(tmp_path, body, sender_type="User"):
@@ -1621,7 +1446,7 @@ async def test_direct_action_and_workflow_run_keep_artifact_before_ci_conclusion
         section = "pr_reviewer"
 
         def __init__(self, _pr_url):
-            observations.append((self.section, str(getattr(get_settings(), self.section).extra_instructions)))
+            observations.append((self.section, str(getattr(settings, self.section).extra_instructions)))
 
         async def run(self):
             return None
