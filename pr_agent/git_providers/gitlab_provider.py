@@ -1080,7 +1080,7 @@ class GitLabProvider(GitProvider):
             raise
 
     def _pr_head_in_base_repo(self) -> bool:
-        """True when the merge request source branch lives in the target project itself."""
+        """Return whether the merge request source branch lives in the target project itself."""
         mr = getattr(self, "mr", None)
         source_project_id = getattr(mr, "source_project_id", None)
         target_project_id = getattr(mr, "target_project_id", None) or getattr(mr, "project_id", None)

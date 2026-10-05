@@ -1827,7 +1827,7 @@ class GithubProvider(GitProvider):
         return response["commit"]
 
     def _pr_head_in_base_repo(self) -> bool:
-        """True when the pull request head branch lives in the base repository itself.
+        """Return whether the pull request head branch lives in the base repository itself.
 
         A fork pull request carries a bare head ref that the contents API resolves
         against the base repository, so writing to that ref would land on the base
