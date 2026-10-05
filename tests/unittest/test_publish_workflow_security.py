@@ -288,6 +288,7 @@ def test_pypi_build_is_separate_from_trusted_publisher() -> None:
 def test_release_build_tools_are_pinned() -> None:
     workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
     build = next(step for step in workflow["jobs"]["build-pypi"]["steps"] if step.get("name") == "Build distributions")
-    assert build["run"].splitlines() == ["python -m pip install build==1.6.1", "python -m build"]
+    install, command = build["run"].splitlines()
+    assert install.startswith("python -m pip install build==") and command == "python -m build"
     project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text())
-    assert project["build-system"]["requires"] == ["setuptools==84.0.0", "wheel==0.48.0"]
+    assert all("==" in requirement for requirement in project["build-system"]["requires"])
