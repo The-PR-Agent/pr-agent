@@ -265,3 +265,37 @@ def test_custom_pattern_respects_enterprise_base_url(description_regex):
     assert extract_ticket_links_from_pr_description("ticket: 42", REPO, "https://github.example.com/") == [
         f"https://github.example.com/{REPO}/issues/42",
     ]
+
+
+
+@pytest.mark.parametrize(
+    ("base_host", "foreign_host"),
+    [
+        ("github.com", "gİthub.com"),
+        ("github.com", "gıthub.com"),
+        ("ghe.server.test", "ghe.ſerver.test"),
+        ("ghe.key.test", "ghe.Key.test"),
+    ],
+)
+def test_foreign_unicode_authority_cannot_exhaust_the_lookup_window(base_host, foreign_host):
+    base = f"https://{base_host}"
+    valid = f"{base}/{REPO}/issues/777"
+    foreign = " ".join(f"https://{foreign_host}/{REPO}/issues/{i}" for i in range(1, 31))
+
+    assert extract_ticket_links_from_pr_description(
+        f"{foreign} {valid}", REPO, base, max_tickets=30
+    ) == [valid]
+
+
+@pytest.mark.parametrize("number", ["1٢", "1۲", "1２"])
+def test_full_issue_url_requires_ascii_digits(number):
+    base = "https://ghe.example.test"
+
+    assert extract_ticket_links_from_pr_description(f"{base}/{REPO}/issues/{number}", REPO, base) == []
+
+
+def test_full_issue_url_preserves_ascii_case_insensitive_authority():
+    base = "https://ghe.example.test:8443"
+    url = f"HTTPS://GHE.EXAMPLE.TEST:8443/{REPO}/issues/12"
+
+    assert extract_ticket_links_from_pr_description(url, REPO, base) == [url]
