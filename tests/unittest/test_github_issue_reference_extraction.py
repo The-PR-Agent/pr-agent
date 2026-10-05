@@ -3,6 +3,8 @@
 `BRANCH_ISSUE_PATTERN` already accepts up to six digits, so `123456-fix` as a branch resolves
 while `#123456` in the description did not. The two now agree.
 """
+from unittest.mock import Mock
+
 import pytest
 
 from pr_agent.tools.ticket_pr_compliance_check import (
@@ -125,6 +127,20 @@ def test_invalid_provider_web_origin_does_not_admit_full_url(base):
     assert extract_ticket_links_from_pr_description(
         "See https://ghe.example.test/org/repo/issues/7", REPO, base
     ) == []
+
+
+def test_unparseable_web_origin_warns_without_changing_shorthand_fallback(monkeypatch):
+    logger = Mock()
+    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_logger", lambda: logger)
+    base = "https://ghe.example.test:bad"
+
+    assert extract_ticket_links_from_pr_description(
+        "See https://ghe.example.test/org/repo/issues/7 and #8", REPO, base
+    ) == [f"{base}/{REPO}/issues/8"]
+    logger.warning.assert_called_once_with(
+        "Could not parse the configured GitHub web origin; full issue-URL matching is disabled. "
+        "Shorthand matching will still be attempted."
+    )
 
 
 def test_a_cross_repo_shorthand_is_not_bounded():

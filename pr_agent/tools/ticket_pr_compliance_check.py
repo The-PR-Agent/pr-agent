@@ -34,7 +34,10 @@ def _github_ticket_pattern(base_url_html):
                 r"(?=$|[\s.,;:!?)}\]>'\"`#]|/(?=$|[\s.,;:!?)}\]>'\"`#]))"
             )
     except (AttributeError, TypeError, ValueError):
-        pass
+        get_logger().warning(
+            "Could not parse the configured GitHub web origin; full issue-URL matching is disabled. "
+            "Shorthand matching will still be attempted."
+        )
 
     # Keep the six capture groups and their spans used by explicit/custom references.
     return re.compile(
