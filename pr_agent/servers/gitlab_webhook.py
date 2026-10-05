@@ -285,7 +285,7 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
                     or not isinstance(gitlab_token, str) or not gitlab_token
                     or not hmac.compare_digest(webhook_token.encode(), stored_token.encode())):
                 raise ValueError("Invalid webhook secret")
-            context["settings"].gitlab.personal_access_token = secret_dict["gitlab_token"]
+            context["settings"].set("GITLAB.PERSONAL_ACCESS_TOKEN", gitlab_token)
             log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
         except Exception as e:
             get_logger().error(

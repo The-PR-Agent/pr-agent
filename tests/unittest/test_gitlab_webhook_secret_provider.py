@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from types import SimpleNamespace
@@ -101,7 +102,7 @@ def gitlab_webhook_settings():
         settings.set("GITLAB", original)
 
 
-async def _post_webhook(token=None):
+async def _post_webhook(token=None, payload=None):
     from fastapi import FastAPI
     from starlette.middleware import Middleware
     from starlette_context.middleware import RawContextMiddleware
@@ -112,7 +113,7 @@ async def _post_webhook(token=None):
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         return await client.post(
-            "/webhook", json={"object_kind": "note", "event_type": "note"}, headers=headers
+            "/webhook", json=payload or {"object_kind": "note", "event_type": "note"}, headers=headers
         )
 
 
@@ -226,7 +227,7 @@ def test_reject_invalid_provider_credentials_without_installing_pat(monkeypatch,
     with request_cycle_context({"settings": copy.deepcopy(gitlab_webhook_settings)}):
         response = gitlab_webhook.authenticate_gitlab_webhook(request, log_context)
         assert response.status_code == 401
-        assert context["settings"].gitlab.personal_access_token == "glpat-dummy"
+        assert context["settings"].get("GITLAB.PERSONAL_ACCESS_TOKEN") == "glpat-dummy"
     assert log_context == {}
 
 
@@ -251,7 +252,7 @@ def test_compare_provider_token_before_installing_request_credentials(monkeypatc
 
     def compare(left, right):
         comparisons.append((left, right))
-        assert context["settings"].gitlab.personal_access_token == "glpat-dummy"
+        assert context["settings"].get("GITLAB.PERSONAL_ACCESS_TOKEN") == "glpat-dummy"
         return real_compare(left, right)
 
     monkeypatch.setattr(gitlab_webhook, "get_fork_safe_secret_provider", lambda: SimpleNamespace(get_secret=get_secret))
@@ -263,12 +264,60 @@ def test_compare_provider_token_before_installing_request_credentials(monkeypatc
         request = Request({"type": "http", "headers": [(b"x-gitlab-token", f"{name}:{token}".encode())]})
         with request_cycle_context({"settings": copy.deepcopy(gitlab_webhook_settings)}):
             assert gitlab_webhook.authenticate_gitlab_webhook(request, {}) is None
-            assert context["settings"].gitlab.personal_access_token == expected_pat
+            assert context["settings"].get("GITLAB.PERSONAL_ACCESS_TOKEN") == expected_pat
 
     assert lookups == list(secrets)
     assert (b"token-one", b"token-one") in comparisons
     assert (b"token-two", b"token-two") in comparisons
-    assert gitlab_webhook_settings.gitlab.personal_access_token == "glpat-dummy"
+    assert gitlab_webhook_settings.get("GITLAB.PERSONAL_ACCESS_TOKEN") == "glpat-dummy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("host_pat", ["glpat-host", ""])
+async def test_provider_pat_reaches_request_local_dispatch(monkeypatch, gitlab_webhook_settings, host_pat):
+    from pr_agent.config_loader import get_settings
+
+    gitlab_webhook_settings.set("GITLAB.PERSONAL_ACCESS_TOKEN", host_pat)
+    secrets = {
+        name: json.dumps({"gitlab_token": pat, "webhook_token": "webhook-token"})
+        for name, pat in [("project-one", "glpat-one"), ("project-two", "glpat-two")]
+    }
+    monkeypatch.setattr(gitlab_webhook, "get_fork_safe_secret_provider",
+                        lambda: SimpleNamespace(get_secret=secrets.get))
+    monkeypatch.setattr(gitlab_webhook, "get_git_provider_with_context", lambda **_: SimpleNamespace())
+    dispatched = []
+
+    async def record_request(url, *_args, **_kwargs):
+        before = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN")
+        await asyncio.sleep(0)
+        dispatched.append((url, before, get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN")))
+
+    monkeypatch.setattr(gitlab_webhook, "handle_request", record_request)
+
+    def payload(project):
+        return {
+            "object_kind": "note", "event_type": "note", "user": {"username": "alice"},
+            "object_attributes": {"note": "/review", "id": 1},
+            "merge_request": {"url": f"https://gitlab.example.com/{project}/-/merge_requests/1"},
+        }
+
+    responses = await asyncio.gather(*(
+        _post_webhook(f"{name}:webhook-token", payload(name)) for name in secrets
+    ))
+    assert [response.status_code for response in responses] == [200, 200]
+    shared = await _post_webhook("topsecret", payload("shared"))
+    assert shared.status_code == (200 if host_pat else 401)
+    assert (await _post_webhook("project-one:wrong", payload("rejected"))).status_code == 401
+    assert (await _post_webhook("project-one", payload("legacy"))).status_code == 401
+    expected = {
+        (f"https://gitlab.example.com/{name}/-/merge_requests/1", pat, pat)
+        for name, pat in [("project-one", "glpat-one"), ("project-two", "glpat-two")]
+    }
+    if host_pat:
+        expected.add(("https://gitlab.example.com/shared/-/merge_requests/1", host_pat, host_pat))
+    assert set(dispatched) == expected
+    assert len(dispatched) == len(expected)
+    assert gitlab_webhook_settings.get("GITLAB.PERSONAL_ACCESS_TOKEN") == host_pat
 
 
 @pytest.mark.asyncio
