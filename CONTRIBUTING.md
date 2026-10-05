@@ -46,3 +46,30 @@ Thank you for your interest in contributing to the PR-Agent project!
 - Ask questions or start a discussion in [GitHub Discussions](https://github.com/the-pr-agent/pr-agent/discussions)
 - Check the [documentation](https://docs.pr-agent.ai/) for detailed information
 - Report bugs or request features through [GitHub Issues](https://github.com/the-pr-agent/pr-agent/issues)
+
+## Release publishing setup (maintainers)
+
+Before merging changes to Trusted Publishing, configure both services:
+
+1. In GitHub **Settings → Environments → release**, require a trusted maintainer
+   or team to review deployments, enable **Prevent self-review**, and disable
+   administrator bypass. Under **Selected branches and tags**, add a branch rule
+   for `main` and a separate tag rule for `v*`. A tag-name rule does not verify
+   ancestry; `publish.yml` also checks that the published commit is in `main` history.
+2. A PyPI owner of the existing `pr-agent` project must add a GitHub Trusted
+   Publisher with owner `The-PR-Agent`, repository `pr-agent`, workflow filename
+   `publish.yml`, and environment `release` (case-sensitive). Register it before
+   merging the token-free workflow; an absent or mismatched publisher rejects uploads.
+3. Validate the first controlled release: confirm the required environment approval,
+   successful PyPI OIDC upload and attestations, Docker publication, and finalization.
+   Delete `PYPI_API_TOKEN` only after a successful Trusted Publishing upload.
+
+The workflow accepts releases whose commit is in `main` history, including older
+main commits, and manual dispatches from `main`. It builds distributions in a
+read-only job and transfers them to a separate publisher job with OIDC permission;
+package build dependencies do not receive that permission. Build frontend and
+backend versions are pinned, but runner tools and transitive dependencies are not
+fully locked, so this does not guarantee reproducible builds.
+
+See [PyPI publisher registration](https://docs.pypi.org/trusted-publishers/adding-a-publisher/)
+and [GitHub environment protection rules](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
