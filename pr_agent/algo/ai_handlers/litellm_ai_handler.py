@@ -139,7 +139,7 @@ from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
 from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
-from pr_agent.config_loader import get_settings, get_verbosity_level
+from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
@@ -490,12 +490,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         ).strip().lower()
         self._anthropic_auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
         self._request_provider_cache = {}
+        self._drop_params = settings.get("LITELLM.DROP_PARAMS", None)
 
-        if settings.get("LITELLM.DISABLE_AIOHTTP", False):
+        if global_settings.get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
         self._initialize_aws_request_credentials(settings)
-        if settings.get("LITELLM.DROP_PARAMS", None):
-            litellm.drop_params = settings.litellm.drop_params
         if settings.get("LITELLM.SUCCESS_CALLBACK", None):
             litellm.success_callback = settings.litellm.success_callback
         if settings.get("LITELLM.FAILURE_CALLBACK", None):
@@ -582,23 +581,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         self.claude_adaptive_thinking_models_override = self._validated_model_name_list(
             "claude_adaptive_thinking_models_override"
         )
-        bedrock_overrides = [
-            model
-            for model in self.claude_adaptive_thinking_models_override
-            if model.startswith("bedrock/") or re.match(r"^arn:[^:]+:bedrock:", model)
-        ]
-        if (
-            bedrock_overrides
-            and self._claude_thinking_controls["enable_claude_adaptive_thinking"]
-        ):
-            litellm.register_model({
-                model: {
-                    "litellm_provider": "bedrock",
-                    "mode": "chat",
-                    "supports_adaptive_thinking": True,
-                }
-                for model in bedrock_overrides
-            })
+        self._register_host_claude_adaptive_models()
 
         # Models that require streaming
         self.streaming_required_models = STREAMING_REQUIRED_MODELS
@@ -629,6 +612,43 @@ class LiteLLMAIHandler(BaseAiHandler):
             "otel" in (getattr(litellm, name, None) or [])
             for name in ("callbacks", "success_callback", "failure_callback", "service_callback")
         )
+
+    @staticmethod
+    def _host_claude_adaptive_thinking_enabled() -> bool:
+        return bool(global_settings.config.get("enable_claude_adaptive_thinking", False))
+
+    @classmethod
+    def _host_claude_adaptive_thinking_models_override(cls) -> list[str]:
+        return cls._validated_model_name_list(
+            "claude_adaptive_thinking_models_override",
+            settings=global_settings,
+        )
+
+    @staticmethod
+    def _requires_litellm_adaptive_registration(model: str) -> bool:
+        return model.startswith("bedrock/") or re.match(r"^arn:[^:]+:bedrock:", model) is not None
+
+    @classmethod
+    def _register_host_claude_adaptive_models(cls) -> None:
+        """Register opaque Bedrock adaptive models only from host-owned configuration."""
+        if not cls._host_claude_adaptive_thinking_enabled():
+            return
+        host_overrides = cls._host_claude_adaptive_thinking_models_override()
+        bedrock_overrides = [
+            model
+            for model in host_overrides
+            if cls._requires_litellm_adaptive_registration(model)
+        ]
+        if not bedrock_overrides:
+            return
+        litellm.register_model({
+            model: {
+                "litellm_provider": "bedrock",
+                "mode": "chat",
+                "supports_adaptive_thinking": True,
+            }
+            for model in bedrock_overrides
+        })
 
     def _snapshot_provider_request_params(self, settings) -> dict:
         """Capture provider credentials and endpoints for this handler instance."""
@@ -2365,9 +2385,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         return kwargs
 
     @staticmethod
-    def _validated_model_name_list(setting_name: str) -> list[str]:
+    def _validated_model_name_list(setting_name: str, *, settings=None) -> list[str]:
         """Return a stripped config list of model names, or an empty list when malformed."""
-        value = get_settings().config.get(setting_name, []) or []
+        settings = settings or get_settings()
+        value = settings.config.get(setting_name, []) or []
         if not value:
             return []
         if not isinstance(value, list) or not all(
@@ -2391,10 +2412,14 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     def _model_uses_adaptive_thinking(self, model: str) -> bool:
         """Return whether a model should receive the adaptive-thinking payload."""
-        return (
-            isinstance(model, str)
-            and model.strip() in self.claude_adaptive_thinking_models_override
-        ) or self._is_claude_adaptive_thinking_model(model)
+        if not isinstance(model, str):
+            return False
+        stripped_model = model.strip()
+        if stripped_model in self.claude_adaptive_thinking_models_override:
+            if self._requires_litellm_adaptive_registration(stripped_model):
+                return stripped_model in self._host_claude_adaptive_thinking_models_override()
+            return True
+        return self._is_claude_adaptive_thinking_model(model)
 
     def _is_claude_model(self, model: str) -> bool:
         """Treat models listed in a Claude thinking override as Claude, for opaque Bedrock ARNs."""
@@ -2854,6 +2879,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                     "messages": messages,
                     "timeout": get_settings().config.ai_timeout,
                 }
+                drop_params = getattr(self, "_drop_params", None)
+                if drop_params is not None:
+                    kwargs["drop_params"] = drop_params
                 if deployment_id:
                     kwargs["deployment_id"] = deployment_id
                 kwargs.update(provider_request_params)
@@ -3180,6 +3208,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 output_limit_param: max_tokens,
                 "timeout": timeout,
             }
+            drop_params = getattr(self, "_drop_params", None)
+            if drop_params is not None:
+                kwargs["drop_params"] = drop_params
             if deployment_id:
                 kwargs["deployment_id"] = deployment_id
             kwargs.update(await self._get_provider_request_params_async(

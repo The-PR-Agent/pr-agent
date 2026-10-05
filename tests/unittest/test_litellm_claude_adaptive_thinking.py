@@ -29,7 +29,13 @@ def _restore_litellm_globals():
     """LiteLLMAIHandler.__init__ mutates global litellm/openai state and, when
     AWS_USE_IMDS is set, os.environ; snapshot and restore both, and drop
     AWS_USE_IMDS so the AWS credential path never runs in these tests."""
-    saved = (litellm.api_key, getattr(litellm, "openai_key", None), openai.api_key)
+    saved = (
+        litellm.api_key,
+        getattr(litellm, "openai_key", None),
+        openai.api_key,
+        litellm.drop_params,
+        litellm.disable_aiohttp_transport,
+    )
     saved_model_cost = copy.deepcopy(litellm.model_cost)
     saved_env = {name: os.environ.get(name) for name in _HANDLER_ENV_VARS}
     os.environ.pop("AWS_USE_IMDS", None)
@@ -39,6 +45,8 @@ def _restore_litellm_globals():
         litellm.api_key = saved[0]
         litellm.openai_key = saved[1]
         openai.api_key = saved[2]
+        litellm.drop_params = saved[3]
+        litellm.disable_aiohttp_transport = saved[4]
         litellm.model_cost.clear()
         litellm.model_cost.update(saved_model_cost)
         for name, value in saved_env.items():
@@ -56,6 +64,8 @@ def _settings(
     extended_max_output_tokens=4096,
     adaptive_override=None,
     custom_llm_provider="",
+    drop_params=None,
+    disable_aiohttp=False,
 ):
     flags = {
         "enable_claude_adaptive_thinking": enabled,
@@ -80,13 +90,18 @@ def _settings(
         "aws.AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
         "aws.AWS_REGION_NAME": "us-east-1",
     }
+    settings_values = dict(aws)
+    if drop_params is not None:
+        settings_values["LITELLM.DROP_PARAMS"] = drop_params
+    if disable_aiohttp:
+        settings_values["LITELLM.DISABLE_AIOHTTP"] = True
     return SimpleNamespace(
         config=config,
         litellm=SimpleNamespace(
             custom_llm_provider=custom_llm_provider,
             get=lambda key, default=None: default,
         ),
-        get=lambda key, default=None: aws.get(key, default),
+        get=lambda key, default=None: settings_values.get(key, default),
     )
 
 
@@ -343,7 +358,7 @@ _UNLISTED_PROFILE_ARN = (
 )
 
 
-def test_opaque_model_override_registers_adaptive_support(monkeypatch):
+def test_request_only_opaque_model_override_does_not_use_adaptive_support(monkeypatch):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -355,7 +370,27 @@ def test_opaque_model_override_registers_adaptive_support(monkeypatch):
     handler = LiteLLMAIHandler()
 
     assert handler.claude_adaptive_thinking_models_override == [_PROFILE_ARN]
-    assert handler._model_uses_adaptive_thinking(_PROFILE_ARN) is True
+    assert handler._model_uses_adaptive_thinking(_PROFILE_ARN) is False
+    register_model.assert_not_called()
+
+
+def test_host_opaque_model_override_registers_adaptive_support(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "global_settings",
+        _settings(enabled=True, adaptive_override=[f"  {_PROFILE_ARN}  "]),
+    )
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(enabled=True),
+    )
+    register_model = MagicMock()
+    monkeypatch.setattr(litellm, "register_model", register_model)
+
+    handler = LiteLLMAIHandler()
+
+    assert handler.claude_adaptive_thinking_models_override == []
     register_model.assert_called_once_with({
         _PROFILE_ARN: {
             "litellm_provider": "bedrock",
@@ -366,6 +401,11 @@ def test_opaque_model_override_registers_adaptive_support(monkeypatch):
 
 
 def test_registered_opaque_model_keeps_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "global_settings",
+        _settings(enabled=True, adaptive_override=[_PROFILE_ARN]),
+    )
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -387,6 +427,11 @@ def test_registered_opaque_model_keeps_adaptive_payload(monkeypatch):
 def test_registered_raw_bedrock_arn_keeps_adaptive_payload(monkeypatch):
     monkeypatch.setattr(
         litellm_handler,
+        "global_settings",
+        _settings(enabled=True, adaptive_override=[_RAW_PROFILE_ARN]),
+    )
+    monkeypatch.setattr(
+        litellm_handler,
         "get_settings",
         lambda: _settings(enabled=True, adaptive_override=[_RAW_PROFILE_ARN]),
     )
@@ -403,6 +448,11 @@ def test_registered_raw_bedrock_arn_keeps_adaptive_payload(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_raw_bedrock_arn_with_custom_provider_receives_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "global_settings",
+        _settings(enabled=True, adaptive_override=[_RAW_PROFILE_ARN]),
+    )
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -426,8 +476,51 @@ async def test_raw_bedrock_arn_with_custom_provider_receives_adaptive_payload(mo
     assert kwargs["thinking"] == {"type": "adaptive"}
 
 
+@pytest.mark.asyncio
+async def test_drop_params_is_forwarded_per_request_without_mutating_global(monkeypatch):
+    monkeypatch.setattr(litellm, "drop_params", False)
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(drop_params=True),
+    )
+    with patch(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion",
+        new_callable=AsyncMock,
+    ) as completion:
+        completion.return_value = _response()
+        handler = LiteLLMAIHandler()
+        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert completion.call_args.kwargs["drop_params"] is True
+    assert litellm.drop_params is False
+
+
+def test_disable_aiohttp_is_host_controlled(monkeypatch):
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", False)
+    monkeypatch.setattr(
+        litellm_handler,
+        "global_settings",
+        _settings(disable_aiohttp=False),
+    )
+    monkeypatch.setattr(
+        litellm_handler,
+        "get_settings",
+        lambda: _settings(disable_aiohttp=True),
+    )
+
+    LiteLLMAIHandler()
+
+    assert litellm.disable_aiohttp_transport is False
+
+
 def test_named_override_keeps_litellm_model_info(monkeypatch):
     named = "anthropic/claude-sonnet-4-6"
+    monkeypatch.setattr(
+        litellm_handler,
+        "global_settings",
+        _settings(enabled=True, adaptive_override=[named, _PROFILE_ARN]),
+    )
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -459,7 +552,7 @@ def test_disabled_adaptive_thinking_does_not_register_override(monkeypatch):
     handler.claude_extended_thinking_models = [_PROFILE_ARN]
 
     register_model.assert_not_called()
-    assert handler._claude_thinking_mode(_PROFILE_ARN) == "unsupported_extended"
+    assert handler._claude_thinking_mode(_PROFILE_ARN) == "extended"
 
 
 @pytest.mark.parametrize("bad_override", ["not-a-list", [""], ["ok", 5], [None]])
@@ -480,6 +573,11 @@ def test_malformed_adaptive_override_falls_back_to_builtin_detection(monkeypatch
 
 @pytest.mark.asyncio
 async def test_overridden_opaque_model_receives_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "global_settings",
+        _settings(enabled=True, adaptive_override=[_PROFILE_ARN]),
+    )
     monkeypatch.setattr(litellm, "register_model", MagicMock())
 
     kwargs = await _run_completion(
@@ -493,6 +591,27 @@ async def test_overridden_opaque_model_receives_adaptive_payload(monkeypatch):
     assert kwargs["thinking"] == {"type": "adaptive"}
     assert kwargs["output_config"] == {"effort": "high"}
     assert "temperature" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_request_only_opaque_model_override_does_not_receive_adaptive_payload(monkeypatch):
+    monkeypatch.setattr(
+        litellm_handler,
+        "global_settings",
+        _settings(enabled=False, adaptive_override=[]),
+    )
+    monkeypatch.setattr(litellm, "register_model", MagicMock())
+
+    kwargs = await _run_completion(
+        monkeypatch,
+        _PROFILE_ARN,
+        reasoning_effort="high",
+        enabled=True,
+        adaptive_override=[_PROFILE_ARN],
+    )
+
+    assert "thinking" not in kwargs
+    assert "output_config" not in kwargs
 
 
 @pytest.mark.asyncio

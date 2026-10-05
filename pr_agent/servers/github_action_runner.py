@@ -1,11 +1,14 @@
 import asyncio
+import copy
 import json
 import os
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Optional, Union
 
 import dynaconf
+from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
 from pr_agent.algo.ai_handlers.litellm_helpers import (
@@ -15,7 +18,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 )
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.algo.run_details import command_failed, init_run_details
-from pr_agent.config_loader import get_settings
+from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
@@ -200,6 +203,11 @@ async def _run_review_commands(event_payload):
 
 
 async def run_action():
+    with _action_settings_scope():
+        await _run_action()
+
+
+async def _run_action():
     # Get environment variables
     GITHUB_EVENT_NAME = os.environ.get('GITHUB_EVENT_NAME')
     GITHUB_EVENT_PATH = os.environ.get('GITHUB_EVENT_PATH')
@@ -495,6 +503,17 @@ async def run_action():
             await _run_auto_tool(PRCodeSuggestions, pr_url)
 
 
+@contextmanager
+def _action_settings_scope():
+    """Install Action settings with a guaranteed reset on any exit path."""
+    cm = request_cycle_context({"settings": copy.deepcopy(global_settings)})
+    cm.__enter__()
+    try:
+        yield
+    finally:
+        cm.__exit__(None, None, None)
+
+
 def _inject_ci_conclusion(conclusion):
     """Tell the model how the workflow that triggered this run finished.
 
@@ -544,19 +563,20 @@ async def _run_action_and_drain():
     status = _ActionStatus()
     token = _action_status.set(status)
 
-    try:
-        await run_action()
-    finally:
+    with _action_settings_scope():
         try:
-            if litellm_callbacks_registered():
-                await drain_litellm_callbacks(
-                    get_settings().litellm.get(
-                        "callback_timeout_seconds",
-                        DEFAULT_CALLBACK_TIMEOUT_SECONDS,
-                    )
-                )
+            await _run_action()
         finally:
-            _action_status.reset(token)
+            try:
+                if litellm_callbacks_registered():
+                    await drain_litellm_callbacks(
+                        get_settings().litellm.get(
+                            "callback_timeout_seconds",
+                            DEFAULT_CALLBACK_TIMEOUT_SECONDS,
+                        )
+                    )
+            finally:
+                _action_status.reset(token)
 
     if status.failed:
         raise SystemExit(1)
