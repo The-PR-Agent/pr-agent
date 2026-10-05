@@ -90,10 +90,10 @@ def test_read_a_comma_separated_string():
 @pytest.mark.parametrize("prediction, expected", [
     ("labels:\n- name: bug fix\n", ["bug fix"]),
     ("labels:\n- label: bug fix\n", ["bug fix"]),
-    ("labels:\n- 1\n", ["1"]),
+    ("labels:\n- 1\n", []),
 ])
 def test_read_an_entry_that_is_not_a_plain_string(prediction, expected):
-    """A mapping or a number must not fail the whole /generate_labels run."""
+    """Tolerate non-string shapes, but do not publish unconfigured numeric labels."""
     assert labels(prediction) == expected
 
 

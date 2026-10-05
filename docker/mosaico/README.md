@@ -64,6 +64,28 @@ the image tag's version (it is derived from the running build, never hand-mainta
 skills `review`, `improve`, `describe`, `ask`, and the required
 `https://mosaico-project.eu/extensions/mosaico-observability` extension.
 
+### Caller authentication and request limits
+
+Configure `MOSAICO__BEARER_TOKENS='@json {"reference-agent":"replace-with-generated-secret"}'`
+in the agent's secret environment to require bearer authentication for JSON-RPC and the
+live `/health` probe. Each configured principal has a distinct secret and its own tasks,
+histories and artifacts. The public agent card advertises this requirement. Configure the
+reference caller to send `Authorization: Bearer <secret>` over your HTTPS ingress.
+The default empty map permits anonymous shared ownership; use it only on a trusted,
+single-tenant network.
+
+For `smoke_test.sh`, also set the client-side `MOSAICO_BEARER_TOKEN` in the script's environment.
+For the overlay, add the server's `MOSAICO__BEARER_TOKENS` to the service environment through
+your secret configuration, and set `PR_AGENT_BEARER_TOKEN` for its healthcheck. The reference
+caller needs its own credential configuration. Missing/invalid credentials produce HTTP 401;
+the agent-card GET remains public. Anonymous-mode probes need no token.
+
+The shared `config.max_webhook_request_body_bytes` cap defaults to 5 MiB and returns HTTP 413
+before parsing oversized bodies. `mosaico.routing_scan_max_chars` defaults to 65536 characters
+for PR URL and command detection per segment; put those near the start of a message or its
+surrounding prose. Diffs remain complete. Invalid observability UUIDs are ignored individually.
+These controls do not impose task eviction, request rates, concurrency quotas or health caching.
+
 ### `AGENT_CARD_HOST` / `AGENT_CARD_PORT` — the one thing to get right
 
 These two variables set the URL the agent advertises in `supportedInterfaces`. Leave them

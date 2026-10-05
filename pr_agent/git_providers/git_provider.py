@@ -764,14 +764,14 @@ class GitProvider(ABC):
         the provider has no organisation-level home for global settings.
 
         This is the hook that `_get_global_repo_settings` uses to decide which
-        namespace's `pr-agent-settings` repository (or equivalent) to consult.
+        namespace's `config.global_settings_repo` repository to consult.
         Providers that support global settings override this; the default is None,
         which disables global settings for the provider.
         """
         return None
 
     def _get_global_repo_settings(self):
-        """Load the namespace-wide `pr-agent-settings` .pr_agent.toml, if enabled.
+        """Load the namespace-wide `config.global_settings_repo` .pr_agent.toml, if set.
 
         This is a concrete template: it gates on `use_global_settings_file`, resolves
         the owning namespace via `get_owning_namespace()`, and delegates the actual
@@ -782,12 +782,13 @@ class GitProvider(ABC):
         """
         if not get_settings().config.use_global_settings_file:
             return ""
+        settings_repo = get_settings().config.global_settings_repo
         namespace = self.get_owning_namespace()
-        if not namespace:
+        if not settings_repo or not namespace:
             return ""
         return get_cached_global_settings(
             self._get_global_settings_cache_key(namespace),
-            lambda: self._fetch_global_repo_settings(namespace))
+            lambda: self._fetch_global_repo_settings(namespace, settings_repo))
 
     def _get_global_settings_cache_key(self, namespace: str) -> str:
         """Cache key for a namespace's global settings.
@@ -797,8 +798,8 @@ class GitProvider(ABC):
         """
         return f"{type(self).__name__}:{namespace}"
 
-    def _fetch_global_repo_settings(self, namespace: str):
-        """Fetch the raw `.pr_agent.toml` from the namespace's `pr-agent-settings`
+    def _fetch_global_repo_settings(self, namespace: str, settings_repo: str):
+        """Fetch the raw `.pr_agent.toml` from the namespace's `settings_repo`
         repository. Return "" for an expected "not found"/no-access result (so it is
         cached) and let transient/unexpected errors propagate. Overridden per provider."""
         return ""

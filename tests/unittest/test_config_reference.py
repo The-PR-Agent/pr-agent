@@ -23,13 +23,15 @@ def _documented_keys(text: str) -> Counter:
 
 def test_config_reference_covers_every_active_key():
     keys = _toml_keys(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert sum(keys.values()) == 278
+    assert sum(keys.values()) == 283
 
     assert {
         "model",
         "enable_auto_approval",
         "reaction_on_start",
         "reaction_on_failure",
+        "telegram_bot_token",
+        "telegram_chat_id",
     } <= set(keys)
     assert {"force_streaming_custom_llm_provider", "cache_control_injection_points"} <= set(keys)
 

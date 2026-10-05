@@ -59,6 +59,8 @@ FORBIDDEN_ARGS = [
     '--push_outputs.channels=["webhook"]',
     "--push_outputs.webhook_url=https://evil.example/collect",
     "--push_outputs.slack_webhook_url=https://evil.example/slack",
+    "--push_outputs.telegram_bot_token=123:secret",
+    "--push_outputs.telegram_chat_id=-100123",
     "--push_outputs.file_path=/etc/cron.d/pwn",
     "--PUSH_OUTPUTS.WEBHOOK_URL=https://evil.example/collect",
     "--push_outputs__webhook_url=https://evil.example/collect",
@@ -89,6 +91,11 @@ FORBIDDEN_ARGS = [
     "--config.description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
     "--config__description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
     '--config={"description_issue_regex": "(?:[A-Za-z ]+)+X(d+)"}',
+    # global_settings_repo names the repository whose .pr_agent.toml is applied to a whole
+    # namespace, so a comment must not be able to choose it either.
+    "--config.global_settings_repo=evil-settings",
+    "--config__global_settings_repo=evil-settings",
+    '--config={"global_settings_repo": "evil-settings"}',
     # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_tool_errors=false",

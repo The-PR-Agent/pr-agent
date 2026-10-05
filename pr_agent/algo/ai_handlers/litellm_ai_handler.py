@@ -139,7 +139,7 @@ from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
 from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
-from pr_agent.config_loader import get_settings, get_verbosity_level
+from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
@@ -490,12 +490,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         ).strip().lower()
         self._anthropic_auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
         self._request_provider_cache = {}
+        self._drop_params = settings.get("LITELLM.DROP_PARAMS", None)
 
-        if settings.get("LITELLM.DISABLE_AIOHTTP", False):
+        if global_settings.get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
         self._initialize_aws_request_credentials(settings)
-        if settings.get("LITELLM.DROP_PARAMS", None):
-            litellm.drop_params = settings.litellm.drop_params
         if settings.get("LITELLM.SUCCESS_CALLBACK", None):
             litellm.success_callback = settings.litellm.success_callback
         if settings.get("LITELLM.FAILURE_CALLBACK", None):
@@ -584,13 +583,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
         bedrock_overrides = [
             model
-            for model in self.claude_adaptive_thinking_models_override
+            for model in self._validated_model_name_list("claude_adaptive_thinking_models_override", global_settings)
             if model.startswith("bedrock/") or re.match(r"^arn:[^:]+:bedrock:", model)
         ]
-        if (
-            bedrock_overrides
-            and self._claude_thinking_controls["enable_claude_adaptive_thinking"]
-        ):
+        if bedrock_overrides and global_settings.config.get("enable_claude_adaptive_thinking", False):
             litellm.register_model({
                 model: {
                     "litellm_provider": "bedrock",
@@ -2365,9 +2361,9 @@ class LiteLLMAIHandler(BaseAiHandler):
         return kwargs
 
     @staticmethod
-    def _validated_model_name_list(setting_name: str) -> list[str]:
+    def _validated_model_name_list(setting_name: str, settings=None) -> list[str]:
         """Return a stripped config list of model names, or an empty list when malformed."""
-        value = get_settings().config.get(setting_name, []) or []
+        value = (settings or get_settings()).config.get(setting_name, []) or []
         if not value:
             return []
         if not isinstance(value, list) or not all(
@@ -3273,6 +3269,8 @@ class LiteLLMAIHandler(BaseAiHandler):
     ):
         """Call LiteLLM with any provider compatibility context scoped to this task."""
         _completion = _completion or acompletion
+        if getattr(self, "_drop_params", None):
+            kwargs.setdefault("drop_params", self._drop_params)
         custom_llm_provider = str(kwargs.get("custom_llm_provider") or "").strip().lower()
         provider = self._resolve_configured_request_provider(kwargs.get("model"), custom_llm_provider)
         transport = (

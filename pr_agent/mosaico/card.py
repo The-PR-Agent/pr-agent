@@ -10,7 +10,17 @@ Streaming is advertised as False, which is load-bearing: the reference agent sel
 message/send vs message/stream from capabilities.streaming."""
 import os
 
-from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterface, AgentSkill
+from a2a.types import (
+    AgentCapabilities,
+    AgentCard,
+    AgentExtension,
+    AgentInterface,
+    AgentSkill,
+    HTTPAuthSecurityScheme,
+    SecurityRequirement,
+    SecurityScheme,
+    StringList,
+)
 
 from pr_agent.algo.run_output import get_version
 
@@ -70,7 +80,7 @@ def _build_skills() -> list:
     ]
 
 
-def build_agent_card() -> AgentCard:
+def build_agent_card(*, require_auth: bool = False) -> AgentCard:
     extensions = [
         AgentExtension(
             uri=OBSERVABILITY_EXTENSION_URI,
@@ -97,4 +107,8 @@ def build_agent_card() -> AgentCard:
             extensions=extensions,
         ),
         skills=_build_skills(),
+        security_schemes={
+            "bearerAuth": SecurityScheme(http_auth_security_scheme=HTTPAuthSecurityScheme(scheme="bearer")),
+        } if require_auth else {},
+        security_requirements=[SecurityRequirement(schemes={"bearerAuth": StringList()})] if require_auth else [],
     )

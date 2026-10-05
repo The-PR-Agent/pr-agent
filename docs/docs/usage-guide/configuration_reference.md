@@ -20,6 +20,9 @@ to-do list.
 
 ## `[config]` {#config}
 
+| Key | Default | Description |
+| --- | --- | --- |
+| `max_webhook_request_body_bytes` | 5242880 | maximum request body accepted by webhook servers (5 MiB) |
 **models**
 
 | Key | Default | Description |
@@ -48,13 +51,13 @@ to-do list.
 | --- | --- | --- |
 | `use_repo_settings_file` | true |  |
 | `use_global_settings_file` | true |  |
+| `global_settings_repo` | "" | host-only name of the repository, in the owning org/group/workspace, whose .pr_agent.toml applies to every repository there. Empty disables namespace-wide settings; set "pr-agent-settings" to keep the previous behaviour |
 | `enable_per_directory_settings` | false | when true, merge per-directory .pr_agent.toml files found by walking up from the PR's changed files (monorepo support). Adds bounded recursive tree discovery per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Nearest (deepest) directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path; when more files match than the per_directory_settings_max_files cap, shallower files are applied first and a partially capped depth keeps its later-path (winning) siblings; any overlap is logged as a warning. |
 | `per_directory_settings_max_files` | 20 | hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning) |
 | `per_directory_settings_max_tree_pages` | 10 | maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap. |
 | `extra_config_url` | "" | optional URL or path to an additional .pr_agent.toml merged before the repo-local config; also settable via --extra_config_url or PR_AGENT_EXTRA_CONFIG_URL. See docs/docs/usage-guide/configuration_options.md#external-configuration-url. |
 | `disable_auto_feedback` | false |  |
 | `enable_auto_approval` | false | when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out |
-| `max_webhook_request_body_bytes` | 5242880 | maximum accepted request body for webhook servers in bytes; must be positive. Configure reverse proxies with an equal or larger limit. |
 | `ai_timeout` | 120 | 2 minutes |
 | `retry_same_model_on_timeout` | true | when false, a timed-out call is not retried on the same model and moves on to fallback_models |
 | `retry_same_model_on_length` | false | when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models |
@@ -367,7 +370,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitlab.com" |  |
-| `expand_submodule_diffs` | false |  |
+| `expand_submodule_diffs` | false | Submodule targets must also be listed in config.repo_context_sibling_repos. |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
@@ -538,6 +541,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
+| `bearer_tokens` | {} | principal names to distinct bearer secrets; empty permits anonymous trusted-network use |
+| `routing_scan_max_chars` | 65536 | positive character limit for PR URL and command detection; does not truncate diffs |
 | `health_timeout_seconds` | 10 | finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work |
 | `context_history_max_tasks` | 100 | maximum prior tasks considered for a context follow-up; set from 1 to 1000 |
 
@@ -568,7 +573,9 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable` | false |  |
-| `channels` | [] | any of: "stdout", "file", "webhook", "slack". Nothing is emitted until a channel is listed here |
+| `channels` | [] | any of: "stdout", "file", "webhook", "slack", "telegram". Nothing is emitted until a channel is listed here |
 | `file_path` | "pr-agent-outputs/reviews.jsonl" | used by the "file" channel |
 | `webhook_url` | "" | used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL |
 | `slack_webhook_url` | "" | used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL |
+| `telegram_bot_token` | "" | used by the "telegram" channel; kept in the fixed api.telegram.org URL path |
+| `telegram_chat_id` | "" | used by the "telegram" channel as sendMessage's destination chat |

@@ -16,6 +16,7 @@ import pytest
 
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
+from pr_agent.tools.pr_description import DESCRIBE_PROGRESS_COMMENT, PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
 from pr_agent.tools.progress_comment import (
     ChunkProgressReporter,
@@ -498,6 +499,193 @@ async def test_suggestion_retried_chunks_count_towards_the_total(published_sugge
     # 3 chunks plus the 1 retried: the recovery round finishes the work rather than
     # reporting more completions than there were chunks.
     assert edits[-1].splitlines()[-1] == "analyzed 4 of 4 chunks"
+
+
+_DESCRIBE_KEYS = (
+    "config.publish_output",
+    "config.publish_output_progress",
+    "config.is_auto_command",
+    "pr_description.use_description_markers",
+    "pr_description.enable_large_pr_handling",
+    "pr_description.async_ai_calls",
+)
+
+_DESCRIBE_CHUNK = (
+    "pr_files:\n"
+    "  - filename: |\n"
+    "        a.py\n"
+    "    changes_title: |\n"
+    "        Adds the handler\n"
+    "    changes_summary: |\n"
+    "        Adds a request handler\n"
+    "    label: |\n"
+    "        Bug fix\n"
+)
+
+
+def _make_describe_tool(provider, chunk_predictions):
+    tool = PRDescription.__new__(PRDescription)
+    tool.git_provider = provider
+    tool.pr_url = "https://example.invalid/pull/1"
+    tool.pr_id = 1
+    tool.ai_handler = MagicMock()
+    tool.vars = {"title": "t", "diff": "", "include_file_summary_changes": True}
+    tool.user_description = ""
+    tool.keys_fix = []
+    tool.progress_response = SimpleNamespace(id=1, body=DESCRIBE_PROGRESS_COMMENT)
+    tool._chunk_progress = None
+
+    async def extend_uncovered(walkthrough):
+        return walkthrough
+
+    tool.extend_uncovered_files = extend_uncovered
+
+    remaining = list(chunk_predictions)
+
+    async def fake_get_prediction(model, patches_diff, prompt=""):
+        if prompt != "pr_description_only_files_prompts":
+            return "### PR Walker\n\nwalkthrough"
+        value = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    tool._get_prediction = fake_get_prediction
+    return tool
+
+
+async def _run_chunked_describe(tool, chunk_count=2, **overrides):
+    settings = get_settings()
+    settings.set("config.publish_output", True)
+    settings.set("config.publish_output_progress", overrides.get("publish_output_progress", True))
+    settings.set("config.is_auto_command", overrides.get("is_auto_command", False))
+    settings.set("pr_description.use_description_markers", False)
+    settings.set("pr_description.enable_large_pr_handling", True)
+    settings.set("pr_description.async_ai_calls", overrides.get("async_ai_calls", True))
+    with (
+        patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
+        patch("pr_agent.tools.pr_description.get_pr_diff", return_value=("", [])),
+        patch(
+            "pr_agent.tools.pr_description.get_pr_diff_multiple_patchs",
+            return_value=(
+                [f"chunk-{index}" for index in range(chunk_count)],
+                [1] * chunk_count,
+                [],
+                [],
+                {},
+                [[f"file-{index}.py"] for index in range(chunk_count)],
+            ),
+        ),
+        patch(
+            "pr_agent.tools.pr_description.fit_related_tickets_to_prompt_budget",
+            side_effect=lambda _pr, variables, _system, _user, _model, **_kwargs:
+            (variables, SimpleNamespace(prompt_tokens=0, count_tokens=len)),
+        ),
+    ):
+        await tool._prepare_prediction("gpt-4o")
+
+
+@pytest.fixture
+def published_describe():
+    snapshot = snapshot_settings(_DESCRIBE_KEYS)
+    yield
+    restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_describe_progress_comment_reports_each_settled_chunk(published_describe):
+    provider, edits = _review_progress_editor()
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_describe_tool(provider, [_DESCRIBE_CHUNK, _DESCRIBE_CHUNK])
+
+    await _run_chunked_describe(tool)
+
+    assert edits == [
+        "Preparing PR description... analyzed 1 of 2 chunks",
+        "Preparing PR description... analyzed 2 of 2 chunks",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_describe_progress_comment_reports_a_failed_chunk(published_describe):
+    provider, edits = _review_progress_editor()
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_describe_tool(provider, [RuntimeError("model refused"), _DESCRIBE_CHUNK])
+
+    # One chunk fails and one succeeds; /describe retains the successful chunks,
+    # so the run completes and the progress line reports the failed count.
+    await _run_chunked_describe(tool)
+
+    assert edits
+    assert any("1 chunk failed" in body for body in edits)
+    assert tool.description_failed_chunk_count == 1
+
+
+@pytest.mark.asyncio
+async def test_describe_progress_is_skipped_when_the_provider_cannot_edit(published_describe):
+    provider, edits = _review_progress_editor(is_supported=lambda _capability: False)
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_describe_tool(provider, [_DESCRIBE_CHUNK, _DESCRIBE_CHUNK])
+
+    await _run_chunked_describe(tool)
+
+    assert edits == []
+    assert tool._chunk_progress is None
+
+
+@pytest.mark.asyncio
+async def test_describe_progress_is_skipped_when_progress_output_is_off(published_describe):
+    provider, edits = _review_progress_editor()
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_describe_tool(provider, [_DESCRIBE_CHUNK, _DESCRIBE_CHUNK])
+
+    await _run_chunked_describe(tool, publish_output_progress=False)
+
+    assert edits == []
+    assert tool._chunk_progress is None
+
+
+@pytest.mark.asyncio
+async def test_describe_progress_reports_sync_chunk_settlement(published_describe):
+    provider, edits = _review_progress_editor()
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_describe_tool(provider, [_DESCRIBE_CHUNK, _DESCRIBE_CHUNK])
+
+    await _run_chunked_describe(tool, async_ai_calls=False)
+
+    assert edits == [
+        "Preparing PR description... analyzed 1 of 2 chunks",
+        "Preparing PR description... analyzed 2 of 2 chunks",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_describe_fallback_attempt_restores_the_placeholder(published_describe):
+    provider, edits = _review_progress_editor()
+    provider.get_filtered_diff_file_names.return_value = []
+    error = RuntimeError("model refused")
+    tool = _make_describe_tool(provider, [error, error, _DESCRIBE_CHUNK, _DESCRIBE_CHUNK])
+
+    with pytest.raises(RuntimeError):
+        await _run_chunked_describe(tool)
+    await _run_chunked_describe(tool)
+
+    assert edits[3:] == [
+        DESCRIBE_PROGRESS_COMMENT,
+        "Preparing PR description... analyzed 1 of 2 chunks",
+        "Preparing PR description... analyzed 2 of 2 chunks",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_describe_progress_is_skipped_for_a_single_chunk(published_describe):
+    provider, edits = _review_progress_editor()
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_describe_tool(provider, [_DESCRIBE_CHUNK])
+
+    await _run_chunked_describe(tool, chunk_count=1)
+
+    assert edits == []
 
 
 @pytest.mark.asyncio

@@ -154,7 +154,14 @@ expand_submodule_diffs = true
 
 When enabled, PR-Agent will fetch and attach diffs from the submodule repositories. The default is `false` to avoid extra GitLab API calls.
 
-Submodule URLs in `.gitmodules` may be absolute (`https://`, `ssh://`, `git@host:`) or relative (`../group/repo.git`). Relative URLs are resolved against the merge request's project path the same way git does, so submodules that live in a sibling group on the same GitLab instance are expanded too.
+Submodule URLs in `.gitmodules` may be absolute (`https://`, `ssh://`, `git@host:`) or relative (`../group/repo.git`). Relative URLs are resolved against the merge request's project path the same way git does.
+
+Because `.gitmodules` comes from the merge request head, the target project is chosen by whoever opened it. PR-Agent therefore authorizes each submodule target the same way it authorizes a [sibling repository](#context-from-sibling-repositories): the target must be listed in `config.repo_context_sibling_repos`, must sit in the merge request project's own top-level namespace, and must be readable by the user who triggered the command. Targets that fail any of these checks are skipped with a warning and the parent gitlink change is left in place. Add each submodule you want expanded to the allowlist:
+
+```toml
+[config]
+repo_context_sibling_repos = ["my-group/my-submodule"]
+```
 
 ## Post the review as a GitLab thread
 

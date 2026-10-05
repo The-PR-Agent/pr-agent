@@ -1472,12 +1472,12 @@ class GithubProvider(GitProvider):
         # self-hosted GitHub Enterprise instance) must not share a settings entry.
         return f"github:{getattr(self, 'base_url', '')}:{repo_owner}"
 
-    def _fetch_global_repo_settings(self, repo_owner):
+    def _fetch_global_repo_settings(self, repo_owner, settings_repo):
         try:
-            global_settings_repo = self.github_client.get_repo(f"{repo_owner}/pr-agent-settings")
+            global_settings_repo = self.github_client.get_repo(f"{repo_owner}/{settings_repo}")
             return global_settings_repo.get_contents(".pr_agent.toml").decoded_content
         except GithubException as e:
-            # A missing pr-agent-settings repo/file (404) or lack of access (403) is an expected,
+            # A missing settings repo/file (404) or lack of access (403) is an expected,
             # stable fallback (skip global settings, continue with local) — return "" so it's cached.
             if e.status in (403, 404):
                 get_logger().debug(
@@ -1794,6 +1794,8 @@ class GithubProvider(GitProvider):
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
     ) -> Commit:
+        if not self._pr_head_in_base_repo():
+            raise ValueError("Cannot write to a fork pull request")
         repo = self._get_repo()
         if expected_snapshot.exists:
             if not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision:
@@ -1809,9 +1811,7 @@ class GithubProvider(GitProvider):
             try:
                 repo.get_contents(file_path, ref=branch)
             except GithubException as e:
-                if e.status != 404 or not self._pr_head_in_base_repo():
-                    # Keep missing-file writes disabled for bare fork branches: the
-                    # contents API resolves them against the base repository.
+                if e.status != 404:
                     raise
                 # Do not retry the final creation conflict as an update; GitHub
                 # rejects a file created after the preliminary absence check.

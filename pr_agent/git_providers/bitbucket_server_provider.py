@@ -134,10 +134,10 @@ class BitbucketServerProvider(GitProvider):
     def _get_global_settings_cache_key(self, workspace: str) -> str:
         return f"bitbucket-server:{getattr(self, 'bitbucket_server_url', '')}:{workspace}"
 
-    def _fetch_global_repo_settings(self, workspace):
-        # A missing pr-agent-settings repo/file (404) is an expected fallback -> return "" (cached).
+    def _fetch_global_repo_settings(self, workspace, settings_repo):
+        # A missing settings repo/file (404) is an expected fallback -> return "" (cached).
         try:
-            return self.bitbucket_client.get_content_of_file(workspace, "pr-agent-settings", ".pr_agent.toml")
+            return self.bitbucket_client.get_content_of_file(workspace, settings_repo, ".pr_agent.toml")
         except HTTPError as e:
             if e.response.status_code == 404:
                 return ""
