@@ -485,6 +485,40 @@ class GitLabProvider(GitProvider):
         get_logger().warning(f"[submodule] could not resolve project '{proj_path}': " + "; ".join(failures))
         return None
 
+    def _submodule_target_allowed(self, proj_path: str, project) -> bool:
+        """
+        Apply the sibling-repository checks to a submodule target before diffing it.
+
+        `.gitmodules` is read from the merge request head, so the target project is chosen by
+        whoever opened it. Without these checks a repository could name any project the bot's
+        token can read, and the fetched diff would carry that project's source into the model
+        prompt and the review comment. This mirrors the checks the sibling-repo context path
+        applies in get_sibling_repo_file_content().
+        """
+        if not self.is_sibling_repo_allowed(proj_path):
+            get_logger().warning(
+                f"[submodule] ignoring '{proj_path}': absent from the host sibling-repo allowlist"
+            )
+            return False
+        resolved_path = getattr(project, "path_with_namespace", None)
+        current_namespace = self.get_owning_namespace(resolved=True)
+        if (
+            not isinstance(resolved_path, str)
+            or "/" not in resolved_path
+            or not current_namespace
+            or resolved_path.split("/")[0] != current_namespace
+        ):
+            get_logger().warning(
+                f"[submodule] ignoring '{proj_path}': target is outside the MR project's namespace"
+            )
+            return False
+        if not self._requester_can_read_sibling_project(project):
+            get_logger().warning(
+                f"[submodule] ignoring '{proj_path}': the review requester cannot read it"
+            )
+            return False
+        return True
+
     def _compare_submodule(self, proj_path: str, old_sha: str, new_sha: str) -> list[dict]:
         """
         Call repository_compare on submodule project; return list of diffs.
@@ -496,6 +530,9 @@ class GitLabProvider(GitProvider):
             proj = self._project_by_path(proj_path)
             if proj is None:
                 get_logger().warning(f"[submodule] resolve failed for {proj_path}")
+                self._submodule_cache[key] = []
+                return []
+            if not self._submodule_target_allowed(proj_path, proj):
                 self._submodule_cache[key] = []
                 return []
             cmp = proj.repository_compare(old_sha, new_sha)

@@ -777,7 +777,8 @@ class TestGitLabProvider:
     def test_compare_submodule_cached(self, gitlab_provider):
         proj = MagicMock()
         proj.repository_compare.return_value = {"diffs": [{"diff": "d"}]}
-        with patch.object(gitlab_provider, "_project_by_path", return_value=proj) as m_pbp:
+        with patch.object(gitlab_provider, "_project_by_path", return_value=proj) as m_pbp, \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True):
             first = gitlab_provider._compare_submodule("grp/repo", "old", "new")
             second = gitlab_provider._compare_submodule("grp/repo", "old", "new")
 
@@ -800,6 +801,7 @@ class TestGitLabProvider:
         proj.repository_compare.return_value = comparison
 
         with patch.object(gitlab_provider, "_project_by_path", return_value=proj), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True), \
              patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
             first = gitlab_provider._compare_submodule("grp/repo", "old", "new")
             second = gitlab_provider._compare_submodule("grp/repo", "old", "new")
@@ -825,6 +827,7 @@ class TestGitLabProvider:
         proj.repository_compare.return_value = comparison
 
         with patch.object(gitlab_provider, "_project_by_path", return_value=proj), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True), \
              patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
             result = gitlab_provider._compare_submodule("grp/repo", "old", "new")
 
@@ -847,6 +850,7 @@ class TestGitLabProvider:
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
              patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"src/lib_a": "group/child.git"}), \
              patch.object(gitlab_provider, "_project_by_path", return_value=child_project), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True), \
              patch.object(gitlab_provider, "get_pr_file_content", return_value=""):
             files = gitlab_provider.get_diff_files()
 
@@ -862,6 +866,89 @@ class TestGitLabProvider:
 
         assert result == cached_diffs
         m_pbp.assert_not_called()
+
+    SECRET_DIFF = {"old_path": "creds.py", "new_path": "creds.py",
+                  "diff": "@@ -1 +1 @@\n-SECRET = None\n+SECRET = 'leaked'\n"}
+
+    def _expand(self, gitlab_provider, *, allowlist, target_path, namespace="group",
+                can_read=True):
+        """Run a real expansion whose .gitmodules points at `target_path`."""
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        settings.config.get.side_effect = lambda key, default=None: (
+            allowlist if key == "repo_context_sibling_repos" else default)
+
+        target = MagicMock()
+        target.path_with_namespace = target_path
+        target.repository_compare.return_value = {"diffs": [self.SECRET_DIFF]}
+
+        changes = [self._bump()]
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch("pr_agent.git_providers.git_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map",
+                          return_value={"libs/a": f"https://gitlab.com/{target_path}.git"}), \
+             patch.object(gitlab_provider, "_project_by_path", return_value=target), \
+             patch.object(gitlab_provider, "get_owning_namespace", return_value=namespace), \
+             patch.object(gitlab_provider, "_requester_can_read_sibling_project",
+                          return_value=can_read) as m_read:
+            out = gitlab_provider._expand_submodule_changes(changes)
+        return target, m_read, out
+
+    @staticmethod
+    def _bump():
+        return {"new_path": "libs/a", "old_path": "libs/a",
+                "diff": "-Subproject commit aaa1111\n+Subproject commit bbb2222\n",
+                "new_file": False, "deleted_file": False, "renamed_file": False}
+
+    def test_rejects_target_absent_from_host_allowlist(self, gitlab_provider):
+        target, m_read, out = self._expand(
+            gitlab_provider, allowlist=[], target_path="group/lib")
+
+        target.repository_compare.assert_not_called()
+        m_read.assert_not_called()
+        assert "leaked" not in str(out)
+
+    def test_rejects_allowlisted_target_outside_the_namespace(self, gitlab_provider):
+        # The allowlist is host-controlled, but a target still has to sit in the MR project's
+        # own namespace, so an allowlisted sibling elsewhere cannot be pulled in.
+        target, m_read, out = self._expand(
+            gitlab_provider, allowlist=["secret-org/private"], target_path="secret-org/private",
+            namespace="group")
+
+        target.repository_compare.assert_not_called()
+        m_read.assert_not_called()
+        assert "leaked" not in str(out)
+
+    def test_rejects_target_the_requester_cannot_read(self, gitlab_provider):
+        target, m_read, out = self._expand(
+            gitlab_provider, allowlist=["group/private"], target_path="group/private",
+            namespace="group", can_read=False)
+
+        m_read.assert_called_once()
+        target.repository_compare.assert_not_called()
+        assert "leaked" not in str(out)
+
+    def test_expands_allowlisted_in_namespace_readable_target(self, gitlab_provider):
+        # The gate must not disable the feature for a legitimate submodule.
+        target, m_read, out = self._expand(
+            gitlab_provider, allowlist=["group/lib"], target_path="group/lib",
+            namespace="group", can_read=True)
+
+        m_read.assert_called_once()
+        target.repository_compare.assert_called_once_with("aaa1111", "bbb2222")
+        assert "leaked" in str(out)
+
+    def test_rejected_target_is_not_retried_from_cache(self, gitlab_provider):
+        # A rejection is cached like any other empty outcome, so one MR does not re-resolve
+        # the same forbidden target for every gitlink bump.
+        target, _, out = self._expand(
+            gitlab_provider, allowlist=[], target_path="secret-org/private")
+
+        target.repository_compare.assert_not_called()
+        assert ("secret-org/private", "aaa1111", "bbb2222") in gitlab_provider._submodule_cache
+
+
 
     def test_parse_merge_request_url_handles_nested_project_paths(self, gitlab_provider):
         project_path, mr_id = gitlab_provider._parse_merge_request_url(
@@ -2661,6 +2748,7 @@ class TestGitLabIncrementalReview:
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
              patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"libs/sub": "group/child.git"}), \
              patch.object(gitlab_provider, "_project_by_path", return_value=child_project), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True), \
              patch.object(gitlab_provider, "get_pr_file_content", return_value=""):
             files = gitlab_provider.get_diff_files()
 
