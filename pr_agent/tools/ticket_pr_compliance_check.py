@@ -30,7 +30,7 @@ def _github_ticket_pattern(base_url_html):
             authority += r"(?::443)?" if port in (None, 443) else f":{port}"
             full_url = (
                 rf"(?<![\w@/])(?ai:https://{authority})/"
-                r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.{1,2}/)[A-Za-z0-9._-]+/issues/[1-9][0-9]*"
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.{1,2}/)[A-Za-z0-9._-]+/issues/0*[1-9][0-9]*"
                 r"(?![\w-]|/[\w-])"
             )
     except (AttributeError, TypeError, ValueError):

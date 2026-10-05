@@ -63,6 +63,14 @@ def test_a_full_url_is_not_bounded():
     assert _links(f"Fixes {url}") == [url]
 
 
+@pytest.mark.parametrize("base", [BASE, "https://ghe.example.test:8443"])
+@pytest.mark.parametrize("number", ["0007", "0070"])
+def test_full_issue_url_preserves_positive_leading_zero_numbers(base, number):
+    url = f"{base}/{REPO}/issues/{number}"
+
+    assert extract_ticket_links_from_pr_description(f"Fixes {url}", REPO, base) == [url]
+
+
 def test_enterprise_full_url_keeps_first_seen_order_and_custom_explicit_span(description_regex):
     description_regex(r"(\d+)")
     enterprise = "https://ghe.example.test"
@@ -351,10 +359,9 @@ def test_foreign_unicode_authority_cannot_exhaust_the_lookup_window(base_host, f
     ) == [valid]
 
 
-@pytest.mark.parametrize("number", ["1٢", "1۲", "1２"])
-def test_full_issue_url_requires_ascii_digits(number):
-    base = "https://ghe.example.test"
-
+@pytest.mark.parametrize("base", [BASE, "https://ghe.example.test:8443"])
+@pytest.mark.parametrize("number", ["00", "0000", "1٢", "1۲", "1２"])
+def test_full_issue_url_requires_positive_ascii_digits(base, number):
     assert extract_ticket_links_from_pr_description(f"{base}/{REPO}/issues/{number}", REPO, base) == []
 
 
