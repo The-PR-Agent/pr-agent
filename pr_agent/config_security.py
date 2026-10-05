@@ -38,7 +38,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
     "pr_reviewer": frozenset({"publish_error_details"}),
-    # repo_context_sibling_repos lists the sibling repositories whose files a consuming repo
+    # repo_context_sibling_repos lists the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
     # triggers the read, not who chose the target or where the output lands, so a sibling
