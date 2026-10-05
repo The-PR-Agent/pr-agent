@@ -77,6 +77,70 @@ def test_enterprise_full_url_keeps_first_seen_order_and_custom_explicit_span(des
 
 
 @pytest.mark.parametrize(
+    ("base", "url"),
+    [
+        ("https://ghe.example.test", "https://github.com/other/project/issues/99"),
+        (BASE, "https://ghe.example.test/other/project/issues/99"),
+        (BASE, "HTTP://other.example.test/other/project/issues/99"),
+        (BASE, "https://user23:pass45@other.example.test:8443/team7/repo8/issues/99"),
+        (BASE, "https://[2001:db8::1]:8443/team7/repo8/issues/99?x=10#11"),
+        (BASE, "https://other.example.test/other/project/issues/99?plain=123"),
+        (BASE, "https://other.example.test/other/project/issues/99#issuecomment-123"),
+        (BASE, "https://other.example.test/other/project/issues/99/extra123"),
+        (BASE, "https://other.example.test/other/project/issues/ABC-99"),
+        (BASE, "https://github.com/other/project/issues/99/extra123"),
+    ],
+)
+def test_issue_url_numbers_are_not_custom_local_references(description_regex, base, url):
+    description_regex(r"(\d+)")
+    assert extract_ticket_links_from_pr_description(f"See {url}", REPO, base) == []
+
+
+@pytest.mark.parametrize("suffix", ["/", "?plain=123", "#issuecomment-123", "/#issuecomment-123"])
+def test_admitted_issue_url_suffix_is_not_a_custom_local_reference(description_regex, suffix):
+    description_regex(r"(\d+)")
+    url = f"{BASE}/other/project/issues/99"
+    assert _links(f"See {url}{suffix}") == [url]
+
+
+@pytest.mark.parametrize("separator", [",", ";", ".", ")", "]", ">", "`"])
+def test_custom_reference_after_an_issue_url_delimiter_is_preserved(description_regex, separator):
+    description_regex(r"(\d+)")
+    assert _links(f"https://other.example.test/team/repo/issues/99{separator}42") == [
+        f"{BASE}/{REPO}/issues/42",
+    ]
+
+
+@pytest.mark.parametrize("suffix", ["?x=8,123", "#comment-8;123", "/extra8.123"])
+def test_issue_url_suffix_reserves_punctuation_separated_numbers(description_regex, suffix):
+    description_regex(r"(\d+)")
+    assert _links(f"https://other.example.test/team/repo/issues/99{suffix} 42") == [
+        f"{BASE}/{REPO}/issues/42",
+    ]
+
+
+@pytest.mark.parametrize("url", ["https://jira.example.test/browse/ABC-42", "https://other.example.test/pulls/42"])
+def test_unrelated_url_can_still_supply_a_custom_reference(description_regex, url):
+    description_regex(r"(\d+)")
+    assert _links(url) == [f"{BASE}/{REPO}/issues/42"]
+
+
+def test_foreign_url_suppression_preserves_custom_order_deduplication_and_cap(description_regex):
+    description_regex(r"(\d+)")
+    description = "42 https://other.example.test/team/repo/issues/99 other/project#7 42 8"
+    assert extract_ticket_links_from_pr_description(description, REPO, BASE, max_tickets=2) == [
+        f"{BASE}/{REPO}/issues/42",
+        f"{BASE}/other/project/issues/7",
+    ]
+
+
+def test_foreign_url_numbers_do_not_fill_the_custom_lookup_window(description_regex):
+    description_regex(r"(\d+)")
+    description = " ".join(f"https://other.example.test/team/repo/issues/{i}" for i in range(100, 140))
+    assert _links(f"{description} ticket42") == [f"{BASE}/{REPO}/issues/42"]
+
+
+@pytest.mark.parametrize(
     ("base", "url", "expected"),
     [
         ("https://ghe.example.test", "https://ghe.example.test/org/repo/issues/7", True),
