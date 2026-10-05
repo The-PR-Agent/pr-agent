@@ -926,8 +926,10 @@ class PRReviewer:
         """
         comment = getattr(self, "_progress_response", None)
         settings = get_settings()
-        if comment is None or not settings.config.get("publish_output_progress", True):
+        if not settings.config.get("publish_output_progress", True):
             return None
+        # A missing comment falls through: create() then serves the check-run sink alone,
+        # which is the only progress channel automatic commands have.
         return ChunkProgressReporter.create(
             self.git_provider,
             comment,

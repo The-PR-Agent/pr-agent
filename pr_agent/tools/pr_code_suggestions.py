@@ -415,6 +415,10 @@ class PRCodeSuggestions:
                     self._progress_base_body = "Preparing suggestions..."
                     self.progress_response = self.git_provider.publish_comment(
                         self._progress_base_body, is_temporary=True)
+            elif get_settings().config.publish_output_progress:
+                # No comment was published (an automatic command publishes none); the base
+                # body still anchors the reporter's dedup, so the check-run sink alone can serve.
+                self._progress_base_body = "Preparing suggestions..."
 
             # # call the model to get the suggestions, and self-reflect on them
             # if not self.is_extended:

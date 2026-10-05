@@ -90,6 +90,7 @@ class GithubProvider(GitProvider):
         self._resolved_config_branch: str | None = None
         self._check_run_ids: dict = {}
         self._check_runs_in_progress: set = set()
+        self._check_run_base_summaries: dict = {}
         self._published_inline_comment_bodies: list[str] = []
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
@@ -707,6 +708,7 @@ class GithubProvider(GitProvider):
         }
         if self._upsert_check_run(name, body):
             self._check_runs_in_progress.discard(name)
+            self._check_run_base_summaries.pop(name, None)
             return True
         return False
 
@@ -722,8 +724,29 @@ class GithubProvider(GitProvider):
         }
         if self._upsert_check_run(name, body):
             self._check_runs_in_progress.add(name)
+            self._check_run_base_summaries[name] = summary
             return True
         return False
+
+    def update_check_run_progress(self, line: str) -> bool:
+        """Append a progress line to every in-progress check run's output summary.
+
+        The run keeps its ``in_progress`` status; GitHub allows repeated output PATCHes.
+        Returns True when at least one run was updated. With no run in progress (manual
+        commands, or check runs disabled) this is a no-op returning False.
+        """
+        updated = False
+        for name in list(self._check_runs_in_progress):
+            base = self._check_run_base_summaries.get(name, "")
+            summary = f"{base} {line}".strip() if line else base
+            body = {"output": {"title": self._check_run_name(name), "summary": summary[:300]}}
+            if self._upsert_check_run(name, body):
+                updated = True
+            else:
+                # Keep trying the remaining runs, but stop counting this one as live
+                # so a permanently failing update does not repeat every chunk.
+                self._check_runs_in_progress.discard(name)
+        return updated
 
     def finish_check_run(self, name: str, conclusion: str, summary: str) -> bool:
         """Complete a check run opened by `start_check_run` that no tool completed.
@@ -740,6 +763,7 @@ class GithubProvider(GitProvider):
         }
         if self._upsert_check_run(name, body):
             self._check_runs_in_progress.discard(name)
+            self._check_run_base_summaries.pop(name, None)
             return True
         return False
 

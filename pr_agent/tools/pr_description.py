@@ -674,7 +674,9 @@ class PRDescription:
         settings = get_settings()
         # A single chunk has nothing to report: one "1 of 1" edit is a provider
         # write with no information, so skip the reporter like /improve does.
-        if comment is None or total < 2 or not settings.config.get("publish_output_progress", True):
+        # A missing comment falls through: create() then serves the check-run
+        # sink alone, which is the only progress channel automatic commands have.
+        if total < 2 or not settings.config.get("publish_output_progress", True):
             return None
         return ChunkProgressReporter.create(
             self.git_provider,

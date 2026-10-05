@@ -38,6 +38,7 @@ def _github(sha="abc123", existing=None):
     provider.last_commit_id = SimpleNamespace(sha=sha) if sha else None
     provider._check_run_ids = {}
     provider._check_runs_in_progress = set()
+    provider._check_run_base_summaries = {}
     requester = MagicMock()
 
     def request(method, url, **kwargs):
@@ -84,6 +85,42 @@ def test_start_check_run_reopens_the_run_already_on_the_commit():
     [(method, url, body)] = _requests(provider)
     assert (method, url) == ("PATCH", f"{CHECK_RUNS_URL}/55")
     assert body["status"] == "in_progress"
+
+
+def test_update_check_run_progress_appends_the_line_to_a_started_run():
+    provider = _github()
+    provider.start_check_run("review", "PR-Agent is running /review")
+
+    assert provider.update_check_run_progress("analyzed 2 of 3 chunks") is True
+
+    [(create_method, create_url, _created), (method, url, body)] = _requests(provider)
+    assert (create_method, create_url) == ("POST", CHECK_RUNS_URL)
+    assert (method, url) == ("PATCH", f"{CHECK_RUNS_URL}/101")
+    assert "status" not in body  # the run stays in_progress
+    assert body["output"]["summary"] == "PR-Agent is running /review analyzed 2 of 3 chunks"
+
+
+def test_update_check_run_progress_without_a_started_run_is_a_noop():
+    provider = _github()
+
+    assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
+    assert _requests(provider) == []
+
+
+def test_update_check_run_progress_stops_retrying_a_failing_run():
+    provider = _github()
+    provider.start_check_run("review", "working")
+    provider.pr._requester.requestJsonAndCheck.side_effect = RequestException("api down")
+
+    assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
+    # The run left the in-progress set, so a later chunk does not hit the API again.
+    provider.pr._requester.requestJsonAndCheck.side_effect = None
+    non_get_before = [c for c in provider.pr._requester.requestJsonAndCheck.call_args_list
+                      if c.args[0] != "GET"]
+    assert provider.update_check_run_progress("analyzed 2 of 2 chunks") is False
+    non_get_after = [c for c in provider.pr._requester.requestJsonAndCheck.call_args_list
+                     if c.args[0] != "GET"]
+    assert len(non_get_after) == len(non_get_before)
 
 
 def test_the_tool_completes_the_run_the_runner_opened():

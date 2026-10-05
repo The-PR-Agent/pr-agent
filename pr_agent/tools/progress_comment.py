@@ -71,21 +71,25 @@ def edit_comment_safely(git_provider, comment, body: str, *, label: str = "progr
 
 
 class ChunkProgressReporter:
-    """Rewrite a progress comment in place as the chunks of a chunked run settle.
+    """Keep a run's progress current as the chunks of a chunked run settle.
 
     A chunked run makes several model calls (plus retries) that can take minutes, so the
-    published placeholder is kept current instead of frozen. Reporting is best effort: a
-    provider without `edit_comment` never gets a reporter, and an edit that fails mid-run is
-    logged and dropped so the result is unaffected.
+    published progress is kept current instead of frozen. Two parallel sinks exist: the
+    in-place rewrite of a progress comment (when one was published), and the output summary
+    of the provider's in-progress check runs (``update_check_run_progress`` — automatic
+    commands publish no progress comment, so the check run is their only visible channel).
+    Reporting is best effort: an edit or update that fails mid-run is logged and dropped so
+    the result is unaffected.
 
-    Every counter change takes a lock that is held until the edit lands, so the comment cannot
-    end up showing an older count than the one the tool already recorded. `edit_comment` is a
-    blocking provider call, so it runs in a worker thread rather than on the event loop that
-    the sibling chunk coroutines still need.
+    Every counter change takes a lock that is held until the writes land, so a sink cannot
+    end up showing an older count than the one the tool already recorded. The provider calls
+    block, so they run in a worker thread rather than on the event loop that the sibling
+    chunk coroutines still need.
     """
 
     def __init__(self, git_provider, comment, base_body: str, total: int, body_builder,
-                 *, label: str = "progress", completed: int = 0, failed: int = 0):
+                 *, label: str = "progress", completed: int = 0, failed: int = 0,
+                 check_run_sink=None):
         self.git_provider = git_provider
         self.comment = comment
         self.base_body = base_body
@@ -94,19 +98,35 @@ class ChunkProgressReporter:
         self.label = label
         self.completed = max(int(completed), 0)
         self.failed = max(int(failed), 0)
+        self._check_run_sink = check_run_sink
         self._last_body = base_body
         self._lock = asyncio.Lock()
 
     @classmethod
     def create(cls, git_provider, comment, base_body, *, total, body_builder,
                label: str = "progress", completed: int = 0):
-        """Build a reporter, or None when there is no comment this provider can edit back."""
-        if comment is None or not base_body or not total:
+        """Build a reporter, or None when no sink is available.
+
+        The comment sink needs a published comment and a provider that can edit and remove
+        comments. When there is no such comment — automatic commands publish none — the
+        provider's check-run progress method serves alone; a run with both gets both.
+        """
+        if not base_body or not total:
             return None
+        check_run_sink = getattr(git_provider, "update_check_run_progress", None)
+        check_run_sink = check_run_sink if callable(check_run_sink) else None
+        if comment is None:
+            return cls(git_provider, None, base_body, total, body_builder,
+                       label=label, completed=completed, check_run_sink=check_run_sink) \
+                if check_run_sink is not None else None
         if not supports_editable_progress_comment(git_provider):
-            return None
+            # Without an editable comment the run falls back to the check run alone.
+            if check_run_sink is None:
+                return None
+            return cls(git_provider, None, base_body, total, body_builder,
+                       label=label, completed=completed, check_run_sink=check_run_sink)
         return cls(git_provider, comment, base_body, total, body_builder,
-                   label=label, completed=completed)
+                   label=label, completed=completed, check_run_sink=check_run_sink)
 
     async def reset_to_base(self) -> None:
         """Restore the published placeholder, so a new attempt does not inherit the last counts."""
@@ -132,14 +152,23 @@ class ChunkProgressReporter:
             await self._report()
 
     async def _report(self) -> None:
-        await self._write(self.body_builder(
-            chunk_progress_line(self.completed, self.total, self.failed)))
+        line = chunk_progress_line(self.completed, self.total, self.failed)
+        await self._write(self.body_builder(line), line)
 
-    async def _write(self, body: str) -> None:
+    async def _write(self, body: str, line: str = "") -> None:
         # set_failed(0) after a clean batch reproduces the body the last settled chunk already
-        # published; editing again would be a redundant write.
+        # published; writing again would be a redundant provider call on every sink.
         if body == self._last_body:
             return
         self._last_body = body
-        await asyncio.to_thread(edit_comment_safely, self.git_provider, self.comment, body,
-                                label=self.label)
+        if self.comment is not None:
+            await asyncio.to_thread(edit_comment_safely, self.git_provider, self.comment, body,
+                                    label=self.label)
+        if self._check_run_sink is not None:
+            await asyncio.to_thread(self._update_check_run_safely, line)
+
+    def _update_check_run_safely(self, line: str) -> None:
+        try:
+            self._check_run_sink(line)
+        except Exception as error:
+            get_logger().warning(f"Failed to update the {self.label} check run: {error}")
