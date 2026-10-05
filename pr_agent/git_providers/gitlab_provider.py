@@ -1012,6 +1012,8 @@ class GitLabProvider(GitProvider):
         self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
     ) -> None:
         """Create or replace a file only against the captured file state."""
+        if not self._pr_head_in_base_repo():
+            raise GitlabGetError("Cannot push to a fork merge request branch via the target project", response_code=404)
         try:
             if expected_snapshot.exists and (
                 not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision
@@ -1076,6 +1078,15 @@ class GitLabProvider(GitProvider):
         except (GitlabError, RequestException) as e:
             get_logger().exception(f"Unexpected error creating/updating file {file_path} in branch {branch}: {e}")
             raise
+
+    def _pr_head_in_base_repo(self) -> bool:
+        """True when the merge request source branch lives in the target project itself."""
+        mr = getattr(self, "mr", None)
+        source_project_id = getattr(mr, "source_project_id", None)
+        target_project_id = getattr(mr, "target_project_id", None) or getattr(mr, "project_id", None)
+        if source_project_id is None or target_project_id is None:
+            return False
+        return str(source_project_id) == str(target_project_id)
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         """

@@ -96,6 +96,11 @@ class TestGitLabProvider:
                 "GITLAB.PERSONAL_ACCESS_TOKEN": "fake_token"
             }.get(key, default)
 
+            mock_project.id = 1
+            mock_mr = mock_project.mergerequests.get.return_value
+            mock_mr.source_project_id = 1
+            mock_mr.target_project_id = 1
+
             mock_gitlab_client.projects.get.return_value = mock_project
             provider = GitLabProvider("https://gitlab.com/test/repo/-/merge_requests/1")
             provider.gl = mock_gitlab_client
@@ -488,6 +493,48 @@ class TestGitLabProvider:
                 expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
             )
         assert raised.value is error
+        mock_project.files.create.assert_not_called()
+
+    def test_create_or_update_pr_file_does_not_create_for_fork_mr(self, gitlab_provider, mock_project):
+        gitlab_provider.mr.source_project_id = 99
+        gitlab_provider.mr.target_project_id = 1
+
+        with pytest.raises(GitlabGetError) as exc_info:
+            gitlab_provider.create_or_update_pr_file(
+                "CHANGELOG.md", "main", "new content", "Add CHANGELOG.md",
+                expected_snapshot=FileContentSnapshot("", False, None),
+            )
+
+        assert getattr(exc_info.value, "response_code", None) == 404
+        mock_project.files.get.assert_not_called()
+        mock_project.files.create.assert_not_called()
+
+    def test_create_or_update_pr_file_does_not_update_for_fork_mr(self, gitlab_provider, mock_project):
+        gitlab_provider.mr.source_project_id = 99
+        gitlab_provider.mr.target_project_id = 1
+
+        with pytest.raises(GitlabGetError) as exc_info:
+            gitlab_provider.create_or_update_pr_file(
+                "CHANGELOG.md", "main", "new content", "Update CHANGELOG.md",
+                expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
+            )
+
+        assert getattr(exc_info.value, "response_code", None) == 404
+        mock_project.files.get.assert_not_called()
+        mock_project.files.create.assert_not_called()
+
+    def test_create_or_update_pr_file_rejects_when_project_ids_missing(self, gitlab_provider, mock_project):
+        gitlab_provider.mr.source_project_id = None
+        gitlab_provider.mr.target_project_id = 1
+
+        with pytest.raises(GitlabGetError) as exc_info:
+            gitlab_provider.create_or_update_pr_file(
+                "CHANGELOG.md", "main", "new content", "Add CHANGELOG.md",
+                expected_snapshot=FileContentSnapshot("", False, None),
+            )
+
+        assert getattr(exc_info.value, "response_code", None) == 404
+        mock_project.files.get.assert_not_called()
         mock_project.files.create.assert_not_called()
 
     def test_has_create_or_update_pr_file_method(self, gitlab_provider):
