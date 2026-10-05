@@ -105,7 +105,7 @@ Fill in the name and URL. Configure a webhook **Secret** and set the same value 
 webhook_secret = "<webhook secret>"
 ```
 
-Bitbucket signs webhook payloads with this secret in the `X-Hub-Signature` header. PR-Agent requires the secret and rejects webhook requests with HTTP 403 if it is missing or empty. Missing or invalid signatures also receive HTTP 403.
+Bitbucket signs webhook payloads with this secret in the `X-Hub-Signature` header. PR-Agent requires the secret and rejects webhook requests with HTTP 403 if it is missing or empty. Normal webhook deliveries without a valid signature also receive HTTP 403. Bitbucket's connection test remains available after the secret is configured.
 
 The separate Authentication option can remain 'None' because this server verifies the secret-based signature rather than Basic authentication. Select the 'Pull Request Opened' checkbox to receive that event as a webhook.
 
