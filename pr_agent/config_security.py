@@ -158,7 +158,10 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # into bounded regexes, whereas `ignore.regex` accepts arbitrary expressions that
 # filter_ignored() compiles and matches against every changed filename on every
 # review. A catastrophic-backtracking pattern committed in a nested file could
-# stall a worker, so nested files keep the bounded glob form only.
+# stall a worker, so nested files keep the bounded glob form only. The expansion
+# that glob form allows is bounded by the per-glob and per-list variant ceilings
+# in pr_agent/algo/file_filter.py; the number of globs a nested file may list is
+# not.
 #
 # The `config` section lists model-routing and output knobs but deliberately
 # excludes the repo-context builders: `repo_context_files` fetches every listed

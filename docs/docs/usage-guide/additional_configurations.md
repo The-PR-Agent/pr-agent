@@ -99,6 +99,12 @@ And to ignore Python files in all PRs using `regex` pattern, set in a configurat
 regex = ['.*\.py$']
 ```
 
+A `**/` segment in a `glob` pattern matches zero or more directories, so `src/**/generated_*.py` also ignores `src/generated_pb.py` and not only `src/api/generated_pb.py`. Note that `*` still matches across `/`, as in `['*.py']` above.
+
+Each ignore-glob list keeps at most 256 additional, distinct zero-directory regexes. Patterns with more than six standalone `**/` segments or more than 256 characters are not expanded. Configured patterns and the existing root-level form of a leading `**/` are always kept and do not count toward the limit. Skipped variants are reported once per list; files only those variants match are still analyzed.
+
+The limit applies separately to `ignore.glob` and each enabled `ignore_language_framework` list. Globs made entirely of stars and separators, such as `**/**/**`, can match every file after zero-directory expansion.
+
 ## Extra instructions
 
 All PR-Agent tools have a parameter called `extra_instructions`, that enables to add free-text extra instructions. Example usage:
