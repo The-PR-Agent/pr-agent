@@ -364,10 +364,7 @@ push_commands = [
 
 [gitlab]
 url = "https://gitlab.com"
-# Expand GitLab submodule bumps into real file diffs. Each submodule target is authorized
-# like a sibling repository: it must be listed in config.repo_context_sibling_repos, sit in
-# this project's own top-level namespace, and be readable by the requesting user. Targets
-# that fail those checks are skipped with a warning, leaving the parent gitlink change.
+# Submodule targets must also be listed in config.repo_context_sibling_repos.
 expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
