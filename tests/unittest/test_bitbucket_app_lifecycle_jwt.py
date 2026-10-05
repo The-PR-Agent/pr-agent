@@ -69,7 +69,7 @@ async def test_installed_stores_secret_keyed_by_valid_client_key(monkeypatch, cl
     assert result is None
     assert len(provider.stored) == 1
     stored_key, stored_val = provider.stored[0]
-    assert stored_key == client_key
+    assert stored_key == bitbucket_app._bitbucket_client_secret_name(client_key)
     data = json.loads(stored_val)
     assert data["shared_secret"] == "secret-val-123"
     assert data["client_key"] == client_key
@@ -122,7 +122,7 @@ async def test_installed_first_install_succeeds_without_auth_header(monkeypatch)
 
     result = await _route_endpoint("/installed", "POST")(request, None)
     assert result is None
-    assert provider.get_secret("workspace-uuid-1") != ""
+    assert provider.get_secret(bitbucket_app._bitbucket_client_secret_name("workspace-uuid-1")) != ""
 
 
 @pytest.mark.asyncio

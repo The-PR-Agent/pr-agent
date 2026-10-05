@@ -63,6 +63,10 @@ def _compute_qsh(method: str, path: str) -> str:
     return hashlib.sha256(f"{method.upper()}&{canonical_path}&".encode("utf-8")).hexdigest()
 
 
+def _bitbucket_client_secret_name(client_key: str) -> str:
+    return f"bitbucket-app-{hashlib.sha256(client_key.encode('utf-8')).hexdigest()}"
+
+
 def _get_request_timeout():
     """Return the host-controlled timeout for offloaded Bitbucket App requests."""
     timeout = global_settings.get("bitbucket_app.request_timeout")
@@ -304,7 +308,11 @@ def _verify_webhook_jwt(input_jwt: str, request: Request) -> tuple[str, str] | N
         get_logger().error("Bitbucket webhook JWT is missing 'iss' claim")
         return None
     try:
-        secrets = json.loads(get_fork_safe_secret_provider().get_secret(client_key))
+        secret_provider = get_fork_safe_secret_provider()
+        raw_secret = secret_provider.get_secret(_bitbucket_client_secret_name(client_key))
+        if not raw_secret:
+            raw_secret = secret_provider.get_secret(client_key)
+        secrets = json.loads(raw_secret)
         shared_secret = secrets["shared_secret"]
     except Exception as e:
         get_logger().error(f"Failed to look up Bitbucket shared secret: {e}")
@@ -445,11 +453,15 @@ async def handle_installed_webhooks(request: Request, response: Response):
         get_logger().error("Failed to register user: secret provider not configured")
         return JSONResponse({"error": "Unable to register user"}, status_code=500)
 
+    secret_name = _bitbucket_client_secret_name(client_key)
+
     # For a clientKey that already has an entry (re-installation), require a JWT
     # signed with the currently stored secret (Atlassian's documented reinstall pattern).
     if hasattr(secret_provider, "get_secret"):
         try:
-            raw_secret = secret_provider.get_secret(client_key)
+            raw_secret = secret_provider.get_secret(secret_name)
+            if not raw_secret:
+                raw_secret = secret_provider.get_secret(client_key)
         except Exception as e:
             get_logger().error(f"Failed to check existing secret for clientKey: {type(e).__name__}")
             return JSONResponse({"error": "Unable to verify existing installation"}, status_code=500)
@@ -487,7 +499,7 @@ async def handle_installed_webhooks(request: Request, response: Response):
         "username": username
     }
     try:
-        secret_provider.store_secret(client_key, json.dumps(secrets))
+        secret_provider.store_secret(secret_name, json.dumps(secrets))
     except Exception as e:
         get_logger().error(f"Failed to register user: secret provider failure ({type(e).__name__})")
         return JSONResponse({"error": "Unable to register user"}, status_code=500)

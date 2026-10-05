@@ -82,6 +82,34 @@ class TestAWSSecretsManagerProvider:
             SecretString='test-value'
         )
 
+    def test_store_secret_create_missing(self):
+        provider, mock_client = self._provider()
+        error = ClientError({"Error": {"Code": "ResourceNotFoundException", "Message": "AWS error"}},
+                            "PutSecretValue")
+        mock_client.put_secret_value.side_effect = error
+
+        provider.store_secret('test-secret', 'test-value')
+
+        mock_client.create_secret.assert_called_once_with(
+            Name='test-secret',
+            SecretString='test-value'
+        )
+
+    @pytest.mark.parametrize(("stored", "raises"), [("test-value", False), ("other-value", True)])
+    def test_store_secret_concurrent_create(self, stored, raises):
+        provider, mock_client = self._provider()
+        mock_client.put_secret_value.side_effect = ClientError(
+            {"Error": {"Code": "ResourceNotFoundException", "Message": "AWS error"}}, "PutSecretValue")
+        mock_client.create_secret.side_effect = ClientError(
+            {"Error": {"Code": "ResourceExistsException", "Message": "AWS error"}}, "CreateSecret")
+        mock_client.get_secret_value.return_value = {"SecretString": stored}
+
+        if raises:
+            with pytest.raises(ClientError):
+                provider.store_secret('test-secret', 'test-value')
+        else:
+            provider.store_secret('test-secret', 'test-value')
+
     def test_init_failure_invalid_config(self):
         with patch("pr_agent.secret_providers.aws_secrets_manager_provider.get_settings") as mock_get_settings, \
              patch("pr_agent.secret_providers.aws_secrets_manager_provider.boto3.client"):
