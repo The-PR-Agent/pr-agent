@@ -67,4 +67,3 @@ async def test_gitlab_does_not_log_the_payload(monkeypatch):
 
     assert "push" in repr(logger.calls)
     assert SENTINEL not in repr(logger.calls)
-
