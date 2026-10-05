@@ -314,6 +314,23 @@ def test_publish_comment_skips_temporary(tmp_path):
     assert review_path.read_text() == "real review body"
 
 
+def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypatch):
+    # Simulate a Windows cp1252 locale so an open() without an explicit encoding
+    # fails on the emoji that /describe output carries (e.g. the usage guide header).
+    def cp1252_default_open(file, mode="r", *args, **kwargs):
+        if "b" not in mode:
+            kwargs.setdefault("encoding", "cp1252")
+        return open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("pr_agent.git_providers.local_git_provider.open", cp1252_default_open, raising=False)
+    description_path = tmp_path / "description.md"
+    provider = object.__new__(LocalGitProvider)
+    provider.description_path = description_path
+
+    provider.publish_description("my-branch", "✨ Describe tool usage guide")
+    assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe tool usage guide"
+
+
 def test_init_on_detached_head_falls_back_to_commit_sha(tmp_path, monkeypatch):
     # CI checkouts often point HEAD at a bare commit; repo.head.ref then raises
     # TypeError. The branch name is only used as the PR-mimic title, so fall

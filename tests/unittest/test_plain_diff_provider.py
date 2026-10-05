@@ -1,3 +1,6 @@
+import io
+import sys
+
 import pytest
 
 from pr_agent.algo.types import EDIT_TYPE
@@ -156,6 +159,20 @@ def test_publish_comment_to_file(cfg, tmp_path):
     provider = PlainDiffGitProvider(None)
     provider.publish_comment("# Review\nsaved")
     assert "saved" in out.read_text(encoding="utf-8")
+
+
+def test_publish_comment_survives_stdout_that_cannot_encode(cfg, tmp_path, monkeypatch):
+    # Simulate a redirected Windows stdout (cp1252) and check that emoji in tool
+    # output neither abort publishing nor skip the --output file.
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
+    out = tmp_path / "review.md"
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", str(out))
+    provider = PlainDiffGitProvider(None)
+    provider.publish_comment("## ✨ Review\nlooks good")
+    assert raw.getvalue().decode("utf-8") == "## ✨ Review\nlooks good\n"
+    assert out.read_text(encoding="utf-8") == "## ✨ Review\nlooks good"
 
 
 def test_empty_diff_raises(cfg):

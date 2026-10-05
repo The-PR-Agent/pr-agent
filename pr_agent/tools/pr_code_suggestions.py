@@ -21,9 +21,11 @@ from pr_agent.algo.comment_identity import (
 )
 from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
 from pr_agent.algo.pr_processing import (
+    DELETED_FILES_,
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     FallbackEligibleError,
+    _append_metadata_section,
     _get_all_models,
     add_ai_metadata_to_diff_files,
     append_filtered_file_names,
@@ -2091,13 +2093,14 @@ class PRCodeSuggestions:
         )
         attempt_token_handler = self._suggestion_attempt_budget.token_handler
         # get PR diff
+        deleted_files = []
         if get_settings().pr_code_suggestions.decouple_hunks:
             self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
                 self.git_provider, attempt_token_handler, model,
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=True, return_remaining_files=True,
                 output_token_reserve=output_token_reserve,
-                include_filtered_file_names=False)  # decouple hunk with line numbers
+                include_filtered_file_names=False, deleted_files=deleted_files)  # decouple hunk with line numbers
             self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)  # decouple hunk
 
         else:
@@ -2107,7 +2110,7 @@ class PRCodeSuggestions:
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=False, return_remaining_files=True,
                 output_token_reserve=output_token_reserve,
-                include_filtered_file_names=False)
+                include_filtered_file_names=False, deleted_files=deleted_files)
             self.patches_diff_list = await self.convert_to_decoupled_with_line_numbers(
                 self.patches_diff_list_no_line_numbers,
                 model,
@@ -2115,12 +2118,13 @@ class PRCodeSuggestions:
             )
             if not self.patches_diff_list:
                 # fallback to decoupled hunks
+                deleted_files.clear()
                 self.patches_diff_list, self.remaining_files_list = get_pr_multi_diffs(
                     self.git_provider, attempt_token_handler, model,
                     max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                     add_line_numbers=True, return_remaining_files=True,
                     output_token_reserve=output_token_reserve,
-                    include_filtered_file_names=False)  # decouple hunk with line numbers
+                    include_filtered_file_names=False, deleted_files=deleted_files)  # decouple hunk with line numbers
                 self.patches_diff_list_no_line_numbers = self.remove_line_numbers(self.patches_diff_list)
 
         filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
@@ -2136,6 +2140,17 @@ class PRCodeSuggestions:
                 append_filtered_file_names(chunk, self.git_provider, attempt_token_handler, max_tokens)
                 for chunk in self.patches_diff_list_no_line_numbers
             ]
+        if self.patches_diff_list and deleted_files:
+            max_tokens = attempt_token_handler.prompt_tokens + self._suggestion_attempt_budget.available_tokens(
+                OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
+            )
+            section = DELETED_FILES_ + "\n" + "\n".join(deleted_files)
+            for diffs in (self.patches_diff_list, self.patches_diff_list_no_line_numbers):
+                diffs[0] = _append_metadata_section(
+                    diffs[0], attempt_token_handler.prompt_tokens + attempt_token_handler.count_tokens(diffs[0]),
+                    section, max_tokens, attempt_token_handler, whole_lines=True)[0]
+        elif deleted_files and not self.remaining_files_list:
+            return {"code_suggestions": []}  # only deletions: nothing a suggestion could anchor on
 
         if self.patches_diff_list:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
