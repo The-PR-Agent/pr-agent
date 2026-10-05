@@ -35,7 +35,7 @@ def restore_cli_settings():
         settings.set(key, value)
 
 
-def _run_with_result(monkeypatch, result, *, propagate_tool_errors):
+def _run_with_result(monkeypatch, result, *, propagate_tool_errors, recorded_failure=False):
     fake_settings = SimpleNamespace(
         config={"propagate_tool_errors": propagate_tool_errors},
         litellm={},
@@ -47,6 +47,7 @@ def _run_with_result(monkeypatch, result, *, propagate_tool_errors):
 
     monkeypatch.setattr(cli, "get_settings", lambda: fake_settings)
     monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setattr(cli, "command_failed", lambda: recorded_failure)
     monkeypatch.setattr(
         cli,
         "PRAgent",
@@ -84,6 +85,24 @@ def test_run_maps_request_result_to_status(
 
     assert status == expected_status
     assert ("usage:" in capsys.readouterr().out) is prints_help
+
+
+@pytest.mark.parametrize(
+    ("propagate_tool_errors", "expected_status"),
+    [
+        (False, None),
+        (True, 1),
+    ],
+)
+def test_run_maps_recorded_tool_failure_to_status(monkeypatch, propagate_tool_errors, expected_status):
+    status = _run_with_result(
+        monkeypatch,
+        True,
+        propagate_tool_errors=propagate_tool_errors,
+        recorded_failure=True,
+    )
+
+    assert status == expected_status
 
 
 def test_run_reads_effective_setting_after_dispatch(monkeypatch):

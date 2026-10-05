@@ -14,6 +14,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     litellm_callbacks_registered,
 )
 from pr_agent.algo.artifacts import inject_artifact_context
+from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
@@ -239,7 +240,10 @@ def run(inargs=None, args=None):
         result = asyncio.run(inner())
         if not result:
             parser.print_help()
-        if result is False and settings.config.get("propagate_tool_errors", False):
+        recorded_failure = command_failed()
+        if settings.config.get("propagate_tool_errors", False) and (result is False or recorded_failure):
+            if result is not False and recorded_failure:
+                get_logger().warning("Tool reported success but recorded a failure; exiting with an error")
             return 1
 
 
