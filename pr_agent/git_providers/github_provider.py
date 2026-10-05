@@ -91,6 +91,7 @@ class GithubProvider(GitProvider):
         self._check_run_ids: dict = {}
         self._check_runs_in_progress: set = set()
         self._check_run_base_summaries: dict = {}
+        self._check_runs_progress_blocked: set = set()
         self._published_inline_comment_bodies: list[str] = []
         if pr_url and 'pull' in pr_url:
             self.set_pr(pr_url)
@@ -709,6 +710,7 @@ class GithubProvider(GitProvider):
         if self._upsert_check_run(name, body):
             self._check_runs_in_progress.discard(name)
             self._check_run_base_summaries.pop(name, None)
+            self._check_runs_progress_blocked.discard(name)
             return True
         return False
 
@@ -736,16 +738,17 @@ class GithubProvider(GitProvider):
         commands, or check runs disabled) this is a no-op returning False.
         """
         updated = False
-        for name in list(self._check_runs_in_progress):
+        for name in list(self._check_runs_in_progress - self._check_runs_progress_blocked):
             base = self._check_run_base_summaries.get(name, "")
             summary = f"{base} {line}".strip() if line else base
             body = {"output": {"title": self._check_run_name(name), "summary": summary[:300]}}
             if self._upsert_check_run(name, body):
                 updated = True
             else:
-                # Keep trying the remaining runs, but stop counting this one as live
-                # so a permanently failing update does not repeat every chunk.
-                self._check_runs_in_progress.discard(name)
+                # Stop retrying a run whose progress write keeps failing, but keep it in
+                # _check_runs_in_progress: finish_check_run completes runs by that
+                # membership, so a failed progress write must not strand the run.
+                self._check_runs_progress_blocked.add(name)
         return updated
 
     def finish_check_run(self, name: str, conclusion: str, summary: str) -> bool:
@@ -764,6 +767,7 @@ class GithubProvider(GitProvider):
         if self._upsert_check_run(name, body):
             self._check_runs_in_progress.discard(name)
             self._check_run_base_summaries.pop(name, None)
+            self._check_runs_progress_blocked.discard(name)
             return True
         return False
 

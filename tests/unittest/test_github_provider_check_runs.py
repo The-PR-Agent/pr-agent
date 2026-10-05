@@ -36,6 +36,7 @@ def _make_provider(last_commit_sha="deadbeef", requester=None):
     p._check_run_ids = {}
     p._check_runs_in_progress = set()
     p._check_run_base_summaries = {}
+    p._check_runs_progress_blocked = set()
     return p
 
 

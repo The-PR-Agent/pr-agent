@@ -39,6 +39,7 @@ def _github(sha="abc123", existing=None):
     provider._check_run_ids = {}
     provider._check_runs_in_progress = set()
     provider._check_run_base_summaries = {}
+    provider._check_runs_progress_blocked = set()
     requester = MagicMock()
 
     def request(method, url, **kwargs):
@@ -113,14 +114,16 @@ def test_update_check_run_progress_stops_retrying_a_failing_run():
     provider.pr._requester.requestJsonAndCheck.side_effect = RequestException("api down")
 
     assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
-    # The run left the in-progress set, so a later chunk does not hit the API again.
-    provider.pr._requester.requestJsonAndCheck.side_effect = None
-    non_get_before = [c for c in provider.pr._requester.requestJsonAndCheck.call_args_list
-                      if c.args[0] != "GET"]
+    # A failed progress write stops retrying, but the run must stay completable:
+    # finish_check_run completes runs by in-progress membership, and stranding a run
+    # in progress on GitHub is worse than missing interim progress lines.
+    assert provider._check_runs_in_progress == {"review"}
     assert provider.update_check_run_progress("analyzed 2 of 2 chunks") is False
-    non_get_after = [c for c in provider.pr._requester.requestJsonAndCheck.call_args_list
-                     if c.args[0] != "GET"]
-    assert len(non_get_after) == len(non_get_before)
+    provider.pr._requester.requestJsonAndCheck.side_effect = None
+    assert provider.finish_check_run("review", "failure", "PR-Agent failed") is True
+    completed = _requests(provider)[-1][2]
+    assert completed["status"] == "completed"
+    assert completed["conclusion"] == "failure"
 
 
 def test_the_tool_completes_the_run_the_runner_opened():
