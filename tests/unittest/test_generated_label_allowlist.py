@@ -27,6 +27,10 @@ def label_settings():
     (False, {"Release ready": "ready"}, ["Release ready", "Other"], ["Other"]),
     (True, {}, ["bug_fix_with_tests", "invented"], ["Bug fix with tests"]),
     (False, {}, ["invented"], []),
+    (False, {}, ["bug_fix", "BUG_FIX", "invented"], ["Bug fix", "Bug fix"]),
+    (True, {"Release ready": "ready"}, [" RELEASE_READY "], ["Release ready"]),
+    (True, {}, ["BUG_FIX_WITH_TESTS"], ["Bug fix with tests"]),
+    (False, {"Release ready": "ready"}, ["RELEASE_READY"], []),
 ])
 def test_prepare_labels_filters_model_output(tool_class, enabled, custom, labels, expected):
     get_settings().set("config.enable_custom_labels", enabled)
@@ -55,6 +59,7 @@ def test_existing_human_labels_are_not_subject_to_model_allowlist():
 
 
 @pytest.mark.parametrize("supports_labels", [True, False])
+@pytest.mark.asyncio
 async def test_generate_labels_filters_before_publication(supports_labels):
     snapshot = snapshot_settings(("config.publish_output",))
     get_settings().set("config.publish_output", True)
@@ -74,5 +79,34 @@ async def test_generate_labels_filters_before_publication(supports_labels):
         else:
             tool.git_provider.publish_labels.assert_not_called()
             tool.git_provider.publish_comment.assert_any_call("## PR Labels:\nBug fix\n", is_temporary=False)
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.parametrize("generated,expected", [
+    (["deploy-production"], None),
+    ([], ["P0"]),
+    (["bug_fix", "deploy-production"], ["Bug fix", "P0"]),
+])
+@pytest.mark.asyncio
+async def test_rejected_output_preserves_existing_labels_but_explicit_empty_can_clear(generated, expected):
+    snapshot = snapshot_settings(("config.publish_output",))
+    get_settings().set("config.publish_output", True)
+    try:
+        tool = PRGenerateLabels.__new__(PRGenerateLabels)
+        tool.pr_id = "repo#1"
+        tool.prediction = "model response"
+        tool.data = {"labels": generated}
+        tool.variables = {}
+        tool.git_provider = MagicMock()
+        tool.git_provider.is_supported.return_value = True
+        tool.git_provider.get_pr_labels.return_value = ["Enhancement", "P0"]
+        with patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new=AsyncMock()):
+            await tool.run()
+        if expected is None:
+            tool.git_provider.publish_labels.assert_not_called()
+        else:
+            tool.git_provider.publish_labels.assert_called_once_with(expected)
+        tool.git_provider.remove_initial_comment.assert_called_once_with()
     finally:
         restore_settings(snapshot)

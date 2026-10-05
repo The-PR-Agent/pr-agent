@@ -70,6 +70,12 @@ set also includes `Bug fix with tests`. Matching ignores case, and unknown gener
 labels are dropped with a warning. Existing human-added labels are preserved and
 are not restricted by this filter.
 
+Prompt enum keys such as `bug_fix` and `RELEASE_READY` are resolved to their
+allowed display names, ignoring case. If a nonempty model response contains only
+rejected labels, `/generate_labels` leaves the current labels unchanged. An
+explicit `labels: []` response retains the existing behavior of clearing old
+bot-owned labels while preserving human-added labels.
+
 ## Comparison with `/describe` labels
 
 The `/describe` tool also generates labels as part of its output. The key differences are:

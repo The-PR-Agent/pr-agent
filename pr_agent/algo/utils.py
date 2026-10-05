@@ -1348,15 +1348,20 @@ def set_custom_labels(variables, git_provider=None):
 
 def filter_generated_labels(labels: List[str]) -> List[str]:
     """Keep model-generated labels within the enabled vocabulary, not user labels."""
-    allowed = {label.value.lower() for label in PRType}
+    names = [label.value for label in PRType]
     if get_settings().config.get("enable_custom_labels", False):
         custom_labels = get_settings().get("custom_labels", {}) or _DEFAULT_CUSTOM_LABELS
-        allowed.update(str(label).lower() for label in custom_labels)
+        names.extend(str(label) for label in custom_labels)
+    allowed = {name.lower() for name in names}
+    # Prompts ask for enum keys (e.g. bug_fix), not just display names.
+    aliases = {name.lower().replace(" ", "_"): name for name in names}
     accepted = []
     dropped = []
     for label in labels:
         if isinstance(label, str) and label.strip().lower() in allowed:
             accepted.append(label.strip())
+        elif isinstance(label, str) and label.strip().lower() in aliases:
+            accepted.append(aliases[label.strip().lower()])
         else:
             dropped.append(label)
     if dropped:
