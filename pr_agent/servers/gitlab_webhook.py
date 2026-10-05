@@ -256,7 +256,7 @@ def should_process_pr_logic(data) -> bool:
 def authenticate_gitlab_webhook(request: Request, log_context: dict):
     request_token = request.headers.get("X-Gitlab-Token", "")
     shared_secret = get_settings().get("GITLAB.SHARED_SECRET")
-    # A valid shared credential does not need a cloud lookup, even during a provider outage.
+    # Check the shared credential first to avoid cloud lookups, even during provider outages.
     if not shared_secret or not hmac.compare_digest(request_token.encode(), str(shared_secret).encode()):
         # Split at the last colon so a secret name or ARN can itself contain colons.
         secret_name, separator, webhook_token = request_token.rpartition(":")
