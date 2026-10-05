@@ -6,7 +6,13 @@ from typing import Callable, Literal
 from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 
-from pr_agent.algo import GPT6_MAX_INPUT_TOKENS, GPT6_MODELS, GPT6_OPENROUTER_ROUTING_SUFFIXES, MAX_TOKENS
+from pr_agent.algo import (
+    GPT6_MAX_INPUT_TOKENS,
+    GPT6_MODELS,
+    GPT6_OPENROUTER_ROUTING_SUFFIXES,
+    GPT6_SOL_TIER_MODELS,
+    MAX_TOKENS,
+)
 from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -52,7 +58,7 @@ def _gpt6_budget_model(model: str, settings) -> tuple[str, bool]:
     model_base = model.removeprefix("openrouter/")
     if model_base.startswith(("azure_ai/", "aiohttp_openai/")):
         provider_model_base = model_base.split("/", 1)[1].removesuffix("_thinking")
-        if provider_model_base in ("gpt-6-sol", "gpt-6-luna"):
+        if provider_model_base in GPT6_SOL_TIER_MODELS:
             model_base = provider_model_base
     while model_base.startswith(("openai/", "azure/")):
         model_base = model_base.removeprefix("openai/").removeprefix("azure/")
@@ -76,7 +82,7 @@ def get_max_tokens(model, ignore_max_model_tokens=False):
     """
     Get the maximum number of tokens allowed for a model.
     logic:
-    (1) Honor a positive custom limit for Sol/Luna on non-native custom providers.
+    (1) Honor a positive custom limit for Sol-tier GPT-6 models on non-native custom providers.
     (2) If the model is in './pr_agent/algo/__init__.py', use the value from there.
     (3) else if 'config.custom_model_max_tokens' is set to a positive value, use it.
     (4) Resolve a supported GPT-5.x/GPT-6 alias to its registered base-model value.

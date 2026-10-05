@@ -41,7 +41,9 @@ except ImportError:
 from pr_agent.algo import (
     CLAUDE_EXTENDED_THINKING_MODELS,
     GPT6_MODELS,
+    GPT6_MODELS_WITHOUT_NONE_EFFORT,
     GPT6_OPENROUTER_ROUTING_SUFFIXES,
+    GPT6_SOL_TIER_MODELS,
     GROK_REASONING_EFFORT_LEVELS,
     STREAMING_REQUIRED_MODELS,
     USER_MESSAGE_ONLY_MODELS,
@@ -1340,7 +1342,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Return the supported native GPT-6 model name without changing gateway model IDs."""
         if model.startswith(("azure_ai/", "aiohttp_openai/")):
             provider_model = model.split("/", 1)[1].removesuffix("_thinking")
-            return provider_model if provider_model in ("gpt-6-sol", "gpt-6-luna") else None
+            return provider_model if provider_model in GPT6_SOL_TIER_MODELS else None
         model = _strip_openai_azure_prefixes(model).removesuffix("_thinking")
         return model if model in GPT6_MODELS else None
 
@@ -1351,7 +1353,7 @@ class LiteLLMAIHandler(BaseAiHandler):
             return "max_tokens"
         if (
             provider not in (None, "openai", "azure", "azure_ai", "openrouter")
-            and cls._gpt6_model_name(model) in ("gpt-6-sol", "gpt-6-luna")
+            and cls._gpt6_model_name(model) in GPT6_SOL_TIER_MODELS
         ):
             return "max_tokens"
         if model.startswith("openrouter/"):
@@ -1376,7 +1378,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 routed_model = routed_model.rsplit(":", 1)[0]
             gpt6_model = self._gpt6_model_name(routed_model)
             if gpt6_model:
-                if custom_llm_provider not in ("", "openrouter") and gpt6_model in ("gpt-6-sol", "gpt-6-luna"):
+                if custom_llm_provider not in ("", "openrouter") and gpt6_model in GPT6_SOL_TIER_MODELS:
                     return model
                 return model.replace("_thinking", "", 1)
             if model.startswith("openrouter/"):
@@ -1386,11 +1388,11 @@ class LiteLLMAIHandler(BaseAiHandler):
             or self._resolve_configured_request_provider(model, custom_llm_provider) not in (
                 "openai", "azure", "azure_ai"
             )
-        ) and self._gpt6_model_name(model) in ("gpt-6-sol", "gpt-6-luna"):
+        ) and self._gpt6_model_name(model) in GPT6_SOL_TIER_MODELS:
             return model
         if (
             model.startswith(("azure_ai/", "aiohttp_openai/"))
-            and self._gpt6_model_name(model) in ("gpt-6-sol", "gpt-6-luna")
+            and self._gpt6_model_name(model) in GPT6_SOL_TIER_MODELS
         ):
             return model.replace("_thinking", "")
         model_base = _strip_openai_azure_prefixes(model)
@@ -2114,7 +2116,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 gpt6_model = model.removeprefix("openrouter/")
                 if gpt6_model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES):
                     gpt6_model = gpt6_model.rsplit(":", 1)[0]
-                if self._gpt6_model_name(gpt6_model) in ("gpt-6-sol", "gpt-6-luna"):
+                if self._gpt6_model_name(gpt6_model) in GPT6_SOL_TIER_MODELS:
                     effective_reasoning_effort = ReasoningEffort.LOW.value
             clamped_effort = self._clamp_grok_reasoning_effort(model, effective_reasoning_effort)
             if clamped_effort != effective_reasoning_effort:
@@ -2739,14 +2741,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                 gpt6_model = self._gpt6_model_name(family_model.removeprefix("openrouter/"))
                 preserved_gpt6_alias = (
                     bool(openrouter_model) and family_model.endswith("_thinking")
-                    and gpt6_model in ("gpt-6-sol", "gpt-6-luna")
+                    and gpt6_model in GPT6_SOL_TIER_MODELS
                 )
                 non_native_gpt6_model = (
                     (request_provider not in ("openai", "azure", "azure_ai", "openrouter")
                      or custom_llm_provider in ("azure_text", "text-completion-openai")
                      or family_model.startswith(("azure_text/", "text-completion-openai/")))
                     and (gpt6_model or family_model.rsplit("/", 1)[-1].removesuffix("_thinking"))
-                    in ("gpt-6-sol", "gpt-6-luna")
+                    in GPT6_SOL_TIER_MODELS
                 )
                 if non_native_gpt6_model or preserved_gpt6_alias:
                     gpt6_model = None
@@ -2761,13 +2763,13 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                     if is_gpt6_model and (
                         effort == ReasoningEffort.MINIMAL.value
-                        or (gpt6_model == "gpt-6-astra" and effort == ReasoningEffort.NONE.value)
+                        or (gpt6_model in GPT6_MODELS_WITHOUT_NONE_EFFORT and effort == ReasoningEffort.NONE.value)
                     ):
                         get_logger().info(
                             f"{gpt6_model} does not support reasoning_effort='{effort}'; using 'low'"
                         )
                         effort = ReasoningEffort.LOW.value
-                    elif gpt6_model in ("gpt-6-sol", "gpt-6-luna") and request_provider in ("azure", "azure_ai") and (
+                    elif gpt6_model in GPT6_SOL_TIER_MODELS and request_provider in ("azure", "azure_ai") and (
                         effort == ReasoningEffort.MAX.value
                     ):
                         get_logger().info(f"{gpt6_model} on Azure Chat Completions uses 'xhigh' instead of 'max'")
@@ -2824,7 +2826,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                     if openrouter_model:
                         openrouter_reasoning_effort = effort
-                    elif gpt6_model in ("gpt-6-sol", "gpt-6-luna") and (
+                    elif gpt6_model in GPT6_SOL_TIER_MODELS and (
                         effort == ReasoningEffort.XHIGH.value
                         or (request_provider in ("azure", "azure_ai") and effort == ReasoningEffort.NONE.value)
                     ):

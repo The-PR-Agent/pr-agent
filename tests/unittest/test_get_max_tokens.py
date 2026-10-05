@@ -25,7 +25,7 @@ def _expected_max_tokens(model: str) -> int:
 
 class TestGetMaxTokens:
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("provider", ["ollama", "openai_like", "azure_text", "text-completion-openai"])
     @pytest.mark.parametrize("custom_limit", [16000, "16000"])
     @pytest.mark.parametrize("global_limit, expected", [(0, 16000), (32000, 16000), (8000, 8000)])
@@ -44,7 +44,7 @@ class TestGetMaxTokens:
         assert get_max_tokens(model) == expected
         assert get_max_tokens(model, ignore_max_model_tokens=True) == 16000
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-5.6"])
     @pytest.mark.parametrize("provider", ["", "openai", "azure", "azure_ai", "aiohttp_openai", "openrouter"])
     def test_native_registered_models_keep_registry_priority(self, monkeypatch, model, provider):
         settings = type("", (), {
@@ -55,7 +55,7 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1050000
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-5.6"])
     @pytest.mark.parametrize("custom_limit", [0, -1])
     def test_custom_provider_without_override_keeps_registered_limit(self, monkeypatch, model, custom_limit):
         settings = type("", (), {
@@ -147,7 +147,7 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 1050000
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("prefix", [
         "", "openai/", "azure/", "azure/openai/", "openrouter/", "openrouter/openai/",
     ])
@@ -165,7 +165,7 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(f"{prefix}{model}{suffix}") == (cap or 1050000)
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("suffix", ["", "_thinking"])
     @pytest.mark.parametrize("custom_limit, expected", [(0, 1050000), (128000, 128000)])
     def test_azure_ai_gpt6_max_tokens(self, monkeypatch, model, suffix, custom_limit, expected):
@@ -180,7 +180,7 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(f"azure_ai/{model}{suffix}") == expected
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("alias", [
         "openai/{}", "azure/{}", "azure/openai/{}_thinking", "{}_thinking",
         "openrouter/{}", "openrouter/openai/{}_thinking",
@@ -197,7 +197,7 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(alias.format(model)) == expected
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("prefix", ["", "openai/", "openrouter/openai/"])
     @pytest.mark.parametrize("route", [":nitro", ":floor", ":online", ":exacto"])
     @pytest.mark.parametrize("custom_limit, expected", [(0, 1050000), (128000, 128000)])
@@ -216,7 +216,7 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(f"{prefix}{model}_thinking{route}") == expected
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize(("prefix", "custom_provider"), [
         ("", "ollama"), ("openrouter/openai/", "ollama"), ("", ""),
     ])
@@ -245,7 +245,7 @@ class TestGetMaxTokens:
         assert get_max_tokens(variant) == expected
         assert lookup_models == ([variant] if custom_limit == 0 else [])
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("route", [":batch", ":free"])
     def test_gpt6_thinking_nonrouting_variant_uses_provider_metadata(self, monkeypatch, model, route):
         fake_settings = type("", (), {
@@ -260,7 +260,7 @@ class TestGetMaxTokens:
         with pytest.raises(Exception, match="defined in MAX_TOKENS"):
             get_max_tokens(f"openrouter/openai/{model}_thinking{route}")
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("custom_provider", ["ollama", "openai_like", "azure_text", "text-completion-openai"])
     @pytest.mark.parametrize("alias", [
         "{}_thinking", "openai/{}", "azure/{}", "azure_ai/{}", "openrouter/openai/{}",
@@ -287,7 +287,7 @@ class TestGetMaxTokens:
         assert get_max_tokens(variant) == expected
         assert lookup_models == ([variant] if custom_limit == 0 else [])
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("custom_provider", ["openai", "aiohttp_openai", "azure", "azure_ai", "openrouter"])
     @pytest.mark.parametrize("alias", ["{}_thinking", "openai/{}", "openai/{}_thinking"])
     def test_native_provider_gpt6_alias_preserves_registered_limit(self, monkeypatch, model, custom_provider, alias):

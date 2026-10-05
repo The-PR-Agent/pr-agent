@@ -48,9 +48,9 @@ repo_context_max_sibling_files = 5 # Maximum number of sibling-repository files 
 max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
-custom_model_max_tokens=-1 # Override unknown models or Sol/Luna on non-native custom providers.
+custom_model_max_tokens=-1 # Override unknown models or Sol-tier GPT-6 on non-native custom providers.
 # Send max_completion_tokens for recognized Astra IDs, including bare IDs on custom providers,
-# and native OpenAI/Azure Sol/Luna. OpenRouter Astra uses it only without a routing suffix or with :nitro/:floor.
+# and native OpenAI/Azure Sol-tier GPT-6. OpenRouter Astra uses it only without a routing suffix or with :nitro/:floor.
 # Use max_tokens for other routes, including azure_text and text-completion-openai.
 # Choose a limit supported by the selected model.
 max_output_tokens = 0 # 0 = unset (the provider's own default applies)
@@ -111,7 +111,7 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 # Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is
 # otherwise decided by litellm's bundled model metadata (and the maintained Grok registry),
 # so add an ID here when litellm does not know the model (custom OpenAI-compatible
-# endpoints), or when another provider hosts GPT-6 Sol/Luna under the same ID.
+# endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID.
 # Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731"
 # matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists
 # reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not

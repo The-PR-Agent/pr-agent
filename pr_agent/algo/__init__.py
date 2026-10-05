@@ -226,9 +226,18 @@ _claude_tokens, _claude_extended_thinking = (
 )
 
 
-GPT6_MODELS = ('gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna')
+GPT6_MODELS = ('gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol')
 GPT6_OPENROUTER_ROUTING_SUFFIXES = (":nitro", ":floor", ":online", ":exacto")
-GPT6_MAX_INPUT_TOKENS = {"gpt-6-sol": 922000, "gpt-6-luna": 922000}
+# Sol-tier models share the OpenAI-compatible bridge: a non-native provider gets max_tokens
+# instead of max_completion_tokens. On such a provider the id is a custom model, so reasoning
+# needs an explicit additional_reasoning_effort_models opt-in and then rides as a top-level
+# reasoning_effort. The tier advances on its own cadence, so GPT-6.1 Sol revises GPT-6 Sol
+# rather than starting a new family.
+GPT6_SOL_TIER_MODELS = ('gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-sol')
+# GPT-6 models whose reasoning.effort omits "none", per their OpenAI model pages: their levels
+# are low, medium (default), high, xhigh and max, so a configured "none" is clamped to "low".
+GPT6_MODELS_WITHOUT_NONE_EFFORT = ('gpt-6-astra', 'gpt-6.1-sol')
+GPT6_MAX_INPUT_TOKENS = {"gpt-6-sol": 922000, "gpt-6-luna": 922000, "gpt-6.1-sol": 922000}
 
 
 # MAX_TOKENS holds only entries that deliberately deviate from (or are absent
@@ -262,6 +271,7 @@ MAX_TOKENS = {
     'gpt-6-astra': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-6-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'gpt-6-luna': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
+    'gpt-6.1-sol': 1050000,  # 1.05M, but may be limited by config.max_model_tokens
     'o1-mini': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-mini-2024-09-12': 128000,  # 128K, but may be limited by config.max_model_tokens
     'o1-2024-12-17': 204800,  # 200K, but may be limited by config.max_model_tokens

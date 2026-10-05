@@ -299,7 +299,7 @@ def test_prompt_budget_uses_handler_reported_output_limit(help_tool, monkeypatch
     tool.ai_handler.get_output_token_limit.assert_called_once_with(PRIMARY)
 
 
-@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
 @pytest.mark.parametrize("reserve, expected", [(4096, 922000), (128000, 922000), (200000, 850000)])
 def test_help_budget_honors_native_gpt6_input_ceiling(help_tool, monkeypatch, model, reserve, expected):
     tool, _, _ = help_tool
