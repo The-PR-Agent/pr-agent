@@ -745,6 +745,18 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                                        f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
 
         if custom_pattern is not None and repo_path:
+            # Reserve issue-shaped URL tokens on any host, including their suffixes,
+            # so custom captures cannot turn their numbers into local tickets.
+            # These spans suppress captures; only the configured origin admits URLs.
+            issue_url_pattern = (
+                r'''(?ai:https?://)[^/\s?#<>"'`(){}]+/'''
+                r'''[^/\s?#<>"'`()\[\]{}]+/'''
+                r'''[^/\s?#<>"'`()\[\]{}]+/issues/'''
+                r'''[^/\s?#.,;:!<>"'`()\[\]{}]+'''
+                r'''(?:[/?#][^\s<>"'`()\[\]{}]*)?'''
+            )
+            explicit_spans.extend(match.span() for match in re.finditer(issue_url_pattern, pr_description))
+            explicit_spans.sort()
             explicit_index = 0
             for match in custom_matches:
                 issue_number = match[1]

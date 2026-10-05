@@ -554,6 +554,27 @@ class TestCrossRepoTicketResolution:
         # Nor may it fall through to a lookup on the PR's (wrong) instance.
         assert provider.github_client.get_repo_calls == []
 
+    @pytest.mark.parametrize("local_reference", ["", " ticket42"])
+    def test_foreign_issue_url_custom_capture_never_fetches_a_local_issue(self, settings_snapshot, local_reference):
+        saved = snapshot_settings(["config.description_issue_regex"])
+        try:
+            settings_snapshot.set("config.description_issue_regex", r"(\d+)")
+            repo_obj = _FakeRepoObj({42: _FakeIssue(42), 99: _FakeIssue(99)})
+            repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+            provider = _make_github_provider(
+                user_description=f"https://github.com/other/project/issues/99{local_reference}",
+                base_url_html="https://ghe.example.test",
+                repo_obj=repo_obj,
+                github_client=_FakeGithubClient(),
+            )
+            result = asyncio.run(extract_tickets(provider))
+            expected = [42] if local_reference else []
+            assert [ticket["ticket_id"] for ticket in result] == expected
+            assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == expected
+            assert provider.github_client.get_repo_calls == []
+        finally:
+            restore_settings(saved)
+
     def test_api_host_form_counts_as_the_same_instance(self, settings_snapshot):
         # Sub-issue URLs may arrive in api.github.com form; that is the same
         # instance as the PR's https://github.com and must not be rejected.
