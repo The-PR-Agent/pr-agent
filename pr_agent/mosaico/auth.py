@@ -32,7 +32,10 @@ class MosaicoAuthenticationBackend(AuthenticationBackend):
         return bool(self.credentials)
 
     async def authenticate(self, conn):
-        public_card = conn.scope.get("method") == "GET" and conn.scope["path"] == "/.well-known/agent-card.json"
+        public_card = (
+            conn.scope.get("method") in {"GET", "HEAD"}
+            and conn.scope["path"] == "/.well-known/agent-card.json"
+        )
         if not self.enabled or public_card:
             return None
         headers = conn.headers.getlist("authorization")

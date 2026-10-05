@@ -80,7 +80,7 @@ your secret configuration, and set `PR_AGENT_BEARER_TOKEN` for its healthcheck. 
 caller needs its own credential configuration. Missing/invalid credentials produce HTTP 401;
 the agent-card GET remains public. Anonymous-mode probes need no token.
 
-The shared `config.max_webhook_request_body_bytes` cap defaults to 10 MiB and returns HTTP 413
+The shared `config.max_webhook_request_body_bytes` cap defaults to 5 MiB and returns HTTP 413
 before parsing oversized bodies. `mosaico.routing_scan_max_chars` defaults to 65536 characters
 for PR URL and command detection per segment; put those near the start of a message or its
 surrounding prose. Diffs remain complete. Invalid observability UUIDs are ignored individually.

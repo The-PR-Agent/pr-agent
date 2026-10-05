@@ -51,7 +51,7 @@ advertised as disabled, which is load-bearing: the reference agent selects
 
 ### Request limits and caller authentication
 
-MOSAICO uses the shared `config.max_webhook_request_body_bytes` limit (10 MiB by default),
+MOSAICO uses the shared `config.max_webhook_request_body_bytes` limit (5 MiB by default),
 including streamed bodies without a valid Content-Length. Oversized requests return HTTP 413
 before JSON-RPC parsing or tool execution. `mosaico.routing_scan_max_chars` (default: 65536,
 a positive integer) bounds PR URL and command detection per text segment. An incomplete token

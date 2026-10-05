@@ -646,6 +646,9 @@ class TestMosaicoRequestBoundaries:
             assert "bearerAuth" in card["securityRequirements"][0]["schemes"]
             assert "alice-secret" not in json.dumps(card)
             assert "bob-secret" not in json.dumps(card)
+            head = await client.head("/.well-known/agent-card.json")
+            assert head.status_code == 200
+            assert head.content == b""
             health = await client.get("/health", headers={"Authorization": "bearer alice-secret"})
             assert health.status_code == 200
             assert health.json()["is_healthy"] is True
