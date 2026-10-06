@@ -41,8 +41,16 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
     "azure_devops": frozenset({"pat"}),
+    # Provider authentication-mode and TLS settings (bitbucket, gitea, github,
+    # gitlab) are host decisions: a repository config or comment argument must
+    # not switch auth method or turn off certificate verification for the
+    # provider connection.
+    "bitbucket": frozenset({"auth_type"}),
     "databricks": frozenset({"api_base"}),
     "gerrit": frozenset({"webhook_password", "webhook_username"}),
+    "gitea": frozenset({"skip_ssl_verification", "ssl_ca_cert"}),
+    "github": frozenset({"deployment_type"}),
+    "gitlab": frozenset({"auth_type", "ssl_verify"}),
     "huggingface": frozenset({"api_base"}),
     "moonshot": frozenset({"api_base"}),
     "ollama": frozenset({"api_base"}),
