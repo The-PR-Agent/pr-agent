@@ -217,6 +217,36 @@ def test_build_repo_context_reuses_process_cache_for_same_pr_url(repo_context_se
     assert second_provider.requested_paths == []
 
 
+def test_duplicate_local_context_preserves_later_unique_file_within_line_budget(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["a.md", " a.md ", "b.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 15)
+    provider = FakeProvider({"a.md": "A_MARKER", "b.md": "B_MARKER"})
+
+    context = build_repo_context(provider)
+
+    assert provider.requested_paths == ["a.md", "b.md"]
+    assert context.count('<file path="a.md"') == 1
+    assert "A_MARKER" in context
+    assert "B_MARKER" in context
+    assert len(context.splitlines()) <= 15
+
+
+def test_failed_duplicate_local_context_is_attempted_once_and_retried_next_build(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["a.md", " a.md "])
+    provider = FakeProvider({}, pr_url="https://example.com/org/local-duplicates/pull/1")
+    provider.get_repo_file_content = Mock(side_effect=[RuntimeError("temporary outage"), "Recovered rules"])
+
+    assert build_repo_context(provider) == ""
+    assert provider.get_repo_file_content.call_count == 1
+
+    recovered = build_repo_context(provider)
+    assert "Recovered rules" in recovered
+    assert provider.get_repo_file_content.call_count == 2
+
+    assert build_repo_context(provider) == recovered
+    assert provider.get_repo_file_content.call_count == 2
+
+
 def test_build_repo_context_process_cache_separates_default_and_target_branch(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
