@@ -29,6 +29,7 @@ _SETTINGS_KEYS = [
     "config.ignore_pr_labels",
     "config.ignore_pr_title",
     "config.ignore_pr_authors",
+    "config.ignore_repositories",
 ]
 
 
@@ -644,4 +645,49 @@ def test_cli_ignore_filter_failure_never_blocks_the_command(monkeypatch):
     status, handle_calls = _run_cli_with_counting_agent(monkeypatch)
 
     assert handle_calls == 1
+    assert status is None
+
+
+def test_cli_repo_filter_accepts_object_valued_repo_fields(monkeypatch):
+    """A provider whose .repo is an API object must not break ignore_repositories.
+
+    Bitbucket, Gitea and Azure store a repository object there; with repository rules
+    configured, a non-string used to raise inside the shared regex search and fail the
+    whole filter open, disabling the other exclusions too.
+    """
+    settings = get_settings()
+    settings.set("config.ignore_repositories", ["^some-org/temp-"])
+    settings.set("config.ignore_pr_labels", ["wip"])
+    provider = SimpleNamespace(
+        pr=SimpleNamespace(title="WIP handler", user=SimpleNamespace(login="dev")),
+        repo=SimpleNamespace(full_name="some-org/temp-repo"),
+        get_pr_branch=lambda: "feature/x",
+        get_pr_labels=lambda: ["other"],
+    )
+    monkeypatch.setattr(cli, "get_git_provider_with_context", lambda pr_url=None: provider)
+    monkeypatch.setattr(cli, "apply_repo_settings", lambda url: None)
+
+    status, handle_calls = _run_cli_with_counting_agent(monkeypatch)
+
+    assert handle_calls == 0  # the object-backed full_name still matches the rule
+    assert status is None
+
+
+def test_cli_repo_filter_falls_back_to_workspace_and_slug(monkeypatch):
+    settings = get_settings()
+    settings.set("config.ignore_repositories", ["^ws/archived-"])
+    provider = SimpleNamespace(
+        pr=SimpleNamespace(title="Anything", user=SimpleNamespace(login="dev")),
+        repo=object(),  # no full_name attribute at all
+        workspace_slug="ws",
+        repo_slug="archived-thing",
+        get_pr_branch=lambda: "feature/x",
+        get_pr_labels=lambda: [],
+    )
+    monkeypatch.setattr(cli, "get_git_provider_with_context", lambda pr_url=None: provider)
+    monkeypatch.setattr(cli, "apply_repo_settings", lambda url: None)
+
+    status, handle_calls = _run_cli_with_counting_agent(monkeypatch)
+
+    assert handle_calls == 0
     assert status is None

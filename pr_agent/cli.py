@@ -144,10 +144,19 @@ def _cli_pr_filter_skips(pr_url: str) -> bool:
     except Exception:
         labels = []
 
+    # provider.repo is a "org/repo" string on GitHub but an API repository object on
+    # Bitbucket, Gitea and Azure; a non-string here would make the shared regex search
+    # raise and fail the whole filter open, so derive a string identity or none at all.
+    repo = getattr(provider, "repo", None)
+    repo_full_name = _first(repo,
+                            getattr(repo, "full_name", None),
+                            f"{getattr(provider, 'workspace_slug', '')}/{getattr(provider, 'repo_slug', '')}"
+                            if getattr(provider, "repo_slug", None) else None)
+
     return not should_process_pr_logic(
         title=getattr(pr, "title", None) or "",
         sender=sender,
-        repo_full_name=getattr(provider, "repo", "") or "",
+        repo_full_name=repo_full_name,
         labels=labels,
         source_branch=source_branch,
         target_branch=target_branch,
