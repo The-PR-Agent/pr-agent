@@ -453,6 +453,8 @@ def test_repo_settings_filter_nested_credentials_but_apply_safe_keys(monkeypatch
     [
         ("github", "base_url"),
         ("gerrit", "patch_server_endpoint"),
+        ("gerrit", "webhook_password"),
+        ("gerrit", "webhook_username"),
         ("azure_devops", "org"),
         ("azure_devops", "pat"),
         ("aws", "aws_access_key_id"),

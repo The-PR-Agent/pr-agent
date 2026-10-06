@@ -42,6 +42,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "azure_ad": frozenset({"api_base"}),
     "azure_devops": frozenset({"pat"}),
     "databricks": frozenset({"api_base"}),
+    "gerrit": frozenset({"webhook_password", "webhook_username"}),
     "huggingface": frozenset({"api_base"}),
     "moonshot": frozenset({"api_base"}),
     "ollama": frozenset({"api_base"}),
