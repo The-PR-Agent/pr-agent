@@ -126,6 +126,22 @@ def test_update_check_run_progress_stops_retrying_a_failing_run():
     assert completed["conclusion"] == "failure"
 
 
+def test_a_failed_progress_patch_never_opens_a_second_run():
+    provider = _github()
+    provider.start_check_run("review", "working")
+
+    def request(method, url, **kwargs):
+        if method == "PATCH":
+            raise RequestException("bad gateway")
+        return {}, {"id": 202}
+
+    provider.pr._requester.requestJsonAndCheck.side_effect = request
+
+    assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
+    assert [method for method, _url, _body in _requests(provider)] == ["POST", "PATCH"]
+    assert provider._check_run_ids == {"review": 101}
+
+
 def test_the_tool_completes_the_run_the_runner_opened():
     provider = _github()
     provider.start_check_run("review", "working")

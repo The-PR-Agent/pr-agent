@@ -742,9 +742,15 @@ class GithubProvider(GitProvider):
             base = self._check_run_base_summaries.get(name, "")
             summary = f"{base} {line}".strip() if line else base
             body = {"output": {"title": self._check_run_name(name), "summary": summary[:300]}}
-            if self._upsert_check_run(name, body):
+            run_id = self._check_run_ids[name]
+            try:
+                # PATCH only: the create fallback in _upsert_check_run would open a second run
+                # and leave this one in_progress forever.
+                self.pr._requester.requestJsonAndCheck(
+                    "PATCH", f"{self.base_url}/repos/{self.repo}/check-runs/{run_id}", input=body)
                 updated = True
-            else:
+            except (GithubException, RequestException) as e:
+                get_logger().warning(f"Failed to update check run {run_id} progress, error: {e}")
                 # Stop retrying a run whose progress write keeps failing, but keep it in
                 # _check_runs_in_progress: finish_check_run completes runs by that
                 # membership, so a failed progress write must not strand the run.
