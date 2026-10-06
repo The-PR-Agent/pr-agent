@@ -1,16 +1,9 @@
-import copy
-import tomllib
 from os.path import abspath, dirname, join
 from pathlib import Path
 from typing import Optional
 
 from dynaconf import Dynaconf
-from dynaconf.loaders import env_loader
 from starlette_context import context
-
-from pr_agent.config_security import filter_repo_host_only_keys
-
-PR_AGENT_TOML_KEY = 'pr-agent'
 
 current_dir = dirname(abspath(__file__))
 
@@ -93,7 +86,6 @@ def get_verbosity_level() -> int:
         return 0
 
 
-# Add local configuration from pyproject.toml of the project being reviewed
 def _find_repository_root() -> Optional[Path]:
     """
     Identify project root directory by recursively searching for the .git directory in the parent directories.
@@ -106,81 +98,6 @@ def _find_repository_root() -> Optional[Path]:
             return cwd
         cwd = cwd.parent
     return None
-
-
-def _find_pyproject() -> Optional[Path]:
-    """
-    Search for file pyproject.toml in the repository root.
-    """
-    repo_root = _find_repository_root()
-    if repo_root:
-        pyproject = repo_root / "pyproject.toml"
-        return pyproject if pyproject.is_file() else None
-    return None
-
-
-def _apply_pyproject_settings(pyproject_path: Path) -> None:
-    """
-    Merge the `[tool.pr-agent]` table of the reviewed repository's pyproject.toml into the settings.
-
-    pyproject.toml belongs to the repository under review, so wherever PR-Agent runs from a checkout
-    of that repository (GitHub Action, CLI in CI) its contents are contributor-controlled. It is
-    therefore bounded by the same host-only filter as the repository's .pr_agent.toml: without it a
-    repository could reach host-level capabilities through its packaging metadata, e.g.
-    `config.extra_config_url`, which the next apply_repo_settings() fetches over HTTP(S) and merges
-    unfiltered (SSRF, auth-header exfiltration, wholesale setting override). Repo sections are
-    merged into the current values rather than replacing them, so keys absent from pyproject.toml
-    keep their defaults, and env vars are replayed last to stay the highest precedence layer.
-    """
-    from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
-    from pr_agent.log import get_logger
-
-    settings = get_settings()
-    try:
-        if pyproject_path.stat().st_size > MAX_TOML_SIZE_IN_BYTES:
-            get_logger().warning(
-                f"pyproject.toml exceeds {MAX_TOML_SIZE_IN_BYTES} bytes; skipping it")
-            return
-        with open(pyproject_path, "rb") as f:
-            parsed_toml = tomllib.load(f)
-        tool = parsed_toml.get("tool")
-        if not isinstance(tool, dict):
-            return
-        sections = tool.get(PR_AGENT_TOML_KEY)
-        if not isinstance(sections, dict) or not sections:
-            return
-        # Same pre-parse rejection the other config sources apply: forbidden Dynaconf directives
-        # (includes, preload, custom loaders, ...) must not reach the settings object.
-        validate_file_security(sections, "pyproject.toml")
-        applied_sections = []
-        for section, contents in sections.items():
-            if not isinstance(contents, dict) or not contents:
-                get_logger().debug(f"Skipping non-table or empty section [{section}] from pyproject.toml")
-                continue
-            contents = filter_repo_host_only_keys(section, contents, source="pyproject.toml")
-            if not contents:
-                continue
-            section_dict = copy.deepcopy(settings.as_dict().get(section.upper(), {}))
-            for key, value in contents.items():
-                # Dynaconf looks up keys case-insensitively, so replace the existing key (whatever
-                # its casing) instead of leaving a duplicate beside it.
-                for existing_key in list(section_dict):
-                    if existing_key.lower() == key.lower():
-                        del section_dict[existing_key]
-                section_dict[key] = value
-            settings.unset(section)
-            settings.set(section, section_dict, merge=False)
-            applied_sections.append(section)
-        env_loader.load(settings)
-        # Log section names only: a pyproject.toml may carry secrets, just like .pr_agent.toml.
-        get_logger().info(f"Applied pyproject.toml settings (sections: {sorted(applied_sections)})")
-    except Exception as e:
-        get_logger().warning(f"Failed to apply pyproject.toml settings from {pyproject_path}: {e}")
-
-
-pyproject_path = _find_pyproject()
-if pyproject_path is not None:
-    _apply_pyproject_settings(pyproject_path)
 
 
 def apply_secrets_manager_config():

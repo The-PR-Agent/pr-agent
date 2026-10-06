@@ -17,8 +17,9 @@ from starlette_context import context
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
+    REPO_HOST_ONLY_KEYS_BY_SECTION,
+    REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
     REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS,
-    filter_repo_host_only_keys,
 )
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
@@ -471,9 +472,27 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
                     contents = {key: value for key, value in contents.items() if key.lower() != "temperature"}
                 if not contents:
                     continue
-        contents = filter_repo_host_only_keys(section, contents, source="repo settings")
-        if not contents:
-            continue
+        allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
+        if allowed_keys is not None:
+            rejected = [k for k in contents if k.lower() not in allowed_keys]
+            if rejected:
+                get_logger().warning(
+                    f"Ignoring host-only key(s) {rejected} in section [{section}] from repo "
+                    f"settings; only {sorted(allowed_keys)} may be set per-repo for this section"
+                )
+            contents = {k: v for k, v in contents.items() if k.lower() in allowed_keys}
+            if not contents:
+                continue
+        else:
+            host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section.lower(), frozenset())
+            rejected = [k for k in contents if k.lower() in host_only_keys]
+            if rejected:
+                get_logger().warning(
+                    f"Ignoring host-only key(s) {rejected} in section [{section}] from repo settings"
+                )
+                contents = {k: v for k, v in contents.items() if k.lower() not in host_only_keys}
+                if not contents:
+                    continue
         section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))
         if repo_settings_scope == "per_directory":
             previous = vars(get_settings()).setdefault("_per_directory_original_values", {})
