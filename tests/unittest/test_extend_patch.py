@@ -125,6 +125,54 @@ class TestExtendPatch:
         )
         assert actual_output3 == expected_output_no_dynamic_context
 
+    @pytest.mark.parametrize("section_header", ["", "   "])
+    def test_headerless_hunk_uses_fixed_context_with_new_file(self, monkeypatch, section_header):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        preceding = [f"    line{i}" for i in range(1, 11)]
+        original = "\n".join([*preceding, "old"])
+        new = "\n".join([*preceding, "new"])
+        patch = f"@@ -11 +11 @@{section_header}\n-old\n+new"
+
+        extended = extend_patch(original, patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str=new)
+
+        assert extended.splitlines()[1].startswith("@@ -6,6 +6,6 @@")
+        assert extended.splitlines()[2:] == [*(f"     line{i}" for i in range(6, 11)), "-old", "+new"]
+
+    @pytest.mark.parametrize("new_header_line", ["anchor", "changed anchor"])
+    def test_dynamic_header_missing_or_mismatched_uses_fixed_context(self, monkeypatch, new_header_line):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        original_lines = ["anchor", *(f"line{i}" for i in range(2, 11)), "old"]
+        new_lines = [new_header_line, *original_lines[1:-1], "new"]
+        header = "missing" if new_header_line == "anchor" else "anchor"
+        patch = f"@@ -11 +11 @@ {header}\n-old\n+new"
+
+        extended = extend_patch("\n".join(original_lines), patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str="\n".join(new_lines))
+
+        assert extended.splitlines()[1].startswith("@@ -6,6 +6,6 @@")
+        assert extended.splitlines()[2:7] == [*(f" line{i}" for i in range(6, 11))]
+
+    def test_dynamic_context_resets_for_headerless_second_hunk(self, monkeypatch):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        original_lines = ["def first():", *(f"line{i}" for i in range(2, 11)), "old1",
+                          *(f"line{i}" for i in range(12, 21)), "old2"]
+        new_lines = ["new1" if line == "old1" else "new2" if line == "old2" else line
+                     for line in original_lines]
+        patch = "@@ -11 +11 @@ def first():\n-old1\n+new1\n@@ -21 +21 @@\n-old2\n+new2"
+
+        extended = extend_patch("\n".join(original_lines), patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str="\n".join(new_lines))
+
+        hunk_headers = [line for line in extended.splitlines() if line.startswith("@@")]
+        assert hunk_headers == ["@@ -1,11 +1,11 @@ ", "@@ -16,6 +16,6 @@ "]
+
 
 
 

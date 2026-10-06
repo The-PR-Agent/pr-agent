@@ -121,7 +121,7 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                                 extended_size2 = max(extended_size2 - delta_cap, size2)
                             return extended_start1, extended_size1, extended_start2, extended_size2
 
-                        if allow_dynamic_context and file_new_lines:
+                        if allow_dynamic_context and file_new_lines and section_header.strip():
                             extended_start1, extended_size1, extended_start2, extended_size2 = \
                                 _calc_context_limits(patch_extra_lines_before_dynamic)
 
