@@ -261,7 +261,8 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
         # Split at the last colon so a secret name or ARN can itself contain colons.
         secret_name, separator, webhook_token = request_token.rpartition(":")
         if not separator or not secret_name or not webhook_token:
-            get_logger().error("Failed to validate secret")
+            get_logger().error("Failed to validate secret: X-Gitlab-Token is neither the shared secret "
+                               "nor <secret-name>:<webhook-token>")
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
 
