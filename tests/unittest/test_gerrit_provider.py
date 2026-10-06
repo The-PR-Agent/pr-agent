@@ -75,6 +75,18 @@ def test_get_repo_settings_resolves_only_safe_symlinks(tmp_path, target, expecte
     assert provider.get_repo_settings() == expected
 
 
+def test_get_repo_settings_resolves_linked_directories(tmp_path):
+    repo = _make_repo(tmp_path, ["actual/review.toml"])
+    (tmp_path / "settings").symlink_to("actual", target_is_directory=True)
+    (tmp_path / ".pr_agent.toml").symlink_to("settings/review.toml")
+    repo.index.add(["settings", ".pr_agent.toml"])
+    repo.index.commit("link settings directory")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == b"actual/review.toml\n"
+
+
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
     repo = _make_repo(tmp_path, ["keep.py", "gone.py"])
     (tmp_path / "gone.py").unlink()

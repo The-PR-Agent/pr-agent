@@ -269,6 +269,33 @@ class GerritProvider(GitProvider):
     def get_commit_messages(self) -> str:
         return self.repo.head.commit.message
 
+    @staticmethod
+    def _resolve_intermediate_settings_links(settings_tree, settings_path):
+        visited_paths = set()
+        while settings_path not in visited_paths:
+            visited_paths.add(settings_path)
+            current_tree = settings_tree
+            path_parts = settings_path.split("/")
+            for index, part in enumerate(path_parts[:-1]):
+                entry = current_tree / part
+                if stat.S_ISLNK(entry.mode):
+                    target = entry.data_stream.read().decode("utf-8")
+                    if posixpath.isabs(target):
+                        return None
+                    link_path = "/".join(path_parts[:index + 1])
+                    settings_path = posixpath.normpath(posixpath.join(
+                        posixpath.dirname(link_path), target, *path_parts[index + 1:]
+                    ))
+                    if settings_path in (".", "..") or settings_path.startswith("../"):
+                        return None
+                    break
+                if entry.type != "tree":
+                    return None
+                current_tree = entry
+            else:
+                return current_tree / path_parts[-1], settings_path
+        return None
+
     def get_repo_settings(self):
         try:
             settings_tree = self.repo.branches[0].commit.tree
@@ -276,7 +303,10 @@ class GerritProvider(GitProvider):
             visited_paths = set()
             while settings_path not in visited_paths:
                 visited_paths.add(settings_path)
-                settings_entry = settings_tree / settings_path
+                resolved_entry = self._resolve_intermediate_settings_links(settings_tree, settings_path)
+                if resolved_entry is None:
+                    return b""
+                settings_entry, settings_path = resolved_entry
                 if settings_entry.type != "blob":
                     return b""
                 contents = settings_entry.data_stream.read()
