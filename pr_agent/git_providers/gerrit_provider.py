@@ -449,7 +449,16 @@ class GerritProvider(GitProvider):
                 continue
             # Sanitize file path to prevent directory traversal
             try:
-                target_path = (repo_root / suggestion["relevant_file"]).resolve()
+                requested_path = repo_root / suggestion["relevant_file"]
+                # resolve() follows symlinks, so a tracked symlink into .git/ would still look
+                # contained and add_suggestion() would then rewrite git's own metadata (for
+                # example .git/hooks/pre-commit) before the diff below reads it. Refuse a
+                # symlink outright, and refuse any path that resolves through a .git directory.
+                if requested_path.is_symlink():
+                    raise ValueError("symlink")
+                target_path = requested_path.resolve()
+                if ".git" in target_path.parts:
+                    raise ValueError("resolves into .git")
                 target_path.relative_to(repo_root)
             except ValueError:
                 get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")

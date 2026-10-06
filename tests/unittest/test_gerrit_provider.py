@@ -109,6 +109,56 @@ def test_get_repo_settings_resolves_parent_segments_after_linked_directories(tmp
     assert provider.get_repo_settings() == expected
 
 
+def _suggestion(relevant_file):
+    return {
+        "relevant_file": relevant_file,
+        "body": "**Suggestion**\n```suggestion\nreplaced\n```",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+    }
+
+
+@pytest.mark.parametrize("relevant_file", ["link.py", "gitdir/config"])
+def test_publish_code_suggestions_refuses_paths_that_reach_into_git(tmp_path, monkeypatch, relevant_file):
+    repo = _make_repo(tmp_path, ["app.py"])
+    (tmp_path / "link.py").symlink_to(".git/config")
+    (tmp_path / "gitdir").symlink_to(".git", target_is_directory=True)
+    repo.index.add(["link.py", "gitdir"])
+    repo.index.commit("track a link into .git")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    applied = []
+    monkeypatch.setattr(gerrit_provider, "add_suggestion", lambda *args, **kwargs: applied.append(args))
+    monkeypatch.setattr(gerrit_provider, "upload_patch", lambda *args, **kwargs: "https://patch.example/1")
+    monkeypatch.setattr(gerrit_provider, "add_comment", lambda *args, **kwargs: None)
+    before = (tmp_path / ".git/config").read_text()
+
+    provider.publish_code_suggestions([_suggestion(relevant_file)])
+
+    assert applied == []
+    assert (tmp_path / ".git/config").read_text() == before
+
+
+def test_publish_code_suggestions_still_applies_a_regular_file(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, ["app.py"])
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+    provider.refspec = "refs/changes/01/1/1"
+    provider.parsed_url = SimpleNamespace()
+
+    applied = []
+    monkeypatch.setattr(gerrit_provider, "add_suggestion", lambda *args, **kwargs: applied.append(args[0].name))
+    monkeypatch.setattr(gerrit_provider, "upload_patch", lambda *args, **kwargs: "https://patch.example/1")
+    monkeypatch.setattr(gerrit_provider, "add_comment", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gerrit_provider, "reset_local_changes", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gerrit_provider, "diff", lambda *args, **kwargs: "diff --git a/app.py b/app.py\n")
+
+    provider.publish_code_suggestions([_suggestion("app.py")])
+
+    assert applied == ["app.py"]
+
+
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
     repo = _make_repo(tmp_path, ["keep.py", "gone.py"])
     (tmp_path / "gone.py").unlink()
