@@ -34,15 +34,17 @@ def enforce_request_policy(pr_url) -> bool:
         return True
     from pr_agent.git_providers import get_git_provider_with_context
 
-    provider = get_git_provider_with_context(pr_url)
-    metadata = provider.get_request_policy_metadata(required)
-    missing = required - metadata.keys()
-    unknown = {field for field in required if metadata.get(field) is None}
-    if missing or unknown:
-        raise ValueError(f"Required request policy metadata is unavailable: {sorted(missing | unknown)}")
-    if not should_process_pr_logic(**metadata, raise_on_error=True):
-        get_logger().info("Request ignored by policy")
-        return False
+    try:
+        provider = get_git_provider_with_context(pr_url)
+        metadata = provider.get_request_policy_metadata(required)
+        # Missing/None fields leave only their own rules unevaluated. The shared
+        # matcher keeps checking the other fields and retains its error fallback.
+        if not should_process_pr_logic(**metadata):
+            get_logger().info("Request ignored by policy")
+            return False
+    except Exception as error:
+        # Preserve webhook behavior: a provider hiccup must not suppress a review.
+        get_logger().warning(f"Unable to evaluate request policy ({type(error).__name__}); continuing request")
     return True
 
 

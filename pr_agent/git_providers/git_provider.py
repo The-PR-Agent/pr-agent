@@ -271,11 +271,11 @@ class GitProvider(ABC):
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         """Return policy fields; None means unknown, empty values mean not applicable.
 
-        Providers must implement this contract before configured ignore rules can
-        be evaluated. Never silently allow a new provider lacking policy metadata.
-        Read expensive fields (such as labels) only when requested.
+        Omit unavailable fields or return None; only their rules are skipped.
+        Read expensive fields (such as labels) only when requested. Lookup errors
+        are handled by the policy layer, which allows the request to continue.
         """
-        raise NotImplementedError("This provider does not implement request policy metadata")
+        return {}
 
     @abstractmethod
     def is_supported(self, capability: str) -> bool:

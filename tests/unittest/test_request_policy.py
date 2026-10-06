@@ -84,26 +84,59 @@ async def test_repo_settings_are_loaded_before_policy_and_argument_overrides(env
     tool.assert_not_called()
 
 
-async def test_missing_metadata_is_a_failure_not_permission_to_run(environment, monkeypatch):
+@pytest.mark.parametrize("missing_form", ["omitted", "none"])
+@pytest.mark.parametrize("title_matches", [False, True])
+async def test_unavailable_author_skips_only_author_rule(environment, monkeypatch, missing_form, title_matches):
     settings, provider = environment
     settings.set("config.ignore_pr_authors", ["author"])
-    provider.get_request_policy_metadata.return_value = {**METADATA, "sender": None}
-    tool = Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
-    assert await agent.PRAgent().handle_request(URL, "/review") is False
-    tool.assert_not_called()
+    settings.set("config.ignore_pr_title", ["^Regular" if title_matches else "^Unmatched$"])
+    metadata = METADATA.copy()
+    if missing_form == "omitted":
+        metadata.pop("sender")
+    else:
+        metadata["sender"] = None
+    provider.get_request_policy_metadata.return_value = metadata
+    tool = SimpleNamespace(run=AsyncMock())
+    factory, notify = Mock(return_value=tool), Mock()
+    monkeypatch.setitem(agent.command2class, "review", factory)
+    result = await agent.PRAgent().handle_request(URL, "/review", notify=notify)
+    if title_matches:
+        assert result is RequestOutcome.SKIPPED
+        tool.run.assert_not_awaited()
+        notify.assert_not_called()
+    else:
+        assert result is True
+        tool.run.assert_awaited_once()
+        notify.assert_called_once()
 
 
-async def test_new_provider_cannot_silently_omit_policy_support(environment, monkeypatch):
+@pytest.mark.parametrize("failure_at", ["provider", "metadata"])
+async def test_policy_lookup_error_allows_command(environment, monkeypatch, failure_at):
+    settings, provider = environment
+    settings.set("config.ignore_pr_title", ["Regular"])
+    if failure_at == "provider":
+        monkeypatch.setattr(git_providers, "get_git_provider_with_context", Mock(side_effect=RuntimeError("outage")))
+    else:
+        provider.get_request_policy_metadata.side_effect = RuntimeError("outage")
+    tool = SimpleNamespace(run=AsyncMock())
+    notify = Mock()
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    assert await agent.PRAgent().handle_request(URL, "/review", notify=notify) is True
+    tool.run.assert_awaited_once()
+    notify.assert_called_once()
+    agent.flush_telemetry.assert_called_once()
+
+
+async def test_provider_without_metadata_uses_empty_default(environment, monkeypatch):
     from pr_agent.git_providers.git_provider import GitProvider
     settings, provider = environment
     settings.set("config.ignore_pr_title", ["Regular"])
     provider.get_request_policy_metadata.side_effect = (
         lambda fields: GitProvider.get_request_policy_metadata(None, fields))
-    tool = Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
-    assert await agent.PRAgent().handle_request(URL, "/review") is False
-    tool.assert_not_called()
+    tool = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    assert await agent.PRAgent().handle_request(URL, "/review") is True
+    tool.run.assert_awaited_once()
 
 
 def test_every_builtin_and_mosaico_provider_implements_policy_contract():
@@ -301,14 +334,14 @@ def test_skipped_result_is_distinct_from_success_and_failure():
     assert not RequestOutcome.SKIPPED
 
 
-async def test_invalid_policy_returns_failure_without_raising_or_running_tool(environment, monkeypatch):
+async def test_invalid_policy_preserves_shared_matcher_error_fallback(environment, monkeypatch):
     settings, _ = environment
     settings.set("config.ignore_pr_title", ["["])
-    tool, notify = Mock(), Mock()
-    monkeypatch.setitem(agent.command2class, "review", tool)
-    assert await agent.PRAgent().handle_request(URL, "/review", notify=notify) is False
-    tool.assert_not_called()
-    notify.assert_not_called()
+    tool, notify = SimpleNamespace(run=AsyncMock()), Mock()
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    assert await agent.PRAgent().handle_request(URL, "/review", notify=notify) is True
+    tool.run.assert_awaited_once()
+    notify.assert_called_once()
     agent.flush_telemetry.assert_called_once()
 
 
