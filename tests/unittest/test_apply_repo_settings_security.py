@@ -440,6 +440,34 @@ def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypat
 @pytest.mark.parametrize(
     ("section", "key"),
     [
+        ("bitbucket", "auth_type"),
+        ("gitea", "skip_ssl_verification"),
+        ("gitea", "ssl_ca_cert"),
+        ("github", "deployment_type"),
+        ("gitlab", "auth_type"),
+        ("gitlab", "ssl_verify"),
+    ],
+)
+def test_repo_settings_cannot_override_provider_auth_and_tls_keys(monkeypatch, settings_snapshot, section, key):
+    assert is_repo_host_only_key(section, key)
+    assert CliArgs.validate_user_args([f"--{section}.{key}=untrusted"])[0] is False
+
+    provider = FakeGitProvider(repo_settings_bytes=f'[{section}]\n{key} = "repo-controlled"\n'.encode())
+    captured = _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set(f"{section}.{key}", "host-controlled")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert _section(settings, section).get(key) == "host-controlled"
+
+
+@pytest.mark.parametrize(
+    ("section", "key"),
+    [
         ("github", "base_url"),
         ("gerrit", "patch_server_endpoint"),
         ("gerrit", "webhook_password"),

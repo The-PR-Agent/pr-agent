@@ -41,8 +41,19 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
     "azure_devops": frozenset({"pat"}),
+    # auth_type chooses which credential the host presents, and ssl_verify,
+    # skip_ssl_verification and ssl_ca_cert decide whether the host trusts the provider's
+    # certificate at all. A reviewed repository setting any of them could switch the
+    # operator's authentication mechanism, or turn certificate validation off for every
+    # host-side call, so they are host decisions like the connection keys above.
+    "bitbucket": frozenset({"auth_type"}),
     "databricks": frozenset({"api_base"}),
     "gerrit": frozenset({"webhook_password", "webhook_username"}),
+    "gitea": frozenset({"skip_ssl_verification", "ssl_ca_cert"}),
+    # deployment_type selects which GitHub host the bot talks to (cloud or enterprise),
+    # which is the operator's choice for the same reason as the endpoint keys above.
+    "github": frozenset({"deployment_type"}),
+    "gitlab": frozenset({"auth_type", "ssl_verify"}),
     "huggingface": frozenset({"api_base"}),
     "moonshot": frozenset({"api_base"}),
     "ollama": frozenset({"api_base"}),
