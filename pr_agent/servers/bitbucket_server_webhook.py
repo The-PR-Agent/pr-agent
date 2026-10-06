@@ -24,6 +24,7 @@ from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
     is_command_comment,
+    payload_log_summary,
     push_trigger_slot,
     shared_should_process_pr_logic,
     verify_signature,
@@ -106,9 +107,6 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         get_logger().error("Rejecting Bitbucket Server webhook: BITBUCKET_SERVER.WEBHOOK_SECRET is not configured")
         raise HTTPException(status_code=403, detail="Webhook authentication is not configured.")
 
-    data = await request.json()
-    get_logger().info(json.dumps(data))
-
     body_bytes = await request.body()
     if body_bytes.decode('utf-8') == '{"test": true}':
         return JSONResponse(
@@ -116,6 +114,8 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
         )
     signature_header = request.headers.get("x-hub-signature", None)
     verify_signature(body_bytes, webhook_secret, signature_header)
+    data = await request.json()
+    get_logger().info(payload_log_summary(data, ("eventKey",)))
 
     # Install a per-request settings clone only after auth/connection-test checks, so
     # rejected traffic doesn't pay the deepcopy cost. Must precede apply_repo_settings(),
