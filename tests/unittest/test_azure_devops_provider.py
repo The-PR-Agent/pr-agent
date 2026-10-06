@@ -1349,6 +1349,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         provider.previous_review = "stale"
         provider.unreviewed_files_map = {"stale.cs": "stale.cs"}
         provider._pr_iteration_changes_cache = ["stale"]
+        provider._languages = {"Python": 100.0}
         provider.temp_comments = ["stale"]
         provider._parse_pr_url = MagicMock(return_value=("project", "repo", 2))
         provider._get_pr = MagicMock(return_value=MagicMock())
@@ -1361,6 +1362,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         assert provider.previous_review is None
         assert provider.unreviewed_files_map == {}
         assert provider._pr_iteration_changes_cache is None
+        assert provider._languages is None
         assert provider.temp_comments == []
 
     def test_unmatched_suggestion_path_does_not_break_markdown(self):

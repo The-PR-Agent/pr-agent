@@ -98,7 +98,16 @@ docker push <your-registry>/pr-agent:bitbucket_server_webhook
 ```
 
 Navigate to `Projects` or `Repositories`, `Settings`, `Webhooks`, `Create Webhook`.
-Fill in the name and URL. For Authentication, select 'None'. Select the 'Pull Request Opened' checkbox to receive that event as a webhook.
+Fill in the name and URL. Configure a webhook **Secret** and set the same value in PR-Agent's `.secrets.toml`:
+
+```toml
+[bitbucket_server]
+webhook_secret = "<webhook secret>"
+```
+
+Bitbucket signs webhook payloads with this secret in the `X-Hub-Signature` header. PR-Agent requires the secret and rejects webhook requests with HTTP 403 if it is missing or empty. Normal webhook deliveries without a valid signature also receive HTTP 403. Bitbucket's connection test remains available after the secret is configured.
+
+The separate Authentication option can remain 'None' because this server verifies the secret-based signature rather than Basic authentication. Select the 'Pull Request Opened' checkbox to receive that event as a webhook.
 
 The URL should end with `/webhook`, for example: https://domain.com/webhook
 

@@ -1,3 +1,6 @@
+import copy
+import hashlib
+import hmac
 import json
 from unittest import mock
 
@@ -324,8 +327,14 @@ async def _run_bitbucket_server_comment_webhook(monkeypatch, comment_text):
         route.endpoint for route in bitbucket_server_webhook.router.routes if route.path == "/webhook"
     )
     background_tasks = BackgroundTasks()
-    with request_cycle_context({}):
-        response = await endpoint(background_tasks, _Request(payload, headers={}))
+    settings = copy.deepcopy(global_settings)
+    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", "test-webhook-secret")
+    request = _Request(payload, headers={})
+    request.headers["x-hub-signature"] = "sha256=" + hmac.new(
+        b"test-webhook-secret", await request.body(), hashlib.sha256,
+    ).hexdigest()
+    with request_cycle_context({"settings": settings}):
+        response = await endpoint(background_tasks, request)
         await background_tasks()
     return response, recorded
 

@@ -17,7 +17,7 @@ from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
-from .git_provider import GitProvider, get_git_ssl_env
+from .git_provider import GitProvider, cache_languages, get_git_ssl_env
 
 
 class BitbucketServerProvider(GitProvider):
@@ -35,6 +35,7 @@ class BitbucketServerProvider(GitProvider):
         self.temp_comments = []
         self.incremental = incremental
         self.diff_files = None
+        self._pr_changes = None
         self.bitbucket_pull_request_api_url = pr_url
         self.bearer_token = get_settings().get("BITBUCKET_SERVER.BEARER_TOKEN", None)
         # Get username and password from settings
@@ -232,10 +233,22 @@ class BitbucketServerProvider(GitProvider):
             raise
         return file_content
 
+    def _get_pull_request_changes(self):
+        """Return the pull request change list, fetching it at most once per provider instance.
+
+        Fetch it once for get_files(), get_languages() and get_diff_files() instead of once
+        per caller, or the paginated changes request is re-issued several times per command.
+        """
+        cached = getattr(self, "_pr_changes", None)
+        if cached is None:
+            cached = list(
+                self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
+            )
+            self._pr_changes = cached
+        return cached
+
     def get_files(self):
-        changes = self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
-        diffstat = [change["path"]['toString'] for change in changes]
-        return diffstat
+        return [change["path"]['toString'] for change in self._get_pull_request_changes()]
 
     #gets the best common ancestor: https://git-scm.com/docs/git-merge-base
     @staticmethod
@@ -289,9 +302,7 @@ class BitbucketServerProvider(GitProvider):
         original_file_content_str = ""
         new_file_content_str = ""
 
-        changes_original = list(
-            self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
-        )
+        changes_original = self._get_pull_request_changes()
         changes = filter_ignored(changes_original, 'bitbucket_server')
         for change in changes:
             file_path = change['path']['toString']
@@ -514,6 +525,7 @@ class BitbucketServerProvider(GitProvider):
     def get_title(self):
         return self.pr.title
 
+    @cache_languages
     def get_languages(self):
         # Return {language name: percentage}, like the other providers.
         lang_map = get_settings().get("language_extension_map_org", {}) or {}

@@ -727,7 +727,7 @@ def test_github_provider_rejects_private_sibling_when_requester_is_not_collabora
 
     sibling_repo.get_contents.assert_not_called()
     mock_get_logger.return_value.warning.assert_called_once_with(
-        "Ignoring sibling repo context file the review requester cannot read: myorg/lib"
+        "Ignoring sibling repository the review requester cannot read: myorg/lib"
     )
 
 
@@ -766,7 +766,7 @@ def test_github_provider_rejects_private_sibling_when_command_actor_lacks_access
     sibling_repo.has_in_collaborators.assert_called_once_with("mallory")
     sibling_repo.get_contents.assert_not_called()
     mock_get_logger.return_value.warning.assert_called_once_with(
-        "Ignoring sibling repo context file the review requester cannot read: myorg/lib"
+        "Ignoring sibling repository the review requester cannot read: myorg/lib"
     )
 
 
@@ -874,7 +874,7 @@ def test_github_provider_rejects_internal_sibling_to_non_member_non_collaborator
     sibling_repo.has_in_collaborators.assert_called_once_with("alice")
     sibling_repo.get_contents.assert_not_called()
     mock_get_logger.return_value.warning.assert_called_once_with(
-        "Ignoring sibling repo context file the review requester cannot read: myorg/lib"
+        "Ignoring sibling repository the review requester cannot read: myorg/lib"
     )
 
 

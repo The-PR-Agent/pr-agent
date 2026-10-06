@@ -52,6 +52,7 @@ from .git_provider import (
     GitProvider,
     IncompletePullRequestFilesError,
     IncrementalPR,
+    cache_languages,
     get_config_branch,
     redact_credentials,
 )
@@ -241,6 +242,7 @@ class GithubProvider(GitProvider):
         if (self.repo, self.pr_num) != (repo, pr_num):
             self._published_inline_comment_bodies = []
             self._inline_comment_store = None
+            self._languages = None
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
 
@@ -1274,6 +1276,7 @@ class GithubProvider(GitProvider):
     def get_title(self):
         return self.pr.title
 
+    @cache_languages
     def get_languages(self):
         languages = self._get_repo().get_languages()
         return languages
@@ -1512,27 +1515,40 @@ class GithubProvider(GitProvider):
                 return ""
             raise
 
+    def get_issue_content(self, repo_obj, issue_number: int):
+        """Fetch an authorized issue and reject transferred content before prompt use."""
+        issue = repo_obj.get_issue(issue_number)
+        # Reject transferred issues after PyGithub follows same-host redirects.
+        if str(issue.repository_url).casefold() != str(repo_obj.url).casefold():
+            raise ValueError("GitHub ticket response does not match the authorized repository")
+        return issue
+
+    def get_sibling_repo(self, repo_id: str):
+        repo_id = (repo_id or "").strip().strip("/")
+        if not repo_id or not self.is_sibling_repo_allowed(repo_id, case_sensitive=False):
+            get_logger().warning(f"Ignoring sibling repo absent from the host allowlist: {repo_id}")
+            return None
+        sibling_repo = self.github_client.get_repo(repo_id)
+        resolved_name = sibling_repo.full_name
+        current_owner = self.get_owning_namespace(resolved=True)
+        # Reject redirects/transfers unless the canonical same-owner repository was selected.
+        if (not isinstance(resolved_name, str) or resolved_name.casefold() != repo_id.casefold()
+                or not current_owner or resolved_name.split("/")[0].casefold() != current_owner.casefold()):
+            get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
+            return None
+        if not self._requester_can_read_sibling_repo(sibling_repo):
+            get_logger().warning(f"Ignoring sibling repository the review requester cannot read: {repo_id}")
+            return None
+        return sibling_repo
+
     def get_sibling_repo_file_content(self, repo_id: str, file_path: str, from_default_branch: bool = False):
         try:
             repo_id = (repo_id or "").strip().strip("/")
             file_path = (file_path or "").strip().lstrip("/")
             if not repo_id or not file_path:
                 return ""
-            if not self.is_sibling_repo_allowed(repo_id, case_sensitive=False):
-                get_logger().warning(f"Ignoring sibling repo absent from the host allowlist: {repo_id}")
-                return ""
-            sibling_repo = self.github_client.get_repo(repo_id)
-            resolved_name = sibling_repo.full_name
-            current_owner = self.get_owning_namespace(resolved=True)
-            # Reject redirects/transfers unless the canonical repository was explicitly selected.
-            if (not isinstance(resolved_name, str) or resolved_name.casefold() != repo_id.casefold()
-                    or not current_owner or resolved_name.split("/")[0].casefold() != current_owner.casefold()):
-                get_logger().warning(f"Ignoring out-of-owner sibling repo in repo context: {repo_id}")
-                return ""
-            if not self._requester_can_read_sibling_repo(sibling_repo):
-                get_logger().warning(
-                    f"Ignoring sibling repo context file the review requester cannot read: {repo_id}"
-                )
+            sibling_repo = self.get_sibling_repo(repo_id)
+            if sibling_repo is None:
                 return ""
             # The sibling has no PR-target ref in this repo, so its default branch is the only
             # well-defined revision to read the file from.

@@ -186,13 +186,10 @@ def handle_line_comment(body: str, thread_id: int, comment_id: int, provider: Az
 # currently only basic auth is supported with azure webhooks
 # for this reason, https must be enabled to ensure the credentials are not sent in clear text
 def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B008
-    if not WEBHOOK_USERNAME and not WEBHOOK_PASSWORD:
-        return
     if not WEBHOOK_USERNAME or not WEBHOOK_PASSWORD:
-        # Fail closed on a half-configured pair rather than reverting to open access.
-        get_logger().error("Incomplete azure_devops_server webhook credentials: set both "
-                           "webhook_username and webhook_password, or neither")
-        raise HTTPException(status_code=500, detail="Webhook authentication is misconfigured.")
+        get_logger().error("Rejecting Azure DevOps webhook: set both "
+                           "azure_devops_server.webhook_username and azure_devops_server.webhook_password")
+        raise HTTPException(status_code=403, detail="Webhook authentication is not configured.")
 
     if credentials is None:
         raise HTTPException(

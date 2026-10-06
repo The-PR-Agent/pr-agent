@@ -19,6 +19,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
@@ -202,14 +203,17 @@ async def _get_bot_user_id():
             gl = gitlab.Gitlab(
                 url=gitlab_url,
                 oauth_token=gitlab_token,
-                ssl_verify=ssl_verify
+                ssl_verify=ssl_verify,
+                timeout=get_http_request_timeout(),
             )
         else:
             gl = gitlab.Gitlab(
                 url=gitlab_url,
                 private_token=gitlab_token,
-                ssl_verify=ssl_verify
+                ssl_verify=ssl_verify,
+                timeout=get_http_request_timeout(),
             )
+        refresh_session_request_timeout(gl)
         gl.auth()
         return gl.user.id
 
@@ -255,36 +259,45 @@ def should_process_pr_logic(data) -> bool:
 
 
 def authenticate_gitlab_webhook(request: Request, log_context: dict):
-    request_token = request.headers.get("X-Gitlab-Token")
-    # Built only for a request that will actually consult it, so a cloud client that
-    # fails to initialize or read cannot drop webhooks authenticated by shared secret instead.
-    secret = None
-    if request_token:
+    request_token = request.headers.get("X-Gitlab-Token", "")
+    shared_secret = get_settings().get("GITLAB.SHARED_SECRET")
+    # Check the shared credential first to avoid cloud lookups, even during provider outages.
+    if not shared_secret or not hmac.compare_digest(request_token.encode(), str(shared_secret).encode()):
+        # Split at the last colon so a secret name or ARN can itself contain colons.
+        secret_name, separator, webhook_token = request_token.rpartition(":")
+        if not separator or not secret_name or not webhook_token:
+            get_logger().error("Failed to validate secret: X-Gitlab-Token is neither the shared secret "
+                               "nor <secret-name>:<webhook-token>")
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                                content=jsonable_encoder({"message": "unauthorized"}))
+
+        secret = None
         try:
             secret_provider = get_fork_safe_secret_provider()
-            secret = secret_provider.get_secret(request_token) if secret_provider else None
+            secret = secret_provider.get_secret(secret_name) if secret_provider else None
         except Exception as e:
-            get_logger().warning(f"Secret provider failed ({type(e).__name__}), falling back to the shared secret")
-    if secret:
+            get_logger().warning(f"Secret provider failed ({type(e).__name__})")
+        if not secret:
+            get_logger().error("Failed to validate secret")
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                                content=jsonable_encoder({"message": "unauthorized"}))
         try:
             secret_dict = json.loads(secret)
-            context["settings"].gitlab.personal_access_token = secret_dict["gitlab_token"]
+            if not isinstance(secret_dict, dict):
+                raise ValueError("Invalid webhook secret")
+            stored_token = secret_dict.get("webhook_token")
+            gitlab_token = secret_dict.get("gitlab_token")
+            if (not isinstance(stored_token, str) or not stored_token
+                    or not isinstance(gitlab_token, str) or not gitlab_token
+                    or not hmac.compare_digest(webhook_token.encode(), stored_token.encode())):
+                raise ValueError("Invalid webhook secret")
+            context["settings"].set("GITLAB.PERSONAL_ACCESS_TOKEN", gitlab_token)
             log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
         except Exception as e:
             get_logger().error(
                 f"Failed to validate the secret for the provided webhook token: {type(e).__name__}")
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
-    elif get_settings().get("GITLAB.SHARED_SECRET"):
-        secret = get_settings().get("GITLAB.SHARED_SECRET")
-        if not hmac.compare_digest(str(request_token or ""), str(secret)):
-            get_logger().error("Failed to validate secret")
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                                content=jsonable_encoder({"message": "unauthorized"}))
-    else:
-        get_logger().error("Failed to validate secret")
-        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                            content=jsonable_encoder({"message": "unauthorized"}))
     gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
     if not gitlab_token:
         get_logger().error("No gitlab token found")

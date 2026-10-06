@@ -1,3 +1,4 @@
+import functools
 import json
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -19,8 +20,10 @@ from pr_agent.git_providers.git_provider import (
     GitProvider,
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
+    cache_languages,
     redact_credentials,
 )
+from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
 
 # Shipped default for the [gitea] url setting in configuration.toml. A value
@@ -49,6 +52,17 @@ class _GiteaCommitAdapter:
         raw = raw or {}
         self.sha = raw.get("sha", "")
         self.html_url = raw.get("html_url", "")
+
+
+def _with_default_request_timeout(call_api):
+    """Fill in connect/read bounds when giteapy forwards an unset request timeout."""
+    @functools.wraps(call_api)
+    def call_api_with_timeout(*args, **kwargs):
+        if not kwargs.get("_request_timeout"):
+            kwargs["_request_timeout"] = (get_http_request_timeout(),) * 2
+        return call_api(*args, **kwargs)
+
+    return call_api_with_timeout
 
 
 class GiteaProvider(GitProvider):
@@ -83,6 +97,7 @@ class GiteaProvider(GitProvider):
         configuration.ssl_ca_cert = get_settings().get("GITEA.SSL_CA_CERT", None)
 
         client = giteapy.ApiClient(configuration)
+        client.call_api = _with_default_request_timeout(client.call_api)
         self.repo_api = RepoApi(client)
         self.owner = None
         self.repo = None
@@ -718,6 +733,7 @@ class GiteaProvider(GitProvider):
 
         return comments
 
+    @cache_languages
     def get_languages(self) -> Set[str]:
         """Get programming languages used in the repository"""
         languages = self.repo_api.get_languages(
@@ -777,10 +793,15 @@ class GiteaProvider(GitProvider):
             self.logger.error("Repository settings not found")
             return settings_files if settings_files else ""
 
+        target_ref = self.base_sha or self.base_ref
+        if not target_ref:
+            self.logger.warning("Cannot get repository settings: no target/base ref available")
+            return settings_files if settings_files else ""
+
         response = self.repo_api.get_file_content(
             owner=self.owner,
             repo=self.repo,
-            commit_sha=self.sha,
+            commit_sha=target_ref,
             filepath=self.repo_settings
         )
         if not response:

@@ -8,6 +8,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -24,6 +25,16 @@ from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+
+def cache_languages(get_languages):
+    """Cache non-empty language results per provider instance."""
+    @wraps(get_languages)
+    def wrapper(self):
+        if not getattr(self, "_languages", None):
+            self._languages = get_languages(self)
+        return self._languages
+    return wrapper
 
 
 def get_config_branch() -> str:
@@ -806,6 +817,14 @@ class GitProvider(ABC):
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
+
+    def get_issue_content(self, repo_obj, issue_number: int):
+        """Fetch issue content within this provider's authorized repository boundary."""
+        raise NotImplementedError("This provider cannot fetch GitHub issue content")
+
+    def get_sibling_repo(self, repo_id: str):
+        """Resolve a host-approved sibling repository the requester may read."""
+        return None
 
     def get_sibling_repo_file_content(self, repo_id: str, file_path: str, from_default_branch: bool = False):
         """Fetch a single file from a sibling repository in the same namespace/owner.

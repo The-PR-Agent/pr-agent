@@ -127,12 +127,14 @@ configure a stable identity (GUID/ID, unique name, or descriptor). A list can be
 agent_identity = "<agent identity>"
 ```
 
-For webhook security, create a sporadic username/password pair and configure the webhook username and password on both the server and Azure DevOps webhook. These will be sent as basic Auth data by the webhook with each request:
+Webhook authentication is required. Create a username/password pair and configure the same values on the server and in the Azure DevOps webhook's Basic authentication settings. Azure DevOps sends these credentials with each request:
 
 ```toml
 [azure_devops_server]
 webhook_username = "<basic auth user>"
 webhook_password = "<basic auth password>"
 ```
+
+The server rejects webhook requests with HTTP 403 if either setting is missing or empty. With both settings configured, requests without valid Basic credentials receive HTTP 401.
 
 > :warning: **Ensure that the webhook endpoint is only accessible over HTTPS** to mitigate the risk of credential interception when using basic authentication.

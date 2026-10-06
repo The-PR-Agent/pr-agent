@@ -23,10 +23,11 @@ def _documented_keys(text: str) -> Counter:
 
 def test_config_reference_covers_every_active_key():
     keys = _toml_keys(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert sum(keys.values()) == 283
+    assert sum(keys.values()) == 284
 
     assert {
         "model",
+        "http_request_timeout",
         "enable_auto_approval",
         "reaction_on_start",
         "reaction_on_failure",

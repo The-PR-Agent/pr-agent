@@ -41,6 +41,7 @@ from .git_provider import (
     CodeSuggestionThread,
     GitProvider,
     IncrementalPR,
+    cache_languages,
 )
 
 AZURE_DEVOPS_AVAILABLE = True
@@ -562,6 +563,7 @@ class AzureDevopsProvider(GitProvider):
         self.diff_files = None
         self._diff_path_map = None
         self._pr_iteration_changes_cache = None
+        self._languages = None
         self.pr_commits = None
         self.previous_review = None
         self.unreviewed_files_map = {}
@@ -1344,6 +1346,7 @@ class AzureDevopsProvider(GitProvider):
     def get_title(self):
         return self.pr.title
 
+    @cache_languages
     def get_languages(self):
         # Return {language name: percentage}, like the other providers. Keys are
         # language NAMES (e.g. "Python"), not raw extensions: the consumer

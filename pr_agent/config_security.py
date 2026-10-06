@@ -38,7 +38,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
     "pr_reviewer": frozenset({"publish_error_details"}),
-    # repo_context_sibling_repos lists the sibling repositories whose files a consuming repo
+    # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
     # triggers the read, not who chose the target or where the output lands, so a sibling
@@ -62,10 +62,13 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # would otherwise repoint that fetch to an arbitrary internal URL (SSRF), exfiltrate the
     # auth header, and override secrets/model routing/output sinks wholesale. CLI arguments
     # for it are already blocked; the repo-settings entry point now matches.
+    # Provider request timeouts stay host-controlled so repository settings cannot lengthen
+    # worker occupancy across SDK retries. Command arguments enforce this same boundary.
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
         "global_settings_repo",
+        "http_request_timeout",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
     }),

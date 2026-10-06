@@ -96,6 +96,10 @@ FORBIDDEN_ARGS = [
     "--config.global_settings_repo=evil-settings",
     "--config__global_settings_repo=evil-settings",
     '--config={"global_settings_repo": "evil-settings"}',
+    # Provider timeouts affect host workers and must not be set by command arguments.
+    "--config.http_request_timeout=600",
+    "--config__http_request_timeout=600",
+    '--config={"http_request_timeout": 600}',
     # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_tool_errors=false",

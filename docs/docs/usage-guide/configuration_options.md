@@ -83,8 +83,11 @@ By default, configuration is read from the **default branch**, so only users who
 **Never set the config branch from untrusted or PR-derived input** (e.g. `--config-branch=$GITHUB_HEAD_REF` / `${{ github.head_ref }}` in CI). Doing so lets anyone who can push a branch to the repository supply their own `.pr_agent.toml` and control the review — for example pointing `model`/the API base at an attacker endpoint to exfiltrate the diff, injecting `extra_instructions`, or enabling auto-approval of their own PR. Always pin the config branch to a fixed, maintainer-controlled branch.
 :::
 
-:::note[GitHub and GitLab only]
-Branch selection is currently implemented for GitHub and GitLab. On all other platforms the `--config-branch` flag and `PR_AGENT_CONFIG_BRANCH` variable are ignored, and the local `.pr_agent.toml` is always read from the default branch.
+:::note[Provider branch behavior]
+Branch selection is currently implemented for GitHub and GitLab. Gitea ignores these options and reads
+the local `.pr_agent.toml` from the pull request target ref, which may differ from the default branch.
+Gerrit also ignores these options, but reads the file from the cloned default branch. Other platforms
+retain their provider-specific settings source.
 :::
 
 ## Global configuration file

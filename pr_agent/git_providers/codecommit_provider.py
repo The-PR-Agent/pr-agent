@@ -19,7 +19,7 @@ from ..algo.comment_identity import (
 from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import GitProvider
+from .git_provider import GitProvider, cache_languages
 
 
 class PullRequestCCMimic:
@@ -120,6 +120,7 @@ class CodeCommitProvider(GitProvider):
         self.pr = pr
         self.diff_files = None
         self.git_files = None
+        self._languages = None
 
     def get_files(self) -> list[CodeCommitFile]:
         # bring files from CodeCommit only once
@@ -417,6 +418,7 @@ class CodeCommitProvider(GitProvider):
         except:
             return ""
 
+    @cache_languages
     def get_languages(self):
         """Return recognized language percentages for diff prioritization."""
         language_map = get_settings().get("language_extension_map_org", {}) or {}
