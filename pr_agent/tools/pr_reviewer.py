@@ -1363,7 +1363,7 @@ class PRReviewer:
                     else:
                         self._review_state_preserved = True
 
-        # Emit the review to optional external sinks (stdout/file/webhook/slack); no-op unless enabled.
+        # Emit the review to optional external sinks (stdout/file/webhook/slack/telegram); no-op unless enabled.
         # publish_output gates it so a dry run makes no external calls. The "no major issues"
         # suppression deliberately does not: that only silences the PR comment.
         if get_settings().config.publish_output:

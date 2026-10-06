@@ -336,6 +336,89 @@ class TestGithubExtractionMerging:
 # ---------------------------------------------------------------------------
 
 class TestCrossRepoTicketResolution:
+    def test_enterprise_full_url_fetches_same_instance_cross_repo_in_order(self, settings_snapshot):
+        enterprise = "https://ghe.example.test"
+        pr_repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="Local")})
+        other_repo_obj = _FakeRepoObj({7: _FakeIssue(7, title="Enterprise cross-repo")})
+        provider = _make_github_provider(
+            user_description=(
+                f"Fixes #1 and {enterprise}/other/project/issues/7, "
+                f"again {enterprise}/other/project/issues/7"
+            ),
+            base_url_html=enterprise,
+            repo_obj=pr_repo_obj,
+            github_client=_FakeGithubClient({"other/project": other_repo_obj}),
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["ticket_id"] for ticket in result] == [1, 7]
+        assert result[1]["title"] == "Enterprise cross-repo"
+        assert provider.github_client.get_repo_calls == ["other/project"]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://ghe.example.test/other/project/issues/7",
+            "https://other.example.test/other/project/issues/7",
+            "https://other.example.test/other/project/issues/7#issuecomment-123",
+            "https://ghe.example.test.evil/other/project/issues/7",
+            "https://user@ghe.example.test/other/project/issues/7",
+            "https://ghe.example.test@evil.test/other/project/issues/7",
+            "https://ghe.example.test:8443/other/project/issues/7",
+            "https://ghe.example.test/other/project/issues/7/extra",
+        ],
+    )
+    def test_untrusted_enterprise_full_url_never_fetches_repo(self, settings_snapshot, url):
+        client = _FakeGithubClient({"other/project": _FakeRepoObj({7: _FakeIssue(7)})})
+        provider = _make_github_provider(
+            user_description=f"See {url}",
+            base_url_html="https://ghe.example.test",
+            repo_obj=_FakeRepoObj({}),
+            github_client=client,
+        )
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        assert client.get_repo_calls == []
+
+    def test_enterprise_explicit_default_port_reuses_local_repo(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({7: _FakeIssue(7, title="Enterprise issue")})
+        provider = _make_github_provider(
+            user_description="See https://ghe.example.test:443/org/repo/issues/7",
+            base_url_html="https://ghe.example.test",
+            repo_obj=repo_obj,
+            github_client=_FakeGithubClient(),
+        )
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [7]
+        assert provider.github_client.get_repo_calls == []
+
+    def test_enterprise_comment_permalink_fetches_canonical_issue(self, settings_snapshot):
+        client = _FakeGithubClient({"other/project": _FakeRepoObj({7: _FakeIssue(7)})})
+        provider = _make_github_provider(
+            user_description="See https://ghe.example.test/other/project/issues/7#issuecomment-123",
+            base_url_html="https://ghe.example.test",
+            repo_obj=_FakeRepoObj({}),
+            github_client=client,
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+        assert [ticket["ticket_id"] for ticket in result] == [7]
+        assert result[0]["ticket_url"] == "https://ghe.example.test/other/project/issues/7"
+        assert client.get_repo_calls == ["other/project"]
+
+    def test_enterprise_nondefault_port_uses_configured_client(self, settings_snapshot):
+        client = _FakeGithubClient({"other/project": _FakeRepoObj({7: _FakeIssue(7)})})
+        provider = _make_github_provider(
+            user_description="See https://ghe.example.test:8443/other/project/issues/7",
+            base_url_html="https://ghe.example.test:8443",
+            repo_obj=_FakeRepoObj({}),
+            github_client=client,
+        )
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [7]
+        assert client.get_repo_calls == ["other/project"]
+
     def test_ticket_in_other_repo_is_fetched_from_that_repo(self, settings_snapshot):
         # Both repositories happen to have an issue #5. The PR links the one in
         # ``other/repo``, so the ``other/repo`` issue must be the one returned —
@@ -447,6 +530,27 @@ class TestCrossRepoTicketResolution:
         assert [t["ticket_id"] for t in result] == [1]
         # Nor may it fall through to a lookup on the PR's (wrong) instance.
         assert provider.github_client.get_repo_calls == []
+
+    @pytest.mark.parametrize("local_reference", ["", " ticket42"])
+    def test_foreign_issue_url_custom_capture_never_fetches_a_local_issue(self, settings_snapshot, local_reference):
+        saved = snapshot_settings(["config.description_issue_regex"])
+        try:
+            settings_snapshot.set("config.description_issue_regex", r"(\d+)")
+            repo_obj = _FakeRepoObj({42: _FakeIssue(42), 99: _FakeIssue(99)})
+            repo_obj.get_issue = MagicMock(wraps=repo_obj.get_issue)
+            provider = _make_github_provider(
+                user_description=f"https://github.com/other/project/issues/99{local_reference}",
+                base_url_html="https://ghe.example.test",
+                repo_obj=repo_obj,
+                github_client=_FakeGithubClient(),
+            )
+            result = asyncio.run(extract_tickets(provider))
+            expected = [42] if local_reference else []
+            assert [ticket["ticket_id"] for ticket in result] == expected
+            assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == expected
+            assert provider.github_client.get_repo_calls == []
+        finally:
+            restore_settings(saved)
 
     def test_api_host_form_counts_as_the_same_instance(self, settings_snapshot):
         # Sub-issue URLs may arrive in api.github.com form; that is the same

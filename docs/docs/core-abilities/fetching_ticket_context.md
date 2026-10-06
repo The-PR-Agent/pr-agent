@@ -92,6 +92,9 @@ Examples of valid GitHub/GitLab issue references:
 - `#<ISSUE_NUMBER>`
 - `<ORG_NAME>/<REPO_NAME>#<ISSUE_NUMBER>`
 
+Full GitHub issue URLs are recognized on the configured instance's HTTPS web origin, including GitHub Enterprise URLs such as `https://github.example.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>`.
+Full GitHub issue URLs on other origins are ignored.
+
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)
 

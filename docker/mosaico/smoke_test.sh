@@ -42,6 +42,12 @@ trap cleanup EXIT
 # container would otherwise hang the loop forever. Limits are generous because /health
 # and SendMessage both wait on a live LLM.
 CURL_CONNECT=(--connect-timeout 5)
+# Keep the client secret out of curl's command line; the private directory is 0700.
+AUTH_ARGS=()
+if [[ -n "${MOSAICO_BEARER_TOKEN:-}" ]]; then
+  printf 'Authorization: Bearer %s\n' "$MOSAICO_BEARER_TOKEN" > "$TMPDIR_RUN/auth-header"
+  AUTH_ARGS=(--header "@$TMPDIR_RUN/auth-header")
+fi
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -105,7 +111,7 @@ fi
 
 # --- FULL: /health (live LLM ping -> 200/503) ---
 echo "==> [full] GET /health (live LLM probe)"
-code=$(curl -s "${CURL_CONNECT[@]}" --max-time 120 -o "$TMPDIR_RUN/health.json" -w '%{http_code}' "$BASE/health")
+code=$(curl -s "${CURL_CONNECT[@]}" ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} --max-time 120 -o "$TMPDIR_RUN/health.json" -w '%{http_code}' "$BASE/health")
 # Images without health-probe redaction can include provider details in a 503 body;
 # inspect captured output before sharing it publicly.
 cat "$TMPDIR_RUN/health.json"; echo
@@ -120,7 +126,7 @@ read -r -d '' BODY <<'JSON'
 {"id":"smoke-1","jsonrpc":"2.0","method":"SendMessage","params":{"message":{"messageId":"smoke-msg-1","role":"ROLE_USER","parts":[{"text":"review the following\n```diff\ndiff --git a/foo.py b/foo.py\nindex 1111111..2222222 100644\n--- a/foo.py\n+++ b/foo.py\n@@ -1,2 +1,2 @@\n-x = 1\n+x = 2\n y = 3\n```"}]}}}
 JSON
 
-curl -fsS "${CURL_CONNECT[@]}" --max-time 300 \
+curl -fsS "${CURL_CONNECT[@]}" ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} --max-time 300 \
   -X POST "$BASE/" -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
   -d "$BODY" -o "$TMPDIR_RUN/resp.json" || fail "SendMessage request failed"
 RESP="$TMPDIR_RUN/resp.json" python3 - <<'PY' || fail "SendMessage response invalid"

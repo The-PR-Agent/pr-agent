@@ -19,6 +19,7 @@ from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
@@ -27,6 +28,7 @@ from pr_agent.servers.utils import (
     get_pr_commands,
     is_ask_command_comment,
     is_command_comment,
+    payload_log_summary,
     push_trigger_slot,
     shared_should_process_pr_logic,
 )
@@ -201,14 +203,17 @@ async def _get_bot_user_id():
             gl = gitlab.Gitlab(
                 url=gitlab_url,
                 oauth_token=gitlab_token,
-                ssl_verify=ssl_verify
+                ssl_verify=ssl_verify,
+                timeout=get_http_request_timeout(),
             )
         else:
             gl = gitlab.Gitlab(
                 url=gitlab_url,
                 private_token=gitlab_token,
-                ssl_verify=ssl_verify
+                ssl_verify=ssl_verify,
+                timeout=get_http_request_timeout(),
             )
+        refresh_session_request_timeout(gl)
         gl.auth()
         return gl.user.id
 
@@ -295,7 +300,6 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
 @router.post("/webhook")
 async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     start_time = datetime.now()
-    request_json = await request.json()
     context["settings"] = copy.deepcopy(global_settings)
 
     log_context = {"server_type": "gitlab_app"}
@@ -303,9 +307,10 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     unauthorized_response = authenticate_gitlab_webhook(request, log_context)
     if unauthorized_response is not None:
         return unauthorized_response
+    request_json = await request.json()
 
     async def inner(data: dict):
-        get_logger().info("GitLab data", artifact=data)
+        get_logger().info("GitLab data", artifact=payload_log_summary(data, ("object_kind",)))
         sender = data.get("user", {}).get("username", "unknown")
         sender_id = data.get("user", {}).get("id", "unknown")
 
@@ -454,7 +459,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
     background_tasks.add_task(inner, request_json)
     end_time = datetime.now()
-    get_logger().info(f"Processing time: {end_time - start_time}", request=request_json)
+    get_logger().info(f"Processing time: {end_time - start_time}")
     return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
 
 

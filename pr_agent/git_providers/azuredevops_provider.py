@@ -41,6 +41,7 @@ from .git_provider import (
     CodeSuggestionThread,
     GitProvider,
     IncrementalPR,
+    cache_languages,
 )
 
 AZURE_DEVOPS_AVAILABLE = True
@@ -562,6 +563,7 @@ class AzureDevopsProvider(GitProvider):
         self.diff_files = None
         self._diff_path_map = None
         self._pr_iteration_changes_cache = None
+        self._languages = None
         self.pr_commits = None
         self.previous_review = None
         self.unreviewed_files_map = {}
@@ -774,13 +776,13 @@ class AzureDevopsProvider(GitProvider):
     def _get_global_settings_cache_key(self, org: str) -> str:
         return f"azure-devops:{org}:{self.workspace_slug}"
 
-    def _fetch_global_repo_settings(self, org):
-        # Convention: the org-wide <org>/pr-agent-settings settings repository lives in the
-        # same project as the current repository (Azure DevOps orgs contain projects, not
-        # repos directly, so there is no repo addressable purely from the org name).
+    def _fetch_global_repo_settings(self, org, settings_repo):
+        # The org-wide settings repository lives in the same project as the current repository
+        # (Azure DevOps orgs contain projects, not repos directly, so there is no repo
+        # addressable purely from the org name).
         try:
             contents = self.azure_devops_client.get_item_content(
-                repository_id="pr-agent-settings",
+                repository_id=settings_repo,
                 project=self.workspace_slug,
                 download=False,
                 include_content_metadata=False,
@@ -1344,6 +1346,7 @@ class AzureDevopsProvider(GitProvider):
     def get_title(self):
         return self.pr.title
 
+    @cache_languages
     def get_languages(self):
         # Return {language name: percentage}, like the other providers. Keys are
         # language NAMES (e.g. "Python"), not raw extensions: the consumer

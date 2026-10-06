@@ -14,12 +14,37 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
-# Compile the regex pattern once, outside the function
-GITHUB_TICKET_PATTERN = re.compile(
-    r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)'
-    r'|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)'
-    r'|(#\d+)'
-)
+
+def _github_ticket_pattern(base_url_html):
+    """Match full issue URLs only on the provider's configured HTTPS web origin."""
+    full_url = r"(?!)"
+    try:
+        origin = urlparse(base_url_html)
+        host = origin.hostname
+        port = origin.port
+        if (origin.scheme == "https" and host and origin.username is None and origin.password is None
+                and origin.path in ("", "/") and not origin.params and not origin.query and not origin.fragment
+                and not origin.netloc.endswith(":")):
+            host = f"[{host}]" if ":" in host else host
+            authority = re.escape(host)
+            authority += r"(?::443)?" if port in (None, 443) else f":{port}"
+            full_url = (
+                rf"(?<![\w@/])(?ai:https://{authority})/"
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.{1,2}/)[A-Za-z0-9._-]+/issues/0*[1-9][0-9]*"
+                r"(?![\w-]|/[\w-])"
+            )
+    except (AttributeError, TypeError, ValueError):
+        get_logger().warning(
+            "Could not parse the configured GitHub web origin; full issue-URL matching is disabled. "
+            "Shorthand matching will still be attempted."
+        )
+
+    # Keep the six capture groups and their spans used by explicit/custom references.
+    return re.compile(
+        rf"({full_url})"
+        r"|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)"
+        r"|(#\d+)"
+    )
 # Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
 BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
 # A bare "#12345" is as likely to be an error code as an issue, so a shorthand reference is
@@ -703,7 +728,7 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
 
         candidates = []
         explicit_spans = []
-        for match in GITHUB_TICKET_PATTERN.finditer(pr_description):
+        for match in _github_ticket_pattern(base_url_html).finditer(pr_description):
             if match[1]:  # Full URL match
                 candidates.append((match.start(), match[1]))
                 explicit_spans.append(match.span())
@@ -720,6 +745,18 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                                        f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
 
         if custom_pattern is not None and repo_path:
+            # Reserve issue-shaped URL tokens on any host, including their suffixes,
+            # so custom captures cannot turn their numbers into local tickets.
+            # Suppress captures in these spans; admit URLs only on the configured origin.
+            issue_url_pattern = (
+                r'''(?ai:https?://)[^/\s?#<>"'`(){}]+/'''
+                r'''[^/\s?#<>"'`()\[\]{}]+/'''
+                r'''[^/\s?#<>"'`()\[\]{}]+/issues/'''
+                r'''[^/\s?#.,;:!<>"'`()\[\]{}]+'''
+                r'''(?:[/?#][^\s<>"'`()\[\]{}]*)?'''
+            )
+            explicit_spans.extend(match.span() for match in re.finditer(issue_url_pattern, pr_description))
+            explicit_spans.sort()
             explicit_index = 0
             for match in custom_matches:
                 issue_number = match[1]

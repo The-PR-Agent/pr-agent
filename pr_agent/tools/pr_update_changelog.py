@@ -280,8 +280,10 @@ class PRUpdateChangelog:
             new_file_content = answer
 
         if not self.commit_changelog:
-            answer += "\n\n\n>to commit the new content to the CHANGELOG.md file, please type:" \
-                      "\n>'/update_changelog --pr_update_changelog.push_changelog_changes=true'\n"
+            answer += (
+                "\n\n\n>to commit the new content to the CHANGELOG.md file, enable "
+                "`pr_update_changelog.push_changelog_changes=true` in `.pr_agent.toml`.\n"
+            )
 
         return new_file_content, answer
 

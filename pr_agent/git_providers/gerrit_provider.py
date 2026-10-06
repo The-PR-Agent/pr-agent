@@ -1,5 +1,4 @@
 import json
-import os
 import pathlib
 import posixpath
 import re
@@ -10,7 +9,7 @@ import subprocess
 import uuid
 from collections import Counter, namedtuple
 from pathlib import Path
-from tempfile import NamedTemporaryFile, mkdtemp
+from tempfile import mkdtemp
 from typing import Optional
 
 import requests
@@ -21,8 +20,9 @@ from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import GitProvider, redact_credentials
+from pr_agent.git_providers.git_provider import GitProvider, cache_languages, redact_credentials
 from pr_agent.git_providers.local_git_provider import PullRequestMimic
+from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
 
 
@@ -178,18 +178,19 @@ def adopt_to_gerrit_message(message):
 
 
 def add_suggestion(src_filename, context: str, start, end: int):
-    with (
-        NamedTemporaryFile("w", delete=False) as tmp,
-        open(src_filename, "r") as src
-    ):
+    # Rewrite the file in place with its own line endings, so the patch built from
+    # `git diff` holds only the suggestion: no CRLF-to-LF rewrite and no mode change.
+    with open(src_filename, "r", encoding="utf-8", newline="") as src:
         lines = src.readlines()
-        tmp.writelines(lines[:start - 1])
+    # Match the ending of the first replaced line, falling back to the first line.
+    anchor = lines[start - 1] if 0 < start <= len(lines) else (lines[0] if lines else "")
+    if context and anchor.endswith("\r\n"):
+        context = context.replace("\r\n", "\n").replace("\n", "\r\n")
+    with open(src_filename, "w", encoding="utf-8", newline="") as dst:
+        dst.writelines(lines[:start - 1])
         if context:
-            tmp.write(context)
-        tmp.writelines(lines[end:])
-
-    shutil.copy(tmp.name, src_filename)
-    os.remove(tmp.name)
+            dst.write(context)
+        dst.writelines(lines[end:])
 
 
 def upload_patch(patch, path):
@@ -207,7 +208,8 @@ def upload_patch(patch, path):
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {patch_server_token}",
-        }
+        },
+        timeout=get_http_request_timeout(),
     )
     response.raise_for_status()
     patch_server_endpoint = patch_server_endpoint.rstrip("/")
@@ -373,6 +375,7 @@ class GerritProvider(GitProvider):
         diff_files = [item.a_path for item in diff_index]
         return diff_files
 
+    @cache_languages
     def get_languages(self):
         """
         Calculate percentage of languages in repository. Used for hunk

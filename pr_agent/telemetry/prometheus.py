@@ -25,16 +25,18 @@ requirement this module exists for, and it ships as a 0.x pre-release.
 import re
 from typing import Any, Dict, Tuple
 
+from opentelemetry.sdk.metrics import Counter
+from opentelemetry.sdk.metrics.export import (
+    AggregationTemporality,
+    MetricExporter,
+    MetricExportResult,
+    Sum,
+)
 from opentelemetry.sdk.metrics.export import (
     Gauge as OTelGauge,
 )
 from opentelemetry.sdk.metrics.export import (
     Histogram as OTelHistogram,
-)
-from opentelemetry.sdk.metrics.export import (
-    MetricExporter,
-    MetricExportResult,
-    Sum,
 )
 from starlette.responses import Response
 
@@ -125,7 +127,7 @@ class PrometheusMetricExporter(MetricExporter):
     """
 
     def __init__(self):
-        super().__init__()
+        super().__init__(preferred_temporality={Counter: AggregationTemporality.DELTA})
         # metric name -> (label_names, prometheus_client metric object)
         self._counters: Dict[str, Tuple] = {}
         self._gauges: Dict[str, Tuple] = {}

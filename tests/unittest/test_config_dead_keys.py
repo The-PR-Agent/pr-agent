@@ -49,11 +49,6 @@ _ALLOWLIST = {
     "pr_agent/tools/pr_description.py",
     (
         "config",
-        "enable_claude_adaptive_thinking",
-    ): "settings.config.get(key, default) in the thinking-controls loop in "
-    "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
-    (
-        "config",
         "enable_claude_extended_thinking",
     ): "settings.config.get(key, default) in the thinking-controls loop in "
     "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
@@ -144,6 +139,14 @@ _ALLOWLIST = {
         "push_outputs",
         "slack_webhook_url",
     ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "telegram_bot_token",
+    ): "cfg.get(\"telegram_bot_token\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "telegram_chat_id",
+    ): "cfg.get(\"telegram_chat_id\") in pr_agent/algo/output_sinks.py",
 }
 
 

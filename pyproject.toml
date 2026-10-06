@@ -38,7 +38,7 @@ dependencies = [
   "GitPython>=3.1.62,<4",
   "starlette>=1.6.0,<2",
   "Jinja2==3.1.6",
-  "litellm==1.103.0",
+  "litellm==1.104.0",
   "loguru==0.7.3",
   "openai>=1.55.3",
   "PyJWT>=2.15.1,<3",

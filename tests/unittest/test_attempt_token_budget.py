@@ -176,7 +176,7 @@ def test_input_token_limit_uses_attempt_reserve_and_extra_headroom(monkeypatch):
     assert budget.input_token_limit(100, additional_input_reserve=True) == 750
 
 
-@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
 @pytest.mark.parametrize(("prefix", "suffix", "provider"), [
     ("", "", ""), ("openai/", "_thinking", ""), ("azure/openai/", "_thinking", ""),
     ("azure_ai/", "_thinking", ""), ("openrouter/openai/", "_thinking:nitro", ""),
@@ -205,7 +205,7 @@ def test_native_gpt6_input_ceiling_is_independent_of_output_reserve(
     assert budget.require_input_capacity(4096) == expected - 100
 
 
-@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
 def test_gpt6_input_ceiling_applies_with_global_cap_bypass(monkeypatch, model):
     settings = SimpleNamespace(
         config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=32000),
@@ -249,7 +249,7 @@ def test_input_ceiling_is_frozen_and_rejects_required_prompt_at_boundary(monkeyp
         budget.require_input_capacity(4096)
 
 
-@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
 @pytest.mark.parametrize("provider, ceiling", [("", 922000), ("aiohttp_openai", 922000), ("ollama", None)])
 def test_aiohttp_prefixed_input_budget_honors_actual_route(monkeypatch, model, provider, ceiling):
     settings = SimpleNamespace(

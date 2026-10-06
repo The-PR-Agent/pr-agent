@@ -11,7 +11,7 @@
 # PR-Agent host's filesystem, so letting a repo set it would allow a malicious repo to read
 # sensitive host files (e.g. ~/.ssh/*) into the LLM prompt. `paths` therefore stays host-only.
 #
-# push_outputs: routes review data to operator-controlled sinks (webhook/slack/file). Letting a
+# push_outputs: routes review data to operator-controlled sinks (webhook/slack/telegram/file). Letting a
 # repo set any of these would let a malicious repo exfiltrate review data to an arbitrary host,
 # reach internal endpoints (SSRF), or append to arbitrary host files. The whole section is
 # therefore host-only (empty allowlist -> every key dropped).
@@ -54,15 +54,21 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # an operator choice, and this is what makes it one: without it, [config] is otherwise
     # repo-configurable, so a reviewed repo's .pr_agent.toml or a comment argument could
     # supply the pattern. The operator still sets it through host configuration.
+    # global_settings_repo names the repository whose .pr_agent.toml applies to every repository
+    # in the namespace, so the operator chooses it, not a reviewed repo or a comment argument.
     # extra_config_url is host-only: the next apply_repo_settings() call fetches it over
     # HTTP(S) (attaching PR_AGENT_EXTRA_CONFIG_AUTH_HEADER) and merges *every* section of the
     # response into runtime settings without host-key filtering. A malicious reviewed repo
     # would otherwise repoint that fetch to an arbitrary internal URL (SSRF), exfiltrate the
     # auth header, and override secrets/model routing/output sinks wholesale. CLI arguments
     # for it are already blocked; the repo-settings entry point now matches.
+    # Provider request timeouts stay host-controlled so repository settings cannot lengthen
+    # worker occupancy across SDK retries. Command arguments enforce this same boundary.
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
+        "global_settings_repo",
+        "http_request_timeout",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
     }),
@@ -80,8 +86,20 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
-    "config": frozenset({"repo_context_files"}),
+    "config": frozenset({
+        "branch_issue_regex",
+        "fallback_models",
+        "num_retries",
+        "output_relevant_configurations",
+        "repo_context_files",
+    }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
+    "ignore": frozenset({"regex"}),
+    "pr_code_suggestions": frozenset({"parallel_calls"}),
+    "pr_questions": frozenset({"resolve_threads"}),
+    "pr_reviewer": frozenset({"max_number_of_calls"}),
+    "pr_similar_issue": frozenset({"force_update_dataset"}),
+    "pr_update_changelog": frozenset({"push_changelog_changes"}),
 }
 
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is
@@ -155,7 +173,10 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # into bounded regexes, whereas `ignore.regex` accepts arbitrary expressions that
 # filter_ignored() compiles and matches against every changed filename on every
 # review. A catastrophic-backtracking pattern committed in a nested file could
-# stall a worker, so nested files keep the bounded glob form only.
+# stall a worker, so nested files keep the bounded glob form only. The expansion
+# that glob form allows is bounded by the per-glob and per-list variant ceilings
+# in pr_agent/algo/file_filter.py; the number of globs a nested file may list is
+# not.
 #
 # The `config` section lists model-routing and output knobs but deliberately
 # excludes the repo-context builders: `repo_context_files` fetches every listed
