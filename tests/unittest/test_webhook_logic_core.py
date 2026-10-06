@@ -1019,7 +1019,7 @@ async def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_modu
 
 
 @pytest.mark.parametrize(
-    "line_range, expected_start, expected_end, expected_side",
+    "line_range, expected_start, expected_end, expected_side, expected_path",
     [
         (
             {
@@ -1029,6 +1029,7 @@ async def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_modu
             10,
             12,
             "RIGHT",
+            "new/src/app.py",
         ),
         (
             {
@@ -1038,6 +1039,7 @@ async def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_modu
             9,
             11,
             "LEFT",
+            "old/src/app.py",
         ),
         (
             {
@@ -1047,11 +1049,12 @@ async def test_gitlab_manual_feedback_on_draft_is_unaffected(gitlab_webhook_modu
             10,
             12,
             "RIGHT",
+            "new/src/app.py",
         ),
     ],
 )
 def test_gitlab_handle_ask_line_selects_line_numbers_and_side_from_line_range(
-    gitlab_webhook_module, line_range, expected_start, expected_end, expected_side
+    gitlab_webhook_module, line_range, expected_start, expected_end, expected_side, expected_path
 ):
     data = {
         "object_attributes": {
@@ -1072,7 +1075,7 @@ def test_gitlab_handle_ask_line_selects_line_numbers_and_side_from_line_range(
             f"--line_start={expected_start}",
             f"--line_end={expected_end}",
             f"--side={expected_side}",
-            "--file_name=new/src/app.py",
+            f"--file_name={expected_path}",
             "--comment_id=disc-1",
             "why this change?",
         ]
