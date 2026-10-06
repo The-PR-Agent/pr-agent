@@ -1,6 +1,7 @@
 import git
 import pytest
 
+from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
@@ -17,6 +18,67 @@ def _make_repo(tmp_path, filenames):
         repo.index.add([str(f)])
     repo.index.commit("init")
     return repo
+
+
+@pytest.fixture
+def local_commit_description(tmp_path):
+    repo = _make_repo(tmp_path, ["a.py"])
+    target = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    older = "OLDER: preserve the existing retry boundary"
+    newer = (
+        "NEWER: document the changed recovery path\n"
+        + "Keep the full commit context for local review. " * 12
+        + "TAIL: retain cancellation behavior"
+    )
+    for number, message in enumerate([older, newer], start=1):
+        (tmp_path / "a.py").write_text(f"value = {number}\n")
+        repo.index.add(["a.py"])
+        repo.index.commit(message)
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+    provider.target_branch_name = target
+    return provider, newer + " " + older
+
+
+def test_local_description_preserves_commit_range_order_and_tail(local_commit_description):
+    provider, expected = local_commit_description
+    assert len(expected) > 200
+    assert provider.get_pr_description_full() == expected
+
+
+def test_local_description_is_empty_without_feature_commits(tmp_path):
+    repo = _make_repo(tmp_path, ["a.py"])
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+    provider.target_branch_name = repo.active_branch.name
+    assert provider.get_pr_description_full() == ""
+
+
+@pytest.mark.parametrize("full", [True, False])
+def test_local_description_uses_shared_token_budget(local_commit_description, full):
+    provider, expected = local_commit_description
+    settings = get_settings()
+    snapshot = snapshot_settings(["CONFIG.MAX_DESCRIPTION_TOKENS"])
+    encoder = TokenEncoder.get_token_encoder()
+    try:
+        settings.set("CONFIG.MAX_DESCRIPTION_TOKENS", 1000)
+        assert provider.get_pr_description(full=full) == expected
+        assert provider.get_pr_description(split_changes_walkthrough=True) == (expected, [])
+
+        settings.set("CONFIG.MAX_DESCRIPTION_TOKENS", 20)
+        clipped = provider.get_pr_description(full=full)
+        assert clipped.endswith("...(truncated)")
+        assert "TAIL: retain cancellation behavior" not in clipped
+        clipped_tokens = len(encoder.encode(clipped, disallowed_special=()))
+        expected_tokens = len(encoder.encode(expected, disallowed_special=()))
+        assert clipped_tokens < expected_tokens
+        assert provider.get_user_description() == expected
+
+        settings.set("CONFIG.MAX_DESCRIPTION_TOKENS", 1000)
+        assert provider.get_pr_description(full=full) == expected
+    finally:
+        restore_settings(snapshot)
 
 
 def test_get_languages_returns_language_names(tmp_path):
