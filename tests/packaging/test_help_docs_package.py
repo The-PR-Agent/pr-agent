@@ -203,7 +203,7 @@ def test_help_docs_distribution_contract(tmp_path):
     uv = shutil.which("uv")
     assert uv, "uv is required for the packaging regression"
     with (REPOSITORY_ROOT / "pyproject.toml").open("rb") as pyproject:
-        required_uv = tomllib.load(pyproject)["tool"]["uv"]["required-version"].removeprefix("==")
+        required_uv = tomllib.load(pyproject)["tool"]["uv"]["required-version"].removeprefix(">=")
     assert _run([uv, "--version"], cwd=tmp_path).stdout.startswith(f"uv {required_uv} ")
 
     build_env = os.environ.copy()
