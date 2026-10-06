@@ -358,8 +358,10 @@ Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 line
 While the chunks run, the animated `Work in progress ...` comment is edited in place with the
 number of chunks already analyzed, for example `analyzed 2 of 3 chunks`, plus `... 1 chunk
 failed` when a chunk gives up. The updates require `config.publish_output_progress` and a
-provider that supports both editing and removing a comment, so single-chunk runs, plain-diff
-providers, and automatic commands keep the frozen placeholder. A fallback model restores the
+provider that supports both editing and removing a comment, so single-chunk runs and plain-diff
+providers keep the frozen placeholder. Automatic commands publish no progress comment, but while
+`github.publish_as_check_run` is enabled their in-progress check run shows the same chunk count.
+A fallback model restores the
 placeholder before it starts, and every retry round is added to the total, so the visible count
 neither moves backward nor stops early. The comment is then edited into the final suggestions as
 usual.

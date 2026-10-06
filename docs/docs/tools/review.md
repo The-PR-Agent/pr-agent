@@ -299,7 +299,9 @@ While the chunks run, the temporary `Preparing review...` comment is rewritten i
 number of chunks already analyzed, for example `Preparing review... analyzed 2 of 3 chunks`, plus
 `... 1 chunk failed` when a chunk gives up. The updates require
 `config.publish_output_progress` and a provider that supports both editing and removing a
-comment, so plain-diff runs and automatic commands keep the frozen placeholder. The comment stays
+comment, so plain-diff runs keep the frozen placeholder. Automatic commands publish no progress
+comment, but while `github.publish_as_check_run` is enabled their in-progress check run shows the
+same chunk count. The comment stays
 temporary and is still removed before the merged review is published. A fallback model restores
 the placeholder before it starts, so the visible count never moves backward.
 

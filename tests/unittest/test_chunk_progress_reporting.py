@@ -700,6 +700,25 @@ async def test_a_failing_check_run_update_never_breaks_the_run(published_review)
 
 
 @pytest.mark.asyncio
+async def test_auto_suggestions_anchor_the_check_run_reporter(published_suggestions):
+    settings = get_settings()
+    settings.set("config.publish_output", True)
+    settings.set("config.publish_output_progress", True)
+    settings.set("config.is_auto_command", True)
+    tool = _make_suggestion_tool(MagicMock(), [])
+    seen = []
+
+    async def capture(*_args, **_kwargs):
+        seen.append(tool._progress_base_body)
+        return {"code_suggestions": []}
+
+    with patch("pr_agent.tools.pr_code_suggestions.retry_with_fallback_models", side_effect=capture):
+        await tool.run()
+
+    assert seen == ["Preparing suggestions..."]
+
+
+@pytest.mark.asyncio
 async def test_describe_progress_is_skipped_when_progress_output_is_off(published_describe):
     provider, edits = _review_progress_editor()
     provider.get_filtered_diff_file_names.return_value = []
