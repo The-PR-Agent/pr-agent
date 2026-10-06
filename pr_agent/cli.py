@@ -18,7 +18,10 @@ from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger, setup_logger
+from pr_agent.servers.utils import should_process_pr_logic
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
 setup_logger(log_level)
@@ -98,6 +101,57 @@ def _validate_output_options(parser, args, diff_mode):
             parser.error("--json-output is only supported in plain-diff mode (--stdin or --diff-file)")
         if command not in _PLAIN_DIFF_JSON_COMMANDS:
             parser.error("--json-output is only supported for plain-diff review commands (review or review_pr)")
+
+
+def _cli_pr_filter_skips(pr_url: str) -> bool:
+    """Whether the CLI target PR is excluded by the config.ignore_pr_* filters.
+
+    The webhook servers evaluate these filters on PR events; the CLI resolves the PR itself,
+    so the same shared filter runs before dispatching. Repository settings are applied first
+    so a repository .pr_agent.toml can carry the exclusions. Best effort: a provider field
+    that cannot be read contributes nothing to the match, and a filter failure never blocks
+    the command.
+    """
+    try:
+        provider = get_git_provider_with_context(pr_url=pr_url)
+        apply_repo_settings(pr_url)
+    except Exception as error:
+        get_logger().warning(f"Cannot evaluate ignore_pr_* filters for {pr_url}: {error}")
+        return False
+
+    pr = getattr(provider, "pr", None)
+
+    def _first(*candidates):
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        return ""
+
+    try:
+        branch = provider.get_pr_branch()
+    except Exception:
+        branch = None
+    source_branch = _first(branch, getattr(getattr(pr, "head", None), "ref", None),
+                           getattr(pr, "source_branch", None))
+    target_branch = _first(getattr(getattr(pr, "base", None), "ref", None),
+                           getattr(pr, "target_branch", None))
+    sender = _first(getattr(getattr(pr, "user", None), "login", None),
+                    getattr(getattr(pr, "author", None), "username", None),
+                    getattr(getattr(pr, "user", None), "username", None))
+    try:
+        labels = [label if isinstance(label, str) else str(getattr(label, "name", "") or label)
+                  for label in (provider.get_pr_labels() or [])]
+    except Exception:
+        labels = []
+
+    return not should_process_pr_logic(
+        title=getattr(pr, "title", None) or "",
+        sender=sender,
+        repo_full_name=getattr(provider, "repo", "") or "",
+        labels=labels,
+        source_branch=source_branch,
+        target_branch=target_branch,
+    )
 
 
 def set_parser():
@@ -226,6 +280,11 @@ def run(inargs=None, args=None):
                 result = await PRAgent().handle_request(args.issue_url, [command] + args.rest)
             else:
                 target = args.pr_url if args.pr_url else "local_diff"
+                if args.pr_url and _cli_pr_filter_skips(args.pr_url):
+                    # Same skip the webhook servers log, and the same exit contract:
+                    # an ignored PR is not an error, so the command does not run.
+                    get_logger().info(f"Ignoring PR {args.pr_url} due to config.ignore_pr_* filters")
+                    return True, False
                 result = await PRAgent().handle_request(target, [command] + args.rest)
 
             # litellm defers its success/failure callbacks onto the event loop, which

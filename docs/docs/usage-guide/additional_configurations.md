@@ -513,6 +513,12 @@ PR-Agent allows you to automatically ignore certain PRs based on various criteri
 - PRs containing specific labels
 - PRs opened by specific users
 
+These `ignore_pr_*` keys apply to the webhook servers and to the CLI alike: a
+`pr-agent --pr_url=... review` run resolves the PR and evaluates the same filters before
+dispatching, skipping the command with exit code 0 when one matches (there is no plain-diff
+PR to evaluate in `--stdin`/`--diff-file` mode). On the CLI, `ignore_pr_authors` matches the
+PR author, since there is no event sender.
+
 ### Ignoring PRs with specific titles
 
 To ignore PRs with a specific title such as "[Bump]: ...", you can add the following to your `configuration.toml` file:

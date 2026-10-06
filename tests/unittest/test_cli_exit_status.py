@@ -25,6 +25,10 @@ _SETTINGS_KEYS = [
     "config.cli_mode",
     "config.config_branch",
     "config.extra_config_url",
+    "config.ignore_pr_source_branches",
+    "config.ignore_pr_labels",
+    "config.ignore_pr_title",
+    "config.ignore_pr_authors",
 ]
 
 
@@ -531,8 +535,7 @@ def test_process_entrypoints_map_request_status(
     env["PR_AGENT_TEST_PROPAGATE"] = propagate_tool_errors
 
     for entrypoint in process_entrypoints:
-        completed = subprocess.run(
-            [*entrypoint, "--pr_url=https://example.com/org/repo/pull/1", "review"],
+        completed = subprocess.run(            [*entrypoint, "--pr_url=https://example.com/org/repo/pull/1", "review"],
             cwd=Path(__file__).parents[2],
             env=env,
             capture_output=True,
@@ -568,3 +571,77 @@ def test_process_entrypoints_preserve_argparse_status(
             completed.stdout,
             completed.stderr,
         )
+
+
+def _patch_cli_pr_filter_provider(monkeypatch, *, title="Add the handler", source_branch="feature/handler",
+                                  target_branch="main", labels=None, author="dev", repo="org/repo"):
+    provider = SimpleNamespace(
+        pr=SimpleNamespace(
+            title=title,
+            user=SimpleNamespace(login=author),
+            head=SimpleNamespace(ref=source_branch),
+            base=SimpleNamespace(ref=target_branch),
+        ),
+        repo=repo,
+        get_pr_branch=lambda: source_branch,
+        get_pr_labels=lambda: list(labels or []),
+    )
+    monkeypatch.setattr(cli, "get_git_provider_with_context", lambda pr_url=None: provider)
+    monkeypatch.setattr(cli, "apply_repo_settings", lambda url: None)
+    return provider
+
+
+def _run_cli_with_counting_agent(monkeypatch):
+    handle_calls = []
+
+    async def fake_handle_request(*_args, **_kwargs):
+        init_run_details()
+        handle_calls.append(True)
+        return True
+
+    # Real settings on purpose: the filter reads the ignore_pr_* keys through the
+    # request-scoped deepcopy, which a fake settings object would shadow.
+    monkeypatch.setattr(cli, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setattr(
+        cli, "PRAgent", lambda: SimpleNamespace(handle_request=fake_handle_request)
+    )
+    monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+
+    status = cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/1", "review"])
+    return status, len(handle_calls)
+
+
+@pytest.mark.parametrize(
+    ("ignore_key", "ignore_value", "field", "value", "expected_calls"),
+    [
+        ("config.ignore_pr_source_branches", ["^renovate/"], "source_branch", "renovate/dep-1.2", 0),
+        ("config.ignore_pr_labels", ["dependencies"], "labels", ["dependencies", "ci"], 0),
+        ("config.ignore_pr_title", ["^\\[Bump\\]"], "title", "[Bump] deps", 0),
+        ("config.ignore_pr_authors", ["^dependabot"], "author", "dependabot[bot]", 0),
+        ("config.ignore_pr_source_branches", ["^renovate/"], "source_branch", "feature/x", 1),
+    ],
+)
+def test_cli_applies_the_ignore_pr_filters(monkeypatch, ignore_key, ignore_value, field, value, expected_calls):
+    settings = get_settings()
+    settings.set(ignore_key, ignore_value)
+    _patch_cli_pr_filter_provider(monkeypatch, **{field: value})
+
+    status, handle_calls = _run_cli_with_counting_agent(monkeypatch)
+
+    assert handle_calls == expected_calls
+    if expected_calls == 0:
+        # An ignored PR is not an error: exit 0 semantics, no help text.
+        assert status is None
+
+
+def test_cli_ignore_filter_failure_never_blocks_the_command(monkeypatch):
+    def broken_provider(pr_url=None):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(cli, "get_git_provider_with_context", broken_provider)
+    monkeypatch.setattr(cli, "apply_repo_settings", lambda url: None)
+
+    status, handle_calls = _run_cli_with_counting_agent(monkeypatch)
+
+    assert handle_calls == 1
+    assert status is None
