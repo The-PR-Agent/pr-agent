@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Usage and Automation | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/usage-guide/automations_and_usage/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Usage and Automation | PR-Agent"><meta data-rh="true" name="description" content="Local repo (CLI)"><meta data-rh="true" property="og:description" content="Local repo (CLI)"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/usage-guide/automations_and_usage/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/automations_and_usage/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/usage-guide/automations_and_usage/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Usage and automation","item":"https://docs.pr-agent.ai/usage-guide/automations_and_usage"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.80e95eb5.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.0e723f1f.js" defer="defer"></script>
 <script src="/assets/js/main.ec1a8257.js" defer="defer"></script>
 </head>
 <body>
@@ -25,9 +25,10 @@ Examples of invoking the different tools via the CLI:</p>
 <p><code>&lt;pr_url&gt;</code> is the url of the relevant PR (for example: <a href="https://github.com/the-pr-agent/pr-agent/pull/50" target="_blank" rel="noopener noreferrer" class="">#50</a>).</p>
 <p><strong>Notes:</strong></p>
 <ol>
-<li class="">in addition to editing your local configuration file, you can also change any configuration value by adding it to the command line:</li>
+<li class="">In addition to editing your local configuration file, you can also change repository-configurable values by adding them to the command line:</li>
 </ol>
 <div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">python -m pr_agent.cli --pr_url=&lt;pr_url&gt;  /review --pr_reviewer.extra_instructions=&quot;focus on the file: ...&quot;</span><br></div></code></pre></div></div>
+<p>Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See <a class="" href="/usage-guide/configuration_options/#local-configuration-file">Configuration Options</a> for details.</p>
 <ol start="2">
 <li class="">You can print results locally, without publishing them, by setting in <code>configuration.toml</code>:</li>
 </ol>
