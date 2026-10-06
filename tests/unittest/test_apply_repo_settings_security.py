@@ -437,6 +437,17 @@ def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypat
     assert ollama.get("timeout") == 30
 
 
+def test_repo_settings_filter_nested_credentials_but_apply_safe_keys(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b'[ollama.connection]\napi_key = "repo-key"\ntimeout = 30\n')
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("ollama", {"connection": {"api_key": "host-key", "region": "host-region"}}, merge=False)
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert _section(settings, "ollama")["connection"] == {"api_key": "host-key", "region": "host-region", "timeout": 30}
+
+
 @pytest.mark.parametrize(
     ("section", "key"),
     [
