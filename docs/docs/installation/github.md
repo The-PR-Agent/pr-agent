@@ -559,9 +559,10 @@ If you encounter rate limiting:
   ```
   The default tools need no additional scopes. Add `checks: write` only when
   `github.publish_as_check_run` is enabled. Features that push repository contents, such as
-  `pr_update_changelog.push_changelog_changes`, require `contents: write`. Thread resolution uses
-  the existing pull-request permission. If you omit `contents: write`, enable
-  `config.restricted_mode` so operations that need it are skipped or fall back safely.
+  `pr_update_changelog.push_changelog_changes`, require `contents: write`, and so does
+  `pr_questions.resolve_threads`, because GitHub gates thread resolution on that scope. If you omit
+  `contents: write`, enable `config.restricted_mode` so operations that need it are skipped or fall
+  back safely, and keep `pr_questions.resolve_threads` off, since restricted mode does not cover it.
   See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
 
 **Error: "PR-Agent command was not run" for incomplete GitHub files**
