@@ -14,12 +14,37 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
-# Compile the regex pattern once, outside the function
-GITHUB_TICKET_PATTERN = re.compile(
-    r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)'
-    r'|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)'
-    r'|(#\d+)'
-)
+
+def _github_ticket_pattern(base_url_html):
+    """Match full issue URLs only on the provider's configured HTTPS web origin."""
+    full_url = r"(?!)"
+    try:
+        origin = urlparse(base_url_html)
+        host = origin.hostname
+        port = origin.port
+        if (origin.scheme == "https" and host and origin.username is None and origin.password is None
+                and origin.path in ("", "/") and not origin.params and not origin.query and not origin.fragment
+                and not origin.netloc.endswith(":")):
+            host = f"[{host}]" if ":" in host else host
+            authority = re.escape(host)
+            authority += r"(?::443)?" if port in (None, 443) else f":{port}"
+            full_url = (
+                rf"(?<![\w@/])(?ai:https://{authority})/"
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.{1,2}/)[A-Za-z0-9._-]+/issues/0*[1-9][0-9]*"
+                r"(?![\w-]|/[\w-])"
+            )
+    except (AttributeError, TypeError, ValueError):
+        get_logger().warning(
+            "Could not parse the configured GitHub web origin; full issue-URL matching is disabled. "
+            "Shorthand matching will still be attempted."
+        )
+
+    # Keep the six capture groups and their spans used by explicit/custom references.
+    return re.compile(
+        rf"({full_url})"
+        r"|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)"
+        r"|(#\d+)"
+    )
 # Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
 BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
 # A bare "#12345" is as likely to be an error code as an issue, so a shorthand reference is
@@ -703,7 +728,7 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
 
         candidates = []
         explicit_spans = []
-        for match in GITHUB_TICKET_PATTERN.finditer(pr_description):
+        for match in _github_ticket_pattern(base_url_html).finditer(pr_description):
             if match[1]:  # Full URL match
                 candidates.append((match.start(), match[1]))
                 explicit_spans.append(match.span())
@@ -720,6 +745,18 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                                        f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
 
         if custom_pattern is not None and repo_path:
+            # Reserve issue-shaped URL tokens on any host, including their suffixes,
+            # so custom captures cannot turn their numbers into local tickets.
+            # Suppress captures in these spans; admit URLs only on the configured origin.
+            issue_url_pattern = (
+                r'''(?ai:https?://)[^/\s?#<>"'`(){}]+/'''
+                r'''[^/\s?#<>"'`()\[\]{}]+/'''
+                r'''[^/\s?#<>"'`()\[\]{}]+/issues/'''
+                r'''[^/\s?#.,;:!<>"'`()\[\]{}]+'''
+                r'''(?:[/?#][^\s<>"'`()\[\]{}]*)?'''
+            )
+            explicit_spans.extend(match.span() for match in re.finditer(issue_url_pattern, pr_description))
+            explicit_spans.sort()
             explicit_index = 0
             for match in custom_matches:
                 issue_number = match[1]
@@ -813,9 +850,8 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
     """
     Resolve the repository handle that owns the ticket at `ticket_url`.
 
-    A ticket linked from a PR description may live in a different repository than the PR
-    itself, so it must be fetched from its own repository. The PR's `repo_obj` is reused
-    when the ticket belongs to the PR's repository, to avoid an extra API call.
+    The PR's `repo_obj` is reused for its own tickets. Other repositories must pass the
+    provider's host-approved sibling and requester checks before any issue is fetched.
 
     `_parse_issue_url` drops the host, so `owner/repo` alone does not identify a repository
     when a description links across GitHub instances (e.g. GitHub Enterprise and github.com).
@@ -845,15 +881,14 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
 
     pr_repo_name = getattr(git_provider, "repo", None) or ""
     pr_repo_obj = getattr(git_provider, "repo_obj", None)
-    is_pr_repo = repo_name.lower() == pr_repo_name.lower() and pr_repo_obj is not None
-    if is_pr_repo:
-        repo_obj = pr_repo_obj
-    else:
-        try:
-            repo_obj = git_provider.github_client.get_repo(repo_name)
-        except Exception as e:
-            repo_obj_cache[cache_key] = e
-            raise
+    try:
+        if repo_name.lower() == pr_repo_name.lower():
+            repo_obj = pr_repo_obj if pr_repo_obj is not None else git_provider.github_client.get_repo(repo_name)
+        else:
+            repo_obj = git_provider.get_sibling_repo(repo_name)
+    except Exception as e:
+        repo_obj_cache[cache_key] = e
+        raise
 
     repo_obj_cache[cache_key] = repo_obj
     return repo_obj
@@ -921,7 +956,9 @@ async def extract_tickets(git_provider):
                     try:
                         repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
-                        issue_main = repo_obj.get_issue(original_issue_number)
+                        if repo_obj is None:
+                            continue
+                        issue_main = git_provider.get_issue_content(repo_obj, original_issue_number)
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
@@ -947,7 +984,9 @@ async def extract_tickets(git_provider):
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = _get_repo_obj_for_ticket(git_provider, sub_issue_url, sub_repo,
                                                                         repo_obj_cache)
-                                sub_issue = sub_repo_obj.get_issue(sub_issue_number)
+                                if sub_repo_obj is None:
+                                    continue
+                                sub_issue = git_provider.get_issue_content(sub_repo_obj, sub_issue_number)
 
                                 sub_body = sub_issue.body or ""
                                 if len(sub_body) > MAX_TICKET_CHARACTERS:

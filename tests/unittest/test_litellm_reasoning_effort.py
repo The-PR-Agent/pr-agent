@@ -7,8 +7,14 @@ from litellm.litellm_core_utils.get_model_cost_map import GetModelCostMap
 from litellm.utils import get_optional_params
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_handler
-from pr_agent.algo import token_budget
+from pr_agent.algo import (
+    GPT6_MODELS,
+    GPT6_MODELS_WITHOUT_NONE_EFFORT,
+    GPT6_SOL_TIER_MODELS,
+    token_budget,
+)
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.utils import ReasoningEffort
 
 ACOMPLETION_PATCH_TARGET = 'pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion'
 
@@ -1034,12 +1040,12 @@ class TestLiteLLMReasoningEffortGPT6:
                      "AWS_SESSION_TOKEN", "AWS_REGION_NAME", "OPENAI_API_KEY"):
             monkeypatch.delenv(name, raising=False)
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("provider", ["openai", "azure"])
     @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
     def test_litellm_forwards_gpt6_reasoning(self, monkeypatch, model, provider, effort):
         monkeypatch.setattr(litellm, "drop_params", False)
-        use_extra_body = model in ("gpt-6-sol", "gpt-6-luna") and (
+        use_extra_body = model in GPT6_SOL_TIER_MODELS and (
             effort == "xhigh" or (provider == "azure" and effort == "none")
         )
         request_params = (
@@ -1059,7 +1065,12 @@ class TestLiteLLMReasoningEffortGPT6:
         assert "max_tokens" not in params
         assert "temperature" not in params
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    # GPT-6.1 Sol is excluded: its model page lists no "none" effort, so PR-Agent clamps a
+    # configured "none" to "low" before building the request. See
+    # test_gpt6_reasoning_effort and test_gpt6_none_effort_is_clamped_for_models_without_it.
+    @pytest.mark.parametrize(
+        "model", [m for m in GPT6_MODELS if m not in GPT6_MODELS_WITHOUT_NONE_EFFORT]
+    )
     @pytest.mark.parametrize("provider", ["openai", "azure"])
     def test_litellm_forwards_gpt6_none_reasoning(self, monkeypatch, model, provider):
         monkeypatch.setattr(litellm, "drop_params", False)
@@ -1080,6 +1091,7 @@ class TestLiteLLMReasoningEffortGPT6:
         ("gpt-6-astra", "low"),
         ("gpt-6-sol", "none"),
         ("gpt-6-luna", "none"),
+        ("gpt-6.1-sol", "low"),
     ])
     @pytest.mark.parametrize(("effort", "expected"), [
         ("low", "low"),
@@ -1107,7 +1119,7 @@ class TestLiteLLMReasoningEffortGPT6:
         kwargs = completion.call_args.kwargs
         expected = none_expected if effort == "none" else expected
         assert kwargs["model"] == "openai/" + model
-        if model in ("gpt-6-sol", "gpt-6-luna") and expected == "xhigh":
+        if model in GPT6_SOL_TIER_MODELS and expected == "xhigh":
             assert "reasoning_effort" not in kwargs
             assert kwargs["extra_body"]["reasoning_effort"] == "xhigh"
         else:
@@ -1120,12 +1132,20 @@ class TestLiteLLMReasoningEffortGPT6:
         ]
         assert result == ("test", "stop")
 
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", GPT6_SOL_TIER_MODELS)
     @pytest.mark.parametrize("effort", ["none", "xhigh", "max"])
     @pytest.mark.asyncio
     async def test_azure_gpt6_reasoning_uses_extra_body_when_litellm_map_is_missing(
         self, monkeypatch, model, effort
     ):
+        # A model whose page omits "none" never reaches this branch: the clamp above
+        # rewrites the effort first, so only "xhigh"/"max" use extra_body there.
+        expected_effort = "xhigh" if effort == "max" else effort
+        if model in GPT6_MODELS_WITHOUT_NONE_EFFORT and effort == "none":
+            expected_effort = ReasoningEffort.LOW.value
+            extra_body_expected = False
+        else:
+            extra_body_expected = True
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: create_mock_settings(effort))
         self._isolate_env(monkeypatch)
 
@@ -1137,11 +1157,17 @@ class TestLiteLLMReasoningEffortGPT6:
 
         kwargs = completion.call_args.kwargs
         assert kwargs["model"] == "azure/" + model
-        assert "reasoning_effort" not in kwargs
-        assert kwargs["extra_body"]["reasoning_effort"] == ("xhigh" if effort == "max" else effort)
+        if extra_body_expected:
+            assert "reasoning_effort" not in kwargs
+            assert kwargs["extra_body"]["reasoning_effort"] == expected_effort
+        else:
+            # "none" was clamped before the extra_body decision, so the native
+            # top-level parameter carries the supported "low" level instead.
+            assert kwargs["reasoning_effort"] == expected_effort
+            assert "extra_body" not in kwargs
         assert "temperature" not in kwargs
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("prefix", ["", "openai/", "azure/", "azure/openai/"])
     @pytest.mark.parametrize("suffix", ["", "_thinking"])
     @pytest.mark.parametrize("azure", [False, True])
@@ -1165,7 +1191,7 @@ class TestLiteLLMReasoningEffortGPT6:
         assert kwargs["reasoning_effort"] == "medium"
         assert "temperature" not in kwargs
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.asyncio
     async def test_gpt6_output_limit(self, monkeypatch, model):
         fake_settings = create_mock_settings("max")
@@ -1181,7 +1207,7 @@ class TestLiteLLMReasoningEffortGPT6:
         assert kwargs["max_completion_tokens"] == 4096
         assert "max_tokens" not in kwargs
 
-    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
     @pytest.mark.parametrize("prefix", ["", "openai/", "azure/", "azure/openai/"])
     @pytest.mark.parametrize("suffix", ["", "_thinking"])
     @pytest.mark.asyncio
@@ -1209,9 +1235,87 @@ class TestLiteLLMReasoningEffortGPT6:
         "openrouter/openai/gpt-6-sol",
         "ollama/gpt-6-luna",
         "gpt-6-sol_thinking-extra",
+        # The dotted GPT-6.1 spelling must not widen the registry to undocumented tiers.
+        "gpt-6.1",
+        "gpt-6.1-luna",
+        "gpt-6.1-astra",
+        # The azure_ai/ and aiohttp_openai/ bridges admit Sol-tier ids only. Astra predates
+        # that list, so adding it there would silently change its request shape.
+        "azure_ai/gpt-6-astra",
+        "aiohttp_openai/gpt-6-astra",
     ])
     def test_gpt6_model_name_does_not_overmatch(self, model):
         assert LiteLLMAIHandler._gpt6_model_name(model) is None
+
+    # The maintained registry, transcribed from the OpenAI model pages:
+    # https://developers.openai.com/api/docs/models/gpt-6-astra (no "none"),
+    # .../gpt-6-sol and .../gpt-6-luna (accept "none"), .../gpt-6.1-sol (no "none").
+    @pytest.mark.parametrize(("model", "accepts_none"), [
+        ("gpt-6-astra", False),
+        ("gpt-6-sol", True),
+        ("gpt-6-luna", True),
+        ("gpt-6.1-sol", False),
+    ])
+    def test_gpt6_none_effort_registry_matches_model_pages(self, model, accepts_none):
+        assert (model in GPT6_MODELS_WITHOUT_NONE_EFFORT) is not accepts_none
+
+    def test_gpt6_none_effort_registry_is_registered_subset(self):
+        """The native GPT-6 clamp in _chat_completion_with_retry reaches this registry through
+        _gpt6_model_name, which returns None for an id missing from GPT6_MODELS, so a member
+        registered only here never matches. An explicit openrouter.reasoning_effort bypasses
+        that clamp."""
+        assert set(GPT6_MODELS_WITHOUT_NONE_EFFORT) <= set(GPT6_MODELS)
+
+    @pytest.mark.parametrize("model", sorted(GPT6_MODELS_WITHOUT_NONE_EFFORT))
+    @pytest.mark.parametrize("azure", [False, True])
+    @pytest.mark.asyncio
+    async def test_gpt6_none_effort_is_clamped_for_models_without_it(self, monkeypatch, model, azure):
+        """A configured "none" must never reach a model whose page omits that level."""
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: create_mock_settings("none"))
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            handler = LiteLLMAIHandler()
+            handler.azure = azure
+            await handler.chat_completion(model=model, system="system", user="user")
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["reasoning_effort"] == ReasoningEffort.LOW.value
+        assert "extra_body" not in kwargs
+        assert "temperature" not in kwargs
+
+    @pytest.mark.parametrize(("model", "expected"), [
+        # GPT-6.1 Sol's page omits "none", so {"enabled": false} would silently turn a
+        # supported reasoning model into a non-reasoning one instead of clamping the level.
+        ("gpt-6.1-sol", {"effort": ReasoningEffort.LOW.value}),
+        # Control: GPT-6 Sol does accept "none", so its OpenRouter mapping is unchanged.
+        ("gpt-6-sol", {"enabled": False}),
+    ])
+    @pytest.mark.asyncio
+    async def test_gpt6_openrouter_inherited_none_effort_respects_model_support(
+        self, monkeypatch, model, expected
+    ):
+        """config.reasoning_effort="none" on an OpenRouter route must respect model support.
+
+        The explicit openrouter.reasoning_effort source bypasses this clamp, which is
+        documented in changing_a_model.md and out of scope here; this covers the inherited
+        config source, where the native GPT-6 clamp runs before the reasoning object is built.
+        """
+        fake_settings = create_mock_settings("none")
+        monkeypatch.setattr(fake_settings.litellm, "custom_llm_provider", "openrouter", raising=False)
+        monkeypatch.setattr(litellm_handler, "get_settings", lambda: fake_settings)
+        self._isolate_env(monkeypatch)
+
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as completion:
+            completion.return_value = create_mock_acompletion_response()
+            await LiteLLMAIHandler().chat_completion(
+                model=f"openrouter/openai/{model}", system="system", user="user",
+            )
+
+        kwargs = completion.call_args.kwargs
+        assert kwargs["extra_body"]["reasoning"] == expected
+        assert "reasoning_effort" not in kwargs
 
 
 class TestLiteLLMReasoningEffortGemini:

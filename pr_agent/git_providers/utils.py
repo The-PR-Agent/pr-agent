@@ -788,10 +788,10 @@ def handle_configurations_errors(config_errors, git_provider):
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
                 if config_type == "global":
                     # Global content is redacted, so we never render it — skip decoding it entirely.
-                    # Global settings live in a `pr-agent-settings` repo scoped per platform
-                    # (GitHub organization, GitLab group, or Bitbucket workspace).
-                    body += ("\n\nThe invalid configuration came from the global "
-                             "`pr-agent-settings` settings repository.")
+                    # Global settings live in the repo named by config.global_settings_repo, scoped
+                    # per platform (GitHub organization, GitLab group, or Bitbucket workspace).
+                    body += ("\n\nThe invalid configuration came from the global settings "
+                             "repository (`config.global_settings_repo`).")
                 else:
                     settings_content = err['settings']
                     configuration_file_content = (

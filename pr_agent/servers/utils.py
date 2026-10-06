@@ -38,6 +38,19 @@ _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
 _MISSING = object()
 
 
+def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
+    """Return a webhook payload's top-level keys and identifying string fields, never its values."""
+    if not isinstance(data, dict):
+        return {"payload_type": type(data).__name__}
+
+    summary = {"payload_keys": sorted(data.keys())}
+    for name in identifying_fields:
+        value = data.get(name)
+        if isinstance(value, str):
+            summary[name] = value
+    return summary
+
+
 def is_command_comment(body) -> bool:
     """Return True when a comment body is a slash-command comment.
 

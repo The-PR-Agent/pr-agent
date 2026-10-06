@@ -25,6 +25,8 @@ After ~30 seconds, the tool will generate a description for the PR:
 
 <img src="/img/describe_new.webp" alt="Describe New" width="512" />
 
+While a large PR's chunks run, the temporary `Preparing PR description...` comment is rewritten in place, for example `Preparing PR description... analyzed 2 of 3 chunks`; once every chunk has settled, `, 1 chunk failed` is added if a chunk gave up. This needs `config.publish_output_progress` and a provider that can edit and remove comments; single-chunk runs keep the plain placeholder.
+
 If you want to edit [configurations](#configuration-options), add the relevant ones to the command:
 
 ```

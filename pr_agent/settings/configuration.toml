@@ -22,6 +22,7 @@ log_level="DEBUG"
 # Configurations
 use_repo_settings_file=true
 use_global_settings_file=true
+global_settings_repo="" # host-only name of the repository, in the owning org/group/workspace, whose .pr_agent.toml applies to every repository there. Empty disables namespace-wide settings; set "pr-agent-settings" to keep the previous behaviour
 enable_per_directory_settings=false # when true, merge per-directory .pr_agent.toml files found by walking up from the PR's changed files (monorepo support). Adds bounded recursive tree discovery per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Nearest (deepest) directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path; when more files match than the per_directory_settings_max_files cap, shallower files are applied first and a partially capped depth keeps its later-path (winning) siblings; any overlap is logged as a warning.
 per_directory_settings_max_files=20 # hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning)
 per_directory_settings_max_tree_pages=10 # maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap.
@@ -29,6 +30,7 @@ extra_config_url="" # optional URL or path to an additional .pr_agent.toml merge
 disable_auto_feedback = false
 enable_auto_approval = false # when true, /review may auto-approve a PR via auto_approve_logic(); that caller is currently commented out
 ai_timeout=120 # 2 minutes
+http_request_timeout=60 # host-only connect/read inactivity seconds for GitLab/Gitea and direct Bitbucket/Gerrit HTTP attempts; capped at 600
 retry_same_model_on_timeout = true # when false, a timed-out call is not retried on the same model and moves on to fallback_models
 retry_same_model_on_length = false # when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models
 # num_retries = 0 # per-call retries inside the completion client itself; unset keeps the client's default. These multiply the handler's own retry attempts
@@ -41,15 +43,15 @@ repo_context_files = ["AGENTS.md"] # Repository-relative files (e.g. AGENTS.md, 
 # cached content within the TTL. Providers without commit resolution key on a branch name or None.
 repo_context_from_default_branch = true # Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead.
 repo_context_max_lines = 500 # Maximum total rendered lines for repo context, including wrapper tags
-repo_context_sibling_repos = [] # Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution
+repo_context_sibling_repos = [] # Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries and GitHub ticket lookups may select. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution
 repo_context_max_sibling_files = 5 # Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository's .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build.
 # token limits
 max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
-custom_model_max_tokens=-1 # Override unknown models or Sol/Luna on non-native custom providers.
+custom_model_max_tokens=-1 # Override unknown models or Sol-tier GPT-6 on non-native custom providers.
 # Send max_completion_tokens for recognized Astra IDs, including bare IDs on custom providers,
-# and native OpenAI/Azure Sol/Luna. OpenRouter Astra uses it only without a routing suffix or with :nitro/:floor.
+# and native OpenAI/Azure Sol-tier GPT-6. OpenRouter Astra uses it only without a routing suffix or with :nitro/:floor.
 # Use max_tokens for other routes, including azure_text and text-completion-openai.
 # Choose a limit supported by the selected model.
 max_output_tokens = 0 # 0 = unset (the provider's own default applies)
@@ -110,7 +112,7 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 # Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is
 # otherwise decided by litellm's bundled model metadata (and the maintained Grok registry),
 # so add an ID here when litellm does not know the model (custom OpenAI-compatible
-# endpoints), or when another provider hosts GPT-6 Sol/Luna under the same ID.
+# endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID.
 # Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731"
 # matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists
 # reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not
@@ -364,6 +366,7 @@ push_commands = [
 
 [gitlab]
 url = "https://gitlab.com"
+# Submodule targets must also be listed in config.repo_context_sibling_repos.
 expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
@@ -596,6 +599,8 @@ target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 max_artifact_size = 50000
 
 [mosaico]
+bearer_tokens = {} # principal names to distinct bearer secrets; empty permits anonymous trusted-network use
+routing_scan_max_chars = 65536 # positive character limit for PR URL and command detection; does not truncate diffs
 health_timeout_seconds = 10 # finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work
 context_history_max_tasks = 100 # maximum prior tasks considered for a context follow-up; set from 1 to 1000
 
@@ -610,7 +615,9 @@ agent_identity = "" # empty: discover the identity from earlier agent comments o
 
 [push_outputs] # push tool outputs to external sinks without calling git-provider APIs (disabled by default)
 enable = false
-channels = [] # any of: "stdout", "file", "webhook", "slack". Nothing is emitted until a channel is listed here
+channels = [] # any of: "stdout", "file", "webhook", "slack", "telegram". Nothing is emitted until a channel is listed here
 file_path = "pr-agent-outputs/reviews.jsonl" # used by the "file" channel
 webhook_url = "" # used by the "webhook" channel: generic JSON POST target. Must be an absolute https:// URL
 slack_webhook_url = "" # used by the "slack" channel: a Slack Incoming Webhook URL. Must be an absolute https:// URL
+telegram_bot_token = "" # used by the "telegram" channel; kept in the fixed api.telegram.org URL path
+telegram_chat_id = "" # used by the "telegram" channel as sendMessage's destination chat

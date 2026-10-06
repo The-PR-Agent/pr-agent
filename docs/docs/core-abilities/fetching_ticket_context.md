@@ -92,12 +92,29 @@ Examples of valid GitHub/GitLab issue references:
 - `#<ISSUE_NUMBER>`
 - `<ORG_NAME>/<REPO_NAME>#<ISSUE_NUMBER>`
 
+Full GitHub issue URLs are recognized on the configured instance's HTTPS web origin, including GitHub Enterprise URLs such as `https://github.example.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>`.
+Full GitHub issue URLs on other origins are ignored.
+
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)
 
 This branch-name detection applies **only when the git provider is GitHub**. Support for other platforms is planned for later.
 
-Since PR-Agent is integrated with GitHub, it doesn't require any additional configuration to fetch GitHub issues.
+By default, GitHub ticket context is limited to the PR's own repository. Issues and sub-issues in another
+repository require explicit host approval through `config.repo_context_sibling_repos`:
+
+```toml
+[config]
+repo_context_sibling_repos = ["myorg/shared-tickets"]
+```
+
+Only canonical repositories under the PR repository's resolved owner are accepted. For private or internal
+repositories, the command requester must also have read access; CLI runs use the PR author when no command actor
+is available. Repository settings and comment arguments cannot change this allowlist. An empty list disables
+cross-repository ticket reads, including public repositories. Approve only content that may be included in the
+consuming PR's review or description. Ticket lookup limits are separate from the sibling-file limit.
+PyGithub may follow an issue transfer, but results from a different repository are discarded before prompt use.
+Reference a transferred issue by its current repository and number.
 
 ## Asana Integration
 

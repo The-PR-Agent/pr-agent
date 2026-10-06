@@ -16,14 +16,9 @@ To print all the available configurations as a comment on your PR, you can use t
 
 <img src="/img/possible_config1.png" alt="possible_config1" width="512" />
 
-To view the **actual** configurations used for a specific tool, after all the user settings are applied, you can add for each tool a `--config.output_relevant_configurations=true` suffix.
-For example:
-
-```
-/improve --config.output_relevant_configurations=true
-```
-
-Will output an additional field showing the actual configurations used for the `improve` tool.
+To view the **actual** configurations used for a specific tool after all user settings are applied,
+an authorized operator can set `config.output_relevant_configurations=true` in `.pr_agent.toml`.
+Comment-supplied arguments cannot enable this output because it may disclose host-controlled settings.
 
 <img src="/img/possible_config2.png" alt="possible_config2" width="512" />
 
@@ -99,6 +94,12 @@ And to ignore Python files in all PRs using `regex` pattern, set in a configurat
 regex = ['.*\.py$']
 ```
 
+A `**/` segment in a `glob` pattern matches zero or more directories, so `src/**/generated_*.py` also ignores `src/generated_pb.py` and not only `src/api/generated_pb.py`. Note that `*` still matches across `/`, as in `['*.py']` above.
+
+Each ignore-glob list keeps at most 256 additional, distinct zero-directory regexes. Patterns with more than six standalone `**/` segments or more than 256 characters are not expanded. Configured patterns and the existing root-level form of a leading `**/` are always kept and do not count toward the limit. Skipped variants are reported once per list; files only those variants match are still analyzed.
+
+The limit applies separately to `ignore.glob` and each enabled `ignore_language_framework` list. Globs made entirely of stars and separators, such as `**/**/**`, can match every file after zero-directory expansion.
+
 ## Extra instructions
 
 All PR-Agent tools have a parameter called `extra_instructions`, that enables to add free-text extra instructions. Example usage:
@@ -154,7 +155,14 @@ expand_submodule_diffs = true
 
 When enabled, PR-Agent will fetch and attach diffs from the submodule repositories. The default is `false` to avoid extra GitLab API calls.
 
-Submodule URLs in `.gitmodules` may be absolute (`https://`, `ssh://`, `git@host:`) or relative (`../group/repo.git`). Relative URLs are resolved against the merge request's project path the same way git does, so submodules that live in a sibling group on the same GitLab instance are expanded too.
+Submodule URLs in `.gitmodules` may be absolute (`https://`, `ssh://`, `git@host:`) or relative (`../group/repo.git`). Relative URLs are resolved against the merge request's project path the same way git does.
+
+Because `.gitmodules` comes from the merge request head, the target project is chosen by whoever opened it. PR-Agent therefore authorizes each submodule target the same way it authorizes a [sibling repository](#context-from-sibling-repositories): the target must be listed in `config.repo_context_sibling_repos`, must sit in the merge request project's own top-level namespace, and must be readable by the user who triggered the command. Targets that fail any of these checks are skipped with a warning and the parent gitlink change is left in place. Add each submodule you want expanded to the allowlist:
+
+```toml
+[config]
+repo_context_sibling_repos = ["my-group/my-submodule"]
+```
 
 ## Post the review as a GitLab thread
 

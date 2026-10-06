@@ -1,3 +1,5 @@
+import os
+import sys
 from types import SimpleNamespace
 
 import git
@@ -28,6 +30,83 @@ def test_get_commit_messages_returns_text(tmp_path):
     provider.repo = _make_repo(tmp_path, ["app.py"])
 
     assert provider.get_commit_messages() == "initial files"
+
+
+def test_get_repo_settings_reads_the_default_branch_not_the_change(tmp_path):
+    repo = _make_repo(tmp_path, [".pr_agent.toml"])
+    repo.git.checkout("--detach")
+    (tmp_path / ".pr_agent.toml").write_text("from the change\n")
+    repo.index.add([".pr_agent.toml"])
+    repo.index.commit("change edits settings")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == b".pr_agent.toml\n"
+
+
+def test_get_repo_settings_is_empty_when_the_default_branch_has_none(tmp_path):
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = _make_repo(tmp_path, ["app.py"]), tmp_path
+
+    assert provider.get_repo_settings() == b""
+
+
+def test_get_repo_settings_is_empty_when_the_settings_path_is_a_directory(tmp_path):
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = _make_repo(tmp_path, [".pr_agent.toml/nested"]), tmp_path
+
+    assert provider.get_repo_settings() == b""
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("settings/review.toml", b"settings/review.toml\n"),
+        (".pr_agent.toml", b""),
+        ("../outside.toml", b""),
+    ],
+)
+def test_get_repo_settings_resolves_only_safe_symlinks(tmp_path, target, expected):
+    repo = _make_repo(tmp_path, ["settings/review.toml"])
+    (tmp_path / ".pr_agent.toml").symlink_to(target)
+    repo.index.add([".pr_agent.toml"])
+    repo.index.commit("link settings")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == expected
+
+
+def test_get_repo_settings_resolves_linked_directories(tmp_path):
+    repo = _make_repo(tmp_path, ["actual/review.toml"])
+    (tmp_path / "settings").symlink_to("actual", target_is_directory=True)
+    (tmp_path / ".pr_agent.toml").symlink_to("settings/review.toml")
+    repo.index.add(["settings", ".pr_agent.toml"])
+    repo.index.commit("link settings directory")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == b"actual/review.toml\n"
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("alias/../settings.toml", b"nested/settings.toml\n"),
+        ("alias/../../settings.toml", b"settings.toml\n"),
+        ("alias/../../../outside.toml", b""),
+    ],
+)
+def test_get_repo_settings_resolves_parent_segments_after_linked_directories(tmp_path, target, expected):
+    repo = _make_repo(tmp_path, ["settings.toml", "nested/settings.toml", "nested/subdir/keep"])
+    (tmp_path / "alias").symlink_to("nested/subdir", target_is_directory=True)
+    (tmp_path / ".pr_agent.toml").symlink_to(target)
+    repo.index.add(["alias", ".pr_agent.toml"])
+    repo.index.commit("link settings through parent segment")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == expected
 
 
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
@@ -236,6 +315,23 @@ def _capture_logs():
     return captured, sink_id
 
 
+def test_git_remote_logs_redact_credentials(tmp_path, monkeypatch):
+    from loguru import logger as loguru_logger
+
+    monkeypatch.setattr(gerrit_provider, "_call", lambda *args, **kwargs: "")
+    captured, sink_id = _capture_logs()
+    try:
+        url = "https://secret-user@example.com/project"
+        gerrit_provider.clone(url, tmp_path)
+        gerrit_provider.fetch(url, "refs/changes/01/1/1", tmp_path)
+    finally:
+        loguru_logger.remove(sink_id)
+
+    combined = "\n".join(captured)
+    assert "secret-user" not in combined
+    assert "https://example.com/project" in combined
+
+
 @pytest.mark.parametrize("failing_step", ["clone", "fetch", "checkout"])
 def test_prepare_repo_removes_temp_directory_when_setup_fails(tmp_path, monkeypatch, failing_step):
     repo_path = tmp_path / "clone"
@@ -398,3 +494,36 @@ def test_init_rejects_malformed_change_refspec_before_preparing_repo(monkeypatch
         GerritProvider(f"my/project:{refspec}")
 
     assert prepare_calls == []
+
+
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+def test_add_suggestion_replaces_only_the_suggested_lines(tmp_path, eol):
+    src = tmp_path / "app.py"
+    src.write_bytes(f"a{eol}b{eol}c{eol}".encode())
+
+    gerrit_provider.add_suggestion(src, "B1\nB2\n", 2, 2)
+
+    # Keep the file's line endings so the uploaded diff touches only the suggestion.
+    assert src.read_bytes() == f"a{eol}B1{eol}B2{eol}c{eol}".encode()
+
+
+def test_add_suggestion_matches_the_replaced_lines_in_a_mixed_ending_file(tmp_path):
+    src = tmp_path / "app.py"
+    src.write_bytes(b"a\nb\r\nc\n")
+
+    gerrit_provider.add_suggestion(src, "B\n", 2, 2)
+
+    assert src.read_bytes() == b"a\nB\r\nc\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_add_suggestion_keeps_the_file_mode(tmp_path):
+    src = tmp_path / "run.sh"
+    src.write_bytes(b"echo a\necho b\n")
+    os.chmod(src, 0o700)
+
+    gerrit_provider.add_suggestion(src, "echo B\n", 2, 2)
+
+    # Check the executable bit survives, so the patch carries no mode change.
+    assert os.stat(src).st_mode & 0o777 == 0o700
+    assert src.read_bytes() == b"echo a\necho B\n"

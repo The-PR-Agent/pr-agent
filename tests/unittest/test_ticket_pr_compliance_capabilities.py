@@ -98,6 +98,9 @@ class _CustomGitHubSubstitute(_BaseStubProvider):
     def supports_issue_url_tickets(self) -> bool:
         return True
 
+    def get_issue_content(self, repo_obj, issue_number):
+        return repo_obj.get_issue(issue_number)
+
     def get_user_description(self) -> str:
         return self._description
 
@@ -285,6 +288,7 @@ async def test_extract_tickets_routes_to_azure_capability():
 async def test_extract_tickets_supports_duck_typed_substitutes(route):
     provider = _IndependentDuckTypedSubstitute(route)
     if route == "github":
+        provider.get_issue_content = lambda repo_obj, number: repo_obj.get_issue(number)
         provider.repo_obj.get_issue.return_value = MagicMock(
             number=42, title="GH 42", body="GH Body", labels=[], pull_request=None
         )

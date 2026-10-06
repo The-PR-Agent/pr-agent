@@ -736,6 +736,9 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
                   name: settings-volume
     ```
 
+    > Service images run as UID/GID `10001`: mounted secrets must be readable, and mounted data paths writable, by that user.
+    > Home-relative mounts belong under `/home/pragent`.
+
     > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI.KEY` and `GITHUB.USER_TOKEN`.
 
 6) Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
@@ -763,7 +766,7 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 
 > **Note:** When running PR-Agent from GitHub app, the default configuration file (configuration.toml) will be loaded.
 > However, you can override the default tool parameters by uploading a local configuration file `.pr_agent.toml`
-> To use organization-level global configuration, create `<organization>/pr-agent-settings` with a `.pr_agent.toml` file and install the GitHub App on that repository too.
+> To use organization-level global configuration, set `config.global_settings_repo = "pr-agent-settings"`, create `<organization>/pr-agent-settings` with a `.pr_agent.toml` file, and install the GitHub App on that repository too.
 > The app needs read access to the settings repository as well as the pull request repositories. This applies to both GitHub.com and GitHub Enterprise Server.
 > For more information please check out the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-app)
 ---

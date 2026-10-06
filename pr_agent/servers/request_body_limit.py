@@ -65,11 +65,8 @@ class RequestBodyLimitMiddleware:
         await response(scope, receive, send)
 
 
-def create_server_app(
-    middleware: Optional[Iterable[Middleware]] = None,
-    max_body_size: Optional[int] = None,
-) -> FastAPI:
-    """Build a FastAPI server with the shared request-body limit enabled."""
+def get_max_request_body_size(max_body_size: Optional[int] = None) -> int:
+    """Resolve the shared positive body limit for FastAPI and Starlette servers."""
     if max_body_size is None:
         max_body_size = get_settings().config.max_webhook_request_body_bytes
     try:
@@ -79,6 +76,15 @@ def create_server_app(
     if max_body_size <= 0:
         raise ValueError("max_webhook_request_body_bytes must be a positive integer")
 
+    return max_body_size
+
+
+def create_server_app(
+    middleware: Optional[Iterable[Middleware]] = None,
+    max_body_size: Optional[int] = None,
+) -> FastAPI:
+    """Build a FastAPI server with the shared request-body limit enabled."""
+    max_body_size = get_max_request_body_size(max_body_size)
     configured_middleware = [Middleware(RequestBodyLimitMiddleware, max_body_size=max_body_size)]
     configured_middleware.extend(middleware or [])
     return FastAPI(middleware=configured_middleware)

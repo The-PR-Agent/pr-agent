@@ -3,6 +3,8 @@
 `BRANCH_ISSUE_PATTERN` already accepts up to six digits, so `123456-fix` as a branch resolves
 while `#123456` in the description did not. The two now agree.
 """
+from unittest.mock import Mock
+
 import pytest
 
 from pr_agent.tools.ticket_pr_compliance_check import (
@@ -59,6 +61,158 @@ def test_a_full_url_is_not_bounded():
     url = f"{BASE}/{REPO}/issues/1234567"
 
     assert _links(f"Fixes {url}") == [url]
+
+
+@pytest.mark.parametrize("base", [BASE, "https://ghe.example.test:8443"])
+@pytest.mark.parametrize("number", ["0007", "0070"])
+def test_full_issue_url_preserves_positive_leading_zero_numbers(base, number):
+    url = f"{base}/{REPO}/issues/{number}"
+
+    assert extract_ticket_links_from_pr_description(f"Fixes {url}", REPO, base) == [url]
+
+
+def test_enterprise_full_url_keeps_first_seen_order_and_custom_explicit_span(description_regex):
+    description_regex(r"(\d+)")
+    enterprise = "https://ghe.example.test"
+    description = (
+        f"Fixes {enterprise}/other/project/issues/7, then #2, "
+        f"again {enterprise}/other/project/issues/7"
+    )
+    assert extract_ticket_links_from_pr_description(description, REPO, enterprise) == [
+        f"{enterprise}/other/project/issues/7",
+        f"{enterprise}/{REPO}/issues/2",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("base", "url"),
+    [
+        ("https://ghe.example.test", "https://github.com/other/project/issues/99"),
+        (BASE, "https://ghe.example.test/other/project/issues/99"),
+        (BASE, "HTTP://other.example.test/other/project/issues/99"),
+        (BASE, "https://user23:pass45@other.example.test:8443/team7/repo8/issues/99"),
+        (BASE, "https://[2001:db8::1]:8443/team7/repo8/issues/99?x=10#11"),
+        (BASE, "https://other.example.test/other/project/issues/99?plain=123"),
+        (BASE, "https://other.example.test/other/project/issues/99#issuecomment-123"),
+        (BASE, "https://other.example.test/other/project/issues/99/extra123"),
+        (BASE, "https://other.example.test/other/project/issues/ABC-99"),
+        (BASE, "https://github.com/other/project/issues/99/extra123"),
+    ],
+)
+def test_issue_url_numbers_are_not_custom_local_references(description_regex, base, url):
+    description_regex(r"(\d+)")
+    assert extract_ticket_links_from_pr_description(f"See {url}", REPO, base) == []
+
+
+@pytest.mark.parametrize("suffix", ["/", "?plain=123", "#issuecomment-123", "/#issuecomment-123"])
+def test_admitted_issue_url_suffix_is_not_a_custom_local_reference(description_regex, suffix):
+    description_regex(r"(\d+)")
+    url = f"{BASE}/other/project/issues/99"
+    assert _links(f"See {url}{suffix}") == [url]
+
+
+@pytest.mark.parametrize("separator", [",", ";", ".", ")", "]", ">", "`"])
+def test_custom_reference_after_an_issue_url_delimiter_is_preserved(description_regex, separator):
+    description_regex(r"(\d+)")
+    assert _links(f"https://other.example.test/team/repo/issues/99{separator}42") == [
+        f"{BASE}/{REPO}/issues/42",
+    ]
+
+
+@pytest.mark.parametrize("suffix", ["?x=8,123", "#comment-8;123", "/extra8.123"])
+def test_issue_url_suffix_reserves_punctuation_separated_numbers(description_regex, suffix):
+    description_regex(r"(\d+)")
+    assert _links(f"https://other.example.test/team/repo/issues/99{suffix} 42") == [
+        f"{BASE}/{REPO}/issues/42",
+    ]
+
+
+@pytest.mark.parametrize("url", ["https://jira.example.test/browse/ABC-42", "https://other.example.test/pulls/42"])
+def test_unrelated_url_can_still_supply_a_custom_reference(description_regex, url):
+    description_regex(r"(\d+)")
+    assert _links(url) == [f"{BASE}/{REPO}/issues/42"]
+
+
+def test_foreign_url_suppression_preserves_custom_order_deduplication_and_cap(description_regex):
+    description_regex(r"(\d+)")
+    description = "42 https://other.example.test/team/repo/issues/99 other/project#7 42 8"
+    assert extract_ticket_links_from_pr_description(description, REPO, BASE, max_tickets=2) == [
+        f"{BASE}/{REPO}/issues/42",
+        f"{BASE}/other/project/issues/7",
+    ]
+
+
+def test_foreign_url_numbers_do_not_fill_the_custom_lookup_window(description_regex):
+    description_regex(r"(\d+)")
+    description = " ".join(f"https://other.example.test/team/repo/issues/{i}" for i in range(100, 140))
+    assert _links(f"{description} ticket42") == [f"{BASE}/{REPO}/issues/42"]
+
+
+@pytest.mark.parametrize(
+    ("base", "url", "expected"),
+    [
+        ("https://ghe.example.test", "https://ghe.example.test/org/repo/issues/7", True),
+        ("https://ghe.example.test", "https://ghe.example.test:443/org/repo/issues/7", True),
+        ("https://ghe.example.test:8443", "https://ghe.example.test:8443/org/repo/issues/7", True),
+        ("https://ghe.example.test:8443", "https://ghe.example.test/org/repo/issues/7", False),
+        ("https://ghe.example.test:8443", "https://ghe.example.test:443/org/repo/issues/7", False),
+        ("https://ghe.example.test", "http://ghe.example.test/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://other.example.test/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://ghe.example.test.evil/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://user@ghe.example.test/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://ghe.example.test@evil.test/org/repo/issues/7", False),
+        ("https://ghe.example.test", "https://ghe.example.test/org/repo/issues/0", False),
+        ("https://ghe.example.test", "https://ghe.example.test/org/repo/issues/7/extra", False),
+        ("https://ghe.example.test", "https://ghe.example.test/org/../issues/7", False),
+    ],
+)
+def test_enterprise_full_url_uses_only_configured_https_origin_and_canonical_path(base, url, expected):
+    links = extract_ticket_links_from_pr_description(f"See {url}", REPO, base)
+    assert links == ([url] if expected else [])
+
+
+def test_enterprise_full_url_custom_capture_does_not_create_a_local_duplicate(description_regex):
+    description_regex(r"(\d+)")
+    enterprise = "https://ghe.example.test"
+    assert extract_ticket_links_from_pr_description(
+        f"See {enterprise}/other/project/issues/7", REPO, enterprise
+    ) == [f"{enterprise}/other/project/issues/7"]
+
+
+@pytest.mark.parametrize("base", ["https://github.com", "https://ghe.example.test"])
+@pytest.mark.parametrize("suffix", ["/", "?plain=1", "#issuecomment-123", "/#issuecomment-123", "**", "|"])
+def test_full_issue_link_with_benign_suffix_keeps_canonical_issue_pointer(base, suffix):
+    issue = f"{base}/{REPO}/issues/7"
+    assert extract_ticket_links_from_pr_description(f"See {issue}{suffix}", REPO, base) == [issue]
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        "http://ghe.example.test",
+        "https://user@ghe.example.test",
+        "https://ghe.example.test/path",
+        "https://ghe.example.test:bad",
+    ],
+)
+def test_invalid_provider_web_origin_does_not_admit_full_url(base):
+    assert extract_ticket_links_from_pr_description(
+        "See https://ghe.example.test/org/repo/issues/7", REPO, base
+    ) == []
+
+
+def test_unparseable_web_origin_warns_without_changing_shorthand_fallback(monkeypatch):
+    logger = Mock()
+    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.get_logger", lambda: logger)
+    base = "https://ghe.example.test:bad"
+
+    assert extract_ticket_links_from_pr_description(
+        "See https://ghe.example.test/org/repo/issues/7 and #8", REPO, base
+    ) == [f"{base}/{REPO}/issues/8"]
+    logger.warning.assert_called_once_with(
+        "Could not parse the configured GitHub web origin; full issue-URL matching is disabled. "
+        "Shorthand matching will still be attempted."
+    )
 
 
 def test_a_cross_repo_shorthand_is_not_bounded():
@@ -183,3 +337,36 @@ def test_custom_pattern_respects_enterprise_base_url(description_regex):
     assert extract_ticket_links_from_pr_description("ticket: 42", REPO, "https://github.example.com/") == [
         f"https://github.example.com/{REPO}/issues/42",
     ]
+
+
+
+@pytest.mark.parametrize(
+    ("base_host", "foreign_host"),
+    [
+        ("github.com", "gİthub.com"),
+        ("github.com", "gıthub.com"),
+        ("ghe.server.test", "ghe.ſerver.test"),
+        ("ghe.key.test", "ghe.Key.test"),
+    ],
+)
+def test_foreign_unicode_authority_cannot_exhaust_the_lookup_window(base_host, foreign_host):
+    base = f"https://{base_host}"
+    valid = f"{base}/{REPO}/issues/777"
+    foreign = " ".join(f"https://{foreign_host}/{REPO}/issues/{i}" for i in range(1, 31))
+
+    assert extract_ticket_links_from_pr_description(
+        f"{foreign} {valid}", REPO, base, max_tickets=30
+    ) == [valid]
+
+
+@pytest.mark.parametrize("base", [BASE, "https://ghe.example.test:8443"])
+@pytest.mark.parametrize("number", ["00", "0000", "1٢", "1۲", "1２"])
+def test_full_issue_url_requires_positive_ascii_digits(base, number):
+    assert extract_ticket_links_from_pr_description(f"{base}/{REPO}/issues/{number}", REPO, base) == []
+
+
+def test_full_issue_url_preserves_ascii_case_insensitive_authority():
+    base = "https://ghe.example.test:8443"
+    url = f"HTTPS://GHE.EXAMPLE.TEST:8443/{REPO}/issues/12"
+
+    assert extract_ticket_links_from_pr_description(url, REPO, base) == [url]

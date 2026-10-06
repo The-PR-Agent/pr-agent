@@ -4,6 +4,7 @@ Construct helper-test instances with ``__new__``. Use the real initializer with
 provider and token-handler stubs for raw-dispatch tests. Avoid live providers and AI calls.
 """
 
+import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1264,6 +1265,106 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
             assert "nothing to answer about" in obj.git_provider.publish_comment.call_args[0][0]
         finally:
             restore_settings(saved)
+
+
+@pytest.fixture
+def line_output_settings():
+    keys = (
+        "config.publish_output", "pr_questions.use_conversation_history", "ask_diff_hunk",
+        "line_start", "line_end", "side", "file_name", "comment_id",
+    )
+    saved = snapshot_settings(keys)
+    settings = get_settings()
+    settings.set("pr_questions.use_conversation_history", False)
+    settings.set("ask_diff_hunk", "@@ -1 +1 @@\n-old\n+new")
+    settings.set("line_start", 1)
+    settings.set("line_end", 1)
+    settings.set("side", "RIGHT")
+    settings.set("file_name", "module.py")
+    yield settings
+    restore_settings(saved)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matched, comment_id", [(True, 42), (True, ""), (False, 42), (False, "")])
+async def test_line_question_dry_run_logs_result_without_provider_effects(
+    line_output_settings, monkeypatch, matched, comment_id
+):
+    line_output_settings.set("config.publish_output", False)
+    line_output_settings.set("comment_id", comment_id)
+    tool = _make_line_questions()
+    tool.resolve_threads = True
+    tool.vars["resolve_threads"] = True
+    hunk = ("@@ -1 +1 @@\n-old\n+new", "selected") if matched else ("", "")
+    answer = "/approved\n[THREAD_RESOLVED]" if comment_id else "/approved"
+    prediction = AsyncMock(return_value=answer)
+    logger = MagicMock()
+    monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", lambda *_args, **_kwargs: hunk)
+    monkeypatch.setattr(plq, "retry_with_fallback_models", prediction)
+    monkeypatch.setattr(plq, "get_logger", lambda: logger)
+
+    await tool.run()
+
+    assert prediction.await_count == int(matched)
+    tool.git_provider.reply_to_comment_from_comment_id.assert_not_called()
+    tool.git_provider.publish_comment.assert_not_called()
+    tool.git_provider.resolve_comment_thread.assert_not_called()
+    info = "\n".join(str(call.args[0]) for call in logger.info.call_args_list)
+    if matched:
+        assert " /approved" in info
+        assert "[THREAD_RESOLVED]" not in info
+    else:
+        assert "nothing to answer about" in info
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matched, comment_id", [(True, 42), (True, ""), (False, 42), (False, "")])
+async def test_line_question_enabled_output_keeps_reply_root_and_resolution(
+    line_output_settings, monkeypatch, matched, comment_id
+):
+    line_output_settings.set("config.publish_output", True)
+    line_output_settings.set("comment_id", comment_id)
+    tool = _make_line_questions()
+    tool.resolve_threads = True
+    tool.vars["resolve_threads"] = True
+    hunk = ("@@ -1 +1 @@\n-old\n+new", "selected") if matched else ("", "")
+    prediction = AsyncMock(return_value="answer\n[THREAD_RESOLVED]" if comment_id else "answer")
+    monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", lambda *_args, **_kwargs: hunk)
+    monkeypatch.setattr(plq, "retry_with_fallback_models", prediction)
+
+    await tool.run()
+
+    assert prediction.await_count == int(matched)
+    if comment_id:
+        tool.git_provider.reply_to_comment_from_comment_id.assert_called_once()
+        tool.git_provider.publish_comment.assert_not_called()
+    else:
+        tool.git_provider.publish_comment.assert_called_once()
+        tool.git_provider.reply_to_comment_from_comment_id.assert_not_called()
+    if matched and comment_id:
+        assert tool.git_provider.reply_to_comment_from_comment_id.call_args.args == (42, "answer")
+        tool.git_provider.resolve_comment_thread.assert_called_once_with(42)
+    else:
+        tool.git_provider.resolve_comment_thread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_line_question_model_cancellation_has_no_output_effects(line_output_settings, monkeypatch):
+    line_output_settings.set("config.publish_output", False)
+    line_output_settings.set("comment_id", 42)
+    tool = _make_line_questions()
+    tool.resolve_threads = True
+    monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", lambda *_args, **_kwargs: ("@@ -1 +1 @@", "selected"))
+    monkeypatch.setattr(plq, "retry_with_fallback_models", AsyncMock(side_effect=asyncio.CancelledError))
+
+    with pytest.raises(asyncio.CancelledError):
+        await tool.run()
+
+    tool.git_provider.reply_to_comment_from_comment_id.assert_not_called()
+    tool.git_provider.publish_comment.assert_not_called()
+    tool.git_provider.resolve_comment_thread.assert_not_called()
+
+
 def test_ask_user_prompt_includes_untrusted_conversation_history():
     variables = {
         "branch": "feature/test",
