@@ -162,16 +162,16 @@ class TestExtendPatch:
         monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
         monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
         original_lines = ["def first():", *(f"line{i}" for i in range(2, 11)), "old1",
-                          *(f"line{i}" for i in range(12, 21)), "old2"]
+                          *(f"line{i}" for i in range(12, 22)), "old2"]
         new_lines = ["new1" if line == "old1" else "new2" if line == "old2" else line
                      for line in original_lines]
-        patch = "@@ -11 +11 @@ def first():\n-old1\n+new1\n@@ -21 +21 @@\n-old2\n+new2"
+        patch = "@@ -11 +11 @@ def first():\n-old1\n+new1\n@@ -22 +22 @@\n-old2\n+new2"
 
         extended = extend_patch("\n".join(original_lines), patch, patch_extra_lines_before=5,
                                 patch_extra_lines_after=0, new_file_str="\n".join(new_lines))
 
         hunk_headers = [line for line in extended.splitlines() if line.startswith("@@")]
-        assert hunk_headers == ["@@ -1,11 +1,11 @@ ", "@@ -16,6 +16,6 @@ "]
+        assert hunk_headers == ["@@ -1,11 +1,11 @@ ", "@@ -17,6 +17,6 @@ "]
 
 
 
