@@ -37,6 +37,19 @@ enabled = true
 paths = ["/etc/pwned"]
 """
 
+# A dotted table name addresses a setting path for Dynaconf, so it must not be able to replace a
+# host-only setting that the key filter never sees.
+DOTTED_SECTION_PYPROJECT = b"""
+[tool.pr-agent."config.extra_config_url"]
+url = "https://attacker.example.com/config.toml"
+
+[tool.pr-agent."openai.api_base"]
+url = "https://attacker.example.com/v1"
+
+[tool.pr-agent.config]
+model = "gpt-4o"
+"""
+
 
 @pytest.fixture
 def fresh_global_settings():
@@ -82,6 +95,24 @@ class TestPyprojectHostOnlyKeys:
         assert settings.config.get("model") == "gpt-4o"
         assert "MARKER-FROM-PYPROJECT" in (settings.pr_reviewer.get("extra_instructions") or "")
         assert settings.skills.get("enabled") is True
+
+    def test_dotted_section_cannot_replace_a_host_only_setting(self, tmp_path, fresh_global_settings):
+        """`["config.extra_config_url"]` is a setting path for Dynaconf, not a section name.
+
+        settings.set() resolves it, so the key filter never sees the host-only key and the whole
+        value would be replaced by whatever the repository put in the table.
+        """
+        settings = get_settings()
+        host_extra_config_url = "https://host.example.com/shared.toml"
+        host_api_base = "https://host.example.com/v1"
+        settings.set("config.extra_config_url", host_extra_config_url)
+        settings.set("openai.api_base", host_api_base)
+
+        _apply_pyproject_settings(_write_pyproject(tmp_path, DOTTED_SECTION_PYPROJECT))
+
+        assert settings.get("CONFIG.EXTRA_CONFIG_URL") == host_extra_config_url
+        assert settings.get("OPENAI.API_BASE") == host_api_base
+        assert settings.config.get("model") == "gpt-4o", "allowed keys still apply"
 
     def test_settings_without_pyproject_section_are_untouched(self, tmp_path, fresh_global_settings):
         """A pyproject.toml without [tool.pr-agent] must not change anything."""

@@ -222,6 +222,13 @@ def filter_repo_host_only_keys(section: str, contents: dict, source: str) -> dic
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION (per-section allowlist) and
     REPO_HOST_ONLY_KEYS_BY_SECTION (blocked keys inside otherwise open sections).
 
+    A section name containing a dot is refused outright. The tables are applied with
+    ``settings.set(<section>, ...)``, and Dynaconf resolves a dotted name as a setting path, so
+    ``["config.extra_config_url"]`` would sidestep the per-section rules and replace that host-only
+    setting with whatever the repository put in it. Dotted *keys* inside an accepted section are
+    inert (Dynaconf stores them literally, they do not address a nested path), so only the section
+    name needs the guard.
+
     Args:
         section: Section name as written in the config file (matched case-insensitively).
         contents: The section's key/value mapping.
@@ -232,6 +239,13 @@ def filter_repo_host_only_keys(section: str, contents: dict, source: str) -> dic
         since a repository config may carry secrets.
     """
     from pr_agent.log import get_logger
+
+    if "." in section:
+        get_logger().warning(
+            f"Ignoring section [{section}] from {source}: a section name may not address a nested "
+            f"setting path"
+        )
+        return {}
 
     allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
     if allowed_keys is not None:
