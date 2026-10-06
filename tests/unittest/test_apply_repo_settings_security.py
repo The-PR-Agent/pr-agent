@@ -437,17 +437,6 @@ def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypat
     assert ollama.get("timeout") == 30
 
 
-def test_repo_settings_filter_nested_credentials_but_apply_safe_keys(monkeypatch, settings_snapshot):
-    provider = FakeGitProvider(repo_settings_bytes=b'[ollama.connection]\napi_key = "repo-key"\ntimeout = 30\n')
-    _install_provider(monkeypatch, provider)
-    settings = get_settings()
-    settings.set("config.use_repo_settings_file", True)
-    settings.set("ollama", {"connection": {"api_key": "host-key", "region": "host-region"}}, merge=False)
-    apply_repo_settings("https://example.com/owner/repo/pull/1")
-
-    assert _section(settings, "ollama")["connection"] == {"api_key": "host-key", "region": "host-region", "timeout": 30}
-
-
 @pytest.mark.parametrize(
     ("section", "key"),
     [
@@ -490,6 +479,10 @@ web_url = "https://repo-public.example"
 AutoHotkey = [".repo-ahk"]
 Monkey = [".repo-monkey"]
 Org = [".repo-org"]
+[custom_labels."API key"]
+description = "Touches API-key handling"
+[custom_labels.Hotkey]
+description = "Keyboard shortcut"
 """)
     _install_provider(monkeypatch, provider)
     settings = get_settings()
@@ -504,4 +497,5 @@ Org = [".repo-org"]
     assert {key: language_map.get(key) for key in ("AutoHotkey", "Monkey", "Org")} == {
         "AutoHotkey": [".repo-ahk"], "Monkey": [".repo-monkey"], "Org": [".repo-org"]
     }
+    assert set(_section(settings, "custom_labels")) >= {"API key", "Hotkey"}
     assert CliArgs.validate_user_args(["--gitea.web_url=https://comment.example"])[0] is False

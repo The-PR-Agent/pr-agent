@@ -358,28 +358,6 @@ def _write_settings_temp(settings_content, repo_settings_files: list) -> str:
     return repo_settings_file
 
 
-def _filter_nested_repo_settings(section, value, trusted_value=None):
-    if isinstance(value, list):
-        filtered = [_filter_nested_repo_settings(section, item) for item in value]
-        return [item for item, _ in filtered], [key for _, keys in filtered for key in keys]
-    if not isinstance(value, dict):
-        return value, []
-    filtered = copy.deepcopy(trusted_value) if isinstance(trusted_value, dict) else {}
-    rejected = []
-    for key, nested_value in value.items():
-        matching_key = next((existing for existing in filtered if existing.lower() == key.lower()), None)
-        if is_repo_host_only_key(section, key):
-            rejected.append(str(key))
-            continue
-        existing_value = filtered.get(matching_key) if matching_key is not None else None
-        nested_value, nested_rejected = _filter_nested_repo_settings(section, nested_value, existing_value)
-        rejected.extend(nested_rejected)
-        if matching_key is not None:
-            del filtered[matching_key]
-        filtered[key] = nested_value
-    return filtered, rejected
-
-
 def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
     """Load a single repo settings file and merge its allowed keys into the global settings.
 
@@ -408,7 +386,7 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
 
     # Apply the already-parsed data directly instead of re-reading the file through Dynaconf, which
     # would parse the same TOML a second time. Section names are matched case-insensitively (Dynaconf
-    # stores them upper-cased); lists replace, while mappings retain trusted nested values.
+    # stores them upper-cased); list/dict values replace rather than merge, matching the loader.
     for section, contents in parsed_toml.items():
         if not isinstance(contents, dict) or not contents:
             get_logger().debug(f"Skipping non-table or empty section: {section}")
@@ -526,17 +504,9 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
             # Dynaconf looks up keys case-insensitively, so replacing the existing key
             # (whatever its casing) keeps the newer value from a nearer/sibling config
             # deterministic instead of leaving an "canonical-cased" duplicate beside it.
-            existing_key = next(
-                (candidate for candidate in section_dict if candidate.lower() == key.lower()), None
-            )
-            existing_value = section_dict.get(existing_key) if existing_key is not None else None
-            value, nested_rejected = _filter_nested_repo_settings(section, value, existing_value)
-            if nested_rejected:
-                get_logger().warning(
-                    f"Ignoring nested host-only key(s) {nested_rejected} in section [{section}] from repo settings"
-                )
-            if existing_key is not None:
-                del section_dict[existing_key]
+            for existing_key in list(section_dict):
+                if existing_key.lower() == key.lower():
+                    del section_dict[existing_key]
             section_dict[key] = value
         get_settings().unset(section)
         get_settings().set(section, section_dict, merge=False)

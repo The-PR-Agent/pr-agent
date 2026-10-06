@@ -30,7 +30,7 @@ _REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION = {
     "config": frozenset({"progress_gif_url"}),
     "gitea": frozenset({"web_url"}),
 }
-_REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"language_extension_map_org"})
+_REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"custom_labels", "language_extension_map_org"})
 
 
 # Keep individual settings in otherwise repository-configurable sections host-only.
