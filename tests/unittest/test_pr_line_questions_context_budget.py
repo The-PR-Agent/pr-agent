@@ -244,17 +244,17 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
 
 
 @pytest.mark.parametrize(
-    ("side", "file_name", "expects_hunk", "renamed"),
+    ("side", "file_name", "renamed"),
     [
-        ("LEFT", "old/src/app.py", True, True),
-        ("LEFT", "new/src/app.py", False, True),
-        ("LEFT", "src/app.py", True, False),
-        ("RIGHT", "src/app.py", True, False),
+        ("LEFT", "old/src/app.py", True),
+        ("LEFT", "new/src/app.py", True),
+        ("LEFT", "src/app.py", False),
+        ("RIGHT", "src/app.py", False),
     ],
 )
 @pytest.mark.asyncio
-async def test_ask_line_matches_old_filename_for_left_side_renamed_file(
-    monkeypatch, side, file_name, expects_hunk, renamed
+async def test_ask_line_matches_renamed_file_on_either_side_path(
+    monkeypatch, side, file_name, renamed
 ):
     settings = get_settings()
     keys = (
@@ -355,17 +355,7 @@ async def test_ask_line_matches_old_filename_for_left_side_renamed_file(
 
         await question.run()
 
-        if expects_hunk:
-            assert ai_handler.requests, "expected the model to be called for a matching old path"
-            assert provider.replies == [(100, "answer")]
-        else:
-            assert not ai_handler.requests
-            assert provider.replies == [
-                (
-                    100,
-                    f"Could not find the requested lines of `{file_name}` in this "
-                    "pull request's diff, so there is nothing to answer about.",
-                )
-            ]
+        assert ai_handler.requests, f"expected the model to be called for {side}/{file_name}"
+        assert provider.replies == [(100, "answer")]
     finally:
         restore_settings(saved)
