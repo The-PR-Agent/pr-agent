@@ -1,5 +1,6 @@
 import functools
 import json
+import re
 from collections.abc import Mapping
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote, urlparse
@@ -233,27 +234,92 @@ class GiteaProvider(GitProvider):
                     pr_number=self.pr_number
             )
 
-            lines = diff_contents.splitlines()
-            current_file = None
-            current_patch = []
             file_patches = {}
-            for line in lines:
-                if line.startswith('diff --git'):
-                    if current_file and current_patch:
-                        file_patches[current_file] = '\n'.join(current_patch)
-                        current_patch = []
-                    current_file = line.split(' b/')[-1]
-                elif line.startswith('@@') and not current_patch:
-                    current_patch = [line]
-                elif current_patch:
-                    current_patch.append(line)
-
-            if current_file and current_patch:
-                file_patches[current_file] = '\n'.join(current_patch)
+            for block in re.split(r"(?m)(?=^diff --git )", diff_contents):
+                if not block.startswith("diff --git "):
+                    continue
+                filename = self._diff_new_filename(block)
+                if not filename:
+                    continue
+                hunk_lines = []
+                for line in block.splitlines()[1:]:
+                    if hunk_lines or line.startswith('@@'):
+                        hunk_lines.append(line)
+                if not hunk_lines:
+                    # Hunk-less entries (mode changes, binary blobs): keep the header
+                    # metadata so the file still contributes something to review, but
+                    # stop before any binary patch payload.
+                    for line in block.splitlines()[1:]:
+                        if line.startswith('GIT binary patch'):
+                            break
+                        hunk_lines.append(line)
+                file_patches[filename] = '\n'.join(hunk_lines)
 
             self.file_diffs = file_patches
         except Exception as e:
             self.logger.error(f"Error getting diff content: {str(e)}")
+
+    @staticmethod
+    def _decode_git_diff_name(value: str) -> str:
+        """Decode a git-quoted path from a unified-diff line.
+
+        Git C-quotes names with special characters (escaping them) and appends a
+        literal tab to spaced names on the ---/+++ lines, both of which the raw
+        header-level split left as-is.
+        """
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            value = value[1:-1]
+        i = 0
+        out = []
+        while i < len(value):
+            char = value[i]
+            if char == '\\' and i + 1 < len(value):
+                nxt = value[i + 1]
+                simple = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '"': '"'}
+                if nxt in simple:
+                    out.append(simple[nxt])
+                    i += 2
+                    continue
+                if nxt in '01234567' and i + 3 < len(value):
+                    out.append(chr(int(value[i + 1:i + 4], 8)))
+                    i += 4
+                    continue
+            out.append(char)
+            i += 1
+        return ''.join(out)
+
+    @staticmethod
+    def _diff_new_filename(block: str) -> str:
+        """Extract the new-side filename from one ``diff --git`` block.
+
+        The name is read from the content/rename markers (``+++ b/``, ``rename to``,
+        ``--- a/``) rather than splitting the header, because a path may itself
+        contain `` b/`` and would otherwise be truncated. Hunk-less entries such as
+        mode changes fall back to the header.
+        """
+        lines = block.splitlines()
+        for line in lines:
+            if line.startswith('rename to '):
+                return GiteaProvider._decode_git_diff_name(line[len('rename to '):])
+            if line.startswith('+++ b/'):
+                return GiteaProvider._decode_git_diff_name(line[len('+++ b/'):].rstrip('\t'))
+            if line.startswith('+++ "b/'):
+                token = line[len('+++ "'):]
+                if token.startswith('b/'):
+                    token = token[2:]
+                return GiteaProvider._decode_git_diff_name(token.rstrip('"'))
+            if line.startswith('--- a/'):
+                return GiteaProvider._decode_git_diff_name(line[len('--- a/'):].rstrip('\t'))
+            if line.startswith('--- "a/'):
+                token = line[len('--- "'):]
+                if token.startswith('a/'):
+                    token = token[2:]
+                return GiteaProvider._decode_git_diff_name(token.rstrip('"'))
+        header = lines[0][len('diff --git '):]
+        quoted = re.search(r'"b/(.*)"\s*$', header)
+        if quoted:
+            return GiteaProvider._decode_git_diff_name(quoted.group(1))
+        return header.split(' b/')[-1].rstrip('\t')
 
     @staticmethod
     def _url_path_parts(url: str) -> list[str]:
