@@ -47,6 +47,19 @@ extra_instructions="""\
 
 Then you can give a list of extra instructions to the `review` tool.
 
+### Local configuration from `pyproject.toml`
+
+`Platforms supported: GitHub Action, CLI`
+
+When PR-Agent runs from a checkout of the repository it reviews (the GitHub Action, or the CLI in CI), a `[tool.pr-agent]` table in that checkout's `pyproject.toml` is merged into the settings as well:
+
+```toml
+[tool.pr-agent.config]
+model = "gpt-4o"
+```
+
+The same keys are overridable as in `.pr_agent.toml`, and the same host-controlled keys (`config.extra_config_url`, `config.description_issue_regex`, `pr_reviewer.publish_error_details`, provider endpoints, `push_outputs`, `prompt_fragments`, ...) are ignored there too, because `pyproject.toml` is part of the reviewed repository.
+
 ### Loading the local configuration from a non-default branch
 
 `Platforms supported: GitHub, GitLab`

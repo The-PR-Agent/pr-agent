@@ -209,3 +209,43 @@ REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS = {
     "pr_similar_issue": None,
     "pr_find_similar_component": None,
 }
+
+
+def filter_repo_host_only_keys(section: str, contents: dict, source: str) -> dict:
+    """
+    Return one section of a repository-provided config with the keys a repository may not set removed.
+
+    Every source a repository controls its root-level configuration through goes through this
+    function: the default-branch ``.pr_agent.toml`` and the ``[tool.pr-agent]`` table of the
+    repository's own ``pyproject.toml``. Both are contributor-controlled wherever PR-Agent runs
+    from a checkout of the reviewed repository (GitHub Action, CLI in CI), so both are bounded by
+    REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION (per-section allowlist) and
+    REPO_HOST_ONLY_KEYS_BY_SECTION (blocked keys inside otherwise open sections).
+
+    Args:
+        section: Section name as written in the config file (matched case-insensitively).
+        contents: The section's key/value mapping.
+        source: How the config file is named in the warning logs.
+
+    Returns:
+        dict: The keys that may be applied. Rejected key names are logged, never their values,
+        since a repository config may carry secrets.
+    """
+    from pr_agent.log import get_logger
+
+    allowed_keys = REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION.get(section.lower())
+    if allowed_keys is not None:
+        rejected = [key for key in contents if key.lower() not in allowed_keys]
+        if rejected:
+            get_logger().warning(
+                f"Ignoring key(s) {sorted(rejected)} in section [{section}] from {source}; "
+                f"only {sorted(allowed_keys)} may be set for this section"
+            )
+    else:
+        host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section.lower(), frozenset())
+        rejected = [key for key in contents if key.lower() in host_only_keys]
+        if rejected:
+            get_logger().warning(
+                f"Ignoring host-only key(s) {sorted(rejected)} in section [{section}] from {source}"
+            )
+    return {key: value for key, value in contents.items() if key not in rejected}
