@@ -21,7 +21,7 @@ from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.git_providers.git_provider import GitProvider, redact_credentials
 from pr_agent.git_providers.local_git_provider import PullRequestMimic
 from pr_agent.log import get_logger
 
@@ -38,13 +38,13 @@ def _call(*command, **kwargs) -> (int, str, str):
 
 
 def clone(url, directory):
-    get_logger().info("Cloning {} to {}", url, directory)
+    get_logger().info("Cloning {} to {}", redact_credentials(url), directory)
     stdout = _call('git', 'clone', "--depth", "1", url, directory)
     get_logger().info(stdout)
 
 
 def fetch(url, refspec, cwd):
-    get_logger().info("Fetching {} {}", url, refspec)
+    get_logger().info("Fetching {} {}", redact_credentials(url), refspec)
     stdout = _call(
         'git', 'fetch', '--depth', '2', url, refspec,
         cwd=cwd
@@ -270,56 +270,49 @@ class GerritProvider(GitProvider):
         return self.repo.head.commit.message
 
     @staticmethod
-    def _resolve_intermediate_settings_links(settings_tree, settings_path):
-        visited_paths = set()
-        while settings_path not in visited_paths:
-            visited_paths.add(settings_path)
-            current_tree = settings_tree
-            path_parts = settings_path.split("/")
-            for index, part in enumerate(path_parts[:-1]):
-                entry = current_tree / part
-                if stat.S_ISLNK(entry.mode):
-                    target = entry.data_stream.read().decode("utf-8")
-                    if posixpath.isabs(target):
-                        return None
-                    link_path = "/".join(path_parts[:index + 1])
-                    settings_path = posixpath.normpath(posixpath.join(
-                        posixpath.dirname(link_path), target, *path_parts[index + 1:]
-                    ))
-                    if settings_path in (".", "..") or settings_path.startswith("../"):
-                        return None
-                    break
+    def _resolve_settings_entry(settings_tree, settings_path):
+        path_parts = settings_path.split("/")
+        visited_links = set()
+        resolved_parts = []
+        tree_stack = [settings_tree]
+        while path_parts:
+            part = path_parts.pop(0)
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if not resolved_parts:
+                    return None
+                resolved_parts.pop()
+                tree_stack.pop()
+                continue
+
+            entry = tree_stack[-1] / part
+            if stat.S_ISLNK(entry.mode):
+                link_path = "/".join((*resolved_parts, part))
+                link_state = (link_path, tuple(path_parts))
+                if link_state in visited_links or len(visited_links) >= 40:
+                    return None
+                visited_links.add(link_state)
+                target = entry.data_stream.read().decode("utf-8")
+                if not target or posixpath.isabs(target):
+                    return None
+                path_parts = target.split("/") + path_parts
+            elif path_parts:
                 if entry.type != "tree":
                     return None
-                current_tree = entry
+                resolved_parts.append(part)
+                tree_stack.append(entry)
             else:
-                return current_tree / path_parts[-1], settings_path
+                return entry
         return None
 
     def get_repo_settings(self):
         try:
             settings_tree = self.repo.branches[0].commit.tree
-            settings_path = ".pr_agent.toml"
-            visited_paths = set()
-            while settings_path not in visited_paths:
-                visited_paths.add(settings_path)
-                resolved_entry = self._resolve_intermediate_settings_links(settings_tree, settings_path)
-                if resolved_entry is None:
-                    return b""
-                settings_entry, settings_path = resolved_entry
-                if settings_entry.type != "blob":
-                    return b""
-                contents = settings_entry.data_stream.read()
-                if not stat.S_ISLNK(settings_entry.mode):
-                    return contents
-
-                target = contents.decode("utf-8")
-                if posixpath.isabs(target):
-                    return b""
-                settings_path = posixpath.normpath(posixpath.join(posixpath.dirname(settings_path), target))
-                if settings_path == ".." or settings_path.startswith("../"):
-                    return b""
-            return b""
+            settings_entry = self._resolve_settings_entry(settings_tree, ".pr_agent.toml")
+            if settings_entry is None or settings_entry.type != "blob":
+                return b""
+            return settings_entry.data_stream.read()
         except (IndexError, KeyError, OSError, UnicodeDecodeError, ValueError):
             return b""
 

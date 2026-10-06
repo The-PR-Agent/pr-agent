@@ -87,6 +87,26 @@ def test_get_repo_settings_resolves_linked_directories(tmp_path):
     assert provider.get_repo_settings() == b"actual/review.toml\n"
 
 
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("alias/../settings.toml", b"nested/settings.toml\n"),
+        ("alias/../../settings.toml", b"settings.toml\n"),
+        ("alias/../../../outside.toml", b""),
+    ],
+)
+def test_get_repo_settings_resolves_parent_segments_after_linked_directories(tmp_path, target, expected):
+    repo = _make_repo(tmp_path, ["settings.toml", "nested/settings.toml", "nested/subdir/keep"])
+    (tmp_path / "alias").symlink_to("nested/subdir", target_is_directory=True)
+    (tmp_path / ".pr_agent.toml").symlink_to(target)
+    repo.index.add(["alias", ".pr_agent.toml"])
+    repo.index.commit("link settings through parent segment")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == expected
+
+
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
     repo = _make_repo(tmp_path, ["keep.py", "gone.py"])
     (tmp_path / "gone.py").unlink()
@@ -291,6 +311,23 @@ def _capture_logs():
     captured = []
     sink_id = loguru_logger.add(lambda msg: captured.append(str(msg)), level="DEBUG")
     return captured, sink_id
+
+
+def test_git_remote_logs_redact_credentials(tmp_path, monkeypatch):
+    from loguru import logger as loguru_logger
+
+    monkeypatch.setattr(gerrit_provider, "_call", lambda *args, **kwargs: "")
+    captured, sink_id = _capture_logs()
+    try:
+        url = "https://secret-user@example.com/project"
+        gerrit_provider.clone(url, tmp_path)
+        gerrit_provider.fetch(url, "refs/changes/01/1/1", tmp_path)
+    finally:
+        loguru_logger.remove(sink_id)
+
+    combined = "\n".join(captured)
+    assert "secret-user" not in combined
+    assert "https://example.com/project" in combined
 
 
 @pytest.mark.parametrize("failing_step", ["clone", "fetch", "checkout"])
