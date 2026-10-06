@@ -142,6 +142,26 @@ def test_a_failed_progress_patch_never_opens_a_second_run():
     assert provider._check_run_ids == {"review": 101}
 
 
+def test_a_reopened_run_is_not_blocked_by_the_previous_attempt():
+    """A failed progress write must not block a run of the same name reopened later.
+
+    Regression from review: progress PATCH fails, completion also fails, the API
+    recovers and the run is reopened - progress must flow again.
+    """
+    provider = _github()
+    provider.start_check_run("review", "first attempt")
+    request = provider.pr._requester.requestJsonAndCheck
+    original = request.side_effect
+    request.side_effect = RequestException("offline")
+
+    assert provider.update_check_run_progress("analyzed 1 of 2 chunks") is False
+    assert provider.finish_check_run("review", "failure", "failed") is False
+
+    request.side_effect = original
+    assert provider.start_check_run("review", "second attempt") is True
+    assert provider.update_check_run_progress("new chunk") is True
+
+
 def test_the_tool_completes_the_run_the_runner_opened():
     provider = _github()
     provider.start_check_run("review", "working")

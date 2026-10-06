@@ -727,6 +727,9 @@ class GithubProvider(GitProvider):
         if self._upsert_check_run(name, body):
             self._check_runs_in_progress.add(name)
             self._check_run_base_summaries[name] = summary
+            # A reopened run starts fresh: a progress write that failed for the previous
+            # run of this name must not block the new one.
+            self._check_runs_progress_blocked.discard(name)
             return True
         return False
 
