@@ -1515,7 +1515,7 @@ class GithubProvider(GitProvider):
     def get_issue_content(self, repo_obj, issue_number: int):
         """Fetch an authorized issue and reject transferred content before prompt use."""
         issue = repo_obj.get_issue(issue_number)
-        # PyGithub follows same-host 301s, so a transferred issue resolves to another repository.
+        # Reject transferred issues after PyGithub follows same-host redirects.
         if str(issue.repository_url).casefold() != str(repo_obj.url).casefold():
             raise ValueError("GitHub ticket response does not match the authorized repository")
         return issue

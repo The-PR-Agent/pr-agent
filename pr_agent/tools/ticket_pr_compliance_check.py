@@ -886,8 +886,6 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
             repo_obj = pr_repo_obj if pr_repo_obj is not None else git_provider.github_client.get_repo(repo_name)
         else:
             repo_obj = git_provider.get_sibling_repo(repo_name)
-            if repo_obj is None:
-                raise ValueError(f"Ticket repository {repo_name} is not an authorized sibling")
     except Exception as e:
         repo_obj_cache[cache_key] = e
         raise
@@ -958,6 +956,8 @@ async def extract_tickets(git_provider):
                     try:
                         repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
+                        if repo_obj is None:
+                            continue
                         issue_main = git_provider.get_issue_content(repo_obj, original_issue_number)
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {ticket!r}: {e}",
@@ -984,6 +984,8 @@ async def extract_tickets(git_provider):
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = _get_repo_obj_for_ticket(git_provider, sub_issue_url, sub_repo,
                                                                         repo_obj_cache)
+                                if sub_repo_obj is None:
+                                    continue
                                 sub_issue = git_provider.get_issue_content(sub_repo_obj, sub_issue_number)
 
                                 sub_body = sub_issue.body or ""

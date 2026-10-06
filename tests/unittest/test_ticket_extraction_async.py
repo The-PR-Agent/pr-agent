@@ -648,8 +648,9 @@ class TestTicketRepositoryAuthorization:
     @pytest.mark.parametrize("origin", ["https://github.com", "https://ghe.example.test"])
     @pytest.mark.parametrize("full_url", [False, True])
     def test_unapproved_repository_is_never_resolved(self, settings_snapshot, origin, full_url):
-        other = _FakeRepoObj({5: _FakeIssue(5)})
-        reference = f"{origin}/org/other/issues/5" if full_url else "org/other#5"
+        other = _FakeRepoObj({5: _FakeIssue(5), 6: _FakeIssue(6)})
+        reference = (f"{origin}/org/other/issues/5 {origin}/org/other/issues/6"
+                     if full_url else "org/other#5 org/other#6")
         provider = _make_github_provider(
             user_description=reference,
             base_url_html=origin,
@@ -657,8 +658,14 @@ class TestTicketRepositoryAuthorization:
             github_client=_FakeGithubClient({"org/other": other}),
         )
         provider.fetch_sub_issues = MagicMock(return_value=[])
+        provider.get_sibling_repo = MagicMock(wraps=provider.get_sibling_repo)
 
-        assert asyncio.run(extract_tickets(provider)) == []
+        result, logs = _capture_logs(lambda: asyncio.run(extract_tickets(provider)))
+        assert result == []
+        assert logs.count("WARNING") == 1
+        assert "Ignoring sibling repo absent from the host allowlist: org/other" in logs
+        assert "ERROR" not in logs
+        provider.get_sibling_repo.assert_called_once_with("org/other")
         assert provider.github_client.get_repo_calls == []
         assert other.get_issue_calls == []
         provider.fetch_sub_issues.assert_not_called()
@@ -672,11 +679,15 @@ class TestTicketRepositoryAuthorization:
             sub_issues_map={"https://github.com/org/repo/issues/1": ["https://github.com/org/other/issues/5"]},
         )
 
-        result = asyncio.run(extract_tickets(provider))
+        result, logs = _capture_logs(lambda: asyncio.run(extract_tickets(provider)))
         assert [ticket["ticket_id"] for ticket in result] == [1]
         assert result[0]["sub_issues"] == []
         assert provider.github_client.get_repo_calls == []
         assert other.get_issue_calls == []
+        assert logs.count("WARNING") == 1
+        assert "Ignoring sibling repo absent from the host allowlist: org/other" in logs
+        assert "ERROR" not in logs
+        assert "Failed to fetch sub-issue" not in logs
 
     @pytest.mark.parametrize("visibility", ["private", "internal"])
     @pytest.mark.parametrize("actor", [None, "requester"])
@@ -794,10 +805,19 @@ class TestGetIssueFailureIsolated:
         provider = _make_github_provider(
             user_description="Fixes #1 and #2", repo_obj=repo_obj
         )
-        result = asyncio.run(extract_tickets(provider))
+        records = []
+        sink_id = tpc.get_logger().add(lambda message: records.append(message.record), level="ERROR")
+        try:
+            result = asyncio.run(extract_tickets(provider))
+        finally:
+            tpc.get_logger().remove(sink_id)
         assert result is not None
         ids = [t["ticket_id"] for t in result]
         assert ids == [2]
+        assert len(records) == 1
+        assert records[0]["level"].name == "ERROR"
+        assert "Error getting main issue" in records[0]["message"]
+        assert "RuntimeError: boom for issue 1" in records[0]["extra"]["artifact"]["traceback"]
 
 
 # ---------------------------------------------------------------------------
