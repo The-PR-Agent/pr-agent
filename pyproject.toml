@@ -156,9 +156,8 @@ dev = [
 ]
 
 [tool.uv]
-# Keep this exact pin in sync with docker/Dockerfile and docker/Dockerfile.lambda
-# so local, CI, release, and container builds use the same uv version.
-required-version = "==0.12.10"
+# Floor, not "==": Dependabot's uv 0.12.18 failed the exact pin with tool_version_not_supported.
+required-version = ">=0.12.10"
 
 [tool.ruff]
 line-length = 120

@@ -21,6 +21,8 @@ jobs:
 
       - id: uv
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          resolution-strategy: lowest
 
       - name: Check uv.lock
         run: uv lock --check
