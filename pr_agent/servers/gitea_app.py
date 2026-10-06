@@ -61,7 +61,7 @@ async def get_body(request: Request):
         verify_signature(body_bytes, webhook_secret, f"sha256={signature_header}")
     except Exception as ex:
         get_logger().error(f"Invalid signature: {ex}")
-        raise HTTPException(status_code=401, detail="Invalid signature")
+        raise HTTPException(status_code=401, detail="Invalid signature") from ex
 
     try:
         body = await request.json()

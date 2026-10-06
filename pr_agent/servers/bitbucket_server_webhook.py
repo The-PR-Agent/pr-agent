@@ -232,7 +232,7 @@ def _to_list(command_string: str) -> list:
         else:
             raise ValueError("Parsed data is not a list of strings.")
     except (SyntaxError, ValueError, TypeError) as e:
-        raise ValueError(f"Invalid command string: {e}")
+        raise ValueError(f"Invalid command string: {e}") from e
 
 
 def _get_commands_list_from_settings(setting_key: str) -> list:

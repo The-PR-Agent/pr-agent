@@ -188,7 +188,6 @@ lint.exclude = ["api/code_completions"]
 lint.ignore = [
   "E722", # bare `except`
   "B023", # function definition uses loop variable
-  "B904", # raise without `from` inside `except`
 ]
 
 [tool.ruff.lint.per-file-ignores]
