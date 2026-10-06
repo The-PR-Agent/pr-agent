@@ -10,7 +10,6 @@ import traceback
 from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
-import requests
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
 from github.Commit import Commit
 from github.Issue import Issue
@@ -1514,42 +1513,12 @@ class GithubProvider(GitProvider):
             raise
 
     def get_issue_content(self, repo_obj, issue_number: int):
-        """Fetch an authorized repository's issue without following transfer redirects.
-
-        PyGithub follows same-host 301 responses automatically. Use a bounded GET here
-        rather than fetching a transferred issue before checking its repository. This
-        request shares SDK authentication/TLS settings, but not its retry/pacing state.
-        """
-        repo_id = repo_obj.full_name
-        if (not isinstance(repo_id, str) or not re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9._-]+", repo_id)
-                or repo_id.split("/")[1] in (".", "..")):
-            raise ValueError("Invalid canonical ticket repository")
-        requester = self.github_client.requester
-        options = requester.kwargs
-        repo_url = f"{requester.base_url.rstrip('/')}/repos/{'/'.join(quote(p, safe='') for p in repo_id.split('/'))}"
-        issue_url = f"{repo_url}/issues/{issue_number}"
-        headers = {"Accept": "application/vnd.github+json", "User-Agent": options["user_agent"]}
-        if requester.auth is not None:
-            requester.auth.authentication(headers)
-        if requester.api_version:
-            headers["X-GitHub-Api-Version"] = requester.api_version
-        # Preserve SDK authentication instead of letting Requests replace it from .netrc.
-        response = requests.get(issue_url, headers=headers, timeout=options["timeout"],
-                                verify=options["verify"], allow_redirects=False, auth=lambda request: request)
-        try:
-            if response.status_code != 200:
-                raise GithubException(response.status_code, {"message": "GitHub ticket request did not return 200"},
-                                      dict(response.headers))
-            data = response.json()
-            # Do not materialize an issue with a different identity, or allow optional
-            # missing fields to trigger a later lazy SDK fetch that can follow redirects.
-            if (not isinstance(data, dict) or type(data.get("number")) is not int or data.get("number") != issue_number
-                    or str(data.get("repository_url", "")).casefold() != repo_url.casefold()
-                    or str(data.get("url", "")).casefold() != issue_url.casefold()):
-                raise ValueError("GitHub ticket response does not match the authorized repository and issue")
-            return Issue(requester, dict(response.headers), data, completed=True)
-        finally:
-            response.close()
+        """Fetch an authorized issue and reject transferred content before prompt use."""
+        issue = repo_obj.get_issue(issue_number)
+        # PyGithub follows same-host 301s, so a transferred issue resolves to another repository.
+        if str(issue.repository_url).casefold() != str(repo_obj.url).casefold():
+            raise ValueError("GitHub ticket response does not match the authorized repository")
+        return issue
 
     def get_sibling_repo(self, repo_id: str):
         repo_id = (repo_id or "").strip().strip("/")
