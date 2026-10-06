@@ -51,6 +51,7 @@ to-do list.
 | --- | --- | --- |
 | `use_repo_settings_file` | true |  |
 | `use_global_settings_file` | true |  |
+| `global_settings_repo` | "" | host-only name of the repository, in the owning org/group/workspace, whose .pr_agent.toml applies to every repository there. Empty disables namespace-wide settings; set "pr-agent-settings" to keep the previous behaviour |
 | `enable_per_directory_settings` | false | when true, merge per-directory .pr_agent.toml files found by walking up from the PR's changed files (monorepo support). Adds bounded recursive tree discovery per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Nearest (deepest) directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path; when more files match than the per_directory_settings_max_files cap, shallower files are applied first and a partially capped depth keeps its later-path (winning) siblings; any overlap is logged as a warning. |
 | `per_directory_settings_max_files` | 20 | hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning) |
 | `per_directory_settings_max_tree_pages` | 10 | maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap. |
@@ -75,7 +76,7 @@ to-do list.
 | `max_description_tokens` | 500 |  |
 | `max_commits_tokens` | 500 |  |
 | `max_model_tokens` | 32000 | Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities. |
-| `custom_model_max_tokens` | -1 | Override unknown models or Sol/Luna on non-native custom providers. |
+| `custom_model_max_tokens` | -1 | Override unknown models or Sol-tier GPT-6 on non-native custom providers. |
 | `max_output_tokens` | 0 | 0 = unset (the provider's own default applies) |
 | `model_token_count_estimate_factor` | 0.3 | factor to increase the token count estimate, in order to reduce likelihood of model failure due to too many tokens - applicable only when requesting an accurate estimate. |
 | `image_input_token_allowance` | 4096 | reserve tokens per image when provider counting omits or underestimates image cost |
@@ -123,7 +124,7 @@ to-do list.
 | `enable_ai_metadata` | false | will enable adding ai metadata |
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
-| `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here when litellm does not know the model (custom OpenAI-compatible endpoints), or when another provider hosts GPT-6 Sol/Luna under the same ID. Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
+| `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here when litellm does not know the model (custom OpenAI-compatible endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID. Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
 | `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, also match the suffix-free base ID (for example, match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm's metadata still marks them temperature-capable; see the issue for the probe diff. |
 **extended thinking for Claude reasoning models**
 
@@ -369,7 +370,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "https://gitlab.com" |  |
-| `expand_submodule_diffs` | false |  |
+| `expand_submodule_diffs` | false | Submodule targets must also be listed in config.repo_context_sibling_repos. |
 | `feedback_on_draft_pr` | false |  |
 | `publish_review_as_thread` | false | Post the /review summary as a resolvable thread (discussion) instead of a plain note. |
 | `publish_improve_as_thread` | false | Post the /improve suggestions comment as a resolvable thread (discussion) instead of a plain note. |
@@ -540,6 +541,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
+| `bearer_tokens` | {} | principal names to distinct bearer secrets; empty permits anonymous trusted-network use |
+| `routing_scan_max_chars` | 65536 | positive character limit for PR URL and command detection; does not truncate diffs |
 | `health_timeout_seconds` | 10 | finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work |
 | `context_history_max_tasks` | 100 | maximum prior tasks considered for a context follow-up; set from 1 to 1000 |
 

@@ -240,13 +240,26 @@ class GiteaProvider(GitProvider):
         except Exception as e:
             self.logger.error(f"Error getting diff content: {str(e)}")
 
+    @staticmethod
+    def _url_path_parts(url: str) -> list[str]:
+        """Split a PR or issue URL into path parts that start at the owner.
+
+        Strip the install path of the configured ``GITEA.URL`` or ``GITEA.WEB_URL`` first,
+        so an instance served under a subpath (``https://host/gitea/owner/repo/pulls/1``)
+        parses like a root install, then strip the ``/api/v1/repos`` API prefix.
+        """
+        path = urlparse(url).path
+        for base_url in (get_settings().get("GITEA.URL", ""), get_settings().get("GITEA.WEB_URL", "")):
+            base_path = urlparse(base_url or "").path.rstrip("/")
+            if base_path and path.startswith(base_path + "/"):
+                path = path[len(base_path):]
+                break
+        if path.startswith("/api/v1/repos"):
+            path = path[len("/api/v1/repos"):]
+        return path.strip('/').split('/')
+
     def _parse_pr_url(self, pr_url: str) -> Tuple[str, str, int]:
-        parsed_url = urlparse(pr_url)
-
-        if parsed_url.path.startswith("/api/v1/repos"):
-            parsed_url = urlparse(pr_url.replace("/api/v1/repos", ""))
-
-        path_parts = parsed_url.path.strip('/').split('/')
+        path_parts = self._url_path_parts(pr_url)
         if len(path_parts) < 4 or path_parts[2] != 'pulls':
             raise ValueError("The provided URL does not appear to be a Gitea PR URL")
 
@@ -261,12 +274,7 @@ class GiteaProvider(GitProvider):
         return owner, repo, pr_number
 
     def _parse_issue_url(self, issue_url: str) -> Tuple[str, str, int]:
-        parsed_url = urlparse(issue_url)
-
-        if parsed_url.path.startswith("/api/v1/repos"):
-            parsed_url = urlparse(issue_url.replace("/api/v1/repos", ""))
-
-        path_parts = parsed_url.path.strip('/').split('/')
+        path_parts = self._url_path_parts(issue_url)
         if len(path_parts) < 4 or path_parts[2] != 'issues':
             raise ValueError("The provided URL does not appear to be a Gitea issue URL")
 
@@ -605,18 +613,21 @@ class GiteaProvider(GitProvider):
                 self.__add_file_content(filename)
                 head_file = self.file_contents.get(filename,"")
 
+            status = file.get("status","")
+
             if self.incremental.is_incremental and self.unreviewed_files_map:
                 base_file = self._get_file_content_from_latest_commit(filename)
                 self.unreviewed_files_map[filename] = patch
             else:
-                if avoid_load:
+                # An added file cannot exist at base_sha, so fetching it there only costs a
+                # request and logs an error. Matches GithubProvider.get_diff_files().
+                if avoid_load or status == 'added':
                     base_file = ""
                 else:
                     base_file = self._get_file_content_from_base(filename)
 
             num_plus_lines = file.get("additions",0)
             num_minus_lines = file.get("deletions",0)
-            status = file.get("status","")
 
             if status == 'added':
                 edit_type = EDIT_TYPE.ADDED
@@ -789,17 +800,17 @@ class GiteaProvider(GitProvider):
     def _get_global_settings_cache_key(self, owner: str) -> str:
         return f"gitea:{getattr(self, 'base_url', '')}:{owner}"
 
-    def _fetch_global_repo_settings(self, owner):
-        # Owner-wide global settings live in an <owner>/pr-agent-settings repository.
+    def _fetch_global_repo_settings(self, owner, settings_repo):
+        # Owner-wide global settings live in the configured <owner>/<settings_repo> repository.
         # A missing settings repo/file (404) is an expected fallback -> return "" (cached).
         try:
-            settings_repo = self.repo_api.repo_get(owner, "pr-agent-settings")
-            default_branch = getattr(settings_repo, "default_branch", None)
+            repo = self.repo_api.repo_get(owner, settings_repo)
+            default_branch = getattr(repo, "default_branch", None)
             if not default_branch:
                 return ""
             content = self.repo_api.get_file_content(
                 owner=owner,
-                repo="pr-agent-settings",
+                repo=settings_repo,
                 commit_sha=default_branch,
                 filepath=".pr_agent.toml",
             )

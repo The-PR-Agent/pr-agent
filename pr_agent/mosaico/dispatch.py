@@ -15,6 +15,7 @@ Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", 
 (several tool paths never set it, and handle_request swallows exceptions -> False).
 route_and_run NEVER raises; on failure/empty it returns an honest fallback string."""
 import re
+from collections import deque
 from typing import NamedTuple, Optional
 
 import aiohttp
@@ -39,10 +40,9 @@ _DIFF_FETCH_MAX_BYTES = 4_000_000  # ~4 MB; larger diffs exceed model context an
 _DIFF_FETCH_MAX_REDIRECTS = MAX_SAFE_REDIRECTS
 
 # PR-URL detection: github/gitlab/bitbucket/azure-style hosts with a PR/MR path.
-_PR_URL_RE = re.compile(
-    r"https?://\S*?/(?:pull|pulls|merge_requests|pullrequest|pull-requests|_git/\S+/pullrequest)/\d+",
-    re.IGNORECASE,
-)
+_URL_TOKEN_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_PR_PATH_RE = re.compile(r"/(?:pull|pulls|merge_requests|pullrequest|pull-requests)/\d+", re.IGNORECASE)
+_VERB_TOKEN_RE = re.compile(rf"/?({'|'.join(_VALID_VERBS)})\b")
 
 # Diff detection: a ```diff fence or a raw unified-diff header.
 _DIFF_FENCE_RE = re.compile(r"```\s*diff", re.IGNORECASE)
@@ -109,19 +109,32 @@ def _split_turns(text: str) -> list["_Turn"]:
     return turns
 
 
+def _routing_prefix(text: str) -> str:
+    """Bound detection work without turning a cut token into a different PR/verb."""
+    limit = get_settings().get("MOSAICO.ROUTING_SCAN_MAX_CHARS", 65536)
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("mosaico.routing_scan_max_chars must be a positive integer")
+    text = text or ""
+    end = min(len(text), limit)
+    if end < len(text) and not text[end].isspace():
+        while end and not text[end - 1].isspace():
+            end -= 1
+    return text[:end]
+
+
 def _explicit_verb(text: str) -> Optional[str]:
-    """The requested verb, by POSITION IN THE TEXT and not by _VALID_VERBS order."""
-    low = (text or "").lower()
-    best = None
-    for verb in _VALID_VERBS:
-        for m in re.finditer(rf"(^|\s)/?{verb}\b", low):
-            at = m.end() - len(verb)
-            if _NEGATION_RE.search(low[:at]):
-                continue
-            if best is None or at < best[0]:
-                best = (at, verb)
-            break
-    return best[1] if best else None
+    """Return the first non-negated command, scanning each whitespace token once."""
+    low = _routing_prefix(text).lower()
+    prior_starts = deque(maxlen=4)
+    for token in re.finditer(r"\S+", low):
+        match = _VERB_TOKEN_RE.match(token.group())
+        if match:
+            at = token.start() + match.start(1)
+            start = prior_starts[0] if prior_starts else token.start()
+            if not _NEGATION_RE.search(low[start:at]):
+                return match.group(1)
+        prior_starts.append(token.start())
+    return None
 
 
 def _reads_as_question(text: str) -> bool:
@@ -158,9 +171,11 @@ def _resolve_verb(user_segments: list) -> str:
 
 
 def _find_pr_url(text: str):
-    m = _PR_URL_RE.search(text or "")
-    if m:
-        return m.group(0)
+    for candidate in _URL_TOKEN_RE.finditer(_routing_prefix(text)):
+        url = candidate.group()
+        path = _PR_PATH_RE.search(url)
+        if path:
+            return url[:path.end()]
     return None
 
 

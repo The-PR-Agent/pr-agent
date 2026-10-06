@@ -49,6 +49,46 @@ hand-maintained), and the required
 advertised as disabled, which is load-bearing: the reference agent selects
 `message/send` vs `message/stream` from that capability.
 
+### Request limits and caller authentication
+
+MOSAICO uses the shared `config.max_webhook_request_body_bytes` limit (5 MiB by default),
+including streamed bodies without a valid Content-Length. Oversized requests return HTTP 413
+before JSON-RPC parsing or tool execution. `mosaico.routing_scan_max_chars` (default: 65536,
+a positive integer) bounds PR URL and command detection per text segment. An incomplete token
+at the boundary is ignored; supplied diffs are still processed in full. Put the PR URL or
+command near the start of the message or its surrounding prose.
+
+Configure `mosaico.bearer_tokens` as a map of stable principal names to distinct opaque secrets
+in secret settings, or through Dynaconf's JSON environment syntax:
+
+```bash
+export MOSAICO__BEARER_TOKENS='@json {"reference-agent":"replace-with-generated-secret"}'
+```
+
+With a nonempty map, JSON-RPC and `/health` require `Authorization: Bearer <secret>`.
+Missing or invalid credentials return HTTP 401 before reading the body or running the LLM.
+The agent-card GET stays public and advertises the bearer requirement without exposing secrets.
+Use HTTPS at your ingress and configure the caller to send its credential. Tasks, artifacts,
+histories and context follow-ups are scoped to the configured principal; callers sharing a
+secret share that principal. Keep principal names stable when rotating secrets. Invalid
+credential maps, including duplicate secrets, fail app construction.
+
+The default empty map preserves anonymous access and shared task ownership for a trusted,
+single-tenant network. Configure authentication before exposing the service to other callers.
+These limits do not provide a task retention policy, rate limit or concurrency quota: the
+in-memory store still retains tasks until restart, and each authorized health probe performs
+a live completion.
+
+Observability root/super task IDs must be canonical UUIDs. Invalid IDs are omitted independently;
+valid IDs are normalized to lowercase before producing Langfuse trace context. A metadata error
+does not fail the review.
+
+For the bundled smoke test, provide the client credential as `MOSAICO_BEARER_TOKEN` in the
+script's environment when the server map is configured. For the Compose overlay, supply
+`PR_AGENT_BEARER_TOKEN` for the healthcheck and add `MOSAICO__BEARER_TOKENS` to the service's
+`environment` mapping through your secret configuration. Configure the reference caller's
+credential separately. Both probes continue to work without a token in anonymous mode.
+
 ### Run the standalone container
 
 The server boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:

@@ -857,7 +857,7 @@ With the OpenAI models that support reasoning effort (eg: gpt-5.6-terra), you ca
 
 For a model served through an OpenAI-compatible endpoint that litellm does not recognize as reasoning-capable, add its ID to `config.additional_reasoning_effort_models`. For known models support is decided by litellm's bundled reasoning metadata plus the maintained Grok registry (Grok ids resolve through their `xai/` prefix) with Claude models left out of the metadata path (their reasoning comes from the dedicated extended/adaptive thinking settings; an explicit entry in the list above still applies to them). Config IDs match exactly or through any provider prefix (e.g. `"deepseek-v4-flash-0731"` matches `"openai/deepseek-v4-flash-0731"`). When LiteLLM does not recognize the model, PR-Agent sets `allowed_openai_params = ["reasoning_effort"]` so the parameter reaches the endpoint. Note the default `"medium"` may be rejected by providers that accept a different subset (e.g. `"none"/"low"/"high"/"max"`); adding a custom model ID surfaces that provider-side error instead of silently dropping the setting.
 
-For GPT-6 Sol or Luna hosted outside OpenAI, Azure, or OpenRouter under the same
+For GPT-6 Sol, Luna, or GPT-6.1 Sol hosted outside OpenAI, Azure, or OpenRouter under the same
 model ID, add the ID to this list to explicitly enable `reasoning_effort`.
 
 To use [GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol) or
@@ -869,26 +869,54 @@ model = "gpt-6-sol" # or "gpt-6-luna"
 reasoning_effort = "medium" # "none", "low", "medium", "high", "xhigh", "max"
 ```
 
-For recognized native GPT-6 Sol/Luna IDs on OpenAI, Azure, and OpenRouter routes,
+For recognized native Sol-tier GPT-6 IDs on OpenAI, Azure, and OpenRouter routes,
 PR-Agent omits temperature.
-On OpenAI routes, their native `none` and `max` reasoning efforts are passed through
-unchanged. Azure routes preserve `none` and map `max` to `xhigh` for Chat Completions.
-OpenRouter maps `none` to disabled reasoning and `max` to `xhigh`.
-The legacy `minimal` setting is mapped to `low` on all three routes.
-Both models have a 1,050,000-token context window, a 922,000-token input ceiling,
+GPT-6 Sol and GPT-6 Luna accept `none`: OpenAI routes pass it through unchanged, Azure routes
+preserve it, and OpenRouter maps it to disabled reasoning.
+GPT-6.1 Sol omits `none` from its supported levels, so PR-Agent clamps it to `low` instead; see
+its own section below.
+All three map `max` to `xhigh` on Azure and OpenRouter, and the legacy `minimal` setting is
+mapped to `low`.
+Each has a 1,050,000-token context window, a 922,000-token input ceiling,
 and support up to 128,000 output tokens. PR-Agent also applies `config.max_model_tokens` unless
 a tool bypasses that configured cap, as `/help` does; the native input ceiling still applies.
 The existing Chat Completions path is used for PR-Agent's
-text requests. OpenAI requires the Responses API for built-in tools and function calling with
-reasoning; Chat Completions function calling is limited to `reasoning_effort = "none"`.
+text requests. For GPT-6 Sol and Luna, OpenAI requires the Responses API for built-in tools and
+function calling with reasoning; Chat Completions function calling is limited to
+`reasoning_effort = "none"`.
 
 Unrecognized OpenRouter `_thinking` variants, such as `_thinking:batch` or `_thinking:free`,
 keep their literal IDs without native GPT-6 temperature or effort normalization.
 Add the full ID to `config.additional_reasoning_effort_models` to explicitly enable reasoning.
 For unregistered literal IDs, prompt budgeting requires usable LiteLLM metadata or
 `config.custom_model_max_tokens`.
-For bare Sol/Luna IDs on non-native custom providers, a positive `config.custom_model_max_tokens`
+For bare Sol-tier GPT-6 IDs on non-native custom providers, a positive `config.custom_model_max_tokens`
 takes precedence over the native registry value.
+
+To use [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol):
+
+```toml
+[config]
+model = "gpt-6.1-sol"
+reasoning_effort = "medium" # "low", "medium", "high", "xhigh", "max"
+```
+
+GPT-6.1 Sol shares the routing above: same temperature handling, same `max`/`minimal` mapping,
+and the same 1,050,000-token context window, 922,000-token input ceiling, and 128,000-token
+output limit. Its model page lists `low`, `medium` (default), `high`, `xhigh`, and `max` only,
+so `none` is **not** supported and PR-Agent clamps a configured `none` to `low` rather than
+sending a value the endpoint rejects. That clamp covers the OpenAI, Azure, Azure AI, aiohttp
+and OpenRouter routes; an explicit `openrouter.reasoning_effort` is a separate setting and is
+still passed through, so avoid setting it to `none` for this model.
+
+On a non-native custom provider the ID is treated as an unknown model: nothing is sent unless
+you list it in `config.additional_reasoning_effort_models`, and if you do, the configured
+effort is forwarded verbatim. Register it only for an endpoint that accepts this model's full
+effort set.
+
+Its model page also requires the Responses API for tool calling and describes Chat Completions
+as supported without tool calling, so unlike GPT-6 Sol and Luna this model has no Chat
+Completions tool-calling path at any effort.
 
 To use [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra):
 
@@ -955,8 +983,8 @@ count against that budget, the visible answer can come back empty or truncated. 
 including bare Astra IDs on custom providers. OpenRouter Astra uses this parameter only
 without a routing suffix or with `:nitro`/`:floor`. Other routes use `max_tokens`, and
 the `azure_text` and `text-completion-openai` routes always use `max_tokens`.
-Use a value supported by the selected model. GPT-6 Astra, Sol, and Luna support at most
-128,000 output tokens, including reasoning tokens.
+Use a value supported by the selected model. GPT-6 Astra, Sol, Luna, and GPT-6.1 Sol support
+at most 128,000 output tokens, including reasoning tokens.
 PR-Agent does not automatically clamp this setting to the model's output limit.
 When Claude extended thinking is enabled, `extended_thinking_max_output_tokens` takes precedence.
 For models with small context windows, keep in mind that prompt and completion tokens share the

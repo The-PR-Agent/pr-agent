@@ -1,3 +1,5 @@
+import os
+import sys
 from types import SimpleNamespace
 
 import git
@@ -398,3 +400,36 @@ def test_init_rejects_malformed_change_refspec_before_preparing_repo(monkeypatch
         GerritProvider(f"my/project:{refspec}")
 
     assert prepare_calls == []
+
+
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+def test_add_suggestion_replaces_only_the_suggested_lines(tmp_path, eol):
+    src = tmp_path / "app.py"
+    src.write_bytes(f"a{eol}b{eol}c{eol}".encode())
+
+    gerrit_provider.add_suggestion(src, "B1\nB2\n", 2, 2)
+
+    # Keep the file's line endings so the uploaded diff touches only the suggestion.
+    assert src.read_bytes() == f"a{eol}B1{eol}B2{eol}c{eol}".encode()
+
+
+def test_add_suggestion_matches_the_replaced_lines_in_a_mixed_ending_file(tmp_path):
+    src = tmp_path / "app.py"
+    src.write_bytes(b"a\nb\r\nc\n")
+
+    gerrit_provider.add_suggestion(src, "B\n", 2, 2)
+
+    assert src.read_bytes() == b"a\nB\r\nc\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_add_suggestion_keeps_the_file_mode(tmp_path):
+    src = tmp_path / "run.sh"
+    src.write_bytes(b"echo a\necho b\n")
+    os.chmod(src, 0o700)
+
+    gerrit_provider.add_suggestion(src, "echo B\n", 2, 2)
+
+    # Check the executable bit survives, so the patch carries no mode change.
+    assert os.stat(src).st_mode & 0o777 == 0o700
+    assert src.read_bytes() == b"echo a\necho B\n"

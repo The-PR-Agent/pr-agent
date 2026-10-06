@@ -29,6 +29,7 @@ from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
     is_command_comment,
+    payload_log_summary,
     push_trigger_slot,
     shared_should_process_pr_logic,
 )
@@ -111,18 +112,6 @@ async def handle_manifest(request: Request, response: Response):
         get_logger().error("Failed to replace api_key in Bitbucket manifest, trying to continue")
     manifest_obj = json.loads(manifest)
     return JSONResponse(manifest_obj)
-
-
-def _payload_log_summary(data: object) -> dict:
-    if not isinstance(data, dict):
-        return {"payload_type": type(data).__name__}
-
-    summary = {"payload_keys": sorted(data.keys())}
-    for field in ("clientKey", "event"):
-        value = data.get(field)
-        if isinstance(value, str):
-            summary[field] = value
-    return summary
 
 
 def _get_username(data):
@@ -275,7 +264,7 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
         return "OK"
     input_jwt = jwt_parts[1]
     data = await request.json()
-    get_logger().debug(_payload_log_summary(data))
+    get_logger().debug(payload_log_summary(data, ("clientKey", "event")))
 
     async def inner():
         try:
@@ -434,7 +423,7 @@ async def handle_uninstalled_webhooks(request: Request, response: Response):
     get_logger().info("handle_uninstalled_webhooks")
 
     data = await request.json()
-    get_logger().info(_payload_log_summary(data))
+    get_logger().info(payload_log_summary(data, ("clientKey", "event")))
 
 
 def start():

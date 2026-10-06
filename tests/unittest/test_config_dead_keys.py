@@ -49,11 +49,6 @@ _ALLOWLIST = {
     "pr_agent/tools/pr_description.py",
     (
         "config",
-        "enable_claude_adaptive_thinking",
-    ): "settings.config.get(key, default) in the thinking-controls loop in "
-    "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
-    (
-        "config",
         "enable_claude_extended_thinking",
     ): "settings.config.get(key, default) in the thinking-controls loop in "
     "pr_agent/algo/ai_handlers/litellm_ai_handler.py",

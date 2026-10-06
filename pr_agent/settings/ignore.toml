@@ -1,8 +1,8 @@
 [ignore]
 
 glob = [
-    # Ignore files and directories matching these glob patterns.
-    # See https://docs.python.org/3/library/glob.html
+    # Ignore files and directories matching these glob patterns, where a '**/' segment matches
+    # zero or more directories and '*' matches across '/', as fnmatch does.
     'vendor/**',
 ]
 regex = [

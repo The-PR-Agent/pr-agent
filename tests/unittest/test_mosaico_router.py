@@ -1183,3 +1183,60 @@ class TestSingleTurnUnchanged:
                                         ("agent", "hi, what can I do?"),
                                         ("user", "review my code please")))
         assert out == "PR-Agent requires a PR URL or a supplied diff."
+
+
+class TestBoundedRoutingDetection:
+    @pytest.mark.parametrize("url", [
+        "https://github.com/org/repo/pull/123", "https://gitea.example/org/repo/pulls/123",
+        "https://gitlab.example/org/repo/-/merge_requests/123", "https://bitbucket.org/org/repo/pull-requests/123",
+        "https://bitbucket.example/org/repo/pullrequest/123",
+        "https://dev.azure.com/org/project/_git/repo/pullrequest/123",
+    ])
+    def test_provider_paths_and_markdown_keep_complete_pr_number(self, url):
+        assert dispatch._find_pr_url(f"Review [{url}]({url}?view=files)") == url
+        assert dispatch._find_pr_url(url.upper()) == url.upper()
+
+    def test_repeated_url_paths_and_negated_verbs_keep_order(self):
+        assert dispatch._find_pr_url("https://" + "_git/" * 6000) is None
+        assert _explicit_verb("do not review " * 4000 + ", describe this") == "describe"
+        assert dispatch._find_pr_url(f"https://invalid.example/path {PR_URL} {DEAD_PR_URL}") == PR_URL
+
+    @pytest.mark.parametrize("text, expected", [
+        ("do not please now /review describe", "describe"),
+        ("rather than just please improve\u2003describe", "describe"),
+        ("nothing to improve here?", "improve"),
+        ("skip this review, /ask why", "ask"),
+        ("no bug, review this", "review"),
+        ("reviewer then /describe", "describe"),
+    ])
+    def test_local_negation_preserves_whitespace_and_punctuation(self, text, expected):
+        assert _explicit_verb(text) == expected
+
+    def test_scan_boundary_never_invents_partial_pr_or_command(self, monkeypatch):
+        settings = get_settings()
+        old = settings.get("MOSAICO.ROUTING_SCAN_MAX_CHARS")
+        try:
+            settings.set("MOSAICO.ROUTING_SCAN_MAX_CHARS", len(PR_URL) - 1)
+            assert dispatch._find_pr_url(PR_URL + " ") is None
+            settings.set("MOSAICO.ROUTING_SCAN_MAX_CHARS", len(PR_URL))
+            assert dispatch._find_pr_url(PR_URL + " ") == PR_URL
+            settings.set("MOSAICO.ROUTING_SCAN_MAX_CHARS", 6)
+            assert _explicit_verb("reviewer") is None
+            assert _explicit_verb("review please") == "review"
+            assert _explicit_verb("      describe") is None
+        finally:
+            settings.set("MOSAICO.ROUTING_SCAN_MAX_CHARS", old)
+
+    @pytest.mark.asyncio
+    async def test_detection_budget_does_not_truncate_supplied_diff(self, monkeypatch, restore_settings):
+        large = SAMPLE_RAW_DIFF + "+" + "x" * 70000 + "\n"
+        captured = []
+
+        async def run_diff(body, verb, question, title, empty_ok=True):
+            captured.append((body, verb))
+            return dispatch.RouteResult("reviewed", True)
+
+        monkeypatch.setattr(dispatch, "_run_on_diff", run_diff)
+        result = await route_and_run_result(large + "\nNow describe it")
+        assert result.ok
+        assert captured == [(large + "\nNow describe it", "describe")]

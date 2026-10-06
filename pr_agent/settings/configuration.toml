@@ -22,6 +22,7 @@ log_level="DEBUG"
 # Configurations
 use_repo_settings_file=true
 use_global_settings_file=true
+global_settings_repo="" # host-only name of the repository, in the owning org/group/workspace, whose .pr_agent.toml applies to every repository there. Empty disables namespace-wide settings; set "pr-agent-settings" to keep the previous behaviour
 enable_per_directory_settings=false # when true, merge per-directory .pr_agent.toml files found by walking up from the PR's changed files (monorepo support). Adds bounded recursive tree discovery per MR; per-directory files may only override non-critical sections (see REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS). Nearest (deepest) directory wins on shared keys; equal-depth siblings resolve to the lexicographically-last path; when more files match than the per_directory_settings_max_files cap, shallower files are applied first and a partially capped depth keeps its later-path (winning) siblings; any overlap is logged as a warning.
 per_directory_settings_max_files=20 # hard ceiling on the number of per-directory .pr_agent.toml files applied per MR (deeper configs beyond the cap are skipped with a warning)
 per_directory_settings_max_tree_pages=10 # maximum GitLab recursive-tree pages (100 entries each); skip nested settings if discovery is incomplete. Root/host-controlled, independent of the settings-file cap.
@@ -47,9 +48,9 @@ repo_context_max_sibling_files = 5 # Maximum number of sibling-repository files 
 max_description_tokens = 500
 max_commits_tokens = 500
 max_model_tokens = 32000 # Limits the maximum number of tokens that can be used by any model, regardless of the model's default capabilities.
-custom_model_max_tokens=-1 # Override unknown models or Sol/Luna on non-native custom providers.
+custom_model_max_tokens=-1 # Override unknown models or Sol-tier GPT-6 on non-native custom providers.
 # Send max_completion_tokens for recognized Astra IDs, including bare IDs on custom providers,
-# and native OpenAI/Azure Sol/Luna. OpenRouter Astra uses it only without a routing suffix or with :nitro/:floor.
+# and native OpenAI/Azure Sol-tier GPT-6. OpenRouter Astra uses it only without a routing suffix or with :nitro/:floor.
 # Use max_tokens for other routes, including azure_text and text-completion-openai.
 # Choose a limit supported by the selected model.
 max_output_tokens = 0 # 0 = unset (the provider's own default applies)
@@ -110,7 +111,7 @@ reasoning_effort = "medium" # "none", "minimal", "low", "medium", "high", "xhigh
 # Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is
 # otherwise decided by litellm's bundled model metadata (and the maintained Grok registry),
 # so add an ID here when litellm does not know the model (custom OpenAI-compatible
-# endpoints), or when another provider hosts GPT-6 Sol/Luna under the same ID.
+# endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID.
 # Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731"
 # matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists
 # reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not
@@ -364,6 +365,7 @@ push_commands = [
 
 [gitlab]
 url = "https://gitlab.com"
+# Submodule targets must also be listed in config.repo_context_sibling_repos.
 expand_submodule_diffs = false
 feedback_on_draft_pr = false
 # Post the /review summary as a resolvable thread (discussion) instead of a plain note.
@@ -596,6 +598,8 @@ target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 max_artifact_size = 50000
 
 [mosaico]
+bearer_tokens = {} # principal names to distinct bearer secrets; empty permits anonymous trusted-network use
+routing_scan_max_chars = 65536 # positive character limit for PR URL and command detection; does not truncate diffs
 health_timeout_seconds = 10 # finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work
 context_history_max_tasks = 100 # maximum prior tasks considered for a context follow-up; set from 1 to 1000
 

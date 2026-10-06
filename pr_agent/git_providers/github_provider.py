@@ -1473,12 +1473,12 @@ class GithubProvider(GitProvider):
         # self-hosted GitHub Enterprise instance) must not share a settings entry.
         return f"github:{getattr(self, 'base_url', '')}:{repo_owner}"
 
-    def _fetch_global_repo_settings(self, repo_owner):
+    def _fetch_global_repo_settings(self, repo_owner, settings_repo):
         try:
-            global_settings_repo = self.github_client.get_repo(f"{repo_owner}/pr-agent-settings")
+            global_settings_repo = self.github_client.get_repo(f"{repo_owner}/{settings_repo}")
             return global_settings_repo.get_contents(".pr_agent.toml").decoded_content
         except GithubException as e:
-            # A missing pr-agent-settings repo/file (404) or lack of access (403) is an expected,
+            # A missing settings repo/file (404) or lack of access (403) is an expected,
             # stable fallback (skip global settings, continue with local) — return "" so it's cached.
             if e.status in (403, 404):
                 get_logger().debug(

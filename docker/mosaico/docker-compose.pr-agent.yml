@@ -17,6 +17,8 @@ services:
       AGENT_CARD_HOST: ${PR_AGENT_HOST:-${DEFAULT_TASK_AGENT_HOST}}
       AGENT_CARD_PORT: ${PR_AGENT_PORT:-23000}
       MODEL_NAME: ${PR_AGENT_MODEL}
+      # Client credential for the live healthcheck when server bearer auth is configured.
+      MOSAICO_BEARER_TOKEN: ${PR_AGENT_BEARER_TOKEN:-}
     # Mirrors the peer agents' probe. /health is a live LLM check, so no LLM means no
     # registration - intended: a registered card with a dead LLM is worse.
     # PORT comes from base-definitions.yml's `agent` service; the :-9000 fallback keeps
@@ -24,7 +26,7 @@ services:
     # timeout=25 sits between /health's own 10s LLM timeout and Docker's 30s default
     # healthcheck timeout, so a stalled probe fails as unhealthy rather than being killed.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:$${PORT:-9000}/health', timeout=25)\""]
+      test: ["CMD-SHELL", "python -c \"import os, urllib.request; token=os.getenv('MOSAICO_BEARER_TOKEN'); request=urllib.request.Request('http://localhost:$${PORT:-9000}/health', headers={'Authorization': 'Bearer '+token} if token else {}); urllib.request.urlopen(request, timeout=25)\""]
 
   pr-agent-solution-agent-registration:
     extends:

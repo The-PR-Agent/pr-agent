@@ -485,6 +485,12 @@ class GitLabProvider(GitProvider):
         get_logger().warning(f"[submodule] could not resolve project '{proj_path}': " + "; ".join(failures))
         return None
 
+    def _submodule_target_allowed(self, project) -> bool:
+        """Apply the sibling-repository checks to the resolved submodule project."""
+        path = getattr(project, "path_with_namespace", None) or ""
+        return (self.is_sibling_repo_allowed(path) and path.split("/")[0] == self.get_owning_namespace(resolved=True)
+                and self._requester_can_read_sibling_project(project))
+
     def _compare_submodule(self, proj_path: str, old_sha: str, new_sha: str) -> list[dict]:
         """
         Call repository_compare on submodule project; return list of diffs.
@@ -496,6 +502,10 @@ class GitLabProvider(GitProvider):
             proj = self._project_by_path(proj_path)
             if proj is None:
                 get_logger().warning(f"[submodule] resolve failed for {proj_path}")
+                self._submodule_cache[key] = []
+                return []
+            if not self._submodule_target_allowed(proj):
+                get_logger().warning(f"[submodule] skipping {proj_path}: not an authorized sibling repository")
                 self._submodule_cache[key] = []
                 return []
             cmp = proj.repository_compare(old_sha, new_sha)
@@ -2144,12 +2154,12 @@ class GitLabProvider(GitProvider):
     def _get_global_settings_cache_key(self, group: str) -> str:
         return f"gitlab:{getattr(self, 'gitlab_url', '')}:{group}"
 
-    def _fetch_global_repo_settings(self, group):
+    def _fetch_global_repo_settings(self, group, settings_repo):
         try:
-            project = self.gl.projects.get(f"{group}/pr-agent-settings")
+            project = self.gl.projects.get(f"{group}/{settings_repo}")
             return project.files.get(file_path='.pr_agent.toml', ref=project.default_branch).decode()
         except GitlabGetError:
-            # A missing pr-agent-settings project/file is an expected fallback -> return "" (cached).
+            # A missing settings project/file is an expected fallback -> return "" (cached).
             return ""
         # Transient/unexpected errors propagate so the caller does not cache the failure.
 

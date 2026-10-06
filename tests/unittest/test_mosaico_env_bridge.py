@@ -164,29 +164,31 @@ class TestApplyMosaicoEnv:
 class TestParseObservabilityMetadata:
     def test_all_three_keys(self):
         raw = {
-            "mosaico-root-task-id": "r1",
-            "mosaico-super-task-id": "s1",
+            "mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000",
+            "mosaico-super-task-id": "00112233-4455-6677-8899-aabbccddeeff",
             "mosaico-root-task-name": "name1",
         }
         assert parse_observability_metadata(raw) == raw
 
     def test_missing_one_key_returns_partial_dict(self):
-        raw = {"mosaico-root-task-id": "r1", "mosaico-root-task-name": "name1"}
+        raw = {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000", "mosaico-root-task-name": "name1"}
         out = parse_observability_metadata(raw)
-        assert out == {"mosaico-root-task-id": "r1", "mosaico-root-task-name": "name1"}
+        assert out == {
+            "mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000", "mosaico-root-task-name": "name1",
+        }
         assert out != {}
 
     def test_non_string_value_key_omitted(self):
-        raw = {"mosaico-root-task-id": "r1", "mosaico-super-task-id": 12345}
-        assert parse_observability_metadata(raw) == {"mosaico-root-task-id": "r1"}
+        raw = {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000", "mosaico-super-task-id": 12345}
+        assert parse_observability_metadata(raw) == {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000"}
 
     def test_non_mapping_returns_empty_and_never_raises(self):
         for bad in (None, [], "string", 42):
             assert parse_observability_metadata(bad) == {}
 
     def test_extra_keys_ignored(self):
-        raw = {"mosaico-root-task-id": "r1", "unrelated": "x"}
-        assert parse_observability_metadata(raw) == {"mosaico-root-task-id": "r1"}
+        raw = {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000", "unrelated": "x"}
+        assert parse_observability_metadata(raw) == {"mosaico-root-task-id": "123e4567-e89b-12d3-a456-426614174000"}
 
 
 class TestMosaicoLogContext:

@@ -91,12 +91,31 @@ FORBIDDEN_ARGS = [
     "--config.description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
     "--config__description_issue_regex=(?:[A-Za-z ]+)+X(d+)",
     '--config={"description_issue_regex": "(?:[A-Za-z ]+)+X(d+)"}',
+    # global_settings_repo names the repository whose .pr_agent.toml is applied to a whole
+    # namespace, so a comment must not be able to choose it either.
+    "--config.global_settings_repo=evil-settings",
+    "--config__global_settings_repo=evil-settings",
+    '--config={"global_settings_repo": "evil-settings"}',
     # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_tool_errors=false",
     "--GITHUB_ACTION_CONFIG.FAIL_ON_TOOL_ERRORS=false",
     "--github_action_config__fail_on_tool_errors=false",
     '--github_action_config={"fail_on_tool_errors": false}',
+    # Resource, write, and regex controls stay host-controlled when commands are
+    # supplied through comments, even when root repository settings may set them.
+    "--pr_reviewer.max_number_of_calls=10",
+    "--pr_code_suggestions.parallel_calls=true",
+    '--config.fallback_models=["gpt-4.1"]',
+    "--config.num_retries=10",
+    "--pr_update_changelog.push_changelog_changes=true",
+    "--pr_questions.resolve_threads=true",
+    "--pr_similar_issue.force_update_dataset=true",
+    "--pr_similar_issue={force_update_dataset: true, vectordb: qdrant}",
+    "--pr_similar_issue={vectordb: qdrant, max_issues_to_scan: 50}",
+    "--config.branch_issue_regex=^([\\w/.-]+)*!$",
+    "--ignore.regex=^([\\w/.-]+)*!$",
+    "--config.output_relevant_configurations=true",
     # section-level mapping values on sections that are not host-only themselves:
     # the dotted keys below are all rejected, so their {key: value} forms must be too
     '--qdrant={url: "https://evil.example", api_key: "x"}',
@@ -120,7 +139,7 @@ ALLOWED_ARGS_SINGLE = [
     "--pr_description.publish_labels=false",
     # a mapping value whose nested keys are all allowed stays accepted
     "--qdrant={timeout: 5, prefer_grpc: true}",
-    "--pr_similar_issue={vectordb: qdrant, max_issues_to_scan: 50}",
+    "--pr_similar_issue.max_issues_to_scan=50",
     # non-flag arguments are not validated against the forbidden list
     "some-positional-arg",
     "yes",

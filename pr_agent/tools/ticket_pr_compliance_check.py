@@ -30,8 +30,8 @@ def _github_ticket_pattern(base_url_html):
             authority += r"(?::443)?" if port in (None, 443) else f":{port}"
             full_url = (
                 rf"(?<![\w@/])(?ai:https://{authority})/"
-                r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.{1,2}/)[A-Za-z0-9._-]+/issues/[1-9][0-9]*"
-                r"(?=$|[\s.,;:!?)}\]>'\"`#]|/(?=$|[\s.,;:!?)}\]>'\"`#]))"
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.{1,2}/)[A-Za-z0-9._-]+/issues/0*[1-9][0-9]*"
+                r"(?![\w-]|/[\w-])"
             )
     except (AttributeError, TypeError, ValueError):
         get_logger().warning(
@@ -747,7 +747,7 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
         if custom_pattern is not None and repo_path:
             # Reserve issue-shaped URL tokens on any host, including their suffixes,
             # so custom captures cannot turn their numbers into local tickets.
-            # These spans suppress captures; only the configured origin admits URLs.
+            # Suppress captures in these spans; admit URLs only on the configured origin.
             issue_url_pattern = (
                 r'''(?ai:https?://)[^/\s?#<>"'`(){}]+/'''
                 r'''[^/\s?#<>"'`()\[\]{}]+/'''

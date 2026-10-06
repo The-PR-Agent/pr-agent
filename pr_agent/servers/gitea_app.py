@@ -42,14 +42,7 @@ async def handle_gitea_webhooks(background_tasks: BackgroundTasks, request: Requ
     return {}
 
 async def get_body(request: Request):
-    """Parse and verify webhook request body"""
-    try:
-        body = await request.json()
-    except Exception as e:
-        get_logger().error("Error parsing request body", artifact={'error': e})
-        raise HTTPException(status_code=400, detail="Error parsing request body") from e
-
-
+    """Verify and parse webhook request body"""
     # Verify webhook signature
     webhook_secret = getattr(get_settings().gitea, 'webhook_secret', None)
     if not webhook_secret:
@@ -70,6 +63,11 @@ async def get_body(request: Request):
         get_logger().error(f"Invalid signature: {ex}")
         raise HTTPException(status_code=401, detail="Invalid signature")
 
+    try:
+        body = await request.json()
+    except Exception as e:
+        get_logger().error("Error parsing request body", artifact={'error': e})
+        raise HTTPException(status_code=400, detail="Error parsing request body") from e
     return body
 
 async def handle_request(body: Dict[str, Any], event: str):

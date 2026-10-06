@@ -2339,6 +2339,7 @@ class TestAzureDevopsGlobalSettings:
     @staticmethod
     def _set_org_settings(ms, org):
         ms.return_value.config.use_global_settings_file = True
+        ms.return_value.config.global_settings_repo = "pr-agent-settings"
         ms.return_value.azure_devops.get.return_value = org
 
     def test_get_owning_namespace_returns_configured_org(self):
@@ -2362,7 +2363,7 @@ class TestAzureDevopsGlobalSettings:
     def test_fetch_global_repo_settings_reads_pr_agent_settings_from_pr_project(self):
         provider = self._make_provider()
         provider.azure_devops_client.get_item_content.return_value = [b"[pr_reviewer]"]
-        result = provider._fetch_global_repo_settings("myorg")
+        result = provider._fetch_global_repo_settings("myorg", "pr-agent-settings")
 
         assert result == b"[pr_reviewer]"
         provider.azure_devops_client.get_item_content.assert_called_once_with(
@@ -2379,7 +2380,7 @@ class TestAzureDevopsGlobalSettings:
         provider.azure_devops_client.get_item_content.side_effect = Exception(
             "Operation returned a 404 status code."
         )
-        assert provider._fetch_global_repo_settings("myorg") == ""
+        assert provider._fetch_global_repo_settings("myorg", "pr-agent-settings") == ""
 
     def test_get_repo_settings_merges_global_then_local(self):
         provider = self._make_provider()
@@ -2391,6 +2392,7 @@ class TestAzureDevopsGlobalSettings:
              patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
             az.return_value.azure_devops.get.return_value = "myorg"
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider.get_repo_settings()
 
         assert result == [
@@ -2416,6 +2418,7 @@ class TestAzureDevopsGlobalSettings:
              patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
             az.return_value.azure_devops.get.return_value = "myorg"
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
 
@@ -2483,6 +2486,7 @@ class TestAzureDevopsFailuresAreReported:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             captured = {}
             logs = self._capture(lambda: captured.setdefault("files", provider.get_repo_settings()))
 
@@ -2511,6 +2515,7 @@ class TestAzureDevopsFailuresAreReported:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             captured = {}
             errors = self._capture(lambda: captured.setdefault("files", provider.get_repo_settings()))
             all_levels = self._capture(

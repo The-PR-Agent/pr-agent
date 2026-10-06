@@ -10,11 +10,16 @@ provider registration, and a one-time Langfuse client construction when creds ar
 uvicorn.run is only invoked under __main__."""
 import os
 
+from a2a.server.context import ServerCallContext
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.request_handlers.request_handler import validate_request_params
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import CancelTaskRequest, Task
+from a2a.utils.errors import TaskNotFoundError
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
+from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -26,14 +31,26 @@ from starlette_context.middleware import RawContextMiddleware
 # that chain completes before any get_settings() call below, avoiding a partial-init
 # circular import when server.py is the first module loaded (e.g. at test collection).
 import pr_agent.config_loader  # noqa: F401  (import-order load; do not remove)
+from pr_agent.config_loader import get_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
+from pr_agent.mosaico.auth import MosaicoAuthenticationBackend, MosaicoCallContextBuilder, authentication_error
 from pr_agent.mosaico.card import build_agent_card
 from pr_agent.mosaico.env_bridge import apply_mosaico_env, langfuse_env_present
 from pr_agent.mosaico.executor import PRAgentExecutor, health_check
+from pr_agent.servers.request_body_limit import RequestBodyLimitMiddleware, get_max_request_body_size
 
 HEALTH_PATH = "/health"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 9000
+
+
+class MosaicoRequestHandler(DefaultRequestHandler):
+    @validate_request_params
+    async def on_cancel_task(self, params: CancelTaskRequest, context: ServerCallContext) -> Task | None:
+        # Apply the same owner-scoped lookup as GetTask before cancellation.
+        if await self.task_store.get(params.id, context) is None:
+            raise TaskNotFoundError
+        return await super().on_cancel_task(params, context)
 
 
 async def _health(request: Request) -> JSONResponse:
@@ -77,19 +94,24 @@ def _configure_langfuse() -> None:
 def build_app():
     """Build the Starlette app: A2A card + JSONRPC routes + /health, with
     RawContextMiddleware on the same app (A2A 1.0)."""
-    card = build_agent_card()
+    auth_backend = MosaicoAuthenticationBackend(get_settings().get("MOSAICO.BEARER_TOKENS", {}))
+    card = build_agent_card(require_auth=auth_backend.enabled)
     task_store = InMemoryTaskStore()
-    handler = DefaultRequestHandler(
+    handler = MosaicoRequestHandler(
         agent_executor=PRAgentExecutor(task_store=task_store),
         task_store=task_store,
         agent_card=card,
     )
     routes = [
         *create_agent_card_routes(card),          # GET /.well-known/agent-card.json
-        *create_jsonrpc_routes(handler, rpc_url="/"),
+        *create_jsonrpc_routes(handler, rpc_url="/", context_builder=MosaicoCallContextBuilder()),
         Route(HEALTH_PATH, _health, methods=["GET"]),
     ]
-    return Starlette(routes=routes, middleware=[Middleware(RawContextMiddleware)])
+    return Starlette(routes=routes, middleware=[
+        Middleware(AuthenticationMiddleware, backend=auth_backend, on_error=authentication_error),
+        Middleware(RequestBodyLimitMiddleware, max_body_size=get_max_request_body_size()),
+        Middleware(RawContextMiddleware),
+    ])
 
 
 def start() -> None:

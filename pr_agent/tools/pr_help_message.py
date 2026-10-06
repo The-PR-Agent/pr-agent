@@ -493,8 +493,11 @@ class PRHelpMessage:
             else:
                 supports_gfm_markdown = self.git_provider.is_supported("gfm_markdown")
                 if not supports_gfm_markdown and not self.git_provider.supports_markdown_tables():
-                    self.git_provider.publish_comment(
-                        "The `Help` tool requires gfm markdown, which is not supported by your code platform.")
+                    notice = "The `Help` tool requires gfm markdown, which is not supported by your code platform."
+                    if get_settings().config.publish_output:
+                        self.git_provider.publish_comment(notice)
+                    else:
+                        get_logger().info(notice)
                     return
 
                 get_logger().info('Getting PR Help Message...')
