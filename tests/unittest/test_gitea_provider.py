@@ -923,6 +923,22 @@ class TestGiteaProviderAddFileDiff:
         expected = '@@ -1 +1,2 @@\n q\n+r'
         assert self._parse_diff(diff) == {'quote"file.txt': expected}
 
+    def test_quoted_non_ascii_path_is_decoded_as_utf8(self):
+        diff = (
+            r'diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"'
+            '\n'
+            'index bca70f3..8a08eba 100644\n'
+            r'--- "a/caf\303\251.txt"'
+            '\n'
+            r'+++ "b/caf\303\251.txt"'
+            '\n'
+            '@@ -1 +1,2 @@\n'
+            ' q\n'
+            '+r'
+        )
+        expected = '@@ -1 +1,2 @@\n q\n+r'
+        assert self._parse_diff(diff) == {'café.txt': expected}
+
     def test_binary_blob_keeps_header_without_payload(self):
         diff = (
             'diff --git a/img.png b/img.png\n'

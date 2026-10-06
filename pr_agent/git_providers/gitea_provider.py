@@ -263,29 +263,37 @@ class GiteaProvider(GitProvider):
     def _decode_git_diff_name(value: str) -> str:
         """Decode a git-quoted path from a unified-diff line.
 
-        Git C-quotes names with special characters (escaping them) and appends a
-        literal tab to spaced names on the ---/+++ lines, both of which the raw
-        header-level split left as-is.
+        Git C-quotes names with special characters (escaping them), octal-escapes
+        non-ASCII bytes, and appends a literal tab to spaced names on the ---/+++
+        lines, all of which the raw header-level split left as-is. Consecutive
+        octal escapes encode one UTF-8 sequence, so they must be decoded together
+        as bytes rather than turned into characters one-by-one.
         """
         if len(value) >= 2 and value[0] == value[-1] == '"':
             value = value[1:-1]
-        i = 0
+        simple = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '"': '"'}
         out = []
+        escaped_bytes = []
+        i = 0
         while i < len(value):
             char = value[i]
             if char == '\\' and i + 1 < len(value):
                 nxt = value[i + 1]
-                simple = {'n': '\n', 't': '\t', 'r': '\r', '\\': '\\', '"': '"'}
                 if nxt in simple:
                     out.append(simple[nxt])
                     i += 2
                     continue
                 if nxt in '01234567' and i + 3 < len(value):
-                    out.append(chr(int(value[i + 1:i + 4], 8)))
+                    escaped_bytes.append(int(value[i + 1:i + 4], 8))
                     i += 4
                     continue
+            if escaped_bytes:
+                out.append(bytes(escaped_bytes).decode('utf-8', errors='replace'))
+                escaped_bytes = []
             out.append(char)
             i += 1
+        if escaped_bytes:
+            out.append(bytes(escaped_bytes).decode('utf-8', errors='replace'))
         return ''.join(out)
 
     @staticmethod
