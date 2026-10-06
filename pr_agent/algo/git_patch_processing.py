@@ -388,6 +388,7 @@ __old hunk__
     prev_header_line = []
     header_line = []
     skip_hunk = False
+    pre_hunk_lines = []
     for line_i, line in enumerate(patch_lines):
         if line == NO_NEWLINE_AT_EOF_MARKER:
             continue
@@ -432,7 +433,10 @@ __old hunk__
         elif skip_hunk:
             continue
         elif match is None:
-            # Ignore unified-diff file metadata before the first valid hunk.
+            # Buffer the metadata of hunk-less patches (mode changes, renames,
+            # binary blobs) so the file still shows what changed in the review;
+            # once a real hunk appears this metadata is ignored as before.
+            pre_hunk_lines.append(line)
             continue
         elif line.startswith('+'):
             new_content_lines.append(line)
@@ -466,6 +470,10 @@ __old hunk__
                 patch_with_lines_str += f"{line_old}\n"
 
     rendered_hunks.append(patch_with_lines_str)
+    if not match and pre_hunk_lines:
+        # No valid hunk: keep the file metadata (mode, rename, binary) instead of
+        # returning just the filename header.
+        rendered_hunks.append('\n'.join(pre_hunk_lines))
     return "".join(rendered_hunks).rstrip('\r\n')
 
 
