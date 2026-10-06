@@ -89,7 +89,10 @@ class PR_LineQuestions:
         else:
             diff_files = self.git_provider.get_diff_files()
             for file in diff_files:
-                if file.filename == file_name:
+                # A left-side question targets the old file; for renamed files
+                # `filename` only carries the new name, so match the old name too.
+                candidate = (file.old_filename or file.filename) if side.lower() == 'left' else file.filename
+                if candidate == file_name:
                     self.patch_with_lines, self.selected_lines = extract_hunk_lines_from_patch(file.patch,
                                                                                                file.filename,
                                                                                                line_start=line_start,

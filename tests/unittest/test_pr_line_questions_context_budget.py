@@ -8,6 +8,7 @@ from litellm import token_counter
 import pr_agent.tools.pr_line_questions as plq
 from pr_agent.algo.token_budget import MESSAGE_FRAMING_TOKEN_ALLOWANCE, REPLY_FRAMING_TOKEN_ALLOWANCE
 from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -238,5 +239,133 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
         )
         assert "reply 199" in request["user"]
         assert provider.replies == [(100, "answer")]
+    finally:
+        restore_settings(saved)
+
+
+@pytest.mark.parametrize(
+    ("side", "file_name", "expects_hunk", "renamed"),
+    [
+        ("LEFT", "old/src/app.py", True, True),
+        ("LEFT", "new/src/app.py", False, True),
+        ("LEFT", "src/app.py", True, False),
+        ("RIGHT", "src/app.py", True, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ask_line_matches_old_filename_for_left_side_renamed_file(
+    monkeypatch, side, file_name, expects_hunk, renamed
+):
+    settings = get_settings()
+    keys = (
+        "config.model",
+        "config.model_weak",
+        "config.fallback_models",
+        "config.max_model_tokens",
+        "config.max_output_tokens",
+        "openai.deployment_id",
+        "openai.fallback_deployments",
+        "pr_questions.use_conversation_history",
+        "ask_diff_hunk",
+        "line_start",
+        "line_end",
+        "side",
+        "file_name",
+        "comment_id",
+    )
+    saved = snapshot_settings(keys)
+    patch = (
+        "@@ -9,5 +9,5 @@ def renamed():\n"
+        "     kept_a\n"
+        "     kept_b\n"
+        "     kept_c\n"
+        "     kept_d\n"
+    )
+
+    class _ProviderWithDiff:
+        def __init__(self):
+            self.replies = []
+
+        def get_diff_files(self):
+            if renamed:
+                return [
+                    FilePatchInfo(
+                        base_file="",
+                        head_file="",
+                        patch=patch,
+                        filename="new/src/app.py",
+                        edit_type=EDIT_TYPE.RENAMED,
+                        old_filename="old/src/app.py",
+                    )
+                ]
+            return [
+                FilePatchInfo(
+                    base_file="",
+                    head_file="",
+                    patch=patch,
+                    filename="src/app.py",
+                    edit_type=EDIT_TYPE.MODIFIED,
+                    old_filename=None,
+                )
+            ]
+
+        def supports_line_question_history(self):
+            return False
+
+        def supports_threaded_pr_questions(self):
+            return False
+
+        def reply_to_comment_from_comment_id(self, comment_id, body):
+            self.replies.append((comment_id, body))
+
+    provider = _ProviderWithDiff()
+    ai_handler = _RecordingAIHandler()
+    question = plq.PR_LineQuestions.__new__(plq.PR_LineQuestions)
+    question.question_str = "Why was this file renamed?"
+    question.git_provider = provider
+    question.ai_handler = ai_handler
+    question.resolve_threads = False
+    question.vars = {
+        "title": "Renamed file",
+        "branch": "feature/rename",
+        "question": question.question_str,
+        "full_hunk": "",
+        "selected_lines": "",
+        "conversation_history": "",
+        "resolve_threads": False,
+        "is_azure_devops": False,
+        "extra_instructions": "",
+    }
+
+    try:
+        settings.set("config.model", "gpt-4o")
+        settings.set("config.model_weak", "")
+        settings.set("config.fallback_models", [])
+        settings.set("config.max_model_tokens", 3000)
+        settings.set("config.max_output_tokens", 100)
+        settings.set("openai.deployment_id", None)
+        settings.set("openai.fallback_deployments", [])
+        settings.set("pr_questions.use_conversation_history", False)
+        settings.set("ask_diff_hunk", "")
+        settings.set("line_start", 9)
+        settings.set("line_end", 10)
+        settings.set("side", side)
+        settings.set("file_name", file_name)
+        settings.set("comment_id", 100)
+
+        await question.run()
+
+        if expects_hunk:
+            assert ai_handler.requests, "expected the model to be called for a matching old path"
+            assert provider.replies == [(100, "answer")]
+        else:
+            assert not ai_handler.requests
+            assert provider.replies == [
+                (
+                    100,
+                    f"Could not find the requested lines of `{file_name}` in this "
+                    "pull request's diff, so there is nothing to answer about.",
+                )
+            ]
     finally:
         restore_settings(saved)
