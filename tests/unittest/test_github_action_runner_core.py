@@ -871,6 +871,7 @@ def test_comment_argument_cannot_disable_recorded_failure_check(monkeypatch, tmp
             return None
 
     monkeypatch.setattr(github_action_runner, "apply_repo_settings", lambda pr_url: None)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(github_action_runner, "get_git_provider", lambda: FakeProvider)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
@@ -1419,6 +1420,7 @@ async def test_action_configured_commands_reapply_one_artifact_after_real_repo_m
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda _url: Provider())
     monkeypatch.setitem(pr_agent_module.command2class, "review", RecordingReviewer)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)

@@ -20,6 +20,7 @@ from typing import NamedTuple, Optional
 
 import aiohttp
 
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.url_safety import (
     MAX_SAFE_REDIRECTS,
@@ -28,6 +29,7 @@ from pr_agent.algo.url_safety import (
 from pr_agent.algo.url_safety import (
     url_is_safe as _url_is_safe,
 )
+from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 from pr_agent.mosaico.diff_provider import parse_unified_diff
@@ -298,6 +300,8 @@ async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
         )
     finally:
         settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_before)
+    if ok is RequestOutcome.SKIPPED:
+        return RouteResult("Request ignored by policy.", ok=True)
     if ok is False:
         return RouteResult(_error_fallback(verb), ok=False)
     artifact = _capture_artifact()
@@ -305,26 +309,23 @@ async def _run_pr_agent(target: str, verb: str) -> "RouteResult":
 
 
 async def _run_ask(target: str, question: str) -> "RouteResult":
-    """Run the ask path directly via PRQuestions (it uses get_git_provider()(pr_url),
-    not the with-context variant). PRQuestions.run() is NOT wrapped by handle_request's
-    try/except, so wrap it here and treat an exception like a swallowed failure.
-
-    PRQuestions.parse_args() joins args as plain text (no --config.* parsing), so the
-    arg-injection trick used by _run_pr_agent cannot apply here. Instead, force
-    publish_output=False on the per-request settings copy (executor.py deepcopies
-    global_settings into starlette_context, so this write is request-scoped) before
-    constructing PRQuestions — run() reads config.publish_output with no
-    apply_repo_settings call after this point that could re-enable publishing."""
-    from pr_agent.tools.pr_questions import PRQuestions
-    get_settings().set("CONFIG.PUBLISH_OUTPUT", False)
-    get_settings().set("CONFIG.PUBLISH_OUTPUT_PROGRESS", False)
+    """Use the same policy boundary as other verbs; preserve literal question text."""
+    from pr_agent.agent.pr_agent import PRAgent
+    settings = get_settings()
+    settings.set("data.answer", "")
+    propagate_before = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
     try:
-        q = PRQuestions(target, args=[question])
-        await q.run()
-    except Exception:
-        get_logger().exception("MOSAICO: ask path failed")
+        ok = await PRAgent().handle_request(
+            target, ["ask", encode_user_text_arg(question), "--config.publish_output=false",
+                     "--config.publish_output_progress=false", "--config.propagate_tool_errors=true"],
+        )
+    finally:
+        settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_before)
+    if ok is RequestOutcome.SKIPPED:
+        return RouteResult("Request ignored by policy.", ok=True)
+    if ok is False:
         return RouteResult(_error_fallback("ask"), ok=False)
-    answer = (q.prediction or "").strip()
+    answer = (settings.get("data.answer", "") or "").strip()
     return RouteResult(answer, ok=True) if answer else RouteResult(_empty_fallback("ask"), ok=True)
 
 
@@ -356,6 +357,7 @@ async def _run_on_diff(diff_body: str, verb: str, text: str, title: str, empty_o
         "files": parsed,
         "languages": _simple_languages(parsed),
         "title": title,
+        "source_url": title if not empty_ok else None,
     })
     settings.set("CONFIG.GIT_PROVIDER", "mosaico_diff")
     if verb == "ask":

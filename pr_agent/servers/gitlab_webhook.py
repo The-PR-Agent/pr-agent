@@ -16,6 +16,7 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -59,7 +60,9 @@ def get_fork_safe_secret_provider():
     return _secret_provider_state["provider"]
 
 
-async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None) -> bool:
+async def handle_request(
+    api_url: str, body: str, log_context: dict, sender_id: str, notify=None
+) -> bool | RequestOutcome:
     log_context["action"] = body
     log_context["event"] = "pull_request" if body == "/review" else "comment"
     log_context["api_url"] = api_url
@@ -101,7 +104,8 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                await agent.handle_request(api_url, new_command)
+                if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                    return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
 
@@ -443,7 +447,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 result = await handle_request(
                     url, body, log_context, sender_id, notify=notify_start_reaction)
-                if not dispatched:
+                if result is RequestOutcome.SKIPPED or not dispatched:
                     return
                 # `propagate_tool_errors` is off, so a tool that failed internally still returns
                 # normally. Reading that as success would tick a comment whose command never ran.

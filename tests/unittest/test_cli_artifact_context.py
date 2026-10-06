@@ -88,6 +88,7 @@ extra_instructions = "Repository instructions"
         async def run(self):
             pass
 
+    monkeypatch.setattr(agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda _url: Provider())
     monkeypatch.setitem(agent_module.command2class, "review", RecordingReviewer)
     monkeypatch.setattr(agent_module, "flush_telemetry", lambda: None)

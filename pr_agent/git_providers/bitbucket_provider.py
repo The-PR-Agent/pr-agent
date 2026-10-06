@@ -10,6 +10,8 @@ import requests
 from atlassian.bitbucket import Cloud
 from starlette_context import context
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
+
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
@@ -69,6 +71,15 @@ def _diffstat_line_count(diff, field: str) -> Optional[int]:
 
 
 class BitbucketProvider(GitProvider):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        pr = self.pr.data
+        return policy_metadata(title=policy_value(pr, "title"),
+                               sender=(policy_value(pr, "author", "nickname")
+                                       or policy_value(pr, "author", "display_name")),
+                               repo_full_name=policy_value(pr, "destination", "repository", "full_name"),
+                               source_branch=policy_value(pr, "source", "branch", "name"),
+                               target_branch=policy_value(pr, "destination", "branch", "name"))
+
     def __init__(
         self, pr_url: Optional[str] = None, incremental: Optional[bool] = False
     ):

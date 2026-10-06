@@ -268,6 +268,15 @@ def get_git_ssl_env() -> dict[str, str]:
 
 
 class GitProvider(ABC):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        """Return policy fields; None means unknown, empty values mean not applicable.
+
+        Providers must implement this contract before configured ignore rules can
+        be evaluated. Never silently allow a new provider lacking policy metadata.
+        Read expensive fields (such as labels) only when requested.
+        """
+        raise NotImplementedError("This provider does not implement request policy metadata")
+
     @abstractmethod
     def is_supported(self, capability: str) -> bool:
         pass

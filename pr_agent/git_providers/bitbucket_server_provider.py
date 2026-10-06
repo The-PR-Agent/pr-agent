@@ -10,6 +10,8 @@ from atlassian.bitbucket import Bitbucket
 from packaging.version import parse as parse_version
 from requests.exceptions import HTTPError
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
+
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.language_handler import build_language_file_matcher, is_valid_file
@@ -21,6 +23,12 @@ from .git_provider import GitProvider, get_git_ssl_env
 
 
 class BitbucketServerProvider(GitProvider):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        return policy_metadata(title=self.pr.title, sender=policy_value(self.pr, "author", "user", "name"),
+                               repo_full_name=f"{self.workspace_slug}/{self.repo_slug}",
+                               source_branch=policy_value(self.pr, "fromRef", "displayId"),
+                               target_branch=policy_value(self.pr, "toRef", "displayId"))
+
     def __init__(
             self, pr_url: Optional[str] = None, incremental: Optional[bool] = False,
             bitbucket_client: Optional[Bitbucket] = None,

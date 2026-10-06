@@ -112,6 +112,7 @@ def reset_response_language():
 
 
 def _patch_request_dependencies(monkeypatch, validate_result=(True, None), update_settings_fn=None):
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     if update_settings_fn is None:
         update_settings_fn = _identity_args
 
@@ -212,6 +213,7 @@ async def test_prepared_override_wins_after_repo_settings_and_next_command_reloa
         async def run(self):
             observed.append(get_settings().get("PR_REVIEWER.EXTRA_INSTRUCTIONS"))
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
     monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
@@ -257,6 +259,7 @@ async def test_prepared_overrides_control_repository_loading(monkeypatch, settin
                              settings.pr_reviewer.require_tests_review,
                              settings.pr_reviewer.extra_instructions))
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
     monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)

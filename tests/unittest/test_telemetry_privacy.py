@@ -50,6 +50,7 @@ def telemetry(monkeypatch):
     counter = _RecordingCounter()
     monkeypatch.setattr(pr_agent_module, "get_tracer", lambda: tracer)
     monkeypatch.setattr(pr_agent_module, "get_commands_counter", lambda: counter)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda args: (True, None))
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)

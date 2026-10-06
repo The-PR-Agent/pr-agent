@@ -8,6 +8,7 @@ from typing import Optional, Union
 import dynaconf
 
 from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -79,6 +80,8 @@ async def _handle_request(url, body, notify=None):
     # behind by a previous command; the tool replaces it with its own on entry.
     init_run_details()
     result = await PRAgent().handle_request(url, body, notify=notify)
+    if result is RequestOutcome.SKIPPED:
+        return RequestOutcome.SKIPPED
     if result is False:
         _mark_action_failed()
     _fail_on_recorded_tool_error()
@@ -93,7 +96,7 @@ async def _handle_configured_command(url, command):
         get_logger().error("Failed to parse a configured command; skipping it.")
         _mark_action_failed()
         return
-    await _handle_request(url, command_args)
+    return await _handle_request(url, command_args)
 
 
 def _mark_action_failed():
@@ -196,7 +199,8 @@ async def _run_review_commands(event_payload):
     get_settings().pr_description.final_update_message = False
     get_logger().info(f"Running review commands: {review_commands}")
     for command in review_commands:
-        await _handle_configured_command(pr_url, command)
+        if await _handle_configured_command(pr_url, command) is RequestOutcome.SKIPPED:
+            return
 
 
 async def run_action():
@@ -334,7 +338,8 @@ async def run_action():
                 get_settings().pr_description.final_update_message = False
                 get_logger().info(f"Running push commands: {push_commands}")
                 for command in push_commands:
-                    await _handle_configured_command(pr_url, command)
+                    if await _handle_configured_command(pr_url, command) is RequestOutcome.SKIPPED:
+                        return
                 return
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("url")

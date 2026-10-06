@@ -26,6 +26,7 @@ class CodeCommitPullRequestResponse:
     """
 
     def __init__(self, json: dict):
+        self.author_arn = json.get("authorArn")
         self.title = json.get("title", "")
         self.description = json.get("description", "")
 

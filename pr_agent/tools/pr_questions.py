@@ -100,6 +100,8 @@ class PRQuestions:
 
             if get_settings().config.publish_output:
                 self._publish_answer(pr_comment)
+            else:
+                get_settings().set("data.answer", (self.prediction or "").strip())
         finally:
             if temporary_comment_published:
                 try:

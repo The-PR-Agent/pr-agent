@@ -17,6 +17,7 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
@@ -42,7 +43,8 @@ def handle_request(
     async def inner():
         try:
             with get_logger().contextualize(**log_context):
-                await PRAgent().handle_request(url, body)
+                if await PRAgent().handle_request(url, body) is RequestOutcome.SKIPPED:
+                    return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to handle webhook: {e}")
 
@@ -209,7 +211,8 @@ async def _run_commands_sequentially(commands: List[str], url: str, log_context:
             log_context["api_url"] = url
 
             with get_logger().contextualize(**log_context):
-                await PRAgent().handle_request(url, body)
+                if await PRAgent().handle_request(url, body) is RequestOutcome.SKIPPED:
+                    return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to handle command: {command} , error: {e}")
 

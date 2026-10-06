@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher, is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
@@ -79,6 +80,11 @@ class CodeCommitProvider(GitProvider):
     # cap is measured on what CodeCommit actually receives. Class-level, like
     # the other providers' max_comment_length, minus the truncation marker
     # limit_output_characters appends.
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        return policy_metadata(title=self.pr.title, sender=policy_value(self.pr, "author_arn"),
+                               repo_full_name=self.repo_name, source_branch=self.pr.source_branch,
+                               target_branch=self.pr.destination_branch)
+
     max_comment_length = 10240 - len("...")
 
     def __init__(self, pr_url: Optional[str] = None, incremental: Optional[bool] = False):
@@ -543,6 +549,7 @@ class CodeCommitProvider(GitProvider):
         # Return our object that mimics PullRequest class from the PyGithub library
         # (This strategy was copied from the LocalGitProvider)
         mimic = PullRequestCCMimic(response.title, diff_files, targets=response.targets)
+        mimic.author_arn = getattr(response, "author_arn", None)
         mimic.description = response.description
         mimic.source_commit = response.targets[0].source_commit
         mimic.source_branch = response.targets[0].source_branch

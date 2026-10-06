@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent, commands, parse_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -227,6 +228,9 @@ def run(inargs=None, args=None):
             else:
                 target = args.pr_url if args.pr_url else "local_diff"
                 result = await PRAgent().handle_request(target, [command] + args.rest)
+            if result is RequestOutcome.SKIPPED:
+                # No tool ran, so there are no command callbacks or failures to drain.
+                return True, False
 
             # litellm defers its success/failure callbacks onto the event loop, which
             # asyncio.run() below tears down the moment this coroutine returns. Give

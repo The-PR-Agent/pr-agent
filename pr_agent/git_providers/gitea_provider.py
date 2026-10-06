@@ -6,6 +6,7 @@ from urllib.parse import quote, urlparse
 import giteapy
 from giteapy.rest import ApiException
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
@@ -52,6 +53,17 @@ class _GiteaCommitAdapter:
 
 
 class GiteaProvider(GitProvider):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        pr = self.pr
+        if pr is None:
+            return policy_metadata(title="", sender="", repo_full_name=f"{self.owner}/{self.repo}",
+                                   source_branch="", target_branch="")
+        return policy_metadata(title=pr.title, sender=policy_value(pr, "user", "login"),
+                               repo_full_name=f"{self.owner}/{self.repo}",
+                               source_branch=policy_value(pr, "head", "ref"),
+                               target_branch=policy_value(pr, "base", "ref"),
+                               labels=self.get_pr_labels() if "labels" in required_fields else ())
+
     _base_url_html: Optional[str] = None  # resolved on first use, see base_url_html
 
     def __init__(self, url: Optional[str] = None):

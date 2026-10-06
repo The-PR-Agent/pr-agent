@@ -214,6 +214,7 @@ async def test_handle_request_uses_real_validator_to_block_forbidden(monkeypatch
     update_settings = Mock()
     tool_factory = Mock()
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
     monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
@@ -250,6 +251,7 @@ async def test_handle_request_rejects_forbidden_mapping_args_in_comment_and_cli(
     update_settings = Mock()
     tool_factory = Mock()
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
     monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
@@ -286,6 +288,7 @@ async def test_handle_request_rejects_mapping_args_as_the_settings_loader_parses
     tool_factory = Mock()
     qdrant_url_before = pr_agent_module.get_settings().get("qdrant.url")
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
     monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)
@@ -318,6 +321,7 @@ async def test_handle_request_allows_protected_key_names_in_setting_values(monke
     tool_factory = Mock(return_value=tool)
     notify = Mock()
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", update_settings)
     monkeypatch.setitem(pr_agent_module.command2class, "custom", tool_factory)

@@ -15,6 +15,7 @@ import requests
 import urllib3.util
 from git import Repo
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -213,6 +214,11 @@ def upload_patch(patch, path):
 
 
 class GerritProvider(GitProvider):
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # The checkout provides no reliable source/target branch names or review labels.
+        return policy_metadata(title=self.pr.title, sender=self.repo.head.commit.author.email,
+                               repo_full_name=self.project, source_branch=None, target_branch=None)
 
     def __init__(self, key: str, incremental=False):
         self.repo_path = None

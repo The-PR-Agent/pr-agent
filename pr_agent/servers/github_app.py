@@ -12,6 +12,7 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
@@ -166,6 +167,8 @@ async def handle_comments_on_pr(body: Dict[str, Any],
                 propagate_tool_errors=True)
             # Optional, and disabled by default: tell the author how the command ended without
             # adding another comment to the thread.
+            if succeeded is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
             provider.react_to_outcome(comment_id, bool(succeeded))
             return succeeded
         else:
@@ -512,11 +515,16 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
                 reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-            check_run = _start_auto_command_check_run(provider, new_command)
+            def notify_start():
+                nonlocal check_run
+                check_run = _start_auto_command_check_run(provider, new_command)
             # Install a fresh collector so `command_failed()` below cannot read a verdict left
             # behind by the previous command; the tool replaces it with its own on entry.
             init_run_details()
-            if await agent.handle_request(api_url, new_command) is False:
+            result = await agent.handle_request(api_url, new_command, notify=notify_start)
+            if result is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
+            if result is False:
                 command_succeeded = False
             elif command_failed():
                 # `propagate_tool_errors` is false by default, so a tool that failed internally
