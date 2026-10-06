@@ -110,7 +110,7 @@ class PRUpdateChangelog:
                 f"Failed to initialize changelog generation after a read error: {setup_error}"
             )
             self._publish_changelog_read_error_fallback()
-            raise changelog_read_error from None
+            raise changelog_read_error  # noqa: B904
 
     async def run(self):
         get_logger().info('Updating the changelog...')
