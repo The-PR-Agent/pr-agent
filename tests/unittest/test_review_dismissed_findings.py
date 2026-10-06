@@ -177,12 +177,10 @@ def test_previous_findings_context_feeds_human_resolved_gitlab_threads(monkeypat
         state["findings"][0]["finding_id"]
 
 
-def test_dismissed_entry_too_large_for_the_budget_keeps_the_stored_active_finding():
+def test_dismissed_entry_too_large_for_the_budget_does_not_fall_back_to_the_active_finding():
     state = reconcile_review_findings(
         None, [{"path": "app.py", "body": _KEY_ISSUE_BODY, "line_start": 2, "line_end": 2}],
         allow_resolution=False, head_sha="head-1").state
     dismissed = [{"path": "app.py", "body": _KEY_ISSUE_BODY, "line_start": 2, "line_end": 2, "reply": "x" * 500}]
 
-    context = json.loads(render_previous_findings(state, len(render_previous_findings(state, 10_000)), dismissed))
-
-    assert [entry["state"] for entry in context] == ["active"]
+    assert render_previous_findings(state, len(render_previous_findings(state, 10_000)), dismissed) == ""

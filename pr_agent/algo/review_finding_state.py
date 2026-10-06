@@ -327,7 +327,7 @@ def render_previous_findings(
 
     Active findings come first, then dismissed ones (inline threads a human resolved without a fix, given as
     findings with an optional `reply`), then resolved ones, each newest first. A dismissed finding replaces
-    the stored finding with the same id, which is rendered instead when the dismissed entry does not fit.
+    the stored finding with the same id, and neither is rendered when the dismissed entry does not fit.
     Each finding is split back into the `issue_header` and `issue_content` the model emitted, so it can
     repeat a still-valid finding verbatim and keep its identity across runs. The block stays within
     `max_chars` (0 disables it).
@@ -342,24 +342,19 @@ def render_previous_findings(
             if finding.get("reply"):
                 normalized["reply"] = finding["reply"]
             dismissed_by_id.setdefault(normalized["finding_id"], normalized)
-    stored = list((state or {}).get("findings", []))
-    replaced = {finding["finding_id"]: finding for finding in stored if finding.get("finding_id") in dismissed_by_id}
-    findings = [finding for finding in stored if finding.get("finding_id") not in replaced]
+    findings = [finding for finding in (state or {}).get("findings", [])
+                if finding.get("finding_id") not in dismissed_by_id]
     active = [finding for finding in findings if finding.get("state") == "ACTIVE"]
     active.sort(key=lambda finding: str(finding.get("last_seen") or ""), reverse=True)
     resolved = [finding for finding in findings if finding.get("state") == "RESOLVED"]
     resolved.sort(key=lambda finding: str(finding.get("resolved_at") or ""), reverse=True)
     entries, context = [], ""
     for finding in active + list(dismissed_by_id.values()) + resolved:
-        options = [finding]
-        if finding["state"] == "DISMISSED" and finding["finding_id"] in replaced:
-            options.append(replaced[finding["finding_id"]])
-        for option in options:
-            candidate = json.dumps(entries + [_previous_finding_entry(option)], ensure_ascii=False, indent=2)
-            if len(candidate) <= max_chars:
-                entries.append(_previous_finding_entry(option))
-                context = candidate
-                break
+        entry = _previous_finding_entry(finding)
+        candidate = json.dumps(entries + [entry], ensure_ascii=False, indent=2)
+        if len(candidate) <= max_chars:
+            entries.append(entry)
+            context = candidate
     return context
 
 
