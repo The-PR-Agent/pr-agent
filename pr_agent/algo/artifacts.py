@@ -97,14 +97,6 @@ def _read_and_truncate(path: Path, max_size: int) -> str:
     return content
 
 
-def format_artifact_content(content: str, label: str, instructions: str) -> str:
-    label = _single_line_artifact_label(label)
-    header = f"CI Artifact: {label}" if label else "CI Artifact"
-    instructions = (instructions or "").strip() or DEFAULT_ARTIFACT_INSTRUCTIONS
-    start_marker, end_marker = _artifact_boundary_markers()
-    return f"{header}\n" f"{start_marker}\n" f"{content}\n" f"{end_marker}\n" f"{instructions}"
-
-
 def load_artifact_context() -> Optional[ArtifactPromptContext]:
     try:
         artifacts_settings = get_settings().get("ARTIFACTS", {})
@@ -152,13 +144,6 @@ def load_artifact_context() -> Optional[ArtifactPromptContext]:
         "start_marker": start_marker,
         "end_marker": end_marker,
     }
-
-
-def load_artifact() -> str:
-    context = load_artifact_context()
-    if not context:
-        return ""
-    return format_artifact_content(context["content"], context["label"], context["instructions"])
 
 
 def inject_artifact_context() -> None:
