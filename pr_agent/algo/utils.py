@@ -570,7 +570,7 @@ def process_can_be_split(emoji, value):
             # markdown_text += f"<tr><td> {emoji}&nbsp;<strong>{key_nice}</strong></td><td>\n\n{value}\n\n</td></tr>\n"
             # markdown_text += f"### {emoji} No multiple PR themes\n\n"
             markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
-        else:
+        elif isinstance(value, list):
             markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
             for split in value:
                 title = split.get('title', '')
