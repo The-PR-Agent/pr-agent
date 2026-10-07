@@ -52,6 +52,9 @@ class _GiteaCommitAdapter:
         raw = raw or {}
         self.sha = raw.get("sha", "")
         self.html_url = raw.get("html_url", "")
+        commit = raw.get("commit")
+        message = commit.get("message") if isinstance(commit, Mapping) else None
+        self.message = message if isinstance(message, str) and message.strip() else ""
 
 
 def _with_default_request_timeout(call_api):
@@ -545,18 +548,12 @@ class GiteaProvider(GitProvider):
     def get_commit_messages(self)-> str:
         """Get commit messages for the PR"""
         max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
-        pr_commits = self.repo_api.get_pr_commits(
-            owner=self.owner,
-            repo=self.repo,
-            pr_number=self.pr_number
-        )
-
-        if not pr_commits:
+        if not self.pr_commits:
             self.logger.error("Failed to get commit messages")
             return ""
 
         try:
-            commit_messages = [commit["commit"]["message"] for commit in pr_commits if commit]
+            commit_messages = [commit.message for commit in reversed(self.pr_commits) if commit.message]
 
             if not commit_messages:
                 self.logger.error("No commit messages found")

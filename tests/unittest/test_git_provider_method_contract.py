@@ -108,6 +108,7 @@ def _gitea(monkeypatch) -> GiteaProvider:
     provider.owner = "owner"
     provider.repo = "repo"
     provider.pr_number = 7
+    provider.sha = "head-sha"
     provider.enabled_pr = True
     provider.enabled_issue = False
     provider.issue_number = None
@@ -116,6 +117,7 @@ def _gitea(monkeypatch) -> GiteaProvider:
     provider.repo_api.add_reaction_comment.return_value = SimpleNamespace(id=REACTION_ID)
     provider.repo_api.remove_reaction_comment.return_value = SimpleNamespace(status=200)
     provider.repo_api.get_pr_commits.return_value = [{"commit": {"message": COMMIT_MESSAGE}}]
+    provider._set_pr_commits()
     return provider
 
 
