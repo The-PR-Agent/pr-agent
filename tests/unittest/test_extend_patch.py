@@ -386,14 +386,14 @@ class TestExtendPatchZeroLengthHunks:
     ORIGINAL = 'a\nb\nc\nd\ne\nf\n'
 
     def test_pure_insertion_extended_both_sides(self):
-        # `git diff -U0` after inserting X between c and d
+        # Use the `git diff -U0` output after inserting X between c and d
         new_file = 'a\nb\nc\nX\nd\ne\nf\n'
         actual = extend_patch(self.ORIGINAL, '@@ -3,0 +4 @@\n+X', patch_extra_lines_before=1,
                               patch_extra_lines_after=1, filename='f.py', new_file_str=new_file)
         assert actual == '\n@@ -3,2 +3,3 @@ \n c\n+X\n d'
 
     def test_pure_deletion_extended_both_sides(self):
-        # `git diff -U0` after deleting c and d
+        # Use the `git diff -U0` output after deleting c and d
         new_file = 'a\nb\ne\nf\n'
         actual = extend_patch(self.ORIGINAL, '@@ -3,2 +2,0 @@\n-c\n-d', patch_extra_lines_before=1,
                               patch_extra_lines_after=1, filename='f.py', new_file_str=new_file)
@@ -406,7 +406,7 @@ class TestExtendPatchZeroLengthHunks:
         assert actual == '\n@@ -4,2 +4,3 @@ \n+X\n d\n e'
 
     def test_pure_insertion_at_end_of_file_keeps_header(self):
-        # nothing can be added after the last line, so the zero-length header must stay as it was
+        # Keep the header as it was: nothing can be added after the last line
         new_file = 'a\nb\nc\nd\ne\nf\nX\n'
         actual = extend_patch(self.ORIGINAL, '@@ -6,0 +7 @@\n+X', patch_extra_lines_before=0,
                               patch_extra_lines_after=2, filename='f.py', new_file_str=new_file)

@@ -105,8 +105,8 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                         extended_patch_lines.extend(delta_lines_original)
 
                     section_header, size1, size2, start1, start2 = extract_hunk_headers(match)
-                    # A zero-length side (a pure insertion or deletion, as in `git diff -U0`) numbers the
-                    # line *before* the change, so shift it to the first line the hunk position refers to.
+                    # Shift a zero-length side (a pure insertion or deletion, as in `git diff -U0`) by one line:
+                    # its header numbers the line *before* the change.
                     header_start1, header_start2 = start1, start2
                     if size1 == 0:
                         start1 += 1
@@ -201,7 +201,7 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                         extended_start2 = start2
                         extended_size2 = size2
                         delta_lines_original = []
-                    # a hunk that is still zero-length keeps the header numbering of the original patch
+                    # Keep the original header numbering for a hunk that is still zero-length after extension
                     if extended_size1 == 0:
                         extended_start1 = header_start1
                     if extended_size2 == 0:
