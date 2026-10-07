@@ -34,10 +34,6 @@ def get_artifact_context(tool_name: str) -> Optional[ArtifactPromptContext]:
     return context if tool_name.lower() in targets else None
 
 
-def reapply_artifact_context() -> None:
-    """Compatibility hook; task-local artifact context does not require settings reapplication."""
-
-
 def resolve_artifact_path(path: str) -> Optional[Path]:
     if not path:
         return None

@@ -216,7 +216,6 @@ async def test_prepared_override_wins_after_repo_settings_and_next_command_reloa
 
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
 
@@ -262,7 +261,6 @@ async def test_prepared_overrides_control_repository_loading(monkeypatch, settin
 
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
 

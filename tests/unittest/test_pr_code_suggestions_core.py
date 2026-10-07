@@ -2181,6 +2181,7 @@ def _render_suggestions_user_prompt(prompt_key: str, discussion_context: str) ->
         "diff_no_line_numbers": "+value",
         "duplicate_prompt_examples": False,
         "suggestion_discussion_context": discussion_context,
+        "artifact_context": None,
     }
     environment = Environment(undefined=StrictUndefined, autoescape=True)
     return environment.from_string(get_settings().get(prompt_key)).render(variables)

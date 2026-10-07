@@ -35,7 +35,6 @@ def test_cli_disabled_ingress_does_not_reuse_a_calling_context_payload(monkeypat
 
     class FakeAgent:
         async def handle_request(self, *_args, **_kwargs):
-            artifacts.reapply_artifact_context()
             settings = get_settings()
             observed.append((
                 str(settings.pr_reviewer.extra_instructions),

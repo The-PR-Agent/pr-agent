@@ -123,7 +123,6 @@ async def test_routed_publication_outcome_with_empty_run_details(
 
     monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fake_retry)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "add_docs", lambda *_args, **_kwargs: tool)
     span = Mock()
     settings = get_settings()

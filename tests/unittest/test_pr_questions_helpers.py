@@ -102,7 +102,6 @@ def raw_question_tools(monkeypatch):
         tools.append(self)
 
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider", lambda: lambda _url: provider)
     monkeypatch.setattr("pr_agent.tools.pr_questions.get_main_pr_language", lambda *_args: "Python")
