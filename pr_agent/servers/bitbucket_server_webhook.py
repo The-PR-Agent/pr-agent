@@ -129,7 +129,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
     pr_id = pull_request.get("id")
     repository_name = repository.get("slug", "")
     project_name = (repository.get("project") or {}).get("key", "")
-    if pr_id is None:
+    if pr_id in (None, -1):
         get_logger().info(f"Ignoring event without a pull request: {data.get('eventKey')}", **log_context)
         return JSONResponse(
             status_code=status.HTTP_200_OK,
