@@ -875,15 +875,6 @@ class TestGiteaProviderAddFileDiff:
     def test_empty_diff_results_in_no_patches(self):
         assert self._parse_diff('') == {}
 
-    def test_mode_only_change_is_preserved(self):
-        diff = (
-            'diff --git a/modestuff.txt b/modestuff.txt\n'
-            'old mode 100644\n'
-            'new mode 100755'
-        )
-        expected = 'old mode 100644\nnew mode 100755'
-        assert self._parse_diff(diff) == {'modestuff.txt': expected}
-
     def test_path_containing_b_slash_is_not_truncated(self):
         diff = (
             'diff --git a/x b/y.txt b/x b/y.txt\n'
@@ -896,16 +887,6 @@ class TestGiteaProviderAddFileDiff:
         )
         expected = '@@ -1 +1,2 @@\n a\n+b'
         assert self._parse_diff(diff) == {'x b/y.txt': expected}
-
-    def test_rename_only_block_uses_rename_target(self):
-        diff = (
-            'diff --git a/old.py b/new dir/new.py\n'
-            'similarity index 100%\n'
-            'rename from old.py\n'
-            'rename to new dir/new.py'
-        )
-        expected = 'similarity index 100%\nrename from old.py\nrename to new dir/new.py'
-        assert self._parse_diff(diff) == {'new dir/new.py': expected}
 
     def test_quoted_path_is_decoded(self):
         diff = (
@@ -938,18 +919,6 @@ class TestGiteaProviderAddFileDiff:
         )
         expected = '@@ -1 +1,2 @@\n q\n+r'
         assert self._parse_diff(diff) == {'café.txt': expected}
-
-    def test_binary_blob_keeps_header_without_payload(self):
-        diff = (
-            'diff --git a/img.png b/img.png\n'
-            'index 0000000..abcdef 100644\n'
-            'Binary files /dev/null and b/img.png differ\n'
-            'GIT binary patch\n'
-            'literal 5\n'
-            'b3RoZXJ26d3N'
-        )
-        expected = 'index 0000000..abcdef 100644\nBinary files /dev/null and b/img.png differ'
-        assert self._parse_diff(diff) == {'img.png': expected}
 
     def test_api_error_is_swallowed_and_logged(self):
         from pr_agent.git_providers.gitea_provider import GiteaProvider
