@@ -96,6 +96,23 @@ class TestLoadArtifactContext:
         assert context["start_marker"].startswith("<<<CI_ARTIFACT_")
         assert context["end_marker"] == context["start_marker"].replace("_BEGIN>>>", "_END>>>")
 
+    def test_whitespace_only_label_falls_back_to_filename(self, tmp_path):
+        artifact = tmp_path / "artifact-output.log"
+        artifact.write_text("content")
+        with patch("pr_agent.algo.artifacts.get_settings") as mock_gs:
+            mock_gs.return_value.get.return_value = {
+                "enable": True,
+                "artifact_path": str(artifact),
+                "artifact_instructions": "",
+                "artifact_label": "  \n \t",
+                "max_artifact_size": 50000,
+            }
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):
+                context = load_artifact_context()
+        assert context is not None
+        assert context["label"] == artifact.name
+
+
     def test_loads_context_with_custom_instructions(self, tmp_path):
         artifact = tmp_path / "results.xml"
         artifact.write_text("FAILED: test_login")

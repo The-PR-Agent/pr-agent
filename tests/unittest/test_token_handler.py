@@ -149,6 +149,20 @@ def test_warns_when_rendered_user_prompt_omits_fields_that_probe_renders(monkeyp
     assert "user prompt does not render" in _last_warning(logger)
 
 
+def test_warns_when_artifact_content_is_also_rendered_outside_markers(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
+    variables = _artifact_context()
+    token_handler.TokenHandler(
+        object(),
+        variables,
+        "{{ artifact_context.instructions }}",
+        "{{ artifact_context.content }}\n"
+        "{{ artifact_context.start_marker }}Label: {{ artifact_context.label }}\n"
+        "{{ artifact_context.content }}\n{{ artifact_context.end_marker }}",
+    )
+    assert "user prompt does not render" in _last_warning(logger)
+
+
 def test_warns_when_instructions_repeat_unrendered_artifact_fields(monkeypatch):
     logger = _patch_artifact_warning_dependencies(monkeypatch)
     variables = _artifact_context()

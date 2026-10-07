@@ -134,11 +134,15 @@ def load_artifact_context() -> Optional[ArtifactPromptContext]:
     if not content:
         return None
 
-    label = artifacts_settings.get("artifact_label", "") or artifact_path.name
+    label = (
+        _single_line_artifact_label(artifacts_settings.get("artifact_label", "") or "")
+        or _single_line_artifact_label(artifact_path.name)
+        or "CI artifact"
+    )
     start_marker, end_marker = _artifact_boundary_markers()
     instructions = (artifacts_settings.get("artifact_instructions", "") or "").strip()
     return {
-        "label": _single_line_artifact_label(label),
+        "label": label,
         "content": content,
         "instructions": instructions or DEFAULT_ARTIFACT_INSTRUCTIONS,
         "start_marker": start_marker,

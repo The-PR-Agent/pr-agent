@@ -20,7 +20,9 @@ _artifact_prompt_warning_cache: dict[bytes, None] = {}
 _artifact_prompt_warning_lock = Lock()
 
 
-def _artifact_fields_inside_markers(prompt: str, context: dict) -> bool:
+def _artifact_fields_inside_markers(
+    prompt: str, context: dict, *, require_fields_only_inside_markers: bool = False
+) -> bool:
     start_marker = context.get("start_marker")
     end_marker = context.get("end_marker")
     label = context.get("label")
@@ -32,7 +34,12 @@ def _artifact_fields_inside_markers(prompt: str, context: dict) -> bool:
     if start < 0 or end < 0:
         return False
     marked_content = prompt[start + len(start_marker):end]
-    return label in marked_content and content in marked_content
+    if label not in marked_content or content not in marked_content:
+        return False
+    if require_fields_only_inside_markers:
+        unmarked_content = prompt[:start] + prompt[end + len(end_marker):]
+        return label not in unmarked_content and content not in unmarked_content
+    return True
 
 
 def _artifact_prompt_warning_is_new(system_template: str, user_template: str, issues: tuple[str, ...]) -> bool:
@@ -84,7 +91,7 @@ def warn_if_artifact_context_prompt_is_invalid(
         probe_variables = {**variables, "artifact_context": probe_context}
         probed_user_prompt = user_jinja.render(probe_variables)
         probed_user_fields_present = _artifact_fields_inside_markers(
-            probed_user_prompt, probe_context
+            probed_user_prompt, probe_context, require_fields_only_inside_markers=True
         )
         actual_user_fields_present = _artifact_fields_inside_markers(user_prompt, context)
         if not probed_user_fields_present or not actual_user_fields_present:

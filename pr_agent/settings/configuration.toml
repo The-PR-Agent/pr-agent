@@ -591,11 +591,11 @@ max_skills_tokens = 8000 # token budget for the combined skills_context block
 enable = false
 # File path to the artifact (relative to GITHUB_WORKSPACE, or absolute)
 artifact_path = ""
-# Custom instructions appended after the artifact content (leave empty for a sensible default)
+# Analysis guidance rendered separately before the untrusted artifact label and content (leave empty for a sensible default)
 artifact_instructions = ""
 # Label shown to the AI — defaults to the filename when empty.
 artifact_label = ""
-# Which tools receive artifact context.
+# Which supported tools receive artifact context; unsupported names are skipped with a warning.
 target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 # Max artifact size in characters (content is truncated if exceeded)
 max_artifact_size = 50000
