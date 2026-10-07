@@ -89,7 +89,7 @@ def test_e2e_run_github_app():
         logger.error(f"Failed to run e2e test for GitHub app: {e}")
         logger.info(f"Deleting the branch {new_branch}")
         project.branches.delete(new_branch)
-        raise AssertionError()
+        raise AssertionError() from e
 
 
 if __name__ == '__main__':

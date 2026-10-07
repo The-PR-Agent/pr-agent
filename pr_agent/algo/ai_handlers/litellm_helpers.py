@@ -274,7 +274,7 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
                 raise ValueError(f"LITELLM.EXTRA_BODY cannot override existing parameters: {', '.join(colliding_keys)}")
             kwargs.update(litellm_extra_body)
         except json.JSONDecodeError as e:
-            raise ValueError(f"LITELLM.EXTRA_BODY contains invalid JSON: {str(e)}")
+            raise ValueError(f"LITELLM.EXTRA_BODY contains invalid JSON: {str(e)}") from e
     return kwargs
 
 

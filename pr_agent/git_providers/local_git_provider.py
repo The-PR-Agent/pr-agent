@@ -268,8 +268,7 @@ class LocalGitProvider(GitProvider):
         commits_diff = list(self.repo.iter_commits(self.target_branch_name + '..HEAD'))
         # Get the commit messages and concatenate
         commit_messages = " ".join([commit.message for commit in commits_diff])
-        # TODO Handle the description better - maybe use gpt-3.5 summarisation here?
-        return commit_messages[:200]  # Use max 200 characters
+        return commit_messages
 
     def get_pr_title(self):
         """

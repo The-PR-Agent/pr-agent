@@ -110,7 +110,7 @@ class PRUpdateChangelog:
                 f"Failed to initialize changelog generation after a read error: {setup_error}"
             )
             self._publish_changelog_read_error_fallback()
-            raise changelog_read_error
+            raise changelog_read_error  # noqa: B904
 
     async def run(self):
         get_logger().info('Updating the changelog...')
@@ -147,7 +147,7 @@ class PRUpdateChangelog:
                     f"Failed to generate changelog fallback after a read error: {generation_error}"
                 )
                 self._publish_changelog_read_error_fallback()
-                raise changelog_read_error
+                raise changelog_read_error  # noqa: B904
 
             new_file_content, answer = self._prepare_changelog_update()
 

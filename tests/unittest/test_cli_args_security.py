@@ -128,6 +128,8 @@ FORBIDDEN_ARGS = [
     '--github_app={private_key: "---BEGIN---", app_id: 123}',
     '--gitea={web_url: "https://evil.example"}',
     '--openai={key: "sk-leaked"}',
+    '--github={deployment_type: "app"}',
+    '--gitlab={ssl_verify: false}',
     # an empty container still exposes its key path for validation
     '--qdrant={url: {}}',
     '--qdrant={server: {url: []}}',
@@ -144,6 +146,10 @@ ALLOWED_ARGS_SINGLE = [
     # a mapping value whose nested keys are all allowed stays accepted
     "--qdrant={timeout: 5, prefer_grpc: true}",
     "--pr_similar_issue.max_issues_to_scan=50",
+    "--github.publish_as_check_run=true",
+    "--gitlab.handle_push_trigger=true",
+    "--bitbucket.identity_request_timeout=10",
+    "--gitea.handle_push_trigger=true",
     # non-flag arguments are not validated against the forbidden list
     "some-positional-arg",
     "yes",

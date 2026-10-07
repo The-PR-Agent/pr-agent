@@ -20,11 +20,13 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 
 **Notes:**
 
-1. in addition to editing your local configuration file, you can also change any configuration value by adding it to the command line:
+1. In addition to editing your local configuration file, you can also change repository-configurable values by adding them to the command line:
 
 ```
 python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructions="focus on the file: ..."
 ```
+
+Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See [Configuration Options](./configuration_options.md#local-configuration-file) for details.
 
 2. You can print results locally, without publishing them, by setting in `configuration.toml`:
 

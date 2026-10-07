@@ -32,7 +32,7 @@ If you set `config.output_relevant_configurations` to True, each tool will also 
 
 By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent tools (either at PR creation or via manual trigger) for the configuration to take effect.
 
-Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host.
+Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host. The same restriction applies to provider authentication and TLS settings: `github.deployment_type`, `bitbucket.auth_type`, `gitlab.auth_type`, `gitlab.ssl_verify`, `gitea.skip_ssl_verification`, and `gitea.ssl_ca_cert`. These settings are also rejected in command arguments.
 
 For example, if you set in `.pr_agent.toml`:
 
@@ -109,7 +109,7 @@ For example, with `global_settings_repo = "pr-agent-settings"` in a GitHub organ
 
 - The file `my-org/pr-agent-settings/.pr_agent.toml` (read from that repository's default branch) serves as a global configuration file for all the repos in the organization.
 
-- A repository such as `my-org/my-repo` inherits that global configuration file, and may override any of its values in its own `.pr_agent.toml`.
+- A repository such as `my-org/my-repo` inherits that global configuration file, and may override its repository-configurable values in its own `.pr_agent.toml`.
 
 ## Project/Group level configuration file
 

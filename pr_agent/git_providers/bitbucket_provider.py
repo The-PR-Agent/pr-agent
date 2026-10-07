@@ -319,7 +319,7 @@ class BitbucketProvider(GitProvider):
                     continue
 
             if pr_patches is None:
-                raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}")
+                raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}") from e
 
         diff_split = _split_raw_diff(pr_patches)
         # filter all elements of 'diff_split' that are of indices in 'diffs_original' that are not in 'diffs'

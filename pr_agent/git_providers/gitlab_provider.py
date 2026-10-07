@@ -289,7 +289,7 @@ class GitLabProvider(GitProvider):
             refresh_session_request_timeout(self.gl)
         except (GitlabError, RequestException, ValueError) as e:
             get_logger().error(f"Failed to create GitLab instance: {e}")
-            raise ValueError(f"Unable to authenticate with GitLab: {e}")
+            raise ValueError(f"Unable to authenticate with GitLab: {e}") from e
         self.max_comment_chars = 65000
         self.id_project = None
         self.id_mr = None
