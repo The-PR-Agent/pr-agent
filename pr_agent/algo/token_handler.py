@@ -6,12 +6,20 @@ from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from threading import Lock
 
-from jinja2 import StrictUndefined, meta
+from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
 from tiktoken import encoding_for_model, get_encoding
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+
+def _renders_artifact_fields(prompt: str, artifact_context: dict, fields: tuple[str, ...]) -> bool:
+    return all(
+        isinstance(value, str) and value and value in prompt
+        for field in fields
+        for value in (artifact_context.get(field),)
+    )
 
 
 def _await_coroutine(coro):
@@ -146,23 +154,27 @@ class TokenHandler:
             environment = SandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
             user_prompt = environment.from_string(user).render(vars)
-            if vars.get("artifact_context"):
-                system_variables = meta.find_undeclared_variables(environment.parse(system))
-                user_variables = meta.find_undeclared_variables(environment.parse(user))
-                missing_roles = [
-                    role
-                    for role, referenced in (("system", system_variables), ("user", user_variables))
-                    if "artifact_context" not in referenced
-                ]
+            artifact_context = vars.get("artifact_context")
+            if artifact_context:
+                missing_roles = []
+                if not isinstance(artifact_context, dict) or not _renders_artifact_fields(
+                    system_prompt, artifact_context, ("instructions",)
+                ):
+                    missing_roles.append("system")
+                if not isinstance(artifact_context, dict) or not _renders_artifact_fields(
+                    user_prompt, artifact_context, ("label", "content", "start_marker", "end_marker")
+                ):
+                    missing_roles.append("user")
                 if missing_roles:
                     prompt_names = " and ".join(missing_roles)
                     prompt_noun = "prompts" if len(missing_roles) > 1 else "prompt"
                     verb = "do not" if len(missing_roles) > 1 else "does not"
                     get_logger().warning(
                         "CI artifact context is available, but the active "
-                        f"{prompt_names} {prompt_noun} {verb} reference artifact_context. "
-                        "Update custom prompts to render artifact instructions in the system prompt "
-                        "and marked artifact label/content in the user prompt."
+                        f"{prompt_names} {prompt_noun} {verb} render all required artifact fields. "
+                        "Update custom prompts to render artifact_context.instructions in the system "
+                        "prompt and all of artifact_context.label, artifact_context.content, "
+                        "artifact_context.start_marker, and artifact_context.end_marker in the user prompt."
                     )
             system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
             user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))

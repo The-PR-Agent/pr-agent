@@ -72,65 +72,94 @@ def test_no_pr_handler_initializes_zero_prompt_tokens(monkeypatch):
     assert handler.prompt_tokens == 0
 
 
-def test_warns_when_artifact_context_is_missing_from_one_active_prompt(monkeypatch):
+def _artifact_context():
+    return {
+        "artifact_context": {
+            "instructions": "Check failures",
+            "label": "ci.log",
+            "content": "FAILED",
+            "start_marker": "<START>",
+            "end_marker": "<END>",
+        }
+    }
+
+
+def _expected_artifact_warning(roles):
+    role_names = " and ".join(roles)
+    noun = "prompts" if len(roles) > 1 else "prompt"
+    verb = "do not" if len(roles) > 1 else "does not"
+    return (
+        "CI artifact context is available, but the active "
+        f"{role_names} {noun} {verb} render all required artifact fields. "
+        "Update custom prompts to render artifact_context.instructions in the system prompt "
+        "and all of artifact_context.label, artifact_context.content, artifact_context.start_marker, "
+        "and artifact_context.end_marker in the user prompt."
+    )
+
+
+def _patch_artifact_warning_dependencies(monkeypatch):
     monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings())
     encoder = MagicMock()
     encoder.encode.return_value = []
     monkeypatch.setattr(token_handler.TokenEncoder, "get_token_encoder", lambda _model=None: encoder)
     logger = MagicMock()
     monkeypatch.setattr(token_handler, "get_logger", lambda: logger)
+    return logger
 
+
+def test_warns_when_artifact_context_is_missing_from_one_active_prompt(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
     token_handler.TokenHandler(
         object(),
-        {"artifact_context": {"instructions": "Check failures"}},
+        _artifact_context(),
         "{{ artifact_context.instructions }}",
         "Review this PR",
     )
-
-    logger.warning.assert_called_once_with(
-        "CI artifact context is available, but the active user prompt does not reference artifact_context. "
-        "Update custom prompts to render artifact instructions in the system prompt and marked artifact "
-        "label/content in the user prompt."
-    )
+    logger.warning.assert_called_once_with(_expected_artifact_warning(["user"]))
 
 
 def test_warns_when_both_active_prompts_omit_artifact_context(monkeypatch):
-    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings())
-    encoder = MagicMock()
-    encoder.encode.return_value = []
-    monkeypatch.setattr(token_handler.TokenEncoder, "get_token_encoder", lambda _model=None: encoder)
-    logger = MagicMock()
-    monkeypatch.setattr(token_handler, "get_logger", lambda: logger)
-
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
     token_handler.TokenHandler(
         object(),
-        {"artifact_context": {"content": "FAILED"}},
+        _artifact_context(),
         "Analyze the pull request",
         "Review the pull request",
     )
+    logger.warning.assert_called_once_with(_expected_artifact_warning(["system", "user"]))
 
-    logger.warning.assert_called_once_with(
-        "CI artifact context is available, but the active system and user prompts do not reference artifact_context. "
-        "Update custom prompts to render artifact instructions in the system prompt and marked artifact "
-        "label/content in the user prompt."
+
+def test_warns_when_artifact_context_is_only_used_in_conditions(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
+    token_handler.TokenHandler(
+        object(),
+        _artifact_context(),
+        "{% if artifact_context %}Artifact available{% endif %}",
+        "{% if artifact_context %}Artifact loaded{% endif %}",
     )
+    logger.warning.assert_called_once_with(_expected_artifact_warning(["system", "user"]))
+
+
+def test_warns_when_user_prompt_omits_artifact_boundaries(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
+    token_handler.TokenHandler(
+        object(),
+        _artifact_context(),
+        "{{ artifact_context.instructions }}",
+        "{{ artifact_context.label }}{{ artifact_context.content }}",
+    )
+    logger.warning.assert_called_once_with(_expected_artifact_warning(["user"]))
 
 
 def test_does_not_warn_when_both_active_prompts_render_artifact_context(monkeypatch):
-    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings())
-    encoder = MagicMock()
-    encoder.encode.return_value = []
-    monkeypatch.setattr(token_handler.TokenEncoder, "get_token_encoder", lambda _model=None: encoder)
-    logger = MagicMock()
-    monkeypatch.setattr(token_handler, "get_logger", lambda: logger)
-
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
     token_handler.TokenHandler(
         object(),
-        {"artifact_context": {"instructions": "Check failures", "content": "FAILED"}},
+        _artifact_context(),
         "{{ artifact_context.instructions }}",
-        "{{ artifact_context.content }}",
+        "{{ artifact_context.start_marker }}{{ artifact_context.label }}"
+        "{{ artifact_context.content }}{{ artifact_context.end_marker }}",
     )
-
     logger.warning.assert_not_called()
 
 

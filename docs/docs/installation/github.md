@@ -435,8 +435,9 @@ Setting `artifact_path` turns the feature on by itself; there is no separate ena
 
 When overriding a supported tool's prompt, keep `artifact_context.instructions` in the system prompt and render
 `artifact_context.label`, `artifact_context.content`, `artifact_context.start_marker`, and `artifact_context.end_marker` in
-a clearly marked, untrusted section of the user prompt. PR-Agent warns when a loaded artifact is omitted from
-either active prompt. This replaces the legacy `extra_instructions` behavior for CI artifacts.
+a clearly marked, untrusted section of the user prompt. PR-Agent checks the rendered prompts for these values and
+warns if any required field is missing; referencing `artifact_context` only in a template condition is not enough.
+This replaces the legacy `extra_instructions` behavior for CI artifacts.
 
 The remaining knobs live in the `[artifacts]` section of your configuration:
 
