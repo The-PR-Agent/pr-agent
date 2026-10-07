@@ -87,7 +87,7 @@ def warn_if_artifact_context_prompt_is_invalid(
             probed_user_prompt, probe_context
         )
         actual_user_fields_present = _artifact_fields_inside_markers(user_prompt, context)
-        if not probed_user_fields_present and not actual_user_fields_present:
+        if not probed_user_fields_present or not actual_user_fields_present:
             issues.append("user prompt does not render the artifact label and content between its markers")
 
         leaked_fields = [
@@ -97,8 +97,9 @@ def warn_if_artifact_context_prompt_is_invalid(
         ]
         if leaked_fields:
             issues.append(f"system prompt renders untrusted artifact {', '.join(leaked_fields)}")
-    except Exception:
-        issues.append("artifact prompt fields could not be verified")
+    except Exception as exc:
+        get_logger().debug("CI artifact prompt validation probe failed.", exc_info=True)
+        issues.append(f"artifact prompt fields could not be verified ({type(exc).__name__})")
 
     if not issues or not _artifact_prompt_warning_is_new(system_template, user_template, tuple(issues)):
         return

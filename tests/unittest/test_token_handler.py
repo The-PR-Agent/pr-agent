@@ -136,6 +136,54 @@ def test_warns_when_artifact_context_is_only_used_in_conditions(monkeypatch):
     assert "user prompt does not render" in message
 
 
+def test_warns_when_rendered_user_prompt_omits_fields_that_probe_renders(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
+    context = _artifact_context()
+    token_handler.warn_if_artifact_context_prompt_is_invalid(
+        "{{ artifact_context.instructions }}",
+        "{{ artifact_context.start_marker }}{{ artifact_context.label }}"
+        "{{ artifact_context.content }}{{ artifact_context.end_marker }}",
+        context,
+        "Flag failing tests.",
+        "Rendered without the artifact section",
+    )
+    assert "user prompt does not render" in _last_warning(logger)
+
+
+def test_warns_when_instructions_repeat_unrendered_artifact_fields(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
+    variables = _artifact_context()
+    variables["artifact_context"]["instructions"] = (
+        "Compare label ci.log with content FAILED_CI_ARTIFACT_7461."
+    )
+    token_handler.TokenHandler(
+        object(),
+        variables,
+        "{{ artifact_context.instructions }}",
+        "{{ artifact_context.start_marker }}{{ artifact_context.instructions }}"
+        "{{ artifact_context.end_marker }}",
+    )
+    assert "user prompt does not render" in _last_warning(logger)
+
+
+def test_probe_failure_warning_includes_the_exception(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
+    context = _artifact_context()
+    token_handler.warn_if_artifact_context_prompt_is_invalid(
+        "{{ missing_artifact_probe }}",
+        "{{ artifact_context.start_marker }}{{ artifact_context.label }}"
+        "{{ artifact_context.content }}{{ artifact_context.end_marker }}",
+        context,
+        "Rendered system prompt",
+        "Rendered user prompt",
+    )
+    message = _last_warning(logger)
+    assert "UndefinedError" in message
+    logger.debug.assert_called_once_with(
+        "CI artifact prompt validation probe failed.", exc_info=True
+    )
+
+
 def test_warns_when_user_prompt_omits_artifact_boundaries(monkeypatch):
     logger = _patch_artifact_warning_dependencies(monkeypatch)
     token_handler.TokenHandler(
