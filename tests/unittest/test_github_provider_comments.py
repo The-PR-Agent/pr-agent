@@ -719,7 +719,10 @@ class _FakeRequester:
 
     def requestJson(self, method, url, input=None):
         self.calls.append(("json", method, url, input))
-        return self._responses.pop(0)
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def _make_provider_with_graphql(rest_comment_data, graphql_responses):
@@ -822,6 +825,93 @@ class TestResolveCommentThread:
         assert provider.resolve_comment_thread(123) is True
         assert len(requester.calls) == len(pages) + 2
         assert all("variables" not in call[3] for call in requester.calls[1:])
+
+    @pytest.mark.parametrize("failure", [
+        "metadata", "cursor", "response", "json", "request", "github", "graphql",
+        "node", "comments", "connection", "page_info", "repeated_cursor",
+    ])
+    def test_unusable_candidate_does_not_block_later_matching_thread(self, failure, monkeypatch):
+        logger = MagicMock()
+        monkeypatch.setattr(gh_module, "get_logger", lambda: logger)
+        broken = _make_overflow_thread("PRRT_other")
+        response = _make_comment_page(["PRR_reply"], thread_id="PRRT_other")
+        reason = ""
+        if failure == "metadata":
+            broken["comments"]["pageInfo"] = None
+            pages, reason = [], "invalid metadata"
+        elif failure == "cursor":
+            broken["comments"]["pageInfo"]["endCursor"] = None
+            pages, reason = [], "invalid or repeated comment cursor"
+        elif failure == "response":
+            pages, reason = ["secret-response"], "invalid response format"
+        elif failure == "json":
+            pages, reason = [(200, {}, "secret-invalid-json")], "lookup failed (JSONDecodeError)"
+        elif failure == "request":
+            pages, reason = [RequestException("secret-request")], "lookup failed (RequestException)"
+        elif failure == "github":
+            pages, reason = [_FakeGithubException(502, {"message": "secret-github"})], "lookup failed"
+        elif failure == "graphql":
+            pages = [_make_graphql_response({"node": None}, errors=[{"message": "secret-graphql"}])]
+            reason = "GraphQL errors"
+        elif failure in {"node", "comments", "connection", "page_info"}:
+            data = json.loads(response[2])["data"]
+            if failure == "node":
+                data["node"]["id"] = "PRRT_wrong"
+                reason = "invalid thread node"
+            elif failure == "comments":
+                data["node"]["comments"]["nodes"] = [None]
+                reason = "invalid comment nodes"
+            elif failure == "connection":
+                data["node"]["comments"] = None
+                reason = "lookup failed (AttributeError)"
+            else:
+                data["node"]["comments"]["nodes"] = [{"id": "PRR_absent"}]
+                data["node"]["comments"]["pageInfo"] = None
+                reason = "invalid comment page info"
+            pages = [_make_graphql_response(data)]
+        else:
+            pages = [_make_comment_page(["PRR_absent"], thread_id="PRRT_other",
+                                        has_next_page=True, cursor="cursor1")]
+            reason = "invalid or repeated comment cursor"
+        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([broken, _make_overflow_thread()]),
+            *pages, _make_comment_page(["PRR_reply"]), resolved,
+        ])
+
+        assert provider.resolve_comment_thread(123) is True
+        assert requester.calls[0][2].endswith("/pulls/comments/123")
+        assert requester.calls[-2][3]["variables"] == {"threadId": "PRRT_target", "cursor": "cursor1"}
+        mutations = [c for c in requester.calls[1:] if "resolveReviewThread" in c[3]["query"]]
+        assert len(mutations) == 1
+        assert 'threadId: "PRRT_target"' in mutations[0][3]["query"]
+        assert len(requester.calls) == 4 + len(pages)
+        messages = [call.args[0] for call in logger.warning.call_args_list]
+        assert any("PRRT_other" in message and reason in message for message in messages)
+        assert all("secret-" not in message for message in messages)
+        logger.error.assert_not_called()
+
+    @pytest.mark.parametrize("matched", [False, True])
+    def test_failed_candidate_then_resolved_or_absent_match_does_not_mutate(self, matched):
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread("PRRT_other", cursor=None), _make_overflow_thread()]),
+            _make_comment_page(["PRR_reply" if matched else "PRR_absent"], resolved=True),
+        ])
+        assert provider.resolve_comment_thread(123) is matched
+        assert len(requester.calls) == 3
+        assert not any("resolveReviewThread" in c[3]["query"] for c in requester.calls[1:])
+
+    def test_invalid_thread_identifier_diagnostic_is_bounded_and_escaped(self, monkeypatch):
+        logger = MagicMock()
+        monkeypatch.setattr(gh_module, "get_logger", lambda: logger)
+        unsafe_id = "PRRT_other\n" + "x" * 1000
+        provider, _ = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread(unsafe_id, cursor=None)]),
+        ])
+        assert provider.resolve_comment_thread(123) is False
+        diagnostic = logger.warning.call_args_list[0].args[0]
+        assert "PRRT_other" in diagnostic and "\n" not in diagnostic
+        assert len(diagnostic) < 220
 
     def test_overflow_match_uses_fresh_resolved_state_without_mutation(self):
         provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [

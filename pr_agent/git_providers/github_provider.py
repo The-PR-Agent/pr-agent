@@ -1108,61 +1108,75 @@ class GithubProvider(GitProvider):
             # reading overflow comments in unrelated threads.
             if not thread_id and not is_already_resolved:
                 for overflow_id, page_info in overflow_threads:
+                    log_id = repr(overflow_id[:128]) if isinstance(overflow_id, str) and overflow_id else "<invalid>"
                     if (not isinstance(overflow_id, str) or not overflow_id
                             or not isinstance(page_info, dict) or page_info.get("hasNextPage") is not True):
-                        return False
-                    comment_cursor = page_info.get("endCursor")
-                    seen_cursors = set()
-                    while True:
-                        if not isinstance(comment_cursor, str) or not comment_cursor or comment_cursor in seen_cursors:
-                            get_logger().error("Invalid or repeated review-thread comment cursor")
-                            return False
-                        seen_cursors.add(comment_cursor)
-                        query = """
-                        query($threadId: ID!, $cursor: String!) {
-                            node(id: $threadId) {
-                                __typename
-                                ... on PullRequestReviewThread {
-                                    id
-                                    isResolved
-                                    comments(first: 100, after: $cursor) {
-                                        pageInfo { hasNextPage endCursor }
-                                        nodes { id }
+                        get_logger().warning(f"Skipping overflow thread {log_id}: invalid metadata")
+                        continue
+                    try:
+                        comment_cursor = page_info.get("endCursor")
+                        seen_cursors = set()
+                        while True:
+                            if (not isinstance(comment_cursor, str) or not comment_cursor
+                                    or comment_cursor in seen_cursors):
+                                get_logger().warning(
+                                    f"Skipping overflow thread {log_id}: invalid or repeated comment cursor"
+                                )
+                                break
+                            seen_cursors.add(comment_cursor)
+                            query = """
+                            query($threadId: ID!, $cursor: String!) {
+                                node(id: $threadId) {
+                                    __typename
+                                    ... on PullRequestReviewThread {
+                                        id
+                                        isResolved
+                                        comments(first: 100, after: $cursor) {
+                                            pageInfo { hasNextPage endCursor }
+                                            nodes { id }
+                                        }
                                     }
                                 }
                             }
-                        }
-                        """
-                        response_tuple = self.github_client._Github__requester.requestJson(
-                            "POST", "/graphql",
-                            input={"query": query, "variables": {"threadId": overflow_id, "cursor": comment_cursor}},
-                        )
-                        if not isinstance(response_tuple, tuple) or len(response_tuple) != 3:
-                            return False
-                        response_json = json.loads(response_tuple[2])
-                        if response_json.get("errors"):
-                            get_logger().error(f"GraphQL errors querying thread comments: {response_json['errors']}")
-                            return False
-                        node = response_json.get("data", {}).get("node")
-                        if (not isinstance(node, dict) or node.get("__typename") != "PullRequestReviewThread"
-                                or node.get("id") != overflow_id or not isinstance(node.get("isResolved"), bool)):
-                            return False
-                        comments = node.get("comments", {})
-                        comment_nodes = comments.get("nodes")
-                        if (not isinstance(comment_nodes, list) or any(
-                                not isinstance(c, dict) or not isinstance(c.get("id"), str) for c in comment_nodes)):
-                            return False
-                        if any(c["id"] == comment_node_id for c in comment_nodes):
-                            is_already_resolved = node["isResolved"]
-                            if not is_already_resolved:
-                                thread_id = overflow_id
-                            break
-                        page_info = comments.get("pageInfo")
-                        if not isinstance(page_info, dict) or not isinstance(page_info.get("hasNextPage"), bool):
-                            return False
-                        if not page_info["hasNextPage"]:
-                            break
-                        comment_cursor = page_info.get("endCursor")
+                            """
+                            response_tuple = self.github_client._Github__requester.requestJson(
+                                "POST", "/graphql",
+                                input={"query": query,
+                                       "variables": {"threadId": overflow_id, "cursor": comment_cursor}},
+                            )
+                            if not isinstance(response_tuple, tuple) or len(response_tuple) != 3:
+                                get_logger().warning(f"Skipping overflow thread {log_id}: invalid response format")
+                                break
+                            response_json = json.loads(response_tuple[2])
+                            if response_json.get("errors"):
+                                get_logger().warning(f"Skipping overflow thread {log_id}: GraphQL errors")
+                                break
+                            node = response_json.get("data", {}).get("node")
+                            if (not isinstance(node, dict) or node.get("__typename") != "PullRequestReviewThread"
+                                    or node.get("id") != overflow_id or not isinstance(node.get("isResolved"), bool)):
+                                get_logger().warning(f"Skipping overflow thread {log_id}: invalid thread node")
+                                break
+                            comments = node.get("comments", {})
+                            comment_nodes = comments.get("nodes")
+                            if (not isinstance(comment_nodes, list) or any(
+                                    not isinstance(c, dict) or not isinstance(c.get("id"), str)
+                                    for c in comment_nodes)):
+                                get_logger().warning(f"Skipping overflow thread {log_id}: invalid comment nodes")
+                                break
+                            if any(c["id"] == comment_node_id for c in comment_nodes):
+                                is_already_resolved = node["isResolved"]
+                                if not is_already_resolved:
+                                    thread_id = overflow_id
+                                break
+                            page_info = comments.get("pageInfo")
+                            if not isinstance(page_info, dict) or not isinstance(page_info.get("hasNextPage"), bool):
+                                get_logger().warning(f"Skipping overflow thread {log_id}: invalid comment page info")
+                                break
+                            if not page_info["hasNextPage"]:
+                                break
+                            comment_cursor = page_info.get("endCursor")
+                    except (GithubException, RequestException, ValueError, KeyError, TypeError, AttributeError) as e:
+                        get_logger().warning(f"Skipping overflow thread {log_id}: lookup failed ({type(e).__name__})")
                     if thread_id or is_already_resolved:
                         break
 
