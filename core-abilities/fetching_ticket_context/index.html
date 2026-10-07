@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.2">
 <title data-rh="true">Fetching Ticket Context for PRs | PR-Agent</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" property="og:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" name="twitter:image" content="https://docs.pr-agent.ai/img/social-card.png"><meta data-rh="true" property="og:url" content="https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Fetching Ticket Context for PRs | PR-Agent"><meta data-rh="true" name="description" content="Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea"><meta data-rh="true" property="og:description" content="Supported Git Platforms: GitHub, GitLab, Bitbucket, Azure DevOps, Gitea"><link data-rh="true" rel="icon" href="/img/favicon.svg"><link data-rh="true" rel="canonical" href="https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/" hreflang="en"><link data-rh="true" rel="alternate" href="https://docs.pr-agent.ai/core-abilities/fetching_ticket_context/" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Fetching ticket context","item":"https://docs.pr-agent.ai/core-abilities/fetching_ticket_context"}]}</script><script src="https://widget.kapa.ai/kapa-widget.bundle.js" data-website-id="5c89c0b1-b2ee-43c9-8c6f-43ed762b3c1e" data-project-name="PR-Agent" data-project-color="#2459db" data-project-logo="/img/favicon.svg" data-launcher-button-image="/img/favicon-white.svg" data-color-scheme-selector="[data-theme=&#39;dark&#39;]" async></script><link rel="stylesheet" href="/assets/css/styles.928a3cd8.css">
-<script src="/assets/js/runtime~main.c0cd30d1.js" defer="defer"></script>
+<script src="/assets/js/runtime~main.b9c11f56.js" defer="defer"></script>
 <script src="/assets/js/main.ec1a8257.js" defer="defer"></script>
 </head>
 <body>
@@ -35,7 +35,7 @@ This integration enriches the review process by automatically surfacing relevant
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="affected-tools">Affected Tools<a href="#affected-tools" class="hash-link" aria-label="Direct link to Affected Tools" title="Direct link to Affected Tools" translate="no">​</a></h2>
 <p>Ticket Recognition Requirements:</p>
 <ul>
-<li class="">The PR description should contain a link to the ticket or if the branch name starts with the ticket id / number.</li>
+<li class="">GitHub/GitLab issue references can appear in the PR/MR title or description. GitHub also recognizes numeric issue references in the branch name.</li>
 <li class="">For Jira tickets, you should follow the instructions in <a href="#jira-integration" class="">Jira Integration</a> in order to authenticate with Jira.</li>
 <li class="">For Asana tickets, see <a href="#asana-integration" class="">Asana Integration</a>.</li>
 </ul>
@@ -44,7 +44,7 @@ This integration enriches the review process by automatically surfacing relevant
 By understanding the reasoning and intent behind modifications, the LLM can offer more insightful and relevant code analysis.</p>
 <h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="review-tool">Review tool<a href="#review-tool" class="hash-link" aria-label="Direct link to Review tool" title="Direct link to Review tool" translate="no">​</a></h3>
 <p>Similarly to the <code>describe</code> tool, the <code>review</code> tool will use the ticket content to provide additional context for the code changes.</p>
-<p>In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue mentioned in the PR description.
+<p>In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
 Each ticket will be assigned a label (Compliance/Alignment level), Indicates the degree to which the PR fulfills its original purpose:</p>
 <ul>
 <li class="">Fully Compliant</li>
@@ -63,7 +63,7 @@ Each ticket will be assigned a label (Compliance/Alignment level), Indicates the
 <p>-</p>
 <div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#d5d9e1;--prism-background-color:#11141a"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#d5d9e1;background-color:#11141a"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#d5d9e1"><span class="token plain">If you set:</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">```toml</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">[pr_reviewer]</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">check_pr_additional_content=true</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">```</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">(default: `false`)</span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain" style="display:inline-block"></span><br></div><div class="token-line" style="color:#d5d9e1"><span class="token plain">the `review` tool will also validate that the PR code doesn&#x27;t contain any additional content that is not related to the ticket. If it does, the PR will be labeled at best as `PR Code Verified`, and the `review` tool will provide a comment with the additional unrelated content found in the PR code.</span><br></div></code></pre></div></div>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="githubgitlab-issues-integration">GitHub/GitLab Issues Integration<a href="#githubgitlab-issues-integration" class="hash-link" aria-label="Direct link to GitHub/GitLab Issues Integration" title="Direct link to GitHub/GitLab Issues Integration" translate="no">​</a></h2>
-<p>PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR description and fetch the issue content.
+<p>PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR/MR title or description and fetch the issue content.
 Examples of valid GitHub/GitLab issue references:</p>
 <ul>
 <li class=""><code>https://github.com/&lt;ORG_NAME&gt;/&lt;REPO_NAME&gt;/issues/&lt;ISSUE_NUMBER&gt;</code> or <code>https://gitlab.com/&lt;ORG_NAME&gt;/&lt;REPO_NAME&gt;/-/issues/&lt;ISSUE_NUMBER&gt;</code></li>
@@ -72,6 +72,11 @@ Examples of valid GitHub/GitLab issue references:</p>
 </ul>
 <p>Full GitHub issue URLs are recognized on the configured instance&#x27;s HTTPS web origin, including GitHub Enterprise URLs such as <code>https://github.example.com/&lt;ORG_NAME&gt;/&lt;REPO_NAME&gt;/issues/&lt;ISSUE_NUMBER&gt;</code>.
 Full GitHub issue URLs on other origins are ignored.</p>
+<p>GitHub processes references from the description first, then the branch name, then the title. GitLab processes
+description references before title references. Repeated identical references do not add lookups, and title references use
+the existing ticket lookup and result limits without displacing earlier sources.</p>
+<p>The optional <code>config.description_issue_regex</code> setting applies only to the GitHub PR description. GitHub titles use
+the built-in reference formats above, including local <code>#&lt;ISSUE_NUMBER&gt;</code> references of up to six digits.</p>
 <p>Branch names can also be used to link issues, for example:</p>
 <ul>
 <li class=""><code>123-fix-bug</code> (where <code>123</code> is the issue number)</li>
