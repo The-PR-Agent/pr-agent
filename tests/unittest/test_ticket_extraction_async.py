@@ -6,6 +6,7 @@ These tests are deterministic and fake-provider based — no live API or
 network access is performed.
 """
 import asyncio
+import copy
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -1167,18 +1168,24 @@ class TestExtractAndCachePrTickets:
             "sub_issues": [sub_a, sub_b],
         }
 
+        second_ticket = {"ticket_url": "u/second", "title": "second", "sub_issues": [sub_a]}
+        main_ticket["sub_issues"].insert(0, second_ticket)
+        bare_ticket = {"ticket_url": "u/bare", "title": "bare"}
+        extracted = [main_ticket, second_ticket, bare_ticket]
+        original = copy.deepcopy(extracted)
+
         async def _fake_extract(_):
-            return [main_ticket]
+            return extracted
 
         monkeypatch.setattr(tpc, "extract_tickets", _fake_extract)
 
         vars_ = {}
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
 
-        # Main ticket is appended first, followed by its sub-issues,
-        # so prompt clipping preserving a prefix keeps the primary ticket.
+        # Keep direct tickets before expansion; preserve child order and repeated records.
         stored = vars_["related_tickets"]
-        assert stored == [main_ticket, sub_a, sub_b]
+        assert stored == [main_ticket, second_ticket, bare_ticket, second_ticket, sub_a, sub_b, sub_a]
+        assert extracted == original
         # Settings cache is also populated
         assert get_settings().get("related_tickets") == stored
 

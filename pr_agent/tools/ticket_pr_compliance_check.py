@@ -1144,12 +1144,11 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
         tickets_content = await extract_tickets(git_provider)
 
         if tickets_content:
-            # Store main tickets along with their sub-issues (main ticket first so prompt clipping preserves the parent)
+            # Preserve directly linked tickets before expanded sub-issues when prompt clipping keeps a prefix.
+            related_tickets.extend(tickets_content)
             for ticket in tickets_content:
-                related_tickets.append(ticket)
                 if "sub_issues" in ticket and ticket["sub_issues"]:
-                    for sub_issue in ticket["sub_issues"]:
-                        related_tickets.append(sub_issue)  # Add sub-issues content
+                    related_tickets.extend(ticket["sub_issues"])
 
             get_logger().info("Extracted tickets and sub-issues from PR description",
                               artifact={"tickets": related_tickets})
