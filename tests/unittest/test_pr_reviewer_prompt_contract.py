@@ -205,6 +205,16 @@ def test_all_artifact_target_prompts_render_untrusted_content_separately(prompt_
     assert user.count(artifact_content) == 1
     assert user.index(start_marker) < user.index(artifact_content) < user.index(end_marker)
     assert end_marker in user.splitlines()
+
+    omitted_only_user = environment.from_string(prompt.user).render(
+        **{**variables, "related_tickets": []}
+    )
+    assert end_marker in omitted_only_user.splitlines()
+    if "code_suggestions" not in prompt_name:
+        omitted_notice = "Context notice: 1 additional related ticket(s)"
+        assert omitted_notice in omitted_only_user
+        assert omitted_only_user.index(end_marker) < omitted_only_user.index(omitted_notice)
+
     assert "Keep the result concise." in system
     if "pr_code_suggestions_prompt" in prompt_name:
         assert user.index("CI artifact label and content") < user.index("--PR Info--")
