@@ -144,7 +144,6 @@ def test_warns_when_rendered_user_prompt_omits_fields_that_probe_renders(monkeyp
         "{{ artifact_context.start_marker }}{{ artifact_context.label }}"
         "{{ artifact_context.content }}{{ artifact_context.end_marker }}",
         context,
-        "Flag failing tests.",
         "Rendered without the artifact section",
     )
     assert "user prompt does not render" in _last_warning(logger)
@@ -174,7 +173,6 @@ def test_probe_failure_warning_includes_the_exception(monkeypatch):
         "{{ artifact_context.start_marker }}{{ artifact_context.label }}"
         "{{ artifact_context.content }}{{ artifact_context.end_marker }}",
         context,
-        "Rendered system prompt",
         "Rendered user prompt",
     )
     message = _last_warning(logger)

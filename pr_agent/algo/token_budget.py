@@ -358,7 +358,7 @@ class AttemptTokenBudget:
         )
         system_prompt, user_prompt = budget.render_prompt_templates(variables)
         warn_if_artifact_context_prompt_is_invalid(
-            system_template, user_template, variables, system_prompt, user_prompt
+            system_template, user_template, variables, user_prompt
         )
         prepared = budget.prepare_request(
             ai_handler,

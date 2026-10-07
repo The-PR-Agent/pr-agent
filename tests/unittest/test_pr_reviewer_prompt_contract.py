@@ -239,13 +239,11 @@ def test_all_artifact_target_prompts_render_untrusted_content_separately(
     monkeypatch.setattr(token_handler, "get_logger", lambda: logger)
     system_artifact_template = _artifact_prompt_block(prompt.system, "instructions")
     user_artifact_template = _artifact_prompt_block(prompt.user, "start_marker")
-    system_artifact_prompt = environment.from_string(system_artifact_template).render(**variables)
     user_artifact_prompt = environment.from_string(user_artifact_template).render(**variables)
     token_handler.warn_if_artifact_context_prompt_is_invalid(
         system_artifact_template,
         user_artifact_template,
         variables,
-        system_artifact_prompt,
         user_artifact_prompt,
     )
     logger.warning.assert_not_called()

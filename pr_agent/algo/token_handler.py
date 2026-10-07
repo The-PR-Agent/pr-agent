@@ -50,7 +50,6 @@ def warn_if_artifact_context_prompt_is_invalid(
     system_template: str,
     user_template: str,
     variables: dict,
-    system_prompt: str,
     user_prompt: str,
 ) -> None:
     """Warn once when an active prompt omits or misroutes CI artifact context."""
@@ -77,6 +76,7 @@ def warn_if_artifact_context_prompt_is_invalid(
         return system_jinja.render(probe_variables)
 
     try:
+        baseline_system_prompt = system_jinja.render(variables)
         if probes["instructions"] not in render_system_with_probe("instructions"):
             issues.append("system prompt does not render artifact_context.instructions")
 
@@ -93,7 +93,7 @@ def warn_if_artifact_context_prompt_is_invalid(
         leaked_fields = [
             field
             for field in ("label", "content")
-            if render_system_with_probe(field) != system_prompt
+            if render_system_with_probe(field) != baseline_system_prompt
         ]
         if leaked_fields:
             issues.append(f"system prompt renders untrusted artifact {', '.join(leaked_fields)}")
@@ -243,9 +243,7 @@ class TokenHandler:
             environment = SandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
             user_prompt = environment.from_string(user).render(vars)
-            warn_if_artifact_context_prompt_is_invalid(
-                system, user, vars, system_prompt, user_prompt
-            )
+            warn_if_artifact_context_prompt_is_invalid(system, user, vars, user_prompt)
             system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
             user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))
             return system_prompt_tokens + user_prompt_tokens
