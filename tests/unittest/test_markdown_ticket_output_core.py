@@ -438,6 +438,14 @@ class TestProcessCanBeSplit:
         )
         assert "No multiple PR themes" in out
 
+    def test_string_returns_no_themes(self):
+        out = process_can_be_split("🔀", "No")
+        assert "No multiple PR themes" in out
+
+    def test_dict_returns_no_themes(self):
+        out = process_can_be_split("🔀", {"title": "single mapping"})
+        assert "No multiple PR themes" in out
+
     def test_multiple_themes_render_details(self):
         out = process_can_be_split(
             "🔀",
