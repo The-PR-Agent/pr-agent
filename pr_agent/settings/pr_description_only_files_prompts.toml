@@ -82,8 +82,9 @@ Label: {{ artifact_context.label }}
 {{ artifact_context.start_marker }}
 {{ artifact_context.content }}
 {{ artifact_context.end_marker }}
-{%- endif %}
-{%- if related_tickets %}
+
+{% endif %}
+{% if related_tickets %}
 Related Ticket Info:
 {% for ticket in related_tickets %}
 =====
