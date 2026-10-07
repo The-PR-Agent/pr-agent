@@ -1966,12 +1966,36 @@ class TestAzureDevopsProviderSuggestionDiscussions:
 
     def test_marks_thread_replies_as_agent_generated(self):
         provider = _provider_with_diff("/src/app.py")
-        provider.azure_devops_client.create_comment.return_value = SimpleNamespace()
+        response = SimpleNamespace()
+        provider.azure_devops_client.create_comment.return_value = response
+        provider._threads_cache = ["cached thread"]
 
-        provider.reply_to_thread(21, "Answer")
+        assert provider.reply_to_thread(21, "Answer") is response
 
         comment = provider.azure_devops_client.create_comment.call_args.args[0]
         assert comment.content == "Answer\n\n<!-- pr-agent-response -->"
+        assert response.thread_id == 21
+        assert provider._threads_cache is None
+        assert provider.temp_comments == []
+
+    @pytest.mark.parametrize("is_temporary", [False, True])
+    def test_thread_reply_failure_preserves_primary_and_progress_semantics(self, is_temporary):
+        provider = _provider_with_diff("/src/app.py")
+        error = RuntimeError("reply failed")
+        provider.azure_devops_client.create_comment.side_effect = error
+        cached_threads = ["cached thread"]
+        provider._threads_cache = cached_threads
+
+        if is_temporary:
+            assert provider.reply_to_comment_from_comment_id(21, "answer", is_temporary=True) is None
+        else:
+            with pytest.raises(RuntimeError) as caught:
+                provider.reply_to_comment_from_comment_id(21, "answer")
+            assert caught.value is error
+
+        provider.azure_devops_client.create_comment.assert_called_once()
+        assert provider._threads_cache is cached_threads
+        assert provider.temp_comments == []
 
     def test_excludes_temporary_progress_reply_from_conversation_history(self):
         provider = _provider_with_diff("/src/app.py")

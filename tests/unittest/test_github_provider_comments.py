@@ -97,6 +97,33 @@ def test_edit_comment_returns_false_on_github_failure():
     assert provider.edit_comment(comment, "updated body") is False
 
 
+def test_thread_reply_preserves_void_success_and_truncation():
+    provider = _make_provider(max_chars=10)
+    requester = MagicMock()
+    requester.requestJsonAndCheck.return_value = ({}, {})
+    provider.pr._requester = requester
+
+    assert provider.reply_to_comment_from_comment_id(42, "x" * 20) is None
+    requester.requestJsonAndCheck.assert_called_once_with(
+        "POST", "https://api.github.com/repos/owner/repo/pulls/1/comments/42/replies",
+        input={"body": "xxxxxxx..."},
+    )
+
+
+@pytest.mark.parametrize("error", [GithubException(500, "reply failed", {}), RequestException("network error")])
+def test_thread_reply_propagates_failure_without_retry(error):
+    provider = _make_provider()
+    requester = MagicMock()
+    requester.requestJsonAndCheck.side_effect = error
+    provider.pr._requester = requester
+
+    with pytest.raises(type(error)) as caught:
+        provider.reply_to_comment_from_comment_id(42, "answer")
+
+    assert caught.value is error
+    requester.requestJsonAndCheck.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("deployment_type", "agent_login", "comment_login", "expected"),
     [

@@ -14,6 +14,7 @@ from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.tools.pr_line_questions as plq
+import pr_agent.tools.pr_questions as pq
 from pr_agent.algo.comment_identity import format_pr_questions_header
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import AzureDevopsProvider
@@ -1325,6 +1326,7 @@ async def test_line_question_enabled_output_keeps_reply_root_and_resolution(
     line_output_settings.set("config.publish_output", True)
     line_output_settings.set("comment_id", comment_id)
     tool = _make_line_questions()
+    tool.git_provider.reply_to_comment_from_comment_id.return_value = None
     tool.resolve_threads = True
     tool.vars["resolve_threads"] = True
     hunk = ("@@ -1 +1 @@\n-old\n+new", "selected") if matched else ("", "")
@@ -1346,6 +1348,75 @@ async def test_line_question_enabled_output_keeps_reply_root_and_resolution(
         tool.git_provider.resolve_comment_thread.assert_called_once_with(42)
     else:
         tool.git_provider.resolve_comment_thread.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matched", [True, False])
+async def test_failed_github_line_reply_leaves_thread_unresolved(line_output_settings, monkeypatch, matched):
+    from requests.exceptions import RequestException
+
+    line_output_settings.set("config.publish_output", True)
+    line_output_settings.set("comment_id", 42)
+    tool = _make_line_questions()
+    tool.resolve_threads = True
+    tool.vars["resolve_threads"] = True
+    provider = GithubProvider.__new__(GithubProvider)
+    error = RequestException("reply failed")
+    requester = MagicMock()
+    requester.requestJsonAndCheck.side_effect = error
+    provider.pr = SimpleNamespace(_requester=requester)
+    provider.base_url = "https://api.github.com"
+    provider.repo = "owner/repo"
+    provider.pr_num = 1
+    provider.max_comment_chars = 65000
+    provider.resolve_comment_thread = MagicMock()
+    tool.git_provider = provider
+    hunk = ("@@ -1 +1 @@\n-old\n+new", "selected") if matched else ("", "")
+    prediction = AsyncMock(return_value="answer\n[THREAD_RESOLVED]")
+    monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", lambda *_args, **_kwargs: hunk)
+    monkeypatch.setattr(plq, "retry_with_fallback_models", prediction)
+
+    with pytest.raises(RequestException) as caught:
+        await tool.run()
+
+    assert caught.value is error
+    assert prediction.await_count == int(matched)
+    requester.requestJsonAndCheck.assert_called_once()
+    provider.resolve_comment_thread.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("publish_output", [True, False])
+async def test_azure_ask_preserves_reply_failure_through_cleanup(line_output_settings, monkeypatch, publish_output):
+    line_output_settings.set("config.publish_output", publish_output)
+    line_output_settings.set("comment_id", 42)
+    provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+    provider.pr_num = 1
+    provider.repo_slug = "repo"
+    provider.workspace_slug = "project"
+    provider.azure_devops_client = MagicMock()
+    error = RuntimeError("reply failed")
+    provider.azure_devops_client.create_comment.side_effect = error
+    provider.publish_comment = MagicMock()
+    provider.remove_initial_comment = MagicMock(side_effect=RuntimeError("cleanup failed"))
+    provider.is_supported = MagicMock(return_value=False)
+    tool = _make_pr_questions("why?", "answer", provider)
+    tool.pr_url = "https://example.com/pull/1"
+    prediction = AsyncMock()
+    monkeypatch.setattr(pq, "retry_with_fallback_models", prediction)
+
+    if publish_output:
+        with pytest.raises(RuntimeError) as caught:
+            await tool.run()
+        assert caught.value is error
+        provider.azure_devops_client.create_comment.assert_called_once()
+        provider.remove_initial_comment.assert_called_once()
+    else:
+        assert await tool.run() == ""
+        provider.azure_devops_client.create_comment.assert_not_called()
+        provider.publish_comment.assert_not_called()
+        provider.remove_initial_comment.assert_not_called()
+    prediction.assert_awaited_once()
 
 
 @pytest.mark.asyncio

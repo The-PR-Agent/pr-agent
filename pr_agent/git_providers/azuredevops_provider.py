@@ -1744,6 +1744,8 @@ class AzureDevopsProvider(GitProvider):
             return response
         except Exception as e:
             get_logger().exception(f"Failed to reply to thread, error: {e}")
+            if not is_temporary:
+                raise
 
     def get_thread_context(self, thread_id: int) -> CommentThreadContext:
         try:

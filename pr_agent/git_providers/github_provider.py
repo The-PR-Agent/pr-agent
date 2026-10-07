@@ -1295,6 +1295,7 @@ class GithubProvider(GitProvider):
             )
         except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to reply comment, error: {e}")
+            raise
 
     def remove_initial_comment(self):
         try:
