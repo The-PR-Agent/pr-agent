@@ -1041,6 +1041,7 @@ class GithubProvider(GitProvider):
             thread_id = None
             is_already_resolved = False
             cursor = None
+            overflow_threads = []
             while True:
                 after_clause = f', after: "{cursor}"' if cursor else ""
                 query = f"""
@@ -1053,6 +1054,7 @@ class GithubProvider(GitProvider):
                                     id
                                     isResolved
                                     comments(first: 100) {{
+                                        pageInfo {{ hasNextPage endCursor }}
                                         nodes {{
                                             id
                                         }}
@@ -1089,6 +1091,11 @@ class GithubProvider(GitProvider):
                         else:
                             thread_id = thread["id"]
                         break
+                    comments = thread.get("comments", {})
+                    if "pageInfo" in comments:
+                        comment_page_info = comments["pageInfo"]
+                        if not isinstance(comment_page_info, dict) or comment_page_info.get("hasNextPage") is not False:
+                            overflow_threads.append(thread)
 
                 if thread_id or is_already_resolved:
                     break
@@ -1096,6 +1103,70 @@ class GithubProvider(GitProvider):
                 if not page_info.get("hasNextPage"):
                     break
                 cursor = page_info.get("endCursor")
+
+            # Preserve the original fast search across all thread pages before
+            # reading overflow comments in unrelated threads.
+            if not thread_id and not is_already_resolved:
+                for thread in overflow_threads:
+                    overflow_id = thread.get("id")
+                    page_info = thread["comments"]["pageInfo"]
+                    if (not isinstance(overflow_id, str) or not overflow_id
+                            or not isinstance(page_info, dict) or page_info.get("hasNextPage") is not True):
+                        return False
+                    comment_cursor = page_info.get("endCursor")
+                    seen_cursors = set()
+                    while True:
+                        if not isinstance(comment_cursor, str) or not comment_cursor or comment_cursor in seen_cursors:
+                            get_logger().error("Invalid or repeated review-thread comment cursor")
+                            return False
+                        seen_cursors.add(comment_cursor)
+                        query = """
+                        query($threadId: ID!, $cursor: String!) {
+                            node(id: $threadId) {
+                                __typename
+                                ... on PullRequestReviewThread {
+                                    id
+                                    isResolved
+                                    comments(first: 100, after: $cursor) {
+                                        pageInfo { hasNextPage endCursor }
+                                        nodes { id }
+                                    }
+                                }
+                            }
+                        }
+                        """
+                        response_tuple = self.github_client._Github__requester.requestJson(
+                            "POST", "/graphql",
+                            input={"query": query, "variables": {"threadId": overflow_id, "cursor": comment_cursor}},
+                        )
+                        if not isinstance(response_tuple, tuple) or len(response_tuple) != 3:
+                            return False
+                        response_json = json.loads(response_tuple[2])
+                        if response_json.get("errors"):
+                            get_logger().error(f"GraphQL errors querying thread comments: {response_json['errors']}")
+                            return False
+                        node = response_json.get("data", {}).get("node")
+                        if (not isinstance(node, dict) or node.get("__typename") != "PullRequestReviewThread"
+                                or node.get("id") != overflow_id or not isinstance(node.get("isResolved"), bool)):
+                            return False
+                        comments = node.get("comments", {})
+                        comment_nodes = comments.get("nodes")
+                        if (not isinstance(comment_nodes, list) or any(
+                                not isinstance(c, dict) or not isinstance(c.get("id"), str) for c in comment_nodes)):
+                            return False
+                        if any(c["id"] == comment_node_id for c in comment_nodes):
+                            is_already_resolved = node["isResolved"]
+                            if not is_already_resolved:
+                                thread_id = overflow_id
+                            break
+                        page_info = comments.get("pageInfo")
+                        if not isinstance(page_info, dict) or not isinstance(page_info.get("hasNextPage"), bool):
+                            return False
+                        if not page_info["hasNextPage"]:
+                            break
+                        comment_cursor = page_info.get("endCursor")
+                    if thread_id or is_already_resolved:
+                        break
 
             if is_already_resolved:
                 get_logger().info(f"Thread for comment {comment_id} is already resolved")

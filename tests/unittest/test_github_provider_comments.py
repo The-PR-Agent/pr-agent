@@ -746,7 +746,165 @@ def _make_threads_response(threads, has_next_page=False, end_cursor=None):
     })
 
 
+def _make_overflow_thread(thread_id="PRRT_target", cursor="cursor1"):
+    return {
+        "id": thread_id, "isResolved": False,
+        "comments": {"nodes": [{"id": "PRR_other"}],
+                     "pageInfo": {"hasNextPage": True, "endCursor": cursor}},
+    }
+
+
+def _make_comment_page(comment_ids, thread_id="PRRT_target", resolved=False, has_next_page=False, cursor=None):
+    return _make_graphql_response({"node": {
+        "__typename": "PullRequestReviewThread", "id": thread_id, "isResolved": resolved,
+        "comments": {"nodes": [{"id": comment_id} for comment_id in comment_ids],
+                     "pageInfo": {"hasNextPage": has_next_page, "endCursor": cursor}},
+    }})
+
+
 class TestResolveCommentThread:
+    def test_resolves_reply_after_first_hundred_comments(self):
+        thread = {
+            "id": "PRRT_target", "isResolved": False,
+            "comments": {
+                "nodes": [{"id": f"PRR_other_{i}"} for i in range(100)],
+                "pageInfo": {"hasNextPage": True, "endCursor": "comment_cursor"},
+            },
+        }
+        remaining_comments = _make_graphql_response({"node": {
+            "__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": False,
+            "comments": {"nodes": [{"id": "PRR_reply101"}],
+                         "pageInfo": {"hasNextPage": False, "endCursor": None}},
+        }})
+        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
+        provider, requester = _make_provider_with_graphql(
+            {"node_id": "PRR_reply101"}, [_make_threads_response([thread]), remaining_comments, resolved]
+        )
+
+        assert provider.resolve_comment_thread(123) is True
+        assert len(requester.calls) == 4
+        assert requester.calls[0][2].endswith("/pulls/comments/123")
+        assert requester.calls[2][3]["variables"] == {"threadId": "PRRT_target", "cursor": "comment_cursor"}
+        assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
+
+    def test_searches_outer_pages_then_multiple_overflow_candidates_and_pages(self):
+        page1 = _make_threads_response([_make_overflow_thread("PRRT_other")], True, "outer_cursor")
+        page2 = _make_threads_response([_make_overflow_thread()])
+        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            page1, page2, _make_comment_page(["PRR_absent"], thread_id="PRRT_other"),
+            _make_comment_page(["PRR_other"], has_next_page=True, cursor='opaque"cursor2'),
+            _make_comment_page(["PRR_reply"]), resolved,
+        ])
+
+        assert provider.resolve_comment_thread(123) is True
+        assert 'after: "outer_cursor"' in requester.calls[2][3]["query"]
+        assert [c[3]["variables"] for c in requester.calls[3:6]] == [
+            {"threadId": "PRRT_other", "cursor": "cursor1"},
+            {"threadId": "PRRT_target", "cursor": "cursor1"},
+            {"threadId": "PRRT_target", "cursor": 'opaque"cursor2'},
+        ]
+        assert 'threadId: "PRRT_target"' in requester.calls[6][3]["query"]
+
+    @pytest.mark.parametrize("later_outer_page", [False, True])
+    def test_fast_lookup_does_not_read_or_validate_unrelated_overflow(self, later_outer_page):
+        broken_overflow = _make_overflow_thread(cursor=None)
+        target = {"id": "PRRT_target", "isResolved": False,
+                  "comments": {"nodes": [{"id": "PRR_reply"}]}}
+        if later_outer_page:
+            pages = [_make_threads_response([broken_overflow], True, "outer_cursor"),
+                     _make_threads_response([target])]
+        else:
+            pages = [_make_threads_response([broken_overflow, target])]
+        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [*pages, resolved])
+
+        assert provider.resolve_comment_thread(123) is True
+        assert len(requester.calls) == len(pages) + 2
+        assert all("variables" not in call[3] for call in requester.calls[1:])
+
+    def test_overflow_match_uses_fresh_resolved_state_without_mutation(self):
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread()]),
+            _make_comment_page(["PRR_reply"], resolved=True),
+        ])
+        assert provider.resolve_comment_thread(123) is True
+        assert len(requester.calls) == 3
+        assert not any("resolveReviewThread" in call[3]["query"] for call in requester.calls[1:])
+
+    def test_exhausted_overflow_without_requested_identity_does_not_mutate(self):
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread()]), _make_comment_page(["PRR_other"]),
+        ])
+        assert provider.resolve_comment_thread(123) is False
+        assert len(requester.calls) == 3
+
+    @pytest.mark.parametrize("cursor", [None, "", 123])
+    def test_invalid_initial_comment_cursor_does_not_read_or_mutate(self, cursor):
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread(cursor=cursor)]),
+        ])
+        assert provider.resolve_comment_thread(123) is False
+        assert len(requester.calls) == 2
+
+    @pytest.mark.parametrize("cursors", [["cursor1"], ["cursor2", "cursor1"]])
+    def test_repeated_or_cyclic_comment_cursor_does_not_mutate(self, cursors):
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread()]),
+            *[_make_comment_page(["PRR_other"], has_next_page=True, cursor=cursor) for cursor in cursors],
+        ])
+        assert provider.resolve_comment_thread(123) is False
+        assert len(requester.calls) == 2 + len(cursors)
+
+    @pytest.mark.parametrize("page_info", [None, {}, {"hasNextPage": "true"},
+                                             {"hasNextPage": True, "endCursor": None}])
+    def test_invalid_next_comment_page_does_not_mutate(self, page_info):
+        response = _make_graphql_response({"node": {
+            "__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": False,
+            "comments": {"nodes": [{"id": "PRR_other"}], "pageInfo": page_info},
+        }})
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread()]), response,
+        ])
+        assert provider.resolve_comment_thread(123) is False
+        assert len(requester.calls) == 3
+
+    @pytest.mark.parametrize("node", [
+        None,
+        {"__typename": "Issue", "id": "PRRT_target", "isResolved": False},
+        {"__typename": "PullRequestReviewThread", "id": "PRRT_wrong", "isResolved": False},
+        {"__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": "false"},
+        {"__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": False,
+         "comments": {"nodes": {"id": "PRR_reply"}}},
+        {"__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": False,
+         "comments": {"nodes": [None]}},
+    ])
+    def test_malformed_overflow_node_does_not_mutate(self, node):
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread()]), _make_graphql_response({"node": node}),
+        ])
+        assert provider.resolve_comment_thread(123) is False
+        assert len(requester.calls) == 3
+
+    @pytest.mark.parametrize("response", [
+        "not-a-tuple", (200, {}, "not-json"), _make_graphql_response(None),
+        _make_graphql_response({"node": None}, errors=[{"message": "Unavailable"}]),
+    ])
+    def test_failed_overflow_query_does_not_mutate(self, response):
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
+            _make_threads_response([_make_overflow_thread()]), response,
+        ])
+        assert provider.resolve_comment_thread(123) is False
+        assert len(requester.calls) == 3
+
+    @pytest.mark.parametrize("response", [
+        "not-a-tuple", _make_graphql_response({}, errors=[{"message": "Unavailable"}]),
+    ])
+    def test_failed_outer_query_does_not_read_overflow_or_mutate(self, response):
+        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [response])
+        assert provider.resolve_comment_thread(123) is False
+        assert len(requester.calls) == 2
+
     def test_resolves_thread_successfully(self):
         rest_data = {"node_id": "PRR_comment1"}
         threads_response = _make_threads_response([
