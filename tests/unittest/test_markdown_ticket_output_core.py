@@ -446,6 +446,10 @@ class TestProcessCanBeSplit:
         out = process_can_be_split("🔀", {"title": "single mapping"})
         assert "No multiple PR themes" in out
 
+    def test_affirmative_value_does_not_claim_no_themes(self):
+        out = process_can_be_split("🔀", True)
+        assert "No multiple PR themes" not in out
+
     def test_multiple_themes_render_details(self):
         out = process_can_be_split(
             "🔀",
