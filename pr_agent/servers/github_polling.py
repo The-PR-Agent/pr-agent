@@ -2,7 +2,6 @@ import asyncio
 import copy
 import math
 import multiprocessing
-import re
 import traceback
 from collections import deque
 from contextlib import contextmanager
@@ -43,19 +42,11 @@ class _CommentPaginationDrift(_InvalidPaginationMetadata):
 
 _RETRY_POLLING_NOTIFICATION = object()
 
-_PR_COMMENTS_URL_PATTERN = re.compile(r"/pulls/(\d+)$")
-
 
 def _pr_comments_url(pr_url: str) -> str:
-    """Map an API PR URL to its comments URL.
-
-    GitHub exposes PR comments under the issue endpoint, but only the trailing
-    "/pulls/<number>" segment differs. Replace that segment instead of the whole
-    "pulls" substring so org or repo names containing "pulls" are not corrupted.
-    """
-    if _PR_COMMENTS_URL_PATTERN.search(pr_url):
-        return _PR_COMMENTS_URL_PATTERN.sub(r"/issues/\1/comments", pr_url)
-    return f"{pr_url}/comments"
+    """Map an API pull request URL to its issue comments URL."""
+    base, sep, number = pr_url.rpartition("/pulls/")
+    return f"{base}/issues/{number}/comments" if sep else f"{pr_url}/comments"
 
 
 def _get_polling_request_timeout() -> float:
