@@ -218,6 +218,9 @@ user="""
 Ticket URL: '{{ ticket.ticket_url }}'
 
 Ticket Title: '{{ ticket.title }}'
+{%- if ticket.parent_ticket_url is defined and ticket.parent_ticket_url %}
+Parent Ticket: '{{ ticket.parent_ticket_url | e }}'{% if ticket.parent_ticket_title is defined and ticket.parent_ticket_title %} — '{{ ticket.parent_ticket_title | e }}'{% endif %}
+{%- endif %}
 
 {%- if ticket.labels is defined and ticket.labels %}
 

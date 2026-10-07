@@ -66,6 +66,45 @@ def test_related_ticket_prompts_disclose_omitted_records(prompt_name):
     assert "2 additional related ticket(s) were omitted" in rendered
 
 
+@pytest.mark.parametrize(
+    "prompt_name",
+    [
+        "pr_description_prompt",
+        "pr_description_only_files_prompts",
+        "pr_description_only_description_prompts",
+        "pr_review_prompt",
+    ],
+)
+def test_related_ticket_prompts_preserve_parent_association(prompt_name):
+    template = Environment(autoescape=False).from_string(get_settings().get(prompt_name).user)
+    direct = [
+        {"ticket_url": "u/p1", "title": "Parent 1", "body": "Requirements 1"},
+        {"ticket_url": "u/p2", "title": "Parent 2", "body": "Requirements 2"},
+    ]
+    children = [
+        {"ticket_url": f"u/c{index}", "title": f"Child {index}", "body": "Child requirements",
+         "parent_ticket_url": "u/p1", "parent_ticket_title": "Parent 1"}
+        for index in (1, 2, 3)
+    ]
+    children[-1].update(parent_ticket_url="u/p2", parent_ticket_title="Parent 2")
+    first_family = template.render(related_tickets=[*direct, *children])
+    moved_child = {**children[1], "parent_ticket_url": "u/p2", "parent_ticket_title": "Parent 2"}
+    second_family = template.render(related_tickets=[*direct, children[0], moved_child, children[2]])
+
+    assert first_family != second_family
+    assert first_family.count("Parent Ticket: 'u/p1' — 'Parent 1'") == 2
+    assert second_family.count("Parent Ticket: 'u/p2' — 'Parent 2'") == 2
+    assert "Parent Ticket:" not in template.render(related_tickets=direct)
+    no_title = {**children[0], "parent_ticket_url": "u/<parent>?a=1&b=2"}
+    del no_title["parent_ticket_title"]
+    escaped = template.render(related_tickets=[no_title])
+    assert "Parent Ticket: 'u/&lt;parent&gt;?a=1&amp;b=2'" in escaped
+    escaped_title = template.render(related_tickets=[{
+        **children[0], "parent_ticket_title": "<Parent & title>"
+    }])
+    assert "&lt;Parent &amp; title&gt;" in escaped_title
+
+
 @pytest.fixture
 def prompt_budget(monkeypatch):
     """Use a 1,500-token diff/output reserve with deterministic prompt sizes."""

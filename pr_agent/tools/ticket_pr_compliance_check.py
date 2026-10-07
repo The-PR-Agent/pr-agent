@@ -1148,7 +1148,14 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
             related_tickets.extend(tickets_content)
             for ticket in tickets_content:
                 if "sub_issues" in ticket and ticket["sub_issues"]:
-                    related_tickets.extend(ticket["sub_issues"])
+                    parent_url = ticket.get("ticket_url")
+                    for sub_issue in ticket["sub_issues"]:
+                        child = sub_issue.copy()
+                        if isinstance(parent_url, str) and parent_url.strip():
+                            child["parent_ticket_url"] = parent_url
+                            if ticket.get("title"):
+                                child["parent_ticket_title"] = ticket["title"]
+                        related_tickets.append(child)
 
             get_logger().info("Extracted tickets and sub-issues from PR description",
                               artifact={"tickets": related_tickets})

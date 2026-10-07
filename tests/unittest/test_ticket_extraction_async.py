@@ -1151,8 +1151,9 @@ class TestExtractAndCachePrTickets:
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
         assert vars_["related_tickets"] == cached
 
+    @pytest.mark.parametrize("parent_url", ["u/main", " ", None])
     def test_stores_main_issue_before_sub_issues_in_related_tickets(
-        self, settings_snapshot, monkeypatch
+        self, settings_snapshot, monkeypatch, parent_url
     ):
         settings_snapshot.set("pr_reviewer.require_ticket_analysis_review", True)
         settings_snapshot.set("related_tickets", [])
@@ -1161,7 +1162,7 @@ class TestExtractAndCachePrTickets:
         sub_b = {"ticket_url": "u/sub_b", "title": "sub_b", "body": "s2"}
         main_ticket = {
             "ticket_id": 1,
-            "ticket_url": "u/main",
+            "ticket_url": parent_url,
             "title": "main",
             "body": "m",
             "labels": "",
@@ -1184,7 +1185,26 @@ class TestExtractAndCachePrTickets:
 
         # Keep direct tickets before expansion; preserve child order and repeated records.
         stored = vars_["related_tickets"]
-        assert stored == [main_ticket, second_ticket, bare_ticket, second_ticket, sub_a, sub_b, sub_a]
+        assert stored[:3] == [main_ticket, second_ticket, bare_ticket]
+        assert len(stored) == 7
+        assert [ticket["ticket_url"] for ticket in stored[3:]] == [
+            "u/second", "u/sub_a", "u/sub_b", "u/sub_a"
+        ]
+        for child, source in zip(stored[3:], [second_ticket, sub_a, sub_b, sub_a], strict=True):
+            assert child is not source
+            assert {key: value for key, value in child.items() if not key.startswith("parent_ticket_")} == source
+        if parent_url == "u/main":
+            assert [ticket["parent_ticket_url"] for ticket in stored[3:]] == [
+                "u/main", "u/main", "u/main", "u/second"
+            ]
+            assert [ticket["parent_ticket_title"] for ticket in stored[3:]] == [
+                "main", "main", "main", "second"
+            ]
+        else:
+            assert all("parent_ticket_url" not in ticket for ticket in stored[3:6])
+        assert stored[-1]["parent_ticket_url"] == "u/second"
+        assert stored[4] is not stored[-1]
+        assert "parent_ticket_url" not in stored[1]
         assert extracted == original
         # Settings cache is also populated
         assert get_settings().get("related_tickets") == stored
