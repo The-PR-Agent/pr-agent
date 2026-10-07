@@ -515,7 +515,7 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
                 reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-            def notify_start():
+            def notify_start(new_command=new_command):
                 nonlocal check_run
                 check_run = _start_auto_command_check_run(provider, new_command)
             # Install a fresh collector so `command_failed()` below cannot read a verdict left

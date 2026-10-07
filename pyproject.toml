@@ -175,10 +175,6 @@ lint.fixable = [
   "F541", # f-string without placeholders
 ]
 
-lint.unfixable = [
-  "B", # Avoid trying to fix flake8-bugbear (`B`) violations.
-]
-
 lint.exclude = ["api/code_completions"]
 
 # Everything below is a pre-existing
@@ -186,7 +182,6 @@ lint.exclude = ["api/code_completions"]
 # the entry. TODO: burn this list down.
 lint.ignore = [
   "E722", # bare `except`
-  "B023", # function definition uses loop variable
 ]
 
 [tool.ruff.lint.per-file-ignores]

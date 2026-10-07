@@ -656,7 +656,7 @@ class CodeCommitProvider(GitProvider):
                 identifiers,
                 identity_marker,
                 used_comment_ids,
-                lambda candidate: matcher(candidate, target),
+                lambda candidate, matcher=matcher: matcher(candidate, target),
             )
             if comment is not None:
                 return comment

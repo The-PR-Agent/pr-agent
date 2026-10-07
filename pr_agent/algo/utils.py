@@ -1473,7 +1473,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                         relevant_line_in_file = matches_difflib[0]
 
 
-                def scan_patch_lines(is_match):
+                def scan_patch_lines(is_match, patch_lines=patch_lines, absolute_position=absolute_position):
                     scan_delta = 0
                     scan_start2 = 0
                     skip_hunk = False
@@ -1501,10 +1501,10 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
                     return -1, absolute_position
 
                 position, absolute_position = scan_patch_lines(
-                    lambda line: line == relevant_line_in_file or line[1:] == relevant_line_in_file)
+                    lambda line, rl=relevant_line_in_file: line == rl or line[1:] == rl)
                 if position == -1:
                     position, absolute_position = scan_patch_lines(
-                        lambda line: relevant_line_in_file in line)
+                        lambda line, rl=relevant_line_in_file: rl in line)
 
                 if position == -1 and relevant_line_in_file[0] == '+':
                     no_plus_line = relevant_line_in_file[1:].lstrip()

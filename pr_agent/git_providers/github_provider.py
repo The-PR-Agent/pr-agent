@@ -2193,7 +2193,7 @@ class GithubProvider(GitProvider):
                                 diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
                                              f"```diff\n{patch.rstrip()}\n```")
                                 # replace ```suggestion ... ``` with diff_code, using regex:
-                                body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
+                                body = re.sub(r"```suggestion.*?```", lambda _, dc=diff_code: dc, body, flags=re.DOTALL)
                                 body += "\n\n</details>"
                                 suggestion['relevant_lines_start'] = new_start
                                 suggestion['relevant_lines_end'] = new_end

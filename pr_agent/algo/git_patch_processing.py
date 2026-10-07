@@ -116,7 +116,13 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                     is_valid_hunk = check_if_hunk_lines_matches_to_file(i, file_original_lines, patch_lines, start1)
 
                     if is_valid_hunk and (patch_extra_lines_before > 0 or patch_extra_lines_after > 0):
-                        def _calc_context_limits(patch_lines_before):
+                        def _calc_context_limits(
+                            patch_lines_before,
+                            start1=start1,
+                            size1=size1,
+                            start2=start2,
+                            size2=size2,
+                        ):
                             extended_start1 = max(1, start1 - patch_lines_before)
                             extended_size1 = size1 + (start1 - extended_start1) + patch_extra_lines_after
                             extended_start2 = max(1, start2 - patch_lines_before)

@@ -2008,7 +2008,11 @@ class PRCodeSuggestions:
                     for index in pending:
                         numbered, unnumbered = chunk_pairs[index]
 
-                        def render(candidate: str) -> tuple[str, str]:
+                        def render(
+                            candidate: str,
+                            numbered=numbered,
+                            attempt_budget=attempt_budget,
+                        ) -> tuple[str, str]:
                             variables = copy.deepcopy(self.vars)
                             variables["diff"] = numbered
                             variables["diff_no_line_numbers"] = candidate
