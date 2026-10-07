@@ -260,6 +260,7 @@ class TestInjectArtifactContext:
     _KEYS = (
         "artifacts.enable",
         "artifacts.artifact_path",
+        "artifacts.artifact_label",
         "artifacts.artifact_instructions",
         "artifacts.target_tools",
         "pr_reviewer.extra_instructions",
@@ -273,6 +274,7 @@ class TestInjectArtifactContext:
         s = get_settings()
         s.set("artifacts.enable", False)
         s.set("artifacts.artifact_path", "")
+        s.set("artifacts.artifact_label", "")
         s.set("artifacts.artifact_instructions", "")
         s.set("artifacts.target_tools", ["pr_reviewer", "pr_description", "pr_code_suggestions"])
         for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
