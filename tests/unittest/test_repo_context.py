@@ -1551,7 +1551,8 @@ def test_build_repo_context_enforces_total_line_cap(repo_context_settings, max_l
         assert all(line in context.splitlines() for line in ["one", "two", "three", "four", "five"])
         assert context.count('<file path="AGENTS.md"') == 1
         assert context.index('<file path="AGENTS.md"') < context.index('<file path="CONTRIBUTING.md"')
-    assert provider.requested_paths == ["AGENTS.md", "CONTRIBUTING.md"]
+    expected_paths = ["AGENTS.md"] if max_lines == 4 else ["AGENTS.md", "CONTRIBUTING.md"]
+    assert provider.requested_paths == expected_paths
     assert len(context.splitlines()) <= max_lines
 
 
@@ -2047,3 +2048,35 @@ def test_selected_sibling_build_requires_allowlist(repo_context_settings):
     assert "interface" in build_repo_context(provider)
     repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
     assert build_repo_context(provider) == ""
+
+
+def test_build_repo_context_stops_loading_after_truncated_file(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "CONTRIBUTING.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
+    provider = FakeProvider({
+        "AGENTS.md": "\n".join(f"line {index}" for index in range(20)),
+        "CONTRIBUTING.md": "This file should not be fetched.",
+    })
+
+    context = build_repo_context(provider)
+
+    assert TRUNCATION_MARKER in context
+    assert "CONTRIBUTING.md" not in context
+    assert provider.requested_paths == ["AGENTS.md"]
+
+
+def test_build_repo_context_does_not_fetch_after_exact_budget_fill(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "CONTRIBUTING.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
+    provider = FakeProvider({
+        "AGENTS.md": "first line\nsecond line",
+        "CONTRIBUTING.md": "This file should not be fetched.",
+    })
+
+    context = build_repo_context(provider)
+
+    assert "first line" in context
+    assert "second line" in context
+    assert TRUNCATION_MARKER not in context
+    assert "CONTRIBUTING.md" not in context
+    assert provider.requested_paths == ["AGENTS.md"]
