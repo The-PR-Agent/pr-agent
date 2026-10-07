@@ -11,6 +11,8 @@ DEFAULT_ARTIFACT_INSTRUCTIONS = (
     "It was produced by a prior CI step."
 )
 
+SUPPORTED_ARTIFACT_TOOLS = frozenset({"pr_reviewer", "pr_description", "pr_code_suggestions"})
+
 
 class ArtifactPromptContext(TypedDict):
     label: str
@@ -25,20 +27,15 @@ _artifact_context: ContextVar[Optional[tuple[ArtifactPromptContext, frozenset[st
 
 def get_artifact_context(tool_name: str) -> Optional[ArtifactPromptContext]:
     """Return the separate CI artifact prompt context for a targeted tool."""
-    return get_settings().get(f"{tool_name.lower()}.artifact_context")
+    payload = _artifact_context.get()
+    if payload is None:
+        return None
+    context, targets = payload
+    return context if tool_name.lower() in targets else None
 
 
 def reapply_artifact_context() -> None:
-    """Restore separately scoped artifact context after final command settings, without file I/O."""
-    settings = get_settings()
-    for tool_name in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
-        settings.set(f"{tool_name}.artifact_context", None)
-
-    payload = _artifact_context.get()
-    if payload is not None:
-        context, targets = payload
-        for tool_name in targets:
-            settings.set(f"{tool_name}.artifact_context", context)
+    """Compatibility hook; task-local artifact context does not require settings reapplication."""
 
 
 def resolve_artifact_path(path: str) -> Optional[Path]:
@@ -158,10 +155,9 @@ def inject_artifact_context() -> None:
     ARTIFACT_PATH in the environment turns the feature on by itself. Called once before a
     command runs, by the GitHub Action runner and by the CLI.
     """
-    # Each ingress prepares a new payload. Failed, empty, or disabled ingress must
-    # not leave an earlier task's payload available for dispatcher reapplication.
+    # Each ingress starts with a clean task-local context so a failed, empty, or
+    # disabled load cannot reuse an earlier payload.
     _artifact_context.set(None)
-    reapply_artifact_context()
 
     artifact_path_env = (
         os.environ.get("ARTIFACT_PATH") or os.environ.get("PR_AGENT_ARTIFACT_PATH") or ""
@@ -191,9 +187,16 @@ def inject_artifact_context() -> None:
         )
         if isinstance(target_tools, str):
             target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
-        target_tools = frozenset(str(t).lower() for t in target_tools)
+        requested_tools = frozenset(str(t).lower() for t in target_tools)
+        target_tools = requested_tools & SUPPORTED_ARTIFACT_TOOLS
+        unsupported_tools = sorted(requested_tools - SUPPORTED_ARTIFACT_TOOLS)
+        if unsupported_tools:
+            get_logger().warning(
+                f"Unsupported artifact target tools will be ignored: {unsupported_tools}"
+            )
+        if not target_tools:
+            return
         _artifact_context.set((artifact_context, target_tools))
-        reapply_artifact_context()
         get_logger().info(f"Injected artifact context into tools: {target_tools}")
     except (OSError, ValueError, TypeError) as e:
         get_logger().warning(f"Failed to process artifacts: {e}", exc_info=True)

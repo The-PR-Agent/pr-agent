@@ -532,9 +532,9 @@ _This section only documents commented-out examples; see the [TOML source](https
 | --- | --- | --- |
 | `enable` | false | Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set) |
 | `artifact_path` | "" | File path to the artifact (relative to GITHUB_WORKSPACE, or absolute) |
-| `artifact_instructions` | "" | Custom instructions appended after the artifact content (leave empty for a sensible default) |
+| `artifact_instructions` | "" | Analysis guidance rendered separately before the untrusted artifact label and content (leave empty for a sensible default) |
 | `artifact_label` | "" | Label shown to the AI — defaults to the filename when empty. |
-| `target_tools` | ["pr_reviewer", "pr_description", "pr_code_suggestions"] | Which tools receive artifact context. |
+| `target_tools` | ["pr_reviewer", "pr_description", "pr_code_suggestions"] | Which supported tools receive artifact context; unsupported names are skipped with a warning. |
 | `max_artifact_size` | 50000 | Max artifact size in characters (content is truncated if exceeded) |
 
 

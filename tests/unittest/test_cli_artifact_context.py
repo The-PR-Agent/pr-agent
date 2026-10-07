@@ -39,9 +39,9 @@ def test_cli_disabled_ingress_does_not_reuse_a_calling_context_payload(monkeypat
             settings = get_settings()
             observed.append((
                 str(settings.pr_reviewer.extra_instructions),
-                settings.pr_reviewer.artifact_context,
+                artifacts.get_artifact_context("pr_reviewer"),
                 str(settings.pr_description.extra_instructions),
-                settings.pr_description.artifact_context,
+                artifacts.get_artifact_context("pr_description"),
             ))
             return True
 
@@ -91,9 +91,9 @@ extra_instructions = "Repository instructions"
             settings = get_settings()
             observed.append((
                 settings.pr_reviewer.extra_instructions,
-                settings.pr_reviewer.artifact_context,
+                artifacts.get_artifact_context("pr_reviewer"),
                 settings.pr_description.extra_instructions,
-                settings.pr_description.artifact_context,
+                artifacts.get_artifact_context("pr_description"),
             ))
 
         async def run(self):

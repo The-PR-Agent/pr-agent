@@ -265,9 +265,6 @@ class TestInjectArtifactContext:
         "pr_reviewer.extra_instructions",
         "pr_description.extra_instructions",
         "pr_code_suggestions.extra_instructions",
-        "pr_reviewer.artifact_context",
-        "pr_description.artifact_context",
-        "pr_code_suggestions.artifact_context",
     )
 
     @pytest.fixture
@@ -280,7 +277,6 @@ class TestInjectArtifactContext:
         s.set("artifacts.target_tools", ["pr_reviewer", "pr_description", "pr_code_suggestions"])
         for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
             s.set(f"{tool}.extra_instructions", "")
-            s.set(f"{tool}.artifact_context", None)
         token = _artifact_context.set(None)
         try:
             yield s
@@ -326,6 +322,33 @@ class TestInjectArtifactContext:
             assert context["content"] == "FAILED: test_login"
             assert context["instructions"] == "Flag any test failures."
             assert settings.get(f"{tool}.extra_instructions") == ""
+
+    def test_artifact_directives_are_not_parsed_as_settings(self, settings, report):
+        directive = "@format {env[HOME]}"
+        report.write_text(directive, encoding="utf-8")
+        settings.set("artifacts.enable", True)
+        settings.set("artifacts.artifact_path", str(report))
+        settings.artifacts.artifact_label = directive
+
+        with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "HOME": "secret-value"}):
+            inject_artifact_context()
+
+        context = get_artifact_context("pr_reviewer")
+        assert context["content"] == directive
+        assert context["label"] == directive
+
+    def test_unsupported_target_tools_are_skipped_with_a_warning(self, settings, report):
+        settings.set("artifacts.target_tools", ["pr_reviewer", "pr_questions"])
+        env = {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}
+
+        with patch.dict(os.environ, env), patch("pr_agent.algo.artifacts.get_logger") as logger:
+            inject_artifact_context()
+
+        assert get_artifact_context("pr_reviewer")["content"] == "FAILED: test_login"
+        assert get_artifact_context("pr_questions") is None
+        logger.return_value.warning.assert_called_once_with(
+            "Unsupported artifact target tools will be ignored: ['pr_questions']"
+        )
 
     def test_settings_alone_are_enough_without_the_env_var(self, settings, report):
         settings.set("artifacts.enable", True)

@@ -803,13 +803,12 @@ async def test_handle_request_auto_review_uses_reviewer_auto_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeypatch, tmp_path):
+async def test_auto_review_keeps_prepared_artifact_context_without_notifying(monkeypatch, tmp_path):
     artifact = tmp_path / "artifact.txt"
     artifact.write_text("AUTO_REVIEW_ARTIFACT", encoding="utf-8")
     settings = get_settings()
     original_artifacts = settings.get("ARTIFACTS")
     original_instructions = settings.pr_reviewer.extra_instructions
-    original_artifact_context = settings.pr_reviewer.artifact_context
     artifact_token = artifacts._artifact_context.set(None)
     observed = []
     notify = Mock()
@@ -821,7 +820,7 @@ async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeyp
                 is_auto,
                 args,
                 str(settings.pr_reviewer.extra_instructions),
-                settings.pr_reviewer.artifact_context,
+                artifacts.get_artifact_context("pr_reviewer"),
             ))
 
         async def run(self):
@@ -862,7 +861,6 @@ async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeyp
     finally:
         settings.set("ARTIFACTS", original_artifacts, merge=False)
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
-        settings.set("PR_REVIEWER.ARTIFACT_CONTEXT", original_artifact_context)
         artifacts._artifact_context.reset(artifact_token)
 
 
@@ -886,13 +884,15 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
     try:
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Unscoped instructions")
         _patch_request_dependencies(monkeypatch)
-        monkeypatch.setattr(artifacts, "load_artifact", fail_if_loaded)
+        monkeypatch.setattr(artifacts, "load_artifact_context", fail_if_loaded)
+        monkeypatch.setattr(artifacts, "_read_and_truncate", fail_if_loaded)
         monkeypatch.setitem(pr_agent_module.command2class, "review", FakeTool)
 
         handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/review")
 
         assert handled is True
         assert observed == ["Unscoped instructions"]
+        assert artifacts.get_artifact_context("pr_reviewer") is None
     finally:
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
         artifacts._artifact_context.reset(token)

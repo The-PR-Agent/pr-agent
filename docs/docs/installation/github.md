@@ -431,7 +431,7 @@ Point the action at the file with the `artifact_path` input. The path is resolve
           artifact_instructions: "These are the failing tests from this PR's CI run. Call out any suggestion that would not fix them."
 ```
 
-Setting `artifact_path` turns the feature on by itself; there is no separate enable switch to flip in the workflow. The file contents are wrapped in a labelled `CI Artifact` block and appended to the `extra_instructions` of each target tool.
+Setting `artifact_path` turns the feature on by itself; there is no separate enable switch to flip in the workflow. Supported target tools receive a dedicated artifact section in their prompt. The label and file contents are explicitly marked as untrusted data, while `artifact_instructions` appears separately as subordinate analysis guidance. The supported targets are `pr_reviewer`, `pr_description` and `pr_code_suggestions`; unsupported names are skipped with a warning.
 
 The remaining knobs live in the `[artifacts]` section of your configuration:
 

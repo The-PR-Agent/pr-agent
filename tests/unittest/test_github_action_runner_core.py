@@ -173,9 +173,8 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
 def restore_github_settings():
     """Snapshot and restore global settings that run_action mutates.
 
-    Covers GITHUB/GITHUB_ACTION_CONFIG/GITHUB_APP plus prompt context and extra_instructions
-    of the three auto-run tools (artifact/CI-conclusion injection), so these
-    tests don't leak state into others.
+    Covers GITHUB/GITHUB_ACTION_CONFIG/GITHUB_APP plus task-local artifact context
+    and extra_instructions so these tests don't leak state into others.
     """
     settings = get_settings()
     had_github = "GITHUB" in settings
@@ -190,10 +189,7 @@ def restore_github_settings():
         section: getattr(getattr(settings, section, None), "extra_instructions", None)
         for section in ("pr_reviewer", "pr_description", "pr_code_suggestions")
     }
-    original_artifact_contexts = {
-        section: getattr(getattr(settings, section, None), "artifact_context", None)
-        for section in ("pr_reviewer", "pr_description", "pr_code_suggestions")
-    }
+    artifact_token = artifacts._artifact_context.set(None)
     yield
     if had_github:
         settings.set("GITHUB", original_github)
@@ -214,7 +210,7 @@ def restore_github_settings():
     for section, extra_instructions in original_extra_instructions.items():
         if extra_instructions is not None:
             getattr(settings, section).extra_instructions = extra_instructions
-        getattr(settings, section).artifact_context = original_artifact_contexts[section]
+    artifacts._artifact_context.reset(artifact_token)
 
 
 @pytest.fixture
@@ -1385,7 +1381,7 @@ async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(
 
 
 @pytest.mark.asyncio
-async def test_action_configured_commands_reapply_one_artifact_after_real_repo_merges(
+async def test_action_configured_commands_share_one_artifact_context_after_real_repo_merges(
     monkeypatch, tmp_path, restore_github_settings, restore_artifact_action_settings,
 ):
     """Verify repeated repository merges share the Action's single artifact read."""
@@ -1405,7 +1401,7 @@ async def test_action_configured_commands_reapply_one_artifact_after_real_repo_m
         def __init__(self, _pr_url, ai_handler=None, args=None):
             observed.append((
                 str(get_settings().pr_reviewer.extra_instructions),
-                get_settings().pr_reviewer.artifact_context,
+                artifacts.get_artifact_context("pr_reviewer"),
             ))
 
         async def run(self):
@@ -1461,7 +1457,11 @@ async def test_direct_action_and_workflow_run_keep_artifact_separate_from_ci_con
 
         def __init__(self, _pr_url):
             tool_settings = getattr(settings, self.section)
-            observations.append((self.section, str(tool_settings.extra_instructions), tool_settings.artifact_context))
+            observations.append((
+                self.section,
+                str(tool_settings.extra_instructions),
+                artifacts.get_artifact_context(self.section),
+            ))
 
         async def run(self):
             return None

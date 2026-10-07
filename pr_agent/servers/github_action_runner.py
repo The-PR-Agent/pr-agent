@@ -503,9 +503,8 @@ async def run_action():
 def _inject_ci_conclusion(conclusion):
     """Tell the model how the workflow that triggered this run finished.
 
-    Mirrors the append-to-extra_instructions pattern already used for the
-    response-language instruction above and by _inject_artifact_context, so a
-    reviewer running after CI knows a failed/cancelled run without config
+    Adds the workflow conclusion to the reviewer's extra instructions so a
+    review running after CI knows a failed or cancelled run without config
     changes or new prompt variables.
     """
     if not conclusion:
