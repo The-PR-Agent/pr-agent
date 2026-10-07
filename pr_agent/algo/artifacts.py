@@ -167,8 +167,8 @@ def inject_artifact_context() -> None:
     ARTIFACT_PATH in the environment turns the feature on by itself. Called once before a
     command runs, by the GitHub Action runner and by the CLI.
     """
-    # Each ingress starts with a clean task-local context so a failed, empty, or
-    # disabled load cannot reuse an earlier payload.
+    # Reset task-local context before each ingress so a failed, empty, or disabled
+    # load cannot reuse an earlier payload.
     _artifact_context.set(None)
 
     artifact_path_env = (
