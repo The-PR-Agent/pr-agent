@@ -1,4 +1,5 @@
 import os
+import secrets
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional, TypedDict
@@ -18,6 +19,8 @@ class ArtifactPromptContext(TypedDict):
     label: str
     content: str
     instructions: str
+    start_marker: str
+    end_marker: str
 
 
 _artifact_context: ContextVar[Optional[tuple[ArtifactPromptContext, frozenset[str]]]] = ContextVar(
@@ -66,6 +69,20 @@ def resolve_artifact_path(path: str) -> Optional[Path]:
 _TRUNCATION_MARKER = "\n\n[... content truncated due to size limit ...]"
 
 
+def _artifact_boundary_markers() -> tuple[str, str]:
+    """Build unpredictable prompt boundaries for one artifact payload."""
+    nonce = secrets.token_hex(16)
+    return (
+        f"<<<CI_ARTIFACT_{nonce}_BEGIN>>>",
+        f"<<<CI_ARTIFACT_{nonce}_END>>>",
+    )
+
+
+def _single_line_artifact_label(label: str) -> str:
+    """Collapse whitespace in an untrusted artifact label."""
+    return " ".join(str(label).split())
+
+
 def _read_and_truncate(path: Path, max_size: int) -> str:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -81,15 +98,11 @@ def _read_and_truncate(path: Path, max_size: int) -> str:
 
 
 def format_artifact_content(content: str, label: str, instructions: str) -> str:
+    label = _single_line_artifact_label(label)
     header = f"CI Artifact: {label}" if label else "CI Artifact"
     instructions = (instructions or "").strip() or DEFAULT_ARTIFACT_INSTRUCTIONS
-    return (
-        f"{header}\n"
-        f"=====\n"
-        f"{content}\n"
-        f"=====\n"
-        f"{instructions}"
-    )
+    start_marker, end_marker = _artifact_boundary_markers()
+    return f"{header}\n" f"{start_marker}\n" f"{content}\n" f"{end_marker}\n" f"{instructions}"
 
 
 def load_artifact_context() -> Optional[ArtifactPromptContext]:
@@ -130,11 +143,14 @@ def load_artifact_context() -> Optional[ArtifactPromptContext]:
         return None
 
     label = artifacts_settings.get("artifact_label", "") or artifact_path.name
+    start_marker, end_marker = _artifact_boundary_markers()
     instructions = (artifacts_settings.get("artifact_instructions", "") or "").strip()
     return {
-        "label": str(label),
+        "label": _single_line_artifact_label(label),
         "content": content,
         "instructions": instructions or DEFAULT_ARTIFACT_INSTRUCTIONS,
+        "start_marker": start_marker,
+        "end_marker": end_marker,
     }
 
 
