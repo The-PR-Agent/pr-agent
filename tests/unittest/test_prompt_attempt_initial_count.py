@@ -64,7 +64,7 @@ def test_for_prompt_attempt_skips_discarded_initial_prompt_count(monkeypatch):
     assert warning_calls[0][0] == "System {{ title }}"
     assert warning_calls[0][1] == "User {{ diff }}"
     assert warning_calls[0][2] is variables
-    assert warning_calls[0][3:] == ("System PR", "User ")
+    assert warning_calls[0][3:] == ("User ",)
     assert budget.prompt_tokens == (
         len("System PR")
         + len("User ")
