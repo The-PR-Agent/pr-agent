@@ -72,6 +72,68 @@ def test_no_pr_handler_initializes_zero_prompt_tokens(monkeypatch):
     assert handler.prompt_tokens == 0
 
 
+def test_warns_when_artifact_context_is_missing_from_one_active_prompt(monkeypatch):
+    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings())
+    encoder = MagicMock()
+    encoder.encode.return_value = []
+    monkeypatch.setattr(token_handler.TokenEncoder, "get_token_encoder", lambda _model=None: encoder)
+    logger = MagicMock()
+    monkeypatch.setattr(token_handler, "get_logger", lambda: logger)
+
+    token_handler.TokenHandler(
+        object(),
+        {"artifact_context": {"instructions": "Check failures"}},
+        "{{ artifact_context.instructions }}",
+        "Review this PR",
+    )
+
+    logger.warning.assert_called_once_with(
+        "CI artifact context is available, but the active user prompt does not reference artifact_context. "
+        "Update custom prompts to render artifact instructions in the system prompt and marked artifact "
+        "label/content in the user prompt."
+    )
+
+
+def test_warns_when_both_active_prompts_omit_artifact_context(monkeypatch):
+    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings())
+    encoder = MagicMock()
+    encoder.encode.return_value = []
+    monkeypatch.setattr(token_handler.TokenEncoder, "get_token_encoder", lambda _model=None: encoder)
+    logger = MagicMock()
+    monkeypatch.setattr(token_handler, "get_logger", lambda: logger)
+
+    token_handler.TokenHandler(
+        object(),
+        {"artifact_context": {"content": "FAILED"}},
+        "Analyze the pull request",
+        "Review the pull request",
+    )
+
+    logger.warning.assert_called_once_with(
+        "CI artifact context is available, but the active system and user prompts do not reference artifact_context. "
+        "Update custom prompts to render artifact instructions in the system prompt and marked artifact "
+        "label/content in the user prompt."
+    )
+
+
+def test_does_not_warn_when_both_active_prompts_render_artifact_context(monkeypatch):
+    monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings())
+    encoder = MagicMock()
+    encoder.encode.return_value = []
+    monkeypatch.setattr(token_handler.TokenEncoder, "get_token_encoder", lambda _model=None: encoder)
+    logger = MagicMock()
+    monkeypatch.setattr(token_handler, "get_logger", lambda: logger)
+
+    token_handler.TokenHandler(
+        object(),
+        {"artifact_context": {"instructions": "Check failures", "content": "FAILED"}},
+        "{{ artifact_context.instructions }}",
+        "{{ artifact_context.content }}",
+    )
+
+    logger.warning.assert_not_called()
+
+
 def test_for_model_rebinds_rendered_prompt_without_mutating_source(monkeypatch):
     monkeypatch.setattr(token_handler, "get_settings", lambda use_context=True: _settings())
     encoders = {}

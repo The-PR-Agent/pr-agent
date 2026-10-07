@@ -183,6 +183,15 @@ def test_all_artifact_target_prompts_render_untrusted_content_separately(prompt_
             "start_marker": start_marker,
             "end_marker": end_marker,
         },
+        "related_tickets": [
+            SimpleNamespace(
+                ticket_url="https://example.com/issues/42",
+                title="Representative related ticket",
+                labels=[],
+                body="Ticket details",
+            )
+        ],
+        "related_tickets_omitted": 1,
     }
     system = environment.from_string(prompt.system).render(**variables)
     user = environment.from_string(prompt.user).render(**variables)
@@ -195,6 +204,7 @@ def test_all_artifact_target_prompts_render_untrusted_content_separately(prompt_
     assert artifact_content in user
     assert user.count(artifact_content) == 1
     assert user.index(start_marker) < user.index(artifact_content) < user.index(end_marker)
+    assert end_marker in user.splitlines()
     assert "Keep the result concise." in system
     if "pr_code_suggestions_prompt" in prompt_name:
         assert user.index("CI artifact label and content") < user.index("--PR Info--")

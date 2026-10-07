@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from threading import Lock
 
-from jinja2 import StrictUndefined
+from jinja2 import StrictUndefined, meta
 from jinja2.sandbox import SandboxedEnvironment
 from tiktoken import encoding_for_model, get_encoding
 
@@ -146,6 +146,24 @@ class TokenHandler:
             environment = SandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
             user_prompt = environment.from_string(user).render(vars)
+            if vars.get("artifact_context"):
+                system_variables = meta.find_undeclared_variables(environment.parse(system))
+                user_variables = meta.find_undeclared_variables(environment.parse(user))
+                missing_roles = [
+                    role
+                    for role, referenced in (("system", system_variables), ("user", user_variables))
+                    if "artifact_context" not in referenced
+                ]
+                if missing_roles:
+                    prompt_names = " and ".join(missing_roles)
+                    prompt_noun = "prompts" if len(missing_roles) > 1 else "prompt"
+                    verb = "do not" if len(missing_roles) > 1 else "does not"
+                    get_logger().warning(
+                        "CI artifact context is available, but the active "
+                        f"{prompt_names} {prompt_noun} {verb} reference artifact_context. "
+                        "Update custom prompts to render artifact instructions in the system prompt "
+                        "and marked artifact label/content in the user prompt."
+                    )
             system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
             user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))
             return system_prompt_tokens + user_prompt_tokens
