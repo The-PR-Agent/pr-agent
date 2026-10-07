@@ -770,7 +770,13 @@ class TestResolveCommentThread:
         assert "reviewThreads(first: 100)" in requester.calls[2][3]["query"]
         assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
 
-    def test_deleted_root_falls_back_to_original_reply(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "root_error, expected_status",
+        [(GithubException(404, {"message": "missing root response"}, None), "404"),
+         (RequestException("private transport details"), "network error")],
+        ids=["deleted-root", "network-error"],
+    )
+    def test_root_lookup_failure_falls_back_to_original_reply(self, monkeypatch, root_error, expected_status):
         logger = MagicMock()
         monkeypatch.setattr(gh_module, "get_logger", lambda: logger)
         thread = {
@@ -780,8 +786,7 @@ class TestResolveCommentThread:
         resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
         provider, requester = _make_provider_with_graphql(
             {"node_id": "PRR_reply", "in_reply_to_id": 10},
-            [GithubException(404, {"message": "missing root response"}, None),
-             _make_threads_response([thread]), resolved],
+            [root_error, _make_threads_response([thread]), resolved],
         )
 
         assert provider.resolve_comment_thread(123) is True
@@ -789,7 +794,7 @@ class TestResolveCommentThread:
         assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
         assert "reviewThreads(first: 100)" in requester.calls[2][3]["query"]
         assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
-        logger.warning.assert_called_once_with("Could not fetch root of comment 123: status 404")
+        logger.warning.assert_called_once_with(f"Could not fetch root of comment 123: status {expected_status}")
 
     def test_resolves_thread_successfully(self):
         rest_data = {"node_id": "PRR_comment1"}

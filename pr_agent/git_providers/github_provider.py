@@ -1032,14 +1032,16 @@ class GithubProvider(GitProvider):
             headers, data = self.pr._requester.requestJsonAndCheck(
                 "GET", f"{self.base_url}/repos/{self.repo}/pulls/comments/{comment_id}"
             )
-            # A thread's root is always in its first comment page; a late reply may not be.
+            # Fetch the root to find replies beyond the first comment page.
             if data.get("in_reply_to_id"):
                 try:
                     headers, data = self.pr._requester.requestJsonAndCheck(
                         "GET", f"{self.base_url}/repos/{self.repo}/pulls/comments/{data['in_reply_to_id']}"
                     )
-                except GithubException as e:
-                    get_logger().warning(f"Could not fetch root of comment {comment_id}: status {e.status}")
+                except (GithubException, RequestException) as e:
+                    get_logger().warning(
+                        f"Could not fetch root of comment {comment_id}: status {getattr(e, 'status', 'network error')}"
+                    )
             comment_node_id = data.get("node_id", "")
             if not comment_node_id:
                 get_logger().warning(f"No node_id found for comment {comment_id}")
