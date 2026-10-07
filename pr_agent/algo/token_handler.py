@@ -1,7 +1,9 @@
 import asyncio
 import contextvars
+import hashlib
 import os
 import re
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from threading import Lock
@@ -13,12 +15,98 @@ from tiktoken import encoding_for_model, get_encoding
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
+_ARTIFACT_PROMPT_WARNING_CACHE_LIMIT = 128
+_artifact_prompt_warning_cache: dict[bytes, None] = {}
+_artifact_prompt_warning_lock = Lock()
 
-def _renders_artifact_fields(prompt: str, artifact_context: dict, fields: tuple[str, ...]) -> bool:
-    return all(
-        isinstance(value, str) and value and value in prompt
-        for field in fields
-        for value in (artifact_context.get(field),)
+
+def _artifact_fields_inside_markers(prompt: str, context: dict) -> bool:
+    start_marker = context.get("start_marker")
+    end_marker = context.get("end_marker")
+    label = context.get("label")
+    content = context.get("content")
+    if not all(isinstance(value, str) and value for value in (start_marker, end_marker, label, content)):
+        return False
+    start = prompt.find(start_marker)
+    end = prompt.find(end_marker, start + len(start_marker)) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return False
+    marked_content = prompt[start + len(start_marker):end]
+    return label in marked_content and content in marked_content
+
+
+def _artifact_prompt_warning_is_new(system_template: str, user_template: str, issues: tuple[str, ...]) -> bool:
+    key = hashlib.sha256(repr((system_template, user_template, issues)).encode("utf-8")).digest()
+    with _artifact_prompt_warning_lock:
+        if key in _artifact_prompt_warning_cache:
+            return False
+        _artifact_prompt_warning_cache[key] = None
+        if len(_artifact_prompt_warning_cache) > _ARTIFACT_PROMPT_WARNING_CACHE_LIMIT:
+            _artifact_prompt_warning_cache.pop(next(iter(_artifact_prompt_warning_cache)))
+    return True
+
+
+def warn_if_artifact_context_prompt_is_invalid(
+    system_template: str,
+    user_template: str,
+    variables: dict,
+    system_prompt: str,
+    user_prompt: str,
+) -> None:
+    """Warn once when an active prompt omits or misroutes CI artifact context."""
+    context = variables.get("artifact_context")
+    if not isinstance(context, dict) or not context:
+        return
+
+    issues = []
+    nonce = secrets.token_hex(16)
+    probes = {
+        "instructions": f"__PR_AGENT_ARTIFACT_INSTRUCTIONS_{nonce}__",
+        "label": f"__PR_AGENT_ARTIFACT_LABEL_{nonce}__",
+        "content": f"__PR_AGENT_ARTIFACT_CONTENT_{nonce}__",
+        "start_marker": f"<<<CI_ARTIFACT_{nonce}_BEGIN>>>",
+        "end_marker": f"<<<CI_ARTIFACT_{nonce}_END>>>",
+    }
+    environment = SandboxedEnvironment(undefined=StrictUndefined)
+    system_jinja = environment.from_string(system_template)
+    user_jinja = environment.from_string(user_template)
+
+    def render_system_with_probe(field: str) -> str:
+        probe_context = {**context, field: probes[field]}
+        probe_variables = {**variables, "artifact_context": probe_context}
+        return system_jinja.render(probe_variables)
+
+    try:
+        if probes["instructions"] not in render_system_with_probe("instructions"):
+            issues.append("system prompt does not render artifact_context.instructions")
+
+        probe_context = {**context, **probes}
+        probe_variables = {**variables, "artifact_context": probe_context}
+        probed_user_prompt = user_jinja.render(probe_variables)
+        probed_user_fields_present = _artifact_fields_inside_markers(
+            probed_user_prompt, probe_context
+        )
+        actual_user_fields_present = _artifact_fields_inside_markers(user_prompt, context)
+        if not probed_user_fields_present and not actual_user_fields_present:
+            issues.append("user prompt does not render the artifact label and content between its markers")
+
+        leaked_fields = [
+            field
+            for field in ("label", "content")
+            if render_system_with_probe(field) != system_prompt
+        ]
+        if leaked_fields:
+            issues.append(f"system prompt renders untrusted artifact {', '.join(leaked_fields)}")
+    except Exception:
+        issues.append("artifact prompt fields could not be verified")
+
+    if not issues or not _artifact_prompt_warning_is_new(system_template, user_template, tuple(issues)):
+        return
+    get_logger().warning(
+        "CI artifact prompt validation: "
+        + "; ".join(issues)
+        + ". Keep artifact instructions in the system prompt and keep the untrusted label and content "
+        "only inside the marked user-prompt section."
     )
 
 
@@ -154,28 +242,9 @@ class TokenHandler:
             environment = SandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
             user_prompt = environment.from_string(user).render(vars)
-            artifact_context = vars.get("artifact_context")
-            if artifact_context:
-                missing_roles = []
-                if not isinstance(artifact_context, dict) or not _renders_artifact_fields(
-                    system_prompt, artifact_context, ("instructions",)
-                ):
-                    missing_roles.append("system")
-                if not isinstance(artifact_context, dict) or not _renders_artifact_fields(
-                    user_prompt, artifact_context, ("label", "content", "start_marker", "end_marker")
-                ):
-                    missing_roles.append("user")
-                if missing_roles:
-                    prompt_names = " and ".join(missing_roles)
-                    prompt_noun = "prompts" if len(missing_roles) > 1 else "prompt"
-                    verb = "do not" if len(missing_roles) > 1 else "does not"
-                    get_logger().warning(
-                        "CI artifact context is available, but the active "
-                        f"{prompt_names} {prompt_noun} {verb} render all required artifact fields. "
-                        "Update custom prompts to render artifact_context.instructions in the system "
-                        "prompt and all of artifact_context.label, artifact_context.content, "
-                        "artifact_context.start_marker, and artifact_context.end_marker in the user prompt."
-                    )
+            warn_if_artifact_context_prompt_is_invalid(
+                system, user, vars, system_prompt, user_prompt
+            )
             system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
             user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))
             return system_prompt_tokens + user_prompt_tokens

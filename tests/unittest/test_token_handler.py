@@ -75,26 +75,13 @@ def test_no_pr_handler_initializes_zero_prompt_tokens(monkeypatch):
 def _artifact_context():
     return {
         "artifact_context": {
-            "instructions": "Check failures",
+            "instructions": "Flag failing tests.",
             "label": "ci.log",
-            "content": "FAILED",
-            "start_marker": "<START>",
-            "end_marker": "<END>",
+            "content": "FAILED_CI_ARTIFACT_7461",
+            "start_marker": "<<<CI_ARTIFACT_test_BEGIN>>>",
+            "end_marker": "<<<CI_ARTIFACT_test_END>>>",
         }
     }
-
-
-def _expected_artifact_warning(roles):
-    role_names = " and ".join(roles)
-    noun = "prompts" if len(roles) > 1 else "prompt"
-    verb = "do not" if len(roles) > 1 else "does not"
-    return (
-        "CI artifact context is available, but the active "
-        f"{role_names} {noun} {verb} render all required artifact fields. "
-        "Update custom prompts to render artifact_context.instructions in the system prompt "
-        "and all of artifact_context.label, artifact_context.content, artifact_context.start_marker, "
-        "and artifact_context.end_marker in the user prompt."
-    )
 
 
 def _patch_artifact_warning_dependencies(monkeypatch):
@@ -107,6 +94,11 @@ def _patch_artifact_warning_dependencies(monkeypatch):
     return logger
 
 
+def _last_warning(logger):
+    logger.warning.assert_called_once()
+    return logger.warning.call_args.args[0]
+
+
 def test_warns_when_artifact_context_is_missing_from_one_active_prompt(monkeypatch):
     logger = _patch_artifact_warning_dependencies(monkeypatch)
     token_handler.TokenHandler(
@@ -115,7 +107,7 @@ def test_warns_when_artifact_context_is_missing_from_one_active_prompt(monkeypat
         "{{ artifact_context.instructions }}",
         "Review this PR",
     )
-    logger.warning.assert_called_once_with(_expected_artifact_warning(["user"]))
+    assert "user prompt does not render" in _last_warning(logger)
 
 
 def test_warns_when_both_active_prompts_omit_artifact_context(monkeypatch):
@@ -126,7 +118,9 @@ def test_warns_when_both_active_prompts_omit_artifact_context(monkeypatch):
         "Analyze the pull request",
         "Review the pull request",
     )
-    logger.warning.assert_called_once_with(_expected_artifact_warning(["system", "user"]))
+    message = _last_warning(logger)
+    assert "system prompt does not render artifact_context.instructions" in message
+    assert "user prompt does not render" in message
 
 
 def test_warns_when_artifact_context_is_only_used_in_conditions(monkeypatch):
@@ -137,7 +131,9 @@ def test_warns_when_artifact_context_is_only_used_in_conditions(monkeypatch):
         "{% if artifact_context %}Artifact available{% endif %}",
         "{% if artifact_context %}Artifact loaded{% endif %}",
     )
-    logger.warning.assert_called_once_with(_expected_artifact_warning(["system", "user"]))
+    message = _last_warning(logger)
+    assert "system prompt does not render artifact_context.instructions" in message
+    assert "user prompt does not render" in message
 
 
 def test_warns_when_user_prompt_omits_artifact_boundaries(monkeypatch):
@@ -148,10 +144,50 @@ def test_warns_when_user_prompt_omits_artifact_boundaries(monkeypatch):
         "{{ artifact_context.instructions }}",
         "{{ artifact_context.label }}{{ artifact_context.content }}",
     )
-    logger.warning.assert_called_once_with(_expected_artifact_warning(["user"]))
+    assert "user prompt does not render" in _last_warning(logger)
 
 
-def test_does_not_warn_when_both_active_prompts_render_artifact_context(monkeypatch):
+def test_warns_when_untrusted_artifact_fields_reach_system_prompt(monkeypatch):
+    for field in ("label", "content"):
+        logger = _patch_artifact_warning_dependencies(monkeypatch)
+        token_handler.TokenHandler(
+            object(),
+            _artifact_context(),
+            "{{ artifact_context.instructions }} {{ artifact_context." + field + " }}",
+            "{{ artifact_context.start_marker }}{{ artifact_context.label }}"
+            "{{ artifact_context.content }}{{ artifact_context.end_marker }}",
+        )
+        assert f"system prompt renders untrusted artifact {field}" in _last_warning(logger)
+
+
+def test_does_not_warn_when_artifact_content_matches_other_system_text(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
+    variables = _artifact_context()
+    variables["artifact_context"]["content"] = "review"
+    token_handler.TokenHandler(
+        object(),
+        variables,
+        "Please review this PR: {{ artifact_context.instructions }}",
+        "{{ artifact_context.start_marker }}{{ artifact_context.label }}"
+        "{{ artifact_context.content }}{{ artifact_context.end_marker }}",
+    )
+    logger.warning.assert_not_called()
+
+
+def test_deduplicates_artifact_warnings_for_the_same_prompt_templates(monkeypatch):
+    logger = _patch_artifact_warning_dependencies(monkeypatch)
+    args = (
+        object(),
+        _artifact_context(),
+        "Unique system template with no artifact fields",
+        "Unique user template with no artifact fields",
+    )
+    token_handler.TokenHandler(*args)
+    token_handler.TokenHandler(*args)
+    logger.warning.assert_called_once()
+
+
+def test_does_not_warn_when_artifact_fields_stay_in_marked_user_section(monkeypatch):
     logger = _patch_artifact_warning_dependencies(monkeypatch)
     token_handler.TokenHandler(
         object(),

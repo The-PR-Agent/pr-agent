@@ -13,7 +13,11 @@ from pr_agent.algo import (
     GPT6_SOL_TIER_MODELS,
     MAX_TOKENS,
 )
-from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
+from pr_agent.algo.token_handler import (
+    TokenEncoder,
+    TokenHandler,
+    warn_if_artifact_context_prompt_is_invalid,
+)
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -353,6 +357,9 @@ class AttemptTokenBudget:
             ignore_max_model_tokens=ignore_max_model_tokens,
         )
         system_prompt, user_prompt = budget.render_prompt_templates(variables)
+        warn_if_artifact_context_prompt_is_invalid(
+            system_template, user_template, variables, system_prompt, user_prompt
+        )
         prepared = budget.prepare_request(
             ai_handler,
             system_prompt,
