@@ -715,14 +715,14 @@ class _FakeRequester:
 
     def requestJsonAndCheck(self, method, url, input=None):
         self.calls.append(("check", method, url, input))
-        return ({}, self._responses.pop(0))
-
-    def requestJson(self, method, url, input=None):
-        self.calls.append(("json", method, url, input))
         response = self._responses.pop(0)
         if isinstance(response, Exception):
             raise response
-        return response
+        return ({}, response)
+
+    def requestJson(self, method, url, input=None):
+        self.calls.append(("json", method, url, input))
+        return self._responses.pop(0)
 
 
 def _make_provider_with_graphql(rest_comment_data, graphql_responses):
@@ -749,251 +749,47 @@ def _make_threads_response(threads, has_next_page=False, end_cursor=None):
     })
 
 
-def _make_overflow_thread(thread_id="PRRT_target", cursor="cursor1"):
-    return {
-        "id": thread_id, "isResolved": False,
-        "comments": {"nodes": [{"id": "PRR_other"}],
-                     "pageInfo": {"hasNextPage": True, "endCursor": cursor}},
-    }
-
-
-def _make_comment_page(comment_ids, thread_id="PRRT_target", resolved=False, has_next_page=False, cursor=None):
-    return _make_graphql_response({"node": {
-        "__typename": "PullRequestReviewThread", "id": thread_id, "isResolved": resolved,
-        "comments": {"nodes": [{"id": comment_id} for comment_id in comment_ids],
-                     "pageInfo": {"hasNextPage": has_next_page, "endCursor": cursor}},
-    }})
-
-
 class TestResolveCommentThread:
     def test_resolves_reply_after_first_hundred_comments(self):
         thread = {
             "id": "PRRT_target", "isResolved": False,
-            "comments": {
-                "nodes": [{"id": f"PRR_other_{i}"} for i in range(100)],
-                "pageInfo": {"hasNextPage": True, "endCursor": "comment_cursor"},
-            },
+            "comments": {"nodes": [{"id": "PRR_root"}] + [
+                {"id": f"PRR_reply_{i}"} for i in range(1, 100)
+            ]},
         }
-        remaining_comments = _make_graphql_response({"node": {
-            "__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": False,
-            "comments": {"nodes": [{"id": "PRR_reply101"}],
-                         "pageInfo": {"hasNextPage": False, "endCursor": None}},
-        }})
         resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
         provider, requester = _make_provider_with_graphql(
-            {"node_id": "PRR_reply101"}, [_make_threads_response([thread]), remaining_comments, resolved]
+            {"node_id": "PRR_reply101", "in_reply_to_id": 10},
+            [{"node_id": "PRR_root"}, _make_threads_response([thread]), resolved],
         )
 
         assert provider.resolve_comment_thread(123) is True
         assert len(requester.calls) == 4
         assert requester.calls[0][2].endswith("/pulls/comments/123")
-        assert requester.calls[2][3]["variables"] == {"threadId": "PRRT_target", "cursor": "comment_cursor"}
+        assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
+        assert "reviewThreads(first: 100)" in requester.calls[2][3]["query"]
         assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
 
-    def test_searches_outer_pages_then_multiple_overflow_candidates_and_pages(self):
-        page1 = _make_threads_response([_make_overflow_thread("PRRT_other")], True, "outer_cursor")
-        page2 = _make_threads_response([_make_overflow_thread()])
-        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            page1, page2, _make_comment_page(["PRR_absent"], thread_id="PRRT_other"),
-            _make_comment_page(["PRR_other"], has_next_page=True, cursor='opaque"cursor2'),
-            _make_comment_page(["PRR_reply"]), resolved,
-        ])
-
-        assert provider.resolve_comment_thread(123) is True
-        assert 'after: "outer_cursor"' in requester.calls[2][3]["query"]
-        assert [c[3]["variables"] for c in requester.calls[3:6]] == [
-            {"threadId": "PRRT_other", "cursor": "cursor1"},
-            {"threadId": "PRRT_target", "cursor": "cursor1"},
-            {"threadId": "PRRT_target", "cursor": 'opaque"cursor2'},
-        ]
-        assert 'threadId: "PRRT_target"' in requester.calls[6][3]["query"]
-
-    @pytest.mark.parametrize("later_outer_page", [False, True])
-    def test_fast_lookup_does_not_read_or_validate_unrelated_overflow(self, later_outer_page):
-        broken_overflow = _make_overflow_thread(cursor=None)
-        target = {"id": "PRRT_target", "isResolved": False,
-                  "comments": {"nodes": [{"id": "PRR_reply"}]}}
-        if later_outer_page:
-            pages = [_make_threads_response([broken_overflow], True, "outer_cursor"),
-                     _make_threads_response([target])]
-        else:
-            pages = [_make_threads_response([broken_overflow, target])]
-        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [*pages, resolved])
-
-        assert provider.resolve_comment_thread(123) is True
-        assert len(requester.calls) == len(pages) + 2
-        assert all("variables" not in call[3] for call in requester.calls[1:])
-
-    @pytest.mark.parametrize("failure", [
-        "metadata", "cursor", "response", "json", "request", "github", "graphql",
-        "node", "comments", "connection", "page_info", "repeated_cursor",
-    ])
-    def test_unusable_candidate_does_not_block_later_matching_thread(self, failure, monkeypatch):
+    def test_deleted_root_falls_back_to_original_reply(self, monkeypatch):
         logger = MagicMock()
         monkeypatch.setattr(gh_module, "get_logger", lambda: logger)
-        broken = _make_overflow_thread("PRRT_other")
-        response = _make_comment_page(["PRR_reply"], thread_id="PRRT_other")
-        reason = ""
-        if failure == "metadata":
-            broken["comments"]["pageInfo"] = None
-            pages, reason = [], "invalid metadata"
-        elif failure == "cursor":
-            broken["comments"]["pageInfo"]["endCursor"] = None
-            pages, reason = [], "invalid or repeated comment cursor"
-        elif failure == "response":
-            pages, reason = ["secret-response"], "invalid response format"
-        elif failure == "json":
-            pages, reason = [(200, {}, "secret-invalid-json")], "lookup failed (JSONDecodeError)"
-        elif failure == "request":
-            pages, reason = [RequestException("secret-request")], "lookup failed (RequestException)"
-        elif failure == "github":
-            pages, reason = [_FakeGithubException(502, {"message": "secret-github"})], "lookup failed"
-        elif failure == "graphql":
-            pages = [_make_graphql_response({"node": None}, errors=[{"message": "secret-graphql"}])]
-            reason = "GraphQL errors"
-        elif failure in {"node", "comments", "connection", "page_info"}:
-            data = json.loads(response[2])["data"]
-            if failure == "node":
-                data["node"]["id"] = "PRRT_wrong"
-                reason = "invalid thread node"
-            elif failure == "comments":
-                data["node"]["comments"]["nodes"] = [None]
-                reason = "invalid comment nodes"
-            elif failure == "connection":
-                data["node"]["comments"] = None
-                reason = "lookup failed (AttributeError)"
-            else:
-                data["node"]["comments"]["nodes"] = [{"id": "PRR_absent"}]
-                data["node"]["comments"]["pageInfo"] = None
-                reason = "invalid comment page info"
-            pages = [_make_graphql_response(data)]
-        else:
-            pages = [_make_comment_page(["PRR_absent"], thread_id="PRRT_other",
-                                        has_next_page=True, cursor="cursor1")]
-            reason = "invalid or repeated comment cursor"
+        thread = {
+            "id": "PRRT_target", "isResolved": False,
+            "comments": {"nodes": [{"id": "PRR_reply"}]},
+        }
         resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([broken, _make_overflow_thread()]),
-            *pages, _make_comment_page(["PRR_reply"]), resolved,
-        ])
+        provider, requester = _make_provider_with_graphql(
+            {"node_id": "PRR_reply", "in_reply_to_id": 10},
+            [GithubException(404, {"message": "missing root response"}, None),
+             _make_threads_response([thread]), resolved],
+        )
 
         assert provider.resolve_comment_thread(123) is True
-        assert requester.calls[0][2].endswith("/pulls/comments/123")
-        assert requester.calls[-2][3]["variables"] == {"threadId": "PRRT_target", "cursor": "cursor1"}
-        mutations = [c for c in requester.calls[1:] if "resolveReviewThread" in c[3]["query"]]
-        assert len(mutations) == 1
-        assert 'threadId: "PRRT_target"' in mutations[0][3]["query"]
-        assert len(requester.calls) == 4 + len(pages)
-        messages = [call.args[0] for call in logger.warning.call_args_list]
-        assert any("PRRT_other" in message and reason in message for message in messages)
-        assert all("secret-" not in message for message in messages)
-        logger.error.assert_not_called()
-
-    @pytest.mark.parametrize("matched", [False, True])
-    def test_failed_candidate_then_resolved_or_absent_match_does_not_mutate(self, matched):
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread("PRRT_other", cursor=None), _make_overflow_thread()]),
-            _make_comment_page(["PRR_reply" if matched else "PRR_absent"], resolved=True),
-        ])
-        assert provider.resolve_comment_thread(123) is matched
-        assert len(requester.calls) == 3
-        assert not any("resolveReviewThread" in c[3]["query"] for c in requester.calls[1:])
-
-    def test_invalid_thread_identifier_diagnostic_is_bounded_and_escaped(self, monkeypatch):
-        logger = MagicMock()
-        monkeypatch.setattr(gh_module, "get_logger", lambda: logger)
-        unsafe_id = "PRRT_other\n" + "x" * 1000
-        provider, _ = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread(unsafe_id, cursor=None)]),
-        ])
-        assert provider.resolve_comment_thread(123) is False
-        diagnostic = logger.warning.call_args_list[0].args[0]
-        assert "PRRT_other" in diagnostic and "\n" not in diagnostic
-        assert len(diagnostic) < 220
-
-    def test_overflow_match_uses_fresh_resolved_state_without_mutation(self):
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread()]),
-            _make_comment_page(["PRR_reply"], resolved=True),
-        ])
-        assert provider.resolve_comment_thread(123) is True
-        assert len(requester.calls) == 3
-        assert not any("resolveReviewThread" in call[3]["query"] for call in requester.calls[1:])
-
-    def test_exhausted_overflow_without_requested_identity_does_not_mutate(self):
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread()]), _make_comment_page(["PRR_other"]),
-        ])
-        assert provider.resolve_comment_thread(123) is False
-        assert len(requester.calls) == 3
-
-    @pytest.mark.parametrize("cursor", [None, "", 123])
-    def test_invalid_initial_comment_cursor_does_not_read_or_mutate(self, cursor):
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread(cursor=cursor)]),
-        ])
-        assert provider.resolve_comment_thread(123) is False
-        assert len(requester.calls) == 2
-
-    @pytest.mark.parametrize("cursors", [["cursor1"], ["cursor2", "cursor1"]])
-    def test_repeated_or_cyclic_comment_cursor_does_not_mutate(self, cursors):
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread()]),
-            *[_make_comment_page(["PRR_other"], has_next_page=True, cursor=cursor) for cursor in cursors],
-        ])
-        assert provider.resolve_comment_thread(123) is False
-        assert len(requester.calls) == 2 + len(cursors)
-
-    @pytest.mark.parametrize("page_info", [None, {}, {"hasNextPage": "true"},
-                                             {"hasNextPage": True, "endCursor": None}])
-    def test_invalid_next_comment_page_does_not_mutate(self, page_info):
-        response = _make_graphql_response({"node": {
-            "__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": False,
-            "comments": {"nodes": [{"id": "PRR_other"}], "pageInfo": page_info},
-        }})
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread()]), response,
-        ])
-        assert provider.resolve_comment_thread(123) is False
-        assert len(requester.calls) == 3
-
-    @pytest.mark.parametrize("node", [
-        None,
-        {"__typename": "Issue", "id": "PRRT_target", "isResolved": False},
-        {"__typename": "PullRequestReviewThread", "id": "PRRT_wrong", "isResolved": False},
-        {"__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": "false"},
-        {"__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": False,
-         "comments": {"nodes": {"id": "PRR_reply"}}},
-        {"__typename": "PullRequestReviewThread", "id": "PRRT_target", "isResolved": False,
-         "comments": {"nodes": [None]}},
-    ])
-    def test_malformed_overflow_node_does_not_mutate(self, node):
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread()]), _make_graphql_response({"node": node}),
-        ])
-        assert provider.resolve_comment_thread(123) is False
-        assert len(requester.calls) == 3
-
-    @pytest.mark.parametrize("response", [
-        "not-a-tuple", (200, {}, "not-json"), _make_graphql_response(None),
-        _make_graphql_response({"node": None}, errors=[{"message": "Unavailable"}]),
-    ])
-    def test_failed_overflow_query_does_not_mutate(self, response):
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [
-            _make_threads_response([_make_overflow_thread()]), response,
-        ])
-        assert provider.resolve_comment_thread(123) is False
-        assert len(requester.calls) == 3
-
-    @pytest.mark.parametrize("response", [
-        "not-a-tuple", _make_graphql_response({}, errors=[{"message": "Unavailable"}]),
-    ])
-    def test_failed_outer_query_does_not_read_overflow_or_mutate(self, response):
-        provider, requester = _make_provider_with_graphql({"node_id": "PRR_reply"}, [response])
-        assert provider.resolve_comment_thread(123) is False
-        assert len(requester.calls) == 2
+        assert len(requester.calls) == 4
+        assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
+        assert "reviewThreads(first: 100)" in requester.calls[2][3]["query"]
+        assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
+        logger.warning.assert_called_once_with("Could not fetch root of comment 123: status 404")
 
     def test_resolves_thread_successfully(self):
         rest_data = {"node_id": "PRR_comment1"}
