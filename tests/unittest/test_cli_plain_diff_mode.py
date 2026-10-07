@@ -458,6 +458,7 @@ def test_plain_diff_fake_handler_sees_eager_artifact_without_new_keyword(monkeyp
             captured["target"] = target
             captured["request"] = request
             captured["instructions"] = str(get_settings().pr_reviewer.extra_instructions)
+            captured["artifact_context"] = get_settings().pr_reviewer.artifact_context
             return True
 
     monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
@@ -469,4 +470,5 @@ def test_plain_diff_fake_handler_sees_eager_artifact_without_new_keyword(monkeyp
 
     assert captured["target"] == "local_diff"
     assert captured["request"] == ["review"]
-    assert captured["instructions"].count("PLAIN_DIFF_ARTIFACT") == 1
+    assert "PLAIN_DIFF_ARTIFACT" not in captured["instructions"]
+    assert captured["artifact_context"]["content"].count("PLAIN_DIFF_ARTIFACT") == 1

@@ -809,12 +809,20 @@ async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeyp
     settings = get_settings()
     original_artifacts = settings.get("ARTIFACTS")
     original_instructions = settings.pr_reviewer.extra_instructions
+    original_artifact_context = settings.pr_reviewer.artifact_context
+    artifact_token = artifacts._artifact_context.set(None)
     observed = []
     notify = Mock()
 
     class FakeReviewer:
         def __init__(self, _pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
-            observed.append((is_answer, is_auto, args, str(settings.pr_reviewer.extra_instructions)))
+            observed.append((
+                is_answer,
+                is_auto,
+                args,
+                str(settings.pr_reviewer.extra_instructions),
+                settings.pr_reviewer.artifact_context,
+            ))
 
         async def run(self):
             return None
@@ -844,15 +852,18 @@ async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeyp
         )
 
         assert handled is True
-        assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text in observed] == [
+        assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text, _context in observed] == [
             (False, True, ["--kept"])
         ]
         assert observed[0][3].startswith("Repository instructions")
-        assert observed[0][3].count("AUTO_REVIEW_ARTIFACT") == 1
+        assert observed[0][3].count("AUTO_REVIEW_ARTIFACT") == 0
+        assert observed[0][4]["content"] == "AUTO_REVIEW_ARTIFACT"
         notify.assert_not_called()
     finally:
         settings.set("ARTIFACTS", original_artifacts, merge=False)
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
+        settings.set("PR_REVIEWER.ARTIFACT_CONTEXT", original_artifact_context)
+        artifacts._artifact_context.reset(artifact_token)
 
 
 @pytest.mark.asyncio

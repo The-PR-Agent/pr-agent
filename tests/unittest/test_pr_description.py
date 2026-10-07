@@ -57,6 +57,7 @@ def _make_large_pr_instance(diff_files=None):
         "language": "Python",
         "diff": "",
         "extra_instructions": "",
+        "artifact_context": None,
         "skills_context": "",
         "repo_context": "",
         "commit_messages_str": "feat: initial",

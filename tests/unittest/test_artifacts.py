@@ -8,6 +8,7 @@ from pr_agent.algo.artifacts import (
     _artifact_context,
     _read_and_truncate,
     format_artifact_content,
+    get_artifact_context,
     inject_artifact_context,
     load_artifact,
     resolve_artifact_path,
@@ -264,6 +265,9 @@ class TestInjectArtifactContext:
         "pr_reviewer.extra_instructions",
         "pr_description.extra_instructions",
         "pr_code_suggestions.extra_instructions",
+        "pr_reviewer.artifact_context",
+        "pr_description.artifact_context",
+        "pr_code_suggestions.artifact_context",
     )
 
     @pytest.fixture
@@ -276,6 +280,7 @@ class TestInjectArtifactContext:
         s.set("artifacts.target_tools", ["pr_reviewer", "pr_description", "pr_code_suggestions"])
         for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
             s.set(f"{tool}.extra_instructions", "")
+            s.set(f"{tool}.artifact_context", None)
         token = _artifact_context.set(None)
         try:
             yield s
@@ -295,6 +300,7 @@ class TestInjectArtifactContext:
             os.environ.pop("PR_AGENT_ARTIFACT_PATH", None)
             inject_artifact_context()
         assert settings.get("pr_reviewer.extra_instructions") == ""
+        assert get_artifact_context("pr_reviewer") is None
 
     def test_a_value_that_is_neither_bool_nor_string_stays_disabled(self, settings, report):
         """ARTIFACTS__ENABLE=1 from the environment is off, as it was in the GitHub Action runner."""
@@ -305,8 +311,9 @@ class TestInjectArtifactContext:
             os.environ.pop("PR_AGENT_ARTIFACT_PATH", None)
             inject_artifact_context()
         assert settings.get("pr_reviewer.extra_instructions") == ""
+        assert get_artifact_context("pr_reviewer") is None
 
-    def test_env_path_enables_and_appends_to_every_target_tool(self, settings, report):
+    def test_env_path_sets_separate_context_for_every_target_tool(self, settings, report):
         env = {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report),
                "ARTIFACT_INSTRUCTIONS": "Flag any test failures."}
         with patch.dict(os.environ, env):
@@ -314,10 +321,11 @@ class TestInjectArtifactContext:
 
         assert settings.get("artifacts.enable") is True
         for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
-            extra = settings.get(f"{tool}.extra_instructions")
-            assert "CI Artifact: report.xml" in extra
-            assert "FAILED: test_login" in extra
-            assert "Flag any test failures." in extra
+            context = get_artifact_context(tool)
+            assert context["label"] == "report.xml"
+            assert context["content"] == "FAILED: test_login"
+            assert context["instructions"] == "Flag any test failures."
+            assert settings.get(f"{tool}.extra_instructions") == ""
 
     def test_settings_alone_are_enough_without_the_env_var(self, settings, report):
         settings.set("artifacts.enable", True)
@@ -326,7 +334,8 @@ class TestInjectArtifactContext:
             os.environ.pop("ARTIFACT_PATH", None)
             os.environ.pop("PR_AGENT_ARTIFACT_PATH", None)
             inject_artifact_context()
-        assert "FAILED: test_login" in settings.get("pr_reviewer.extra_instructions")
+        assert get_artifact_context("pr_reviewer")["content"] == "FAILED: test_login"
+        assert settings.get("pr_reviewer.extra_instructions") == ""
 
     def test_only_target_tools_get_it_and_existing_instructions_are_kept(self, settings, report):
         settings.set("artifacts.target_tools", ["pr_reviewer"])
@@ -334,13 +343,13 @@ class TestInjectArtifactContext:
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}):
             inject_artifact_context()
 
-        extra = settings.get("pr_reviewer.extra_instructions")
-        assert extra.startswith("Be terse.\n======\n\n")
-        assert "FAILED: test_login" in extra
+        assert settings.get("pr_reviewer.extra_instructions") == "Be terse."
+        assert get_artifact_context("pr_reviewer")["content"] == "FAILED: test_login"
+        assert get_artifact_context("pr_description") is None
         assert settings.get("pr_description.extra_instructions") == ""
 
     def test_running_twice_does_not_duplicate_the_artifact(self, settings, report):
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}):
             inject_artifact_context()
             inject_artifact_context()
-        assert settings.get("pr_reviewer.extra_instructions").count("FAILED: test_login") == 1
+        assert get_artifact_context("pr_reviewer")["content"].count("FAILED: test_login") == 1

@@ -173,7 +173,7 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
 def restore_github_settings():
     """Snapshot and restore global settings that run_action mutates.
 
-    Covers GITHUB/GITHUB_ACTION_CONFIG/GITHUB_APP plus the extra_instructions
+    Covers GITHUB/GITHUB_ACTION_CONFIG/GITHUB_APP plus prompt context and extra_instructions
     of the three auto-run tools (artifact/CI-conclusion injection), so these
     tests don't leak state into others.
     """
@@ -188,6 +188,10 @@ def restore_github_settings():
     original_final_update = getattr(settings.pr_description, "final_update_message", None)
     original_extra_instructions = {
         section: getattr(getattr(settings, section, None), "extra_instructions", None)
+        for section in ("pr_reviewer", "pr_description", "pr_code_suggestions")
+    }
+    original_artifact_contexts = {
+        section: getattr(getattr(settings, section, None), "artifact_context", None)
         for section in ("pr_reviewer", "pr_description", "pr_code_suggestions")
     }
     yield
@@ -210,6 +214,7 @@ def restore_github_settings():
     for section, extra_instructions in original_extra_instructions.items():
         if extra_instructions is not None:
             getattr(settings, section).extra_instructions = extra_instructions
+        getattr(settings, section).artifact_context = original_artifact_contexts[section]
 
 
 @pytest.fixture
@@ -1398,7 +1403,10 @@ async def test_action_configured_commands_reapply_one_artifact_after_real_repo_m
 
     class RecordingReviewer:
         def __init__(self, _pr_url, ai_handler=None, args=None):
-            observed.append(str(get_settings().pr_reviewer.extra_instructions))
+            observed.append((
+                str(get_settings().pr_reviewer.extra_instructions),
+                get_settings().pr_reviewer.artifact_context,
+            ))
 
         async def run(self):
             return None
@@ -1430,13 +1438,17 @@ async def test_action_configured_commands_reapply_one_artifact_after_real_repo_m
     await github_action_runner.run_action()
 
     assert len(observed) == 2
-    assert all(text.startswith("Repository instruction") for text in observed)
-    assert all(text.count("ACTION_CONFIGURED_ARTIFACT") == 1 for text in observed)
+    assert all(text.startswith("Repository instruction") for text, _context in observed)
+    assert all("ACTION_CONFIGURED_ARTIFACT" not in text for text, _context in observed)
+    assert all(
+        context["content"].count("ACTION_CONFIGURED_ARTIFACT") == 1
+        for _text, context in observed
+    )
     read.assert_called_once_with(artifact.resolve(), 50000)
 
 
 @pytest.mark.asyncio
-async def test_direct_action_and_workflow_run_keep_artifact_before_ci_conclusion(
+async def test_direct_action_and_workflow_run_keep_artifact_separate_from_ci_conclusion(
     monkeypatch, tmp_path, restore_github_settings, restore_artifact_action_settings,
 ):
     settings = restore_artifact_action_settings
@@ -1448,7 +1460,8 @@ async def test_direct_action_and_workflow_run_keep_artifact_before_ci_conclusion
         section = "pr_reviewer"
 
         def __init__(self, _pr_url):
-            observations.append((self.section, str(getattr(settings, self.section).extra_instructions)))
+            tool_settings = getattr(settings, self.section)
+            observations.append((self.section, str(tool_settings.extra_instructions), tool_settings.artifact_context))
 
         async def run(self):
             return None
@@ -1495,10 +1508,14 @@ async def test_direct_action_and_workflow_run_keep_artifact_before_ci_conclusion
 
     await github_action_runner.run_action()
 
-    assert {section for section, _text in observations} == {
+    assert {section for section, _text, _context in observations} == {
         "pr_description", "pr_reviewer", "pr_code_suggestions",
     }
-    assert all(text.count("ACTION_DIRECT_ARTIFACT") == 1 for _section, text in observations)
+    assert all("ACTION_DIRECT_ARTIFACT" not in text for _section, text, _context in observations)
+    assert all(
+        context["content"].count("ACTION_DIRECT_ARTIFACT") == 1
+        for _section, _text, context in observations
+    )
 
     observations.clear()
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
@@ -1508,9 +1525,11 @@ async def test_direct_action_and_workflow_run_keep_artifact_before_ci_conclusion
 
     await github_action_runner.run_action()
 
-    reviewer_text = next(text for section, text in observations if section == "pr_reviewer")
-    assert reviewer_text.count("ACTION_DIRECT_ARTIFACT") == 1
-    assert reviewer_text.index("ACTION_DIRECT_ARTIFACT") < reviewer_text.index("concluded: failure")
+    reviewer_text, reviewer_context = next(
+        (text, context) for section, text, context in observations if section == "pr_reviewer"
+    )
+    assert "concluded: failure" in reviewer_text
+    assert reviewer_context["content"].count("ACTION_DIRECT_ARTIFACT") == 1
 
 
 @pytest.mark.asyncio

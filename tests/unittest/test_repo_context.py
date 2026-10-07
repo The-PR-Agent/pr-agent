@@ -1683,6 +1683,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             "pr_review_prompt",
             {
                 "extra_instructions": "",
+                "artifact_context": None,
                 "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
                 "previous_findings": "",
                 "skills_context": "",
@@ -1707,6 +1708,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             "pr_description_prompt",
             {
                 "extra_instructions": "",
+                "artifact_context": None,
                 "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
                 "skills_context": "",
                 "enable_custom_labels": False,
@@ -1721,6 +1723,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             "pr_code_suggestions_prompt",
             {
                 "extra_instructions": "",
+                "artifact_context": None,
                 "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
                 "skills_context": "",
                 "focus_only_on_problems": True,
@@ -1732,6 +1735,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             "pr_code_suggestions_prompt_not_decoupled",
             {
                 "extra_instructions": "",
+                "artifact_context": None,
                 "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
                 "skills_context": "",
                 "focus_only_on_problems": True,

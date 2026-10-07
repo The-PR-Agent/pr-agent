@@ -1,9 +1,7 @@
 import os
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
-
-import dynaconf
+from typing import Optional, TypedDict
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -13,27 +11,34 @@ DEFAULT_ARTIFACT_INSTRUCTIONS = (
     "It was produced by a prior CI step."
 )
 
-_artifact_context: ContextVar[Optional[tuple[str, frozenset[str]]]] = ContextVar(
+
+class ArtifactPromptContext(TypedDict):
+    label: str
+    content: str
+    instructions: str
+
+
+_artifact_context: ContextVar[Optional[tuple[ArtifactPromptContext, frozenset[str]]]] = ContextVar(
     "pr_agent_artifact_context", default=None
 )
 
 
-def _append_artifact_context(settings, text, targets):
-    separator = "\n======\n\n"
-    for key in settings:
-        setting = settings.get(key)
-        if isinstance(setting, dynaconf.DataDict) and key.lower() in targets and hasattr(setting, "extra_instructions"):
-            extra_instructions = str(setting.extra_instructions or "")
-            if text not in extra_instructions:
-                setting.extra_instructions = extra_instructions + separator + text if extra_instructions else text
+def get_artifact_context(tool_name: str) -> Optional[ArtifactPromptContext]:
+    """Return the separate CI artifact prompt context for a targeted tool."""
+    return get_settings().get(f"{tool_name.lower()}.artifact_context")
 
 
 def reapply_artifact_context() -> None:
-    """Compose already-read context after final command settings, without file I/O."""
+    """Restore separately scoped artifact context after final command settings, without file I/O."""
+    settings = get_settings()
+    for tool_name in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
+        settings.set(f"{tool_name}.artifact_context", None)
+
     payload = _artifact_context.get()
     if payload is not None:
-        text, targets = payload
-        _append_artifact_context(get_settings(), text, targets)
+        context, targets = payload
+        for tool_name in targets:
+            settings.set(f"{tool_name}.artifact_context", context)
 
 
 def resolve_artifact_path(path: str) -> Optional[Path]:
@@ -94,24 +99,24 @@ def format_artifact_content(content: str, label: str, instructions: str) -> str:
     )
 
 
-def load_artifact() -> str:
+def load_artifact_context() -> Optional[ArtifactPromptContext]:
     try:
         artifacts_settings = get_settings().get("ARTIFACTS", {})
     except AttributeError:
-        return ""
+        return None
 
     if not artifacts_settings:
-        return ""
+        return None
 
     enable = artifacts_settings.get("enable", False)
     if isinstance(enable, str):
         enable = enable.lower() == "true"
     if not enable:
-        return ""
+        return None
 
     artifact_path_str = artifacts_settings.get("artifact_path", "")
     if not artifact_path_str:
-        return ""
+        return None
 
     artifact_path = resolve_artifact_path(artifact_path_str)
     if not artifact_path:
@@ -119,7 +124,7 @@ def load_artifact() -> str:
             f"Artifact file not found or path rejected: '{artifact_path_str}' "
             f"(GITHUB_WORKSPACE={os.environ.get('GITHUB_WORKSPACE', 'not set')})"
         )
-        return ""
+        return None
 
     try:
         max_size = int(artifacts_settings.get("max_artifact_size", 50000))
@@ -129,15 +134,26 @@ def load_artifact() -> str:
         max_size = 50000
     content = _read_and_truncate(artifact_path, max_size)
     if not content:
-        return ""
+        return None
 
     label = artifacts_settings.get("artifact_label", "") or artifact_path.name
-    instructions = artifacts_settings.get("artifact_instructions", "")
-    return format_artifact_content(content, label, instructions)
+    instructions = (artifacts_settings.get("artifact_instructions", "") or "").strip()
+    return {
+        "label": str(label),
+        "content": content,
+        "instructions": instructions or DEFAULT_ARTIFACT_INSTRUCTIONS,
+    }
+
+
+def load_artifact() -> str:
+    context = load_artifact_context()
+    if not context:
+        return ""
+    return format_artifact_content(context["content"], context["label"], context["instructions"])
 
 
 def inject_artifact_context() -> None:
-    """Append the CI artifact (see [artifacts]) to the extra_instructions of the target tools.
+    """Load a CI artifact for targeted tools as a separate prompt context.
 
     ARTIFACT_PATH in the environment turns the feature on by itself. Called once before a
     command runs, by the GitHub Action runner and by the CLI.
@@ -145,6 +161,7 @@ def inject_artifact_context() -> None:
     # Each ingress prepares a new payload. Failed, empty, or disabled ingress must
     # not leave an earlier task's payload available for dispatcher reapplication.
     _artifact_context.set(None)
+    reapply_artifact_context()
 
     artifact_path_env = (
         os.environ.get("ARTIFACT_PATH") or os.environ.get("PR_AGENT_ARTIFACT_PATH") or ""
@@ -165,8 +182,8 @@ def inject_artifact_context() -> None:
         return
 
     try:
-        artifact_text = load_artifact()
-        if not artifact_text:
+        artifact_context = load_artifact_context()
+        if not artifact_context:
             return
         target_tools = get_settings().get(
             "ARTIFACTS.TARGET_TOOLS",
@@ -175,8 +192,8 @@ def inject_artifact_context() -> None:
         if isinstance(target_tools, str):
             target_tools = [t.strip() for t in target_tools.split(",") if t.strip()]
         target_tools = frozenset(str(t).lower() for t in target_tools)
-        _artifact_context.set((artifact_text, target_tools))
-        _append_artifact_context(get_settings(), artifact_text, target_tools)
+        _artifact_context.set((artifact_context, target_tools))
+        reapply_artifact_context()
         get_logger().info(f"Injected artifact context into tools: {target_tools}")
     except (OSError, ValueError, TypeError) as e:
         get_logger().warning(f"Failed to process artifacts: {e}", exc_info=True)
