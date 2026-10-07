@@ -34,7 +34,7 @@ This integration enriches the review process by automatically surfacing relevant
 
 Ticket Recognition Requirements:
 
-- The PR description should contain a link to the ticket or if the branch name starts with the ticket id / number.
+- GitHub/GitLab issue references can appear in the PR/MR title or description. GitHub also recognizes numeric issue references in the branch name.
 - For Jira tickets, you should follow the instructions in [Jira Integration](#jira-integration) in order to authenticate with Jira.
 - For Asana tickets, see [Asana Integration](#asana-integration).
 
@@ -47,7 +47,7 @@ By understanding the reasoning and intent behind modifications, the LLM can offe
 
 Similarly to the `describe` tool, the `review` tool will use the ticket content to provide additional context for the code changes.
 
-In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue mentioned in the PR description.
+In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
 Each ticket will be assigned a label (Compliance/Alignment level), Indicates the degree to which the PR fulfills its original purpose:
 
 - Fully Compliant
@@ -85,7 +85,7 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
 
 ## GitHub/GitLab Issues Integration
 
-PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR description and fetch the issue content.
+PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR/MR title or description and fetch the issue content.
 Examples of valid GitHub/GitLab issue references:
 
 - `https://github.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>` or `https://gitlab.com/<ORG_NAME>/<REPO_NAME>/-/issues/<ISSUE_NUMBER>`
@@ -94,6 +94,13 @@ Examples of valid GitHub/GitLab issue references:
 
 Full GitHub issue URLs are recognized on the configured instance's HTTPS web origin, including GitHub Enterprise URLs such as `https://github.example.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>`.
 Full GitHub issue URLs on other origins are ignored.
+
+GitHub processes references from the description first, then the branch name, then the title. GitLab processes
+description references before title references. Repeated identical references do not add lookups, and title references use
+the existing ticket lookup and result limits without displacing earlier sources.
+
+The optional `config.description_issue_regex` setting applies only to the GitHub PR description. GitHub titles use
+the built-in reference formats above, including local `#<ISSUE_NUMBER>` references of up to six digits.
 
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)

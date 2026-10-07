@@ -642,8 +642,9 @@ def _get_user_description_for_asana(git_provider) -> str:
     return description if isinstance(description, str) else ""
 
 
-def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_tickets=MAX_GITLAB_TICKETS):
-    """Extract ``(project_path, issue_iid)`` references from a GitLab MR description."""
+def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_tickets=MAX_GITLAB_TICKETS,
+                                     *, source="description"):
+    """Extract ``(project_path, issue_iid)`` references from GitLab MR metadata."""
     if not isinstance(pr_description, str) or not pr_description:
         return []
 
@@ -693,14 +694,15 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
             references.append(reference)
 
     if len(references) > max_tickets:
-        get_logger().info(f"Too many GitLab tickets found in MR description: {len(references)}")
+        get_logger().info(f"Too many GitLab tickets found in MR {source}: {len(references)}")
     return references[:max_tickets]
 
 
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com',
-                                             max_tickets=MAX_GITHUB_TICKETS):
+                                             max_tickets=MAX_GITHUB_TICKETS, *, use_description_regex=True,
+                                             source="description"):
     """
-    Extract all ticket links from PR description
+    Extract ticket links, optionally using the description-only custom regex.
     """
     # Preserve first-seen order while de-duplicating, so the cap below selects a
     # deterministic subset (a plain set would slice an arbitrary, run-varying one).
@@ -715,7 +717,7 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
     try:
         custom_pattern = None
         custom_matches = []
-        custom_regex = get_settings().get("config.description_issue_regex", "")
+        custom_regex = get_settings().get("config.description_issue_regex", "") if use_description_regex else ""
         if custom_regex:
             try:
                 custom_pattern = re.compile(custom_regex)
@@ -779,10 +781,10 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
             _add(url)
 
         if len(github_tickets) > max_tickets:
-            get_logger().info(f"Too many tickets found in PR description: {len(github_tickets)}")
+            get_logger().info(f"Too many tickets found in PR {source}: {len(github_tickets)}")
             github_tickets = github_tickets[:max_tickets]
     except Exception as e:
-        get_logger().error(f"Error extracting tickets error= {e}",
+        get_logger().error(f"Error extracting tickets from PR {source}: {e}",
                            artifact={"traceback": traceback.format_exc()})
 
     return github_tickets
@@ -933,15 +935,20 @@ async def extract_tickets(git_provider):
             branch_tickets = extract_ticket_links_from_branch_name(
                 branch_name, git_provider.repo, git_provider.base_url_html
             )
+            title = _get_pr_title(git_provider)
+            title_tickets = extract_ticket_links_from_pr_description(
+                title if isinstance(title, str) else "", git_provider.repo, git_provider.base_url_html,
+                max_tickets=MAX_GITHUB_TICKET_LOOKUPS, use_description_regex=False, source="title",
+            )
             seen = set()
             merged = []
-            for link in description_tickets + branch_tickets:
+            for link in description_tickets + branch_tickets + title_tickets:
                 if link not in seen:
                     seen.add(link)
                     merged.append(link)
 
             if len(merged) > MAX_GITHUB_TICKETS:
-                get_logger().info(f"Too many GitHub tickets (description + branch): {len(merged)}")
+                get_logger().info(f"Too many GitHub tickets (description + branch + title): {len(merged)}")
             # Bound lookups separately so skipped PRs do not consume the issue budget.
             tickets = merged[:MAX_GITHUB_TICKET_LOOKUPS]
             tickets_content = []
@@ -1037,14 +1044,26 @@ async def extract_tickets(git_provider):
             return tickets_content
 
         elif _provider_supports(git_provider, "supports_issue_reference_tickets"):
-            references = extract_gitlab_ticket_references(
+            description_references = extract_gitlab_ticket_references(
                 user_description,
                 git_provider.id_project,
                 git_provider.gitlab_url,
                 max_tickets=MAX_GITLAB_TICKET_LOOKUPS,
             )
+            title = _get_pr_title(git_provider)
+            title_references = extract_gitlab_ticket_references(
+                title if isinstance(title, str) else "", git_provider.id_project, git_provider.gitlab_url,
+                max_tickets=MAX_GITLAB_TICKET_LOOKUPS, source="title",
+            )
+            references = []
+            seen = set()
+            for project_path, issue_iid in description_references + title_references:
+                key = (project_path.casefold(), issue_iid)
+                if key not in seen:
+                    seen.add(key)
+                    references.append((project_path, issue_iid))
             tickets_content = []
-            for project_path, issue_iid in references:
+            for project_path, issue_iid in references[:MAX_GITLAB_TICKET_LOOKUPS]:
                 try:
                     # Only the issue manager is needed; avoid fetching unused project metadata.
                     project = git_provider.gl.projects.get(project_path, lazy=True)
