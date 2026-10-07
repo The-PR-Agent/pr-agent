@@ -17,6 +17,7 @@ from gitlab import (
 )
 from requests.exceptions import RequestException
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.comment_identity import (
@@ -252,6 +253,12 @@ class _GitLabIncrementalNote:
 _GITLAB_ACCESS_LEVEL_REPORTER = 20
 
 class GitLabProvider(GitProvider):
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        return policy_metadata(title=self.mr.title, sender=policy_value(self.mr, "author", "username"),
+                               repo_full_name=self._superproject_path(), source_branch=self.mr.source_branch,
+                               target_branch=self.mr.target_branch,
+                               labels=self.get_pr_labels() if "labels" in required_fields else ())
 
     def __init__(self, merge_request_url: Optional[str] = None, incremental: Optional[bool] = False):
         gitlab_url = get_settings().get("GITLAB.URL", None)

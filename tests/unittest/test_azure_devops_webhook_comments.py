@@ -325,6 +325,7 @@ async def _run_comment_command(body, tool_class, monkeypatch):
         return tool
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", build)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     with patch.object(webhook, "get_git_provider_with_context", return_value=provider):

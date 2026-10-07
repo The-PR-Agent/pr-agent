@@ -20,6 +20,7 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, command2class, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -72,6 +73,8 @@ async def handle_request_comment(url: str, body: str, thread_id: int, comment_id
                 # false, and then a resolved discussion thread plus a deleted progress comment would
                 # read as "review done" for a review that was never published.
                 propagate_tool_errors=True)
+            if handled is RequestOutcome.SKIPPED:
+                return
             if handled and not is_question:
                 provider.set_thread_status(thread_id, "closed")
             # The progress reply was posted before the command ran, so a failed run still has to
@@ -226,7 +229,8 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                await agent.handle_request(api_url, new_command)
+                if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                    return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
 

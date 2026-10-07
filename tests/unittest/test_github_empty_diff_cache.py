@@ -111,7 +111,9 @@ async def test_auto_commands_rebuild_diff_without_check_runs(monkeypatch, comman
     caches_before_command = []
 
     class Agent:
-        async def handle_request(self, api_url, command):
+        async def handle_request(self, api_url, command, notify=None):
+            if notify:
+                notify()
             assert get_git_provider_with_context(api_url) is provider
             caches_before_command.append((provider.diff_files, context.get("diff_files")))
             if "-i" in command:

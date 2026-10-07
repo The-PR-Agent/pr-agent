@@ -266,6 +266,7 @@ def _load_repo_context_files(
     max_siblings = _read_max_sibling_context_files()
     sibling_fetch_attempts = 0
     seen_sibling_pairs = set()
+    seen_local_paths = set()
     for entry in context_files:
         repo_id, file_path = _parse_repo_context_file_entry(entry)
         if not file_path:
@@ -312,6 +313,10 @@ def _load_repo_context_files(
             # Render the file under its sibling path so the model sees where it came from.
             label = f"{repo_id}/{file_path}"
         else:
+            if file_path in seen_local_paths:
+                get_logger().debug(f"Skipping duplicate local repo context file: {file_path}")
+                continue
+            seen_local_paths.add(file_path)
             if isinstance(entry, str) and _SIBLING_REPO_SEPARATOR in entry:
                 # A ':' inside a plain local path used to read as a sibling entry. Structured
                 # {"repo_id", "file_path"} dicts are the only sibling form now, so hint at the

@@ -875,6 +875,51 @@ class TestGiteaProviderAddFileDiff:
     def test_empty_diff_results_in_no_patches(self):
         assert self._parse_diff('') == {}
 
+    def test_path_containing_b_slash_is_not_truncated(self):
+        diff = (
+            'diff --git a/x b/y.txt b/x b/y.txt\n'
+            'index 7898192..422c2b7 100644\n'
+            '--- a/x b/y.txt\t\n'
+            '+++ b/x b/y.txt\t\n'
+            '@@ -1 +1,2 @@\n'
+            ' a\n'
+            '+b'
+        )
+        expected = '@@ -1 +1,2 @@\n a\n+b'
+        assert self._parse_diff(diff) == {'x b/y.txt': expected}
+
+    def test_quoted_path_is_decoded(self):
+        diff = (
+            r'diff --git "a/quote\"file.txt" "b/quote\"file.txt"'
+            '\n'
+            'index bca70f3..8a08eba 100644\n'
+            r'--- "a/quote\"file.txt"'
+            '\n'
+            r'+++ "b/quote\"file.txt"'
+            '\n'
+            '@@ -1 +1,2 @@\n'
+            ' q\n'
+            '+r'
+        )
+        expected = '@@ -1 +1,2 @@\n q\n+r'
+        assert self._parse_diff(diff) == {'quote"file.txt': expected}
+
+    def test_quoted_non_ascii_path_is_decoded_as_utf8(self):
+        diff = (
+            r'diff --git "a/caf\303\251.txt" "b/caf\303\251.txt"'
+            '\n'
+            'index bca70f3..8a08eba 100644\n'
+            r'--- "a/caf\303\251.txt"'
+            '\n'
+            r'+++ "b/caf\303\251.txt"'
+            '\n'
+            '@@ -1 +1,2 @@\n'
+            ' q\n'
+            '+r'
+        )
+        expected = '@@ -1 +1,2 @@\n q\n+r'
+        assert self._parse_diff(diff) == {'café.txt': expected}
+
     def test_api_error_is_swallowed_and_logged(self):
         from pr_agent.git_providers.gitea_provider import GiteaProvider
 

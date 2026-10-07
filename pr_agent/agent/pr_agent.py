@@ -8,6 +8,7 @@ import dynaconf
 from opentelemetry.trace import StatusCode
 from starlette_context import context, request_cycle_context
 
+from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import reapply_artifact_context
@@ -306,7 +307,7 @@ class PRAgent:
 
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
-    ) -> bool:
+    ) -> bool | RequestOutcome:
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
         # would auto-record its message and stacktrace — request content, so opt-in.
@@ -347,11 +348,13 @@ class PRAgent:
 
     async def _run_command(
         self, pr_url, request, notify, span, propagate_tool_errors: bool | None = None
-    ) -> bool:
-        # First, apply repo specific settings if exists
+    ) -> bool | RequestOutcome:
+        # Evaluate repository policy before command overrides, notifications or tools.
         apply_repo_settings(pr_url)
+        if enforce_request_policy(pr_url) is False:
+            span.set_attribute("pr_agent.request.ignored", True)
+            return RequestOutcome.SKIPPED
 
-        # Then, apply user specific settings if exists
         if isinstance(request, str):
             lexer = shlex.shlex(request, posix=True)
             lexer.whitespace_split = True
@@ -465,7 +468,11 @@ class PRAgent:
 
     async def handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
-    ) -> bool:
+    ) -> bool | RequestOutcome:
+        """Return True, False, or RequestOutcome.SKIPPED without raising command errors.
+
+        Callers must check for SKIPPED before reactions or other command follow-up.
+        """
         try:
             if propagate_tool_errors is None:
                 return await self._handle_request(pr_url, request, notify)
@@ -475,7 +482,7 @@ class PRAgent:
         except Exception:
             # _handle_request already catches command failures and annotates the span;
             # this is the outer contract every caller relies on — webhook handlers and
-            # the router get False, never an exception, even if telemetry itself fails.
+            # the router get False for failures. Policy skips are a distinct return value.
             get_logger().exception("Failed to process the command.")
             return False
         finally:

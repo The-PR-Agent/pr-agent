@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from git import Repo
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.run_output import show_run_details
@@ -32,6 +33,11 @@ class LocalGitProvider(GitProvider):
     It supports the /review, /describe and /improve capabilities; each writes its output to a
     file (review.md, description.md, improve.md) since there is no hosted PR to comment on.
     """
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # A local comparison has branches, but no hosted PR author or labels.
+        return policy_metadata(title=self.pr.title, sender="", repo_full_name="",
+                               source_branch=self.head_branch_name, target_branch=self.target_branch_name)
 
     def __init__(self, target_branch_name, incremental=False):
         self.repo_path = _find_repository_root()

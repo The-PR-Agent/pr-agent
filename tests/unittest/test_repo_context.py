@@ -1283,17 +1283,23 @@ def test_build_repo_context_process_cache_invalidates_when_config_changes(repo_c
     assert second_provider.requested_paths == ["CONTRIBUTING.md"]
 
 
-def test_build_repo_context_does_not_cache_empty_context_after_fetch_error(repo_context_settings):
-    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+@pytest.mark.parametrize("context_files", [["AGENTS.md"], ["AGENTS.md", " AGENTS.md "]])
+def test_build_repo_context_does_not_cache_empty_context_after_fetch_error(repo_context_settings, context_files):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", context_files)
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = FakeProvider({"AGENTS.md": "Repo purpose"}, pr_url="https://example.com/org/repo/pull/1")
     provider.get_repo_file_content = Mock(side_effect=[Exception("temporary outage"), "Repo purpose"])
 
     first_context = build_repo_context(provider)
-    second_context = build_repo_context(provider)
-
     assert first_context == ""
+    assert provider.get_repo_file_content.call_count == 1
+
+    second_context = build_repo_context(provider)
     assert "Repo purpose" in second_context
+    assert provider.get_repo_file_content.call_count == 2
+
+    assert build_repo_context(provider) == second_context
+    assert provider.get_repo_file_content.call_count == 2
 
 
 def test_build_repo_context_does_not_cache_sibling_content(repo_context_settings):
@@ -1521,9 +1527,13 @@ def test_build_repo_context_skips_invalid_missing_and_empty_files(repo_context_s
     assert provider.requested_paths == ["MISSING.md", "EMPTY.md", "AGENTS.md"]
 
 
-def test_build_repo_context_enforces_total_line_cap(repo_context_settings):
-    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "CONTRIBUTING.md"])
-    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 4)
+@pytest.mark.parametrize(
+    "max_lines,context_files",
+    [(4, ["AGENTS.md", "CONTRIBUTING.md"]), (18, ["AGENTS.md", " AGENTS.md ", "CONTRIBUTING.md"])],
+)
+def test_build_repo_context_enforces_total_line_cap(repo_context_settings, max_lines, context_files):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", context_files)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", max_lines)
     provider = FakeProvider({
         "AGENTS.md": "one\ntwo\nthree",
         "CONTRIBUTING.md": "four\nfive",
@@ -1531,12 +1541,18 @@ def test_build_repo_context_enforces_total_line_cap(repo_context_settings):
 
     context = build_repo_context(provider)
 
-    assert context == (
-        "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
-        "<instruction_files>\n"
-        "</instruction_files>"
-    )
-    assert len(context.splitlines()) <= 4
+    if max_lines == 4:
+        assert context == (
+            "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
+            "<instruction_files>\n"
+            "</instruction_files>"
+        )
+    else:
+        assert all(line in context.splitlines() for line in ["one", "two", "three", "four", "five"])
+        assert context.count('<file path="AGENTS.md"') == 1
+        assert context.index('<file path="AGENTS.md"') < context.index('<file path="CONTRIBUTING.md"')
+    assert provider.requested_paths == ["AGENTS.md", "CONTRIBUTING.md"]
+    assert len(context.splitlines()) <= max_lines
 
 
 def test_render_instruction_files_with_line_budget_returns_empty_when_wrapper_exceeds_budget():

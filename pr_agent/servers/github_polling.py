@@ -11,6 +11,7 @@ import aiohttp
 from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -41,6 +42,12 @@ class _CommentPaginationDrift(_InvalidPaginationMetadata):
 
 
 _RETRY_POLLING_NOTIFICATION = object()
+
+
+def _pr_comments_url(pr_url: str) -> str:
+    """Map an API pull request URL to its issue comments URL."""
+    base, sep, number = pr_url.rpartition("/pulls/")
+    return f"{base}/issues/{number}/comments" if sep else f"{pr_url}/comments"
 
 
 def _get_polling_request_timeout() -> float:
@@ -239,11 +246,13 @@ async def process_comment(pr_url, rest_of_comment, comment_id):
             git_provider = get_git_provider()(pr_url=pr_url)
             git_provider.set_pr(pr_url)
             agent = PRAgent()
-            await agent.handle_request(
+            result = await agent.handle_request(
                 pr_url,
                 rest_of_comment,
                 notify=lambda: git_provider.add_eyes_reaction(comment_id)
             )
+            if result is RequestOutcome.SKIPPED:
+                return
         get_logger().info(f"Finished processing comment for PR: {pr_url}")
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
@@ -292,7 +301,7 @@ async def is_valid_notification(
                             return True, handled_ids, comment, comment_body, pr_url, user_tag
                         else: # we could not find the user tag in the latest comment. Check previous comments
                             # get all comments in the PR
-                            requests_url = f"{pr_url}/comments".replace("pulls", "issues")
+                            requests_url = _pr_comments_url(pr_url)
                             try:
                                 comments = (await _fetch_comment_history(session, requests_url, headers))[::-1]
                             except _CommentPaginationDrift:

@@ -128,6 +128,60 @@ async def test_bitbucket_server_handle_webhook_accepts_push_trigger_event_keys(e
     assert commands == ([(["/review"], expected_url)] if proceed else [])
 
 
+@pytest.mark.asyncio
+async def test_bitbucket_server_push_event_without_pull_request_is_ignored(monkeypatch):
+    # Regression test: "repo:refs_changed" payloads carry no "pullRequest" key, so the
+    # handler must skip them gracefully instead of raising KeyError (HTTP 500).
+    settings = get_settings()
+    original_webhook_secret = settings.get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", "test-webhook-secret")
+
+    payload = {"eventKey": "repo:refs_changed", "actor": {"name": "alice"}, "changes": []}
+    request = _StubRequest(payload)
+    request.headers["x-hub-signature"] = "sha256=" + hmac.new(
+        b"test-webhook-secret", await request.body(), hashlib.sha256,
+    ).hexdigest()
+    background_tasks = BackgroundTasks()
+
+    try:
+        with request_cycle_context({}):
+            response = await bitbucket_server_webhook.handle_webhook(background_tasks, request)
+            await background_tasks()
+    finally:
+        settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", original_webhook_secret)
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["message"] == "Ignored event without a pull request"
+    assert len(background_tasks.tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_bitbucket_server_unsupported_event_returns_json_object(monkeypatch):
+    # Regression test: the 400 response body must be a JSON object, not a JSON-encoded
+    # string literal produced by double-encoding.
+    settings = get_settings()
+    original_webhook_secret = settings.get("BITBUCKET_SERVER.WEBHOOK_SECRET", None)
+    settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", "test-webhook-secret")
+
+    payload = _bitbucket_server_payload()
+    payload["eventKey"] = "pr:modified"
+    request = _StubRequest(payload)
+    request.headers["x-hub-signature"] = "sha256=" + hmac.new(
+        b"test-webhook-secret", await request.body(), hashlib.sha256,
+    ).hexdigest()
+    background_tasks = BackgroundTasks()
+
+    try:
+        with request_cycle_context({}):
+            response = await bitbucket_server_webhook.handle_webhook(background_tasks, request)
+    finally:
+        settings.set("BITBUCKET_SERVER.WEBHOOK_SECRET", original_webhook_secret)
+
+    assert response.status_code == 400
+    assert isinstance(json.loads(response.body), dict)
+    assert json.loads(response.body)["message"] == "Unsupported event"
+
+
 def _gitlab_payload(**object_attributes):
     return {
         "object_attributes": {

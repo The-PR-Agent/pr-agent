@@ -87,6 +87,64 @@ async def test_fallback_reuses_session_and_preserves_selection():
     assert seen == ["Bearer test-token"]
 
 
+def test_pr_comments_url_anchors_pulls_segment():
+    assert github_polling._pr_comments_url("https://api.github.com/repos/owner/repo/pulls/1") == (
+        "https://api.github.com/repos/owner/repo/issues/1/comments"
+    )
+    assert github_polling._pr_comments_url("https://api.github.com/repos/pulls-helper/widgets/pulls/7") == (
+        "https://api.github.com/repos/pulls-helper/widgets/issues/7/comments"
+    )
+    assert github_polling._pr_comments_url("https://api.github.com/repos/owner/widgets-pulls/pulls/7") == (
+        "https://api.github.com/repos/owner/widgets-pulls/issues/7/comments"
+    )
+    assert github_polling._pr_comments_url("https://api.github.com/repos/owner/pulls/pulls/7") == (
+        "https://api.github.com/repos/owner/pulls/issues/7/comments"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_keeps_pulls_in_owner_and_repo_names():
+    selected = _comment(2)
+    requested = []
+
+    async def fallback(request):
+        requested.append(request.path)
+        return web.json_response([_comment(1, "@bot /ask old"), selected])
+
+    @asynccontextmanager
+    async def server():
+        async def latest_handler(request):
+            return web.json_response(_comment(99, "Other discussion"))
+
+        app = web.Application()
+        app.router.add_get("/latest", latest_handler)
+        app.router.add_get("/repos/pulls-helper/widgets-pulls/issues/17/comments", fallback)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            base_url = f"http://{runner.addresses[0][0]}:{runner.addresses[0][1]}"
+            yield base_url
+        finally:
+            await runner.cleanup()
+
+    async with server() as url, aiohttp.ClientSession() as session:
+        handled = set()
+        result = await github_polling.is_valid_notification(
+            {"reason": "mention", "subject": {
+                "type": "PullRequest",
+                "url": f"{url}/repos/pulls-helper/widgets-pulls/pulls/17",
+                "latest_comment_url": f"{url}/latest",
+            }},
+            {}, handled, session, "bot",
+        )
+
+    assert result[0] is True
+    assert result[2] == selected
+    assert requested == ["/repos/pulls-helper/widgets-pulls/issues/17/comments"]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("latest", [_comment(), _comment(2, "@bot /ask question")])
 async def test_latest_mention_does_not_fetch_history(latest):

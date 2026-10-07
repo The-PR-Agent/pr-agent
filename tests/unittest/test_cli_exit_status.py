@@ -219,6 +219,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
         get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", repo_value)
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReview)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", fake_apply_repo_settings)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: events.append("telemetry"))
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
@@ -289,6 +290,7 @@ def test_run_restores_propagation_setting_between_invocations(
         apply_calls += 1
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", ControlledReview)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", fake_apply_repo_settings)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)

@@ -7,6 +7,7 @@ from urllib.parse import quote, urlparse
 import giteapy
 from giteapy.rest import ApiException
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.git_patch_processing import decode_if_bytes
 from pr_agent.algo.language_handler import is_valid_file
@@ -25,6 +26,7 @@ from pr_agent.git_providers.git_provider import (
 )
 from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
+from pr_agent.mosaico.diff_provider import parse_unified_diff
 
 # Shipped default for the [gitea] url setting in configuration.toml. A value
 # equal to this must be treated as "unset" when resolving the user-facing base
@@ -66,6 +68,17 @@ def _with_default_request_timeout(call_api):
 
 
 class GiteaProvider(GitProvider):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        pr = self.pr
+        if pr is None:
+            return policy_metadata(title="", sender="", repo_full_name=f"{self.owner}/{self.repo}",
+                                   source_branch="", target_branch="")
+        return policy_metadata(title=pr.title, sender=policy_value(pr, "user", "login"),
+                               repo_full_name=f"{self.owner}/{self.repo}",
+                               source_branch=policy_value(pr, "head", "ref"),
+                               target_branch=policy_value(pr, "base", "ref"),
+                               labels=self.get_pr_labels() if "labels" in required_fields else ())
+
     _base_url_html: Optional[str] = None  # resolved on first use, see base_url_html
 
     def __init__(self, url: Optional[str] = None):
@@ -233,25 +246,7 @@ class GiteaProvider(GitProvider):
                     pr_number=self.pr_number
             )
 
-            lines = diff_contents.splitlines()
-            current_file = None
-            current_patch = []
-            file_patches = {}
-            for line in lines:
-                if line.startswith('diff --git'):
-                    if current_file and current_patch:
-                        file_patches[current_file] = '\n'.join(current_patch)
-                        current_patch = []
-                    current_file = line.split(' b/')[-1]
-                elif line.startswith('@@') and not current_patch:
-                    current_patch = [line]
-                elif current_patch:
-                    current_patch.append(line)
-
-            if current_file and current_patch:
-                file_patches[current_file] = '\n'.join(current_patch)
-
-            self.file_diffs = file_patches
+            self.file_diffs = {f.filename: f.patch for f in parse_unified_diff(diff_contents)}
         except Exception as e:
             self.logger.error(f"Error getting diff content: {str(e)}")
 

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Iterator, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 
 from ..algo.comment_identity import (
@@ -179,6 +180,15 @@ def _get_azure_change_type(change):
 
 
 class AzureDevopsProvider(GitProvider):
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        source = self.pr.source_ref_name
+        target = self.pr.target_ref_name
+        return policy_metadata(title=self.pr.title, sender=policy_value(self.pr, "created_by", "unique_name"),
+                               repo_full_name=f"{self.workspace_slug}/{self.repo_slug}",
+                               source_branch=source.removeprefix("refs/heads/") if source else None,
+                               target_branch=target.removeprefix("refs/heads/") if target else None,
+                               labels=self.get_pr_labels() if "labels" in required_fields else ())
 
     _INCREMENTAL_ANCHOR_PREFIXES = {
         "review": get_pr_review_comment_identifiers(full=True, incremental=True),

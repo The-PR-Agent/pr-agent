@@ -68,6 +68,7 @@ def telemetry(monkeypatch):
     monkeypatch.setattr(pr_agent_module, "get_commands_counter", lambda: commands_counter)
     monkeypatch.setattr(pr_agent_module, "get_tokens_counter", lambda: tokens_counter)
     monkeypatch.setattr(pr_agent_module, "get_ai_calls_counter", lambda: ai_calls_counter)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda args: (True, None))
     monkeypatch.setattr(pr_agent_module, "update_settings_from_args", lambda args: args)

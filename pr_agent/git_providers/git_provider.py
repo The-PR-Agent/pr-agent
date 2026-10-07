@@ -284,6 +284,15 @@ def get_git_ssl_env() -> dict[str, str]:
 
 
 class GitProvider(ABC):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        """Return policy fields; None means unknown, empty values mean not applicable.
+
+        Omit unavailable fields or return None; only their rules are skipped.
+        Read expensive fields (such as labels) only when requested. Lookup errors
+        are handled by the policy layer, which allows the request to continue.
+        """
+        return {}
+
     @abstractmethod
     def is_supported(self, capability: str) -> bool:
         pass

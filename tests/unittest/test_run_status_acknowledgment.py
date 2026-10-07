@@ -254,6 +254,8 @@ def _agent(outcome):
     events = []
 
     async def handle_request(api_url, command, notify=None):
+        if notify:
+            notify()
         events.append(("run", command))
         if isinstance(outcome, Exception):
             raise outcome

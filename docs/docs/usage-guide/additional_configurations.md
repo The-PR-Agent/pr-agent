@@ -513,6 +513,12 @@ PR-Agent allows you to automatically ignore certain PRs based on various criteri
 - PRs containing specific labels
 - PRs opened by specific users
 
+The title, author, label, repository, source-branch, and target-branch `ignore_*` rules also apply to
+comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In these paths,
+`ignore_pr_authors` matches the **PR author**, not the person posting the command. An ignored CLI
+request exits successfully without running the tool. Plain-diff CLI inputs (`--diff-file` and
+`--stdin`) have no PR metadata and are not excluded by these rules.
+
 ### Ignoring PRs with specific titles
 
 To ignore PRs with a specific title such as "[Bump]: ...", you can add the following to your `configuration.toml` file:
@@ -523,6 +529,12 @@ ignore_pr_title = ["\\[Bump\\]"]
 ```
 
 Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]", "^Auto"]`.
+
+The default `^Auto` pattern also matches ordinary titles such as "Autoscaling fix". Because title
+rules now apply to manual commands too, `/review`, `/ask`, and CLI `--pr_url` commands on such PRs
+are skipped. Set a narrower `ignore_pr_title` pattern or use `ignore_pr_title = []` in your
+configuration if that is not intended. A skipped request is logged without running the tool or
+posting command reactions.
 
 ### Ignoring PRs between specific branches
 

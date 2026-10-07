@@ -9,7 +9,9 @@ are read from MOSAICO.INPUT on the (context) settings.
 """
 import re
 from typing import List, Optional
+from urllib.parse import unquote, urlsplit
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.git_patch_processing import to_hunk_only_patch
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -152,7 +154,19 @@ class DiffInputProvider(GitProvider):
         self.diff_files: List[FilePatchInfo] = list(mosaico_input.get("files", []) or [])
         self._languages = dict(mosaico_input.get("languages", {}) or {})
         self._title = mosaico_input.get("title", "") or ""
+        self._source_url = mosaico_input.get("source_url")
         self.pr = _PullRequestMimic(self._title, self.diff_files)
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # Preserve repository identity when the router fetched a public PR diff.
+        # A pasted patch has no repository, author, labels or branch metadata.
+        repo = ""
+        if self._source_url:
+            path = unquote(urlsplit(self._source_url).path).strip("/")
+            repo = re.split(r"/(?:-/)?(?:pull|pulls|merge_requests|pullrequest|pull-requests)/", path)[0]
+        # The display title is a URL or "Supplied diff", not the hosted PR title.
+        return policy_metadata(title=None, sender="", repo_full_name=repo,
+                               source_branch="", target_branch="")
 
     # ---- INPUT methods (real) ----
     def is_supported(self, capability: str) -> bool:
