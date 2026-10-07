@@ -1095,7 +1095,7 @@ class GithubProvider(GitProvider):
                     if "pageInfo" in comments:
                         comment_page_info = comments["pageInfo"]
                         if not isinstance(comment_page_info, dict) or comment_page_info.get("hasNextPage") is not False:
-                            overflow_threads.append(thread)
+                            overflow_threads.append((thread.get("id"), comment_page_info))
 
                 if thread_id or is_already_resolved:
                     break
@@ -1107,9 +1107,7 @@ class GithubProvider(GitProvider):
             # Preserve the original fast search across all thread pages before
             # reading overflow comments in unrelated threads.
             if not thread_id and not is_already_resolved:
-                for thread in overflow_threads:
-                    overflow_id = thread.get("id")
-                    page_info = thread["comments"]["pageInfo"]
+                for overflow_id, page_info in overflow_threads:
                     if (not isinstance(overflow_id, str) or not overflow_id
                             or not isinstance(page_info, dict) or page_info.get("hasNextPage") is not True):
                         return False
