@@ -32,8 +32,8 @@ class PlainDiffGitProvider(GitProvider):
     """
 
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
-        # A supplied patch has no repository, author, labels or branch metadata.
-        return policy_metadata(title=self.pr.title, sender="", repo_full_name="",
+        # A supplied patch has no PR metadata; its display title is not a PR title.
+        return policy_metadata(title=None, sender="", repo_full_name="",
                                source_branch="", target_branch="")
 
     def __init__(self, pr_url=None, incremental=False):

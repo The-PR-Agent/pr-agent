@@ -164,7 +164,8 @@ class DiffInputProvider(GitProvider):
         if self._source_url:
             path = unquote(urlsplit(self._source_url).path).strip("/")
             repo = re.split(r"/(?:-/)?(?:pull|pulls|merge_requests|pullrequest|pull-requests)/", path)[0]
-        return policy_metadata(title=self._title, sender="", repo_full_name=repo,
+        # The display title is a URL or "Supplied diff", not the hosted PR title.
+        return policy_metadata(title=None, sender="", repo_full_name=repo,
                                source_branch="", target_branch="")
 
     # ---- INPUT methods (real) ----

@@ -402,3 +402,65 @@ async def test_gitlab_comment_skip_has_no_followup_reaction(environment, monkeyp
     await background()
     provider.add_eyes_reaction.assert_not_called()
     provider.react_to_outcome.assert_not_called()
+
+
+@pytest.mark.parametrize("input_mode", ["file", "stdin"])
+def test_plain_diff_cli_does_not_filter_synthetic_title(monkeypatch, tmp_path, input_mode):
+    import io
+
+    from pr_agent import cli
+    settings = copy.deepcopy(global_settings)
+    settings.set("config.use_repo_settings_file", False)
+    settings.set("config.ignore_pr_title", [".*"])
+    patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    monkeypatch.setattr(cli, "_cli_settings_scope", lambda: request_cycle_context({"settings": settings}))
+    monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
+    monkeypatch.setattr(agent, "flush_telemetry", Mock())
+    tool = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    if input_mode == "file":
+        path = tmp_path / "change.diff"
+        path.write_text(patch)
+        arguments = ["--diff-file", str(path), "review"]
+    else:
+        monkeypatch.setattr("sys.stdin", io.StringIO(patch))
+        arguments = ["--stdin", "review"]
+    cli.run(inargs=arguments)
+    tool.run.assert_awaited_once()
+
+
+async def test_gitlab_numeric_project_policy_matches_namespace(environment, monkeypatch):
+    settings, policy_provider = environment
+    settings.set("config.ignore_repositories", ["^org/subgroup/repo$"])
+    cls = git_providers._GIT_PROVIDERS["gitlab"]
+    provider = cls.__new__(cls)
+    provider.id_project = "1234"
+    provider.gl = SimpleNamespace(projects=SimpleNamespace(get=Mock(
+        return_value=SimpleNamespace(path_with_namespace="org/subgroup/repo"))))
+    provider.mr = SimpleNamespace(title="Regular PR", author={"username": "author"},
+                                  source_branch="feature", target_branch="main")
+    policy_provider.get_request_policy_metadata.side_effect = provider.get_request_policy_metadata
+    tool = Mock()
+    monkeypatch.setitem(agent.command2class, "review", tool)
+    result = await agent.PRAgent().handle_request("https://gitlab.com/projects/1234/-/merge_requests/7", "/review")
+    assert result is RequestOutcome.SKIPPED
+    tool.assert_not_called()
+    provider.gl.projects.get.assert_called_once_with("1234")
+
+
+@pytest.mark.parametrize("source", [None, URL])
+async def test_mosaico_display_title_is_not_pr_policy_title(monkeypatch, source):
+    from pr_agent.mosaico import dispatch, provider_registration  # noqa: F401
+    settings = copy.deepcopy(global_settings)
+    settings.set("config.use_repo_settings_file", False)
+    settings.set("config.ignore_pr_title", ["^Supplied diff$", "github.com"])
+    patch = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n"
+    monkeypatch.setattr(dispatch, "_fetch_public_diff", AsyncMock(return_value=patch))
+    monkeypatch.setattr(agent, "flush_telemetry", Mock())
+    tool = SimpleNamespace(run=AsyncMock())
+    monkeypatch.setitem(agent.command2class, "review", Mock(return_value=tool))
+    with request_cycle_context({"settings": settings, "git_provider": {}}):
+        result = await dispatch.route_and_run_result(f"review {source}" if source else f"review\n{patch}")
+    assert result.ok
+    assert result.text != "Request ignored by policy."
+    tool.run.assert_awaited_once()
