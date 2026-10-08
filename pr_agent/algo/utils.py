@@ -1278,7 +1278,7 @@ def try_fix_yaml(response_text: str,
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after adding indent for sections of code blocks")
             return data
-    except yaml.YAMLError:
+    except Exception:
         pass
 
     # eighth fallback - try to remove pipe chars at the root-level dicts
