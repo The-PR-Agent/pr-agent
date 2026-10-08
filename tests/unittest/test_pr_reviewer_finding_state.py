@@ -1507,6 +1507,7 @@ async def test_a_successful_run_is_not_recorded_as_failed(monkeypatch, is_auto_c
     """The control: recording on failure must not turn every run into a failure."""
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.config, "is_auto_command", is_auto_command, raising=False)
+    monkeypatch.setattr(settings.pr_reviewer, "publish_review_failure_comment", False)
     provider = _ReviewRunProvider(comments=[], supports_state=True, authored=True)
     reviewer = _reviewer_for_run(provider)
     reviewer._review_state_result = SimpleNamespace(changed=True)
@@ -1515,6 +1516,10 @@ async def test_a_successful_run_is_not_recorded_as_failed(monkeypatch, is_auto_c
     await reviewer.run()
 
     assert command_failed() is False
+    assert any(
+        "review output" in body
+        for body, is_temporary, _kwargs in provider.published if not is_temporary
+    )
 
 
 def test_persistent_publish_success_rejects_none_and_false():

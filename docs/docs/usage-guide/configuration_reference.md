@@ -164,6 +164,7 @@ to-do list.
 | Key | Default | Description |
 | --- | --- | --- |
 | `publish_output_no_suggestions` | true | Set to "false" if you only need the reviewer's remarks (not labels, not "security audit", etc.) and want to avoid noisy "No major issues detected" comments. |
+| `publish_review_failure_comment` | true | Set to false to suppress review failure comments without changing the command's failure status. |
 | `publish_error_details` | false | Publish a deterministic, sanitized failure reason in manual review comments. No AI call is used. |
 | `persistent_comment` | true |  |
 | `review_heading` | "PR Reviewer Guide" | Visible base heading for full and incremental review comments. Identity is tracked separately. |
