@@ -171,8 +171,9 @@ def test_review_alias_accepts_prompt_field_name():
         "key_issues_to_review": [],
         "estimated_effort_to_review_[1-5]": 3,
     }).estimated_effort_to_review == 3
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
+    review = Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
+    assert review.estimated_effort_to_review is None
+    assert review.model_extra["estimated_effort_to_review"] == 3
 
 
 def test_review_rejects_coercible_numeric_types_and_strips_prompt_literals():
@@ -190,6 +191,15 @@ def test_review_rejects_coercible_numeric_types_and_strips_prompt_literals():
     assert review.risk_level == "low"
     assert review.merge_recommendation == "safe_to_merge"
     assert review.relevant_tests == "No"
+
+
+def test_review_accepts_extra_fields_while_nested_schemas_stay_strict():
+    payload = _review_fixture()
+    payload["review"]["pipeline_status"] = [{"job": "unit", "status": "failed"}]
+
+    review = Review.model_validate(payload["review"])
+    assert review.model_extra["pipeline_status"] == [{"job": "unit", "status": "failed"}]
+    PRReview.model_validate(payload)
 
 
 def test_required_label_and_list_constraints_are_enforced():

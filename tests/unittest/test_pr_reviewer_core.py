@@ -299,6 +299,16 @@ def test_review_schema_requires_enabled_prompt_fields_only():
     get_logger.return_value.warning.assert_not_called()
 
 
+def test_review_schema_allows_fields_requested_through_extra_instructions():
+    reviewer = _make_prediction_reviewer()
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({
+            "review": {"key_issues_to_review": [], "pipeline_status": [{"job": "unit", "status": "failed"}]},
+        }) is True
+
+    get_logger.return_value.warning.assert_not_called()
+
+
 def test_review_schema_reports_none_for_missing_fields():
     reviewer = _make_prediction_reviewer()
     with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
@@ -312,12 +322,16 @@ def test_review_schema_reports_none_for_missing_fields():
 def test_review_schema_logs_all_pydantic_validation_errors():
     reviewer = _make_prediction_reviewer()
     with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
-        assert reviewer._validate_review_schema({"review": {"unexpected_extra_key": "val"}}) is False
+        assert reviewer._validate_review_schema({"review": {
+            "key_issues_to_review": [],
+            "risk_level": "critical",
+            "merge_recommendation": "approve",
+        }}) is False
 
     warnings = [call.kwargs for call in get_logger.return_value.warning.call_args_list]
     logged_fields = [w["artifact"]["field"] for w in warnings]
-    assert "review.key_issues_to_review" in logged_fields
-    assert "review.unexpected_extra_key" in logged_fields
+    assert "review.risk_level" in logged_fields
+    assert "review.merge_recommendation" in logged_fields
 
 
 def test_review_schema_runs_require_checks_when_pydantic_validation_fails():
@@ -327,13 +341,13 @@ def test_review_schema_runs_require_checks_when_pydantic_validation_fails():
         assert reviewer._validate_review_schema({
             "review": {
                 "key_issues_to_review": [],
-                "unexpected_extra_key": "val",
+                "risk_level": "critical",
             }
         }) is False
 
     warnings = [call.kwargs for call in get_logger.return_value.warning.call_args_list]
     logged_fields = [w["artifact"]["field"] for w in warnings]
-    assert "review.unexpected_extra_key" in logged_fields
+    assert "review.risk_level" in logged_fields
     assert "review.score" in logged_fields
 
 
