@@ -16,6 +16,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
     ("https://ci-user:synthetic-password@example.com/log", "synthetic-password", "url_userinfo"),
     ("token=glpat-synthetic_token_for_tests", "glpat-synthetic_token_for_tests", "gitlab_token"),
     ("key=AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE", "aws_access_key"),
+    ("key=" + "A3TQ" + "B" * 16, "A3TQ" + "B" * 16, "aws_access_key"),
     ("AWS_SECRET_ACCESS_KEY=" + "x" * 40, "x" * 40, "credential_assignment"),
     ('"aws_session_token": "synthetic-session-value"', "synthetic-session-value", "credential_assignment"),
     ('"SecretAccessKey": "synthetic-secret-value"', "synthetic-secret-value", "credential_assignment"),
@@ -141,6 +142,45 @@ def test_configured_credential_assignments_are_redacted(tmp_path, monkeypatch, k
 
 
 @pytest.mark.parametrize("content", [
+    'webhook_password = "synthetic first second third"',
+    "webhook_password = 'synthetic first second third'",
+    '"client_secret": "synthetic first second third"',
+    'api_token="<redacted> synthetic first second third"',
+    'api_token="synthetic first \\"second\\" third"',
+    "api_token='synthetic first \\'second\\' third'",
+])
+def test_whole_quoted_credential_is_redacted(tmp_path, monkeypatch, content):
+    path = tmp_path / "ci.log"
+    path.write_text(content + "\nFAILED test_boundary", encoding="utf-8")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    context = artifacts._read_and_truncate(path, 2000)
+
+    for part in ("synthetic", "first", "second", "third"):
+        assert part not in context
+    assert "FAILED test_boundary" in context
+    logger.warning.assert_called_once_with("Redacted CI artifact credentials by type: {'credential_assignment': 1}")
+    repeated_counts = {}
+    assert redact_credentials(context, redaction_counts=repeated_counts) == context
+    assert repeated_counts == {}
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_quoted_credential_crossing_read_boundary_is_redacted(tmp_path, quote):
+    path = tmp_path / "ci.log"
+    path.write_text("webhook_password = " + quote + "synthetic first second third " * 1000 + quote,
+                    encoding="utf-8")
+
+    context = artifacts._read_and_truncate(path, 120)
+
+    for part in ("synthetic", "first", "second", "third"):
+        assert part not in context
+    assert "truncated" in context
+    assert len(context) <= 120
+
+
+@pytest.mark.parametrize("content", [
     "Authorization: Bearer <redacted>synthetic-secret-suffix",
     "Authorization: Bearer <redacted> synthetic-secret-suffix",
     "Authorization: Basic  <redacted>\tsynthetic-secret-suffix",
@@ -170,6 +210,7 @@ def test_partial_redaction_markers_do_not_hide_credential_suffixes(tmp_path, mon
     'api_token="<redacted>"', '"api_token": "<redacted>"', "api_token=<redacted>\n",
     "Authorization: Bearer <redacted>  \n", "Authorization: Bearer <redacted>\t\r\n",
     "api_key_count=3\nuser_token_length=40\nkey=expected-value",
+    'api_token=""', "api_token='  '", 'api_token=" <redacted> "',
 ])
 def test_masked_values_and_noncredential_assignments_are_not_counted(content):
     counts = {}

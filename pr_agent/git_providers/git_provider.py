@@ -145,11 +145,11 @@ _CREDENTIAL_ASSIGNMENT_RE = re.compile(
     r"(?i)(\b(?:[a-z][a-z0-9]*[_.]+)*(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
     r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token|openai_key|openai_api_key|"
     r"user_token|personal_access_token|bearer_token|basic_token|api_token|api_key|pat|client_secret|"
-    r"webhook_secret|shared_secret|webhook_password)\b[\"']?[ \t]*[:=][ \t]*[\"']?)"
-    r"(?!<redacted>(?:[\s\"']|$))([^\s\"']+)"
+    r"webhook_secret|shared_secret|webhook_password)\b[\"']?[ \t]*[:=][ \t]*)"
+    r"(\"(?:\\[\s\S]|[^\"\\])*(?:\"|\\?\Z)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?\Z)|[^\s\"']+)"
 )
 _GITLAB_TOKEN_RE = re.compile(r"\bglpat-[A-Za-z0-9_-]+")
-_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
+_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}\b")
 
 
 # The reaction PR-Agent has always added when it picks a comment command up. Used as the
@@ -168,6 +168,16 @@ def get_reaction_setting(name: str, default: str = "") -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _redact_credential_assignment(match: re.Match) -> str:
+    value = match.group(2)
+    quote = value[0] if value[0] in "\"'" else ""
+    closed = bool(quote and len(value) > 1 and value.endswith(quote))
+    credential = value[1:-1] if closed else value[1:] if quote else value
+    if not credential.strip() or credential.strip().lower() == "<redacted>":
+        return match.group(0)
+    return match.group(1) + quote + "<redacted>" + (quote if closed else "")
+
+
 def redact_credentials(text, *, redaction_counts: dict[str, int] | None = None) -> str:
     if not text:
         return ""
@@ -175,11 +185,20 @@ def redact_credentials(text, *, redaction_counts: dict[str, int] | None = None) 
     for kind, pattern, replacement in (
         ("url_userinfo", _URL_USERINFO_RE, lambda m: m.group("scheme")),
         ("authorization_header", _AUTH_HEADER_RE, lambda m: m.group(1) + "<redacted>"),
-        ("credential_assignment", _CREDENTIAL_ASSIGNMENT_RE, lambda m: m.group(1) + "<redacted>"),
+        ("credential_assignment", _CREDENTIAL_ASSIGNMENT_RE, _redact_credential_assignment),
         ("gitlab_token", _GITLAB_TOKEN_RE, "<redacted>"),
         ("aws_access_key", _AWS_ACCESS_KEY_RE, "<redacted>"),
     ):
-        redacted, count = pattern.subn(replacement, redacted)
+        count = 0
+
+        def counted_replacement(match, replacement=replacement):
+            nonlocal count
+            result = replacement(match) if callable(replacement) else replacement
+            if result != match.group(0):
+                count += 1
+            return result
+
+        redacted = pattern.sub(counted_replacement, redacted)
         if count and redaction_counts is not None:
             redaction_counts[kind] = redaction_counts.get(kind, 0) + count
     return redacted
