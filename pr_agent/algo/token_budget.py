@@ -13,6 +13,7 @@ from pr_agent.algo import (
     GPT6_SOL_TIER_MODELS,
     MAX_TOKENS,
 )
+from pr_agent.algo.token_handler import TokenEncoder, TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
