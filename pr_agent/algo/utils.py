@@ -1251,7 +1251,7 @@ def try_fix_yaml(response_text: str,
             if data is not None:
                 get_logger().info("Successfully parsed AI prediction after replacing tabs with spaces")
                 return data
-        except yaml.YAMLError:
+        except Exception:
             pass
 
     # seventh fallback - add indent for sections of code blocks
