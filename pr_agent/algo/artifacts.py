@@ -95,14 +95,14 @@ def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") 
     keep_end = str(truncate_from).strip().lower() == "end"
     try:
         if keep_end:
-            # The tail is unknown until the whole file is read; cap the read so a huge
-            # artifact does not load unbounded content into memory.
+            # Seek to a bounded tail window so a huge artifact is never read whole.
             with open(path, "rb") as f:
                 f.seek(0, os.SEEK_END)
                 file_size = f.tell()
                 f.seek(max(0, file_size - 4 * (max_size + 1)))
                 raw = f.read(4 * (max_size + 1))
-            content = raw.decode("utf-8", errors="replace")
+            # Match the text-mode branch, which normalizes CRLF and CR newlines.
+            content = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
             if len(content) > max_size + 1:
                 content = content[-(max_size + 1):]
         else:
