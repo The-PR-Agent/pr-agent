@@ -472,8 +472,20 @@ class GerritProvider(GitProvider):
             patch = diff(cwd=self.repo_path)
             patch_id = uuid.uuid4().hex[0:4]
             path = "/".join(["codium-ai", self.refspec, patch_id])
-            full_path = upload_patch(patch, path)
-            reset_local_changes(self.repo_path)
+            uploaded = False
+            try:
+                full_path = upload_patch(patch, path)
+                uploaded = True
+            finally:
+                try:
+                    reset_local_changes(self.repo_path)
+                except Exception as cleanup_error:
+                    if uploaded:
+                        raise
+                    get_logger().warning(
+                        "Failed to reset Gerrit edits after upload failed in {}: {}; stderr: {!r}",
+                        self.repo_path, cleanup_error, getattr(cleanup_error, "stderr", None),
+                    )
             msg.append(f'* {description}\n{full_path}')
 
         if msg:

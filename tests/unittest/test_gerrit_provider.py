@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import git
 import pytest
+import requests
 import urllib3.util
 
 from pr_agent.algo.language_handler import sort_files_by_main_languages
@@ -414,6 +415,85 @@ def test_cleanup_removes_the_temp_repo_and_names_it_in_the_log(tmp_path):
 
     assert not repo_path.exists()
     assert str(repo_path) in "\n".join(captured)
+
+
+@pytest.mark.parametrize("error_type", [requests.Timeout, requests.HTTPError])
+@pytest.mark.parametrize("reset_fails", [False, True])
+def test_suggestion_upload_failure_preserves_error_and_attempts_cleanup(tmp_path, monkeypatch, error_type, reset_fails):
+    from loguru import logger as loguru_logger
+
+    repo = _make_repo(tmp_path, ["app.py"])
+    provider = object.__new__(GerritProvider)
+    provider.repo_path = str(tmp_path)
+    provider.refspec = "refs/changes/01/1/1"
+    error = error_type("upload failed")
+
+    def fail_upload(patch, path):
+        assert "+replacement" in patch
+        raise error
+
+    def reject_comment(*args, **kwargs):
+        pytest.fail("A failed upload must not publish a suggestion comment")
+
+    monkeypatch.setattr(gerrit_provider, "upload_patch", fail_upload)
+    monkeypatch.setattr(gerrit_provider, "add_comment", reject_comment)
+    if reset_fails:
+        def fail_reset(path):
+            raise gerrit_provider.subprocess.CalledProcessError(
+                1, ["git", "checkout", "--force"], stderr=b"fatal: index.lock exists",
+            )
+
+        monkeypatch.setattr(gerrit_provider, "reset_local_changes", fail_reset)
+    suggestion = {
+        "relevant_file": "app.py",
+        "body": "Replace the line\n```suggestion\nreplacement\n```",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+    }
+
+    captured, sink_id = _capture_logs()
+    try:
+        with pytest.raises(error_type, match="upload failed") as caught:
+            provider.publish_code_suggestions([suggestion])
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert caught.value is error
+    if reset_fails:
+        assert repo.is_dirty()
+        combined = "\n".join(captured)
+        assert "Failed to reset Gerrit edits after upload failed" in combined
+        assert str(tmp_path) in combined
+        assert "fatal: index.lock exists" in combined
+    else:
+        assert (tmp_path / "app.py").read_text() == "app.py\n"
+        assert not repo.is_dirty()
+
+
+def test_successful_suggestion_upload_propagates_reset_failure(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, ["app.py"])
+    provider = object.__new__(GerritProvider)
+    provider.repo_path = str(tmp_path)
+    provider.refspec = "refs/changes/01/1/1"
+    error = gerrit_provider.subprocess.CalledProcessError(1, ["git", "checkout", "--force"])
+
+    def fail_reset(path):
+        raise error
+
+    monkeypatch.setattr(gerrit_provider, "upload_patch", lambda patch, path: "https://patch.example/1")
+    monkeypatch.setattr(gerrit_provider, "reset_local_changes", fail_reset)
+    suggestion = {
+        "relevant_file": "app.py",
+        "body": "Replace the line\n```suggestion\nreplacement\n```",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+    }
+
+    with pytest.raises(gerrit_provider.subprocess.CalledProcessError) as caught:
+        provider.publish_code_suggestions([suggestion])
+
+    assert caught.value is error
+    assert repo.is_dirty()
 
 
 def test_cleanup_reports_a_failed_removal_instead_of_claiming_success(tmp_path, monkeypatch):
