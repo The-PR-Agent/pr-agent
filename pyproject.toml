@@ -169,6 +169,12 @@ lint.select = [
   "I",    # isort
 ]
 
+lint.fixable = [
+  "I001", # import sorting
+  "F401", # unused imports
+  "F541", # f-string without placeholders
+]
+
 lint.exclude = ["api/code_completions"]
 
 
