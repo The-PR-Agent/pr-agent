@@ -236,6 +236,23 @@ class TestConvertToMarkdown:
 
         assert convert_to_markdown_v2(input_data).strip() == expected_output.strip()
 
+    def test_ticket_compliance_without_url(self):
+        input_data = {'review': {
+            'ticket_compliance_check': [
+                {
+                    'ticket_url': '',
+                    'fully_compliant_requirements': '- adds the endpoint\n',
+                    'not_compliant_requirements': '',
+                    'requires_further_human_verification': '',
+                }
+            ]
+        }}
+
+        output = convert_to_markdown_v2(input_data)
+
+        assert '[]()' not in output
+        assert '**Untracked ticket - Fully compliant**' in output
+
     def test_can_be_split(self):
         input_data = {'review': {
             'can_be_split': [

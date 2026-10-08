@@ -500,8 +500,10 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                     explanation += f"Non-compliant requirements:\n\n{not_compliant_str}\n\n"
                 if requires_further_human_verification:
                     explanation += f"Requires further human verification:\n\n{requires_further_human_verification}\n\n"
+                ticket_title = ticket_url.split('/')[-1] if ticket_url else "Untracked ticket"
+                ticket_reference = f"[{ticket_title}]({ticket_url})" if ticket_url else ticket_title
                 ticket_compliance_str += (
-                    f"\n\n**[{ticket_url.split('/')[-1]}]({ticket_url}) - "
+                    f"\n\n**{ticket_reference} - "
                     f"{ticket_compliance_level}**\n\n{explanation}\n\n"
                 )
 
