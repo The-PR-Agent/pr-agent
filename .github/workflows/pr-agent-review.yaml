@@ -9,7 +9,11 @@ on:
     inputs:
       comment_id:
         description: ID of an existing /describe or /improve PR comment to replay
-        required: true
+        required: false
+        type: string
+      pr_number:
+        description: PR number to replay its opened event (instead of comment_id)
+        required: false
         type: string
 
 permissions:
@@ -18,7 +22,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number || inputs.comment_id }}
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || inputs.comment_id }}
   cancel-in-progress: false
 
 jobs:
@@ -42,16 +46,28 @@ jobs:
     timeout-minutes: 15
     name: Describe PRs and suggest improvements
     steps:
-      - name: Load PR comment for manual replay
+      - name: Load PR event for manual replay
         if: github.event_name == 'workflow_dispatch'
         id: replay
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           COMMENT_ID: ${{ inputs.comment_id }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -n "$PR_NUMBER" ]]; then
+            [[ -z "$COMMENT_ID" && "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "Supply only a numeric PR number"; exit 1; }
+            gh api "repos/$GH_REPO/pulls/$PR_NUMBER" | jq -e --arg repository "$GH_REPO" '
+              if .state != "open" or .draft then error("PR must be open and ready for review")
+              else {action: "opened", pull_request: ., sender: {type: "User"},
+                    repository: {full_name: $repository}}
+              end' > "$GITHUB_WORKSPACE/pr-agent-event.json"
+            echo "event_name=pull_request_target" >> "$GITHUB_OUTPUT"
+            echo "event_path=/github/workspace/pr-agent-event.json" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           [[ "$COMMENT_ID" =~ ^[0-9]+$ ]] || { echo "Invalid comment ID"; exit 1; }
           gh api "repos/$GH_REPO/issues/comments/$COMMENT_ID" > "$RUNNER_TEMP/pr-agent-comment.json"
           issue_number=$(jq -r '.issue_url | split("/") | last' "$RUNNER_TEMP/pr-agent-comment.json")
@@ -70,12 +86,13 @@ jobs:
                   repository: {full_name: $repository}}
             end' > "$GITHUB_WORKSPACE/pr-agent-event.json"
           echo "event_path=/github/workspace/pr-agent-event.json" >> "$GITHUB_OUTPUT"
+          echo "event_name=issue_comment" >> "$GITHUB_OUTPUT"
 
       - name: Run sponsored PR-Agent
         uses: docker://pragent/pr-agent@sha256:31b9aac6ab067bada9a0c1b001d30ebc500ea4487e00a93c18c59b9ef5fa66db
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_EVENT_NAME: ${{ github.event_name == 'workflow_dispatch' && 'issue_comment' || github.event_name }}
+          GITHUB_EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
           GITHUB_EVENT_PATH: ${{ steps.replay.outputs.event_path || '/github/workflow/event.json' }}
           OPENAI_KEY: ${{ secrets.QODO_SPONSORSHIP_LLM_KEY }}
           OPENAI__API_BASE: https://ai-gateway.qodo.ai/v1

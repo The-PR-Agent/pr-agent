@@ -115,15 +115,16 @@ The workflow uses `pull_request_target` so fork PRs can use the sponsorship
 key. It runs a digest-pinned PR-Agent image without checking out or executing
 the contributor's code.
 
-To retry an existing command or test a workflow branch before merging, select
-**Actions → PR-Agent → Run workflow**, choose the branch, and supply the
-numeric comment ID from the command comment's `#issuecomment-<id>` URL. The
-manual run fetches and validates that comment, then passes it to the same
-PR-Agent comment handler. For example:
+To test a workflow branch before merging, select **Actions → PR-Agent → Run
+workflow**, choose the branch, and supply a `pr_number` to replay the PR-opened
+event and run both tools. To retry a single command, supply `comment_id`
+instead, using the numeric ID from its `#issuecomment-<id>` URL. The manual run
+fetches and validates the PR or comment, then passes it to the same PR-Agent
+event handler. For example:
 
 ```bash
 gh workflow run pr-agent-review.yaml --repo The-PR-Agent/pr-agent \
-  --ref <workflow-branch> -f comment_id=<comment-id>
+  --ref <workflow-branch> -f pr_number=<pr-number>
 ```
 
 Failed tool runs fail the workflow. Generated comments include model and
