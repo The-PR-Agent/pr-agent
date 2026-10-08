@@ -71,7 +71,7 @@ def resolve_artifact_path(path: str) -> Optional[Path]:
 _TRUNCATION_MARKER = "\n\n[... content truncated due to size limit ...]"
 _TRUNCATION_MARKER_START = "[... content truncated due to size limit ...]\n\n"
 _REDACTION_LOOKAHEAD = 512
-_TRUNCATED_URL_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://\S+$")
+_INCOMPLETE_USERINFO_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://[^/@\s:]+:[^/@\s]+$")
 
 
 def _artifact_boundary_markers() -> tuple[str, str]:
@@ -119,11 +119,10 @@ def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") 
 
     truncated = len(content) > max_size
     redaction_counts = {}
-    if len(content) == max_size + _REDACTION_LOOKAHEAD:
-        # A cut-off URL can hide the @ after very long userinfo; mask the ambiguous fragment.
-        content, count = _TRUNCATED_URL_RE.subn("<redacted>", content)
-        if count:
-            redaction_counts["truncated_url"] = count
+    # Mask incomplete userinfo even when the input itself ends before the read limit.
+    content, count = _INCOMPLETE_USERINFO_RE.subn("<redacted>", content)
+    if count:
+        redaction_counts["incomplete_url_userinfo"] = count
     content = redact_credentials(content, redaction_counts=redaction_counts)
     if redaction_counts:
         get_logger().warning(f"Redacted CI artifact credentials by type: {redaction_counts}")

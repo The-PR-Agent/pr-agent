@@ -18,6 +18,10 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
     ("key=AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE", "aws_access_key"),
     ("AWS_SECRET_ACCESS_KEY=" + "x" * 40, "x" * 40, "credential_assignment"),
     ('"aws_session_token": "synthetic-session-value"', "synthetic-session-value", "credential_assignment"),
+    ('"SecretAccessKey": "synthetic-secret-value"', "synthetic-secret-value", "credential_assignment"),
+    ('"SessionToken": "synthetic-session-value"', "synthetic-session-value", "credential_assignment"),
+    ("Authorization: AWS4-HMAC-SHA256 Credential=synthetic-key, Signature=synthetic-signature",
+     "synthetic-signature", "authorization_header"),
 ])
 def test_load_artifact_redacts_credentials_and_reports_only_counts(tmp_path, monkeypatch, content, credential, kind):
     path = tmp_path / "ci.log"
@@ -74,6 +78,20 @@ def test_truncated_long_url_does_not_expose_partial_userinfo(tmp_path):
     assert "synthetic-password" not in context
     assert "Build log:" in context
     assert "truncated" in context
+    assert len(context) <= 120
+
+
+@pytest.mark.parametrize("length", [80, 120 + 511])
+def test_log_ending_inside_url_userinfo_is_masked_at_any_length(tmp_path, length):
+    path = tmp_path / "ci.log"
+    content = "Build log: https://ci-user:synthetic-password"
+    path.write_text(content + "x" * (length - len(content)), encoding="utf-8")
+
+    context = artifacts._read_and_truncate(path, 120)
+
+    assert "ci-user" not in context
+    assert "synthetic-password" not in context
+    assert "Build log:" in context
     assert len(context) <= 120
 
 

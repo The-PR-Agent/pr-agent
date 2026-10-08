@@ -137,10 +137,13 @@ class ConcurrentFileUpdateError(RuntimeError):
 
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
-_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)(?!<redacted>)\S+")
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)(authorization[ \t]*:[ \t]*[A-Za-z][A-Za-z0-9_-]*[ \t]+)(?!<redacted>)[^\r\n]+"
+)
 _CREDENTIAL_ASSIGNMENT_RE = re.compile(
     r"(?i)(\b(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
-    r"github_token|gitlab_token|ci_job_token)\b[\"']?[ \t]*[:=][ \t]*[\"']?)([^\s\"'<>]+)"
+    r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token)"
+    r"\b[\"']?[ \t]*[:=][ \t]*[\"']?)([^\s\"'<>]+)"
 )
 _GITLAB_TOKEN_RE = re.compile(r"\bglpat-[A-Za-z0-9_-]+")
 _AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
