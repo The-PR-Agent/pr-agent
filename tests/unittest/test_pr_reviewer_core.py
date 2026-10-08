@@ -9,6 +9,7 @@ from pr_agent.algo.inline_comment_dedup import (
     get_inline_comment_store,
     key_issue_fingerprint,
 )
+from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
@@ -791,8 +792,13 @@ async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_rev
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize(
+    ("publish_review_failure_comment", "expect_failure_comment"),
+    [(None, True), (False, False), ("false", False)],
+    ids=["default", "disabled", "quoted-false"],
+)
 async def test_run_removes_its_progress_comment_when_review_generation_fails(
-        monkeypatch, propagate_tool_errors):
+        monkeypatch, propagate_tool_errors, publish_review_failure_comment, expect_failure_comment):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
@@ -817,11 +823,14 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
         "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "publish_review_failure_comment": settings.pr_reviewer.get("publish_review_failure_comment", True),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
         settings.config.propagate_tool_errors = propagate_tool_errors
+        if publish_review_failure_comment is not None:
+            settings.pr_reviewer.publish_review_failure_comment = publish_review_failure_comment
 
         if propagate_tool_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
@@ -833,13 +842,15 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
         settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.pr_reviewer.publish_review_failure_comment = original["publish_review_failure_comment"]
 
-    assert git_provider.publish_comment.call_args_list == [
-        (("Preparing review...",), {"is_temporary": True}),
-        (("Failed to review PR",), {}),
-    ]
+    expected_comments = [(("Preparing review...",), {"is_temporary": True})]
+    if expect_failure_comment:
+        expected_comments.append((("Failed to review PR",), {}))
+    assert git_provider.publish_comment.call_args_list == expected_comments
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.remove_initial_comment.assert_not_called()
+    assert command_failed() is True
 
 
 @pytest.mark.asyncio
