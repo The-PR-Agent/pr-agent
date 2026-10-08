@@ -633,8 +633,8 @@ class PRCodeSuggestions:
             extra_count = len(partial_files) - len(displayed_files)
             if extra_count:
                 file_list += f", and {extra_count} more"
-            details.append(f"{len(partial_files)} file(s) were partially analyzed because their patches were "
-                           f"clipped to fit the token budget: {file_list}.")
+            details.append(f"Partial input coverage: {len(partial_files)} file(s) had patches clipped before "
+                           f"analysis to fit the token budget: {file_list}.")
         return "\n\n⚠️ **Suggestion coverage:** " + " ".join(details)
 
     async def publish_no_suggestions(self):

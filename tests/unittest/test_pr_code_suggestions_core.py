@@ -483,7 +483,7 @@ async def test_improve_reports_clipped_patch_missing_from_dispatched_prompt(monk
     assert tool._get_prediction.await_count == 1
     assert all(sentinel not in prompt for prompt in tool._get_prediction.await_args.args[1:])
     assert tool.partial_files_list == ["clipped.py"]
-    assert "partially analyzed" in tool._get_suggestions_coverage_footer()
+    assert "had patches clipped before analysis" in tool._get_suggestions_coverage_footer()
     assert "`clipped.py`" in tool._get_suggestions_coverage_footer(suggestions_present=False)
 
 
@@ -1050,7 +1050,8 @@ def test_suggestions_coverage_footer_keeps_failure_omission_and_clip_categories_
         restore_settings(snapshot)
 
     assert footer.index("analysis chunks failed") < footer.index("were not analyzed")
-    assert footer.index("were not analyzed") < footer.index("were partially analyzed")
+    assert footer.index("were not analyzed") < footer.index("had patches clipped before analysis")
+    assert "partially analyzed" not in footer
     assert "failed chunks could not be analyzed" in footer
     assert "omitted-49.py" in footer and "omitted-50.py" not in footer
     assert "clipped-49.py" in footer and "clipped-50.py" not in footer
@@ -1084,7 +1085,7 @@ async def test_run_appends_partial_suggestions_coverage_to_the_summary():
         artifact = get_settings().data["artifact"]
         assert artifact.startswith("Base suggestions body")
         assert "1 of 2 analysis chunks failed" in artifact
-        assert "partially analyzed" in artifact and "`clipped.py`" in artifact
+        assert "had patches clipped before analysis" in artifact and "`clipped.py`" in artifact
     finally:
         restore_settings(snapshot)
 
@@ -2189,7 +2190,7 @@ async def test_publish_no_suggestions_escapes_coverage_filenames(
     assert "\n# heading.py" not in body
     assert "\n- @org/team.py" not in body
     if coverage_kind == "partial_files_list":
-        assert "partially analyzed" in body
+        assert "had patches clipped before analysis" in body
     else:
         assert "not analyzed" in body
 

@@ -917,7 +917,7 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         List[str]: A list of final diff strings, split into multiple groups based on the maximum number
         of tokens allowed for the given model.
         With `return_remaining_files`, a tuple of that list and the list of omitted file names.
-        With `return_coverage`, a `PackedPRDiffs` result including partially analyzed file names.
+        With `return_coverage`, a `PackedPRDiffs` result including partially included file names.
 
     """
     can_reuse_prepared = (

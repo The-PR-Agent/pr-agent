@@ -1355,16 +1355,16 @@ class PRReviewer:
 
         if get_settings().pr_reviewer.enable_review_coverage_footer:
             for files, explanation in (
-                (self.remaining_files_list, "not included in this review because of the token budget"),
+                (self.remaining_files_list, "were not included in this review because of the token budget"),
                 (self.partial_files_list,
-                 "partially analyzed because their patches were clipped to fit the token budget"),
+                 "had patches clipped before analysis to fit the token budget (partial input coverage)"),
             ):
                 if not files:
                     continue
                 displayed_files = files[:MAX_REVIEW_COVERAGE_FILES]
                 markdown_text += (
                     "\n\n<hr>\n\n"
-                    f"⚠️ **Review coverage:** The following files were {explanation}:\n"
+                    f"⚠️ **Review coverage:** The following files {explanation}:\n"
                     + "\n".join(f"- {_markdown_code_span(file)}" for file in displayed_files)
                 )
                 remaining_count = len(files) - len(displayed_files)

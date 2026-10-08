@@ -688,29 +688,35 @@ def _pack_partial_review(token_handler):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("retry_failed_chunk", [False, True])
-async def test_clipped_prompt_keeps_prior_findings_active_after_success(chunking_enabled, retry_failed_chunk):
+@pytest.mark.parametrize("chunk_outcome", ["success", "retry", "failed"])
+async def test_clipped_prompt_keeps_prior_findings_active(chunking_enabled, chunk_outcome):
     reviewer = _make_reviewer()
     coverage = _pack_partial_review(reviewer.token_handler)
-    reviewer._get_prediction = AsyncMock(side_effect=(
-        [CHUNK_B, RuntimeError("model unavailable"), CHUNK_B] if retry_failed_chunk else [CHUNK_B, CHUNK_B]
-    ))
+    predictions = {
+        "success": [CHUNK_B, CHUNK_B],
+        "retry": [CHUNK_B, RuntimeError("model unavailable"), CHUNK_B],
+        "failed": [RuntimeError("model unavailable"), CHUNK_B],
+    }
+    reviewer._get_prediction = AsyncMock(side_effect=predictions[chunk_outcome])
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("single diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs", return_value=coverage) as pack,
     ):
-        if retry_failed_chunk:
+        if chunk_outcome != "success":
             with pytest.raises(RuntimeError, match="model unavailable"):
                 await reviewer._prepare_prediction("primary")
-            await reviewer._prepare_prediction("fallback")
+            if chunk_outcome == "retry":
+                await reviewer._prepare_prediction("fallback")
+            else:
+                assert reviewer._merge_cached_review_chunks()
         else:
             await reviewer._prepare_prediction("primary")
     pack.assert_called_once()
     assert all("UNSEEN_TAIL_SENTINEL" not in call.args[1] for call in reviewer._get_prediction.await_args_list)
     assert reviewer.remaining_files_list == []
     assert reviewer.partial_files_list == ["a.py"]
-    assert reviewer.review_failed_chunk_count == 0
-    if retry_failed_chunk:
+    assert reviewer.review_failed_chunk_count == (1 if chunk_outcome == "failed" else 0)
+    if chunk_outcome == "retry":
         assert [call.args[1] for call in reviewer._get_prediction.await_args_list] == [
             *coverage.chunks, coverage.chunks[1],
         ]
@@ -731,7 +737,10 @@ async def test_clipped_prompt_keeps_prior_findings_active_after_success(chunking
     assert state["last_run"]["excluded_files"] == ["a.py"]
     with patch.dict(get_settings().pr_reviewer, {"enable_review_coverage_footer": True}):
         rendered = _render_review(reviewer)
-    assert "partially analyzed" in rendered
+    assert "had patches clipped before analysis" in rendered
+    assert "partially analyzed" not in rendered
+    if chunk_outcome == "failed":
+        assert "1 chunk(s) failed and are not covered" in rendered
     assert "- `a.py`" in rendered
     assert "not included in this review" not in rendered
 
@@ -794,7 +803,11 @@ def test_review_coverage_caps_each_category_and_preserves_failed_chunk_note(enab
         assert "Review coverage" not in rendered
         assert "omitted-" not in rendered and "clipped-" not in rendered
         return
-    assert rendered.index("Chunked review") < rendered.index("not included") < rendered.index("partially analyzed")
+    assert (
+        rendered.index("Chunked review")
+        < rendered.index("not included")
+        < rendered.index("had patches clipped before analysis")
+    )
     for prefix in ("omitted", "clipped"):
         assert f"- `{prefix}-49.py`" in rendered
         assert f"{prefix}-50.py" not in rendered
