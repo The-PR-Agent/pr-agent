@@ -1200,7 +1200,7 @@ def try_fix_yaml(response_text: str,
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after removing leading '+'")
             return data
-    except yaml.YAMLError:
+    except Exception:
         pass
 
     # 5.5 fallback - try to normalize diff-style removal markers ('-') within list items
