@@ -116,6 +116,90 @@ def test_shared_redactor_counts_each_type_and_does_not_recount_masked_headers():
     assert repeated_counts == {}
 
 
+@pytest.mark.parametrize("key", [
+    "user_token", "personal_access_token", "bearer_token", "basic_token", "api_token",
+    "api_key", "gemini_api_key", "jira_api_token", "pat", "client_secret", "webhook_secret",
+    "shared_secret", "webhook_password", "github.user_token", "GITHUB__USER_TOKEN", "BITBUCKET_BEARER_TOKEN",
+])
+@pytest.mark.parametrize("assignment", ["{key}=synthetic-opaque-secret", '{key} = "synthetic-opaque-secret"',
+                                        '"{key}": "synthetic-opaque-secret"'])
+def test_configured_credential_assignments_are_redacted(tmp_path, monkeypatch, key, assignment):
+    path = tmp_path / "ci.log"
+    path.write_text(assignment.format(key=key) + "\nFAILED test_boundary", encoding="utf-8")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    context = artifacts._read_and_truncate(path, 2000)
+
+    assert "synthetic-opaque-secret" not in context
+    assert "FAILED test_boundary" in context
+    assert key in context
+    logger.warning.assert_called_once_with("Redacted CI artifact credentials by type: {'credential_assignment': 1}")
+    repeated_counts = {}
+    assert redact_credentials(context, redaction_counts=repeated_counts) == context
+    assert repeated_counts == {}
+
+
+@pytest.mark.parametrize("content", [
+    "Authorization: Bearer <redacted>synthetic-secret-suffix",
+    "Authorization: Bearer <redacted> synthetic-secret-suffix",
+    "Authorization: Basic  <redacted>\tsynthetic-secret-suffix",
+    'api_token="<redacted>synthetic-secret-suffix"',
+    'api_token="<redacted>,synthetic-secret-suffix"',
+    'api_token="<redacted>}synthetic-secret-suffix"',
+    'api_token="<redacted>]synthetic-secret-suffix"',
+])
+def test_partial_redaction_markers_do_not_hide_credential_suffixes(tmp_path, monkeypatch, content):
+    path = tmp_path / "ci.log"
+    path.write_text(content + "\nFAILED test_boundary", encoding="utf-8")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    context = artifacts._read_and_truncate(path, 2000)
+
+    assert "synthetic-secret-suffix" not in context
+    assert "FAILED test_boundary" in context
+    assert "<redacted>" in context
+    logger.warning.assert_called_once()
+    repeated_counts = {}
+    assert redact_credentials(context, redaction_counts=repeated_counts) == context
+    assert repeated_counts == {}
+
+
+@pytest.mark.parametrize("content", [
+    'api_token="<redacted>"', '"api_token": "<redacted>"', "api_token=<redacted>\n",
+    "Authorization: Bearer <redacted>  \n", "Authorization: Bearer <redacted>\t\r\n",
+    "api_key_count=3\nuser_token_length=40\nkey=expected-value",
+])
+def test_masked_values_and_noncredential_assignments_are_not_counted(content):
+    counts = {}
+
+    assert redact_credentials(content, redaction_counts=counts) == content
+    assert counts == {}
+
+
+@pytest.mark.parametrize("ending", ["  ", "\t", "\n\n", "\r\n\r\n", "  \n \n"])
+@pytest.mark.parametrize("max_size", [2000, 120])
+def test_incomplete_userinfo_before_trailing_whitespace_is_masked(tmp_path, monkeypatch, ending, max_size):
+    path = tmp_path / "ci.log"
+    path.write_text("Build log: https://ci-user:synthetic-password" + "x" * 80 + ending,
+                    encoding="utf-8", newline="")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    context = artifacts._read_and_truncate(path, max_size)
+
+    assert "ci-user" not in context
+    assert "synthetic-password" not in context
+    assert "Build log:" in context
+    assert len(context) <= max_size
+    logger.warning.assert_called_once_with("Redacted CI artifact credentials by type: {'incomplete_url_userinfo': 1}")
+    if max_size == 2000:
+        assert context == "Build log: <redacted>" + ending.replace("\r\n", "\n")
+    else:
+        assert "truncated" in context
+
+
 @pytest.mark.parametrize("whitespace", [" ", "  ", "\t", " \t  "])
 def test_masked_authorization_headers_are_unchanged_and_not_counted(whitespace):
     content = f"Authorization: Bearer{whitespace}<redacted>\nFAILED test_boundary"
@@ -143,7 +227,7 @@ def test_authorization_headers_with_extra_whitespace_are_redacted_once(whitespac
     "https://localhost:8080?healthy=true", "https://localhost:8080#status",
     "http://[::1]:8080", "http://[::1]",
 ])
-@pytest.mark.parametrize("ending", ["", "\n"])
+@pytest.mark.parametrize("ending", ["", "\n", "  ", "\t", "\n\n", "  \n \n"])
 def test_valid_urls_at_end_of_artifact_are_preserved(tmp_path, monkeypatch, url, ending):
     path = tmp_path / "ci.log"
     content = f"Build endpoint: {url}{ending}"

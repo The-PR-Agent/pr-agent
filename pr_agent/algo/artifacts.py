@@ -72,7 +72,7 @@ def resolve_artifact_path(path: str) -> Optional[Path]:
 _TRUNCATION_MARKER = "\n\n[... content truncated due to size limit ...]"
 _TRUNCATION_MARKER_START = "[... content truncated due to size limit ...]\n\n"
 _REDACTION_LOOKAHEAD = 512
-_INCOMPLETE_USERINFO_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://[^/@\s:]+:[^/@\s]+$")
+_INCOMPLETE_USERINFO_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://[^/@\s:]+:[^/@\s]+(?=\s*\Z)")
 
 
 def _artifact_boundary_markers() -> tuple[str, str]:

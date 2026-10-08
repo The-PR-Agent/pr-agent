@@ -138,12 +138,15 @@ class ConcurrentFileUpdateError(RuntimeError):
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
 _AUTH_HEADER_RE = re.compile(
-    r"(?i)(authorization[ \t]*:[ \t]*[A-Za-z][A-Za-z0-9_-]*[ \t]++)(?!<redacted>)[^\r\n]+"
+    r"(?i)(authorization[ \t]*:[ \t]*[A-Za-z][A-Za-z0-9_-]*[ \t]++)"
+    r"(?!<redacted>[ \t]*(?:[\r\n]|$))[^\r\n]+"
 )
 _CREDENTIAL_ASSIGNMENT_RE = re.compile(
-    r"(?i)(\b(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
-    r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token|openai_key|openai_api_key)"
-    r"\b[\"']?[ \t]*[:=][ \t]*[\"']?)([^\s\"'<>]+)"
+    r"(?i)(\b(?:[a-z][a-z0-9]*[_.]+)*(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
+    r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token|openai_key|openai_api_key|"
+    r"user_token|personal_access_token|bearer_token|basic_token|api_token|api_key|pat|client_secret|"
+    r"webhook_secret|shared_secret|webhook_password)\b[\"']?[ \t]*[:=][ \t]*[\"']?)"
+    r"(?!<redacted>(?:[\s\"']|$))([^\s\"']+)"
 )
 _GITLAB_TOKEN_RE = re.compile(r"\bglpat-[A-Za-z0-9_-]+")
 _AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")

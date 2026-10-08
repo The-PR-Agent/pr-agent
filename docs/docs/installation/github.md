@@ -450,6 +450,8 @@ target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 max_artifact_size = 50000                                   # characters; longer files are truncated with a marker
 ```
 
+CI artifacts are checked for recognizable URL credentials, authorization headers, standard GitLab tokens, AWS access keys, and common credential assignments before model submission, with redaction matches logged only by type and count; this pattern-based check does not recognize every secret format, so use sanitized CI logs as input.
+
 :::note
 A path that resolves outside `GITHUB_WORKSPACE` is rejected, and a missing or unreadable file is skipped with a warning — in both cases the tools still run, just without the artifact context.
 :::
