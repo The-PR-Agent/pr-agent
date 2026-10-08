@@ -90,10 +90,16 @@ jobs:
 
       - name: Run sponsored PR-Agent
         uses: docker://pragent/pr-agent@sha256:31b9aac6ab067bada9a0c1b001d30ebc500ea4487e00a93c18c59b9ef5fa66db
+        with:
+          entrypoint: /bin/sh
+          args: >-
+            -c 'export GITHUB_EVENT_NAME="$PR_AGENT_EVENT_NAME";
+            export GITHUB_EVENT_PATH="$PR_AGENT_EVENT_PATH";
+            exec /entrypoint.sh'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
-          GITHUB_EVENT_PATH: ${{ steps.replay.outputs.event_path || '/github/workflow/event.json' }}
+          PR_AGENT_EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
+          PR_AGENT_EVENT_PATH: ${{ steps.replay.outputs.event_path || '/github/workflow/event.json' }}
           OPENAI_KEY: ${{ secrets.QODO_SPONSORSHIP_LLM_KEY }}
           OPENAI__API_BASE: https://ai-gateway.qodo.ai/v1
           CONFIG__MODEL: openai/gpt-6.1-sol
