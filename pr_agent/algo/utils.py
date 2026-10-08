@@ -1133,7 +1133,7 @@ def try_fix_yaml(response_text: str,
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after replacing | with |2 and adding spaces")
             return data
-    except yaml.YAMLError:
+    except Exception:
         pass
 
     # second fallback - try to extract only range from first ```yaml to the last ```
