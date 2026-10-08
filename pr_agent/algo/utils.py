@@ -1289,7 +1289,7 @@ def try_fix_yaml(response_text: str,
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after removing pipe chars")
             return data
-    except yaml.YAMLError:
+    except Exception:
         pass
 
     # ninth fallback - try to decode the response text with different encodings.
