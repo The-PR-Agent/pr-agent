@@ -101,6 +101,16 @@ class ContributionTimeCostEstimate(BaseModel):
     worst_case: str = Field(description="A senior developer with no prior experience in this specific technology stack, requiring significant time for research, debugging, or resolving unexpected errors.", examples=["45m", "5h", "30h"])
 {%- endif %}
 
+{%- if require_failure_modes %}
+
+class FailureMode(BaseModel):
+    what: str = Field(description="A concrete way the changed code could fail after merge, grounded in the visible code rather than a speculative defect")
+    where: str = Field(description="The affected file:function in the visible changes")
+    trigger: str = Field(description="The realistic input or state that triggers this failure")
+    detected_by: str = Field(description="The specific test, alert or observable signal that could detect this failure; say 'nothing' if none is apparent. Do not claim a test was executed")
+    covered_in_this_pr: bool = Field(description="True only if a test or check visible in this PR covers the trigger, otherwise false")
+{%- endif %}
+
 class Review(BaseModel):
 {%- if related_tickets %}
     ticket_compliance_check: List[TicketCompliance] = Field(description="A list of compliance checks for the related tickets")
@@ -113,6 +123,9 @@ class Review(BaseModel):
 {%- endif %}
 {%- if require_merge_recommendation %}
     merge_recommendation: Literal["safe_to_merge", "merge_with_caution", "changes_required"] = Field(description="Overall merge recommendation for this PR. Answer with exactly one of: safe_to_merge, merge_with_caution, changes_required. Use changes_required when there are clear issues that should be fixed before merge. Use merge_with_caution when the PR seems acceptable but still deserves focused reviewer attention. Use safe_to_merge when no important blockers or risks are identified.")
+{%- endif %}
+{%- if require_failure_modes %}
+    failure_modes: List[FailureMode] = Field(min_items=0, max_items=3, description="How could this PR break after merge, and what would catch it? Return up to three specific failure scenarios grounded in the visible changes, not generic risks. These scenarios guide review and do not decide whether merging is safe. Return an empty list when no concrete scenario is supported")
 {%- endif %}
 {%- if require_priority_files %}
     review_priority_files: List[str] = Field(description="A short list of the most important files a human reviewer should inspect first. Return an empty list if the PR is too small or no file deserves special attention.")
@@ -169,6 +182,18 @@ review:
 {%- endif %}
 {%- if require_merge_recommendation %}
   merge_recommendation: safe_to_merge
+{%- endif %}
+{%- if require_failure_modes %}
+  failure_modes:
+    - what: |
+        A failed write could leave partial output.
+      where: |
+        src/example.py:save
+      trigger: |
+        The output write fails midway.
+      detected_by: |
+        A test that injects a write failure and checks cleanup.
+      covered_in_this_pr: false
 {%- endif %}
 {%- if require_priority_files %}
   review_priority_files:
@@ -348,6 +373,18 @@ review:
 {%- if require_merge_recommendation %}
   merge_recommendation: |
     safe_to_merge
+{%- endif %}
+{%- if require_failure_modes %}
+  failure_modes:
+    - what: |
+        A failed write could leave partial output.
+      where: |
+        src/example.py:save
+      trigger: |
+        The output write fails midway.
+      detected_by: |
+        A test that injects a write failure and checks cleanup.
+      covered_in_this_pr: false
 {%- endif %}
 {%- if require_priority_files %}
   review_priority_files:

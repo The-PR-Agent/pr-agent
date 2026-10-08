@@ -242,6 +242,7 @@ class PRReviewer:
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
             "require_risk_assessment": get_settings().pr_reviewer.get("require_risk_assessment", False),
             "require_merge_recommendation": get_settings().pr_reviewer.get("require_merge_recommendation", False),
+            "require_failure_modes": get_settings().pr_reviewer.get("require_failure_modes", False),
             "require_priority_files": get_settings().pr_reviewer.get("require_priority_files", False),
             "require_estimate_contribution_time_cost": (
                 get_settings().pr_reviewer.require_estimate_contribution_time_cost
@@ -1213,7 +1214,8 @@ class PRReviewer:
     def _load_review_yaml(prediction: str) -> dict:
         return load_yaml(prediction.strip(),
                          keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
-                                        "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
+                                        "merge_recommendation:", "failure_modes:", "security_concerns:",
+                                        "key_issues_to_review:",
                                         "relevant_file:", "relevant_line:", "suggestion:"],
                         first_key='review', last_key='security_concerns')
 
@@ -1241,6 +1243,7 @@ class PRReviewer:
                 ("estimated_effort_to_review_[1-5]", "require_estimate_effort_to_review"),
                 ("risk_level", "require_risk_assessment"),
                 ("merge_recommendation", "require_merge_recommendation"),
+                ("failure_modes", "require_failure_modes"),
                 ("review_priority_files", "require_priority_files"),
                 ("contribution_time_cost_estimate", "require_estimate_contribution_time_cost"),
                 ("score", "require_score"),
@@ -1275,6 +1278,9 @@ class PRReviewer:
         the feedback.
         """
         data = self.prediction_data if self.prediction_data is not None else self._load_review_yaml(self.prediction)
+        if isinstance(data, dict) and isinstance(data.get("review"), dict):
+            if not getattr(self, "vars", {}).get("require_failure_modes", False):
+                data["review"].pop("failure_modes", None)
         if self.prediction_data is None:
             self._validate_review_schema(data)
         github_action_output(data, 'review')

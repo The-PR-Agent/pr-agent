@@ -35,7 +35,7 @@ from pr_agent.algo.git_patch_processing import (
     to_hunk_only_patch,
 )
 from pr_agent.algo.language_handler import build_language_file_matcher
-from pr_agent.algo.output_models import PRType
+from pr_agent.algo.output_models import PRType, parse_failure_modes
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
@@ -162,6 +162,7 @@ def convert_to_markdown_v2(output_data: dict,
         "Ticket compliance check": "🎫",
         "Risk level": "⚠️",
         "Merge recommendation": "✅",
+        "Failure modes": "🔎",
         "Review priority files": "📂",
     }
     markdown_text = ""
@@ -180,7 +181,7 @@ def convert_to_markdown_v2(output_data: dict,
     review_data = {k: v for k, v in output_data["review"].items() if k != "todo_summary"}
     for key, value in review_data.items():
         if value is None or value == '' or value == {} or value == []:
-            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files']:
+            if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files', 'failure_modes']:
                 continue
         key_nice = key.replace('_', ' ').capitalize()
         emoji = emojis.get(key_nice, "")
@@ -277,6 +278,31 @@ def convert_to_markdown_v2(output_data: dict,
                 markdown_text += "</td></tr>\n"
             else:
                 markdown_text += f"### {emoji} Merge recommendation: {recommendation_display}\n\n"
+        elif key.lower() == 'failure_modes':
+            modes = parse_failure_modes(value)
+            heading = f"{emoji} Failure modes"
+            if gfm_supported:
+                markdown_text += f"<tr><td>{emoji}&nbsp;<strong>Failure modes</strong><br><br>\n"
+            else:
+                markdown_text += f"### {heading}\n\n"
+            if not modes:
+                markdown_text += "No failure modes identified.\n\n"
+            for mode in modes:
+                for field, label in (("what", "What"), ("where", "Where"), ("trigger", "Trigger"),
+                                     ("detected_by", "Detected by")):
+                    text = html.escape(" ".join(mode[field].split()))
+                    text = re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", text)
+                    if gfm_supported:
+                        markdown_text += f"<strong>{label}:</strong> {text}<br>\n"
+                    else:
+                        markdown_text += f"- **{label}:** {text}\n"
+                coverage = "Yes" if mode["covered_in_this_pr"] else "No"
+                if gfm_supported:
+                    markdown_text += f"<strong>Covered in this PR:</strong> {coverage}<br><br>\n"
+                else:
+                    markdown_text += f"- **Covered in this PR:** {coverage}\n\n"
+            if gfm_supported:
+                markdown_text += "</td></tr>\n"
         elif 'review priority files' in key_nice.lower():
             priority_files = []
             if isinstance(value, list):

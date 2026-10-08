@@ -76,3 +76,19 @@ def test_both_findings_fields_flatten(field):
 
     assert "A finding" in merged
     assert "['" not in merged
+
+
+def test_failure_modes_merge_valid_cases_in_chunk_order_and_cap_at_three():
+    def mode(what):
+        return {"what": what, "where": "app.py:save", "trigger": "Write fails",
+                "detected_by": "Write failure test", "covered_in_this_pr": False}
+
+    first, second, third, fourth = [mode(name) for name in ("First", "Second", "Third", "Fourth")]
+    chunks = [{"review": {"failure_modes": [None, {"what": "bad"}, first, second]}},
+              {"review": {"failure_modes": "invalid"}},
+              {"review": {"failure_modes": [third, fourth]}}]
+    assert merge_review_chunks(chunks)["review"]["failure_modes"] == [first, second, third]
+    assert len(chunks[0]["review"]["failure_modes"]) == 4
+    assert _merged([first], [first], field="failure_modes") == [first, first]
+    assert _merged(None, [], field="failure_modes") == []
+    assert _merged([first] * 4, field="failure_modes") == [first] * 3

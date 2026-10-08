@@ -299,6 +299,35 @@ def test_review_schema_requires_enabled_prompt_fields_only():
     get_logger.return_value.warning.assert_not_called()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_review_schema_requires_failure_modes_only_when_enabled(enabled):
+    reviewer = _make_reviewer()
+    reviewer.vars = {"require_failure_modes": enabled}
+    assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is not enabled
+    assert reviewer._validate_review_schema({"review": {"key_issues_to_review": [], "failure_modes": []}}) is True
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_failure_modes": enabled}
+    reviewer.prediction_data = {"review": {"key_issues_to_review": [], "failure_modes": []}}
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+    with (
+        patch("pr_agent.tools.pr_reviewer.github_action_output") as action_output,
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
+        patch("pr_agent.tools.pr_reviewer.push_outputs") as push,
+    ):
+        reviewer._prepare_pr_review()
+    assert ("failure_modes" in action_output.call_args.args[0]["review"]) is enabled
+    assert ("failure_modes" in reviewer.git_provider.publish_structured_review.call_args.args[0]["review"]) is enabled
+    assert ("failure_modes" in render.call_args.args[0]["review"]) is enabled
+    if push.called:
+        assert ("failure_modes" in push.call_args.kwargs["payload"]) is enabled
+
+
 def test_review_schema_reports_none_for_missing_fields():
     reviewer = _make_prediction_reviewer()
     with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:

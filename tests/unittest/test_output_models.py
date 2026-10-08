@@ -265,6 +265,31 @@ def test_assembled_description_validates_all_files_without_changing_prompt_limit
     assert error.value.errors()[0]["loc"] == ("pr_files", 20, "changes_title")
 
 
+def test_review_failure_modes_are_optional_and_bounded():
+    mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Disk full",
+            "detected_by": "Write failure test", "covered_in_this_pr": False}
+    assert Review.model_validate({"key_issues_to_review": []}).failure_modes is None
+    assert Review.model_validate({"key_issues_to_review": [], "failure_modes": []}).failure_modes == []
+    review = Review.model_validate({"key_issues_to_review": [], "failure_modes": [mode] * 3})
+    assert len(review.failure_modes) == 3
+    assert review.failure_modes[0].covered_in_this_pr is False
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [mode] * 4})
+
+
+@pytest.mark.parametrize("invalid", [
+    {"covered_in_this_pr": "false"}, {"covered_in_this_pr": 1},
+    {"what": None}, {"trigger": []}, {"unexpected": "value"},
+])
+def test_review_failure_modes_reject_malformed_entries(invalid):
+    mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Disk full",
+            "detected_by": "Write failure test", "covered_in_this_pr": False}
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [{**mode, **invalid}]})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [{"what": "Partial write"}]})
+
+
 def _split_type_args(value):
     parts, depth, start = [], 0, 0
     for index, character in enumerate(value):

@@ -182,6 +182,12 @@ for the authoritative default values.
     <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required.</td>
   </tr>
   <tr>
+    <td><b>require_failure_modes</b></td>
+    <td>Off by default. If enabled, adds up to three concrete failure scenarios, each with what could break,
+    where, its trigger, how it could be detected, and whether a test or check in this PR covers it.
+    These scenarios guide human review; they do not gate merging or prove that the PR is safe.</td>
+  </tr>
+  <tr>
     <td><b>require_priority_files</b></td>
     <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
   </tr>
@@ -328,6 +334,7 @@ merged field by field:
 | `relevant_tests` | Yes if any chunk found tests |
 | `score` | The lowest score any chunk gave |
 | `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
+| `failure_modes` | Concatenate valid cases in chunk order, keeping at most three |
 | `estimated_effort_to_review_[1-5]` | The highest value any chunk gave |
 | `contribution_time_cost_estimate` | The sum over the chunks, per case |
 | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |

@@ -158,6 +158,7 @@ to-do list.
 | `require_ticket_analysis_review` | true |  |
 | `require_risk_assessment` | false | ask the model for an overall risk level (low/medium/high) |
 | `require_merge_recommendation` | false | ask the model for a merge recommendation (safe_to_merge/merge_with_caution/changes_required) |
+| `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
 **general options**
 

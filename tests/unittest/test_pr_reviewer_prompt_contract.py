@@ -126,6 +126,30 @@ def test_user_prompt_contributes_variables_of_its_own(monkeypatch):
     assert user_referenced - (set(reviewer.vars) - {dropped}) == {dropped}
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_failure_modes_prompt_follows_captured_setting(monkeypatch, enabled):
+    settings = get_settings()
+    original = settings.pr_reviewer.require_failure_modes
+    try:
+        settings.pr_reviewer.require_failure_modes = enabled
+        reviewer = _build_reviewer(monkeypatch)
+    finally:
+        settings.pr_reviewer.require_failure_modes = original
+    assert reviewer.vars["require_failure_modes"] is enabled
+    reviewer.vars["duplicate_prompt_examples"] = True
+    environment = Environment(undefined=StrictUndefined)
+    system = environment.from_string(settings.pr_review_prompt.system).render(reviewer.vars)
+    user = environment.from_string(settings.pr_review_prompt.user).render(reviewer.vars)
+    assert ("class FailureMode(BaseModel):" in system) is enabled
+    assert ("failure_modes: List[FailureMode]" in system) is enabled
+    for prompt in (system, user):
+        assert ("\n  failure_modes:" in prompt) is enabled
+        assert ("covered_in_this_pr: false" in prompt) is enabled
+    if enabled:
+        assert "max_items=3" in system
+        assert "Return an empty list when no concrete scenario is supported" in system
+
+
 def test_artifact_context_is_untrusted_user_input(monkeypatch):
     reviewer = _build_reviewer(monkeypatch)
     reviewer.vars["extra_instructions"] = "Only focus on correctness."

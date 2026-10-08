@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 
 
 class SubPR(BaseModel):
@@ -49,6 +49,29 @@ class ContributionTimeCostEstimate(BaseModel):
     worst_case: str
 
 
+class FailureMode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    what: str
+    where: str
+    trigger: str
+    detected_by: str
+    covered_in_this_pr: StrictBool
+
+
+def parse_failure_modes(value: object) -> List[dict]:
+    """Keep at most three valid cases, including when review validation only warns."""
+    modes = []
+    for entry in value if isinstance(value, list) else []:
+        try:
+            modes.append(FailureMode.model_validate(entry).model_dump())
+        except ValidationError:
+            continue
+        if len(modes) == 3:
+            break
+    return modes
+
+
 class Review(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -58,6 +81,7 @@ class Review(BaseModel):
     )
     risk_level: Optional[Literal["low", "medium", "high"]] = None
     merge_recommendation: Optional[Literal["safe_to_merge", "merge_with_caution", "changes_required"]] = None
+    failure_modes: Optional[List[FailureMode]] = Field(default=None, max_length=3)
     review_priority_files: Optional[List[str]] = None
     contribution_time_cost_estimate: Optional[ContributionTimeCostEstimate] = None
     score: Optional[StrictInt] = Field(default=None, ge=0, le=100)

@@ -22,6 +22,7 @@ import re
 from typing import Any, Callable, Hashable, List, Optional
 
 from pr_agent.algo.comment_identity import as_review_text
+from pr_agent.algo.output_models import parse_failure_modes
 from pr_agent.algo.utils import is_value_no
 from pr_agent.log import get_logger
 
@@ -42,7 +43,10 @@ def merge_review_chunks(chunk_outputs: List[dict]) -> dict:
     if not reviews:
         return {}
     if len(reviews) == 1:
-        return {"review": dict(reviews[0])}
+        review = dict(reviews[0])
+        if "failure_modes" in review:
+            review["failure_modes"] = parse_failure_modes(review["failure_modes"])
+        return {"review": review}
 
     # keep the prompt's field order, which is also the order the review is rendered in
     keys = []
@@ -222,6 +226,10 @@ def _merge_can_be_split(values: List[Any]) -> list:
     return _union_of_lists(_sub_pr_identity)(values)[:MAX_SUB_PRS]
 
 
+def _merge_failure_modes(values: List[Any]) -> list:
+    return parse_failure_modes([item for value in values if isinstance(value, list) for item in value])
+
+
 def _merge_priority_files(values: List[Any]) -> list:
     merged, seen = [], set()
     for value in values:
@@ -307,6 +315,7 @@ _MERGE_RULES: dict = {
     "score": _merge_score,
     "risk_level": _worst_of(RISK_LEVELS),
     "merge_recommendation": _worst_of(MERGE_RECOMMENDATIONS),
+    "failure_modes": _merge_failure_modes,
     "security_concerns": _merge_findings_text,
     "insights_from_user_answers": _merge_findings_text,
     "relevant_tests": _merge_relevant_tests,
