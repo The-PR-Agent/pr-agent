@@ -826,6 +826,7 @@ class GiteaProvider(GitProvider):
                 repo=settings_repo,
                 commit_sha=default_branch,
                 filepath=".pr_agent.toml",
+                propagate_errors=True,
             )
             return content.encode('utf-8')
         except ApiException as e:
@@ -981,7 +982,8 @@ class GiteaProvider(GitProvider):
                 owner=self.owner,
                 repo=self.repo,
                 commit_sha=ref,
-                filepath=file_path
+                filepath=file_path,
+                propagate_errors=True,
             )
             return content
         except ApiException as e:
@@ -1214,8 +1216,9 @@ class RepoApi(giteapy.RepositoryApi):
             self.logger.error(f"Unexpected error: {e}")
             return {}
 
-    def get_file_content(self, owner: str, repo: str, commit_sha: str, filepath: str) -> str:
-        """Get raw file content from a specific commit"""
+    def get_file_content(self, owner: str, repo: str, commit_sha: str, filepath: str,
+                         *, propagate_errors: bool = False) -> str:
+        """Get raw content, optionally preserving fetch errors for guidance cache owners."""
 
         try:
             url = f'/repos/{owner}/{repo}/raw/{filepath}'
@@ -1240,18 +1243,33 @@ class RepoApi(giteapy.RepositoryApi):
             # decode_if_bytes returns "" only if every encoding fails; binary files are
             # filtered downstream by extension (should_skip_patch).
             if hasattr(response, 'data'):
-                raw_data = response.data.read()
-                return decode_if_bytes(raw_data)
+                raw_response = response.data
             elif isinstance(response, tuple):
-                raw_data = response[0].read()
-                return decode_if_bytes(raw_data)
-
-            return ""
+                if propagate_errors and not response:
+                    raise ValueError("Unsupported Gitea raw file response")
+                raw_response = response[0]
+            else:
+                if propagate_errors:
+                    raise ValueError("Unsupported Gitea raw file response")
+                return ""
+            if propagate_errors and not callable(getattr(raw_response, 'read', None)):
+                raise ValueError("Unsupported Gitea raw file response")
+            raw_data = raw_response.read()
+            if propagate_errors and not isinstance(raw_data, (bytes, bytearray, str)):
+                raise ValueError("Unsupported Gitea raw file response")
+            return decode_if_bytes(raw_data)
 
         except ApiException as e:
+            if propagate_errors:
+                # Cache owners log this exception; do not carry response content into their logs.
+                e.body = None
+                e.headers = None
+                raise
             self.logger.error(f"Error getting file: {filepath}, content: {e}")
             return ""
         except Exception as e:
+            if propagate_errors:
+                raise
             self.logger.error(f"Unexpected error: {e}")
             return ""
 

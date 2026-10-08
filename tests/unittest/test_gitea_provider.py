@@ -4,14 +4,228 @@ from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import giteapy
 import pytest
 from giteapy.rest import ApiException
 from starlette_context import context, request_cycle_context
+from urllib3.response import HTTPResponse
 
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers.git_provider import GitProvider
-from pr_agent.git_providers.gitea_provider import GiteaProvider, IncompleteGiteaPullRequestFilesError
+from pr_agent.git_providers.gitea_provider import GiteaProvider, IncompleteGiteaPullRequestFilesError, RepoApi
+
+
+@pytest.fixture
+def guidance_raw_api(monkeypatch):
+    client = giteapy.ApiClient()
+    request = MagicMock()
+    monkeypatch.setattr(client.rest_client.pool_manager, "request", request)
+    return RepoApi(client), request
+
+
+def _guidance_response(body=b"", status=200, *, headers=None, reason=None):
+    return HTTPResponse(body=BytesIO(body), status=status, headers=headers, reason=reason, preload_content=False)
+
+
+@pytest.mark.parametrize("propagate_errors", [False, True])
+@pytest.mark.parametrize("body,expected", [(b"instructions", "instructions"), (b"caf\xe9", "café"), (b"", "")])
+def test_gitea_raw_guidance_preserves_sdk_content(guidance_raw_api, body, expected, propagate_errors):
+    api, request = guidance_raw_api
+    request.return_value = _guidance_response(body)
+
+    assert api.get_file_content("owner", "repo", "base", "AGENTS.md", propagate_errors=propagate_errors) == expected
+
+
+@pytest.mark.parametrize("failure", [401, 403, 500, 503, "transport", "body_read"])
+@pytest.mark.parametrize("propagate_errors", [False, True])
+def test_gitea_raw_guidance_failure_policy(guidance_raw_api, failure, propagate_errors):
+    api, request = guidance_raw_api
+    if isinstance(failure, int):
+        request.return_value = _guidance_response(b"response-body-marker", status=failure,
+                                                headers={"X-Diagnostic": "response-header-marker"},
+                                                reason="Service Unavailable")
+        error_type = ApiException
+    elif failure == "transport":
+        request.side_effect = OSError("transport failed")
+        error_type = OSError
+    else:
+        response = _guidance_response()
+        response.read = MagicMock(side_effect=OSError("body read failed"))
+        request.return_value = response
+        error_type = OSError
+
+    if propagate_errors:
+        with pytest.raises(error_type) as error:
+            api.get_file_content("owner", "repo", "base", "AGENTS.md", propagate_errors=True)
+        if isinstance(failure, int):
+            assert error.value.status == failure
+            assert error.value.reason == "Service Unavailable"
+            assert "response-body-marker" not in str(error.value)
+            assert "response-header-marker" not in str(error.value)
+    else:
+        assert api.get_file_content("owner", "repo", "base", "AGENTS.md") == ""
+
+
+@pytest.mark.parametrize("body", [b"instructions", "instructions", b"", bytearray(b"instructions")])
+def test_gitea_raw_guidance_preserves_readable_data_wrapper(guidance_raw_api, body):
+    api, _ = guidance_raw_api
+    response = SimpleNamespace(data=SimpleNamespace(read=lambda: body))
+    with patch.object(api.api_client, "call_api", return_value=response):
+        assert api.get_file_content("owner", "repo", "base", "AGENTS.md", propagate_errors=True) == (
+            body.decode() if isinstance(body, (bytes, bytearray)) else body
+        )
+
+
+@pytest.mark.parametrize("response,default_result", [(object(), ""), ((), ""), (SimpleNamespace(data=None), ""),
+                                                     (SimpleNamespace(data=SimpleNamespace(read=42)), ""),
+                                                     (SimpleNamespace(data=SimpleNamespace(read=lambda: None)), None)])
+@pytest.mark.parametrize("propagate_errors", [False, True])
+def test_gitea_raw_guidance_unsupported_response_policy(guidance_raw_api, response, default_result, propagate_errors):
+    api, _ = guidance_raw_api
+    with patch.object(api.api_client, "call_api", return_value=response):
+        if propagate_errors:
+            with pytest.raises(ValueError, match="^Unsupported Gitea raw file response$"):
+                api.get_file_content("owner", "repo", "base", "AGENTS.md", propagate_errors=True)
+        else:
+            assert api.get_file_content("owner", "repo", "base", "AGENTS.md") == default_result
+
+
+@pytest.fixture
+def guidance_provider(guidance_raw_api):
+    from pr_agent.algo import repo_context
+    from pr_agent.git_providers import git_provider
+
+    api, request = guidance_raw_api
+    provider = GiteaProvider.__new__(GiteaProvider)
+    provider.__dict__.update(owner="owner", repo="repo", base_sha="b" * 40, base_ref="main", pr_number=1,
+                             base_url="https://gitea.example", base_url_html="https://gitea.example",
+                             logger=MagicMock(), repo_api=api, repo_settings=None)
+    with patch.object(api, "repo_get", return_value=SimpleNamespace(default_branch="main")), \
+            patch.dict(git_provider._GLOBAL_SETTINGS_CACHE, clear=True), \
+            patch.object(repo_context, "_repo_context_process_cache", repo_context._RepoContextCache()), \
+            request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+        yield provider, request
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_gitea_attempted_guidance_failure_is_retried(guidance_provider, partial, monkeypatch):
+    from pr_agent.algo import repo_context
+    from pr_agent.config_loader import get_settings
+
+    build_repo_context = repo_context.build_repo_context
+    logger = MagicMock()
+    monkeypatch.setattr(repo_context, "get_logger", lambda: logger)
+    provider, request = guidance_provider
+    files = ["PREFIX.md", "AGENTS.md"] if partial else ["AGENTS.md"]
+    settings = get_settings()
+    settings.set("CONFIG.REPO_CONTEXT_FILES", files)
+    settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", False)
+    settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
+    failed = False
+
+    def raw_request(method, url, **kwargs):
+        nonlocal failed
+        if "/raw/PREFIX.md" in url:
+            return _guidance_response(b"prefix guidance")
+        if not failed:
+            failed = True
+            return _guidance_response(b"response-body-marker", status=503,
+                                      headers={"X-Diagnostic": "response-header-marker"})
+        return _guidance_response(b"recovered guidance")
+
+    request.side_effect = raw_request
+    first = build_repo_context(provider)
+    assert ("prefix guidance" in first) is partial
+    assert "recovered guidance" not in first
+    logger.warning.assert_called_once()
+    warning = str(logger.warning.call_args)
+    assert "503" in warning
+    assert "response-body-marker" not in warning
+    assert "response-header-marker" not in warning
+    recovered = build_repo_context(provider)
+    assert "recovered guidance" in recovered
+    assert request.call_count == 2 * len(files)
+    assert build_repo_context(provider) == recovered
+    assert request.call_count == 2 * len(files)
+
+
+@pytest.mark.parametrize("cohort", ["repository", "global"])
+@pytest.mark.parametrize("status", [200, 404])
+def test_gitea_missing_or_empty_guidance_is_cached(guidance_provider, cohort, status):
+    from pr_agent.algo.repo_context import build_repo_context
+    from pr_agent.config_loader import get_settings
+
+    provider, request = guidance_provider
+    request.side_effect = lambda *args, **kwargs: _guidance_response(status=status)
+    settings = get_settings()
+    settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", False)
+    settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
+    settings.set("CONFIG.USE_GLOBAL_SETTINGS_FILE", True)
+    settings.set("CONFIG.GLOBAL_SETTINGS_REPO", "pr-agent-settings")
+    load = (lambda: build_repo_context(provider)) if cohort == "repository" else provider._get_global_repo_settings
+
+    assert not load()
+    assert not load()
+    assert request.call_count == 1
+
+
+def test_gitea_global_guidance_recovers_while_local_settings_remain_best_effort(guidance_provider, monkeypatch):
+    from pr_agent.config_loader import get_settings
+    from pr_agent.git_providers import git_provider
+
+    logger = MagicMock()
+    monkeypatch.setattr(git_provider, "get_logger", lambda: logger)
+    provider, request = guidance_provider
+    provider.repo_settings = ".pr_agent.toml"
+    settings = get_settings()
+    settings.set("CONFIG.USE_GLOBAL_SETTINGS_FILE", True)
+    settings.set("CONFIG.GLOBAL_SETTINGS_REPO", "pr-agent-settings")
+    global_calls = 0
+    local_calls = 0
+    toml = b"[pr_reviewer]\nextra_instructions = \"recovered guidance\"\n"
+
+    def raw_request(method, url, **kwargs):
+        nonlocal global_calls, local_calls
+        if "/pr-agent-settings/" in url:
+            global_calls += 1
+            if global_calls == 1:
+                return _guidance_response(b"response-body-marker", status=503,
+                                          headers={"X-Diagnostic": "response-header-marker"})
+            return _guidance_response(toml)
+        local_calls += 1
+        return _guidance_response(status=503)
+
+    request.side_effect = raw_request
+    assert provider.get_repo_settings() == ""
+    logger.warning.assert_called_once()
+    warning = str(logger.warning.call_args)
+    assert "503" in warning
+    assert "response-body-marker" not in warning
+    assert "response-header-marker" not in warning
+    assert provider.get_repo_settings() == [("global", toml)]
+    assert provider.get_repo_settings() == [("global", toml)]
+    assert global_calls == 2
+    assert local_calls == 3
+
+
+def test_gitea_guidance_beyond_line_budget_is_not_requested(guidance_provider):
+    from pr_agent.algo.repo_context import build_repo_context
+    from pr_agent.config_loader import get_settings
+
+    provider, request = guidance_provider
+    settings = get_settings()
+    settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "UNREAD.md"])
+    settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
+    settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", False)
+    settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
+    request.side_effect = lambda *args, **kwargs: _guidance_response(b"one\ntwo\nthree\nfour\nfive\nsix")
+
+    assert "one" in build_repo_context(provider)
+    assert request.call_count == 1
+    assert "/raw/AGENTS.md" in request.call_args.args[1]
 
 
 def test_gitea_comment_url_accepts_dict_fields():
@@ -463,7 +677,8 @@ class TestGiteaProvider:
             owner="owner",
             repo="repo",
             commit_sha="base-sha",
-            filepath="AGENTS.md"
+            filepath="AGENTS.md",
+            propagate_errors=True,
         )
 
     def test_get_repo_file_content_loads_from_base_ref_when_base_sha_missing(self):
@@ -484,7 +699,8 @@ class TestGiteaProvider:
             owner="owner",
             repo="repo",
             commit_sha="main",
-            filepath="AGENTS.md"
+            filepath="AGENTS.md",
+            propagate_errors=True,
         )
 
     def test_get_repo_file_content_from_default_branch(self):
@@ -506,7 +722,8 @@ class TestGiteaProvider:
             owner="owner",
             repo="repo",
             commit_sha="main",
-            filepath="AGENTS.md"
+            filepath="AGENTS.md",
+            propagate_errors=True,
         )
 
     def test_get_repo_file_content_treats_404_as_missing(self):
