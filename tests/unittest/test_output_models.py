@@ -4,7 +4,7 @@ from types import UnionType
 from typing import get_args, get_origin
 
 import pytest
-from pydantic import StrictInt
+from pydantic import StrictBool, StrictInt
 
 from pr_agent.algo.output_models import (
     CodeDocumentation,
@@ -13,6 +13,7 @@ from pr_agent.algo.output_models import (
     ContributionTimeCostEstimate,
     DocHeadingsHelper,
     DocHelper,
+    FailureMode,
     FileDescription,
     FileIdxAndPath,
     KeyIssuesComponentLink,
@@ -332,6 +333,8 @@ def _model_type_signature(annotation):
         return _model_type_signature(get_args(annotation)[0])
     if annotation is StrictInt:
         return "int"
+    if annotation is StrictBool:
+        return "bool"
     if str(origin) == "typing.Literal":
         return ("literal", tuple(str(value) for value in get_args(annotation)))
     if origin in (list,):
@@ -351,7 +354,8 @@ def _model_type_signature(annotation):
 PROMPT_MODELS = {
     "pr_reviewer_prompts.toml": {"SubPR": SubPR, "KeyIssuesComponentLink": KeyIssuesComponentLink,
                                   "TodoSection": TodoSection, "TicketCompliance": TicketCompliance,
-                                  "ContributionTimeCostEstimate": ContributionTimeCostEstimate, "Review": Review,
+                                  "ContributionTimeCostEstimate": ContributionTimeCostEstimate,
+                                  "FailureMode": FailureMode, "Review": Review,
                                   "PRReview": PRReview},
     "pr_description_prompts.toml": {"FileDescription": FileDescription, "PRDescription": PRDescription},
     "pr_description_only_description_prompts.toml": {"PRDescriptionHeaders": PRDescriptionHeaders},

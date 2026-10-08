@@ -1698,6 +1698,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "require_estimate_effort_to_review": True,
                 "require_risk_assessment": False,
                 "require_merge_recommendation": False,
+                "require_failure_modes": False,
                 "require_priority_files": False,
                 "num_max_findings": 3,
                 "num_pr_files": 1,

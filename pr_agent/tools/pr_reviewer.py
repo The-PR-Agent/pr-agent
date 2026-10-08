@@ -28,7 +28,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
     strip_markers,
 )
-from pr_agent.algo.output_models import PRReview
+from pr_agent.algo.output_models import PRReview, parse_failure_modes
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
@@ -1283,6 +1283,8 @@ class PRReviewer:
                 data["review"].pop("failure_modes", None)
         if self.prediction_data is None:
             self._validate_review_schema(data)
+        if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
+            data["review"]["failure_modes"] = parse_failure_modes(data["review"]["failure_modes"])
         github_action_output(data, 'review')
 
         if not isinstance(data, dict) or not isinstance(data.get('review'), dict) or not data['review']:

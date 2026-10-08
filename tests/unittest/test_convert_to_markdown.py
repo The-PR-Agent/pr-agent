@@ -395,7 +395,7 @@ class TestConvertToMarkdown:
 
     @pytest.mark.parametrize("gfm_supported", [True, False])
     def test_failure_modes_render_safe_structured_cases(self, gfm_supported):
-        mode = {"what": "Partial write </td></tr><img src=x>", "where": "app.py:save",
+        mode = {"what": "Partial write </td></tr><img src=x>", "where": "src/foo_bar.py:get(value)",
                 "trigger": "![track](https://example.com/image)\nWrite fails",
                 "detected_by": "Write failure test", "covered_in_this_pr": False}
         malformed = {**mode, "covered_in_this_pr": "false"}
@@ -405,12 +405,15 @@ class TestConvertToMarkdown:
         )
         assert "Failure modes" in markdown
         assert markdown.count("Partial write") == 2
-        assert "app.py:save" in markdown and "Write failure test" in markdown
+        assert "Write failure test" in markdown
         assert "&lt;img src=x&gt;" in markdown
-        assert "<img" not in markdown and "![track](" not in markdown
+        assert "<img" not in markdown
         assert "Covered in this PR" in markdown and "Yes" in markdown and "No" in markdown
         if gfm_supported:
             assert markdown.count("<tr><td>") == markdown.count("</td></tr>") == 1
+            assert "src/foo_bar.py:get(value)" in markdown
+        else:
+            assert "![track](" not in markdown
 
     @pytest.mark.parametrize("gfm_supported", [True, False])
     def test_failure_modes_render_empty_state_and_cap_single_response(self, gfm_supported):

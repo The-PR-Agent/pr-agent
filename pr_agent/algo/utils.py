@@ -290,8 +290,10 @@ def convert_to_markdown_v2(output_data: dict,
             for mode in modes:
                 for field, label in (("what", "What"), ("where", "Where"), ("trigger", "Trigger"),
                                      ("detected_by", "Detected by")):
-                    text = html.escape(" ".join(mode[field].split()))
-                    text = re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", text)
+                    text = " ".join(mode[field].split())
+                    if not gfm_supported:
+                        text = re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", text)
+                    text = html.escape(text)
                     if gfm_supported:
                         markdown_text += f"<strong>{label}:</strong> {text}<br>\n"
                     else:
