@@ -1099,7 +1099,7 @@ def try_fix_yaml(response_text: str,
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after replacing | with |2")
             return data
-    except yaml.YAMLError:
+    except Exception:
         pass
     # try to add spaces to lines that are not indented properly, and contain '}'.
     # Moved out of the except block so it also runs when safe_load returned None (e.g. empty input).
