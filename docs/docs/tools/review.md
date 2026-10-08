@@ -179,7 +179,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>require_merge_recommendation</b></td>
-    <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required.</td>
+    <td>If set to true, the tool will add a section describing what the review found: no_concerns_found, needs_review or changes_required. The value reports the model's findings, not a guarantee about the code.</td>
   </tr>
   <tr>
     <td><b>require_priority_files</b></td>

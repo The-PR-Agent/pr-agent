@@ -157,7 +157,7 @@ to-do list.
 | `require_todo_scan` | false |  |
 | `require_ticket_analysis_review` | true |  |
 | `require_risk_assessment` | false | ask the model for an overall risk level (low/medium/high) |
-| `require_merge_recommendation` | false | ask the model for a merge recommendation (safe_to_merge/merge_with_caution/changes_required) |
+| `require_merge_recommendation` | false | ask the model for a merge recommendation (no_concerns_found/needs_review/changes_required) |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
 **general options**
 

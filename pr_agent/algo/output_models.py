@@ -57,7 +57,7 @@ class Review(BaseModel):
         default=None, alias="estimated_effort_to_review_[1-5]", ge=1, le=5
     )
     risk_level: Optional[Literal["low", "medium", "high"]] = None
-    merge_recommendation: Optional[Literal["safe_to_merge", "merge_with_caution", "changes_required"]] = None
+    merge_recommendation: Optional[Literal["no_concerns_found", "needs_review", "changes_required"]] = None
     review_priority_files: Optional[List[str]] = None
     contribution_time_cost_estimate: Optional[ContributionTimeCostEstimate] = None
     score: Optional[StrictInt] = Field(default=None, ge=0, le=100)

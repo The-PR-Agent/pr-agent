@@ -158,9 +158,9 @@ def test_the_riskiest_chunk_sets_the_risk_level(levels, expected):
 
 
 @pytest.mark.parametrize("recommendations, expected", [
-    (["safe_to_merge", "changes_required"], "changes_required"),
-    (["safe_to_merge", "merge_with_caution"], "merge_with_caution"),
-    (["safe_to_merge", "safe_to_merge"], "safe_to_merge"),
+    (["no_concerns_found", "changes_required"], "changes_required"),
+    (["no_concerns_found", "needs_review"], "needs_review"),
+    (["no_concerns_found", "no_concerns_found"], "no_concerns_found"),
 ])
 def test_the_most_cautious_chunk_sets_the_merge_recommendation(recommendations, expected):
     merged = merge_review_chunks([_chunk(merge_recommendation=value) for value in recommendations])

@@ -336,7 +336,7 @@ class TestConvertToMarkdown:
         input_data = {
             "review": {
                 "risk_level": "medium",
-                "merge_recommendation": "merge_with_caution",
+                "merge_recommendation": "needs_review",
                 "review_priority_files": ["gui_app.py", "app.py"],
             }
         }
@@ -344,7 +344,7 @@ class TestConvertToMarkdown:
         markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
 
         assert "Risk level: Medium" in markdown
-        assert "Merge recommendation: Merge with caution" in markdown
+        assert "Merge recommendation: Needs review" in markdown
         assert "Priority files" in markdown
         assert "- gui_app.py" in markdown
         assert "- app.py" in markdown
@@ -353,7 +353,7 @@ class TestConvertToMarkdown:
         input_data = {
             "review": {
                 "risk_level": "low",
-                "merge_recommendation": "safe_to_merge",
+                "merge_recommendation": "no_concerns_found",
                 "review_priority_files": [],
             }
         }
@@ -361,7 +361,7 @@ class TestConvertToMarkdown:
         markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
 
         assert "Risk level: Low" in markdown
-        assert "Merge recommendation: Safe to merge" in markdown
+        assert "Merge recommendation: No concerns found" in markdown
         assert "Priority files: None" in markdown
 
     def test_structured_review_fields_ignore_invalid_priority_files_type(self):

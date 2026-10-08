@@ -112,7 +112,7 @@ class Review(BaseModel):
     risk_level: Literal["low", "medium", "high"] = Field(description="Overall risk level of this PR. Answer with exactly one of: low, medium, high. Use high only when the PR introduces a clear bug, security concern, or major logic risk. Use medium when the PR is not clearly broken but contains non-trivial areas that require careful human verification. Use low when the PR is small, low-impact, and no important issues are identified.")
 {%- endif %}
 {%- if require_merge_recommendation %}
-    merge_recommendation: Literal["safe_to_merge", "merge_with_caution", "changes_required"] = Field(description="Overall merge recommendation for this PR. Answer with exactly one of: safe_to_merge, merge_with_caution, changes_required. Use changes_required when there are clear issues that should be fixed before merge. Use merge_with_caution when the PR seems acceptable but still deserves focused reviewer attention. Use safe_to_merge when no important blockers or risks are identified.")
+    merge_recommendation: Literal["no_concerns_found", "needs_review", "changes_required"] = Field(description="Overall merge recommendation for this PR. Answer with exactly one of: no_concerns_found, needs_review, changes_required. Use changes_required when there are clear issues that should be fixed before merge. Use needs_review when the PR seems acceptable but still deserves focused reviewer attention. Use no_concerns_found when no important blockers or risks are identified.")
 {%- endif %}
 {%- if require_priority_files %}
     review_priority_files: List[str] = Field(description="A short list of the most important files a human reviewer should inspect first. Return an empty list if the PR is too small or no file deserves special attention.")
@@ -168,7 +168,7 @@ review:
   risk_level: low
 {%- endif %}
 {%- if require_merge_recommendation %}
-  merge_recommendation: safe_to_merge
+  merge_recommendation: no_concerns_found
 {%- endif %}
 {%- if require_priority_files %}
   review_priority_files:
@@ -347,7 +347,7 @@ review:
 {%- endif %}
 {%- if require_merge_recommendation %}
   merge_recommendation: |
-    safe_to_merge
+    no_concerns_found
 {%- endif %}
 {%- if require_priority_files %}
   review_priority_files:

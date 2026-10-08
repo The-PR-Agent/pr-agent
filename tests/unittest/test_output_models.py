@@ -48,7 +48,7 @@ def _review_fixture():
         "review": {
             "estimated_effort_to_review_[1-5]": 3,
             "risk_level": "medium",
-            "merge_recommendation": "merge_with_caution",
+            "merge_recommendation": "needs_review",
             "review_priority_files": ["src/app.py"],
             "contribution_time_cost_estimate": {"best_case": "45m", "average_case": "2h", "worst_case": "5h"},
             "score": 89,
@@ -184,11 +184,11 @@ def test_review_rejects_coercible_numeric_types_and_strips_prompt_literals():
     review = Review.model_validate({
         "key_issues_to_review": [],
         "risk_level": "low\n",
-        "merge_recommendation": "safe_to_merge\n",
+        "merge_recommendation": "no_concerns_found\n",
         "relevant_tests": "No\n",
     })
     assert review.risk_level == "low"
-    assert review.merge_recommendation == "safe_to_merge"
+    assert review.merge_recommendation == "no_concerns_found"
     assert review.relevant_tests == "No"
 
 
