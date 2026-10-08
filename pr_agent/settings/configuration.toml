@@ -601,6 +601,10 @@ artifact_label = ""
 target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 # Max artifact size in characters (content is truncated if exceeded)
 max_artifact_size = 50000
+# Which end of the file to keep when truncating: "start" (default, keeps the beginning) or
+# "end" (keeps the tail, where build logs carry their verdict - failure, plan summary or
+# test result).
+truncate_from = "start"
 
 [mosaico]
 bearer_tokens = {} # principal names to distinct bearer secrets; empty permits anonymous trusted-network use

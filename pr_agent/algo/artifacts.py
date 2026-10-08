@@ -67,6 +67,7 @@ def resolve_artifact_path(path: str) -> Optional[Path]:
 
 
 _TRUNCATION_MARKER = "\n\n[... content truncated due to size limit ...]"
+_TRUNCATION_MARKER_START = "[... content truncated due to size limit ...]\n\n"
 
 
 def _artifact_boundary_markers() -> tuple[str, str]:
@@ -83,17 +84,41 @@ def _single_line_artifact_label(label: str) -> str:
     return " ".join(str(label).split())
 
 
-def _read_and_truncate(path: Path, max_size: int) -> str:
+def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") -> str:
+    """Read an artifact, keeping at most ``max_size`` characters from one end of it.
+
+    ``truncate_from = "start"`` (the default) keeps the beginning of the file, as this
+    has always done. ``"end"`` keeps the tail, where build logs carry their verdict:
+    the failure, plan summary or test result sits at the end of the trace, so dropping
+    from the start keeps the part the review actually needs.
+    """
+    keep_end = str(truncate_from).strip().lower() == "end"
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            content = f.read(max_size + 1)
+        if keep_end:
+            # The tail is unknown until the whole file is read; cap the read so a huge
+            # artifact does not load unbounded content into memory.
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                file_size = f.tell()
+                f.seek(max(0, file_size - 4 * (max_size + 1)))
+                raw = f.read(4 * (max_size + 1))
+            content = raw.decode("utf-8", errors="replace")
+            if len(content) > max_size + 1:
+                content = content[-(max_size + 1):]
+        else:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(max_size + 1)
     except (OSError, IOError) as e:
         get_logger().warning(f"Failed to read artifact file {path}: {e}")
         return ""
 
     if len(content) > max_size:
-        available = max_size - len(_TRUNCATION_MARKER)
-        content = content[:available] + _TRUNCATION_MARKER if available > 0 else content[:max_size]
+        marker = _TRUNCATION_MARKER_START if keep_end else _TRUNCATION_MARKER
+        available = max_size - len(marker)
+        if available > 0:
+            content = (marker + content[-available:]) if keep_end else (content[:available] + marker)
+        else:
+            content = content[-max_size:] if keep_end else content[:max_size]
     return content
 
 
@@ -130,7 +155,8 @@ def load_artifact_context() -> Optional[ArtifactPromptContext]:
         max_size = 50000
     if max_size <= 0:
         max_size = 50000
-    content = _read_and_truncate(artifact_path, max_size)
+    truncate_from = artifacts_settings.get("truncate_from", "start")
+    content = _read_and_truncate(artifact_path, max_size, truncate_from)
     if not content:
         return None
 

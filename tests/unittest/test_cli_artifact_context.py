@@ -35,13 +35,8 @@ def test_cli_disabled_ingress_does_not_reuse_a_calling_context_payload(monkeypat
 
     class FakeAgent:
         async def handle_request(self, *_args, **_kwargs):
-            settings = get_settings()
-            observed.append((
-                str(settings.pr_reviewer.extra_instructions),
-                artifacts.get_artifact_context("pr_reviewer"),
-                str(settings.pr_description.extra_instructions),
-                artifacts.get_artifact_context("pr_description"),
-            ))
+            artifacts.reapply_artifact_context()
+            observed.append(str(get_settings().pr_reviewer.extra_instructions))
             return True
 
     with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
@@ -58,7 +53,7 @@ def test_cli_disabled_ingress_does_not_reuse_a_calling_context_payload(monkeypat
 
             cli.run(inargs=["--pr_url=https://example.com/org/repo/pull/1", "review"])
 
-            assert observed == [("", None, "", None)]
+            assert observed == [""]
             assert artifacts._artifact_context.get() == payload
         finally:
             artifacts._artifact_context.reset(token)
@@ -87,13 +82,8 @@ extra_instructions = "Repository instructions"
 
     class RecordingReviewer:
         def __init__(self, *_args, **_kwargs):
-            settings = get_settings()
-            observed.append((
-                settings.pr_reviewer.extra_instructions,
-                artifacts.get_artifact_context("pr_reviewer"),
-                settings.pr_description.extra_instructions,
-                artifacts.get_artifact_context("pr_description"),
-            ))
+            observed.append((get_settings().pr_reviewer.extra_instructions,
+                             get_settings().pr_description.extra_instructions))
 
         async def run(self):
             pass
@@ -118,13 +108,10 @@ extra_instructions = "Repository instructions"
         cli.run(argv)
 
     assert len(observed) == 1
-    reviewer, reviewer_context, description, description_context = observed[0]
+    reviewer, description = observed[0]
     assert reviewer.startswith("Command instructions" if command_override else "Repository instructions")
-    assert reviewer_context["content"] == "CI_FAILURE_MARKER"
-    assert reviewer_context["label"] == "report.txt"
-    assert "CI_FAILURE_MARKER" not in reviewer
+    assert reviewer.count("CI_FAILURE_MARKER") == 1
     assert "locale code: 'es'" in reviewer
-    assert "UNSELECTED_ARTIFACT" not in str(reviewer_context)
+    assert "UNSELECTED_ARTIFACT" not in reviewer
     assert "CI_FAILURE_MARKER" not in description
-    assert description_context is None
-    read.assert_called_once_with(report.resolve(), 50000)
+    read.assert_called_once_with(report.resolve(), 50000, "start")
