@@ -238,6 +238,18 @@ def test_ticket_compliance_is_grouped_per_ticket_and_its_bullet_lists_are_unione
     assert second["ticket_url"] == "https://tracker/2"
 
 
+def test_ticket_compliance_without_urls_does_not_collapse_unrelated_entries():
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[{"fully_compliant_requirements": "- adds the endpoint"}]),
+        _chunk(ticket_compliance_check=[{"fully_compliant_requirements": "- updates the docs"}]),
+    ])
+
+    assert merged["review"]["ticket_compliance_check"] == [
+        {"fully_compliant_requirements": "- adds the endpoint"},
+        {"fully_compliant_requirements": "- updates the docs"},
+    ]
+
+
 def test_contribution_time_adds_up_across_the_chunks():
     merged = merge_review_chunks([
         _chunk(contribution_time_cost_estimate={"best_case": "45m", "average_case": "2h",
