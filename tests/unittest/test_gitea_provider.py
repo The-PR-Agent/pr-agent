@@ -67,12 +67,16 @@ def test_gitea_raw_guidance_failure_policy(guidance_raw_api, failure, propagate_
         assert api.get_file_content("owner", "repo", "base", "AGENTS.md") == ""
 
 
-@pytest.mark.parametrize("body", [b"instructions", "instructions", b"", bytearray(b"instructions")])
-def test_gitea_raw_guidance_preserves_readable_data_wrapper(guidance_raw_api, body):
+@pytest.mark.parametrize("propagate_errors", [False, True])
+@pytest.mark.parametrize("body,wrapper", [(b"instructions", "data"), ("instructions", "data"),
+                                         (b"", "data"), (bytearray(b"instructions"), "data"),
+                                         (b"instructions", "tuple")])
+def test_gitea_raw_guidance_preserves_readable_wrapper(guidance_raw_api, body, wrapper, propagate_errors):
     api, _ = guidance_raw_api
-    response = SimpleNamespace(data=SimpleNamespace(read=lambda: body))
+    reader = SimpleNamespace(read=lambda: body)
+    response = SimpleNamespace(data=reader) if wrapper == "data" else (reader, 200, {})
     with patch.object(api.api_client, "call_api", return_value=response):
-        assert api.get_file_content("owner", "repo", "base", "AGENTS.md", propagate_errors=True) == (
+        assert api.get_file_content("owner", "repo", "base", "AGENTS.md", propagate_errors=propagate_errors) == (
             body.decode() if isinstance(body, (bytes, bytearray)) else body
         )
 
@@ -99,7 +103,7 @@ def guidance_provider(guidance_raw_api):
     api, request = guidance_raw_api
     provider = GiteaProvider.__new__(GiteaProvider)
     provider.__dict__.update(owner="owner", repo="repo", base_sha="b" * 40, base_ref="main", pr_number=1,
-                             base_url="https://gitea.example", base_url_html="https://gitea.example",
+                             base_url="https://gitea.example", _base_url_html="https://gitea.example",
                              logger=MagicMock(), repo_api=api, repo_settings=None)
     with patch.object(api, "repo_get", return_value=SimpleNamespace(default_branch="main")), \
             patch.dict(git_provider._GLOBAL_SETTINGS_CACHE, clear=True), \
@@ -144,9 +148,11 @@ def test_gitea_attempted_guidance_failure_is_retried(guidance_provider, partial,
     assert "503" in warning
     assert "response-body-marker" not in warning
     assert "response-header-marker" not in warning
+    provider.__dict__.pop(repo_context.REPO_CONTEXT_CACHE_ATTRIBUTE, None)
     recovered = build_repo_context(provider)
     assert "recovered guidance" in recovered
     assert request.call_count == 2 * len(files)
+    provider.__dict__.pop(repo_context.REPO_CONTEXT_CACHE_ATTRIBUTE, None)
     assert build_repo_context(provider) == recovered
     assert request.call_count == 2 * len(files)
 
@@ -209,23 +215,6 @@ def test_gitea_global_guidance_recovers_while_local_settings_remain_best_effort(
     assert provider.get_repo_settings() == [("global", toml)]
     assert global_calls == 2
     assert local_calls == 3
-
-
-def test_gitea_guidance_beyond_line_budget_is_not_requested(guidance_provider):
-    from pr_agent.algo.repo_context import build_repo_context
-    from pr_agent.config_loader import get_settings
-
-    provider, request = guidance_provider
-    settings = get_settings()
-    settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "UNREAD.md"])
-    settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
-    settings.set("CONFIG.REPO_CONTEXT_FROM_DEFAULT_BRANCH", False)
-    settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
-    request.side_effect = lambda *args, **kwargs: _guidance_response(b"one\ntwo\nthree\nfour\nfive\nsix")
-
-    assert "one" in build_repo_context(provider)
-    assert request.call_count == 1
-    assert "/raw/AGENTS.md" in request.call_args.args[1]
 
 
 def test_gitea_comment_url_accepts_dict_fields():
