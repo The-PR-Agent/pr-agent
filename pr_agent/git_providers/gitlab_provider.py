@@ -1,6 +1,7 @@
 import difflib
 import posixpath
 import re
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -720,7 +721,17 @@ class GitLabProvider(GitProvider):
 
     def _set_merge_request(self, merge_request_url: str):
         self.id_project, self.id_mr = self._parse_merge_request_url(merge_request_url)
-        self.mr = self._get_merge_request()
+        # GitLab can deliver the "open" webhook before the API serves the new merge request,
+        # so a 404 is retried briefly before the merge request is treated as missing.
+        for delay in (1, 2, 4, None):
+            try:
+                self.mr = self._get_merge_request()
+                break
+            except GitlabGetError as e:
+                if e.response_code != 404 or delay is None:
+                    raise
+                get_logger().info(f"Merge request {self.id_mr} not found yet, retrying in {delay}s")
+                time.sleep(delay)
         try:
             # the versions endpoint is ordered newest-first, so the latest diff is the first entry
             self.last_diff = self.mr.diffs.list(page=1, per_page=1, get_all=False)[0]
