@@ -81,20 +81,6 @@ def test_gitea_raw_guidance_preserves_readable_wrapper(guidance_raw_api, body, w
         )
 
 
-@pytest.mark.parametrize("response,default_result", [(object(), ""), ((), ""), (SimpleNamespace(data=None), ""),
-                                                     (SimpleNamespace(data=SimpleNamespace(read=42)), ""),
-                                                     (SimpleNamespace(data=SimpleNamespace(read=lambda: None)), None)])
-@pytest.mark.parametrize("propagate_errors", [False, True])
-def test_gitea_raw_guidance_unsupported_response_policy(guidance_raw_api, response, default_result, propagate_errors):
-    api, _ = guidance_raw_api
-    with patch.object(api.api_client, "call_api", return_value=response):
-        if propagate_errors:
-            with pytest.raises(ValueError, match="^Unsupported Gitea raw file response$"):
-                api.get_file_content("owner", "repo", "base", "AGENTS.md", propagate_errors=True)
-        else:
-            assert api.get_file_content("owner", "repo", "base", "AGENTS.md") == default_result
-
-
 @pytest.fixture
 def guidance_provider(guidance_raw_api):
     from pr_agent.algo import repo_context

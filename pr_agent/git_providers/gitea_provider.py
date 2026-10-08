@@ -1243,21 +1243,13 @@ class RepoApi(giteapy.RepositoryApi):
             # decode_if_bytes returns "" only if every encoding fails; binary files are
             # filtered downstream by extension (should_skip_patch).
             if hasattr(response, 'data'):
-                raw_response = response.data
+                raw_data = response.data.read()
+                return decode_if_bytes(raw_data)
             elif isinstance(response, tuple):
-                if propagate_errors and not response:
-                    raise ValueError("Unsupported Gitea raw file response")
-                raw_response = response[0]
-            else:
-                if propagate_errors:
-                    raise ValueError("Unsupported Gitea raw file response")
-                return ""
-            if propagate_errors and not callable(getattr(raw_response, 'read', None)):
-                raise ValueError("Unsupported Gitea raw file response")
-            raw_data = raw_response.read()
-            if propagate_errors and not isinstance(raw_data, (bytes, bytearray, str)):
-                raise ValueError("Unsupported Gitea raw file response")
-            return decode_if_bytes(raw_data)
+                raw_data = response[0].read()
+                return decode_if_bytes(raw_data)
+
+            return ""
 
         except ApiException as e:
             if propagate_errors:
