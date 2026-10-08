@@ -107,6 +107,7 @@ jobs:
           CONFIG__MODEL_REASONING: openai/gpt-6.1-sol
           CONFIG__FALLBACK_MODELS: '[]'
           CONFIG__CUSTOM_MODEL_MAX_TOKENS: '32000'
+          CONFIG__NO_TEMPERATURE_MODELS: '["gpt-6.1-sol"]'
           CONFIG__MAX_OUTPUT_TOKENS: '8192'
           CONFIG__LOG_LEVEL: INFO
           CONFIG__OUTPUT_RUN_DETAILS: 'true'
