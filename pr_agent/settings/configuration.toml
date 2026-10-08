@@ -460,8 +460,8 @@ jira_requirements_field = ""
 # text with another prefix ("SHA-256", "UTF-8", "ISO-8601") is dropped before any lookup,
 # so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys;
 # a supplied list with no valid entry disables the lookup rather than widening it.
-# Empty (default) looks up every key found. Host-only, like jira_site: repository settings
-# and comment arguments cannot change either.
+# Empty (default) looks up every key found. Host-only, like jira_site and jira_api_email:
+# repository settings and comment arguments cannot change them.
 project_keys = []
 
 [litellm]

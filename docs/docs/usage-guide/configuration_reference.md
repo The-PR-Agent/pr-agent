@@ -433,7 +433,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `jira_requirements_field` | "" | Custom field id holding acceptance criteria / requirements, mapped to the ticket "requirements" section. Instance-specific (e.g. "customfield_10127"); empty disables it. |
-| `project_keys` | [] | Optional allowlist of Jira project keys, e.g. ["PROJ", "OPS"]. When non-empty, key-shaped text with another prefix ("SHA-256", "UTF-8", "ISO-8601") is dropped before any lookup, so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys; a supplied list with no valid entry disables the lookup rather than widening it. Empty (default) looks up every key found. Host-only: a repository's .pr_agent.toml or a comment command cannot change it, so an operator's list bounds which projects the host credentials read. |
+| `project_keys` | [] | Optional allowlist of Jira project keys, e.g. ["PROJ", "OPS"]. When non-empty, key-shaped text with another prefix ("SHA-256", "UTF-8", "ISO-8601") is dropped before any lookup, so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys; a supplied list with no valid entry disables the lookup rather than widening it. Empty (default) looks up every key found. Host-only, like jira_site and jira_api_email: repository settings and comment arguments cannot change them. |
 
 
 ## `[litellm]` {#litellm}

@@ -49,8 +49,8 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "gitlab": frozenset({"auth_type", "ssl_verify"}),
     "huggingface": frozenset({"api_base"}),
     # Jira lookups use the host's Atlassian credentials, so the reviewed repository must not
-    # choose the site they authenticate to or widen the project allowlist they may read.
-    "jira": frozenset({"jira_site", "project_keys"}),
+    # choose the site or account they authenticate as, or widen the project allowlist they may read.
+    "jira": frozenset({"jira_api_email", "jira_site", "project_keys"}),
     "moonshot": frozenset({"api_base"}),
     "ollama": frozenset({"api_base"}),
     "openai": frozenset({"api_base", "api_type", "api_version"}),

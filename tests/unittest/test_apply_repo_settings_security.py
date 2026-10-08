@@ -493,6 +493,7 @@ def test_repo_settings_cannot_override_provider_authentication_or_tls(
     [
         ("project_keys", ["PROJ"], '["PROJ", "HR"]'),
         ("jira_site", "host-org", '"other-org"'),
+        ("jira_api_email", "bot@host.example", '"other@repo.example"'),
     ],
 )
 def test_repo_settings_cannot_widen_jira_lookup_scope(
@@ -511,6 +512,27 @@ def test_repo_settings_cannot_widen_jira_lookup_scope(
 
     assert _section(settings, "jira").get(key) == host_value
     assert CliArgs.validate_user_args([f"--jira.{key}=untrusted"])[0] is False
+
+
+def test_repo_settings_filter_jira_scope_but_apply_requirements_field(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b"""
+[jira]
+project_keys = ["HR"]
+jira_requirements_field = "customfield_10127"
+""")
+    _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("jira.project_keys", ["PROJ"])
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    jira = _section(settings, "jira")
+    assert jira.get("project_keys") == ["PROJ"]
+    assert jira.get("jira_requirements_field") == "customfield_10127"
+    assert CliArgs.validate_user_args(["--jira.jira_requirements_field=customfield_1"])[0] is True
+    assert CliArgs.validate_user_args(['--jira={project_keys: ["HR"]}'])[0] is False
 
 
 @pytest.mark.parametrize(

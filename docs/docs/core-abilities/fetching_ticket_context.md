@@ -200,7 +200,7 @@ You can create an API token from your Atlassian account:
 
 <img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
 
-5. In your [configuration file](../usage-guide/configuration_options.md) add the following lines:
+5. In the PR-Agent host configuration (the secrets file or environment variables such as `JIRA__JIRA_SITE`) add the following lines. A repository's `.pr_agent.toml` cannot set them:
 
 ```toml
 [jira]
@@ -231,11 +231,11 @@ jira_requirements_field = "customfield_10127"
 
 Ticket detection matches any `PROJECT-123` shaped text, so strings like `SHA-256`,
 `UTF-8` or `ISO-8601` in a title or description each cost an authenticated lookup that
-returns 404. If your repository works with a known set of Jira projects, list their keys
-in `project_keys`; keys with any other prefix are then dropped before any lookup (they are
+returns 404. If your deployment works with a known set of Jira projects, list their keys
+in the host's `project_keys`; keys with any other prefix are then dropped before any lookup (they are
 named once at debug level in the log). Leave the list empty to look up every key found.
-`project_keys` and `jira_site` are host-only: a repository's `.pr_agent.toml` or a comment
-command cannot change them.
+`project_keys`, `jira_site` and `jira_api_email` are host-only: a repository's `.pr_agent.toml`
+or a comment command cannot change them.
 
 ```toml
 [jira]
