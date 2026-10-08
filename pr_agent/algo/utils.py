@@ -1160,7 +1160,7 @@ def try_fix_yaml(response_text: str,
         if data is not None:
             get_logger().info("Successfully parsed AI prediction after removing curly brackets")
             return data
-    except yaml.YAMLError:
+    except Exception:
         pass
 
 
