@@ -89,7 +89,7 @@ jobs:
           echo "event_name=issue_comment" >> "$GITHUB_OUTPUT"
 
       - name: Run sponsored PR-Agent
-        uses: docker://pragent/pr-agent@sha256:31b9aac6ab067bada9a0c1b001d30ebc500ea4487e00a93c18c59b9ef5fa66db
+        uses: docker://pragent/pr-agent:github_action
         with:
           entrypoint: /bin/sh
           args: >-
