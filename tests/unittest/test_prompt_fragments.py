@@ -289,3 +289,40 @@ def test_non_decoupled_suggestions_prompt_remains_out_of_scope():
     assert "__new hunk__" not in section.system
     assert "__old hunk__" not in section.system
     assert "diff_no_line_numbers" in user_variables
+
+
+_SKILLS_PREFIX_TEMPLATES = [
+    "pr_review_prompt",
+    "pr_description_prompt",
+    "pr_description_only_description_prompts",
+    "pr_description_only_files_prompts",
+    "pr_code_suggestions_prompt",
+    "pr_code_suggestions_prompt_not_decoupled",
+]
+
+
+def _skills_prelude(prompt_name):
+    """Everything between the start of the system template and its role line."""
+    return get_settings().get(prompt_name).system.partition("You are PR-Reviewer")[0]
+
+
+def test_review_tools_share_an_identical_skills_prefix():
+    """/review, /describe and /improve open the system prompt with the same
+    skills_context block, so a prompt-cache breakpoint on the system message
+    reads one cache entry across the tools instead of writing three (#4007)."""
+    rendered = [
+        Environment().from_string(_skills_prelude(name)).render({"skills_context": "sample skill"})
+        for name in _SKILLS_PREFIX_TEMPLATES
+    ]
+
+    assert len(set(rendered)) == 1
+    assert "\n\nOrganizational standards and review skills" in rendered[0]
+
+
+@pytest.mark.parametrize("prompt_name", _SKILLS_PREFIX_TEMPLATES)
+def test_skills_prefix_is_the_only_skills_block_and_vanishes_when_empty(prompt_name):
+    system = get_settings().get(prompt_name).system
+
+    assert system.count("{%- if skills_context %}") == 1
+    assert system.count("{{ skills_context }}") == 1
+    assert Environment().from_string(_skills_prelude(prompt_name)).render({"skills_context": ""}) == ""
