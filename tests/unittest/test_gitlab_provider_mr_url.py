@@ -187,21 +187,31 @@ def gitlab_api(monkeypatch):
     monkeypatch.setitem(settings.gitlab, "url", "https://gitlab.example.com")
     monkeypatch.setitem(settings.gitlab, "personal_access_token", "offline-token")
 
-    def make(visible_after=0, failure=404, diff_failure=None, project_failure=None):
+    def make(visible_after=0, failure=404, diff_failure=None, project_failure=None, refresh_failure=None):
         available_at = time.monotonic() + visible_after
+        initialized = False
 
         def send(_session, request, **_kwargs):
-            nonlocal failure, diff_failure, project_failure
+            nonlocal failure, diff_failure, project_failure, refresh_failure, initialized
             path = urlparse(request.url).path
             if path.endswith("/api/v4/projects/group%2Fproject"):
                 status = project_failure or 200
                 payload = {"id": 41} if status == 200 else {"message": "unavailable"}
                 project_failure = None
             elif path.endswith("/merge_requests/39"):
-                status = failure if failure != 404 or time.monotonic() < available_at else 200
+                labels = ["fresh"] if initialized else ["cached"]
+                if initialized and refresh_failure:
+                    status = refresh_failure
+                    refresh_failure = None
+                else:
+                    status = failure if failure != 404 or time.monotonic() < available_at else 200
                 if status != 404:
                     failure = 200
-                payload = {"iid": 39, "title": "A new merge request"} if status == 200 else {"message": "unavailable"}
+                if status == 200:
+                    initialized = True
+                    payload = {"iid": 39, "title": "A new merge request", "labels": labels}
+                else:
+                    payload = {"message": "unavailable"}
             elif path.endswith("/merge_requests/39/versions"):
                 status = diff_failure or 200
                 payload = [{"id": 1}] if status == 200 else {"message": "unavailable"}
@@ -261,4 +271,12 @@ def test_set_merge_request_does_not_retry_a_missing_project(gitlab_api):
         gitlab_api(project_failure=404)
 
     assert error.value.response_code == 404
+    assert time.monotonic() - started < 1
+
+
+def test_label_refresh_uses_cached_labels_without_waiting_for_a_missing_merge_request(gitlab_api):
+    provider = gitlab_api(refresh_failure=404)
+    started = time.monotonic()
+
+    assert provider.get_pr_labels(update=True) == ["cached"]
     assert time.monotonic() - started < 1

@@ -2777,14 +2777,13 @@ class TestGitLabRelevantDiff:
         assert provider.get_relevant_diff("app.py", "+added line") is None
 
     def test_set_merge_request_snapshots_the_newest_version(self):
-        provider = GitLabProvider.__new__(GitLabProvider)
-        mr = MagicMock()
-        mr.diffs.list.return_value = list(self.VERSIONS)
-        with patch.object(GitLabProvider, "_parse_merge_request_url", return_value=("group/repo", 1)), \
-             patch.object(GitLabProvider, "_get_merge_request", return_value=mr):
-            provider._set_merge_request("https://gitlab.com/group/repo/-/merge_requests/1")
+        provider = self._provider([])
+        provider.gitlab_url = "https://gitlab.com"
+        provider.gl.projects.get.return_value.mergerequests.get.return_value = provider.mr
 
-        assert provider.last_diff == "newest"
+        provider._set_merge_request("https://gitlab.com/group/repo/-/merge_requests/1")
+
+        assert provider.get_relevant_diff("app.py", "+added line") == "newest"
 
     def test_fallback_is_logged_once_not_once_per_version(self):
         provider = self._provider([{"new_path": "other.py", "diff": "@@\n+unrelated\n"}])
