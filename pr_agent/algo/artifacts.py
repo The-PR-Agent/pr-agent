@@ -4,6 +4,7 @@ import secrets
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional, TypedDict
+from urllib.parse import urlsplit
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import redact_credentials
@@ -119,10 +120,17 @@ def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") 
 
     truncated = len(content) > max_size
     redaction_counts = {}
-    # Mask incomplete userinfo even when the input itself ends before the read limit.
-    content, count = _INCOMPLETE_USERINFO_RE.subn("<redacted>", content)
-    if count:
-        redaction_counts["incomplete_url_userinfo"] = count
+    # Preserve valid ports and IPv6 literals before masking incomplete userinfo at EOF.
+    incomplete_url = _INCOMPLETE_USERINFO_RE.search(content)
+    if incomplete_url:
+        try:
+            parsed = urlsplit(incomplete_url.group())
+            valid_authority = parsed.port is not None or parsed.netloc.startswith("[")
+        except ValueError:
+            valid_authority = False
+        if not valid_authority:
+            content = content[:incomplete_url.start()] + "<redacted>" + content[incomplete_url.end():]
+            redaction_counts["incomplete_url_userinfo"] = 1
     content = redact_credentials(content, redaction_counts=redaction_counts)
     if redaction_counts:
         get_logger().warning(f"Redacted CI artifact credentials by type: {redaction_counts}")

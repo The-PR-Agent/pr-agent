@@ -20,6 +20,8 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
     ('"aws_session_token": "synthetic-session-value"', "synthetic-session-value", "credential_assignment"),
     ('"SecretAccessKey": "synthetic-secret-value"', "synthetic-secret-value", "credential_assignment"),
     ('"SessionToken": "synthetic-session-value"', "synthetic-session-value", "credential_assignment"),
+    ("OPENAI_KEY=sk-proj-synthetic-value", "sk-proj-synthetic-value", "credential_assignment"),
+    ('"openai_api_key": "synthetic-openai-value"', "synthetic-openai-value", "credential_assignment"),
     ("Authorization: AWS4-HMAC-SHA256 Credential=synthetic-key, Signature=synthetic-signature",
      "synthetic-signature", "authorization_header"),
 ])
@@ -114,13 +116,53 @@ def test_shared_redactor_counts_each_type_and_does_not_recount_masked_headers():
     assert repeated_counts == {}
 
 
+@pytest.mark.parametrize("whitespace", [" ", "  ", "\t", " \t  "])
+def test_masked_authorization_headers_are_unchanged_and_not_counted(whitespace):
+    content = f"Authorization: Bearer{whitespace}<redacted>\nFAILED test_boundary"
+    counts = {}
+
+    assert redact_credentials(content, redaction_counts=counts) == content
+    assert counts == {}
+
+
+@pytest.mark.parametrize("whitespace", ["  ", "\t\t", " \t  "])
+def test_authorization_headers_with_extra_whitespace_are_redacted_once(whitespace):
+    content = f"Authorization: Bearer{whitespace}synthetic-header\nFAILED test_boundary"
+    counts = {}
+    redacted = redact_credentials(content, redaction_counts=counts)
+
+    assert redacted == f"Authorization: Bearer{whitespace}<redacted>\nFAILED test_boundary"
+    assert counts == {"authorization_header": 1}
+    repeated_counts = {}
+    assert redact_credentials(redacted, redaction_counts=repeated_counts) == redacted
+    assert repeated_counts == {}
+
+
+@pytest.mark.parametrize("url", [
+    "https://localhost:8080", "http://127.0.0.1:3000", "https://ci.example.com:443",
+    "https://localhost:8080?healthy=true", "https://localhost:8080#status",
+    "http://[::1]:8080", "http://[::1]",
+])
+@pytest.mark.parametrize("ending", ["", "\n"])
+def test_valid_urls_at_end_of_artifact_are_preserved(tmp_path, monkeypatch, url, ending):
+    path = tmp_path / "ci.log"
+    content = f"Build endpoint: {url}{ending}"
+    path.write_text(content, encoding="utf-8")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    assert artifacts._read_and_truncate(path, 2000) == content
+    logger.warning.assert_not_called()
+
+
 def test_injected_and_reapplied_artifacts_use_redacted_context(tmp_path, monkeypatch):
     keys = ("artifacts", "pr_reviewer.extra_instructions", "pr_description.extra_instructions",
             "pr_code_suggestions.extra_instructions")
     snapshot = snapshot_settings(keys)
     token = artifacts._artifact_context.set(None)
     path = tmp_path / "ci.log"
-    path.write_text("Authorization: Bearer synthetic-bearer-value\nFAILED test_boundary", encoding="utf-8")
+    path.write_text("Authorization: Bearer synthetic-bearer-value\n"
+                    "OPENAI_KEY=sk-proj-synthetic-value\nFAILED test_boundary", encoding="utf-8")
     monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
     monkeypatch.setenv("ARTIFACT_PATH", str(path))
     try:
@@ -128,12 +170,14 @@ def test_injected_and_reapplied_artifacts_use_redacted_context(tmp_path, monkeyp
         for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
             context = get_settings().get(tool).extra_instructions
             assert "synthetic-bearer-value" not in context
+            assert "sk-proj-synthetic-value" not in context
             assert "FAILED test_boundary" in context
         get_settings().set("pr_reviewer.extra_instructions", "Repository guidance")
         artifacts.reapply_artifact_context()
         context = get_settings().pr_reviewer.extra_instructions
         assert "Repository guidance" in context
         assert "synthetic-bearer-value" not in context
+        assert "sk-proj-synthetic-value" not in context
         assert "FAILED test_boundary" in context
     finally:
         restore_settings(snapshot)
