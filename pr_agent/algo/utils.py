@@ -1301,7 +1301,7 @@ def try_fix_yaml(response_text: str,
             if data:
                 get_logger().info(f"Successfully parsed AI prediction after decoding with {encoding} encoding")
                 return data
-        except (yaml.YAMLError, UnicodeError):
+        except Exception:
             pass
 
     # # sixth fallback - try to remove last lines
