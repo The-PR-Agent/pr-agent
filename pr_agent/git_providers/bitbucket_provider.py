@@ -103,7 +103,7 @@ class BitbucketProvider(GitProvider):
             elif self.auth_type == "bearer":
                 try:
                     self.bearer_token = context.get("bitbucket_bearer_token", None)
-                except (AttributeError, KeyError, TypeError):
+                except Exception:
                     self.bearer_token = None
 
                 if not self.bearer_token:
