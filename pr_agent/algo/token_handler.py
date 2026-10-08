@@ -13,6 +13,7 @@ from tiktoken import encoding_for_model, get_encoding
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
+
 def _await_coroutine(coro):
     """Run a coroutine to completion from a synchronous call site.
 
