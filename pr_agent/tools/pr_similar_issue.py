@@ -275,7 +275,7 @@ class PRSimilarIssue:
         elif get_settings().pr_similar_issue.vectordb == "lancedb":
             try:
                 import lancedb  # import lancedb only if needed
-            except:
+            except ImportError:
                 raise Exception("Please install lancedb to use lancedb as vectordb") from None
             self.db = lancedb.connect(get_settings().lancedb.uri)
             self.table = None
@@ -460,7 +460,7 @@ class PRSimilarIssue:
 
                 try:
                     issue_number = int(r["id"].split('.')[0].split('_')[-1])
-                except:
+                except (ValueError, KeyError, AttributeError):
                     get_logger().debug(f"Failed to parse issue number from {r['id']}")
                     continue
 
@@ -481,7 +481,7 @@ class PRSimilarIssue:
 
                 try:
                     issue_number = int(r["id"].split('.')[0].split('_')[-1])
-                except:
+                except (ValueError, KeyError, AttributeError):
                     get_logger().debug(f"Failed to parse issue number from {r['id']}")
                     continue
 

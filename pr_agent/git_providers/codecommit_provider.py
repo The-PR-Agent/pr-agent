@@ -421,7 +421,7 @@ class CodeCommitProvider(GitProvider):
         try:
             pr_id = f"{self.repo_name}/{self.pr_num}"
             return pr_id
-        except:
+        except AttributeError:
             return ""
 
     @cache_languages

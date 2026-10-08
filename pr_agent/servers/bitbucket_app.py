@@ -128,7 +128,7 @@ async def handle_manifest(request: Request, response: Response):
     try:
         manifest = manifest.replace("app_key", get_settings().bitbucket.app_key)
         manifest = manifest.replace("base_url", get_settings().bitbucket.base_url)
-    except:
+    except (AttributeError, TypeError):
         get_logger().error("Failed to replace api_key in Bitbucket manifest, trying to continue")
     manifest_obj = json.loads(manifest)
     return JSONResponse(manifest_obj)

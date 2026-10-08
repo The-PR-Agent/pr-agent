@@ -169,20 +169,8 @@ lint.select = [
   "I",    # isort
 ]
 
-lint.fixable = [
-  "I001", # import sorting
-  "F401", # unused imports
-  "F541", # f-string without placeholders
-]
-
 lint.exclude = ["api/code_completions"]
 
-# Everything below is a pre-existing
-# violation deferred so ruff runs green on adoption — fix the code and drop
-# the entry. TODO: burn this list down.
-lint.ignore = [
-  "E722", # bare `except`
-]
 
 [tool.ruff.lint.per-file-ignores]
 # Ignore import-position and unused-import in __init__.py (re-export modules).

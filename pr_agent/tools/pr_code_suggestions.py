@@ -2325,7 +2325,7 @@ class PRCodeSuggestions:
                     try:
                         code_snippet_link = self.git_provider.get_line_link(relevant_file, relevant_lines_start,
                                                                             relevant_lines_end)
-                    except:
+                    except (AttributeError, KeyError, ValueError):
                         code_snippet_link = ""
                     # add html table for each suggestion
 
