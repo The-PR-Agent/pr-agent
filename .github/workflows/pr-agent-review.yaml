@@ -1,32 +1,93 @@
-# This workflow enables developers to call PR-Agents `/[actions]` in PR's comments and upon PR creation.
-# Learn more at https://www.codium.ai/pr-agent/
-# This is v0.2 of this workflow file
-
 name: PR-Agent
 
 on:
-# pull_request:
-# issue_comment:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
   workflow_dispatch:
+    inputs:
+      comment_id:
+        description: ID of an existing /describe or /improve PR comment to replay
+        required: true
+        type: string
 
 permissions:
+  contents: read
   issues: write
   pull-requests: write
 
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number || inputs.comment_id }}
+  cancel-in-progress: false
+
 jobs:
   pr_agent_job:
+    if: >-
+      github.event.sender.type != 'Bot' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request_target' && !github.event.pull_request.draft) ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
+          (
+            github.event.comment.body == '/describe' || startsWith(github.event.comment.body, '/describe ') ||
+            github.event.comment.body == '/improve' || startsWith(github.event.comment.body, '/improve ')
+          )
+        )
+      )
     runs-on: ubuntu-latest
-    name: Run pr agent on every pull request
+    timeout-minutes: 15
+    name: Describe PRs and suggest improvements
     steps:
-      - name: PR Agent action step
-        id: pragent
-        uses: Codium-ai/pr-agent@e13da4fdda9903c8c7d1c9ba22f671b43f56039b  # main
+      - name: Load PR comment for manual replay
+        if: github.event_name == 'workflow_dispatch'
+        id: replay
         env:
-          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
-          OPENAI_ORG: ${{ secrets.OPENAI_ORG }} # optional
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PINECONE.API_KEY: ${{ secrets.PINECONE_API_KEY }}
-          PINECONE.ENVIRONMENT: ${{ secrets.PINECONE_ENVIRONMENT }}
-          GITHUB_ACTION_CONFIG.AUTO_DESCRIBE: true
-          GITHUB_ACTION_CONFIG.AUTO_REVIEW: true
-          GITHUB_ACTION_CONFIG.AUTO_IMPROVE: true
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ inputs.comment_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$COMMENT_ID" =~ ^[0-9]+$ ]] || { echo "Invalid comment ID"; exit 1; }
+          gh api "repos/$GH_REPO/issues/comments/$COMMENT_ID" > "$RUNNER_TEMP/pr-agent-comment.json"
+          issue_number=$(jq -r '.issue_url | split("/") | last' "$RUNNER_TEMP/pr-agent-comment.json")
+          gh api "repos/$GH_REPO/issues/$issue_number" > "$RUNNER_TEMP/pr-agent-issue.json"
+          jq -n \
+            --slurpfile comment "$RUNNER_TEMP/pr-agent-comment.json" \
+            --slurpfile issue "$RUNNER_TEMP/pr-agent-issue.json" \
+            --arg repository "$GH_REPO" '
+            $comment[0] as $c | $issue[0] as $i |
+            if $i.pull_request == null then error("Comment must belong to a pull request")
+            elif ($c.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")) | not then
+              error("Comment must be from a maintainer or collaborator")
+            elif ($c.body | test("^/(describe|improve)( |$)")) | not then
+              error("Only /describe and /improve can be replayed")
+            else {action: "created", comment: $c, issue: $i, sender: $c.user,
+                  repository: {full_name: $repository}}
+            end' > "$GITHUB_WORKSPACE/pr-agent-event.json"
+          echo "event_path=/github/workspace/pr-agent-event.json" >> "$GITHUB_OUTPUT"
+
+      - name: Run sponsored PR-Agent
+        uses: docker://pragent/pr-agent@sha256:31b9aac6ab067bada9a0c1b001d30ebc500ea4487e00a93c18c59b9ef5fa66db
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name == 'workflow_dispatch' && 'issue_comment' || github.event_name }}
+          GITHUB_EVENT_PATH: ${{ steps.replay.outputs.event_path || '/github/workflow/event.json' }}
+          OPENAI_KEY: ${{ secrets.QODO_SPONSORSHIP_LLM_KEY }}
+          OPENAI__API_BASE: https://ai-gateway.qodo.ai/v1
+          CONFIG__MODEL: openai/gpt-6.1-sol
+          CONFIG__MODEL_WEAK: openai/gpt-6.1-sol
+          CONFIG__MODEL_REASONING: openai/gpt-6.1-sol
+          CONFIG__FALLBACK_MODELS: '[]'
+          CONFIG__MAX_OUTPUT_TOKENS: '8192'
+          CONFIG__LOG_LEVEL: INFO
+          CONFIG__OUTPUT_RUN_DETAILS: 'true'
+          PR_DESCRIPTION__PUBLISH_DESCRIPTION_AS_COMMENT: 'true'
+          GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: 'true'
+          GITHUB_ACTION_CONFIG__AUTO_REVIEW: 'false'
+          GITHUB_ACTION_CONFIG__AUTO_IMPROVE: 'true'
+          GITHUB_ACTION_CONFIG__FAIL_ON_TOOL_ERRORS: 'true'
