@@ -1187,7 +1187,7 @@ def try_fix_yaml(response_text: str,
                 if data is not None:
                     get_logger().info("Successfully parsed AI prediction after extracting yaml snippet")
                     return data
-            except yaml.YAMLError:
+            except Exception:
                 pass
 
     # fifth fallback - try to remove leading '+' (sometimes added by AI for 'existing code' and 'improved code')
