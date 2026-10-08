@@ -1,10 +1,12 @@
 import os
+import re
 import secrets
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional, TypedDict
 
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.git_provider import redact_credentials
 from pr_agent.log import get_logger
 
 DEFAULT_ARTIFACT_INSTRUCTIONS = (
@@ -68,6 +70,8 @@ def resolve_artifact_path(path: str) -> Optional[Path]:
 
 _TRUNCATION_MARKER = "\n\n[... content truncated due to size limit ...]"
 _TRUNCATION_MARKER_START = "[... content truncated due to size limit ...]\n\n"
+_REDACTION_LOOKAHEAD = 512
+_TRUNCATED_URL_RE = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://\S+$")
 
 
 def _artifact_boundary_markers() -> tuple[str, str]:
@@ -107,12 +111,23 @@ def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") 
                 content = content[-(max_size + 1):]
         else:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read(max_size + 1)
+                # Read bounded lookahead before redacting the kept beginning.
+                content = f.read(max_size + _REDACTION_LOOKAHEAD)
     except (OSError, IOError) as e:
         get_logger().warning(f"Failed to read artifact file {path}: {e}")
         return ""
 
-    if len(content) > max_size:
+    truncated = len(content) > max_size
+    redaction_counts = {}
+    if len(content) == max_size + _REDACTION_LOOKAHEAD:
+        # A cut-off URL can hide the @ after very long userinfo; mask the ambiguous fragment.
+        content, count = _TRUNCATED_URL_RE.subn("<redacted>", content)
+        if count:
+            redaction_counts["truncated_url"] = count
+    content = redact_credentials(content, redaction_counts=redaction_counts)
+    if redaction_counts:
+        get_logger().warning(f"Redacted CI artifact credentials by type: {redaction_counts}")
+    if truncated:
         marker = _TRUNCATION_MARKER_START if keep_end else _TRUNCATION_MARKER
         available = max_size - len(marker)
         if available > 0:

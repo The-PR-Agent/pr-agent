@@ -127,6 +127,8 @@ The `improve` tool can be further customized by providing additional instruction
 You can use the `extra_instructions` configuration option to give the AI model additional instructions for the `improve` tool.
 Be specific, clear, and concise in the instructions. With extra instructions, you are the prompter.
 
+CI artifacts appended through `[artifacts]` are checked for URL credentials, authorization headers, standard GitLab personal access token prefixes, AWS access key IDs, and common credential assignments before they reach the model. Matches are redacted and reported in logs by type and count. This pattern-based check does not recognize every secret format, so use sanitized CI logs as input.
+
 Examples for possible instructions:
 
 ```toml

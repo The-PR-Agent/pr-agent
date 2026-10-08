@@ -137,7 +137,13 @@ class ConcurrentFileUpdateError(RuntimeError):
 
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
-_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
+_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)(?!<redacted>)\S+")
+_CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r"(?i)(\b(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
+    r"github_token|gitlab_token|ci_job_token)\b[\"']?[ \t]*[:=][ \t]*[\"']?)([^\s\"'<>]+)"
+)
+_GITLAB_TOKEN_RE = re.compile(r"\bglpat-[A-Za-z0-9_-]+")
+_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 
 
 # The reaction PR-Agent has always added when it picks a comment command up. Used as the
@@ -156,11 +162,21 @@ def get_reaction_setting(name: str, default: str = "") -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def redact_credentials(text) -> str:
+def redact_credentials(text, *, redaction_counts: dict[str, int] | None = None) -> str:
     if not text:
         return ""
-    redacted = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), str(text))
-    return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + "<redacted>", redacted)
+    redacted = str(text)
+    for kind, pattern, replacement in (
+        ("url_userinfo", _URL_USERINFO_RE, lambda m: m.group("scheme")),
+        ("authorization_header", _AUTH_HEADER_RE, lambda m: m.group(1) + "<redacted>"),
+        ("credential_assignment", _CREDENTIAL_ASSIGNMENT_RE, lambda m: m.group(1) + "<redacted>"),
+        ("gitlab_token", _GITLAB_TOKEN_RE, "<redacted>"),
+        ("aws_access_key", _AWS_ACCESS_KEY_RE, "<redacted>"),
+    ):
+        redacted, count = pattern.subn(replacement, redacted)
+        if count and redaction_counts is not None:
+            redaction_counts[kind] = redaction_counts.get(kind, 0) + count
+    return redacted
 
 
 def _clone_authorization_header(repo_url: str) -> str | None:
