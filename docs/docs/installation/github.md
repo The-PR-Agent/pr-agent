@@ -97,39 +97,6 @@ Using `pull_request_target` gives the workflow access to repository secrets. Nei
 
 ### Configuration Examples
 
-#### This repository's sponsored workflow
-
-The [PR-Agent workflow](https://github.com/The-PR-Agent/pr-agent/blob/main/.github/workflows/pr-agent-review.yaml)
-uses `QODO_SPONSORSHIP_LLM_KEY` with `https://ai-gateway.qodo.ai/v1` and
-`openai/gpt-6.1-sol`. The `openai/` prefix selects PR-Agent's OpenAI-compatible
-transport; the gateway receives `gpt-6.1-sol`. The main, weak, and reasoning
-model settings all use that model, and fallback models are disabled.
-
-On non-draft PRs being opened, reopened, or marked ready for review, it runs
-`/describe` and `/improve`. Descriptions are published as comments, and
-improvements are published as suggestions. Maintainers and collaborators can
-also run either command by posting `/describe` or `/improve` as a PR comment.
-Ordinary comments, bot comments, and commands from other users are ignored.
-
-The workflow uses `pull_request_target` so fork PRs can use the sponsorship
-key. It runs a digest-pinned PR-Agent image without checking out or executing
-the contributor's code.
-
-To test a workflow branch before merging, select **Actions → PR-Agent → Run
-workflow**, choose the branch, and supply a `pr_number` to replay the PR-opened
-event and run both tools. To retry a single command, supply `comment_id`
-instead, using the numeric ID from its `#issuecomment-<id>` URL. The manual run
-fetches and validates the PR or comment, then passes it to the same PR-Agent
-event handler. For example:
-
-```bash
-gh workflow run pr-agent-review.yaml --repo The-PR-Agent/pr-agent \
-  --ref <workflow-branch> -f pr_number=<pr-number>
-```
-
-Failed tool runs fail the workflow. Generated comments include model and
-token usage details so the sponsorship route can be verified.
-
 This section provides detailed, step-by-step examples for configuring PR-Agent with different models and advanced options in GitHub Actions.
 
 #### Quick Start Examples
