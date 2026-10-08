@@ -17,12 +17,6 @@ def test_for_prompt_attempt_skips_discarded_initial_prompt_count(monkeypatch):
     )
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda *_args, **_kwargs: 10_000)
 
-    warning_calls = []
-    monkeypatch.setattr(
-        token_budget_module,
-        "warn_if_artifact_context_prompt_is_invalid",
-        lambda *args: warning_calls.append(args),
-    )
     calls = []
     original = token_handler_module.TokenHandler._get_system_user_tokens
 
@@ -43,13 +37,6 @@ def test_for_prompt_attempt_skips_discarded_initial_prompt_count(monkeypatch):
     assert len(calls) == 1
 
     calls.clear()
-    variables["artifact_context"] = {
-        "instructions": "Flag failures",
-        "label": "ci.log",
-        "content": "FAILED",
-        "start_marker": "<START>",
-        "end_marker": "<END>",
-    }
     budget = token_budget_module.AttemptTokenBudget.for_prompt_attempt(
         "attempt-model",
         object(),
@@ -60,11 +47,6 @@ def test_for_prompt_attempt_skips_discarded_initial_prompt_count(monkeypatch):
     )
 
     assert calls == []
-    assert len(warning_calls) == 1
-    assert warning_calls[0][0] == "System {{ title }}"
-    assert warning_calls[0][1] == "User {{ diff }}"
-    assert warning_calls[0][2] is variables
-    assert warning_calls[0][3:] == ("User ",)
     assert budget.prompt_tokens == (
         len("System PR")
         + len("User ")

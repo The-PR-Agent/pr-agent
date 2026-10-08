@@ -1,9 +1,7 @@
 import asyncio
 import contextvars
-import hashlib
 import os
 import re
-import secrets
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from threading import Lock
@@ -14,109 +12,6 @@ from tiktoken import encoding_for_model, get_encoding
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
-
-_ARTIFACT_PROMPT_WARNING_CACHE_LIMIT = 128
-_artifact_prompt_warning_cache: dict[bytes, None] = {}
-_artifact_prompt_warning_lock = Lock()
-
-
-def _artifact_fields_inside_markers(
-    prompt: str, context: dict, *, require_fields_only_inside_markers: bool = False
-) -> bool:
-    start_marker = context.get("start_marker")
-    end_marker = context.get("end_marker")
-    label = context.get("label")
-    content = context.get("content")
-    if not all(isinstance(value, str) and value for value in (start_marker, end_marker, label, content)):
-        return False
-    start = prompt.find(start_marker)
-    end = prompt.find(end_marker, start + len(start_marker)) if start >= 0 else -1
-    if start < 0 or end < 0:
-        return False
-    marked_content = prompt[start + len(start_marker):end]
-    if label not in marked_content or content not in marked_content:
-        return False
-    if require_fields_only_inside_markers:
-        unmarked_content = prompt[:start] + prompt[end + len(end_marker):]
-        return label not in unmarked_content and content not in unmarked_content
-    return True
-
-
-def _artifact_prompt_warning_is_new(system_template: str, user_template: str, issues: tuple[str, ...]) -> bool:
-    key = hashlib.sha256(repr((system_template, user_template, issues)).encode("utf-8")).digest()
-    with _artifact_prompt_warning_lock:
-        if key in _artifact_prompt_warning_cache:
-            return False
-        _artifact_prompt_warning_cache[key] = None
-        if len(_artifact_prompt_warning_cache) > _ARTIFACT_PROMPT_WARNING_CACHE_LIMIT:
-            _artifact_prompt_warning_cache.pop(next(iter(_artifact_prompt_warning_cache)))
-    return True
-
-
-def warn_if_artifact_context_prompt_is_invalid(
-    system_template: str,
-    user_template: str,
-    variables: dict,
-    user_prompt: str,
-) -> None:
-    """Warn once when an active prompt omits or misroutes CI artifact context."""
-    context = variables.get("artifact_context")
-    if not isinstance(context, dict) or not context:
-        return
-
-    issues = []
-    nonce = secrets.token_hex(16)
-    probes = {
-        "instructions": f"__PR_AGENT_ARTIFACT_INSTRUCTIONS_{nonce}__",
-        "label": f"__PR_AGENT_ARTIFACT_LABEL_{nonce}__",
-        "content": f"__PR_AGENT_ARTIFACT_CONTENT_{nonce}__",
-        "start_marker": f"<<<CI_ARTIFACT_{nonce}_BEGIN>>>",
-        "end_marker": f"<<<CI_ARTIFACT_{nonce}_END>>>",
-    }
-    environment = SandboxedEnvironment(undefined=StrictUndefined)
-    system_jinja = environment.from_string(system_template)
-    user_jinja = environment.from_string(user_template)
-
-    def render_system_with_probe(field: str) -> str:
-        probe_context = {**context, field: probes[field]}
-        probe_variables = {**variables, "artifact_context": probe_context}
-        return system_jinja.render(probe_variables)
-
-    try:
-        baseline_system_prompt = system_jinja.render(variables)
-        if probes["instructions"] not in render_system_with_probe("instructions"):
-            issues.append("system prompt does not render artifact_context.instructions")
-
-        probe_context = {**context, **probes}
-        probe_variables = {**variables, "artifact_context": probe_context}
-        probed_user_prompt = user_jinja.render(probe_variables)
-        probed_user_fields_present = _artifact_fields_inside_markers(
-            probed_user_prompt, probe_context, require_fields_only_inside_markers=True
-        )
-        actual_user_fields_present = _artifact_fields_inside_markers(user_prompt, context)
-        if not probed_user_fields_present or not actual_user_fields_present:
-            issues.append("user prompt does not render the artifact label and content between its markers")
-
-        leaked_fields = [
-            field
-            for field in ("label", "content")
-            if render_system_with_probe(field) != baseline_system_prompt
-        ]
-        if leaked_fields:
-            issues.append(f"system prompt renders untrusted artifact {', '.join(leaked_fields)}")
-    except Exception as exc:
-        get_logger().debug("CI artifact prompt validation probe failed.", exc_info=True)
-        issues.append(f"artifact prompt fields could not be verified ({type(exc).__name__})")
-
-    if not issues or not _artifact_prompt_warning_is_new(system_template, user_template, tuple(issues)):
-        return
-    get_logger().warning(
-        "CI artifact prompt validation: "
-        + "; ".join(issues)
-        + ". Keep artifact instructions in the system prompt and keep the untrusted label and content "
-        "only inside the marked user-prompt section."
-    )
-
 
 def _await_coroutine(coro):
     """Run a coroutine to completion from a synchronous call site.
@@ -250,7 +145,6 @@ class TokenHandler:
             environment = SandboxedEnvironment(undefined=StrictUndefined)
             system_prompt = environment.from_string(system).render(vars)
             user_prompt = environment.from_string(user).render(vars)
-            warn_if_artifact_context_prompt_is_invalid(system, user, vars, user_prompt)
             system_prompt_tokens = len(encoder.encode(system_prompt, disallowed_special=()))
             user_prompt_tokens = len(encoder.encode(user_prompt, disallowed_special=()))
             return system_prompt_tokens + user_prompt_tokens
