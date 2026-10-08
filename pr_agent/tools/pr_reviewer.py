@@ -162,6 +162,15 @@ def _review_failure_comment(error: Exception) -> str:
     return f"Failed to review PR\n\n**Reason:** {reason}"
 
 
+def _markdown_code_span(text: str) -> str:
+    text = text.replace("\r", "\\r").replace("\n", "\\n")
+    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    delimiter = "`" * (longest_run + 1)
+    if text.startswith(("`", " ")) or text.endswith(("`", " ")):
+        text = f" {text} "
+    return f"{delimiter}{text}{delimiter}"
+
+
 _STATE_BLOCK_INVALID_MARKER = "invalid_marker"
 _STATE_BLOCK_READ_ERROR = "read_error"
 _STATE_BLOCK_REVIEW_DATA = "review_data"
@@ -178,6 +187,7 @@ class PRReviewer:
     prediction_data = None  # merged review dict; None means "parse self.prediction instead"
     review_chunk_count = 1
     review_failed_chunk_count = 0
+    partial_files_list = ()
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -210,6 +220,7 @@ class PRReviewer:
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.remaining_files_list = []
+        self.partial_files_list = []
         self.prediction = None
         self._review_state_result = None
         self._review_state_blocked = False
@@ -288,8 +299,9 @@ class PRReviewer:
 
     async def run(self) -> None:
         init_run_details()
-        for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_results",
-                     "_chunked_primary_model"):
+        self.partial_files_list = []
+        for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_partial_files_list",
+                     "_chunked_results", "_chunked_primary_model"):
             self.__dict__.pop(name, None)
         progress_response = None
         partial_review_error = None
@@ -817,13 +829,14 @@ class PRReviewer:
             self._review_state_block_reason = _STATE_BLOCK_REVIEW_DATA
             get_logger().warning("Review finding data is invalid; skipping persistent state update")
             return
+        incomplete_files = list(dict.fromkeys([*self.remaining_files_list, *self.partial_files_list]))
         if self._review_state_blocked:
             if self._review_state_block_reason == _STATE_BLOCK_INVALID_MARKER:
                 self._review_state_result = reconcile_review_findings(
                     None,
                     current_findings,
                     allow_resolution=False,
-                    excluded_files=self.remaining_files_list,
+                    excluded_files=incomplete_files,
                     head_sha=self._review_head_sha(),
                     run_id=self._review_run_id(),
                 )
@@ -843,7 +856,7 @@ class PRReviewer:
             # A merged result with failed chunks is still partial, even when chunking left
             # no additional token-budget files to report.
             and not bool(self.review_failed_chunk_count)
-            and not bool(self.remaining_files_list)
+            and not bool(incomplete_files)
             and parsed.valid
             and current_findings is not None
             # a dropped finding is not an absent one, so this run cannot resolve anything
@@ -854,7 +867,7 @@ class PRReviewer:
             parsed.state,
             current_findings,
             allow_resolution=allow_resolution,
-            excluded_files=self.remaining_files_list,
+            excluded_files=incomplete_files,
             head_sha=self._review_head_sha(),
             run_id=self._review_run_id(),
         )
@@ -874,6 +887,7 @@ class PRReviewer:
         self.prediction_data = None
         self.review_chunk_count = 1
         self.review_failed_chunk_count = 0
+        self.partial_files_list = []
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
         ai_handler = getattr(self, "ai_handler", None)
         output_token_reserve = getattr(
@@ -984,7 +998,7 @@ class PRReviewer:
             multi_diff_kwargs = {
                 "max_calls": get_settings().pr_reviewer.get("max_number_of_calls", 3),
                 "add_line_numbers": True,
-                "return_remaining_files": True,
+                "return_coverage": True,
                 "include_filtered_file_names": False,
             }
             output_token_reserve = getattr(
@@ -994,13 +1008,15 @@ class PRReviewer:
                 multi_diff_kwargs["output_token_reserve"] = output_token_reserve
             if prepared_diff is not None:
                 multi_diff_kwargs["prepared_diff"] = prepared_diff
-            patches_diff_list, remaining_files_list = get_pr_multi_diffs(
+            coverage = get_pr_multi_diffs(
                 self.git_provider,
                 self.token_handler,
                 model,
                 **multi_diff_kwargs)
+            patches_diff_list = coverage.chunks
             self._chunked_patches_diff_list = patches_diff_list
-            self._chunked_remaining_files_list = remaining_files_list
+            self._chunked_remaining_files_list = coverage.remaining_files_list
+            self._chunked_partial_files_list = coverage.partial_files_list
             self._chunked_primary_model = model
         if len(patches_diff_list) < 2:
             get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
@@ -1155,6 +1171,7 @@ class PRReviewer:
         self.review_chunk_count = len(self._chunked_patches_diff_list)
         self.review_failed_chunk_count = self.review_chunk_count - len(chunk_results)
         self.remaining_files_list = self._chunked_remaining_files_list
+        self.partial_files_list = self._chunked_partial_files_list
         models = list(dict.fromkeys(chunk_results[index][2] for index in indices))
         details = get_run_details()
         if details is not None:
@@ -1336,17 +1353,23 @@ class PRReviewer:
                 markdown_text += (f" {self.review_failed_chunk_count} chunk(s) failed and are not covered "
                                   "by this review.")
 
-        if self.remaining_files_list and get_settings().pr_reviewer.enable_review_coverage_footer:
-            displayed_files = self.remaining_files_list[:MAX_REVIEW_COVERAGE_FILES]
-            markdown_text += (
-                "\n\n<hr>\n\n"
-                "⚠️ **Review coverage:** The following files were not included in this review "
-                "because of the token budget:\n"
-                + "\n".join(f"- `{file}`" for file in displayed_files)
-            )
-            remaining_count = len(self.remaining_files_list) - len(displayed_files)
-            if remaining_count:
-                markdown_text += f"\n... and {remaining_count} more"
+        if get_settings().pr_reviewer.enable_review_coverage_footer:
+            for files, explanation in (
+                (self.remaining_files_list, "not included in this review because of the token budget"),
+                (self.partial_files_list,
+                 "partially analyzed because their patches were clipped to fit the token budget"),
+            ):
+                if not files:
+                    continue
+                displayed_files = files[:MAX_REVIEW_COVERAGE_FILES]
+                markdown_text += (
+                    "\n\n<hr>\n\n"
+                    f"⚠️ **Review coverage:** The following files were {explanation}:\n"
+                    + "\n".join(f"- {_markdown_code_span(file)}" for file in displayed_files)
+                )
+                remaining_count = len(files) - len(displayed_files)
+                if remaining_count:
+                    markdown_text += f"\n... and {remaining_count} more"
 
         # Add help text if gfm_markdown is supported
         if self.git_provider.is_supported("gfm_markdown") and get_settings().pr_reviewer.enable_help_text:
