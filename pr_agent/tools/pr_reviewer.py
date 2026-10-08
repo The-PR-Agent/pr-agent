@@ -76,6 +76,7 @@ from pr_agent.git_providers.git_provider import (
 )
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
+from pr_agent.tools.pr_code_suggestions import _markdown_code_span
 from pr_agent.tools.progress_comment import ChunkProgressReporter
 from pr_agent.tools.ticket_pr_compliance_check import (
     extract_and_cache_pr_tickets,
@@ -160,15 +161,6 @@ def _review_failure_comment(error: Exception) -> str:
             reason = candidate
             break
     return f"Failed to review PR\n\n**Reason:** {reason}"
-
-
-def _markdown_code_span(text: str) -> str:
-    text = text.replace("\r", "\\r").replace("\n", "\\n")
-    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    delimiter = "`" * (longest_run + 1)
-    if text.startswith(("`", " ")) or text.endswith(("`", " ")):
-        text = f" {text} "
-    return f"{delimiter}{text}{delimiter}"
 
 
 _STATE_BLOCK_INVALID_MARKER = "invalid_marker"
