@@ -234,6 +234,8 @@ Ticket detection matches any `PROJECT-123` shaped text, so strings like `SHA-256
 returns 404. If your repository works with a known set of Jira projects, list their keys
 in `project_keys`; keys with any other prefix are then dropped before any lookup (they are
 named once at debug level in the log). Leave the list empty to look up every key found.
+`project_keys` and `jira_site` are host-only: a repository's `.pr_agent.toml` or a comment
+command cannot change them.
 
 ```toml
 [jira]

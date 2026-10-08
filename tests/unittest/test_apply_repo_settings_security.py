@@ -72,6 +72,7 @@ SNAPSHOT_SECTIONS = (
     "BITBUCKET",
     "GITLAB",
     "GITEA",
+    "JIRA",
     "LANGUAGE_EXTENSION_MAP_ORG",
 )
 
@@ -485,6 +486,31 @@ def test_repo_settings_cannot_override_provider_authentication_or_tls(
 
     assert _section(settings, section).get(key) == "host-controlled"
     assert CliArgs.validate_user_args([f"--{section}.{key}=untrusted"])[0] is False
+
+
+@pytest.mark.parametrize(
+    ("key", "host_value", "repo_toml_value"),
+    [
+        ("project_keys", ["PROJ"], '["PROJ", "HR"]'),
+        ("jira_site", "host-org", '"other-org"'),
+    ],
+)
+def test_repo_settings_cannot_widen_jira_lookup_scope(
+    monkeypatch, settings_snapshot, key, host_value, repo_toml_value
+):
+    # Jira lookups run with the host's Atlassian credentials, so the repository under
+    # review must not choose which projects or which site those credentials read.
+    provider = FakeGitProvider(repo_settings_bytes=f"[jira]\n{key} = {repo_toml_value}\n".encode())
+    _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set(f"jira.{key}", host_value)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert _section(settings, "jira").get(key) == host_value
+    assert CliArgs.validate_user_args([f"--jira.{key}=untrusted"])[0] is False
 
 
 @pytest.mark.parametrize(
