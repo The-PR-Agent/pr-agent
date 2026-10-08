@@ -137,7 +137,10 @@ def test_failure_modes_prompt_follows_captured_setting(monkeypatch, enabled):
         settings.pr_reviewer.require_failure_modes = original
     assert reviewer.vars["require_failure_modes"] is enabled
     reviewer.vars["duplicate_prompt_examples"] = True
-    environment = Environment(undefined=StrictUndefined)
+    environment = Environment(
+        autoescape=select_autoescape(default_for_string=False),
+        undefined=StrictUndefined,
+    )
     system = environment.from_string(settings.pr_review_prompt.system).render(reviewer.vars)
     user = environment.from_string(settings.pr_review_prompt.user).render(reviewer.vars)
     assert ("class FailureMode(BaseModel):" in system) is enabled
