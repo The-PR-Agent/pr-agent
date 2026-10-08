@@ -93,9 +93,9 @@ jobs:
         with:
           entrypoint: /bin/sh
           args: >-
-            -c 'export GITHUB_EVENT_NAME="$PR_AGENT_EVENT_NAME";
-            export GITHUB_EVENT_PATH="$PR_AGENT_EVENT_PATH";
-            exec /entrypoint.sh'
+            -c "export GITHUB_EVENT_NAME=$PR_AGENT_EVENT_NAME;
+            export GITHUB_EVENT_PATH=$PR_AGENT_EVENT_PATH;
+            exec /entrypoint.sh"
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_AGENT_EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
