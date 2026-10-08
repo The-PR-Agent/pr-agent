@@ -1,10 +1,14 @@
 import asyncio
 import json
 import os
+import threading
+import time
 from types import SimpleNamespace
+from urllib.parse import urlparse
 
 import httpx
 import pytest
+import requests
 
 os.environ.setdefault("GITLAB__URL", "https://gitlab.example.com")
 import pr_agent.servers.gitlab_webhook as gitlab_webhook
@@ -110,7 +114,7 @@ async def _post_webhook(token=None, payload=None):
     app = FastAPI(middleware=[Middleware(RawContextMiddleware)])
     app.include_router(gitlab_webhook.router)
     headers = {"X-Gitlab-Token": token} if token is not None else {}
-    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         return await client.post(
             "/webhook", json=payload or {"object_kind": "note", "event_type": "note"}, headers=headers
@@ -385,3 +389,117 @@ async def test_reject_a_token_unknown_to_provider_and_shared_secret(monkeypatch,
     monkeypatch.setattr(gitlab_webhook, "get_secret_provider", lambda: FakeSecretProvider(secret=""))
 
     assert (await _post_webhook("project-secret:unseen-token")).status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event, phase", [
+    ("open", "bootstrap"), ("reopen", "bootstrap"), ("ready", "bootstrap"),
+    ("push", "bootstrap"), ("assignment", "bootstrap"), ("note", "bootstrap"),
+    ("note", "tool"),
+])
+async def test_process_other_webhooks_while_a_merge_request_lookup_waits(
+    monkeypatch, gitlab_webhook_settings, event, phase,
+):
+    settings = gitlab_webhook_settings
+    command = "/config" if phase == "tool" else "/help"
+    for key, value in {
+        "git_provider": "gitlab", "use_repo_settings_file": False, "extra_config_url": "",
+        "publish_output": True, "reaction_on_start": "", "disable_auto_feedback": False,
+    }.items():
+        monkeypatch.setitem(settings.config, key, value)
+    for key, value in {
+        "url": "https://gitlab.example.com", "pr_commands": [command], "push_commands": [command],
+        "reviewer_commands": [command], "handle_push_trigger": True, "handle_reviewer_assignment": True,
+        "feedback_on_draft_pr": False,
+    }.items():
+        monkeypatch.setitem(settings.gitlab, key, value)
+    waiting = threading.Event()
+    release = threading.Event()
+    notes = []
+    bootstrap_available = phase == "tool"
+    if phase == "tool":
+        secrets = {
+            f"mr-{iid}": json.dumps({"webhook_token": "secret", "gitlab_token": f"glpat-{iid}"})
+            for iid in (39, 40)
+        }
+        monkeypatch.setattr(gitlab_webhook, "get_secret_provider",
+                            lambda: SimpleNamespace(get_secret=secrets.__getitem__))
+        monkeypatch.setitem(settings.gitlab, "auth_type", "private_token")
+
+    def send(_session, request, **_kwargs):
+        nonlocal bootstrap_available
+        path = urlparse(request.url).path
+        status = 200
+        if path.endswith("/api/v4/projects/group%2Fproject"):
+            payload = {"id": 41}
+        elif path.endswith("/api/v4/user"):
+            payload = {"id": 4, "username": "reviewer-bot"}
+        else:
+            iid, _, endpoint = path.split("/merge_requests/", 1)[1].partition("/")
+            iid = int(iid)
+            if phase == "tool" and request.headers.get("PRIVATE-TOKEN") != f"glpat-{iid}":
+                status, payload = 401, {"message": "wrong request credentials"}
+            elif endpoint == "versions":
+                payload = [{"id": 1}]
+            elif endpoint == "notes" and request.method == "POST":
+                body = json.loads(request.body)["body"]
+                notes.append((iid, body))
+                status, payload = 201, {"id": 100 + iid, "body": body}
+            elif not endpoint:
+                if iid == 39 and not bootstrap_available and not release.is_set():
+                    waiting.set()
+                    status, payload = 404, {"message": "not found"}
+                else:
+                    if iid == 39:
+                        bootstrap_available = False
+                    payload = {"iid": iid, "title": "A merge request", "labels": [], "author": {"id": 3},
+                               "source_branch": "feature", "target_branch": "main"}
+            else:
+                raise AssertionError(f"Unexpected GitLab request: {request.url}")
+        response = requests.Response()
+        response.status_code = status
+        response._content = json.dumps(payload).encode()
+        response.headers["Content-Type"] = "application/json"
+        response.request = request
+        return response
+
+    def payload(iid, kind):
+        mr = {"url": f"https://gitlab.example.com/group/project/-/merge_requests/{iid}",
+              "title": "A merge request", "draft": False, "source_branch": "feature", "target_branch": "main"}
+        data = {"object_kind": "merge_request", "user": {"username": "alice", "name": "Alice", "id": 3},
+                "object_attributes": {**mr, "action": kind}}
+        if kind == "note":
+            data.update(object_kind="note", event_type="note", merge_request=mr,
+                        object_attributes={"id": 100 + iid, "note": command + (
+                            f" --config.response_language={'nl' if iid == 39 else 'en'}" if phase == "tool" else ""
+                        )})
+        elif kind == "ready":
+            data["object_attributes"]["action"] = "update"
+            data["changes"] = {"draft": {"previous": True, "current": False}}
+        elif kind == "push":
+            data["object_attributes"].update(action="update", oldrev="old-head")
+        elif kind == "assignment":
+            data["object_attributes"]["action"] = "update"
+            data["changes"] = {"reviewers": {"previous": [], "current": [{"id": 4}]}}
+        return data
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    token = "mr-39:secret" if phase == "tool" else "topsecret"
+    slow = asyncio.create_task(_post_webhook(token, payload(39, event)))
+    try:
+        deadline = time.monotonic() + 5
+        while not waiting.is_set() and not slow.done() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert waiting.is_set() or slow.done(), "The delayed webhook made no progress"
+        token = "mr-40:secret" if phase == "tool" else "topsecret"
+        healthy = await _post_webhook(token, payload(40, "note" if phase == "tool" else "open"))
+        assert healthy.status_code == 200
+        assert any(iid == 40 and body.strip() for iid, body in notes)
+    finally:
+        release.set()
+        delayed = await slow
+    assert delayed.status_code == 200
+    assert any(iid == 39 and body.strip() for iid, body in notes)
+    if phase == "tool":
+        assert any(iid == 39 and "config.response_language = 'nl'" in body for iid, body in notes)
+        assert any(iid == 40 and "config.response_language = 'en'" in body for iid, body in notes)

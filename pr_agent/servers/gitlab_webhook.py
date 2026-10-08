@@ -340,7 +340,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
             if object_attributes.get('action') in ['open', 'reopen']:
                 url = object_attributes.get('url')
                 get_logger().info(f"New merge request: {url}")
-                apply_repo_settings(url)
+                await asyncio.to_thread(apply_repo_settings, url)
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
             # for draft to ready triggered merge requests, before the push case: one update can be both
@@ -348,7 +348,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 url = object_attributes.get('url')
                 get_logger().info(f"Draft MR is ready: {url}")
 
-                apply_repo_settings(url)
+                await asyncio.to_thread(apply_repo_settings, url)
                 if get_settings().get("gitlab.feedback_on_draft_pr", False):
                     # the draft was already getting feedback, so only the push half of this update is new
                     if (object_attributes.get('oldrev')
@@ -368,7 +368,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 url = object_attributes.get('url')
                 get_logger().info(f"New merge request: {url}")
                 # Apply repo settings before checking push commands or handle_push_trigger
-                apply_repo_settings(url)
+                await asyncio.to_thread(apply_repo_settings, url)
 
                 commands_on_push = get_settings().get("gitlab.push_commands", {})
                 handle_push_trigger = get_settings().get("gitlab.handle_push_trigger", False)
@@ -394,7 +394,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                     return JSONResponse(status_code=status.HTTP_200_OK,
                                         content=jsonable_encoder({"message": "success"}))
 
-                apply_repo_settings(url)
+                await asyncio.to_thread(apply_repo_settings, url)
                 handle_assignment = get_settings().get("gitlab.handle_reviewer_assignment", False)
                 if isinstance(handle_assignment, str):
                     handle_assignment = handle_assignment.lower() in ("true", "1", "yes")
@@ -426,7 +426,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 mr = data['merge_request']
                 url = mr.get('url')
                 comment_id = data.get('object_attributes', {}).get('id')
-                provider = get_git_provider_with_context(pr_url=url)
+                provider = await asyncio.to_thread(get_git_provider_with_context, pr_url=url)
 
                 get_logger().info(f"A comment has been added to a merge request: {url}")
                 body = data.get('object_attributes', {}).get('note')

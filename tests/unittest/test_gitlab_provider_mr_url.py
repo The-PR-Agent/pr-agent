@@ -7,7 +7,7 @@ import pytest
 import requests
 from gitlab import GitlabAuthenticationError, GitlabGetError, GitlabListError
 
-from pr_agent.git_providers import gitlab_provider
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 
@@ -183,26 +183,22 @@ def test_get_line_link_encodes_source_branch(branch, expected):
 
 @pytest.fixture
 def gitlab_api(monkeypatch):
-    elapsed = 0
+    settings = get_settings()
+    monkeypatch.setitem(settings.gitlab, "url", "https://gitlab.example.com")
+    monkeypatch.setitem(settings.gitlab, "personal_access_token", "offline-token")
 
-    def advance(seconds):
-        nonlocal elapsed
-        elapsed += seconds
+    def make(visible_after=0, failure=404, diff_failure=None, project_failure=None):
+        available_at = time.monotonic() + visible_after
 
-    monkeypatch.setattr(time, "sleep", advance)
-    monkeypatch.setattr(gitlab_provider, "get_settings", lambda: {
-        "GITLAB.URL": "https://gitlab.example.com",
-        "GITLAB.PERSONAL_ACCESS_TOKEN": "offline-token",
-    })
-
-    def make(visible_after=0, failure=404, diff_failure=None):
         def send(_session, request, **_kwargs):
-            nonlocal failure, diff_failure
+            nonlocal failure, diff_failure, project_failure
             path = urlparse(request.url).path
             if path.endswith("/api/v4/projects/group%2Fproject"):
-                status, payload = 200, {"id": 41}
+                status = project_failure or 200
+                payload = {"id": 41} if status == 200 else {"message": "unavailable"}
+                project_failure = None
             elif path.endswith("/merge_requests/39"):
-                status = failure if elapsed < visible_after else 200
+                status = failure if failure != 404 or time.monotonic() < available_at else 200
                 if status != 404:
                     failure = 200
                 payload = {"iid": 39, "title": "A new merge request"} if status == 200 else {"message": "unavailable"}
@@ -227,16 +223,20 @@ def gitlab_api(monkeypatch):
 
 @pytest.mark.parametrize("visible_after", [0, 7])
 def test_set_merge_request_waits_for_a_new_merge_request_the_api_does_not_serve_yet(gitlab_api, visible_after):
+    started = time.monotonic()
     provider = gitlab_api(visible_after=visible_after)
 
+    assert time.monotonic() - started < visible_after + 1
     assert provider.get_title() == "A new merge request"
 
 
 def test_set_merge_request_raises_when_the_merge_request_stays_missing(gitlab_api):
+    started = time.monotonic()
     with pytest.raises(GitlabGetError) as error:
-        gitlab_api(visible_after=8)
+        gitlab_api(visible_after=float("inf"))
 
     assert error.value.response_code == 404
+    assert time.monotonic() - started < 8
 
 
 @pytest.mark.parametrize("status, exception", [(401, GitlabAuthenticationError), (403, GitlabGetError),
@@ -253,3 +253,12 @@ def test_set_merge_request_does_not_retry_a_missing_diff(gitlab_api):
         gitlab_api(diff_failure=404)
 
     assert error.value.response_code == 404
+
+
+def test_set_merge_request_does_not_retry_a_missing_project(gitlab_api):
+    started = time.monotonic()
+    with pytest.raises(GitlabGetError) as error:
+        gitlab_api(project_failure=404)
+
+    assert error.value.response_code == 404
+    assert time.monotonic() - started < 1

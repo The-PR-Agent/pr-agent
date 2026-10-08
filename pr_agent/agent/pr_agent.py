@@ -349,7 +349,7 @@ class PRAgent:
         self, pr_url, request, notify, span, propagate_tool_errors: bool | None = None
     ) -> bool | RequestOutcome:
         # Evaluate repository policy before command overrides, notifications or tools.
-        apply_repo_settings(pr_url)
+        await asyncio.to_thread(apply_repo_settings, pr_url)
         if enforce_request_policy(pr_url) is False:
             span.set_attribute("pr_agent.request.ignored", True)
             return RequestOutcome.SKIPPED
@@ -443,18 +443,20 @@ class PRAgent:
                 if action == "answer":
                     if notify:
                         notify()
-                    await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
+                    tool_factory = partial(PRReviewer, is_answer=True)
                 elif action == "auto_review":
-                    await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
+                    tool_factory = partial(PRReviewer, is_auto=True)
                 else:
                     if notify:
                         notify()
+                    tool_factory = command2class[action]
 
-                    result = await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
-                    if action == "add_docs" and result is False:
-                        span.set_status(StatusCode.ERROR)
-                        span.set_attribute("error.type", "documentation_publication_failed")
-                        return False
+                tool = await asyncio.to_thread(tool_factory, pr_url, ai_handler=self.ai_handler, args=args)
+                result = await tool.run()
+                if action == "add_docs" and result is False:
+                    span.set_status(StatusCode.ERROR)
+                    span.set_attribute("error.type", "documentation_publication_failed")
+                    return False
 
                 span.set_status(StatusCode.OK)
                 return True
