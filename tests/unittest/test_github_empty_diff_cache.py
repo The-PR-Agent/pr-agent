@@ -279,14 +279,8 @@ def test_partial_failure_is_not_cached(monkeypatch, error_type):
     provider = _provider([_file("first.py"), _file("second.py")])
     error = error_type("collection failed")
     provider._get_pr_file_content.side_effect = ["new\n", error]
-    expected = (
-        gp.IncompletePullRequestFilesError
-        if error_type is gp.IncompletePullRequestFilesError
-        else gp.RateLimitExceeded
-    )
-
     with request_cycle_context({}):
-        with pytest.raises(expected):
+        with pytest.raises(error_type):
             provider._get_diff_files()
 
         assert provider.diff_files is None

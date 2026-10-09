@@ -190,8 +190,7 @@ def _provider_with_corrupt_file_content():
 
 
 def test_get_pr_file_content_returns_empty_string_on_a_corrupt_payload():
-    """Do not let a corrupt body escape: the diff builder re-raises anything that does as
-    RateLimitExceeded, which retries the review as though GitHub had throttled it."""
+    """Treat a corrupt optional file read as empty without interrupting diff collection."""
     provider = _provider_with_corrupt_file_content()
 
     assert provider.get_pr_file_content("a.py", "main") == ""
