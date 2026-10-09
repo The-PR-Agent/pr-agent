@@ -5832,7 +5832,14 @@ async def test_raw_http_request_rejects_residual_headers_without_omit_values(mon
 async def test_raw_http_request_does_not_forward_omit_headers(model):
     kwargs = await _call(LiteLLMAIHandler(), model)
 
-    assert "headers" not in kwargs
+    if model == "openrouter/model":
+        assert kwargs["headers"] == {
+            "HTTP-Referer": "https://github.com/the-pr-agent/pr-agent",
+            "X-OpenRouter-Title": "PR-Agent",
+            "X-Title": "PR-Agent",
+        }
+    else:
+        assert "headers" not in kwargs
 
 
 @pytest.mark.asyncio

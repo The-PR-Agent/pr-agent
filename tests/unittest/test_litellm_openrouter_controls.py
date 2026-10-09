@@ -108,6 +108,81 @@ async def _run(monkeypatch, model, openrouter, reasoning_effort="medium", custom
     return mock_call.call_args[1]
 
 
+class TestOpenRouterAttribution:
+    @pytest.fixture(autouse=True)
+    def _isolate_litellm(self, monkeypatch):
+        monkeypatch.setattr(litellm, "api_base", None)
+        monkeypatch.setattr(litellm, "headers", None)
+        monkeypatch.setattr(litellm, "get_secret", lambda name: None)
+
+    @staticmethod
+    def _headers(configured=None, params=None, provider="openrouter"):
+        handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+        handler._request_headers = configured if configured is not None else {}
+        return handler._finalize_provider_request_params(provider, params or {}).get("headers", {})
+
+    @pytest.mark.parametrize(
+        ("configured", "secrets", "site_url", "title"),
+        [
+            ({}, {}, "https://github.com/the-pr-agent/pr-agent", "PR-Agent"),
+            ({}, {"OR_SITE_URL": "https://site.example", "OR_APP_NAME": "Custom"},
+             "https://site.example", "Custom"),
+            ({"http-referer": "https://explicit.example", "x-title": "Legacy"},
+             {"OR_SITE_URL": "https://ignored.example", "OR_APP_NAME": "Ignored"},
+             "https://explicit.example", "Legacy"),
+            ({"X-Title": "Legacy", "x-OPENROUTER-title": "Modern"}, {},
+             "https://github.com/the-pr-agent/pr-agent", "Modern"),
+        ],
+    )
+    def test_defaults_and_overrides(self, monkeypatch, configured, secrets, site_url, title):
+        monkeypatch.setattr(litellm, "get_secret", lambda name: secrets.get(name))
+        original = configured.copy()
+        headers = self._headers(configured)
+        assert headers["HTTP-Referer"] == site_url
+        assert headers["X-OpenRouter-Title"] == headers["X-Title"] == title
+        assert set(headers) == {"HTTP-Referer", "X-OpenRouter-Title", "X-Title"}
+        assert configured == original
+
+    def test_request_headers_take_precedence_case_insensitively(self):
+        configured = {"HTTP-Referer": "https://config.example", "X-Title": "Configured", "X-Trace": "keep"}
+        params = {"headers": {"http-referer": "https://request.example", "x-openrouter-title": "Requested"}}
+        headers = self._headers(configured, params)
+        assert headers == {
+            "HTTP-Referer": "https://request.example",
+            "X-OpenRouter-Title": "Requested",
+            "X-Title": "Requested",
+            "X-Trace": "keep",
+        }
+
+    def test_other_providers_and_global_header_guard(self, monkeypatch):
+        assert self._headers({"X-Trace": "keep"}, provider="anthropic") == {"X-Trace": "keep"}
+        monkeypatch.setattr(litellm, "headers", {"X-Global": "blocked"})
+        with pytest.raises(ValueError, match="process-wide LiteLLM headers fallback"):
+            self._headers()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "custom_llm_provider"),
+        [("openrouter/z-ai/glm-5.2", ""), ("z-ai/glm-5.2", "openrouter")],
+    )
+    async def test_chat_and_probe(self, monkeypatch, model, custom_llm_provider):
+        monkeypatch.setattr(
+            litellm_handler, "get_settings",
+            lambda: _make_settings(custom_llm_provider=custom_llm_provider),
+        )
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as call:
+            call.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            await handler.chat_completion(model=model, system="sys", user="usr")
+            await handler.probe_completion(model, max_tokens=8, _completion=call)
+
+        assert call.call_count == 2
+        for request in call.call_args_list:
+            headers = request.kwargs["headers"]
+            assert headers["HTTP-Referer"] == "https://github.com/the-pr-agent/pr-agent"
+            assert headers["X-OpenRouter-Title"] == headers["X-Title"] == "PR-Agent"
+
+
 class TestOpenRouterControls:
 
     @pytest.mark.asyncio

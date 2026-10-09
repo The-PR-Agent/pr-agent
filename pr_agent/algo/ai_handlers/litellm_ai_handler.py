@@ -168,6 +168,9 @@ _ANTHROPIC_CACHE_REQUEST_PROVIDERS = ("anthropic", "bedrock", "bedrock_mantle", 
 # _warn_prompt_cache_conditions.
 _ANTHROPIC_CACHE_WARNING_LOG: set[tuple[str, str]] = set()
 
+_OPENROUTER_APP_URL = "https://github.com/the-pr-agent/pr-agent"
+_OPENROUTER_APP_TITLE = "PR-Agent"
+
 PROVIDER_SETTING_PATHS = {
     "anthropic": {"api_key": "ANTHROPIC.KEY"},
     "codestral": {"api_key": "CODESTRAL.KEY"},
@@ -1717,6 +1720,33 @@ class LiteLLMAIHandler(BaseAiHandler):
             params["headers"] = request_headers
         return self._finalize_provider_request_params(provider, params)
 
+    @staticmethod
+    def _with_openrouter_attribution(headers: dict) -> dict:
+        """Attribute OpenRouter requests without overriding explicit headers."""
+        normalized = {name.lower(): value for name, value in headers.items()}
+        if "http-referer" in normalized:
+            site_url = normalized["http-referer"]
+        else:
+            site_url = litellm.get_secret("OR_SITE_URL") or _OPENROUTER_APP_URL
+
+        if "x-openrouter-title" in normalized:
+            title = normalized["x-openrouter-title"]
+        elif "x-title" in normalized:
+            title = normalized["x-title"]
+        else:
+            title = litellm.get_secret("OR_APP_NAME") or _OPENROUTER_APP_TITLE
+
+        other_headers = {
+            name: value for name, value in headers.items()
+            if name.lower() not in ("http-referer", "x-openrouter-title", "x-title")
+        }
+        return {
+            **other_headers,
+            "HTTP-Referer": site_url,
+            "X-OpenRouter-Title": title,
+            "X-Title": title,  # Keep LiteLLM's legacy title consistent.
+        }
+
     def _finalize_provider_request_params(self, provider: str | None, params: dict) -> dict:
         """Merge request-local headers and reject LiteLLM's process-wide header fallback."""
         params = _guard_request_routing_globals(provider, params)
@@ -1746,6 +1776,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             params["headers"] = request_headers
         elif getattr(litellm, "headers", None):
             raise ValueError(f"Refusing process-wide LiteLLM headers fallback for provider {provider or 'unknown'}")
+        if provider == "openrouter":
+            params["headers"] = self._with_openrouter_attribution(request_headers)
         return params
 
     def _requires_streaming(self, model: str) -> bool:
