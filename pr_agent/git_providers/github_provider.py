@@ -1084,8 +1084,7 @@ class GithubProvider(GitProvider):
                 continue
             root = by_node_id.get(nodes[0].get("id"))
             body = getattr(root, "body", None)
-            if (not isinstance(body, str) or not KEY_ISSUE_LOCATION_MARKER_RE.search(body)
-                    or (getattr(root, "raw_data", {}) or {}).get("in_reply_to_id")):
+            if not isinstance(body, str) or not KEY_ISSUE_LOCATION_MARKER_RE.search(body):
                 continue
             try:
                 if not self.is_comment_authored_by_pr_agent(root):

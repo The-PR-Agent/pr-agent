@@ -87,3 +87,17 @@ def test_github_missing_location_and_unverifiable_identity_add_no_dismissal():
     provider.github_user_id = ""
     provider._agent_login = lambda: ""
     assert _dismissed(provider) == []
+
+
+def test_github_review_thread_root_does_not_fetch_raw_comment_data():
+    class ListBuiltComment(SimpleNamespace):
+        @property
+        def raw_data(self):
+            raise AssertionError("Reading raw_data would fetch the comment again")
+
+    body = key_issue_body_with_markers(_BODY, "aabbccddeeff", "112233445566")
+    root = ListBuiltComment(**vars(_comment("root", body)))
+    provider, _ = _provider([[_thread("root")]], [root])
+
+    assert _dismissed(provider) == [{"path": "app.py", "body": _BODY,
+                                    "line_start": 2, "line_end": 2}]
