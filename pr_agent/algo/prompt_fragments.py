@@ -25,7 +25,5 @@ def render_skills_prefix(*, skills_context: str) -> str:
     empty string when ``skills_context`` is empty. The text is left unstripped so callers can
     match it against the start of a rendered system prompt.
     """
-    return _render_fragment(
-        get_settings().prompt_fragments.skills_prefix,
-        skills_context=skills_context,
-    )
+    environment = SandboxedEnvironment(undefined=StrictUndefined)
+    return environment.from_string(get_settings().prompt_fragments.skills_prefix).render(skills_context=skills_context)

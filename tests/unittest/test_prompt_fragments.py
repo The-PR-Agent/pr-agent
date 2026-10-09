@@ -324,7 +324,7 @@ def test_review_tools_open_with_the_shared_skills_prefix(prompt_name):
     system = get_settings().get(prompt_name).system
 
     assert system.startswith(fragment)
-    rendered_prelude = Environment(autoescape=True, trim_blocks=True, lstrip_blocks=True).from_string(
+    rendered_prelude = Environment(autoescape=True).from_string(
         _skills_prelude(prompt_name)
     ).render(skills_context="sample skill")
     assert rendered_prelude == render_skills_prefix(skills_context="sample skill")
