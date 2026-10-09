@@ -110,3 +110,13 @@ def test_in_budget_skills_produce_no_warning():
 
     assert warnings == []
 
+
+def test_lone_oversized_skill_logs_warning():
+    """A single skill that exceeds the budget on its own is still reported."""
+    huge_skill = Skill(name="huge_skill", description="d1", body="word " * 500)
+
+    warnings = _capture_warnings(lambda: format_skills_context([huge_skill], 50))
+
+    assert len(warnings) == 1
+    assert "First skill 'huge_skill' exceeded budget" in warnings[0]
+    assert warnings[0].endswith("tokens kept); truncated")
