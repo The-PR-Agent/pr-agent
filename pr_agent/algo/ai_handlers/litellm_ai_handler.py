@@ -137,8 +137,10 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     _response_field,
     get_repetition_penalty,
 )
+from pr_agent.algo.prompt_fragments import render_skills_prefix
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
+from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
@@ -2585,6 +2587,42 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
         return cache_control_injection_points
 
+    def _split_system_prompt_for_skills_cache(self, messages: list[dict], model: str, injection_points) -> None:
+        """Move the cache breakpoint to the end of the shared skills prefix (#4007).
+
+        The review tools open their system prompts with an identical skills block, so marking
+        that block lets Anthropic read one cache entry across /review, /describe and /improve
+        instead of writing one per tool. Only applies to Anthropic Claude models when a
+        configured injection point targets the system message and the rendered prefix matches;
+        every other request keeps the plain system string. Splitting at the prefix is safe
+        because the two text blocks concatenate back to the original content.
+        """
+        if not injection_points or not self._is_claude_model(model):
+            return
+        system_point = next(
+            (point for point in injection_points if isinstance(point, dict) and point.get("role") == "system"),
+            None,
+        )
+        if system_point is None:
+            return
+        system_index = next(
+            (index for index, message in enumerate(messages) if message.get("role") == "system"),
+            None,
+        )
+        if system_index is None:
+            return
+        content = messages[system_index].get("content")
+        if not isinstance(content, str):
+            return
+        prefix = render_skills_prefix(skills_context=get_skills_context())
+        if not prefix or not content.startswith(prefix):
+            return
+        control = system_point.get("control") or {"type": "ephemeral"}
+        messages[system_index]["content"] = [
+            {"type": "text", "text": prefix, "cache_control": control},
+            {"type": "text", "text": content[len(prefix):], "cache_control": control},
+        ]
+
     @staticmethod
     def _warn_prompt_cache_conditions(
         model: str, system: str, user: str, injection_points, request_provider: str | None = None
@@ -2768,6 +2806,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     user,
                     image_path=img_path,
                 )
+                self._split_system_prompt_for_skills_cache(messages, model, cache_control_injection_points)
 
                 thinking_kwargs_gpt5 = None
                 openrouter_reasoning_effort = None

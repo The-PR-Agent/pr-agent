@@ -382,3 +382,86 @@ def test_estimate_is_zero_without_targeted_role(monkeypatch):
     handler = litellm_handler.LiteLLMAIHandler()
     assert handler._estimate_cached_prefix_tokens("pineapple", "banana", [{"location": "message", "role": "none"}]) == 0
     assert handler._estimate_cached_prefix_tokens("pineapple", "banana", []) == 0
+
+
+# The review tools open their system prompt with an identical skills block, so the handler
+# splits it into its own text block and marks it as a cache breakpoint (#4007). The blocks
+# concatenate back to the original prompt.
+_SKILLS_CONTROL = {"type": "ephemeral", "ttl": "1h"}
+
+
+def _system_message(mock_call):
+    return next(message for message in mock_call.call_args.kwargs["messages"] if message["role"] == "system")
+
+
+async def _run_chat_completion(monkeypatch, points, model, system, skills_context="SKILL"):
+    monkeypatch.setattr(litellm_handler, "get_settings", _settings(points))
+    monkeypatch.setattr(litellm_handler, "get_skills_context", lambda: skills_context)
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model=model, system=system, user="usr")
+    return mock_call
+
+
+@pytest.mark.asyncio
+async def test_claude_system_prompt_splits_at_the_shared_skills_prefix(monkeypatch):
+    points = [{"location": "message", "role": "system", "control": _SKILLS_CONTROL}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "You are PR-Reviewer, a language model"
+
+    mock_call = await _run_chat_completion(monkeypatch, points, "claude-sonnet-5", system)
+
+    assert _system_message(mock_call)["content"] == [
+        {"type": "text", "text": prefix, "cache_control": _SKILLS_CONTROL},
+        {"type": "text", "text": "You are PR-Reviewer, a language model", "cache_control": _SKILLS_CONTROL},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_split_defaults_to_ephemeral_control(monkeypatch):
+    points = [{"location": "message", "role": "system"}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    mock_call = await _run_chat_completion(monkeypatch, points, "claude-sonnet-5", system)
+
+    assert _system_message(mock_call)["content"] == [
+        {"type": "text", "text": prefix, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": "rest", "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_split_for_non_claude_model(monkeypatch):
+    points = [{"location": "message", "role": "system", "control": _SKILLS_CONTROL}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    mock_call = await _run_chat_completion(monkeypatch, points, "gpt-4o", system)
+
+    assert _system_message(mock_call)["content"] == system
+
+
+@pytest.mark.asyncio
+async def test_no_split_without_a_system_injection_point(monkeypatch):
+    points = [{"location": "message", "role": "user"}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    mock_call = await _run_chat_completion(monkeypatch, points, "claude-sonnet-5", system)
+
+    assert _system_message(mock_call)["content"] == system
+
+
+@pytest.mark.asyncio
+async def test_no_split_when_system_does_not_start_with_the_prefix(monkeypatch):
+    points = [{"location": "message", "role": "system", "control": _SKILLS_CONTROL}]
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    mock_call = await _run_chat_completion(
+        monkeypatch, points, "claude-sonnet-5", system, skills_context="A DIFFERENT SKILL"
+    )
+
+    assert _system_message(mock_call)["content"] == system

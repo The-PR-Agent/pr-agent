@@ -6,7 +6,7 @@ import pytest
 from jinja2 import Environment, meta, nodes
 from jinja2.exceptions import SecurityError
 
-from pr_agent.algo.prompt_fragments import render_diff_hunk_format
+from pr_agent.algo.prompt_fragments import render_diff_hunk_format, render_skills_prefix
 from pr_agent.config_loader import get_settings
 from pr_agent.tools import pr_add_docs, pr_code_suggestions, pr_reviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -316,6 +316,22 @@ def test_review_tools_share_an_identical_skills_prefix():
 
     assert len(set(rendered)) == 1
     assert "\n\nOrganizational standards and review skills" in rendered[0]
+
+
+@pytest.mark.parametrize("prompt_name", _SKILLS_PREFIX_TEMPLATES)
+def test_review_tools_open_with_the_shared_skills_prefix(prompt_name):
+    fragment = get_settings().prompt_fragments.skills_prefix
+    system = get_settings().get(prompt_name).system
+
+    assert system.startswith(fragment)
+    rendered_prelude = Environment(trim_blocks=True, lstrip_blocks=True).from_string(
+        _skills_prelude(prompt_name)
+    ).render(skills_context="sample skill")
+    assert rendered_prelude == render_skills_prefix(skills_context="sample skill")
+
+
+def test_render_skills_prefix_empty_without_context():
+    assert render_skills_prefix(skills_context="") == ""
 
 
 @pytest.mark.parametrize("prompt_name", _SKILLS_PREFIX_TEMPLATES)
