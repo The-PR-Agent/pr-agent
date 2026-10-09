@@ -149,6 +149,15 @@ def _as_bool(value) -> bool:
     return False
 
 
+def _as_line_number(value) -> Optional[int]:
+    """Parse an optional positive line number, tolerating null or empty values."""
+    try:
+        line = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return line if line > 0 else None
+
+
 def _review_failure_comment(error: Exception) -> str:
     """Build an optional deterministic failure explanation from an allowlist of safe messages."""
     if not _as_bool(get_settings().pr_reviewer.get("publish_error_details", False)):
@@ -728,12 +737,9 @@ class PRReviewer:
             "path": path,
             "body": f"**{header}**\n\n{content}" if header else content,
         }
-        try:
-            start = int(str(issue.get("start_line", 0)).strip())
-            end = int(str(issue.get("end_line", start)).strip())
-        except (TypeError, ValueError):
-            start, end = 0, 0
-        if start > 0:
+        start = _as_line_number(issue.get("start_line"))
+        if start is not None:
+            end = _as_line_number(issue.get("end_line")) or start
             finding["line_start"] = start
             finding["line_end"] = max(start, end)
         return finding
@@ -1439,11 +1445,8 @@ class PRReviewer:
         issue_header = (issue.get("issue_header") or "").strip()
         if issue_header.lower() == "possible bug":
             issue_header = "Possible Issue"
-        try:
-            start_line = int(str(issue.get("start_line", 0)).strip())
-            end_line = int(str(issue.get("end_line", 0)).strip())
-        except ValueError:
-            start_line, end_line = 0, 0
+        start_line = _as_line_number(issue.get("start_line")) or 0
+        end_line = _as_line_number(issue.get("end_line")) or start_line
 
         if not relevant_file or not issue_content or start_line < 1 or end_line < start_line:
             get_logger().warning("Review finding has no usable location, keeping it in the summary",
