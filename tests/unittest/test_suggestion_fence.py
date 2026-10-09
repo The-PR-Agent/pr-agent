@@ -6,10 +6,16 @@ invalid-comment repair, Gerrit's description/code split, and the inline
 comment dedup -- has to read the longer fence as one block too.
 """
 
+import re
+
 import pytest
 
 from pr_agent.algo.inline_comment_dedup import extract_suggestion_code
-from pr_agent.algo.utils import get_suggestion_fence
+from pr_agent.algo.utils import (
+    get_suggestion_fence,
+    iter_suggestion_blocks,
+    replace_suggestion_blocks,
+)
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
 from pr_agent.git_providers.bitbucket_provider import BitbucketProvider
 from pr_agent.git_providers.bitbucket_server_provider import BitbucketServerProvider
@@ -95,3 +101,45 @@ def test_gerrit_split_keeps_a_literal_suggestion_example_in_the_code():
     description, code = GerritProvider.__new__(GerritProvider).split_suggestion(body)
 
     assert code == improved + "\n"
+
+
+_LAZY_SUGGESTION_RE = re.compile(r"(?<!`)(`{3,})suggestion.*?\1", re.DOTALL)
+
+_BODIES = [
+    f"{HEADER}\n```suggestion\nreturn new()\n```",
+    f"{HEADER}\n````suggestion\n{IMPROVED}\n````",
+    f"{HEADER}\n```suggestion\nfirst\n```\ntext\n```suggestion\nsecond\n```",
+    f"{HEADER}\n```suggestion\nunclosed\n",
+    f"{HEADER}\n````suggestion\nunclosed four\n```suggestion\nclosed three\n```",
+    "```suggestion```",
+    "no fence here",
+]
+
+
+@pytest.mark.parametrize("body", _BODIES)
+def test_replace_suggestion_blocks_matches_the_lazy_regex(body):
+    expected = _LAZY_SUGGESTION_RE.sub(lambda _: "\n\nREPLACED", body)
+
+    assert replace_suggestion_blocks(body, "\n\nREPLACED") == expected
+
+
+def test_iter_suggestion_blocks_returns_the_code_between_the_fences():
+    body = f"{HEADER}\n````suggestion\n{IMPROVED}\n````"
+    blocks = list(iter_suggestion_blocks(body))
+
+    assert len(blocks) == 1
+    start, end, code = blocks[0]
+    assert body[start:end] == f"````suggestion\n{IMPROVED}\n````"
+    assert code == IMPROVED + "\n"
+
+
+def test_iter_suggestion_blocks_yields_no_code_for_a_single_line_block():
+    assert list(iter_suggestion_blocks("```suggestion```")) == [(0, 16, None)]
+
+
+def test_many_unclosed_openers_do_not_rescan_the_body():
+    n = 400
+    body = "".join("`" * (n - i) + "suggestion\n" for i in range(n - 2))
+
+    assert list(iter_suggestion_blocks(body)) == []
+    assert replace_suggestion_blocks(body, "REPLACED") == body

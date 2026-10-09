@@ -41,6 +41,7 @@ from ..algo.utils import (
     Range,
     find_line_number_of_relevant_line_in_file,
     load_large_diff,
+    replace_suggestion_blocks,
     set_file_languages,
 )
 from ..config_loader import get_settings
@@ -2206,9 +2207,8 @@ class GithubProvider(GitProvider):
                                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                                 diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
                                              f"```diff\n{patch.rstrip()}\n```")
-                                # replace ```suggestion ... ``` with diff_code, using regex:
-                                body = re.sub(r'(?<!`)(`{3,})suggestion.*?\1', lambda _, dc=diff_code: dc, body,
-                                              flags=re.DOTALL)
+                                # replace ```suggestion ... ``` with diff_code:
+                                body = replace_suggestion_blocks(body, diff_code)
                                 body += "\n\n</details>"
                                 suggestion['relevant_lines_start'] = new_start
                                 suggestion['relevant_lines_end'] = new_end

@@ -15,7 +15,7 @@ from pr_agent.agent.request_policy import policy_metadata, policy_value
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
-from ..algo.utils import find_line_number_of_relevant_line_in_file
+from ..algo.utils import find_line_number_of_relevant_line_in_file, replace_suggestion_blocks
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .diff_parsing import to_hunk_only_patch
@@ -240,7 +240,7 @@ class BitbucketProvider(GitProvider):
                 patch_orig = "\n".join(diff)
                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                 diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                body = re.sub(r'(?<!`)(`{3,})suggestion.*?\1', lambda _: diff_code, body, flags=re.DOTALL)
+                body = replace_suggestion_blocks(body, diff_code)
             except Exception as e:
                 get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                 return None

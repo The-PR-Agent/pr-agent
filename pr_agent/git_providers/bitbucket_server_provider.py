@@ -1,5 +1,4 @@
 import difflib
-import re
 import subprocess
 from collections import Counter
 from types import SimpleNamespace
@@ -16,7 +15,7 @@ from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.language_handler import build_language_file_matcher, is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
-from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
+from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff, replace_suggestion_blocks
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
 from .git_provider import GitProvider, cache_languages, get_git_ssl_env
@@ -179,7 +178,7 @@ class BitbucketServerProvider(GitProvider):
                 patch_orig = "\n".join(diff)
                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                 diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                body = re.sub(r'(?<!`)(`{3,})suggestion.*?\1', lambda _: diff_code, body, flags=re.DOTALL)
+                body = replace_suggestion_blocks(body, diff_code)
             except Exception as e:
                 get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                 return None

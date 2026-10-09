@@ -146,6 +146,52 @@ def get_suggestion_fence(code: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+_SUGGESTION_OPENER_RE = re.compile(r"(?<!`)(`{3,})suggestion")
+
+
+def iter_suggestion_blocks(body: str):
+    """Yield ``(start, end, code)`` for every closed ```suggestion block in *body*.
+
+    ``start`` and ``end`` are the end-exclusive bounds of the whole block,
+    fences included. ``code`` is the text between the opening line and the
+    closing fence, or ``None`` when the block is closed on the opener line
+    itself. The opener is matched with a regex and its closer is the first run
+    of the same fence length, located with ``str.find``; a lazy regex scan
+    would run to the end of the body for every unclosed opener instead.
+    """
+    position = 0
+    while True:
+        opener = _SUGGESTION_OPENER_RE.search(body, position)
+        if opener is None:
+            return
+        fence = opener.group(1)
+        length = len(fence)
+        close = body.find(fence, opener.end())
+        if close == -1:
+            position = opener.start() + length
+            continue
+        code_start = body.find("\n", opener.end())
+        code = body[code_start + 1:close] if code_start != -1 and code_start < close else None
+        yield opener.start(), close + length, code
+        position = close + length
+
+
+def replace_suggestion_blocks(body: str, replacement: str) -> str:
+    """Replace every closed ```suggestion block in *body* with *replacement*.
+
+    Unclosed openers are left untouched, matching the previous lazy-regex
+    substitution without its repeated scan to the end of the body.
+    """
+    parts = []
+    position = 0
+    for start, end, _ in iter_suggestion_blocks(body):
+        parts.append(body[position:start])
+        parts.append(replacement)
+        position = end
+    parts.append(body[position:])
+    return "".join(parts)
+
+
 def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,

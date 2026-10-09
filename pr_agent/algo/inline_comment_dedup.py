@@ -36,6 +36,8 @@ import hashlib
 import re
 from typing import Iterator, Optional
 
+from pr_agent.algo.utils import iter_suggestion_blocks
+
 _MARKER_URL = r"https://github.com/The-PR-Agent/pr-agent"
 BODY_MARKER_RE = re.compile(
     rf"<!-- pr-agent-dedup: ([a-f0-9]{{12}}) -->|\[pr-agent-dedup: "
@@ -54,7 +56,6 @@ _MARKER_RES = (BODY_MARKER_RE, CODE_MARKER_RE, KEY_ISSUE_LOCATION_MARKER_RE)
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
-_CODE_BLOCK_RE = re.compile(r"(?<!`)(`{3,})suggestion[^\n]*\n(.*?)\1", re.DOTALL)
 _DIFF_BLOCK_RE = re.compile(r"```diff[^\n]*\n(.*?)```", re.DOTALL)
 
 
@@ -135,9 +136,9 @@ def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[
 
 def extract_suggestion_code(body: str) -> Optional[str]:
     body = _strip_markers(body)
-    match = _CODE_BLOCK_RE.search(body)
-    if match:
-        return match.group(2).strip("\n")
+    block = next(iter_suggestion_blocks(body), None)
+    if block is not None and block[2] is not None:
+        return block[2].strip("\n")
     diff_match = _DIFF_BLOCK_RE.search(body)
     if diff_match:
         return _reconstruct_improved_code(diff_match.group(1))

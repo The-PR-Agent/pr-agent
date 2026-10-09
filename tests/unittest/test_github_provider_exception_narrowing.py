@@ -302,31 +302,26 @@ def test_verify_code_comment_reports_failure_on_an_empty_response_body():
     assert isinstance(error, TypeError)
 
 
-def test_validate_comments_inside_hunks_survives_a_regex_error(monkeypatch):
-    """Keep ``re.error`` handled: it subclasses Exception directly, so the other four types
-    never cover it, and main's ``except Exception`` did.
+def test_validate_comments_inside_hunks_survives_a_substitution_failure(monkeypatch):
+    """Keep a failed block rewrite from aborting the remaining suggestions.
 
-    #3577 passes the replacement as a function, which removed the trigger that reached this
-    handler through a backslash in the proposed code. Pin the handler itself instead, by making
-    the substitution fail inside the loop.
+    The handler catches ``re.error`` directly, so the other four types never cover it and
+    main's ``except Exception`` did. ``replace_suggestion_blocks`` replaced the ``re.sub``
+    call, so pin the handler itself by making the rewrite fail inside the loop.
     """
     import re as real_re
-
-    class _ReWithFailingSub:
-        error = real_re.error
-        DOTALL = real_re.DOTALL
-        compile = staticmethod(real_re.compile)
-
-        @staticmethod
-        def sub(*args, **kwargs):
-            raise real_re.error("bad pattern")
 
     diff_file = SimpleNamespace(filename="a.py", patch="@@ -1,3 +1,3 @@\n-old\n+new\n")
     provider = _make_provider()
     monkeypatch.setattr(provider, "get_diff_files", lambda: [diff_file])
     monkeypatch.setattr(
         "pr_agent.git_providers.github_provider.set_file_languages", lambda files: files)
-    monkeypatch.setattr("pr_agent.git_providers.github_provider.re", _ReWithFailingSub)
+
+    def _fail(_body, _replacement):
+        raise real_re.error("bad pattern")
+
+    monkeypatch.setattr(
+        "pr_agent.git_providers.github_provider.replace_suggestion_blocks", _fail)
 
     suggestions = [{
         "relevant_file": "a.py",

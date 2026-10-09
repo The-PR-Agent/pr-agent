@@ -34,6 +34,7 @@ from ..algo.language_handler import build_language_file_matcher, is_valid_file
 from ..algo.utils import (
     find_line_number_of_relevant_line_in_file,
     load_large_diff,
+    replace_suggestion_blocks,
 )
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
@@ -282,7 +283,7 @@ class AzureDevopsProvider(GitProvider):
             if not patch.strip():
                 return body
             diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-            return re.sub(r'(?<!`)(`{3,})suggestion.*?\1', lambda _: diff_code, body, flags=re.DOTALL)
+            return replace_suggestion_blocks(body, diff_code)
         except Exception as e:
             get_logger().exception(f"Azure failed to render a code suggestion as a diff, error: {e}")
             return body
