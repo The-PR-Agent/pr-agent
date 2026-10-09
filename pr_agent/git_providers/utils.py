@@ -167,6 +167,19 @@ def _reapply_env_overrides():
         get_logger().warning(f"Failed to re-apply env-var overrides: {e}")
 
 
+def _merge_section_keys(section_dict: dict, contents: dict):
+    """Merge contents into section_dict, replacing keys case-insensitively.
+
+    Dynaconf looks keys up case-insensitively, so a key that differs only in
+    casing from an existing one must replace it instead of sitting beside it
+    (the effective value would otherwise depend on dict ordering).
+    """
+    for key, value in contents.items():
+        for existing_key in [k for k in section_dict if k.lower() == key.lower()]:
+            del section_dict[existing_key]
+        section_dict[key] = value
+
+
 def _apply_settings_from_file(path: str, label: str):
     """
     Merge an external .toml settings file into the global settings, section-by-section.
@@ -219,15 +232,7 @@ def _apply_settings_from_file(path: str, label: str):
             if not contents:
                 continue
             section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
-            for key, value in contents.items():
-                # Dynaconf looks keys up case-insensitively, so drop any existing
-                # key with the same name in a different casing before adding the
-                # file's key. Otherwise both survive and the effective value
-                # depends on dict ordering (mirrors apply_repo_settings below).
-                for existing_key in list(section_dict):
-                    if existing_key.lower() == key.lower():
-                        del section_dict[existing_key]
-                section_dict[key] = value
+            _merge_section_keys(section_dict, contents)
             get_settings().unset(section)
             get_settings().set(section, section_dict, merge=False)
             merged_sections.append(section)
@@ -516,14 +521,7 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
             for key in contents:
                 original_values.setdefault(
                     key.lower(), (key.lower() in normalized, copy.deepcopy(normalized.get(key.lower()))))
-        for key, value in contents.items():
-            # Dynaconf looks up keys case-insensitively, so replacing the existing key
-            # (whatever its casing) keeps the newer value from a nearer/sibling config
-            # deterministic instead of leaving an "canonical-cased" duplicate beside it.
-            for existing_key in list(section_dict):
-                if existing_key.lower() == key.lower():
-                    del section_dict[existing_key]
-            section_dict[key] = value
+        _merge_section_keys(section_dict, contents)
         get_settings().unset(section)
         get_settings().set(section, section_dict, merge=False)
     # Same precedence-restoration rationale as the extra-config path: env-sourced values
