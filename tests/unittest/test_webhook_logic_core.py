@@ -739,6 +739,7 @@ async def _run_gitlab_pr_commands(module, monkeypatch, draft, repo_setting, even
 
     agent = RecordingAgent()
     monkeypatch.setattr(module, "apply_repo_settings", apply_repo_settings)
+    monkeypatch.setattr(module, "get_git_provider_with_context", lambda pr_url: SimpleNamespace())
     monkeypatch.setattr(module, "PRAgent", lambda: agent)
     secret_provider = SimpleNamespace(
         get_secret=lambda _: '{"gitlab_token": "token", "webhook_token": "webhook-token"}'

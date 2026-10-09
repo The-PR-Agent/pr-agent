@@ -10,6 +10,7 @@ import uvicorn
 from fastapi import APIRouter, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from gitlab.exceptions import GitlabGetError
 from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette_context import context
@@ -37,6 +38,9 @@ from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_me
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
+
+# A new MR can be unreadable for a moment after its webhook fires, so the first lookup answers 404.
+NEW_MR_LOOKUP_RETRY_DELAYS = (1, 2, 4)
 
 
 # Validated at import so a typo in CONFIG.SECRET_PROVIDER still fails at startup. The
@@ -262,6 +266,27 @@ def should_process_pr_logic(data) -> bool:
     return shared_should_process_pr_logic(data, provider="gitlab")
 
 
+def _is_merge_request_not_found(error: Exception) -> bool:
+    cause = error.__cause__
+    return isinstance(cause, GitlabGetError) and cause.response_code == 404
+
+
+async def get_new_mr_provider(url: str):
+    """Build the provider for a just-opened MR, retrying a 404 while the MR becomes visible to the API.
+
+    Any other failure, and a 404 that outlasts the retries, is raised as before.
+    """
+    for attempt, delay in enumerate((*NEW_MR_LOOKUP_RETRY_DELAYS, None), start=1):
+        try:
+            return get_git_provider_with_context(pr_url=url)
+        except ValueError as e:
+            if delay is None or not _is_merge_request_not_found(e):
+                raise
+            get_logger().warning(
+                f"Merge request not found yet (attempt {attempt}), retrying in {delay}s: {url}")
+            await asyncio.sleep(delay)
+
+
 def authenticate_gitlab_webhook(request: Request, log_context: dict):
     request_token = request.headers.get("X-Gitlab-Token", "")
     shared_secret = get_settings().get("GITLAB.SHARED_SECRET")
@@ -340,6 +365,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
             if object_attributes.get('action') in ['open', 'reopen']:
                 url = object_attributes.get('url')
                 get_logger().info(f"New merge request: {url}")
+                await get_new_mr_provider(url)
                 apply_repo_settings(url)
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
