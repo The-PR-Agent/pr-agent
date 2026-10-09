@@ -1,5 +1,6 @@
 """Keep synthetic CI credentials out of model context and diagnostics."""
 
+from time import perf_counter
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -123,6 +124,8 @@ def test_shared_redactor_counts_each_type_and_does_not_recount_masked_headers():
     "user_token", "personal_access_token", "bearer_token", "basic_token", "api_token",
     "api_key", "gemini_api_key", "jira_api_token", "pat", "client_secret", "webhook_secret",
     "shared_secret", "webhook_password", "github.user_token", "GITHUB__USER_TOKEN", "BITBUCKET_BEARER_TOKEN",
+    "_api_key", "__API_KEY", "github._api_key", "_github.user_token", "GITHUB___USER_TOKEN",
+    "github2.api_key", "git-hub.api_key",
 ])
 @pytest.mark.parametrize("assignment", ["{key}=synthetic-opaque-secret", '{key} = "synthetic-opaque-secret"',
                                         '"{key}": "synthetic-opaque-secret"'])
@@ -141,6 +144,19 @@ def test_configured_credential_assignments_are_redacted(tmp_path, monkeypatch, k
     repeated_counts = {}
     assert redact_credentials(context, redaction_counts=repeated_counts) == context
     assert repeated_counts == {}
+
+
+def test_long_dotted_noncredential_assignment_is_unchanged_and_fast():
+    content = "a." * 5000 + "ordinary=value\nFAILED test_boundary"
+    counts = {}
+    started = perf_counter()
+
+    redacted = redact_credentials(content, redaction_counts=counts)
+    elapsed = perf_counter() - started
+
+    assert redacted == content
+    assert counts == {}
+    assert elapsed < 1.0
 
 
 @pytest.mark.parametrize("content", [
@@ -239,6 +255,7 @@ def test_partial_redaction_markers_do_not_hide_credential_suffixes(tmp_path, mon
     'api_token="<redacted>"', '"api_token": "<redacted>"', "api_token=<redacted>\n",
     "Authorization: Bearer <redacted>  \n", "Authorization: Bearer <redacted>\t\r\n",
     "api_key_count=3\nuser_token_length=40\nkey=expected-value",
+    "xapi_key=synthetic-value", "1api_key=synthetic-value", "githubxapi_key=synthetic-value",
     'api_token=""', "api_token='  '", 'api_token=" <redacted> "',
 ])
 def test_masked_values_and_noncredential_assignments_are_not_counted(content):

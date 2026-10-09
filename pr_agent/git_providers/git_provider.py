@@ -142,7 +142,7 @@ _AUTH_HEADER_RE = re.compile(
     r"(?!<redacted>[ \t]*(?:[\r\n]|$))[^\r\n]+"
 )
 _CREDENTIAL_ASSIGNMENT_RE = re.compile(
-    r"(?i)(\b(?:[a-z][a-z0-9]*[_.]+)*(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
+    r"(?i)((?<![a-z0-9])(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
     r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token|openai_key|openai_api_key|"
     r"user_token|personal_access_token|bearer_token|basic_token|api_token|api_key|pat|client_secret|"
     r"webhook_secret|shared_secret|webhook_password)\b[\"']?[ \t]*[:=][ \t]*)"
