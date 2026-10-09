@@ -1,26 +1,29 @@
 import json
-import os
 import pathlib
+import posixpath
 import re
 import shutil
+import stat
 import string
 import subprocess
 import uuid
 from collections import Counter, namedtuple
 from pathlib import Path
-from tempfile import NamedTemporaryFile, mkdtemp
+from tempfile import mkdtemp
 from typing import Optional
 
 import requests
 import urllib3.util
 from git import Repo
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.git_providers.git_provider import GitProvider, cache_languages, redact_credentials
 from pr_agent.git_providers.local_git_provider import PullRequestMimic
+from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
 
 
@@ -36,13 +39,13 @@ def _call(*command, **kwargs) -> (int, str, str):
 
 
 def clone(url, directory):
-    get_logger().info("Cloning %s to %s", url, directory)
+    get_logger().info("Cloning {} to {}", redact_credentials(url), directory)
     stdout = _call('git', 'clone', "--depth", "1", url, directory)
     get_logger().info(stdout)
 
 
 def fetch(url, refspec, cwd):
-    get_logger().info("Fetching %s %s", url, refspec)
+    get_logger().info("Fetching {} {}", redact_credentials(url), refspec)
     stdout = _call(
         'git', 'fetch', '--depth', '2', url, refspec,
         cwd=cwd
@@ -176,18 +179,19 @@ def adopt_to_gerrit_message(message):
 
 
 def add_suggestion(src_filename, context: str, start, end: int):
-    with (
-        NamedTemporaryFile("w", delete=False) as tmp,
-        open(src_filename, "r") as src
-    ):
+    # Rewrite the file in place with its own line endings, so the patch built from
+    # `git diff` holds only the suggestion: no CRLF-to-LF rewrite and no mode change.
+    with open(src_filename, "r", encoding="utf-8", newline="") as src:
         lines = src.readlines()
-        tmp.writelines(lines[:start - 1])
+    # Match the ending of the first replaced line, falling back to the first line.
+    anchor = lines[start - 1] if 0 < start <= len(lines) else (lines[0] if lines else "")
+    if context and anchor.endswith("\r\n"):
+        context = context.replace("\r\n", "\n").replace("\n", "\r\n")
+    with open(src_filename, "w", encoding="utf-8", newline="") as dst:
+        dst.writelines(lines[:start - 1])
         if context:
-            tmp.write(context)
-        tmp.writelines(lines[end:])
-
-    shutil.copy(tmp.name, src_filename)
-    os.remove(tmp.name)
+            dst.write(context)
+        dst.writelines(lines[end:])
 
 
 def upload_patch(patch, path):
@@ -205,7 +209,8 @@ def upload_patch(patch, path):
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {patch_server_token}",
-        }
+        },
+        timeout=get_http_request_timeout(),
     )
     response.raise_for_status()
     patch_server_endpoint = patch_server_endpoint.rstrip("/")
@@ -214,10 +219,21 @@ def upload_patch(patch, path):
 
 class GerritProvider(GitProvider):
 
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # The checkout provides no reliable source/target branch names or review labels.
+        return policy_metadata(title=self.pr.title, sender=self.repo.head.commit.author.email,
+                               repo_full_name=self.project, source_branch=None, target_branch=None)
+
     def __init__(self, key: str, incremental=False):
+        self.repo_path = None
         self.project, self.refspec = key.split(':')
         assert self.project, "Project name is required"
         assert self.refspec, "Refspec is required"
+
+        if not re.fullmatch(r"refs/changes/[0-9]{2}/[0-9]+/[0-9]+", self.refspec):
+            raise ValueError(
+                "Gerrit refspec must match refs/changes/NN/<change>/<patchset>"
+            )
         base_url = get_settings().get('gerrit.url')
         assert base_url, "Gerrit URL is required"
         user = get_settings().get('gerrit.user')
@@ -234,6 +250,7 @@ class GerritProvider(GitProvider):
         self.repo = Repo(self.repo_path)
         assert self.repo
         self.pr_url = base_url
+        self._commit_diffs = None
         self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
 
     def get_pr_title(self):
@@ -261,23 +278,75 @@ class GerritProvider(GitProvider):
     def get_commit_messages(self) -> str:
         return self.repo.head.commit.message
 
+    @staticmethod
+    def _resolve_settings_entry(settings_tree, settings_path):
+        path_parts = settings_path.split("/")
+        visited_links = set()
+        resolved_parts = []
+        tree_stack = [settings_tree]
+        while path_parts:
+            part = path_parts.pop(0)
+            if part in ("", "."):
+                continue
+            if part == "..":
+                if not resolved_parts:
+                    return None
+                resolved_parts.pop()
+                tree_stack.pop()
+                continue
+
+            entry = tree_stack[-1] / part
+            if stat.S_ISLNK(entry.mode):
+                link_path = "/".join((*resolved_parts, part))
+                link_state = (link_path, tuple(path_parts))
+                if link_state in visited_links or len(visited_links) >= 40:
+                    return None
+                visited_links.add(link_state)
+                target = entry.data_stream.read().decode("utf-8")
+                if not target or posixpath.isabs(target):
+                    return None
+                path_parts = target.split("/") + path_parts
+            elif path_parts:
+                if entry.type != "tree":
+                    return None
+                resolved_parts.append(part)
+                tree_stack.append(entry)
+            else:
+                return entry
+        return None
+
     def get_repo_settings(self):
         try:
-            with open(self.repo_path / ".pr_agent.toml", 'rb') as f:
-                contents = f.read()
-            return contents
-        except OSError:
+            settings_tree = self.repo.branches[0].commit.tree
+            settings_entry = self._resolve_settings_entry(settings_tree, ".pr_agent.toml")
+            if settings_entry is None or settings_entry.type != "blob":
+                return b""
+            return settings_entry.data_stream.read()
+        except (IndexError, KeyError, OSError, UnicodeDecodeError, ValueError):
             return b""
 
-    def get_diff_files(self) -> list[FilePatchInfo]:
-        diffs = list(
-            self.repo.head.commit.diff(
-                self.repo.head.commit.parents[0],  # previous commit
-                create_patch=True,
-                R=True
+    def _get_commit_diffs(self) -> list:
+        """Return the cached, unfiltered commit diff, including rename detection and patches.
+
+        Keep filtering in callers so repository settings loaded after construction
+        take effect on every read.
+        """
+        diffs = getattr(self, '_commit_diffs', None)
+        if diffs is None:
+            diffs = list(
+                self.repo.head.commit.diff(
+                    self.repo.head.commit.parents[0],  # previous commit
+                    create_patch=True,
+                    R=True
+                )
             )
-        )
-        diffs = filter_ignored(diffs, "gerrit")
+            self._commit_diffs = diffs
+        return diffs
+
+    def get_diff_files(self) -> list[FilePatchInfo]:
+        # Apply ignore rules at call time: __init__ reads the diff before repository
+        # settings are loaded.
+        diffs = filter_ignored(self._get_commit_diffs(), 'gerrit')
 
         diff_files = []
         for diff_item in diffs:
@@ -318,14 +387,15 @@ class GerritProvider(GitProvider):
         return diff_files
 
     def get_files(self):
-        diff_index = self.repo.head.commit.diff(
-            self.repo.head.commit.parents[0],  # previous commit
-            R=True
-        )
-        # Get the list of changed files
-        diff_files = [item.a_path for item in diff_index]
-        return diff_files
+        # Read names from the filtered raw diff to avoid another walk or blob decoding.
+        # Use the destination path for renames and the original path for deletions.
+        return [
+            path
+            for path in (diff.b_path or diff.a_path for diff in filter_ignored(self._get_commit_diffs(), 'gerrit'))
+            if path
+        ]
 
+    @cache_languages
     def get_languages(self):
         """
         Calculate percentage of languages in repository. Used for hunk
@@ -419,8 +489,20 @@ class GerritProvider(GitProvider):
             patch = diff(cwd=self.repo_path)
             patch_id = uuid.uuid4().hex[0:4]
             path = "/".join(["codium-ai", self.refspec, patch_id])
-            full_path = upload_patch(patch, path)
-            reset_local_changes(self.repo_path)
+            uploaded = False
+            try:
+                full_path = upload_patch(patch, path)
+                uploaded = True
+            finally:
+                try:
+                    reset_local_changes(self.repo_path)
+                except Exception as cleanup_error:
+                    if uploaded:
+                        raise
+                    get_logger().warning(
+                        "Failed to reset Gerrit edits after upload failed in {}: {}; stderr: {!r}",
+                        self.repo_path, cleanup_error, getattr(cleanup_error, "stderr", None),
+                    )
             msg.append(f'* {description}\n{full_path}')
 
         if msg:

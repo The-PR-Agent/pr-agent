@@ -197,14 +197,6 @@ def key_issue_body_with_markers(body: str, body_fp: str, location_fp: str,
     return _append_markers(body, markers, max_chars)
 
 
-def inline_comment_line(comment: dict):
-    """Best-effort anchor line for a GitHub inline-comment dict."""
-    for key in ("line", "position", "start_line"):
-        if comment.get(key) is not None:
-            return comment[key]
-    return None
-
-
 def iter_existing_inline_comment_bodies(git_provider) -> Iterator[str]:
     """Yield the body of every existing comment on the current PR/MR.
 

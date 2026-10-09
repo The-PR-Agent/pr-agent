@@ -69,6 +69,13 @@ for the authoritative default values.
     <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
   </tr>
   <tr>
+    <td><b>publish_review_failure_comment</b></td>
+    <td>
+      Set to false to suppress the "Failed to review PR" comment, including when a persistent review comment
+      cannot be updated. Successful review output and the command's failure status are unchanged. Default is true.
+    </td>
+  </tr>
+  <tr>
     <td><b>publish_error_details</b></td>
     <td>
       If set to true, a failed manual review comment includes a deterministic, sanitized failure reason for known
@@ -91,6 +98,16 @@ for the authoritative default values.
     <td><b>persistent_finding_state</b></td>
     <td>If set to true, PR-Agent persists structured review finding state across complete review runs, so findings can be resolved and reopened. Resolved findings retain the original Markdown formatting of their description. Incremental and partial reviews do not resolve absent findings. Default is true.</td>
 
+  </tr>
+  <tr>
+    <td><b>max_previous_findings_chars</b></td>
+    <td>Character budget for the findings stored by earlier reviews (requires <code>persistent_finding_state</code>). They are given to the model so it repeats a still-valid finding with its earlier wording instead of re-raising it reworded, and does not re-raise a resolved one unless the code reintroduces it. On GitLab, an inline key-issue thread that someone other than PR-Agent resolved is given as dismissed, with its last reply, so the model does not re-raise it unless the code makes it worse. Set to 0 to disable. Default is 8000.
+      On Azure DevOps, verified PR-Agent inline key issues with <code>wontFix</code> or <code>byDesign</code>
+      are also passed as dismissed when the status differs from <code>azure_devops.default_comment_status</code>.
+      A matching default stays an ordinary prior finding. This infers a human decision; Azure does not identify
+      the status-changing actor here, and the current default may differ from the default used at creation.
+      Stable <code>azure_devops_server.agent_identity</code> configuration is required.
+    </td>
   </tr>
   <tr>
   <td><b>final_update_message</b></td>
@@ -175,7 +192,13 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>require_merge_recommendation</b></td>
-    <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required.</td>
+    <td>If set to true, the tool will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model's findings, not a guarantee about the code.</td>
+  </tr>
+  <tr>
+    <td><b>require_failure_modes</b></td>
+    <td>Off by default. If enabled, adds up to three concrete failure scenarios, each with what could break,
+    where, its trigger, how it could be detected, and whether a test or check in this PR covers it.
+    These scenarios guide human review; they do not gate merging or prove that the PR is safe.</td>
   </tr>
   <tr>
     <td><b>require_priority_files</b></td>
@@ -235,8 +258,8 @@ Edit this field to enable/disable the tool, or to change the configurations used
 
 The `review` tool can automatically add labels to your Pull Requests:
 
-- **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L134) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
-- **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L118) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
+- **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
+- **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L119) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
 
 Ticket compliance is reported in the review comment, not as a PR label. It is controlled by
 `pr_reviewer.require_ticket_analysis_review` and requires available ticket context. The tool does not add
@@ -291,6 +314,16 @@ into a single review that says how many chunks it was built from. Files that do 
 after chunking are still listed in the coverage footer. Every chunk is a separate model call,
 so a chunked review costs roughly `max_number_of_calls` times a normal one.
 
+While the chunks run, the temporary `Preparing review...` comment is rewritten in place with the
+number of chunks already analyzed, for example `Preparing review... analyzed 2 of 3 chunks`, plus
+`... 1 chunk failed` when a chunk gives up. The updates require
+`config.publish_output_progress` and a provider that supports both editing and removing a
+comment, so plain-diff runs keep the frozen placeholder. Automatic commands publish no progress
+comment, but while `github.publish_as_check_run` is enabled their in-progress check run shows the
+same chunk count. The comment stays
+temporary and is still removed before the merged review is published. A fallback model restores
+the placeholder before it starts, so the visible count never moves backward.
+
 If a chunk fails or returns malformed output, successful chunks are retained and fallback
 models retry only the pending work. Pending chunks can be split for a smaller model, within
 the call limit; a larger model can also include previously omitted files. Chunks that still
@@ -314,6 +347,7 @@ merged field by field:
 | `relevant_tests` | Yes if any chunk found tests |
 | `score` | The lowest score any chunk gave |
 | `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
+| `failure_modes` | Concatenate valid cases in chunk order, keeping at most three |
 | `estimated_effort_to_review_[1-5]` | The highest value any chunk gave |
 | `contribution_time_cost_estimate` | The sum over the chunks, per case |
 | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |

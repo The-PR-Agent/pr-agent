@@ -1,9 +1,9 @@
-from fastapi import FastAPI
 from mangum import Mangum
 from starlette.middleware import Middleware
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.servers.gitlab_webhook import router
+from pr_agent.servers.request_body_limit import create_server_app
 
 try:
     from pr_agent.config_loader import apply_secrets_manager_config
@@ -12,12 +12,12 @@ except Exception as e:
     try:
         from pr_agent.log import get_logger
         get_logger().debug(f"AWS Secrets Manager initialization failed, falling back to environment variables: {e}")
-    except:
+    except ImportError:
         # Fail completely silently if log module is not available
         pass
 
 middleware = [Middleware(RawContextMiddleware)]
-app = FastAPI(middleware=middleware)
+app = create_server_app(middleware=middleware)
 app.include_router(router)
 
 handler = Mangum(app, lifespan="off")

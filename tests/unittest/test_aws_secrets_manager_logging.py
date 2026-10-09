@@ -82,7 +82,9 @@ def test_sdk_error_details_are_not_logged(monkeypatch, provider_settings, provid
         else:
             client.get_secret_value.side_effect = error
             if method == "get_secret":
-                assert provider.get_secret(SECRET_NAME) == ""
+                with pytest.raises(CredentialRetrievalError) as caught:
+                    provider.get_secret(SECRET_NAME)
+                assert caught.value is error
                 expected = "Failed to get secret from AWS Secrets Manager: CredentialRetrievalError"
             else:
                 assert provider.get_all_secrets() == {}
@@ -104,7 +106,9 @@ def test_unmodeled_aws_error_code_is_logged_without_message(
     provider = aws_provider.AWSSecretsManagerProvider()
     client.get_secret_value.side_effect = error
 
-    assert provider.get_secret(SECRET_NAME) == ""
+    with pytest.raises(ClientError) as caught:
+        provider.get_secret(SECRET_NAME)
+    assert caught.value is error
     assert ERROR_SECRET in str(error)
     assert_safe_log(
         provider_logs,
@@ -132,12 +136,31 @@ def test_webhook_token_is_not_logged_on_service_error(monkeypatch, provider_sett
                 http_status_code=500,
                 expected_params={"SecretId": WEBHOOK_TOKEN},
             )
-            assert provider.get_secret(WEBHOOK_TOKEN) == ""
+            with pytest.raises(ClientError):
+                provider.get_secret(WEBHOOK_TOKEN)
             stubber.assert_no_pending_responses()
     finally:
         client.close()
 
     assert_safe_log(provider_logs, "Failed to get secret from AWS Secrets Manager: InternalServiceError", "WARNING")
+
+
+def test_resource_not_found_returns_empty_string(monkeypatch, provider_settings, provider_logs):
+    error = ClientError(
+        {"Error": {"Code": "ResourceNotFoundException", "Message": "Not found"}},
+        "GetSecretValue",
+    )
+    client = MagicMock()
+    monkeypatch.setattr(aws_provider.boto3, "client", MagicMock(return_value=client))
+    provider = aws_provider.AWSSecretsManagerProvider()
+    client.get_secret_value.side_effect = error
+
+    assert provider.get_secret(SECRET_NAME) == ""
+    assert_safe_log(
+        provider_logs,
+        "Failed to get secret from AWS Secrets Manager: ResourceNotFoundException",
+        "WARNING",
+    )
 
 
 def test_store_secret_logs_error_code_without_secret_name(

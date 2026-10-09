@@ -5,13 +5,14 @@ import uuid
 from typing import Any, Dict, Tuple
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
@@ -25,9 +26,11 @@ from pr_agent.servers.github_common import (
 )
 from pr_agent.servers.github_common import handle_line_comments as handle_line_comments
 from pr_agent.servers.github_common import matches_review_state as matches_review_state
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
     get_pr_commands,
+    is_ask_command_comment,
     push_trigger_slot,
     shared_should_process_pr_logic,
     verify_signature,
@@ -99,11 +102,6 @@ async def get_body(request):
     except Exception as e:
         get_logger().error("Error reading request body", artifact={"error": e})
         raise HTTPException(status_code=400, detail="Error reading request body") from e
-    try:
-        body = await request.json()
-    except Exception as e:
-        get_logger().error("Error parsing request body", artifact={"error": e})
-        raise HTTPException(status_code=400, detail="Error parsing request body") from e
     webhook_secret = getattr(get_settings().github, 'webhook_secret', None)
     if not webhook_secret:
         # Refuse unauthenticated webhooks. Silently accepting requests when
@@ -113,6 +111,11 @@ async def get_body(request):
         raise HTTPException(status_code=403, detail="Webhook secret not configured")
     signature_header = request.headers.get('x-hub-signature-256', None)
     verify_signature(body_bytes, webhook_secret, signature_header)
+    try:
+        body = await request.json()
+    except Exception as e:
+        get_logger().error("Error parsing request body", artifact={"error": e})
+        raise HTTPException(status_code=400, detail="Error parsing request body") from e
     return body
 
 
@@ -140,7 +143,7 @@ async def handle_comments_on_pr(body: Dict[str, Any],
     elif "comment" in body and "pull_request_url" in body["comment"]:
         api_url = body["comment"]["pull_request_url"]
         try:
-            if ('/ask' in comment_body and
+            if (is_ask_command_comment(comment_body) and
                     'subject_type' in body["comment"] and body["comment"]["subject_type"] == "line"):
                 # comment on a code line in the "files changed" tab
                 comment_body = handle_line_comments(body, comment_body)
@@ -164,6 +167,8 @@ async def handle_comments_on_pr(body: Dict[str, Any],
                 propagate_tool_errors=True)
             # Optional, and disabled by default: tell the author how the command ended without
             # adding another comment to the thread.
+            if succeeded is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
             provider.react_to_outcome(comment_id, bool(succeeded))
             return succeeded
         else:
@@ -510,11 +515,16 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
                 reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-            check_run = _start_auto_command_check_run(provider, new_command)
+            def notify_start(new_command=new_command):
+                nonlocal check_run
+                check_run = _start_auto_command_check_run(provider, new_command)
             # Install a fresh collector so `command_failed()` below cannot read a verdict left
             # behind by the previous command; the tool replaces it with its own on entry.
             init_run_details()
-            if await agent.handle_request(api_url, new_command) is False:
+            result = await agent.handle_request(api_url, new_command, notify=notify_start)
+            if result is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
+            if result is False:
                 command_succeeded = False
             elif command_failed():
                 # `propagate_tool_errors` is false by default, so a tool that failed internally
@@ -542,7 +552,7 @@ if get_settings().github_app.override_deployment_type:
 middleware = [Middleware(RawContextMiddleware)]
 if prometheus_metrics_enabled():
     attach_metrics_endpoint(router)
-app = FastAPI(middleware=middleware)
+app = create_server_app(middleware=middleware)
 app.include_router(router)
 
 

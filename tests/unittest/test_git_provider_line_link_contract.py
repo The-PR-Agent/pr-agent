@@ -93,6 +93,7 @@ def _bitbucket_provider() -> BitbucketProvider:
 def _bitbucket_server_provider() -> BitbucketServerProvider:
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     provider.pr_url = "https://bitbucket.example/projects/OWNER/repos/repo/pull-requests/7"
+    provider.pr_num = 7
     return provider
 
 
@@ -296,6 +297,27 @@ def test_path_line_links_encode_reserved_filename(factory, expected_query):
     assert "%26" in parsed.path
     assert "%20" in parsed.path
     assert "%E2%98%83" in parsed.path
+
+
+@pytest.mark.parametrize("case", COMMON_INPUTS, ids=lambda case: case.name)
+@pytest.mark.parametrize(
+    ("filename", "encoded_filename"),
+    [
+        (RESERVED_FILE, "src/a%23b%3Fc%26d%20space-%E2%98%83.py"),
+        ("docs/literal%23.md", "docs/literal%2523.md"),
+        ("src/function(arg).py", "src/function%28arg%29.py"),
+    ],
+)
+def test_bitbucket_cloud_line_links_encode_filename_in_fragment(case, filename, encoded_filename):
+    provider = _bitbucket_provider()
+    link = provider.get_line_link(filename, case.start, case.end)
+    parsed = urlsplit(link)
+    line_anchor = "" if case.start == -1 else f"T{case.start}"
+
+    assert link == f"{provider.pr_url}/#L{encoded_filename}{line_anchor}"
+    assert parsed.path == "/owner/repo/pull-requests/7/"
+    assert parsed.query == ""
+    assert unquote(parsed.fragment) == f"L{filename}{line_anchor}"
 
 
 def test_azure_line_link_encodes_reserved_filename_as_one_ordered_query_value():

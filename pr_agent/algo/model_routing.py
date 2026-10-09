@@ -50,8 +50,7 @@ def route_primary_model(model_type: ModelType, git_provider) -> Optional[Tuple[s
 
     diff_files = git_provider.get_diff_files()
     num_files = len(diff_files)
-    num_hunks = count_hunks(diff_files)
-    size = f"{num_hunks} hunks in {num_files} files"
+    num_hunks = None
     global_deployment_id = settings.get("openai.deployment_id", None)
 
     for rule in rules:
@@ -64,8 +63,6 @@ def route_primary_model(model_type: ModelType, git_provider) -> Optional[Tuple[s
         if not model or (max_hunks is None and max_files is None):
             get_logger().warning(f"Ignoring model routing rule without a model or a limit: {rule}")
             continue
-        if max_hunks is not None and num_hunks > max_hunks:
-            continue
         if max_files is not None and num_files > max_files:
             continue
         deployment_id = rule.get("deployment_id") or None
@@ -73,8 +70,15 @@ def route_primary_model(model_type: ModelType, git_provider) -> Optional[Tuple[s
             get_logger().warning(f"Model routing rule for '{model}' has no deployment_id while "
                                  f"openai.deployment_id is set, skipping it")
             continue
+        if max_hunks is not None:
+            if num_hunks is None:
+                num_hunks = count_hunks(diff_files)
+            if num_hunks > max_hunks:
+                continue
+        size = f"{num_hunks} hunks in {num_files} files" if num_hunks is not None else f"{num_files} files"
         get_logger().info(f"Model routing: {size}, using '{model}' as the primary model")
         return model, deployment_id
 
+    size = f"{num_hunks} hunks in {num_files} files" if num_hunks is not None else f"{num_files} files"
     get_logger().info(f"Model routing: {size} fit no rule, keeping the configured primary model")
     return None

@@ -5,8 +5,6 @@ from typing import Optional
 from dynaconf import Dynaconf
 from starlette_context import context
 
-PR_AGENT_TOML_KEY = 'pr-agent'
-
 current_dir = dirname(abspath(__file__))
 
 dynconf_kwargs = {'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
@@ -88,7 +86,6 @@ def get_verbosity_level() -> int:
         return 0
 
 
-# Add local configuration from pyproject.toml of the project being reviewed
 def _find_repository_root() -> Optional[Path]:
     """
     Identify project root directory by recursively searching for the .git directory in the parent directories.
@@ -101,22 +98,6 @@ def _find_repository_root() -> Optional[Path]:
             return cwd
         cwd = cwd.parent
     return None
-
-
-def _find_pyproject() -> Optional[Path]:
-    """
-    Search for file pyproject.toml in the repository root.
-    """
-    repo_root = _find_repository_root()
-    if repo_root:
-        pyproject = repo_root / "pyproject.toml"
-        return pyproject if pyproject.is_file() else None
-    return None
-
-
-pyproject_path = _find_pyproject()
-if pyproject_path is not None:
-    get_settings().load_file(pyproject_path, env=f'tool.{PR_AGENT_TOML_KEY}')
 
 
 def apply_secrets_manager_config():
@@ -145,7 +126,7 @@ def apply_secrets_manager_config():
         try:
             from pr_agent.log import get_logger
             get_logger().debug(f"Secret provider not configured: {e}")
-        except:
+        except ImportError:
             # Fail completely silently if log module is not available
             pass
 
@@ -157,7 +138,7 @@ def apply_secrets_to_config(secrets: dict):
     try:
         # Dynamic import to avoid potential circular dependency
         from pr_agent.log import get_logger
-    except:
+    except ImportError:
         def get_logger():
             class DummyLogger:
                 def debug(self, msg): pass

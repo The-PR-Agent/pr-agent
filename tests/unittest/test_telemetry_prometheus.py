@@ -54,6 +54,22 @@ def test_counter_export_renders_prometheus_text():
     assert 'pr_agent_commands_total{pr_agent_command="review",provider_name="github"} 3.0' in body
 
 
+def test_counter_repeated_flushes_maintain_value():
+    """Verify that repeated metric flushes after a single increment do not accumulate cumulative totals."""
+    provider, reader = _counter_provider()
+    counter = provider.get_meter("prometheus-flush-test").create_counter(
+        "pr_agent.flushed_commands", unit="{command}", description="PR-Agent commands with flush"
+    )
+    counter.add(1, {"pr_agent.command": "describe", "provider.name": "gitlab"})
+
+    # Collect / flush multiple times
+    for _ in range(4):
+        reader.collect()
+
+    body = prometheus_response().body.decode()
+    assert 'pr_agent_flushed_commands_total{pr_agent_command="describe",provider_name="gitlab"} 1.0' in body
+
+
 def test_multiple_workers_aggregate_at_scrape_time():
     """Run the exporter in two fresh interpreter processes (as gunicorn workers
     would), each recording one command, and assert /metrics merges them."""

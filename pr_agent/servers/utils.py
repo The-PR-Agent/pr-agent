@@ -38,6 +38,19 @@ _DEFAULT_PR_COMMANDS_BY_PROVIDER = {
 _MISSING = object()
 
 
+def payload_log_summary(data: object, identifying_fields: Sequence[str] = ()) -> dict:
+    """Return a webhook payload's top-level keys and identifying string fields, never its values."""
+    if not isinstance(data, dict):
+        return {"payload_type": type(data).__name__}
+
+    summary = {"payload_keys": sorted(data.keys())}
+    for name in identifying_fields:
+        value = data.get(name)
+        if isinstance(value, str):
+            summary[name] = value
+    return summary
+
+
 def is_command_comment(body) -> bool:
     """Return True when a comment body is a slash-command comment.
 
@@ -47,6 +60,24 @@ def is_command_comment(body) -> bool:
     tool, because the dispatcher strips an optional leading slash.
     """
     return isinstance(body, str) and body.lstrip().startswith("/")
+
+
+def is_ask_command_comment(body) -> bool:
+    """Return True when a comment body starts with the /ask command.
+
+    Match the command token, not a bare prefix the way ``str.startswith`` would.
+    A line comment such as "/asking about retries" is not an ask command: the
+    dispatcher rejects the unknown "/asking" command, but prefix matching would
+    instead rewrite the comment into an /ask_line question whose text is
+    "ing about retries". "/ask_line" is the generated command name, so it is
+    accepted as well.
+    """
+    if not isinstance(body, str):
+        return False
+    stripped = body.lstrip()
+    if not stripped:
+        return False
+    return stripped.split(maxsplit=1)[0] in ("/ask", "/ask_line")
 
 
 def get_pr_commands(provider: str) -> Sequence[str]:

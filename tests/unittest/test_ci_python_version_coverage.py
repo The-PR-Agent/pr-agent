@@ -47,9 +47,13 @@ UV_PYTHON_FLAG = re.compile(r"--python[ =](\d+\.\d+)")
 
 
 def _declared_python_versions() -> set[str]:
-    """Minors pyproject claims support for: the floor, plus every pinned marker."""
+    """Minors pyproject claims support for: the floor, plus every pin marker in the base or an extra."""
     project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
-    versions = set(PIN_MARKER_VERSION.findall(" ".join(project["dependencies"])))
+    shipped_dependencies = [
+        *project["dependencies"],
+        *(requirement for extra in project["optional-dependencies"].values() for requirement in extra),
+    ]
+    versions = set(PIN_MARKER_VERSION.findall(" ".join(shipped_dependencies)))
     versions.add(REQUIRES_PYTHON_MINIMUM.search(project["requires-python"]).group(1))
     return versions
 
@@ -100,8 +104,8 @@ def test_lambda_base_matches_main_base() -> None:
     #3294 moved the main image to 3.14 while the Lambda image stayed on
     3.12, and nothing failed because no test read the Lambda Dockerfile.
     Only the minor is asserted: AWS publishes no CPython patch tags for
-    Lambda bases, so the Lambda Dockerfile intentionally floats on the
-    minor tag instead of chasing per-build dated tags. The uv interpreter
+    Lambda bases, so the Lambda Dockerfile retains the readable minor tag
+    with a digest pin maintained by Dependabot. The uv interpreter
     path and site-packages PYTHONPATH embed the same minor and are
     asserted too, because nothing builds this image in CI before publish.
     """

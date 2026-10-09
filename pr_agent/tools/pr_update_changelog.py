@@ -110,7 +110,7 @@ class PRUpdateChangelog:
                 f"Failed to initialize changelog generation after a read error: {setup_error}"
             )
             self._publish_changelog_read_error_fallback()
-            raise changelog_read_error
+            raise changelog_read_error  # noqa: B904
 
     async def run(self):
         get_logger().info('Updating the changelog...')
@@ -147,7 +147,7 @@ class PRUpdateChangelog:
                     f"Failed to generate changelog fallback after a read error: {generation_error}"
                 )
                 self._publish_changelog_read_error_fallback()
-                raise changelog_read_error
+                raise changelog_read_error  # noqa: B904
 
             new_file_content, answer = self._prepare_changelog_update()
 
@@ -280,8 +280,10 @@ class PRUpdateChangelog:
             new_file_content = answer
 
         if not self.commit_changelog:
-            answer += "\n\n\n>to commit the new content to the CHANGELOG.md file, please type:" \
-                      "\n>'/update_changelog --pr_update_changelog.push_changelog_changes=true'\n"
+            answer += (
+                "\n\n\n>to commit the new content to the CHANGELOG.md file, enable "
+                "`pr_update_changelog.push_changelog_changes=true` in `.pr_agent.toml`.\n"
+            )
 
         return new_file_content, answer
 
@@ -335,7 +337,16 @@ class PRUpdateChangelog:
                 self.git_provider.pr.create_review(commit=written_commit, event="COMMENT", comments=[d])
         except Exception:
             # we can't create a review for some reason, let's just publish a comment
-            self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")
+            try:
+                fallback = self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")
+                if self.git_provider.supports_comment_publish_confirmation() and fallback is None:
+                    raise RuntimeError("The changelog fallback comment was not confirmed")
+            except Exception as feedback_error:
+                if written_commit is None:
+                    raise ValueError("The changelog write did not return a commit for review") from feedback_error
+                get_logger().opt(exception=feedback_error).warning(
+                    f"CHANGELOG.md was updated, but its automatic feedback could not be confirmed: {feedback_error}"
+                )
 
     def _get_default_changelog(self):
         example_changelog = \

@@ -66,8 +66,7 @@ class TestConvertToMarkdown:
             <table>
             <tr><td>⏱️&nbsp;<strong>Estimated effort to review</strong>: 1 🔵⚪⚪⚪⚪</td></tr>
             <tr><td>🧪&nbsp;<strong>No relevant tests</strong></td></tr>
-            <tr><td>&nbsp;<strong>Possible issues</strong>: No
-            </td></tr>
+            <tr><td>&nbsp;<strong>Possible issues</strong>: No</td></tr>
             <tr><td>🔒&nbsp;<strong>No security concerns identified</strong></td></tr>
             </table>
         """)
@@ -92,7 +91,6 @@ class TestConvertToMarkdown:
             ### 🧪 No relevant tests
 
             ###  Possible issues: No
-
 
             ### 🔒 No security concerns identified
         """)
@@ -236,6 +234,23 @@ class TestConvertToMarkdown:
 
         assert convert_to_markdown_v2(input_data).strip() == expected_output.strip()
 
+    def test_ticket_compliance_without_url(self):
+        input_data = {'review': {
+            'ticket_compliance_check': [
+                {
+                    'ticket_url': '',
+                    'fully_compliant_requirements': '- adds the endpoint\n',
+                    'not_compliant_requirements': '',
+                    'requires_further_human_verification': '',
+                }
+            ]
+        }}
+
+        output = convert_to_markdown_v2(input_data)
+
+        assert '[]()' not in output
+        assert '**Untracked ticket - Fully compliant**' in output
+
     def test_can_be_split(self):
         input_data = {'review': {
             'can_be_split': [
@@ -336,7 +351,7 @@ class TestConvertToMarkdown:
         input_data = {
             "review": {
                 "risk_level": "medium",
-                "merge_recommendation": "merge_with_caution",
+                "merge_recommendation": "needs_review",
                 "review_priority_files": ["gui_app.py", "app.py"],
             }
         }
@@ -344,7 +359,7 @@ class TestConvertToMarkdown:
         markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
 
         assert "Risk level: Medium" in markdown
-        assert "Merge recommendation: Merge with caution" in markdown
+        assert "Merge recommendation: Needs review" in markdown
         assert "Priority files" in markdown
         assert "- gui_app.py" in markdown
         assert "- app.py" in markdown
@@ -353,7 +368,7 @@ class TestConvertToMarkdown:
         input_data = {
             "review": {
                 "risk_level": "low",
-                "merge_recommendation": "safe_to_merge",
+                "merge_recommendation": "no_concerns_found",
                 "review_priority_files": [],
             }
         }
@@ -361,7 +376,7 @@ class TestConvertToMarkdown:
         markdown = convert_to_markdown_v2(input_data, gfm_supported=False)
 
         assert "Risk level: Low" in markdown
-        assert "Merge recommendation: Safe to merge" in markdown
+        assert "Merge recommendation: No concerns found" in markdown
         assert "Priority files: None" in markdown
 
     def test_structured_review_fields_ignore_invalid_priority_files_type(self):
@@ -392,6 +407,41 @@ class TestConvertToMarkdown:
         assert "<ul>\n<li>gui_app.py</li>\n</ul>" in markdown
         assert "- gui_app.py" not in markdown
         assert markdown.count("<tr><td>") == markdown.count("</td></tr>") == 3
+
+    @pytest.mark.parametrize("gfm_supported", [True, False])
+    def test_failure_modes_render_safe_structured_cases(self, gfm_supported):
+        mode = {"what": "Partial write </td></tr><img src=x>", "where": "src/foo_bar.py:get(value)",
+                "trigger": "![track](https://example.com/image)\nWrite fails",
+                "detected_by": "Write failure test", "covered_in_this_pr": False}
+        malformed = {**mode, "covered_in_this_pr": "false"}
+        markdown = convert_to_markdown_v2(
+            {"review": {"failure_modes": [malformed, None, mode, {**mode, "covered_in_this_pr": True}]}},
+            gfm_supported=gfm_supported,
+        )
+        assert "Failure modes" in markdown
+        assert markdown.count("Partial write") == 2
+        assert "Write failure test" in markdown
+        assert "&lt;img src=x&gt;" in markdown
+        assert "<img" not in markdown
+        assert "Covered in this PR" in markdown and "Yes" in markdown and "No" in markdown
+        if gfm_supported:
+            assert markdown.count("<tr><td>") == markdown.count("</td></tr>") == 1
+            assert "src/foo_bar.py:get(value)" in markdown
+        else:
+            assert "![track](" not in markdown
+
+    @pytest.mark.parametrize("gfm_supported", [True, False])
+    def test_failure_modes_render_empty_state_and_cap_single_response(self, gfm_supported):
+        assert "No failure modes identified." in convert_to_markdown_v2(
+            {"review": {"failure_modes": []}}, gfm_supported=gfm_supported,
+        )
+        assert "No failure modes identified." in convert_to_markdown_v2(
+            {"review": {"failure_modes": {"what": "bad"}}}, gfm_supported=gfm_supported,
+        )
+        mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Write fails",
+                "detected_by": "Write failure test", "covered_in_this_pr": False}
+        markdown = convert_to_markdown_v2({"review": {"failure_modes": [mode] * 4}}, gfm_supported=gfm_supported)
+        assert markdown.count("Partial write") == 3
 
     # Tests that the function works correctly with an empty dictionary input
     def test_empty_dictionary_input(self):
@@ -468,3 +518,129 @@ class TestExpandMinuteSuffix:
     def test_minute_suffix_in_compound_estimate(self):
         """'2h 30m' becomes '2h 30 minutes' (only the minute part is replaced)."""
         assert _expand_minute_suffix("2h 30m") == "2h 30 minutes"
+
+
+class TestGenericReviewKeyFormatting:
+    """Tests for security hardening and formatting of unknown/generic review keys (#3975)."""
+
+    def test_generic_branch_escapes_html_in_gfm(self):
+        input_data = {
+            "review": {
+                "custom_observation": '<img src="https://example.com/tracker.png" onerror="alert(1)">'
+            }
+        }
+        out = convert_to_markdown_v2(input_data, gfm_supported=True)
+        assert "<img" not in out
+        assert "&lt;img" in out
+        assert "alert(1)" in out
+        assert "<tr><td>&nbsp;<strong>Custom observation</strong>: &lt;img" in out
+
+    def test_generic_branch_escapes_html_without_gfm(self):
+        input_data = {
+            "review": {
+                "custom_observation": '<script>alert("xss")</script><details><summary>toggle</summary></details>'
+            }
+        }
+        out = convert_to_markdown_v2(input_data, gfm_supported=False)
+        assert "<script>" not in out
+        assert "<details>" not in out
+        assert "&lt;script&gt;" in out
+        assert "&lt;details&gt;" in out
+        assert "###  Custom observation: &lt;script&gt;" in out
+
+    def test_generic_branch_converts_newlines_to_br_in_gfm(self):
+        input_data = {
+            "review": {
+                "multi_line_note": "First line of notes\nSecond line of notes\r\nThird line of notes"
+            }
+        }
+        out = convert_to_markdown_v2(input_data, gfm_supported=True)
+        assert "First line of notes<br>Second line of notes<br>Third line of notes" in out
+        # Verify no unescaped newlines within the table row
+        row_content = [line for line in out.splitlines() if "Multi line note" in line][0]
+        assert "First line of notes<br>Second line of notes<br>Third line of notes</td></tr>" in row_content
+
+    def test_generic_branch_renders_nested_dict_as_yaml(self):
+        input_data = {
+            "review": {
+                "metadata_info": {
+                    "confidence": "high",
+                    "components": ["auth", "router"],
+                }
+            }
+        }
+        out = convert_to_markdown_v2(input_data, gfm_supported=True)
+        # Reject Python dictionary repr
+        assert "{'confidence': 'high'" not in out
+        # Verify YAML lines become <br>
+        assert "confidence: high" in out
+        assert "components:<br>- auth<br>- router" in out
+
+    def test_generic_branch_renders_nested_list_as_yaml(self):
+        input_data = {
+            "review": {
+                "extra_findings": ["First finding", "Second finding"]
+            }
+        }
+        out = convert_to_markdown_v2(input_data, gfm_supported=True)
+        assert "['First finding'" not in out
+        assert "- First finding<br>- Second finding" in out
+
+    def test_generic_branch_escapes_html_inside_nested_structures(self):
+        input_data = {
+            "review": {
+                "payload": {
+                    "alert": '<img src="https://evil.com/x.png">',
+                    "nested_items": ['<a href="javascript:alert(1)">click</a>'],
+                }
+            }
+        }
+        out = convert_to_markdown_v2(input_data, gfm_supported=True)
+        assert "<img" not in out
+        assert "<a href=" not in out
+        assert "&lt;img" in out
+        assert "&lt;a href=" in out
+
+    def test_generic_branch_escapes_markdown_links_and_images(self):
+        input_data = {
+            "review": {
+                "injected_markdown": "[Click here](https://evil.com) and ![Image](https://evil.com/img.png)"
+            }
+        }
+        out_gfm = convert_to_markdown_v2(input_data, gfm_supported=True)
+        assert "\\[" not in out_gfm
+
+        out_non_gfm = convert_to_markdown_v2(input_data, gfm_supported=False)
+        assert r"\[Click here\](https://evil.com)" in out_non_gfm
+        assert r"!\[Image\](https://evil.com/img.png)" in out_non_gfm
+
+    def test_generic_branch_escapes_unknown_key(self):
+        input_data = {"review": {"<img src=x> [link](https://example.com)": "v"}}
+        assert "&lt;img src=x&gt;" in convert_to_markdown_v2(input_data, gfm_supported=True)
+        out_non_gfm = convert_to_markdown_v2(input_data, gfm_supported=False)
+        assert "&lt;img src=x&gt;" in out_non_gfm
+        assert r"\[link\](https://example.com)" in out_non_gfm
+
+    def test_generic_branch_preserves_unicode_in_nested_yaml(self):
+        input_data = {"review": {"cafe_info": {"location": "café"}}}
+        out = convert_to_markdown_v2(input_data, gfm_supported=True)
+        assert "café" in out
+        assert r"\xE9" not in out
+
+    def test_generic_branch_handles_consecutive_carriage_returns_in_gfm(self):
+        input_data = {"review": {"carriage_note": "line1\r\rline2"}}
+        out = convert_to_markdown_v2(input_data, gfm_supported=True)
+        assert "line1<br><br>line2" in out
+
+    def test_generic_branch_renders_nested_structures_without_gfm(self):
+        input_data = {
+            "review": {
+                "metadata_info": {
+                    "confidence": "high",
+                    "components": ["auth", "router"],
+                }
+            }
+        }
+        out = convert_to_markdown_v2(input_data, gfm_supported=False)
+        # Verify review key is rendered as a heading and YAML as body block
+        assert "###  Metadata info\n\ncomponents:\n- auth\n- router\nconfidence: high\n\n" in out

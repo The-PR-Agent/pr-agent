@@ -18,10 +18,11 @@ def _provider(files=(), *, real_files=False):
     provider.diff_files = None
     provider.incremental = SimpleNamespace(is_incremental=False)
     provider.pr = SimpleNamespace(
-        base=SimpleNamespace(sha="base"),
+        base=SimpleNamespace(sha="base", ref="main"),
         head=SimpleNamespace(sha="head"),
     )
     provider.repo_obj = Mock()
+    provider._get_pr = Mock(return_value=provider.pr)
     provider.repo_obj.compare.return_value = SimpleNamespace(merge_base_commit=provider.pr.base)
     if real_files:
         provider.git_files = None
@@ -110,7 +111,9 @@ async def test_auto_commands_rebuild_diff_without_check_runs(monkeypatch, comman
     caches_before_command = []
 
     class Agent:
-        async def handle_request(self, api_url, command):
+        async def handle_request(self, api_url, command, notify=None):
+            if notify:
+                notify()
             assert get_git_provider_with_context(api_url) is provider
             caches_before_command.append((provider.diff_files, context.get("diff_files")))
             if "-i" in command:

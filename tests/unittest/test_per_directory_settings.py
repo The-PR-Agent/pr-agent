@@ -1242,7 +1242,7 @@ def test_directory_overrides_do_not_leak_between_commands(fresh_global_settings,
             tree_paths=["services/.pr_agent.toml", "services/auth/.pr_agent.toml"],
             contents={
                 "services/.pr_agent.toml": SERVICES_TOML,
-                "services/auth/.pr_agent.toml": b"[pr_reviewer]\nnum_max_findings = 3\nnew_test_key = 42\n",
+                "services/auth/.pr_agent.toml": b"[pr_reviewer]\nnum_max_findings = 3\nnew_test_setting = 42\n",
             },
             files=["services/auth/api.py"],
         ),
@@ -1252,10 +1252,10 @@ def test_directory_overrides_do_not_leak_between_commands(fresh_global_settings,
 
     git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
     assert settings.pr_reviewer.num_max_findings == 3
-    assert settings.pr_reviewer.new_test_key == 42
+    assert settings.pr_reviewer.new_test_setting == 42
     settings.pr_reviewer.extra_instructions = "later trusted change"
 
     git_utils.apply_repo_settings("https://github.com/org/repo/pull/2")
     assert settings.pr_reviewer.num_max_findings == (12 if next_root else 10)
-    assert "new_test_key" not in settings.pr_reviewer
+    assert "new_test_setting" not in settings.pr_reviewer
     assert settings.pr_reviewer.extra_instructions == "later trusted change"

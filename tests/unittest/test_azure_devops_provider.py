@@ -8,6 +8,7 @@ from azure.devops.exceptions import AzureDevOpsServiceError
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity
 from pr_agent.algo.inline_comment_dedup import code_fingerprint
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
+from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import (
     AzureDevopsProvider,
     Comment,
@@ -15,6 +16,26 @@ from pr_agent.git_providers.azuredevops_provider import (
 )
 from pr_agent.git_providers.git_provider import DEFAULT_DISCUSSION_CONTEXT_CHARS, IncrementalPR
 from pr_agent.log import get_logger
+
+
+def _item_not_found_error(message="The specified item does not exist at the specified version."):
+    """The error the Azure SDK raises for a path it will not hand over.
+
+    It carries no status_code or response, so recognising it depends on the type_key
+    branch of _is_not_found_error. Real item-not-found messages also cover a
+    permissions failure, which is why the default here names neither cause.
+    """
+    wrapped_error = SimpleNamespace(
+        inner_exception=None,
+        message=message,
+        exception_id=None,
+        type_name="Microsoft.TeamFoundation.Git.Server.GitItemNotFoundException",
+        type_key="GitItemNotFoundException",
+        error_code=0,
+        event_id=0,
+        custom_properties=None,
+    )
+    return AzureDevOpsServiceError(wrapped_error)
 
 
 def test_get_pr_branch_preserves_slashes_in_source_branch():
@@ -390,17 +411,14 @@ class TestAzureDevopsProviderFiles:
 
     @staticmethod
     def _azure_item_not_found_error():
-        wrapped_error = SimpleNamespace(
-            inner_exception=None,
-            message="The specified item does not exist at the specified version.",
-            exception_id=None,
-            type_name="Microsoft.TeamFoundation.Git.Server.GitItemNotFoundException",
-            type_key="GitItemNotFoundException",
-            error_code=0,
-            event_id=0,
-            custom_properties=None,
-        )
-        return AzureDevOpsServiceError(wrapped_error)
+        return _item_not_found_error()
+
+    def test_diff_files_expose_filtered_lockfile_without_fetching_content(self):
+        provider = self._provider_with_change(self._change(path="/src/pnpm-lock.yaml"))
+
+        assert provider.get_diff_files() == []
+        assert provider.get_filtered_diff_file_names() == ["/src/pnpm-lock.yaml"]
+        provider.azure_devops_client.get_item.assert_not_called()
 
     @classmethod
     def _provider_with_incremental_rename(cls, *get_item_results):
@@ -1331,6 +1349,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         provider.previous_review = "stale"
         provider.unreviewed_files_map = {"stale.cs": "stale.cs"}
         provider._pr_iteration_changes_cache = ["stale"]
+        provider._languages = {"Python": 100.0}
         provider.temp_comments = ["stale"]
         provider._parse_pr_url = MagicMock(return_value=("project", "repo", 2))
         provider._get_pr = MagicMock(return_value=MagicMock())
@@ -1343,6 +1362,7 @@ class TestAzureDevopsProviderSuggestionAnchoring:
         assert provider.previous_review is None
         assert provider.unreviewed_files_map == {}
         assert provider._pr_iteration_changes_cache is None
+        assert provider._languages is None
         assert provider.temp_comments == []
 
     def test_unmatched_suggestion_path_does_not_break_markdown(self):
@@ -1946,12 +1966,36 @@ class TestAzureDevopsProviderSuggestionDiscussions:
 
     def test_marks_thread_replies_as_agent_generated(self):
         provider = _provider_with_diff("/src/app.py")
-        provider.azure_devops_client.create_comment.return_value = SimpleNamespace()
+        response = SimpleNamespace()
+        provider.azure_devops_client.create_comment.return_value = response
+        provider._threads_cache = ["cached thread"]
 
-        provider.reply_to_thread(21, "Answer")
+        assert provider.reply_to_thread(21, "Answer") is response
 
         comment = provider.azure_devops_client.create_comment.call_args.args[0]
         assert comment.content == "Answer\n\n<!-- pr-agent-response -->"
+        assert response.thread_id == 21
+        assert provider._threads_cache is None
+        assert provider.temp_comments == []
+
+    @pytest.mark.parametrize("is_temporary", [False, True])
+    def test_thread_reply_failure_preserves_primary_and_progress_semantics(self, is_temporary):
+        provider = _provider_with_diff("/src/app.py")
+        error = RuntimeError("reply failed")
+        provider.azure_devops_client.create_comment.side_effect = error
+        cached_threads = ["cached thread"]
+        provider._threads_cache = cached_threads
+
+        if is_temporary:
+            assert provider.reply_to_comment_from_comment_id(21, "answer", is_temporary=True) is None
+        else:
+            with pytest.raises(RuntimeError) as caught:
+                provider.reply_to_comment_from_comment_id(21, "answer")
+            assert caught.value is error
+
+        provider.azure_devops_client.create_comment.assert_called_once()
+        assert provider._threads_cache is cached_threads
+        assert provider.temp_comments == []
 
     def test_excludes_temporary_progress_reply_from_conversation_history(self):
         provider = _provider_with_diff("/src/app.py")
@@ -2321,6 +2365,7 @@ class TestAzureDevopsGlobalSettings:
     @staticmethod
     def _set_org_settings(ms, org):
         ms.return_value.config.use_global_settings_file = True
+        ms.return_value.config.global_settings_repo = "pr-agent-settings"
         ms.return_value.azure_devops.get.return_value = org
 
     def test_get_owning_namespace_returns_configured_org(self):
@@ -2344,7 +2389,7 @@ class TestAzureDevopsGlobalSettings:
     def test_fetch_global_repo_settings_reads_pr_agent_settings_from_pr_project(self):
         provider = self._make_provider()
         provider.azure_devops_client.get_item_content.return_value = [b"[pr_reviewer]"]
-        result = provider._fetch_global_repo_settings("myorg")
+        result = provider._fetch_global_repo_settings("myorg", "pr-agent-settings")
 
         assert result == b"[pr_reviewer]"
         provider.azure_devops_client.get_item_content.assert_called_once_with(
@@ -2361,7 +2406,7 @@ class TestAzureDevopsGlobalSettings:
         provider.azure_devops_client.get_item_content.side_effect = Exception(
             "Operation returned a 404 status code."
         )
-        assert provider._fetch_global_repo_settings("myorg") == ""
+        assert provider._fetch_global_repo_settings("myorg", "pr-agent-settings") == ""
 
     def test_get_repo_settings_merges_global_then_local(self):
         provider = self._make_provider()
@@ -2373,6 +2418,7 @@ class TestAzureDevopsGlobalSettings:
              patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
             az.return_value.azure_devops.get.return_value = "myorg"
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider.get_repo_settings()
 
         assert result == [
@@ -2398,10 +2444,245 @@ class TestAzureDevopsGlobalSettings:
              patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
             az.return_value.azure_devops.get.return_value = "myorg"
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"
             assert provider._get_global_repo_settings() == b"[pr_reviewer]\nnum_max_findings = 5\n"  # cached
 
         assert provider.azure_devops_client.get_item_content.call_count == 1
+
+
+class TestAzureDevopsFailuresAreReported:
+    """A failure the caller cannot otherwise detect has to be logged at default verbosity.
+
+    verbosity_level is pinned to 0 here rather than asserted to be 0, so these pin the
+    behaviour at the quietest setting whatever the shipped default happens to be.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _quiet_verbosity(self):
+        settings = get_settings(use_context=False)
+        original = settings.get("config.verbosity_level", 0)
+        settings.set("config.verbosity_level", 0)
+        yield
+        settings.set("config.verbosity_level", original)
+
+    @staticmethod
+    def _capture(call, level="ERROR"):
+        import io
+
+        buffer = io.StringIO()
+        handler_id = get_logger().add(buffer, level=level, format="{message}", colorize=False)
+        try:
+            call()
+        finally:
+            get_logger().remove(handler_id)
+        return buffer.getvalue()
+
+    def test_repo_settings_failure_is_logged_at_default_verbosity(self):
+        """The repository .pr_agent.toml is lost and the run continues without it."""
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_item_content.side_effect = RuntimeError("403 forbidden")
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms, \
+             patch("pr_agent.git_providers.azuredevops_provider.get_settings") as az:
+            az.return_value.azure_devops.get.return_value = "myorg"
+            ms.return_value.config.use_global_settings_file = False
+            logs = self._capture(provider.get_repo_settings)
+
+        assert "Failed to get the repository's .pr_agent.toml" in logs
+        assert "will not be applied for this run" in logs
+
+    def test_repo_settings_failure_does_not_claim_host_defaults_when_global_settings_apply(self):
+        """An org-wide settings file may already be in the list, so host defaults is not reached.
+
+        The message has to stay true in the deployments that use the global settings
+        file, which is the case the ungated log exists to inform.
+        """
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_item_content.side_effect = RuntimeError("403 forbidden")
+        provider._get_global_repo_settings = MagicMock(
+            return_value=b'[pr_reviewer]\nextra_instructions = "org-wide"\n'
+        )
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
+            captured = {}
+            logs = self._capture(lambda: captured.setdefault("files", provider.get_repo_settings()))
+
+        assert captured["files"] == [("global", b'[pr_reviewer]\nextra_instructions = "org-wide"\n')]
+        assert "Failed to get the repository's .pr_agent.toml" in logs
+        # Guards the overclaim this message used to carry: the org-wide file above is
+        # still applied, so the run does not fall back to host defaults.
+        assert "host defaults" not in logs
+
+    def test_absent_repo_settings_file_is_not_reported_as_a_failure(self):
+        """No .pr_agent.toml is the normal case; an error for it trains readers to ignore errors.
+
+        Driven with the message Azure uses for item-not-found, which also covers a
+        permissions failure and carries no "404" token, so this exercises the type_key
+        branch of _is_not_found_error rather than its message-regex fallback.
+        """
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.azure_devops_client = MagicMock()
+        provider.azure_devops_client.get_item_content.side_effect = _item_not_found_error(
+            "TF401019: The item '.pr_agent.toml' does not exist or you do not have "
+            "permissions for the operation."
+        )
+        provider._get_global_repo_settings = MagicMock(return_value=b"")
+
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+            ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
+            captured = {}
+            errors = self._capture(lambda: captured.setdefault("files", provider.get_repo_settings()))
+            all_levels = self._capture(
+                lambda: captured.setdefault("files", provider.get_repo_settings()), level="DEBUG"
+            )
+
+        assert captured["files"] == ""
+        assert "Failed to get the repository's .pr_agent.toml" not in errors
+        # GitItemNotFoundException is also what a permissions failure raises, so the run
+        # leaves a trace rather than dropping the repository settings silently.
+        assert "No repository .pr_agent.toml was read" in all_levels
+
+    def test_publish_failure_is_logged_at_default_verbosity(self):
+        """A suggestion that never publishes is otherwise indistinguishable from none found."""
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 7
+        provider.azure_devops_client = MagicMock()
+        provider.publish_comment = MagicMock(side_effect=RuntimeError("thread rejected"))
+
+        logs = self._capture(
+            lambda: provider.publish_inline_comments([{"body": "**Suggestion:** use a set"}])
+        )
+
+        assert "failed to publish code suggestion on 7 at" in logs.lower()
+
+    def test_publish_failure_before_the_path_is_read_still_reports_and_returns_false(self):
+        """The handler names the file, so the name has to exist before the body is read.
+
+        `comment["body"]` raises before `relevant_file` is assigned, and an f-string
+        referencing an unbound local would escape as UnboundLocalError, losing the
+        False return the caller reads as a publish failure.
+        """
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 7
+        provider.azure_devops_client = MagicMock()
+        provider.publish_comment = MagicMock()
+
+        captured = {}
+        logs = self._capture(
+            lambda: captured.setdefault(
+                "ok", provider.publish_inline_comments([{"relevant_file": "app.py"}])
+            )
+        )
+
+        assert captured["ok"] is False
+        assert "failed to publish code suggestion" in logs.lower()
+
+    def test_publish_failure_does_not_name_the_previous_comment_file(self):
+        """A per-iteration name, or the log blames the wrong file on a later failure.
+
+        The second comment raises on its missing body. The name is read before anything
+        that can raise, so that failure still names its own file rather than the first
+        comment's, which is the point of reading it there.
+        """
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 7
+        provider.azure_devops_client = MagicMock()
+        provider.publish_comment = MagicMock(side_effect=RuntimeError("thread rejected"))
+
+        captured = {}
+        logs = self._capture(
+            lambda: captured.setdefault("ok", provider.publish_inline_comments([
+                {"body": "first", "relevant_file": "first.py"},
+                {"relevant_file": "second.py"},
+            ]))
+        )
+
+        assert captured["ok"] is False
+        # Each failure names the comment it belongs to. A stale name would make
+        # first.py appear twice and leave second.py unreported.
+        assert logs.count("at first.py") == 1, f"first.py blamed for a failure that was not its own: {logs}"
+        assert "at second.py" in logs
+
+    def test_publish_failure_without_a_path_reports_the_placeholder(self):
+        """A payload with neither body nor path has no file to name, and says so."""
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 7
+        provider.azure_devops_client = MagicMock()
+        provider.publish_comment = MagicMock()
+
+        captured = {}
+        logs = self._capture(
+            lambda: captured.setdefault("ok", provider.publish_inline_comments([{"subject_type": "FILE"}]))
+        )
+
+        assert captured["ok"] is False
+        assert "at unknown file" in logs
+
+    def test_publish_failure_during_file_lookup_does_not_stop_later_comments(self):
+        """Report lookup failures and continue publishing the remaining comments."""
+        class ExplodingComment(dict):
+            def get(self, key, default=None):
+                raise RuntimeError("file lookup failed")
+
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.pr_num = 7
+        provider.publish_comment = MagicMock()
+
+        captured = {}
+        logs = self._capture(
+            lambda: captured.setdefault("ok", provider.publish_inline_comments([
+                ExplodingComment(body="first"),
+                {"body": "second", "path": "second.py", "subject_type": "FILE"},
+            ]))
+        )
+
+        assert captured["ok"] is False
+        assert "at unknown file" in logs
+        assert "file lookup failed" in logs
+        provider.publish_comment.assert_called_once_with("second", thread_context={"filePath": "second.py"})
+
+    def test_publish_failure_prefers_the_path_over_relevant_file(self):
+        """path wins on the success path, so it has to win in the handler too.
+
+        create_inline_comment emits both keys, so a payload missing only its body would
+        otherwise be logged as unknown file while the same payload succeeding logs the
+        resolved path.
+        """
+        provider = AzureDevopsProvider.__new__(AzureDevopsProvider)
+        provider.workspace_slug = "my-project"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 7
+        provider.azure_devops_client = MagicMock()
+        provider.publish_comment = MagicMock()
+
+        logs = self._capture(
+            lambda: provider.publish_inline_comments([
+                {"path": "resolved/app.py", "relevant_file": "raw/app.py", "subject_type": "FILE"}
+            ])
+        )
+
+        assert "at resolved/app.py" in logs
+        assert "raw/app.py" not in logs
 
 
 class TestAzureDevopsProviderSuggestionFence:

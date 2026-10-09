@@ -9,11 +9,15 @@ from pr_agent.algo.inline_comment_dedup import (
     get_inline_comment_store,
     key_issue_fingerprint,
 )
+from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.azuredevops_provider import AzureDevopsProvider
-from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
+from pr_agent.git_providers.git_provider import (
+    IncompleteBitbucketPullRequestFilesError,
+    IncompletePullRequestFilesError,
+)
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_reviewer import PRReviewer, _review_failure_comment
@@ -296,6 +300,81 @@ def test_review_schema_requires_enabled_prompt_fields_only():
     get_logger.return_value.warning.assert_not_called()
 
 
+def test_load_review_yaml_preserves_failure_modes_during_scalar_repair():
+    prediction = """review:
+  security_concerns: Risk: unexpected input
+  key_issues_to_review: []
+  failure_modes:
+    - what: Lost update
+      where: app.py:10
+      trigger: Concurrent requests
+      detected_by: A failing test
+      covered_in_this_pr: false
+"""
+    review = PRReviewer._load_review_yaml(prediction)["review"]
+
+    assert review["security_concerns"].strip() == "Risk: unexpected input"
+    assert review["failure_modes"] == [{
+        "what": "Lost update",
+        "where": "app.py:10",
+        "trigger": "Concurrent requests",
+        "detected_by": "A failing test",
+        "covered_in_this_pr": False,
+    }]
+    assert review["failure_modes"][0]["covered_in_this_pr"] is False
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_review_schema_requires_failure_modes_only_when_enabled(enabled):
+    reviewer = _make_reviewer()
+    reviewer.vars = {"require_failure_modes": enabled}
+    assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is not enabled
+    assert reviewer._validate_review_schema({"review": {"key_issues_to_review": [], "failure_modes": []}}) is True
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_failure_modes": enabled}
+    mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Write fails",
+            "detected_by": "Write failure test", "covered_in_this_pr": False}
+    raw_modes = [{**mode, "covered_in_this_pr": "false"}, "bad", mode, mode, mode, mode]
+    reviewer.prediction = "unused prediction"
+    data = {"review": {"key_issues_to_review": [], "failure_modes": raw_modes}}
+    reviewer.git_provider.get_diff_files.return_value = []
+    reviewer.git_provider.is_supported.return_value = False
+    reviewer.set_review_labels = MagicMock()
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
+        patch("pr_agent.tools.pr_reviewer.github_action_output") as action_output,
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
+        patch("pr_agent.tools.pr_reviewer.push_outputs") as push,
+    ):
+        reviewer._prepare_pr_review()
+    assert ("failure_modes" in action_output.call_args.args[0]["review"]) is enabled
+    assert ("failure_modes" in reviewer.git_provider.publish_structured_review.call_args.args[0]["review"]) is enabled
+    assert ("failure_modes" in render.call_args.args[0]["review"]) is enabled
+    if push.called:
+        assert ("failure_modes" in push.call_args.kwargs["payload"]) is enabled
+    if enabled:
+        expected = [mode] * 3
+        assert action_output.call_args.args[0]["review"]["failure_modes"] == expected
+        assert reviewer.git_provider.publish_structured_review.call_args.args[0]["review"]["failure_modes"] == expected
+        assert render.call_args.args[0]["review"]["failure_modes"] == expected
+        if push.called:
+            assert push.call_args.kwargs["payload"]["failure_modes"] == expected
+
+
+def test_review_schema_allows_fields_requested_through_extra_instructions():
+    reviewer = _make_prediction_reviewer()
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({
+            "review": {"key_issues_to_review": [], "pipeline_status": [{"job": "unit", "status": "failed"}]},
+        }) is True
+
+    get_logger.return_value.warning.assert_not_called()
+
+
 def test_review_schema_reports_none_for_missing_fields():
     reviewer = _make_prediction_reviewer()
     with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
@@ -304,6 +383,50 @@ def test_review_schema_reports_none_for_missing_fields():
     warning = get_logger.return_value.warning.call_args.kwargs
     assert warning["artifact"]["field"] == "review.key_issues_to_review"
     assert warning["artifact"]["value"] is None
+
+
+def test_review_schema_logs_all_pydantic_validation_errors():
+    reviewer = _make_prediction_reviewer()
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({"review": {
+            "key_issues_to_review": [],
+            "risk_level": "critical",
+            "merge_recommendation": "approve",
+        }}) is False
+
+    warnings = [call.kwargs for call in get_logger.return_value.warning.call_args_list]
+    logged_fields = [w["artifact"]["field"] for w in warnings]
+    assert "review.risk_level" in logged_fields
+    assert "review.merge_recommendation" in logged_fields
+
+
+def test_review_schema_runs_require_checks_when_pydantic_validation_fails():
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_score": True}
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({
+            "review": {
+                "key_issues_to_review": [],
+                "risk_level": "critical",
+            }
+        }) is False
+
+    warnings = [call.kwargs for call in get_logger.return_value.warning.call_args_list]
+    logged_fields = [w["artifact"]["field"] for w in warnings]
+    assert "review.risk_level" in logged_fields
+    assert "review.score" in logged_fields
+
+
+def test_review_schema_logs_all_missing_required_fields():
+    reviewer = _make_prediction_reviewer()
+    reviewer.vars = {"require_score": True, "require_tests": True}
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({"review": {"key_issues_to_review": []}}) is False
+
+    warnings = [call.kwargs for call in get_logger.return_value.warning.call_args_list]
+    logged_fields = [w["artifact"]["field"] for w in warnings]
+    assert "review.score" in logged_fields
+    assert "review.relevant_tests" in logged_fields
 
 
 def test_prepare_pr_review_limits_coverage_footer_to_50_files():
@@ -748,8 +871,13 @@ async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_rev
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize(
+    ("publish_review_failure_comment", "expect_failure_comment"),
+    [(None, True), (False, False), ("false", False)],
+    ids=["default", "disabled", "quoted-false"],
+)
 async def test_run_removes_its_progress_comment_when_review_generation_fails(
-        monkeypatch, propagate_tool_errors):
+        monkeypatch, propagate_tool_errors, publish_review_failure_comment, expect_failure_comment):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
@@ -774,11 +902,14 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
         "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "publish_review_failure_comment": settings.pr_reviewer.get("publish_review_failure_comment", True),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
         settings.config.propagate_tool_errors = propagate_tool_errors
+        if publish_review_failure_comment is not None:
+            settings.pr_reviewer.publish_review_failure_comment = publish_review_failure_comment
 
         if propagate_tool_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
@@ -790,17 +921,22 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
         settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.pr_reviewer.publish_review_failure_comment = original["publish_review_failure_comment"]
 
-    assert git_provider.publish_comment.call_args_list == [
-        (("Preparing review...",), {"is_temporary": True}),
-        (("Failed to review PR",), {}),
-    ]
+    expected_comments = [(("Preparing review...",), {"is_temporary": True})]
+    if expect_failure_comment:
+        expected_comments.append((("Failed to review PR",), {}))
+    assert git_provider.publish_comment.call_args_list == expected_comments
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.remove_initial_comment.assert_not_called()
+    assert command_failed() is True
 
 
 @pytest.mark.asyncio
-async def test_run_re_raises_incomplete_bitbucket_diff_after_progress_cleanup(monkeypatch):
+@pytest.mark.parametrize(
+    "incomplete_error_class", [IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError]
+)
+async def test_run_re_raises_incomplete_provider_diff_after_progress_cleanup(monkeypatch, incomplete_error_class):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
@@ -812,7 +948,7 @@ async def test_run_re_raises_incomplete_bitbucket_diff_after_progress_cleanup(mo
     reviewer.vars = {}
     reviewer.prediction = None
 
-    incomplete_diff_error = IncompleteBitbucketPullRequestFilesError("incomplete aggregate diff")
+    incomplete_diff_error = incomplete_error_class("incomplete aggregate diff")
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(
         pr_reviewer_module,
@@ -831,7 +967,7 @@ async def test_run_re_raises_incomplete_bitbucket_diff_after_progress_cleanup(mo
         settings.config.is_auto_command = False
         settings.config.propagate_tool_errors = False
 
-        with pytest.raises(IncompleteBitbucketPullRequestFilesError) as exc_info:
+        with pytest.raises(incomplete_error_class) as exc_info:
             await reviewer.run()
     finally:
         settings.config.publish_output = original["publish_output"]

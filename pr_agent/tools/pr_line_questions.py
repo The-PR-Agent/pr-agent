@@ -2,7 +2,8 @@ import copy
 from functools import partial
 from urllib.parse import unquote
 
-from jinja2 import Environment, StrictUndefined, select_autoescape
+from jinja2 import StrictUndefined, select_autoescape
+from jinja2.sandbox import SandboxedEnvironment
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -15,6 +16,7 @@ from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
+from pr_agent.tools.pr_questions import _sanitize_slash_commands
 
 
 class PR_LineQuestions:
@@ -108,11 +110,12 @@ class PR_LineQuestions:
                 model_answer = answer_stripped[:-len("[THREAD_RESOLVED]")].rstrip()
 
             # sanitize the answer so that no line will start with "/"
-            model_answer_sanitized = model_answer.strip().replace("\n/", "\n /")
-            if model_answer_sanitized.startswith("/"):
-                model_answer_sanitized = " " + model_answer_sanitized
+            model_answer_sanitized = _sanitize_slash_commands(model_answer.strip())
 
             get_logger().info('Preparing answer...')
+            if not get_settings().config.publish_output:
+                get_logger().info(f"Answer:\n{model_answer_sanitized}")
+                return ""
             if comment_id:
                 self.git_provider.reply_to_comment_from_comment_id(comment_id, model_answer_sanitized)
                 if should_resolve:
@@ -129,6 +132,9 @@ class PR_LineQuestions:
             # broken bot, so say why nothing was answered.
             no_hunk_message = (f"Could not find the requested lines of `{file_name}` in this "
                                "pull request's diff, so there is nothing to answer about.")
+            if not get_settings().config.publish_output:
+                get_logger().info(no_hunk_message)
+                return ""
             if comment_id:
                 self.git_provider.reply_to_comment_from_comment_id(comment_id, no_hunk_message)
             else:
@@ -205,7 +211,7 @@ class PR_LineQuestions:
         return response
 
     def _render_prompts(self, variables):
-        environment = Environment(
+        environment = SandboxedEnvironment(
             autoescape=select_autoescape(default_for_string=False),
             undefined=StrictUndefined,
         )

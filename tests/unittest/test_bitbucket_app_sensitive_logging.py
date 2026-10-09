@@ -1,5 +1,7 @@
 import json
+from types import SimpleNamespace
 
+import jwt
 import pytest
 from starlette.background import BackgroundTasks
 
@@ -7,9 +9,11 @@ from pr_agent.servers import bitbucket_app
 
 
 class _Request:
-    def __init__(self, headers, payload):
+    def __init__(self, headers, payload, method="POST", path="/webhook"):
         self.headers = headers
         self._payload = payload
+        self.method = method
+        self.url = type("URL", (), {"path": path, "query": ""})()
         self.json_calls = 0
 
     async def json(self):
@@ -35,11 +39,23 @@ def _route_endpoint(path, method):
 
 
 async def test_webhook_does_not_log_authorization_header(monkeypatch):
-    token = "webhook-authorization-sentinel"
+    sentinel = "webhook-authorization-sentinel"
+    token = f"e30.eyJpc3MiOiJjbGllbnQifQ.{sentinel}"
     authorization = f"jWt {token}"
     logger = _RecordingLogger()
     background_tasks = BackgroundTasks()
+    secret_provider = type(
+        "SecretProvider",
+        (),
+        {"get_secret": lambda self, _key: json.dumps({"shared_secret": "shared-secret"})},
+    )()
     monkeypatch.setattr(bitbucket_app, "get_logger", lambda: logger)
+    monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
+    monkeypatch.setattr(
+        bitbucket_app.jwt,
+        "decode",
+        lambda *args, **kwargs: {"qsh": bitbucket_app._compute_qsh("POST", "/webhook")},
+    )
 
     result = await _route_endpoint("/webhook", "POST")(
         background_tasks,
@@ -48,7 +64,8 @@ async def test_webhook_does_not_log_authorization_header(monkeypatch):
 
     assert result == "OK"
     assert len(background_tasks.tasks) == 1
-    assert token not in repr(logger.calls)
+    assert sentinel not in repr(logger.calls)
+    assert authorization not in repr(logger.calls)
 
 
 @pytest.mark.parametrize("headers", [{}, {"authorization": "JWT"}, {"authorization": "Bearer token"}])
@@ -72,6 +89,7 @@ async def test_webhook_rejects_malformed_authorization_header(monkeypatch, heade
 async def test_installed_webhook_does_not_log_credentials(monkeypatch):
     authorization = "JWT install-authorization-sentinel"
     shared_secret = "shared-secret-sentinel"
+    client_key = "ari:cloud:bitbucket::workspace/{client-key}"
     logger = _RecordingLogger()
     stored = []
     secret_provider = type("SecretProvider", (), {"store_secret": lambda self, *args: stored.append(args)})()
@@ -81,7 +99,7 @@ async def test_installed_webhook_does_not_log_credentials(monkeypatch):
     result = await _route_endpoint("/installed", "POST")(
         _Request(
             {"authorization": authorization},
-            {"sharedSecret": shared_secret, "clientKey": "client-key", "principal": {"username": "user"}},
+            {"sharedSecret": shared_secret, "clientKey": client_key, "principal": {"username": "user"}},
         ),
         None,
     )
@@ -91,7 +109,80 @@ async def test_installed_webhook_does_not_log_credentials(monkeypatch):
     assert authorization not in logged
     assert shared_secret not in logged
     assert "handle_installed_webhooks" in logged
+    assert stored[0][0] == bitbucket_app._bitbucket_client_secret_name(client_key)
     assert json.loads(stored[0][1])["shared_secret"] == shared_secret
+    assert json.loads(stored[0][1])["client_key"] == client_key
+    assert json.loads(stored[0][1])["username"] == "user"
+
+
+async def test_webhook_looks_up_secret_by_hashed_client_key(monkeypatch):
+    client_key = "ari:cloud:bitbucket::workspace/{client-key}"
+    shared_secret = "shared-secret-with-enough-bytes-for-hs256"
+    token = jwt.encode({"iss": client_key, "aud": "https://app.example"}, shared_secret, algorithm="HS256")
+    looked_up = []
+
+    class SecretProvider:
+        def get_secret(self, secret_name):
+            looked_up.append(secret_name)
+            return json.dumps({"shared_secret": shared_secret, "client_key": client_key})
+
+    async def get_bearer_token(*args):
+        return "bearer-token"
+
+    settings = SimpleNamespace(bitbucket=SimpleNamespace(base_url="https://app.example"))
+    settings.get = lambda key, default=None: default
+    monkeypatch.setattr(bitbucket_app, "get_settings", lambda: settings)
+    monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: SecretProvider())
+    monkeypatch.setattr(bitbucket_app, "get_bearer_token", get_bearer_token)
+
+    background_tasks = BackgroundTasks()
+    result = await _route_endpoint("/webhook", "POST")(
+        background_tasks,
+        _Request(
+            {"authorization": f"JWT {token}"},
+            {"event": "repo:push", "data": {"actor": {"type": "user"}}},
+        ),
+    )
+
+    assert result == "OK"
+    await background_tasks()
+    assert looked_up == [bitbucket_app._bitbucket_client_secret_name(client_key)]
+
+
+async def test_webhook_falls_back_to_legacy_client_key_secret(monkeypatch):
+    client_key = "legacy-client-key"
+    shared_secret = "shared-secret-with-enough-bytes-for-hs256"
+    token = jwt.encode({"iss": client_key, "aud": "https://app.example"}, shared_secret, algorithm="HS256")
+    looked_up = []
+
+    class SecretProvider:
+        def get_secret(self, secret_name):
+            looked_up.append(secret_name)
+            if secret_name == client_key:
+                return json.dumps({"shared_secret": shared_secret, "client_key": client_key})
+            return ""
+
+    async def get_bearer_token(*args):
+        return "bearer-token"
+
+    settings = SimpleNamespace(bitbucket=SimpleNamespace(base_url="https://app.example"))
+    settings.get = lambda key, default=None: default
+    monkeypatch.setattr(bitbucket_app, "get_settings", lambda: settings)
+    monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: SecretProvider())
+    monkeypatch.setattr(bitbucket_app, "get_bearer_token", get_bearer_token)
+
+    background_tasks = BackgroundTasks()
+    result = await _route_endpoint("/webhook", "POST")(
+        background_tasks,
+        _Request(
+            {"authorization": f"JWT {token}"},
+            {"event": "repo:push", "data": {"actor": {"type": "user"}}},
+        ),
+    )
+
+    assert result == "OK"
+    await background_tasks()
+    assert looked_up == [bitbucket_app._bitbucket_client_secret_name(client_key), client_key]
 
 
 class _FailingJsonRequest(_Request):
@@ -199,3 +290,62 @@ async def test_installed_webhook_does_not_log_store_secret_error(monkeypatch):
     assert result.status_code == 500
     assert provider_error not in logged
     assert "Failed to register user: secret provider failure (RuntimeError)" in logged
+
+
+async def test_webhook_logs_only_selected_payload_fields(monkeypatch):
+    logger = _RecordingLogger()
+    background_tasks = BackgroundTasks()
+    payload = {
+        "event": "pullrequest:created",
+        "clientKey": "webhook-client-key",
+        "data": {
+            "sharedSecret": "webhook-secret-sentinel",
+            "description": "private-webhook-description",
+        },
+    }
+    secret_provider = type(
+        "SecretProvider",
+        (),
+        {"get_secret": lambda self, _key: json.dumps({"shared_secret": "shared-secret"})},
+    )()
+    monkeypatch.setattr(bitbucket_app, "get_logger", lambda: logger)
+    monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
+    monkeypatch.setattr(
+        bitbucket_app.jwt,
+        "decode",
+        lambda *args, **kwargs: {"qsh": bitbucket_app._compute_qsh("POST", "/webhook")},
+    )
+
+    result = await _route_endpoint("/webhook", "POST")(
+        background_tasks,
+        _Request({"authorization": "JWT e30.eyJpc3MiOiJjbGllbnQifQ.signature"}, payload),
+    )
+
+    logged = repr(logger.calls)
+    assert result == "OK"
+    assert "pullrequest:created" in logged
+    assert "webhook-client-key" in logged
+    assert "event" in logged and "data" in logged
+    assert "webhook-secret-sentinel" not in logged
+    assert "private-webhook-description" not in logged
+
+
+async def test_uninstalled_webhook_logs_only_selected_payload_fields(monkeypatch):
+    logger = _RecordingLogger()
+    payload = {
+        "clientKey": "uninstalled-client-key",
+        "principal": {"username": "private-username"},
+        "sharedSecret": "uninstalled-secret-sentinel",
+    }
+    monkeypatch.setattr(bitbucket_app, "get_logger", lambda: logger)
+
+    await _route_endpoint("/uninstalled", "POST")(
+        _Request({}, payload),
+        None,
+    )
+
+    logged = repr(logger.calls)
+    assert "uninstalled-client-key" in logged
+    assert "clientKey" in logged and "principal" in logged and "sharedSecret" in logged
+    assert "private-username" not in logged
+    assert "uninstalled-secret-sentinel" not in logged

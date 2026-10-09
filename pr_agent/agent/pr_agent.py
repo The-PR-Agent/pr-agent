@@ -8,14 +8,15 @@ import dynaconf
 from opentelemetry.trace import StatusCode
 from starlette_context import context, request_cycle_context
 
+from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import reapply_artifact_context
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
+from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -26,7 +27,7 @@ from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFil
 from pr_agent.git_providers.git_provider import IncompletePullRequestFilesError as _IncompletePullRequestFilesError
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import get_logger
-from pr_agent.telemetry.meter import get_commands_counter
+from pr_agent.telemetry.meter import get_ai_calls_counter, get_commands_counter, get_tokens_counter
 from pr_agent.telemetry.shutdown import flush_telemetry
 from pr_agent.telemetry.tracer import get_tracer
 from pr_agent.tools.pr_add_docs import PRAddDocs
@@ -271,13 +272,41 @@ def prepare_command(command: str) -> list[str]:
     return [action] + kept
 
 
+def _record_token_metrics(action: str, git_provider: str) -> None:
+    """Export the run's token usage through the OTel counters, if any was collected.
+
+    Repo and PR stay out of the labels on purpose: they are high-cardinality, the same
+    reason the command counter omits them. Zero values are skipped, so a provider that
+    reports no usage adds nothing.
+    """
+    details = get_run_details()
+    if details is None:
+        return
+    labels = {
+        "pr_agent.command": action,
+        "vcs.provider.name": git_provider,
+        "pr_agent.fallback_used": details.fallback_used,
+    }
+    tokens_counter = get_tokens_counter()
+    for token_type, count in (
+        ("input", details.prompt_tokens),
+        ("output", details.completion_tokens),
+        ("cache_read", details.cache_read_tokens),
+        ("cache_creation", details.cache_creation_tokens),
+    ):
+        if count:
+            tokens_counter.add(count, {**labels, "gen_ai.token.type": token_type})
+    if details.num_ai_calls:
+        get_ai_calls_counter().add(details.num_ai_calls, labels)
+
+
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
 
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
-    ) -> bool:
+    ) -> bool | RequestOutcome:
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
         # would auto-record its message and stacktrace — request content, so opt-in.
@@ -318,11 +347,13 @@ class PRAgent:
 
     async def _run_command(
         self, pr_url, request, notify, span, propagate_tool_errors: bool | None = None
-    ) -> bool:
-        # First, apply repo specific settings if exists
+    ) -> bool | RequestOutcome:
+        # Evaluate repository policy before command overrides, notifications or tools.
         apply_repo_settings(pr_url)
+        if enforce_request_policy(pr_url) is False:
+            span.set_attribute("pr_agent.request.ignored", True)
+            return RequestOutcome.SKIPPED
 
-        # Then, apply user specific settings if exists
         if isinstance(request, str):
             lexer = shlex.shlex(request, posix=True)
             lexer.whitespace_split = True
@@ -390,8 +421,6 @@ class PRAgent:
                 span.set_attribute("error.message", f"Unknown command: {action}")
             return False
 
-        reapply_artifact_context()
-
         # Only after validation: an unknown action is arbitrary user input and
         # must not become a span name, span attribute, or metric label.
         span.update_name(f"pr_agent {action}")
@@ -404,6 +433,10 @@ class PRAgent:
             # result cannot be overridden by either source. Restore it below for request isolation.
             previous_propagation = settings.get("CONFIG.PROPAGATE_TOOL_ERRORS", False)
             settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", propagate_tool_errors)
+        # Install a fresh collector at the per-command boundary so the finally block
+        # exports this command's usage and never repeats or inherits a prior command's
+        # counts. Tools that run their own collector (e.g. /review) replace it on entry.
+        init_run_details()
         try:
             with get_logger().contextualize(command=action, pr_url=pr_url):
                 get_logger().info("PR-Agent request handler started", analytics=True)
@@ -426,12 +459,17 @@ class PRAgent:
                 span.set_status(StatusCode.OK)
                 return True
         finally:
+            _record_token_metrics(action, _git_provider)
             if propagate_tool_errors is not None:
                 settings.set("CONFIG.PROPAGATE_TOOL_ERRORS", previous_propagation)
 
     async def handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
-    ) -> bool:
+    ) -> bool | RequestOutcome:
+        """Return True, False, or RequestOutcome.SKIPPED without raising command errors.
+
+        Callers must check for SKIPPED before reactions or other command follow-up.
+        """
         try:
             if propagate_tool_errors is None:
                 return await self._handle_request(pr_url, request, notify)
@@ -441,7 +479,7 @@ class PRAgent:
         except Exception:
             # _handle_request already catches command failures and annotates the span;
             # this is the outer contract every caller relies on — webhook handlers and
-            # the router get False, never an exception, even if telemetry itself fails.
+            # the router get False for failures. Policy skips are a distinct return value.
             get_logger().exception("Failed to process the command.")
             return False
         finally:

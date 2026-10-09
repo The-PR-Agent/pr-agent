@@ -17,6 +17,7 @@ def clear_cache():
 class SettingsStub:
     class config:
         use_global_settings_file = True
+        global_settings_repo = "pr-agent-settings"
 
     def get(self, key, default=None):
         return default

@@ -207,11 +207,13 @@ For example: `GITLAB.PERSONAL_ACCESS_TOKEN` --> `GITLAB__PERSONAL_ACCESS_TOKEN`
 
 For production Lambda deployments, use AWS Secrets Manager instead of environment variables:
 
-1. Create individual secrets for each GitLab webhook with this JSON format (e.g., secret name: `project-webhook-secret-001`)
+1. Generate a separate random webhook token for each project, for example with `openssl rand -hex 32`.
+   Create an individual secret for each GitLab webhook with this JSON format (e.g., secret name: `project-webhook-secret-001`):
 
 ```json
 {
   "gitlab_token": "glpat-xxxxxxxxxxxxxxxxxxxxxxxx",
+  "webhook_token": "<generated-random-webhook-token>",
   "token_name": "project-webhook-001"
 }
 ```
@@ -231,9 +233,22 @@ CONFIG__SECRET_PROVIDER=aws_secrets_manager
 AWS_SECRETS_MANAGER__SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:pr-agent-main-config-AbCdEf
 ```
 
-4. In your GitLab webhook configuration, set the **Secret Token** to the **Secret name** created in step 1:
-   - Example: `project-webhook-secret-001`
+4. In your GitLab webhook configuration, set the **Secret Token** to `<secret-name>:<webhook-token>`:
+   - Example: `project-webhook-secret-001:<generated-random-webhook-token>`
+   - Use the random token stored in the `webhook_token` field, not the GitLab personal access token.
+   - The final colon separates the token from the secret name, so the webhook token must not contain colons.
 
-**Important**: When using Secrets Manager, GitLab's webhook secret must be the Secrets Manager secret name.
+PR-Agent retrieves the JSON by secret name and compares the supplied token with `webhook_token` before
+using `gitlab_token`. Both fields must be nonempty strings. The secret name alone is not a credential.
 
 5. Add IAM permission `secretsmanager:GetSecretValue` to your Lambda execution role
+
+:::important Migration for existing secret-provider deployments
+Add `webhook_token` to each project secret and update the corresponding GitLab **Secret Token** to
+`<secret-name>:<webhook-token>` when deploying this version. Existing name-only tokens are rejected with
+HTTP 401; coordinate the server and webhook updates to avoid interrupted deliveries. The same format
+applies to the Google Cloud Storage secret provider.
+
+Deployments using `GITLAB.SHARED_SECRET` keep their existing token. A matching shared secret is checked
+first and uses the configured `GITLAB.PERSONAL_ACCESS_TOKEN` without contacting the cloud provider.
+:::

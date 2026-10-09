@@ -36,6 +36,10 @@ _ALLOWLIST = {
         "artifacts",
         "artifact_label",
     ): "artifacts_settings.get('artifact_label', '') in pr_agent/algo/artifacts.py",
+    (
+        "artifacts",
+        "truncate_from",
+    ): "artifacts_settings.get('truncate_from', 'start') in pr_agent/algo/artifacts.py",
     # [config] helpers that re-index the section from a variable or expression
     (
         "config",
@@ -47,11 +51,6 @@ _ALLOWLIST = {
         "output_relevant_configurations",
     ): "get_settings().get('config', {}).get('output_relevant_configurations', False) in "
     "pr_agent/tools/pr_description.py",
-    (
-        "config",
-        "enable_claude_adaptive_thinking",
-    ): "settings.config.get(key, default) in the thinking-controls loop in "
-    "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
     (
         "config",
         "enable_claude_extended_thinking",
@@ -135,15 +134,23 @@ _ALLOWLIST = {
     (
         "push_outputs",
         "file_path",
-    ): "cfg.get(\"file_path\", \"pr-agent-outputs/reviews.jsonl\") in pr_agent/algo/run_output.py",
+    ): "cfg.get(\"file_path\", \"pr-agent-outputs/reviews.jsonl\") in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "webhook_url",
-    ): "_push_outputs_sink_url(cfg, \"webhook_url\") in pr_agent/algo/run_output.py",
+    ): "_push_outputs_sink_url(cfg, \"webhook_url\") in pr_agent/algo/output_sinks.py",
     (
         "push_outputs",
         "slack_webhook_url",
-    ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/run_output.py",
+    ): "_push_outputs_sink_url(cfg, \"slack_webhook_url\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "telegram_bot_token",
+    ): "cfg.get(\"telegram_bot_token\") in pr_agent/algo/output_sinks.py",
+    (
+        "push_outputs",
+        "telegram_chat_id",
+    ): "cfg.get(\"telegram_chat_id\") in pr_agent/algo/output_sinks.py",
 }
 
 

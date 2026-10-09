@@ -1,10 +1,12 @@
 import json
 import os
+import sys
 from collections import Counter
 from typing import List, Optional
 
 from unidiff.errors import UnidiffParseError
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.run_output import show_run_details
@@ -28,6 +30,11 @@ class PlainDiffGitProvider(GitProvider):
     (plain_diff.content, plain_diff.output_path, plain_diff.json_output_path).
     Treat the pr_url arg as an ignored sentinel.
     """
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # A supplied patch has no PR metadata; its display title is not a PR title.
+        return policy_metadata(title=None, sender="", repo_full_name="",
+                               source_branch="", target_branch="")
 
     def __init__(self, pr_url=None, incremental=False):
         diff_text = get_settings().get("plain_diff.content", None)
@@ -106,7 +113,18 @@ class PlainDiffGitProvider(GitProvider):
         incremental.is_incremental = False
 
     def _write_output(self, content: str):
-        print(content)
+        try:
+            print(content)
+        except UnicodeEncodeError:
+            # Emit UTF-8 bytes when a redirected stdout uses a locale encoding (cp1252 on
+            # Windows) that cannot encode the emoji in tool output, so publishing does not
+            # abort before --output is written.
+            buffer = getattr(sys.stdout, "buffer", None)
+            if buffer is None:
+                raise
+            sys.stdout.flush()
+            buffer.write((content + "\n").encode("utf-8"))
+            buffer.flush()
         if self.output_path:
             # --output is always an explicit user request, so a write failure
             # must surface (fail fast) rather than be silently swallowed.

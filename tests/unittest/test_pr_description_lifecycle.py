@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
+from pr_agent.git_providers.git_provider import (
+    IncompleteBitbucketPullRequestFilesError,
+    IncompletePullRequestFilesError,
+)
 from pr_agent.tools import pr_description as pr_description_module
 from pr_agent.tools.pr_description import PRDescription
 from tests.unittest._settings_helpers import (
@@ -79,7 +82,10 @@ async def test_run_removes_progress_comment_when_description_generation_fails(
 
 
 @pytest.mark.asyncio
-async def test_run_re_raises_incomplete_bitbucket_diff_after_progress_cleanup(monkeypatch):
+@pytest.mark.parametrize(
+    "incomplete_error_class", [IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError]
+)
+async def test_run_re_raises_incomplete_provider_diff_after_progress_cleanup(monkeypatch, incomplete_error_class):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
         provider = MagicMock()
@@ -88,7 +94,7 @@ async def test_run_re_raises_incomplete_bitbucket_diff_after_progress_cleanup(mo
         description = _make_description(provider)
 
         monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
-        incomplete_diff_error = IncompleteBitbucketPullRequestFilesError("incomplete aggregate diff")
+        incomplete_diff_error = incomplete_error_class("incomplete aggregate diff")
         monkeypatch.setattr(
             pr_description_module,
             "retry_with_fallback_models",
@@ -96,7 +102,7 @@ async def test_run_re_raises_incomplete_bitbucket_diff_after_progress_cleanup(mo
         )
         _configure_published_run()
 
-        with pytest.raises(IncompleteBitbucketPullRequestFilesError) as exc_info:
+        with pytest.raises(incomplete_error_class) as exc_info:
             await description.run()
 
         assert exc_info.value is incomplete_diff_error

@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,6 +15,14 @@ def _clear_global_settings_cache():
     _gp._GLOBAL_SETTINGS_CACHE.clear()
     yield
     _gp._GLOBAL_SETTINGS_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def _named_global_settings_repo():
+    # Namespace-wide settings are off unless the host names the repository, so the tests
+    # below that exercise the global path set it explicitly.
+    with _global_settings_repo("pr-agent-settings"):
+        yield
 
 
 def _not_found(name):
@@ -57,6 +66,35 @@ def _provider(local_settings=None, global_settings=None):
         else {}
     )
     return provider
+
+
+@contextmanager
+def _global_settings_repo(repo):
+    """Point config.global_settings_repo at `repo` for the duration of the block."""
+    settings = get_settings()
+    original = getattr(settings.config, "global_settings_repo", "")
+    settings.config.global_settings_repo = repo
+    try:
+        yield
+    finally:
+        settings.config.global_settings_repo = original
+
+
+@pytest.mark.parametrize("configured, expected", [("", ""), ("acme-settings", b"[pr_reviewer]\n")])
+def test_global_settings_read_only_the_configured_repo(configured, expected):
+    provider = _provider()
+    provider.github_client.repos = {
+        "org/pr-agent-settings": FakeRepo({".pr_agent.toml": b"[config]\n"}),
+        "org/acme-settings": FakeRepo({".pr_agent.toml": b"[pr_reviewer]\n"}),
+    }
+    settings = get_settings()
+    original = settings.config.use_global_settings_file
+    settings.config.use_global_settings_file = True
+    try:
+        with _global_settings_repo(configured):
+            assert provider._get_global_repo_settings() == expected
+    finally:
+        settings.config.use_global_settings_file = original
 
 
 def test_get_global_repo_settings_repo_less_provider_does_not_crash():

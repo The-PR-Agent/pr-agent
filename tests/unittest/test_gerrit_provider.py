@@ -1,5 +1,10 @@
+import os
+import sys
+from types import SimpleNamespace
+
 import git
 import pytest
+import requests
 import urllib3.util
 
 from pr_agent.algo.language_handler import sort_files_by_main_languages
@@ -26,6 +31,83 @@ def test_get_commit_messages_returns_text(tmp_path):
     provider.repo = _make_repo(tmp_path, ["app.py"])
 
     assert provider.get_commit_messages() == "initial files"
+
+
+def test_get_repo_settings_reads_the_default_branch_not_the_change(tmp_path):
+    repo = _make_repo(tmp_path, [".pr_agent.toml"])
+    repo.git.checkout("--detach")
+    (tmp_path / ".pr_agent.toml").write_text("from the change\n")
+    repo.index.add([".pr_agent.toml"])
+    repo.index.commit("change edits settings")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == b".pr_agent.toml\n"
+
+
+def test_get_repo_settings_is_empty_when_the_default_branch_has_none(tmp_path):
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = _make_repo(tmp_path, ["app.py"]), tmp_path
+
+    assert provider.get_repo_settings() == b""
+
+
+def test_get_repo_settings_is_empty_when_the_settings_path_is_a_directory(tmp_path):
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = _make_repo(tmp_path, [".pr_agent.toml/nested"]), tmp_path
+
+    assert provider.get_repo_settings() == b""
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("settings/review.toml", b"settings/review.toml\n"),
+        (".pr_agent.toml", b""),
+        ("../outside.toml", b""),
+    ],
+)
+def test_get_repo_settings_resolves_only_safe_symlinks(tmp_path, target, expected):
+    repo = _make_repo(tmp_path, ["settings/review.toml"])
+    (tmp_path / ".pr_agent.toml").symlink_to(target)
+    repo.index.add([".pr_agent.toml"])
+    repo.index.commit("link settings")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == expected
+
+
+def test_get_repo_settings_resolves_linked_directories(tmp_path):
+    repo = _make_repo(tmp_path, ["actual/review.toml"])
+    (tmp_path / "settings").symlink_to("actual", target_is_directory=True)
+    (tmp_path / ".pr_agent.toml").symlink_to("settings/review.toml")
+    repo.index.add(["settings", ".pr_agent.toml"])
+    repo.index.commit("link settings directory")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == b"actual/review.toml\n"
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("alias/../settings.toml", b"nested/settings.toml\n"),
+        ("alias/../../settings.toml", b"settings.toml\n"),
+        ("alias/../../../outside.toml", b""),
+    ],
+)
+def test_get_repo_settings_resolves_parent_segments_after_linked_directories(tmp_path, target, expected):
+    repo = _make_repo(tmp_path, ["settings.toml", "nested/settings.toml", "nested/subdir/keep"])
+    (tmp_path / "alias").symlink_to("nested/subdir", target_is_directory=True)
+    (tmp_path / ".pr_agent.toml").symlink_to(target)
+    repo.index.add(["alias", ".pr_agent.toml"])
+    repo.index.commit("link settings through parent segment")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, tmp_path
+
+    assert provider.get_repo_settings() == expected
 
 
 def test_get_diff_files_preserves_deleted_filename(tmp_path):
@@ -234,6 +316,23 @@ def _capture_logs():
     return captured, sink_id
 
 
+def test_git_remote_logs_redact_credentials(tmp_path, monkeypatch):
+    from loguru import logger as loguru_logger
+
+    monkeypatch.setattr(gerrit_provider, "_call", lambda *args, **kwargs: "")
+    captured, sink_id = _capture_logs()
+    try:
+        url = "https://secret-user@example.com/project"
+        gerrit_provider.clone(url, tmp_path)
+        gerrit_provider.fetch(url, "refs/changes/01/1/1", tmp_path)
+    finally:
+        loguru_logger.remove(sink_id)
+
+    combined = "\n".join(captured)
+    assert "secret-user" not in combined
+    assert "https://example.com/project" in combined
+
+
 @pytest.mark.parametrize("failing_step", ["clone", "fetch", "checkout"])
 def test_prepare_repo_removes_temp_directory_when_setup_fails(tmp_path, monkeypatch, failing_step):
     repo_path = tmp_path / "clone"
@@ -318,6 +417,85 @@ def test_cleanup_removes_the_temp_repo_and_names_it_in_the_log(tmp_path):
     assert str(repo_path) in "\n".join(captured)
 
 
+@pytest.mark.parametrize("error_type", [requests.Timeout, requests.HTTPError])
+@pytest.mark.parametrize("reset_fails", [False, True])
+def test_suggestion_upload_failure_preserves_error_and_attempts_cleanup(tmp_path, monkeypatch, error_type, reset_fails):
+    from loguru import logger as loguru_logger
+
+    repo = _make_repo(tmp_path, ["app.py"])
+    provider = object.__new__(GerritProvider)
+    provider.repo_path = str(tmp_path)
+    provider.refspec = "refs/changes/01/1/1"
+    error = error_type("upload failed")
+
+    def fail_upload(patch, path):
+        assert "+replacement" in patch
+        raise error
+
+    def reject_comment(*args, **kwargs):
+        pytest.fail("A failed upload must not publish a suggestion comment")
+
+    monkeypatch.setattr(gerrit_provider, "upload_patch", fail_upload)
+    monkeypatch.setattr(gerrit_provider, "add_comment", reject_comment)
+    if reset_fails:
+        def fail_reset(path):
+            raise gerrit_provider.subprocess.CalledProcessError(
+                1, ["git", "checkout", "--force"], stderr=b"fatal: index.lock exists",
+            )
+
+        monkeypatch.setattr(gerrit_provider, "reset_local_changes", fail_reset)
+    suggestion = {
+        "relevant_file": "app.py",
+        "body": "Replace the line\n```suggestion\nreplacement\n```",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+    }
+
+    captured, sink_id = _capture_logs()
+    try:
+        with pytest.raises(error_type, match="upload failed") as caught:
+            provider.publish_code_suggestions([suggestion])
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert caught.value is error
+    if reset_fails:
+        assert repo.is_dirty()
+        combined = "\n".join(captured)
+        assert "Failed to reset Gerrit edits after upload failed" in combined
+        assert str(tmp_path) in combined
+        assert "fatal: index.lock exists" in combined
+    else:
+        assert (tmp_path / "app.py").read_text() == "app.py\n"
+        assert not repo.is_dirty()
+
+
+def test_successful_suggestion_upload_propagates_reset_failure(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, ["app.py"])
+    provider = object.__new__(GerritProvider)
+    provider.repo_path = str(tmp_path)
+    provider.refspec = "refs/changes/01/1/1"
+    error = gerrit_provider.subprocess.CalledProcessError(1, ["git", "checkout", "--force"])
+
+    def fail_reset(path):
+        raise error
+
+    monkeypatch.setattr(gerrit_provider, "upload_patch", lambda patch, path: "https://patch.example/1")
+    monkeypatch.setattr(gerrit_provider, "reset_local_changes", fail_reset)
+    suggestion = {
+        "relevant_file": "app.py",
+        "body": "Replace the line\n```suggestion\nreplacement\n```",
+        "relevant_lines_start": 1,
+        "relevant_lines_end": 1,
+    }
+
+    with pytest.raises(gerrit_provider.subprocess.CalledProcessError) as caught:
+        provider.publish_code_suggestions([suggestion])
+
+    assert caught.value is error
+    assert repo.is_dirty()
+
+
 def test_cleanup_reports_a_failed_removal_instead_of_claiming_success(tmp_path, monkeypatch):
     """ignore_errors=True would swallow the error, leaving a 'Cleaned up' line for a repo still on disk."""
     from loguru import logger as loguru_logger
@@ -345,3 +523,283 @@ def test_cleanup_reports_a_failed_removal_instead_of_claiming_success(tmp_path, 
     assert "Failed to clean up temp repo" in combined
     assert str(repo_path) in combined
     assert "device busy" in combined
+
+
+def _patch_gerrit_provider_initialization(monkeypatch):
+    settings_values = {
+        "gerrit.url": "https://gerrit.example:29418",
+        "gerrit.user": "bot",
+    }
+    settings = SimpleNamespace(get=lambda key: settings_values[key])
+    prepare_calls = []
+
+    def prepare_repo(url, project, refspec):
+        prepare_calls.append((url, project, refspec))
+        return "repo-path"
+
+    monkeypatch.setattr(gerrit_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr(gerrit_provider, "prepare_repo", prepare_repo)
+    monkeypatch.setattr(gerrit_provider, "Repo", lambda _path: object())
+    monkeypatch.setattr(gerrit_provider, "PullRequestMimic", lambda title, files: (title, files))
+    monkeypatch.setattr(GerritProvider, "get_pr_title", lambda _self: "change")
+    monkeypatch.setattr(GerritProvider, "get_diff_files", lambda _self: [])
+    return prepare_calls
+
+
+@pytest.mark.parametrize("refspec", ["refs/changes/01/1/1", "refs/changes/23/123/4"])
+def test_init_accepts_canonical_change_refspec(monkeypatch, refspec):
+    prepare_calls = _patch_gerrit_provider_initialization(monkeypatch)
+
+    provider = GerritProvider(f"my/project:{refspec}")
+
+    assert provider.refspec == refspec
+    assert prepare_calls[0][1:] == ("my/project", refspec)
+
+
+@pytest.mark.parametrize(
+    "refspec",
+    [
+        "refs/changes/1/1/1",
+        "refs/changes/001/1/1",
+        "refs/heads/main",
+        "refs/changes/01/1",
+        "refs/changes/01/1/1/extra",
+        "refs/changes/ab/1/1",
+    ],
+)
+def test_init_rejects_malformed_change_refspec_before_preparing_repo(monkeypatch, refspec):
+    prepare_calls = _patch_gerrit_provider_initialization(monkeypatch)
+
+    with pytest.raises(ValueError, match="refspec"):
+        GerritProvider(f"my/project:{refspec}")
+
+    assert prepare_calls == []
+
+
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+def test_add_suggestion_replaces_only_the_suggested_lines(tmp_path, eol):
+    src = tmp_path / "app.py"
+    src.write_bytes(f"a{eol}b{eol}c{eol}".encode())
+
+    gerrit_provider.add_suggestion(src, "B1\nB2\n", 2, 2)
+
+    # Keep the file's line endings so the uploaded diff touches only the suggestion.
+    assert src.read_bytes() == f"a{eol}B1{eol}B2{eol}c{eol}".encode()
+
+
+def test_add_suggestion_matches_the_replaced_lines_in_a_mixed_ending_file(tmp_path):
+    src = tmp_path / "app.py"
+    src.write_bytes(b"a\nb\r\nc\n")
+
+    gerrit_provider.add_suggestion(src, "B\n", 2, 2)
+
+    assert src.read_bytes() == b"a\nB\r\nc\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_add_suggestion_keeps_the_file_mode(tmp_path):
+    src = tmp_path / "run.sh"
+    src.write_bytes(b"echo a\necho b\n")
+    os.chmod(src, 0o700)
+
+    gerrit_provider.add_suggestion(src, "echo B\n", 2, 2)
+
+    # Check the executable bit survives, so the patch carries no mode change.
+    assert os.stat(src).st_mode & 0o777 == 0o700
+    assert src.read_bytes() == b"echo a\necho B\n"
+
+
+def test_get_diff_files_walks_the_commit_once(tmp_path, monkeypatch):
+    # Walk the commit once: a command asks for the diff several times (get_num_of_files,
+    # inline comments, pr_processing) and each walk redoes rename detection.
+    repo = _make_repo(tmp_path, ["a.py", "b.py"])
+    for name in ["a.py", "b.py"]:
+        (tmp_path / name).write_text("changed\n")
+    repo.index.add(["a.py", "b.py"])
+    repo.index.commit("change files")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    provider.repo_path = None
+
+    calls = []
+    real_diff = git.Commit.diff
+
+    def counting_diff(self, *args, **kwargs):
+        calls.append(1)
+        return real_diff(self, *args, **kwargs)
+
+    monkeypatch.setattr(git.Commit, "diff", counting_diff)
+
+    first = provider.get_diff_files()
+    second = provider.get_diff_files()
+
+    assert len(calls) == 1
+    # Verify cached Diff objects reproduce the same base/head content and patch.
+    assert first == second
+    assert first[0].base_file != ""
+    assert first[0].patch
+
+
+def test_get_diff_files_reflects_ignore_rules_merged_after_construction(tmp_path):
+    # Read the diff before loading repository settings, then apply the new ignore rules.
+    repo = _make_repo(tmp_path, ["keep.py", "generated.py"])
+    for name in ["keep.py", "generated.py"]:
+        (tmp_path / name).write_text("changed\n")
+    repo.index.add(["keep.py", "generated.py"])
+    repo.index.commit("change files")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    provider.repo_path = None
+
+    settings_snapshot = settings_helpers.snapshot_settings(["ignore.glob", "ignore.regex"])
+    try:
+        # Simulate provider construction before repository settings are loaded.
+        get_settings().set("ignore.glob", [])
+        get_settings().set("ignore.regex", [])
+
+        before_merge = provider.get_diff_files()
+    finally:
+        settings_helpers.restore_settings(settings_snapshot)
+
+    assert {file.filename for file in before_merge} == {"keep.py", "generated.py"}
+
+    settings_snapshot = settings_helpers.snapshot_settings(["ignore.glob", "ignore.regex"])
+    try:
+        get_settings().set("ignore.glob", ["generated.py"])
+        get_settings().set("ignore.regex", [])
+
+        after_merge = provider.get_diff_files()
+        files_after_merge = provider.get_files()
+    finally:
+        settings_helpers.restore_settings(settings_snapshot)
+
+    assert [file.filename for file in after_merge] == ["keep.py"]
+    assert files_after_merge == ["keep.py"]
+
+
+def test_get_files_derives_names_from_the_diff(tmp_path, monkeypatch):
+    # Share the cached walk with get_files(), so both agree on which files changed.
+    repo = _make_repo(tmp_path, ["keep.py"])
+    (tmp_path / "keep.py").write_text("changed\n")
+    repo.index.add(["keep.py"])
+    repo.index.commit("change keep.py")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    provider.repo_path = None
+
+    calls = []
+    real_diff = git.Commit.diff
+
+    def counting_diff(self, *args, **kwargs):
+        calls.append(1)
+        return real_diff(self, *args, **kwargs)
+
+    monkeypatch.setattr(git.Commit, "diff", counting_diff)
+
+    assert provider.get_files() == ["keep.py"]
+    assert provider.get_files() == ["keep.py"]
+    assert [file.filename for file in provider.get_diff_files()] == provider.get_files()
+    # Reuse the cached walk for every filename lookup.
+    assert len(calls) == 1
+
+
+def test_get_files_reports_the_post_rename_path(tmp_path):
+    # Report renamed files under their destination paths.
+    repo = _make_repo(tmp_path, ["old_name.py"])
+    repo.git.mv("old_name.py", "new_name.py")
+    repo.index.commit("rename old_name.py")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    provider.repo_path = None
+
+    assert provider.get_files() == ["new_name.py"]
+
+
+def test_get_files_applies_the_same_ignore_rules_as_the_diff(tmp_path):
+    # Exclude ignored paths from language detection and the no-files guard.
+    repo = _make_repo(tmp_path, ["src/keep.py", "generated/skip.py"])
+    for name in ["src/keep.py", "generated/skip.py"]:
+        (tmp_path / name).write_text("changed\n")
+    repo.index.add(["src/keep.py", "generated/skip.py"])
+    repo.index.commit("change files")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    provider.repo_path = None
+    settings_snapshot = settings_helpers.snapshot_settings(["ignore.glob", "ignore.regex"])
+    try:
+        get_settings().set("ignore.glob", ["generated/**"])
+        get_settings().set("ignore.regex", [])
+
+        files = provider.get_files()
+    finally:
+        settings_helpers.restore_settings(settings_snapshot)
+
+    assert files == ["src/keep.py"]
+
+
+def test_get_files_includes_files_that_diff_files_skips_as_non_utf8(tmp_path):
+    # List undecodable files by name for language detection; omit their content from
+    # the model diff.
+    repo = _make_repo(tmp_path, ["good.py", "bad.py"])
+    (tmp_path / "bad.py").write_bytes(b"\xffbefore\n")
+    repo.index.add(["good.py", "bad.py"])
+    repo.index.commit("add bad bytes")
+    (tmp_path / "good.py").write_text("after\n")
+    (tmp_path / "bad.py").write_bytes(b"\xfeafter\n")
+    repo.index.add(["good.py", "bad.py"])
+    repo.index.commit("change both")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    provider.repo_path = None
+
+    assert provider.get_files() == ["bad.py", "good.py"]
+    assert [file.filename for file in provider.get_diff_files()] == ["good.py"]
+
+
+def test_diff_files_attribute_refreshes_on_every_call(tmp_path):
+    # Refresh diff_files for direct readers after the ignore rules change.
+    repo = _make_repo(tmp_path, ["keep.py", "generated.py"])
+    for name in ["keep.py", "generated.py"]:
+        (tmp_path / name).write_text("changed\n")
+    repo.index.add(["keep.py", "generated.py"])
+    repo.index.commit("change files")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    provider.repo_path = None
+
+    provider.get_diff_files()
+    assert {file.filename for file in provider.diff_files} == {"keep.py", "generated.py"}
+
+    settings_snapshot = settings_helpers.snapshot_settings(["ignore.glob", "ignore.regex"])
+    try:
+        get_settings().set("ignore.glob", ["generated.py"])
+        get_settings().set("ignore.regex", [])
+
+        provider.get_diff_files()
+    finally:
+        settings_helpers.restore_settings(settings_snapshot)
+
+    assert [file.filename for file in provider.diff_files] == ["keep.py"]
+
+
+def test_get_files_includes_deleted_files(tmp_path):
+    # Retain a deleted file's a_path when b_path is None so deletion-only changes
+    # are not treated as empty.
+    repo = _make_repo(tmp_path, ["gone.py"])
+    (tmp_path / "gone.py").unlink()
+    repo.index.remove(["gone.py"])
+    repo.index.commit("delete gone.py")
+
+    provider = object.__new__(GerritProvider)
+    provider.repo = repo
+    provider.repo_path = None
+
+    assert provider.get_files() == ["gone.py"]
+    assert provider.get_diff_files()[0].edit_type == EDIT_TYPE.DELETED

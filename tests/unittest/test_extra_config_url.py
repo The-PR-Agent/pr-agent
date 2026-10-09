@@ -570,12 +570,12 @@ def test_precedence_repo_local_overrides_extra(tmp_path, settings_sandbox, mock_
     """Keys defined in both files: repo-local wins."""
     extra_path = _write_toml(tmp_path, "extra.toml", f"""
 [{_TEST_SECTION}]
-shared_key = "from-extra"
+shared_setting = "from-extra"
 extra_only = "extra-value"
 """)
     repo_toml = f"""
 [{_TEST_SECTION}]
-shared_key = "from-repo"
+shared_setting = "from-repo"
 repo_only = "repo-value"
 """.encode()
     mock_git_provider["provider"] = _FakeGitProvider(repo_toml)
@@ -585,7 +585,7 @@ repo_only = "repo-value"
     apply_repo_settings("https://example.com/pr/1")
 
     # repo wins on the shared key
-    assert get_settings().get(f"{_TEST_SECTION}.shared_key") == "from-repo"
+    assert get_settings().get(f"{_TEST_SECTION}.shared_setting") == "from-repo"
     # extra-only keys survive (extra was applied first, repo didn't touch this key)
     assert get_settings().get(f"{_TEST_SECTION}.extra_only") == "extra-value"
     # repo-only keys are present
@@ -611,7 +611,7 @@ def test_repo_settings_apply_when_extra_url_unset(tmp_path, settings_sandbox, mo
     """Sanity: with no --extra_config_url, only repo-local config is applied."""
     repo_toml = f"""
 [{_TEST_SECTION}]
-repo_key = "repo-only"
+repo_setting = "repo-only"
 """.encode()
     mock_git_provider["provider"] = _FakeGitProvider(repo_toml)
 
@@ -620,7 +620,7 @@ repo_key = "repo-only"
 
     apply_repo_settings("https://example.com/pr/1")
 
-    assert get_settings().get(f"{_TEST_SECTION}.repo_key") == "repo-only"
+    assert get_settings().get(f"{_TEST_SECTION}.repo_setting") == "repo-only"
 
 
 def test_unreachable_extra_url_does_not_block_repo_settings(
@@ -629,7 +629,7 @@ def test_unreachable_extra_url_does_not_block_repo_settings(
     """If the extra source fails to resolve, repo-local config still applies."""
     repo_toml = f"""
 [{_TEST_SECTION}]
-repo_key = "still-applied"
+repo_setting = "still-applied"
 """.encode()
     mock_git_provider["provider"] = _FakeGitProvider(repo_toml)
 
@@ -637,7 +637,7 @@ repo_key = "still-applied"
 
     apply_repo_settings("https://example.com/pr/1")
 
-    assert get_settings().get(f"{_TEST_SECTION}.repo_key") == "still-applied"
+    assert get_settings().get(f"{_TEST_SECTION}.repo_setting") == "still-applied"
 
 
 def test_env_var_overrides_extra_config(tmp_path, settings_sandbox, monkeypatch):

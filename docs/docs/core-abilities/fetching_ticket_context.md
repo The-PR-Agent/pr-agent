@@ -34,7 +34,7 @@ This integration enriches the review process by automatically surfacing relevant
 
 Ticket Recognition Requirements:
 
-- The PR description should contain a link to the ticket or if the branch name starts with the ticket id / number.
+- GitHub/GitLab issue references can appear in the PR/MR title or description. GitHub also recognizes numeric issue references in the branch name.
 - For Jira tickets, you should follow the instructions in [Jira Integration](#jira-integration) in order to authenticate with Jira.
 - For Asana tickets, see [Asana Integration](#asana-integration).
 
@@ -47,7 +47,7 @@ By understanding the reasoning and intent behind modifications, the LLM can offe
 
 Similarly to the `describe` tool, the `review` tool will use the ticket content to provide additional context for the code changes.
 
-In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue mentioned in the PR description.
+In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
 Each ticket will be assigned a label (Compliance/Alignment level), Indicates the degree to which the PR fulfills its original purpose:
 
 - Fully Compliant
@@ -85,19 +85,43 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
 
 ## GitHub/GitLab Issues Integration
 
-PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR description and fetch the issue content.
+PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR/MR title or description and fetch the issue content.
 Examples of valid GitHub/GitLab issue references:
 
 - `https://github.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>` or `https://gitlab.com/<ORG_NAME>/<REPO_NAME>/-/issues/<ISSUE_NUMBER>`
 - `#<ISSUE_NUMBER>`
 - `<ORG_NAME>/<REPO_NAME>#<ISSUE_NUMBER>`
 
+Full GitHub issue URLs are recognized on the configured instance's HTTPS web origin, including GitHub Enterprise URLs such as `https://github.example.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>`.
+Full GitHub issue URLs on other origins are ignored.
+
+GitHub processes references from the description first, then the branch name, then the title. GitLab processes
+description references before title references. Repeated identical references do not add lookups, and title references use
+the existing ticket lookup and result limits without displacing earlier sources.
+
+The optional `config.description_issue_regex` setting applies only to the GitHub PR description. GitHub titles use
+the built-in reference formats above, including local `#<ISSUE_NUMBER>` references of up to six digits.
+
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)
 
 This branch-name detection applies **only when the git provider is GitHub**. Support for other platforms is planned for later.
 
-Since PR-Agent is integrated with GitHub, it doesn't require any additional configuration to fetch GitHub issues.
+By default, GitHub ticket context is limited to the PR's own repository. Issues and sub-issues in another
+repository require explicit host approval through `config.repo_context_sibling_repos`:
+
+```toml
+[config]
+repo_context_sibling_repos = ["myorg/shared-tickets"]
+```
+
+Only canonical repositories under the PR repository's resolved owner are accepted. For private or internal
+repositories, the command requester must also have read access; CLI runs use the PR author when no command actor
+is available. Repository settings and comment arguments cannot change this allowlist. An empty list disables
+cross-repository ticket reads, including public repositories. Approve only content that may be included in the
+consuming PR's review or description. Ticket lookup limits are separate from the sibling-file limit.
+PyGithub may follow an issue transfer, but results from a different repository are discarded before prompt use.
+Reference a transferred issue by its current repository and number.
 
 ## Asana Integration
 
@@ -152,6 +176,8 @@ the established ticket-extraction behavior of existing providers.
 
 ## Jira Integration
 
+Jira lookup needs the `bitbucket` extra: `pip install "pr-agent[bitbucket]"`. Without it the lookup is skipped with a warning.
+
 Only **Jira Cloud** is supported. The base URL is derived from a validated site name
 (`jira_site` → `https://<site>.atlassian.net`) rather than taken as a free-form URL, so
 the configured destination is always an Atlassian Cloud host. Jira Server / Data Center
@@ -174,7 +200,7 @@ You can create an API token from your Atlassian account:
 
 <img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
 
-5. In your [configuration file](../usage-guide/configuration_options.md) add the following lines:
+5. In the PR-Agent host configuration (the secrets file or environment variables such as `JIRA__JIRA_SITE`) add the following lines. A repository's `.pr_agent.toml` cannot set them:
 
 ```toml
 [jira]
@@ -205,9 +231,11 @@ jira_requirements_field = "customfield_10127"
 
 Ticket detection matches any `PROJECT-123` shaped text, so strings like `SHA-256`,
 `UTF-8` or `ISO-8601` in a title or description each cost an authenticated lookup that
-returns 404. If your repository works with a known set of Jira projects, list their keys
-in `project_keys`; keys with any other prefix are then dropped before any lookup (they are
+returns 404. If your deployment works with a known set of Jira projects, list their keys
+in the host's `project_keys`; keys with any other prefix are then dropped before any lookup (they are
 named once at debug level in the log). Leave the list empty to look up every key found.
+`project_keys`, `jira_site` and `jira_api_email` are host-only: a repository's `.pr_agent.toml`
+or a comment command cannot change them.
 
 ```toml
 [jira]

@@ -158,9 +158,9 @@ def test_the_riskiest_chunk_sets_the_risk_level(levels, expected):
 
 
 @pytest.mark.parametrize("recommendations, expected", [
-    (["safe_to_merge", "changes_required"], "changes_required"),
-    (["safe_to_merge", "merge_with_caution"], "merge_with_caution"),
-    (["safe_to_merge", "safe_to_merge"], "safe_to_merge"),
+    (["no_concerns_found", "changes_required"], "changes_required"),
+    (["no_concerns_found", "needs_review"], "needs_review"),
+    (["no_concerns_found", "no_concerns_found"], "no_concerns_found"),
 ])
 def test_the_most_cautious_chunk_sets_the_merge_recommendation(recommendations, expected):
     merged = merge_review_chunks([_chunk(merge_recommendation=value) for value in recommendations])
@@ -236,6 +236,18 @@ def test_ticket_compliance_is_grouped_per_ticket_and_its_bullet_lists_are_unione
     assert first["fully_compliant_requirements"] == "- adds the endpoint"
     assert first["not_compliant_requirements"] == "- no rate limiting"
     assert second["ticket_url"] == "https://tracker/2"
+
+
+def test_ticket_compliance_without_urls_does_not_collapse_unrelated_entries():
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[{"fully_compliant_requirements": "- adds the endpoint"}]),
+        _chunk(ticket_compliance_check=[{"fully_compliant_requirements": "- updates the docs"}]),
+    ])
+
+    assert merged["review"]["ticket_compliance_check"] == [
+        {"fully_compliant_requirements": "- adds the endpoint"},
+        {"fully_compliant_requirements": "- updates the docs"},
+    ]
 
 
 def test_contribution_time_adds_up_across_the_chunks():

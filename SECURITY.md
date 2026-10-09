@@ -24,7 +24,8 @@ This section outlines which versions of PR-Agent are currently supported with se
 
 #### Latest Version
 
-For the most recent updates, use our latest Docker image which is automatically built nightly:
+For the most recent release, use the rolling GitHub Action. Its underlying `github_action` Docker image is updated
+whenever a release is published:
 
 ```yaml
 uses: the-pr-agent/pr-agent@main

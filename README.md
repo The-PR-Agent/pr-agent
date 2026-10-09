@@ -6,9 +6,9 @@
 
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://codium.ai/images/pr_agent/logo-dark.png" width="330">
-  <source media="(prefers-color-scheme: light)" srcset="https://codium.ai/images/pr_agent/logo-light.png" width="330">
-  <img src="https://codium.ai/images/pr_agent/logo-light.png" alt="logo" width="330">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/logo-dark.png" width="330">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/logo-light.png" width="330">
+  <img src="https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/logo-light.png" alt="logo" width="330">
 
 </picture>
 <br>
@@ -90,10 +90,11 @@ jobs:
 Run PR-Agent locally on your repository:
 
 ```bash
-pip install pr-agent
+pip install "pr-agent[github]"
 export OPENAI_KEY=your_key_here
 pr-agent --pr_url https://github.com/owner/repo/pull/123 review
 ```
+Git provider SDKs are optional extras: install the one for your provider ([list](https://docs.pr-agent.ai/installation/locally/#using-pip-package)), or `pr-agent[all]` for every integration.
 [Complete CLI setup guide](https://docs.pr-agent.ai/usage-guide/automations_and_usage/#local-repo-cli)
 
 #### 3. Other Platforms
@@ -145,7 +146,7 @@ ___
 <h4><a href="https://github.com/the-pr-agent/pr-agent/pull/530">/describe</a></h4>
 <div align="center">
 <p float="center">
-<img src="https://www.codium.ai/images/pr_agent/describe_new_short_main.png" width="512">
+<img src="https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/describe_new_short_main.png" width="512">
 </p>
 </div>
 <hr>
@@ -154,7 +155,7 @@ ___
 <div align="center">
 <p float="center">
 <kbd>
-<img src="https://www.codium.ai/images/pr_agent/review_new_short_main.png" width="512">
+<img src="https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/review_new_short_main.png" width="512">
 </kbd>
 </p>
 </div>
@@ -164,7 +165,7 @@ ___
 <div align="center">
 <p float="center">
 <kbd>
-<img src="https://www.codium.ai/images/pr_agent/improve_new_short_main.png" width="512">
+<img src="https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/improve_new_short_main.png" width="512">
 </kbd>
 </p>
 </div>
@@ -198,7 +199,7 @@ See the [Tools docs](https://docs.pr-agent.ai/tools/#usage-examples) for the ful
 
 The following diagram illustrates PR-Agent tools and their flow:
 
-![PR-Agent Tools](https://www.qodo.ai/images/pr_agent/diagram-v0.9.png)
+![PR-Agent Tools](https://raw.githubusercontent.com/The-PR-Agent/pr-agent/main/docs/static/img/diagram-v0.9.png)
 
 ## Data Privacy
 

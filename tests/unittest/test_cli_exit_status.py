@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tomllib
+from contextvars import copy_context
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -12,6 +13,7 @@ import pytest
 from starlette_context import context, request_cycle_context
 
 from pr_agent import cli
+from pr_agent.algo.run_details import init_run_details, record_command_failure
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider
 
@@ -35,7 +37,7 @@ def restore_cli_settings():
         settings.set(key, value)
 
 
-def _run_with_result(monkeypatch, result, *, propagate_tool_errors):
+def _run_with_result(monkeypatch, result, *, propagate_tool_errors, recorded_failure=False):
     fake_settings = SimpleNamespace(
         config={"propagate_tool_errors": propagate_tool_errors},
         litellm={},
@@ -43,6 +45,9 @@ def _run_with_result(monkeypatch, result, *, propagate_tool_errors):
     )
 
     async def fake_handle_request(*_args, **_kwargs):
+        init_run_details()
+        if recorded_failure:
+            record_command_failure()
         return result
 
     monkeypatch.setattr(cli, "get_settings", lambda: fake_settings)
@@ -84,6 +89,37 @@ def test_run_maps_request_result_to_status(
 
     assert status == expected_status
     assert ("usage:" in capsys.readouterr().out) is prints_help
+
+
+@pytest.mark.parametrize(
+    ("propagate_tool_errors", "expected_status"),
+    [
+        (False, None),
+        (True, 1),
+    ],
+)
+def test_run_maps_recorded_tool_failure_to_status(monkeypatch, propagate_tool_errors, expected_status):
+    status = _run_with_result(
+        monkeypatch,
+        True,
+        propagate_tool_errors=propagate_tool_errors,
+        recorded_failure=True,
+    )
+
+    assert status == expected_status
+
+
+def test_run_does_not_inherit_caller_or_previous_command_failure(monkeypatch):
+    def run_commands():
+        init_run_details()
+        record_command_failure()
+        assert _run_with_result(monkeypatch, True, propagate_tool_errors=True) is None
+        assert _run_with_result(
+            monkeypatch, True, propagate_tool_errors=True, recorded_failure=True
+        ) == 1
+        assert _run_with_result(monkeypatch, True, propagate_tool_errors=True) is None
+
+    copy_context().run(run_commands)
 
 
 def test_run_reads_effective_setting_after_dispatch(monkeypatch):
@@ -148,11 +184,13 @@ def test_run_drains_callbacks_before_returning_failure_status(monkeypatch):
         (True, False, None),
     ],
 )
+@pytest.mark.parametrize("recorded_failure", [False, True])
 def test_real_request_failure_uses_effective_propagation_setting(
     monkeypatch,
     repo_value,
     cli_value,
     expected_status,
+    recorded_failure,
 ):
     from pr_agent.agent import pr_agent as pr_agent_module
 
@@ -169,6 +207,9 @@ def test_real_request_failure_uses_effective_propagation_setting(
                 get_settings().config.get("propagate_tool_errors")
                 is expected_effective_value
             )
+            if recorded_failure:
+                record_command_failure()
+                return
             raise RuntimeError("controlled tool failure")
 
     async def fake_drain(*_args, **_kwargs):
@@ -178,6 +219,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
         get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", repo_value)
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReview)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", fake_apply_repo_settings)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: events.append("telemetry"))
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
@@ -248,6 +290,7 @@ def test_run_restores_propagation_setting_between_invocations(
         apply_calls += 1
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", ControlledReview)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", fake_apply_repo_settings)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)

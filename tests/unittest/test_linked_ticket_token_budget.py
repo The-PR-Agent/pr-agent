@@ -66,6 +66,75 @@ def test_related_ticket_prompts_disclose_omitted_records(prompt_name):
     assert "2 additional related ticket(s) were omitted" in rendered
 
 
+@pytest.mark.parametrize(
+    "prompt_name",
+    [
+        "pr_description_prompt",
+        "pr_description_only_files_prompts",
+        "pr_description_only_description_prompts",
+        "pr_review_prompt",
+    ],
+)
+def test_related_ticket_prompts_preserve_parent_association(prompt_name):
+    handler = SimpleNamespace(system="", user=get_settings().get(prompt_name).user)
+    budget = token_budget_module.AttemptTokenBudget("test-model", handler, handler, 10000)
+    variables = {
+        "title": "Fixture PR",
+        "branch": "main",
+        "description": "",
+        "diff": "",
+        "answer_str": "",
+        "date": "",
+        "previous_findings": [],
+        "question_str": "",
+        "duplicate_prompt_examples": "",
+        "num_max_findings": 3,
+        "related_tickets_omitted": 0,
+        "require_can_be_split_review": False,
+        "require_estimate_contribution_time_cost": False,
+        "require_estimate_effort_to_review": False,
+        "require_merge_recommendation": False,
+        "require_priority_files": False,
+        "require_risk_assessment": False,
+        "require_score": False,
+        "require_todo_scan": False,
+        "commit_messages_str": "",
+        "enable_pr_description": False,
+        "enable_pr_diagram": False,
+        "enable_semantic_files_types": False,
+        "include_file_summary_changes": False,
+    }
+
+    def render(related_tickets):
+        return budget.render_prompt_templates({**variables, "related_tickets": related_tickets})[1]
+    direct = [
+        {"ticket_url": "u/p1", "title": "Parent 1", "body": "Requirements 1"},
+        {"ticket_url": "u/p2", "title": "Parent 2", "body": "Requirements 2"},
+    ]
+    children = [
+        {"ticket_url": f"u/c{index}", "title": f"Child {index}", "body": "Child requirements",
+         "parent_ticket_url": "u/p1", "parent_ticket_title": "Parent 1"}
+        for index in (1, 2, 3)
+    ]
+    children[-1].update(parent_ticket_url="u/p2", parent_ticket_title="Parent 2")
+    first_family = render([*direct, *children])
+    moved_child = {**children[1], "parent_ticket_url": "u/p2", "parent_ticket_title": "Parent 2"}
+    second_family = render([*direct, children[0], moved_child, children[2]])
+
+    assert first_family != second_family
+    assert first_family.count("Parent Ticket: 'u/p1' — 'Parent 1'") == 2
+    assert second_family.count("Parent Ticket: 'u/p2' — 'Parent 2'") == 2
+    assert "Parent Ticket:" not in render(direct)
+    no_title = {**children[0], "parent_ticket_url": "u/<parent>?a=1&b=2"}
+    del no_title["parent_ticket_title"]
+    escaped = render([no_title])
+    assert "Parent Ticket: 'u/&lt;parent&gt;?a=1&amp;b=2'" in escaped
+    escaped_title = render([{
+        **children[0], "parent_ticket_title": "<Parent & title>"
+    }])
+    assert "&lt;Parent &amp; title&gt;" in escaped_title
+
+
 @pytest.fixture
 def prompt_budget(monkeypatch):
     """Use a 1,500-token diff/output reserve with deterministic prompt sizes."""
@@ -321,7 +390,7 @@ async def test_description_large_pr_fits_each_prompt_from_raw_tickets(monkeypatc
 
     def get_multiple_patches(_provider, token_handler, _model, **_kwargs):
         packed_handlers.append(token_handler)
-        return ([["@@ -1 +1 @@\n-old\n+new"]], [10], [], [], {}, [[]])
+        return ([["@@ -1 +1 @@\n-old\n+new"]], [10], [], [], {}, [["src/app.py"]])
 
     async def get_prediction(_model, patches_diff=None, prompt=None):
         prediction_calls.append((prompt, patches_diff, tool.vars))

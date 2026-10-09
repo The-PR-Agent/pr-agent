@@ -8,12 +8,14 @@ from contextlib import contextmanager
 from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent, commands, parse_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
 from pr_agent.algo.artifacts import inject_artifact_context
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
@@ -219,11 +221,16 @@ def run(inargs=None, args=None):
             # A CI artifact (see [artifacts]) reaches prompts from the environment or settings files,
             # the same way it does under the GitHub Action. Each asyncio.run gets a fresh task context.
             inject_artifact_context()
+            init_run_details()
+            # Read the verdict in the same task where the request installs its collector.
             if args.issue_url:
-                result = await asyncio.create_task(PRAgent().handle_request(args.issue_url, [command] + args.rest))
+                result = await PRAgent().handle_request(args.issue_url, [command] + args.rest)
             else:
                 target = args.pr_url if args.pr_url else "local_diff"
-                result = await asyncio.create_task(PRAgent().handle_request(target, [command] + args.rest))
+                result = await PRAgent().handle_request(target, [command] + args.rest)
+            if result is RequestOutcome.SKIPPED:
+                # No tool ran, so there are no command callbacks or failures to drain.
+                return True, False
 
             # litellm defers its success/failure callbacks onto the event loop, which
             # asyncio.run() below tears down the moment this coroutine returns. Give
@@ -234,12 +241,14 @@ def run(inargs=None, args=None):
                     get_settings().litellm.get("callback_timeout_seconds", DEFAULT_CALLBACK_TIMEOUT_SECONDS)
                 )
 
-            return result
+            return result, command_failed()
 
-        result = asyncio.run(inner())
+        result, recorded_failure = asyncio.run(inner())
         if not result:
             parser.print_help()
-        if result is False and settings.config.get("propagate_tool_errors", False):
+        if settings.config.get("propagate_tool_errors", False) and (result is False or recorded_failure):
+            if result is not False and recorded_failure:
+                get_logger().warning("Tool reported success but recorded a failure; exiting with an error")
             return 1
 
 

@@ -355,6 +355,17 @@ This approach has two main benefits:
 
 Note: Chunking is primarily relevant for large PRs. For most PRs (up to 600 lines of code), PR-Agent will be able to process the entire code in a single call.
 
+While the chunks run, the animated `Work in progress ...` comment is edited in place with the
+number of chunks already analyzed, for example `analyzed 2 of 3 chunks`, plus `... 1 chunk
+failed` when a chunk gives up. The updates require `config.publish_output_progress` and a
+provider that supports both editing and removing a comment, so single-chunk runs and plain-diff
+providers keep the frozen placeholder. Automatic commands publish no progress comment, but while
+`github.publish_as_check_run` is enabled their in-progress check run shows the same chunk count.
+A fallback model restores the
+placeholder before it starts, and every retry round is added to the total, so the visible count
+neither moves backward nor stops early. The comment is then edited into the final suggestions as
+usual.
+
 ## Configuration options
 
 The descriptions below explain each option's behavior. See the relevant sections in

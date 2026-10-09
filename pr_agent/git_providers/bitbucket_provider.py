@@ -10,6 +10,8 @@ import requests
 from atlassian.bitbucket import Cloud
 from starlette_context import context
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
+
 from ..algo.file_filter import filter_ignored
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
@@ -22,8 +24,10 @@ from .git_provider import (
     FileContentSnapshot,
     GitProvider,
     IncompleteBitbucketPullRequestFilesError,
+    cache_languages,
     redact_credentials,
 )
+from .request_timeout import get_http_request_timeout
 
 
 def _get_identity_request_timeout() -> float:
@@ -69,6 +73,15 @@ def _diffstat_line_count(diff, field: str) -> Optional[int]:
 
 
 class BitbucketProvider(GitProvider):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        pr = self.pr.data
+        return policy_metadata(title=policy_value(pr, "title"),
+                               sender=(policy_value(pr, "author", "nickname")
+                                       or policy_value(pr, "author", "display_name")),
+                               repo_full_name=policy_value(pr, "destination", "repository", "full_name"),
+                               source_branch=policy_value(pr, "source", "branch", "name"),
+                               target_branch=policy_value(pr, "destination", "branch", "name"))
+
     def __init__(
         self, pr_url: Optional[str] = None, incremental: Optional[bool] = False
     ):
@@ -90,7 +103,7 @@ class BitbucketProvider(GitProvider):
             elif self.auth_type == "bearer":
                 try:
                     self.bearer_token = context.get("bitbucket_bearer_token", None)
-                except:
+                except Exception:
                     self.bearer_token = None
 
                 if not self.bearer_token:
@@ -132,7 +145,7 @@ class BitbucketProvider(GitProvider):
             destination_commit = self.pr.data["destination"]["commit"]["hash"]
             url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
                    f"{destination_commit}/.pr_agent.toml")
-            response = requests.request("GET", url, headers=self.headers)
+            response = requests.request("GET", url, headers=self.headers, timeout=get_http_request_timeout())
             if response.status_code == 200:  # found
                 settings_files.append(("local", response.text.encode('utf-8')))
             elif response.status_code != 404:
@@ -145,11 +158,11 @@ class BitbucketProvider(GitProvider):
     def _get_global_settings_cache_key(self, workspace: str) -> str:
         return f"bitbucket:{workspace}"
 
-    def _fetch_global_repo_settings(self, workspace):
+    def _fetch_global_repo_settings(self, workspace, settings_repo):
         # A missing settings repo/file (404) is an expected fallback -> return "" (cached). Other
         # errors raise (via raise_for_status) so the caller does not cache a transient failure.
-        repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/pr-agent-settings"
-        repo_resp = requests.request("GET", repo_url, headers=self.headers)
+        repo_url = f"https://api.bitbucket.org/2.0/repositories/{workspace}/{settings_repo}"
+        repo_resp = requests.request("GET", repo_url, headers=self.headers, timeout=get_http_request_timeout())
         if repo_resp.status_code in (403, 404):  # missing repo or no access -> expected, cacheable
             return ""
         repo_resp.raise_for_status()
@@ -157,7 +170,8 @@ class BitbucketProvider(GitProvider):
         if not main_branch:
             return ""
         ref_resp = requests.request(
-            "GET", f"{repo_url}/refs/branches/{quote(main_branch, safe='')}", headers=self.headers)
+            "GET", f"{repo_url}/refs/branches/{quote(main_branch, safe='')}", headers=self.headers,
+            timeout=get_http_request_timeout())
         if ref_resp.status_code in (403, 404):  # missing branch or no access -> expected, cacheable
             return ""
         ref_resp.raise_for_status()
@@ -165,7 +179,8 @@ class BitbucketProvider(GitProvider):
         if not main_branch_hash:
             raise ValueError("Bitbucket default branch response did not include a target hash")
         file_resp = requests.request(
-            "GET", f"{repo_url}/src/{main_branch_hash}/.pr_agent.toml", headers=self.headers)
+            "GET", f"{repo_url}/src/{main_branch_hash}/.pr_agent.toml", headers=self.headers,
+            timeout=get_http_request_timeout())
         if file_resp.status_code in (403, 404):  # missing file or no access -> expected, cacheable
             return ""
         file_resp.raise_for_status()
@@ -315,7 +330,7 @@ class BitbucketProvider(GitProvider):
                     continue
 
             if pr_patches is None:
-                raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}")
+                raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}") from e
 
         diff_split = _split_raw_diff(pr_patches)
         # filter all elements of 'diff_split' that are of indices in 'diffs_original' that are not in 'diffs'
@@ -411,6 +426,7 @@ class BitbucketProvider(GitProvider):
         if invalid_files_names:
             get_logger().info(f"Disregarding files with invalid extensions:\n{invalid_files_names}")
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 
@@ -526,7 +542,8 @@ class BitbucketProvider(GitProvider):
         })
         try:
             response = requests.request(
-                "POST", self.bitbucket_comment_api_url, data=payload, headers=self.headers
+                "POST", self.bitbucket_comment_api_url, data=payload, headers=self.headers,
+                timeout=get_http_request_timeout()
             )
             response.raise_for_status()
         except Exception as e:
@@ -542,6 +559,7 @@ class BitbucketProvider(GitProvider):
         return True
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        relevant_file = quote(relevant_file, safe="/")
         if relevant_line_start == -1:
             link = f"{self.pr_url}/#L{relevant_file}"
         else:
@@ -575,6 +593,7 @@ class BitbucketProvider(GitProvider):
     def get_title(self):
         return self.pr.title
 
+    @cache_languages
     def get_languages(self):
         language = self._get_repo().get_data("language")
         return {language: 0} if language else {}
@@ -587,9 +606,10 @@ class BitbucketProvider(GitProvider):
     def get_repo_default_branch(self):
         try:
             url_repo = f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/"
-            response_repo = requests.request("GET", url_repo, headers=self.headers).json()
+            response_repo = requests.request(
+                "GET", url_repo, headers=self.headers, timeout=get_http_request_timeout()).json()
             return response_repo['mainbranch']['name']
-        except:
+        except (requests.RequestException, KeyError, TypeError):
             return self.pr.destination_branch
 
     def get_owning_namespace(self) -> str | None:
@@ -710,7 +730,7 @@ class BitbucketProvider(GitProvider):
                 branch = self.pr.data["destination"]["commit"]["hash"]
             url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
                    f"{branch}/{file_path}")
-            response = requests.request("GET", url, headers=self.headers)
+            response = requests.request("GET", url, headers=self.headers, timeout=get_http_request_timeout())
             if response.status_code == 404:  # not found
                 return ""
             # Distinguish an unavailable file from a failed request to prevent an error response
@@ -732,7 +752,8 @@ class BitbucketProvider(GitProvider):
             raise ValueError("Bitbucket file snapshot is missing its source commit")
         url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
                f"{revision}/{file_path}")
-        response = requests.request("GET", url, headers=self.headers)
+        response = requests.request(
+            "GET", url, headers=self.headers, timeout=get_http_request_timeout())
         if response.status_code == 404:
             return FileContentSnapshot("", False, revision)
         response.raise_for_status()
@@ -758,12 +779,13 @@ class BitbucketProvider(GitProvider):
             "parents": expected_snapshot.revision,
         }
         headers = {'Authorization': self.headers['Authorization']} if 'Authorization' in self.headers else {}
-        response = requests.request("POST", url, headers=headers, data=data, files=files)
+        response = requests.request(
+            "POST", url, headers=headers, data=data, files=files, timeout=get_http_request_timeout())
         response.raise_for_status()
 
     def _get_pr_file_content(self, remote_link: str):
         try:
-            response = requests.request("GET", remote_link, headers=self.headers)
+            response = requests.request("GET", remote_link, headers=self.headers, timeout=get_http_request_timeout())
             if response.status_code == 404:  # not found
                 return ""
             contents = response.text
@@ -781,7 +803,9 @@ class BitbucketProvider(GitProvider):
             payload_dict["title"] = pr_title
         payload = json.dumps(payload_dict)
 
-        response = requests.request("PUT", self.bitbucket_pull_request_api_url, headers=self.headers, data=payload)
+        response = requests.request(
+            "PUT", self.bitbucket_pull_request_api_url, headers=self.headers, data=payload,
+            timeout=get_http_request_timeout())
         if not 200 <= response.status_code < 300:
             message = f"Failed to update description, error code: {response.status_code}"
             get_logger().error(message)

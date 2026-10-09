@@ -9,6 +9,7 @@ JSON and overrides GITHUB.DEPLOYMENT_TYPE to "app".
 from typing import Any, Dict, Optional
 
 from pr_agent.config_loader import get_settings
+from pr_agent.servers.utils import is_ask_command_comment
 
 
 def _normalise_setting_list(value):
@@ -60,7 +61,7 @@ def handle_line_comments(body: Dict, comment_body: [str, Any]):
     path = body["comment"]["path"]
     side = body["comment"]["side"]
     comment_id = body["comment"]["id"]
-    if '/ask' in comment_body:
+    if is_ask_command_comment(comment_body):
         # Build an argv list rather than concatenating into a shell-style
         # command string. PRAgent._handle_request() tokenises string requests
         # with single quotes treated literally, which neutralises any

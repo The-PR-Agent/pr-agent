@@ -22,6 +22,7 @@ import re
 from typing import Any, Callable, Hashable, List, Optional
 
 from pr_agent.algo.comment_identity import as_review_text
+from pr_agent.algo.output_models import parse_failure_modes
 from pr_agent.algo.utils import is_value_no
 from pr_agent.log import get_logger
 
@@ -29,7 +30,7 @@ MAX_EFFORT = 5
 MAX_SUB_PRS = 3
 CONTRIBUTION_TIME_CASES = ("best_case", "average_case", "worst_case")
 RISK_LEVELS = ("low", "medium", "high")
-MERGE_RECOMMENDATIONS = ("safe_to_merge", "merge_with_caution", "changes_required")
+MERGE_RECOMMENDATIONS = ("no_concerns_found", "needs_review", "changes_required")
 
 _DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([mh])", re.IGNORECASE)
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -42,7 +43,10 @@ def merge_review_chunks(chunk_outputs: List[dict]) -> dict:
     if not reviews:
         return {}
     if len(reviews) == 1:
-        return {"review": dict(reviews[0])}
+        review = dict(reviews[0])
+        if "failure_modes" in review:
+            review["failure_modes"] = parse_failure_modes(review["failure_modes"])
+        return {"review": review}
 
     # keep the prompt's field order, which is also the order the review is rendered in
     keys = []
@@ -222,6 +226,10 @@ def _merge_can_be_split(values: List[Any]) -> list:
     return _union_of_lists(_sub_pr_identity)(values)[:MAX_SUB_PRS]
 
 
+def _merge_failure_modes(values: List[Any]) -> list:
+    return parse_failure_modes([item for value in values if isinstance(value, list) for item in value])
+
+
 def _merge_priority_files(values: List[Any]) -> list:
     merged, seen = [], set()
     for value in values:
@@ -259,7 +267,11 @@ def _merge_ticket_compliance(values: List[Any]) -> list:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            ticket = _normalize_text(entry.get("ticket_url"))
+            ticket_url = _normalize_text(entry.get("ticket_url"))
+            ticket = ("url", ticket_url) if ticket_url else (
+                "missing_url",
+                tuple(sorted((str(key), _normalize_text(field_value)) for key, field_value in entry.items())),
+            )
             if ticket not in merged:
                 merged[ticket] = dict(entry)
                 continue
@@ -307,6 +319,7 @@ _MERGE_RULES: dict = {
     "score": _merge_score,
     "risk_level": _worst_of(RISK_LEVELS),
     "merge_recommendation": _worst_of(MERGE_RECOMMENDATIONS),
+    "failure_modes": _merge_failure_modes,
     "security_concerns": _merge_findings_text,
     "insights_from_user_answers": _merge_findings_text,
     "relevant_tests": _merge_relevant_tests,

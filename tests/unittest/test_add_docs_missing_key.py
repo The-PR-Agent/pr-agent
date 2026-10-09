@@ -8,7 +8,10 @@ from opentelemetry.trace import StatusCode
 import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
+from pr_agent.git_providers.git_provider import (
+    IncompleteBitbucketPullRequestFilesError,
+    IncompletePullRequestFilesError,
+)
 from pr_agent.tools.pr_add_docs import PRAddDocs
 
 DOCUMENTED = """Code Documentation:
@@ -108,7 +111,7 @@ def results(provider):
     ([False, False, True], None, True),
     ([False, None, False], None, True),
 ])
-async def test_routed_publication_outcome_without_run_details(
+async def test_routed_publication_outcome_with_empty_run_details(
         publish_output, monkeypatch, suggestion_results, comment_error, expected_result):
     provider = FakeGitProvider(suggestion_results=suggestion_results, comment_error=comment_error)
     tool = PRAddDocs.__new__(PRAddDocs)
@@ -120,9 +123,7 @@ async def test_routed_publication_outcome_without_run_details(
 
     monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fake_retry)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "add_docs", lambda *_args, **_kwargs: tool)
-    assert get_run_details() is None
     span = Mock()
     settings = get_settings()
     previous = settings.get("config.propagate_tool_errors", False)
@@ -138,7 +139,11 @@ async def test_routed_publication_outcome_without_run_details(
     span.set_status.assert_called_once_with(StatusCode.OK if expected_result else StatusCode.ERROR)
     assert provider.initial_comment_removed
     assert len(provider.suggestions) == (1 if suggestion_results == [True] else 3)
-    assert get_run_details() is None
+    # The agent installs a collector per command; an empty one must not affect routing.
+    details = get_run_details()
+    assert details is not None
+    assert details.num_ai_calls == 0
+    assert details.model_used is None
     if not expected_result:
         assert results(provider) == ["Failed to publish code documentation for this PR."]
         span.set_attribute.assert_any_call("error.type", "documentation_publication_failed")
@@ -152,15 +157,19 @@ def test_publish_the_documented_response(publish_output, monkeypatch):
     assert provider.initial_comment_removed
 
 
-def test_incomplete_bitbucket_diff_is_re_raised_after_temporary_comment_cleanup(publish_output, monkeypatch):
+@pytest.mark.parametrize(
+    "incomplete_error_class", [IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError]
+)
+def test_incomplete_provider_diff_is_re_raised_after_temporary_comment_cleanup(
+        publish_output, monkeypatch, incomplete_error_class):
     async def fail_with_incomplete_diff(*_args, **_kwargs):
-        raise IncompleteBitbucketPullRequestFilesError("incomplete aggregate diff")
+        raise incomplete_error_class("incomplete aggregate diff")
 
     monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fail_with_incomplete_diff)
     tool = PRAddDocs.__new__(PRAddDocs)
     tool.git_provider = FakeGitProvider()
 
-    with pytest.raises(IncompleteBitbucketPullRequestFilesError):
+    with pytest.raises(incomplete_error_class):
         asyncio.run(tool.run())
 
     assert tool.git_provider.initial_comment_removed

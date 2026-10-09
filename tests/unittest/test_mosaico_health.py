@@ -8,7 +8,7 @@ Also exercises the REAL health_check() (no stub) to lock in Fix A: the removed
 'stop'-param gate must NOT short-circuit /health for models that lack 'stop', since
 PR-Agent's LiteLLMAIHandler never sends 'stop'."""
 import asyncio
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -16,6 +16,7 @@ import httpx
 import litellm
 import pytest
 
+from pr_agent.algo.ai_handlers import litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.mosaico import executor as executor_mod
@@ -314,6 +315,362 @@ class TestHealthCheckGate:
 
         result = await health_check()
         assert result == "Unhealthy: no model configured"
+
+
+@pytest.fixture
+def streaming_health_settings(restore_config_model):
+    restore_config_model.set("CONFIG.MODEL", "openai/gpt-4o")
+    restore_config_model.set("OPENAI.KEY", "test-key")
+    restore_config_model.set("LITELLM.CUSTOM_LLM_PROVIDER", "")
+    return restore_config_model
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["required", "forced", "unexpected"])
+@pytest.mark.parametrize("failure", [False, True])
+async def test_health_consumes_and_closes_stream_without_text(
+    monkeypatch, streaming_health_settings, mode, failure,
+):
+    monkeypatch.setattr(LiteLLMAIHandler, "_requires_streaming", lambda self, model: mode == "required")
+    monkeypatch.setattr(
+        LiteLLMAIHandler, "_force_streaming_for_request", lambda self, provider, base: mode == "forced",
+    )
+    logger = MagicMock()
+    monkeypatch.setattr(executor_mod, "get_logger", lambda: logger)
+    monkeypatch.setattr(litellm_helpers, "get_logger", lambda: logger)
+    events = []
+    secret = "fake-key https://private-endpoint.example"
+
+    class Stream:
+        async def __aiter__(self):
+            yield {"choices": []}
+            events.append("consumed")
+            if failure:
+                raise RuntimeError(secret)
+
+        async def aclose(self):
+            events.append("closed")
+            raise ValueError(secret)
+
+    completion = AsyncMock(return_value=Stream())
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    response = await asyncio.wait_for(_get_health(build_app()), timeout=5)
+
+    assert response.status_code == (503 if failure else 200)
+    assert response.json()["status"] == ("Unhealthy: LLM probe failed" if failure else "OK")
+    assert events == ["consumed", "closed"]
+    completion.assert_awaited_once()
+    assert completion.call_args.kwargs.get("stream", False) is (mode != "unexpected")
+    for private_detail in ("fake-key", "private-endpoint"):
+        assert private_detail not in response.text
+        assert private_detail not in str(logger.mock_calls)
+    warnings = [entry.args[0] for entry in logger.warning.call_args_list]
+    assert "ValueError" in warnings[0]
+    assert warnings[1:] == (["MOSAICO health_check unhealthy: RuntimeError"] if failure else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_mode", ["direct", "self"])
+@pytest.mark.parametrize("failure", [False, True])
+async def test_health_closer_cancellation_preserves_http_outcome(
+    monkeypatch, streaming_health_settings, cancel_mode, failure,
+):
+    monkeypatch.setattr(LiteLLMAIHandler, "_requires_streaming", lambda self, model: True)
+    monkeypatch.setattr(LiteLLMAIHandler, "_force_streaming_for_request", lambda *args: False)
+    logger = MagicMock()
+    monkeypatch.setattr(executor_mod, "get_logger", lambda: logger)
+    monkeypatch.setattr(litellm_helpers, "get_logger", lambda: logger)
+    private_detail = "fake-key https://private-endpoint.example"
+    closers = []
+
+    class Stream:
+        async def __aiter__(self):
+            yield {"choices": []}
+            if failure:
+                raise RuntimeError(private_detail)
+
+        async def aclose(self):
+            closer = asyncio.current_task()
+            closers.append(closer)
+            if cancel_mode == "direct":
+                raise asyncio.CancelledError(private_detail)
+            closer.cancel(private_detail)
+            await asyncio.sleep(0)
+
+    completion = AsyncMock(return_value=Stream())
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    try:
+        response = await asyncio.wait_for(_get_health(build_app()), timeout=5)
+    finally:
+        await asyncio.wait_for(asyncio.gather(*closers, return_exceptions=True), timeout=5)
+
+    assert response.status_code == (503 if failure else 200)
+    assert response.json()["status"] == ("Unhealthy: LLM probe failed" if failure else "OK")
+    completion.assert_awaited_once()
+    closer, = closers
+    assert closer.cancelled()
+    assert closer not in litellm_helpers._stream_close_tasks
+    warnings = [entry.args[0] for entry in logger.warning.call_args_list]
+    assert warnings == ["Failed to close streaming response: CancelledError"] + (
+        ["MOSAICO health_check unhealthy: RuntimeError"] if failure else []
+    )
+    for detail in ("fake-key", "private-endpoint"):
+        assert detail not in response.text
+        assert detail not in str(logger.mock_calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["required", "forced"])
+async def test_health_rejects_non_stream_response_when_streaming_requested(
+    monkeypatch, streaming_health_settings, mode,
+):
+    monkeypatch.setattr(LiteLLMAIHandler, "_requires_streaming", lambda self, model: mode == "required")
+    monkeypatch.setattr(
+        LiteLLMAIHandler, "_force_streaming_for_request", lambda self, provider, base: mode == "forced",
+    )
+    logger = MagicMock()
+    monkeypatch.setattr(executor_mod, "get_logger", lambda: logger)
+    completion = AsyncMock(return_value={"choices": []})
+    monkeypatch.setattr(litellm, "acompletion", completion)
+
+    response = await asyncio.wait_for(_get_health(build_app()), timeout=5)
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "Unhealthy: LLM probe failed"
+    completion.assert_awaited_once()
+    assert completion.call_args.kwargs["stream"] is True
+    logger.warning.assert_called_once_with("MOSAICO health_check unhealthy: TypeError")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "provider", "force_provider", "base", "expected_model", "streaming"),
+    [
+        ("openai/qwq-plus", "", "", "", "openai/qwq-plus", True),
+        ("openai/gpt-4o", "", "", "", "openai/gpt-4o", False),
+        ("hosted-model", "openai", "openai", "https://gateway.example/v1", "hosted-model", True),
+        ("hosted-model", "openai", "openai", "https://other.example/v1", "hosted-model", False),
+        ("hosted-model", "openai", "anthropic", "https://gateway.example/v1", "hosted-model", False),
+        (
+            "openrouter/auto", "openrouter", "openrouter", "https://gateway.example/v1",
+            "openrouter/openrouter/auto", True,
+        ),
+    ],
+)
+async def test_probe_uses_real_streaming_settings(
+    monkeypatch, model, provider, force_provider, base, expected_model, streaming,
+):
+    class EmptyStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    snapshot = snapshot_settings([
+        "OPENAI.KEY", "OPENAI.API_BASE", "OPENROUTER.KEY", "OPENROUTER.API_BASE",
+        "LITELLM.CUSTOM_LLM_PROVIDER",
+        "LITELLM.FORCE_STREAMING_CUSTOM_LLM_PROVIDER", "LITELLM.FORCE_STREAMING_API_BASE_SUBSTRINGS",
+    ])
+    for variable in ("OPENROUTER_API_KEY", "OR_API_KEY", "OPENROUTER_API_BASE"):
+        monkeypatch.delenv(variable, raising=False)
+    settings = get_settings()
+    completion = AsyncMock(return_value=EmptyStream() if streaming else {"choices": []})
+    try:
+        settings.set("OPENAI.KEY", "test-key")
+        settings.set("OPENAI.API_BASE", base)
+        settings.set("OPENROUTER.KEY", None)
+        settings.set("OPENROUTER.API_BASE", None)
+        settings.set("LITELLM.CUSTOM_LLM_PROVIDER", provider)
+        settings.set("LITELLM.FORCE_STREAMING_CUSTOM_LLM_PROVIDER", force_provider)
+        settings.set("LITELLM.FORCE_STREAMING_API_BASE_SUBSTRINGS", ["gateway.example"])
+        assert await LiteLLMAIHandler().probe_completion(model, _completion=completion) is None
+        completion.assert_awaited_once()
+        assert completion.call_args.kwargs["model"] == expected_model
+        assert completion.call_args.kwargs.get("stream", False) is streaming
+        expected_stream_options = {"include_usage": True} if streaming else None
+        assert completion.call_args.kwargs.get("stream_options") == expected_stream_options
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_probes_dispatch_while_other_streams_are_waiting_for_cleanup(monkeypatch, streaming_health_settings):
+    monkeypatch.setattr(LiteLLMAIHandler, "_requires_streaming", lambda self, model: True)
+    monkeypatch.setattr(LiteLLMAIHandler, "_force_streaming_for_request", lambda *args: False)
+    release, all_closing = asyncio.Event(), asyncio.Event()
+    previous_tasks = set(litellm_helpers._stream_close_tasks)
+    closing_count = 0
+    # Exercise more concurrent streams than the removed 32-stream limit.
+    probe_count = 33
+
+    class Stream:
+        async def __aiter__(self):
+            yield {"choices": []}
+
+        async def aclose(self):
+            nonlocal closing_count
+            closing_count += 1
+            if closing_count == probe_count:
+                all_closing.set()
+            await release.wait()
+
+    completion = AsyncMock(side_effect=lambda **kwargs: Stream())
+    handler = LiteLLMAIHandler()
+    tasks = [asyncio.create_task(handler.probe_completion("gpt-4o", _completion=completion))
+             for _ in range(probe_count)]
+    try:
+        await asyncio.wait_for(all_closing.wait(), timeout=5)
+        assert completion.await_count == probe_count
+        assert all(not task.done() for task in tasks)
+        release.set()
+        assert await asyncio.wait_for(asyncio.gather(*tasks), timeout=5) == [None] * probe_count
+    finally:
+        release.set()
+        await asyncio.wait_for(
+            asyncio.gather(
+                *tasks, *(litellm_helpers._stream_close_tasks - previous_tasks), return_exceptions=True,
+            ),
+            timeout=5,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [0.5, 25])
+async def test_health_dispatch_consumption_and_cleanup_share_configured_deadline(
+    monkeypatch, streaming_health_settings, timeout,
+):
+    streaming_health_settings.set("MOSAICO.HEALTH_TIMEOUT_SECONDS", timeout)
+    active = []
+    events = []
+
+    @asynccontextmanager
+    async def deadline(seconds):
+        assert seconds == timeout
+        marker = object()
+        active.append(marker)
+        events.append("enter")
+        try:
+            yield
+        finally:
+            popped = active.pop()
+            assert popped is marker
+            events.append("exit")
+
+    monkeypatch.setattr(executor_mod, "asyncio", SimpleNamespace(timeout=deadline))
+
+    def record(phase):
+        assert len(active) == 1
+        events.append((phase, active[0]))
+
+    class Stream:
+        async def __aiter__(self):
+            record("consume")
+            yield {"choices": []}
+            record("exhaust")
+
+        async def aclose(self):
+            record("close")
+
+    async def dispatch(**kwargs):
+        assert kwargs["timeout"] == timeout
+        record("dispatch")
+        return Stream()
+
+    completion = AsyncMock(side_effect=dispatch)
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    assert await asyncio.wait_for(health_check(), timeout=5) == "OK"
+    marker = events[1][1]
+    assert events == [
+        "enter", ("dispatch", marker), ("consume", marker), ("exhaust", marker), ("close", marker), "exit",
+    ]
+    completion.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_mode", ["caller", "timeout"])
+@pytest.mark.parametrize("phase", ["consumption", "cleanup"])
+async def test_health_cancellation_preserves_cleanup_and_redacts_late_error(
+    monkeypatch, streaming_health_settings, cancel_mode, phase,
+):
+    streaming_health_settings.set("MOSAICO.HEALTH_TIMEOUT_SECONDS", 7)
+    deadline = asyncio.timeout(None)
+    seen_timeouts = []
+
+    def controlled_timeout(seconds):
+        seen_timeouts.append(seconds)
+        return deadline
+
+    monkeypatch.setattr(executor_mod, "asyncio", SimpleNamespace(timeout=controlled_timeout))
+    logger = MagicMock()
+    monkeypatch.setattr(executor_mod, "get_logger", lambda: logger)
+    monkeypatch.setattr(litellm_helpers, "get_logger", lambda: logger)
+    consuming, closing, release, finished = (asyncio.Event() for _ in range(4))
+    previous_tasks = set(litellm_helpers._stream_close_tasks)
+    close_tasks = []
+
+    class Stream:
+        async def __aiter__(self):
+            consuming.set()
+            if phase == "consumption":
+                await release.wait()
+            yield {"choices": []}
+
+        async def aclose(self):
+            close_tasks.append(asyncio.current_task())
+            closing.set()
+            await release.wait()
+            raise RuntimeError("fake-late-secret https://private-endpoint.example")
+
+    completion = AsyncMock(return_value=Stream())
+    monkeypatch.setattr(litellm, "acompletion", completion)
+    task = asyncio.create_task(health_check())
+    try:
+        async with asyncio.timeout(5):
+            await (consuming if phase == "consumption" else closing).wait()
+            if cancel_mode == "caller":
+                task.cancel()
+            else:
+                deadline.reschedule(asyncio.get_running_loop().time())
+            await closing.wait()
+            if cancel_mode == "caller":
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                assert await task == "Unhealthy: LLM probe failed"
+            assert len(close_tasks) == 1
+            closer = close_tasks[0]
+            assert not release.is_set()
+            assert not closer.done()
+            assert closer in litellm_helpers._stream_close_tasks
+            closer.add_done_callback(lambda _: finished.set())
+            release.set()
+            await finished.wait()
+            assert closer.done() and not closer.cancelled()
+            assert closer.result() is None
+            assert closer not in litellm_helpers._stream_close_tasks
+
+        completion.assert_awaited_once()
+        assert seen_timeouts == [streaming_health_settings.get("MOSAICO.HEALTH_TIMEOUT_SECONDS")]
+        assert completion.call_args.kwargs["timeout"] == seen_timeouts[0]
+        assert "fake-late-secret" not in str(logger.mock_calls)
+        assert "private-endpoint" not in str(logger.mock_calls)
+        warnings = [entry.args[0] for entry in logger.warning.call_args_list]
+        cleanup_warnings = [warning for warning in warnings if warning.startswith("Failed to close streaming response")]
+        assert len(cleanup_warnings) == 1
+        assert "RuntimeError" in cleanup_warnings[0]
+        health_warnings = [warning for warning in warnings if warning.startswith("MOSAICO")]
+        assert health_warnings == (
+            ["MOSAICO health_check unhealthy: TimeoutError"] if cancel_mode == "timeout" else []
+        )
+        assert len(warnings) == len(cleanup_warnings) + len(health_warnings)
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(
+            task, *close_tasks, *(litellm_helpers._stream_close_tasks - previous_tasks),
+            return_exceptions=True,
+        ), timeout=5)
 
 
 @pytest.mark.asyncio

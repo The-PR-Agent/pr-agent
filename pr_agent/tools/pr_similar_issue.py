@@ -211,7 +211,7 @@ class PRSimilarIssue:
                     repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
                     issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
                     issue_main.create_comment("Please set pinecone api key, cloud and region in secrets file")
-                raise Exception("Please set pinecone api key, cloud and region in secrets file")
+                raise Exception("Please set pinecone api key, cloud and region in secrets file") from None
             self.pc = pinecone.Pinecone(api_key=api_key)
             self.pc_spec = ServerlessSpec(cloud=cloud, region=region)
             self.pinecone_index = None
@@ -275,8 +275,8 @@ class PRSimilarIssue:
         elif get_settings().pr_similar_issue.vectordb == "lancedb":
             try:
                 import lancedb  # import lancedb only if needed
-            except:
-                raise Exception("Please install lancedb to use lancedb as vectordb")
+            except ImportError:
+                raise Exception("Please install lancedb to use lancedb as vectordb") from None
             self.db = lancedb.connect(get_settings().lancedb.uri)
             self.table = None
 
@@ -329,7 +329,7 @@ class PRSimilarIssue:
                 import qdrant_client
                 from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, VectorParams
             except Exception:
-                raise Exception("Please install qdrant-client to use qdrant as vectordb")
+                raise Exception("Please install qdrant-client to use qdrant as vectordb") from None
 
             # Scoped to qdrant only: pinecone and lancedb keep using self.index_name unchanged.
             self.qdrant_collection_name = _qdrant_collection_name(index_name)
@@ -460,7 +460,7 @@ class PRSimilarIssue:
 
                 try:
                     issue_number = int(r["id"].split('.')[0].split('_')[-1])
-                except:
+                except (ValueError, KeyError, AttributeError):
                     get_logger().debug(f"Failed to parse issue number from {r['id']}")
                     continue
 
@@ -481,7 +481,7 @@ class PRSimilarIssue:
 
                 try:
                     issue_number = int(r["id"].split('.')[0].split('_')[-1])
-                except:
+                except (ValueError, KeyError, AttributeError):
                     get_logger().debug(f"Failed to parse issue number from {r['id']}")
                     continue
 

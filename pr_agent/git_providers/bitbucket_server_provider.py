@@ -10,6 +10,8 @@ from atlassian.bitbucket import Bitbucket
 from packaging.version import parse as parse_version
 from requests.exceptions import HTTPError
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
+
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import decode_if_bytes
 from ..algo.language_handler import build_language_file_matcher, is_valid_file
@@ -17,10 +19,16 @@ from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, load_large_diff
 from ..config_loader import get_settings, get_verbosity_level
 from ..log import get_logger
-from .git_provider import GitProvider, get_git_ssl_env
+from .git_provider import GitProvider, cache_languages, get_git_ssl_env
 
 
 class BitbucketServerProvider(GitProvider):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        return policy_metadata(title=self.pr.title, sender=policy_value(self.pr, "author", "user", "name"),
+                               repo_full_name=f"{self.workspace_slug}/{self.repo_slug}",
+                               source_branch=policy_value(self.pr, "fromRef", "displayId"),
+                               target_branch=policy_value(self.pr, "toRef", "displayId"))
+
     def __init__(
             self, pr_url: Optional[str] = None, incremental: Optional[bool] = False,
             bitbucket_client: Optional[Bitbucket] = None,
@@ -35,6 +43,7 @@ class BitbucketServerProvider(GitProvider):
         self.temp_comments = []
         self.incremental = incremental
         self.diff_files = None
+        self._pr_changes = None
         self.bitbucket_pull_request_api_url = pr_url
         self.bearer_token = get_settings().get("BITBUCKET_SERVER.BEARER_TOKEN", None)
         # Get username and password from settings
@@ -134,10 +143,10 @@ class BitbucketServerProvider(GitProvider):
     def _get_global_settings_cache_key(self, workspace: str) -> str:
         return f"bitbucket-server:{getattr(self, 'bitbucket_server_url', '')}:{workspace}"
 
-    def _fetch_global_repo_settings(self, workspace):
-        # A missing pr-agent-settings repo/file (404) is an expected fallback -> return "" (cached).
+    def _fetch_global_repo_settings(self, workspace, settings_repo):
+        # A missing settings repo/file (404) is an expected fallback -> return "" (cached).
         try:
-            return self.bitbucket_client.get_content_of_file(workspace, "pr-agent-settings", ".pr_agent.toml")
+            return self.bitbucket_client.get_content_of_file(workspace, settings_repo, ".pr_agent.toml")
         except HTTPError as e:
             if e.response.status_code == 404:
                 return ""
@@ -203,8 +212,7 @@ class BitbucketServerProvider(GitProvider):
         get_logger().warning(message)
 
     def _log_code_suggestion_publish_error(self, error: Exception) -> None:
-        if get_verbosity_level() >= 2:
-            get_logger().error(f"Failed to publish code suggestion, error: {error}")
+        get_logger().error(f"Bitbucket Server failed to publish code suggestion, error: {error}")
 
     def is_supported(self, capability: str) -> bool:
         if capability in ['get_labels', 'gfm_markdown']:
@@ -233,10 +241,22 @@ class BitbucketServerProvider(GitProvider):
             raise
         return file_content
 
+    def _get_pull_request_changes(self):
+        """Return the pull request change list, fetching it at most once per provider instance.
+
+        Fetch it once for get_files(), get_languages() and get_diff_files() instead of once
+        per caller, or the paginated changes request is re-issued several times per command.
+        """
+        cached = getattr(self, "_pr_changes", None)
+        if cached is None:
+            cached = list(
+                self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
+            )
+            self._pr_changes = cached
+        return cached
+
     def get_files(self):
-        changes = self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
-        diffstat = [change["path"]['toString'] for change in changes]
-        return diffstat
+        return [change["path"]['toString'] for change in self._get_pull_request_changes()]
 
     #gets the best common ancestor: https://git-scm.com/docs/git-merge-base
     @staticmethod
@@ -286,17 +306,17 @@ class BitbucketServerProvider(GitProvider):
                     raise e
 
         diff_files = []
+        invalid_files_names = []
         original_file_content_str = ""
         new_file_content_str = ""
 
-        changes_original = list(
-            self.bitbucket_client.get_pull_requests_changes(self.workspace_slug, self.repo_slug, self.pr_num)
-        )
+        changes_original = self._get_pull_request_changes()
         changes = filter_ignored(changes_original, 'bitbucket_server')
         for change in changes:
             file_path = change['path']['toString']
             if not is_valid_file(file_path.split("/")[-1]):
                 get_logger().info(f"Skipping a non-code file: {file_path}")
+                invalid_files_names.append(file_path)
                 continue
 
             old_filename = None
@@ -343,6 +363,7 @@ class BitbucketServerProvider(GitProvider):
                 )
             )
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return diff_files
 
@@ -480,10 +501,12 @@ class BitbucketServerProvider(GitProvider):
         return True
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        # Build on the canonical PR URL: a pasted browser URL usually ends in /overview.
+        pr_web_url = self._get_pr_web_url()
         if relevant_line_start == -1:
-            link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}"
+            link = f"{pr_web_url}/diff#{quote_plus(relevant_file)}"
         else:
-            link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
+            link = f"{pr_web_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
         return link
 
     def publish_inline_comments(self, comments: list[dict]) -> bool:
@@ -512,6 +535,7 @@ class BitbucketServerProvider(GitProvider):
     def get_title(self):
         return self.pr.title
 
+    @cache_languages
     def get_languages(self):
         # Return {language name: percentage}, like the other providers.
         lang_map = get_settings().get("language_extension_map_org", {}) or {}

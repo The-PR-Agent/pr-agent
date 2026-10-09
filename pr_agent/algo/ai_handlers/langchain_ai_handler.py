@@ -13,7 +13,7 @@ try:
     from langchain_core.runnables import Runnable
     from langchain_openai import AzureChatOpenAI, ChatOpenAI
     _LANGCHAIN_INSTALLED = True
-except:  # we don't enforce langchain as a dependency, so if it's not installed, just move on
+except ImportError:  # we don't enforce langchain as a dependency, so if it's not installed, just move on
     pass
 
 OPENAI_RETRIES = 5

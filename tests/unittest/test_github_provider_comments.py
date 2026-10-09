@@ -97,6 +97,33 @@ def test_edit_comment_returns_false_on_github_failure():
     assert provider.edit_comment(comment, "updated body") is False
 
 
+def test_thread_reply_preserves_void_success_and_truncation():
+    provider = _make_provider(max_chars=10)
+    requester = MagicMock()
+    requester.requestJsonAndCheck.return_value = ({}, {})
+    provider.pr._requester = requester
+
+    assert provider.reply_to_comment_from_comment_id(42, "x" * 20) is None
+    requester.requestJsonAndCheck.assert_called_once_with(
+        "POST", "https://api.github.com/repos/owner/repo/pulls/1/comments/42/replies",
+        input={"body": "xxxxxxx..."},
+    )
+
+
+@pytest.mark.parametrize("error", [GithubException(500, "reply failed", {}), RequestException("network error")])
+def test_thread_reply_propagates_failure_without_retry(error):
+    provider = _make_provider()
+    requester = MagicMock()
+    requester.requestJsonAndCheck.side_effect = error
+    provider.pr._requester = requester
+
+    with pytest.raises(type(error)) as caught:
+        provider.reply_to_comment_from_comment_id(42, "answer")
+
+    assert caught.value is error
+    requester.requestJsonAndCheck.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("deployment_type", "agent_login", "comment_login", "expected"),
     [
@@ -715,7 +742,10 @@ class _FakeRequester:
 
     def requestJsonAndCheck(self, method, url, input=None):
         self.calls.append(("check", method, url, input))
-        return ({}, self._responses.pop(0))
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return ({}, response)
 
     def requestJson(self, method, url, input=None):
         self.calls.append(("json", method, url, input))
@@ -747,6 +777,52 @@ def _make_threads_response(threads, has_next_page=False, end_cursor=None):
 
 
 class TestResolveCommentThread:
+    def test_resolves_reply_after_first_hundred_comments(self):
+        thread = {
+            "id": "PRRT_target", "isResolved": False,
+            "comments": {"nodes": [{"id": "PRR_root"}] + [
+                {"id": f"PRR_reply_{i}"} for i in range(1, 100)
+            ]},
+        }
+        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
+        provider, requester = _make_provider_with_graphql(
+            {"node_id": "PRR_reply101", "in_reply_to_id": 10},
+            [{"node_id": "PRR_root"}, _make_threads_response([thread]), resolved],
+        )
+
+        assert provider.resolve_comment_thread(123) is True
+        assert len(requester.calls) == 4
+        assert requester.calls[0][2].endswith("/pulls/comments/123")
+        assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
+        assert "reviewThreads(first: 100)" in requester.calls[2][3]["query"]
+        assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
+
+    @pytest.mark.parametrize(
+        "root_error, expected_status",
+        [(GithubException(404, {"message": "missing root response"}, None), "404"),
+         (RequestException("private transport details"), "network error")],
+        ids=["deleted-root", "network-error"],
+    )
+    def test_root_lookup_failure_falls_back_to_original_reply(self, monkeypatch, root_error, expected_status):
+        logger = MagicMock()
+        monkeypatch.setattr(gh_module, "get_logger", lambda: logger)
+        thread = {
+            "id": "PRRT_target", "isResolved": False,
+            "comments": {"nodes": [{"id": "PRR_reply"}]},
+        }
+        resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
+        provider, requester = _make_provider_with_graphql(
+            {"node_id": "PRR_reply", "in_reply_to_id": 10},
+            [root_error, _make_threads_response([thread]), resolved],
+        )
+
+        assert provider.resolve_comment_thread(123) is True
+        assert len(requester.calls) == 4
+        assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
+        assert "reviewThreads(first: 100)" in requester.calls[2][3]["query"]
+        assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
+        logger.warning.assert_called_once_with(f"Could not fetch root of comment 123: status {expected_status}")
+
     def test_resolves_thread_successfully(self):
         rest_data = {"node_id": "PRR_comment1"}
         threads_response = _make_threads_response([

@@ -3,7 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers.git_provider import IncompleteBitbucketPullRequestFilesError
+from pr_agent.git_providers.git_provider import (
+    IncompleteBitbucketPullRequestFilesError,
+    IncompletePullRequestFilesError,
+)
 from pr_agent.tools.pr_generate_labels import PRGenerateLabels
 
 
@@ -69,9 +72,14 @@ async def test_user_labels_are_still_preserved_when_the_provider_supports_labels
 
 
 @pytest.mark.asyncio
-async def test_incomplete_bitbucket_diff_is_re_raised_after_temporary_comment_cleanup(monkeypatch):
+@pytest.mark.parametrize(
+    "incomplete_error_class", [IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError]
+)
+async def test_incomplete_provider_diff_is_re_raised_after_temporary_comment_cleanup(
+    monkeypatch, incomplete_error_class
+):
     async def fail_with_incomplete_diff(*_args, **_kwargs):
-        raise IncompleteBitbucketPullRequestFilesError("incomplete aggregate diff")
+        raise incomplete_error_class("incomplete aggregate diff")
 
     provider = _provider(supports_labels=True)
     tool = _tool(provider)
@@ -84,7 +92,7 @@ async def test_incomplete_bitbucket_diff_is_re_raised_after_temporary_comment_cl
     settings.set("config.propagate_tool_errors", False)
     monkeypatch.setattr("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", fail_with_incomplete_diff)
     try:
-        with pytest.raises(IncompleteBitbucketPullRequestFilesError):
+        with pytest.raises(incomplete_error_class):
             await tool.run()
     finally:
         settings.config.publish_output = previous["publish_output"]

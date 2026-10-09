@@ -196,8 +196,9 @@ class TestCodeCommitProvider:
 
     def test_get_diff_files_filters_invalid_extension_before_fetching_content(self):
         ignored_file = CodeCommitFile("image.png", "before-id", "image.png", "after-id", EDIT_TYPE.MODIFIED)
+        lockfile = CodeCommitFile("pnpm-lock.yaml", "before-id", "pnpm-lock.yaml", "after-id", EDIT_TYPE.MODIFIED)
         valid_file = CodeCommitFile("good.py", "before-id", "good.py", "after-id", EDIT_TYPE.MODIFIED)
-        provider = self._make_diff_provider([ignored_file, valid_file])
+        provider = self._make_diff_provider([ignored_file, lockfile, valid_file])
         provider.codecommit_client.get_file.side_effect = (
             lambda _repo_name, _path, commit: b"before\n" if commit == "destination-commit" else b"after\n"
         )
@@ -205,6 +206,7 @@ class TestCodeCommitProvider:
         diff_files = provider.get_diff_files()
 
         assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert provider.get_filtered_diff_file_names() == ["image.png", "pnpm-lock.yaml"]
         assert provider.codecommit_client.get_file.call_args_list == [
             call("my_test_repo", "good.py", "destination-commit"),
             call("my_test_repo", "good.py", "source-commit"),
@@ -229,6 +231,7 @@ class TestCodeCommitProvider:
             diff_files = provider.get_diff_files()
 
         assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
+        assert provider.get_filtered_diff_file_names() == []
         assert provider.codecommit_client.get_file.call_args_list == [
             call("my_test_repo", "good.py", "destination-commit"),
             call("my_test_repo", "good.py", "source-commit"),

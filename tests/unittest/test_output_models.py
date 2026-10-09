@@ -4,7 +4,7 @@ from types import UnionType
 from typing import get_args, get_origin
 
 import pytest
-from pydantic import StrictInt
+from pydantic import StrictBool, StrictInt
 
 from pr_agent.algo.output_models import (
     CodeDocumentation,
@@ -13,6 +13,7 @@ from pr_agent.algo.output_models import (
     ContributionTimeCostEstimate,
     DocHeadingsHelper,
     DocHelper,
+    FailureMode,
     FileDescription,
     FileIdxAndPath,
     KeyIssuesComponentLink,
@@ -48,7 +49,7 @@ def _review_fixture():
         "review": {
             "estimated_effort_to_review_[1-5]": 3,
             "risk_level": "medium",
-            "merge_recommendation": "merge_with_caution",
+            "merge_recommendation": "needs_review",
             "review_priority_files": ["src/app.py"],
             "contribution_time_cost_estimate": {"best_case": "45m", "average_case": "2h", "worst_case": "5h"},
             "score": 89,
@@ -171,8 +172,9 @@ def test_review_alias_accepts_prompt_field_name():
         "key_issues_to_review": [],
         "estimated_effort_to_review_[1-5]": 3,
     }).estimated_effort_to_review == 3
-    with pytest.raises(ValueError):
-        Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
+    review = Review.model_validate({"key_issues_to_review": [], "estimated_effort_to_review": 3})
+    assert review.estimated_effort_to_review is None
+    assert review.model_extra["estimated_effort_to_review"] == 3
 
 
 def test_review_rejects_coercible_numeric_types_and_strips_prompt_literals():
@@ -184,12 +186,21 @@ def test_review_rejects_coercible_numeric_types_and_strips_prompt_literals():
     review = Review.model_validate({
         "key_issues_to_review": [],
         "risk_level": "low\n",
-        "merge_recommendation": "safe_to_merge\n",
+        "merge_recommendation": "no_concerns_found\n",
         "relevant_tests": "No\n",
     })
     assert review.risk_level == "low"
-    assert review.merge_recommendation == "safe_to_merge"
+    assert review.merge_recommendation == "no_concerns_found"
     assert review.relevant_tests == "No"
+
+
+def test_review_accepts_extra_fields_while_nested_schemas_stay_strict():
+    payload = _review_fixture()
+    payload["review"]["pipeline_status"] = [{"job": "unit", "status": "failed"}]
+
+    review = Review.model_validate(payload["review"])
+    assert review.model_extra["pipeline_status"] == [{"job": "unit", "status": "failed"}]
+    PRReview.model_validate(payload)
 
 
 def test_required_label_and_list_constraints_are_enforced():
@@ -265,6 +276,31 @@ def test_assembled_description_validates_all_files_without_changing_prompt_limit
     assert error.value.errors()[0]["loc"] == ("pr_files", 20, "changes_title")
 
 
+def test_review_failure_modes_are_optional_and_bounded():
+    mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Disk full",
+            "detected_by": "Write failure test", "covered_in_this_pr": False}
+    assert Review.model_validate({"key_issues_to_review": []}).failure_modes is None
+    assert Review.model_validate({"key_issues_to_review": [], "failure_modes": []}).failure_modes == []
+    review = Review.model_validate({"key_issues_to_review": [], "failure_modes": [mode] * 3})
+    assert len(review.failure_modes) == 3
+    assert review.failure_modes[0].covered_in_this_pr is False
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [mode] * 4})
+
+
+@pytest.mark.parametrize("invalid", [
+    {"covered_in_this_pr": "false"}, {"covered_in_this_pr": 1},
+    {"what": None}, {"trigger": []}, {"unexpected": "value"},
+])
+def test_review_failure_modes_reject_malformed_entries(invalid):
+    mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Disk full",
+            "detected_by": "Write failure test", "covered_in_this_pr": False}
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [{**mode, **invalid}]})
+    with pytest.raises(ValueError):
+        Review.model_validate({"key_issues_to_review": [], "failure_modes": [{"what": "Partial write"}]})
+
+
 def _split_type_args(value):
     parts, depth, start = [], 0, 0
     for index, character in enumerate(value):
@@ -307,6 +343,8 @@ def _model_type_signature(annotation):
         return _model_type_signature(get_args(annotation)[0])
     if annotation is StrictInt:
         return "int"
+    if annotation is StrictBool:
+        return "bool"
     if str(origin) == "typing.Literal":
         return ("literal", tuple(str(value) for value in get_args(annotation)))
     if origin in (list,):
@@ -326,7 +364,8 @@ def _model_type_signature(annotation):
 PROMPT_MODELS = {
     "pr_reviewer_prompts.toml": {"SubPR": SubPR, "KeyIssuesComponentLink": KeyIssuesComponentLink,
                                   "TodoSection": TodoSection, "TicketCompliance": TicketCompliance,
-                                  "ContributionTimeCostEstimate": ContributionTimeCostEstimate, "Review": Review,
+                                  "ContributionTimeCostEstimate": ContributionTimeCostEstimate,
+                                  "FailureMode": FailureMode, "Review": Review,
                                   "PRReview": PRReview},
     "pr_description_prompts.toml": {"FileDescription": FileDescription, "PRDescription": PRDescription},
     "pr_description_only_description_prompts.toml": {"PRDescriptionHeaders": PRDescriptionHeaders},

@@ -1,6 +1,7 @@
 import git
 import pytest
 
+from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
@@ -17,6 +18,67 @@ def _make_repo(tmp_path, filenames):
         repo.index.add([str(f)])
     repo.index.commit("init")
     return repo
+
+
+@pytest.fixture
+def local_commit_description(tmp_path):
+    repo = _make_repo(tmp_path, ["a.py"])
+    target = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    older = "OLDER: preserve the existing retry boundary"
+    newer = (
+        "NEWER: document the changed recovery path\n"
+        + "Keep the full commit context for local review. " * 12
+        + "TAIL: retain cancellation behavior"
+    )
+    for number, message in enumerate([older, newer], start=1):
+        (tmp_path / "a.py").write_text(f"value = {number}\n")
+        repo.index.add(["a.py"])
+        repo.index.commit(message)
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+    provider.target_branch_name = target
+    return provider, newer + " " + older
+
+
+def test_local_description_preserves_commit_range_order_and_tail(local_commit_description):
+    provider, expected = local_commit_description
+    assert len(expected) > 200
+    assert provider.get_pr_description_full() == expected
+
+
+def test_local_description_is_empty_without_feature_commits(tmp_path):
+    repo = _make_repo(tmp_path, ["a.py"])
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+    provider.target_branch_name = repo.active_branch.name
+    assert provider.get_pr_description_full() == ""
+
+
+@pytest.mark.parametrize("full", [True, False])
+def test_local_description_uses_shared_token_budget(local_commit_description, full):
+    provider, expected = local_commit_description
+    settings = get_settings()
+    snapshot = snapshot_settings(["CONFIG.MAX_DESCRIPTION_TOKENS"])
+    encoder = TokenEncoder.get_token_encoder()
+    try:
+        settings.set("CONFIG.MAX_DESCRIPTION_TOKENS", 1000)
+        assert provider.get_pr_description(full=full) == expected
+        assert provider.get_pr_description(split_changes_walkthrough=True) == (expected, [])
+
+        settings.set("CONFIG.MAX_DESCRIPTION_TOKENS", 20)
+        clipped = provider.get_pr_description(full=full)
+        assert clipped.endswith("...(truncated)")
+        assert "TAIL: retain cancellation behavior" not in clipped
+        clipped_tokens = len(encoder.encode(clipped, disallowed_special=()))
+        expected_tokens = len(encoder.encode(expected, disallowed_special=()))
+        assert clipped_tokens < expected_tokens
+        assert provider.get_user_description() == expected
+
+        settings.set("CONFIG.MAX_DESCRIPTION_TOKENS", 1000)
+        assert provider.get_pr_description(full=full) == expected
+    finally:
+        restore_settings(snapshot)
 
 
 def test_get_languages_returns_language_names(tmp_path):
@@ -314,6 +376,23 @@ def test_publish_comment_skips_temporary(tmp_path):
     assert review_path.read_text() == "real review body"
 
 
+def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypatch):
+    # Simulate a Windows cp1252 locale so an open() without an explicit encoding
+    # fails on the emoji that /describe output carries (e.g. the usage guide header).
+    def cp1252_default_open(file, mode="r", *args, **kwargs):
+        if "b" not in mode:
+            kwargs.setdefault("encoding", "cp1252")
+        return open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("pr_agent.git_providers.local_git_provider.open", cp1252_default_open, raising=False)
+    description_path = tmp_path / "description.md"
+    provider = object.__new__(LocalGitProvider)
+    provider.description_path = description_path
+
+    provider.publish_description("my-branch", "✨ Describe tool usage guide")
+    assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe tool usage guide"
+
+
 def test_init_on_detached_head_falls_back_to_commit_sha(tmp_path, monkeypatch):
     # CI checkouts often point HEAD at a bare commit; repo.head.ref then raises
     # TypeError. The branch name is only used as the PR-mimic title, so fall
@@ -332,3 +411,98 @@ def test_init_on_detached_head_falls_back_to_commit_sha(tmp_path, monkeypatch):
 
     assert provider.get_pr_title() == commit.hexsha[:7]
     assert [f.filename for f in provider.get_diff_files()] == ["a.py"]
+
+
+def _make_feature_branch_provider(tmp_path, monkeypatch, branch_name):
+    repo = _make_repo(tmp_path, ["a.py"])
+    target_branch_name = repo.active_branch.name
+    repo.git.checkout("-b", branch_name)
+    (tmp_path / "a.py").write_text("y\n")
+    repo.index.add(["a.py"])
+    commit = repo.index.commit("change a.py")
+    monkeypatch.chdir(tmp_path)
+    return repo, commit, LocalGitProvider(target_branch_name)
+
+
+def test_get_pr_branch_returns_branch_name_string(tmp_path, monkeypatch):
+    # get_pr_branch() is consumed as text (prompt variables, ticket-key scanning),
+    # so it must return the branch name rather than GitPython's HEAD object.
+    _, _, provider = _make_feature_branch_provider(tmp_path, monkeypatch, "feature/PROJ-123-fix")
+
+    assert provider.get_pr_branch() == "feature/PROJ-123-fix"
+
+
+def test_get_pr_branch_on_detached_head_returns_commit_sha(tmp_path, monkeypatch):
+    repo, commit, _ = _make_feature_branch_provider(tmp_path, monkeypatch, "feature")
+    repo.git.checkout(commit.hexsha)
+    assert repo.head.is_detached
+
+    provider = LocalGitProvider("feature")
+
+    assert provider.get_pr_branch() == commit.hexsha[:7]
+
+
+def test_add_jira_tickets_scans_local_branch_name(tmp_path, monkeypatch):
+    # Regression: add_jira_tickets() joins title, description and branch into one
+    # string. A non-str branch made the join raise, which was logged as
+    # "Error extracting Jira tickets: ... expected str instance, HEAD found" on
+    # every local run, even with Jira unconfigured.
+    from pr_agent.tools import ticket_pr_compliance_check as tickets
+
+    _, _, provider = _make_feature_branch_provider(tmp_path, monkeypatch, "feature/PROJ-123-fix")
+    scanned = []
+    monkeypatch.setattr(tickets, "extract_jira_tickets",
+                        lambda text, *args, **kwargs: scanned.append(text) or [])
+
+    assert tickets.add_jira_tickets(provider, []) == []
+    assert len(scanned) == 1
+    assert "feature/PROJ-123-fix" in scanned[0]
+
+
+def _make_repo_context_provider(tmp_path, monkeypatch):
+    # Commit "base rules" to AGENTS.md on the target branch and "head rules" on the
+    # feature branch so a test can tell which revision was read.
+    repo = _make_repo(tmp_path, ["a.py", "docs/guide.md"])
+    target_branch_name = repo.active_branch.name
+    (tmp_path / "AGENTS.md").write_bytes(b"base rules\n")
+    repo.index.add(["AGENTS.md"])
+    target_commit = repo.index.commit("add AGENTS.md")
+    repo.git.checkout("-b", "feature")
+    (tmp_path / "AGENTS.md").write_bytes(b"head rules\n")
+    repo.index.add(["AGENTS.md"])
+    repo.index.commit("change AGENTS.md")
+    monkeypatch.chdir(tmp_path)
+    return target_commit, LocalGitProvider(target_branch_name)
+
+
+def test_get_repo_file_content_reads_target_branch_not_head(tmp_path, monkeypatch):
+    # Read repo context from the target branch, like the hosted providers, so the
+    # reviewed changes cannot rewrite the instructions used to review them.
+    target_commit, provider = _make_repo_context_provider(tmp_path, monkeypatch)
+
+    assert provider.get_repo_file_content("AGENTS.md") == "base rules\n"
+    assert provider.get_repo_file_content("AGENTS.md", from_default_branch=True) == "base rules\n"
+    assert provider.get_repo_context_ref() == target_commit.hexsha
+
+
+@pytest.mark.parametrize("file_path", ["MISSING.md", "docs", "docs/missing.md", "../AGENTS.md"])
+def test_get_repo_file_content_returns_empty_for_non_file_paths(tmp_path, monkeypatch, file_path):
+    _, provider = _make_repo_context_provider(tmp_path, monkeypatch)
+
+    assert provider.get_repo_file_content(file_path) == ""
+
+
+def test_build_repo_context_includes_local_agents_file(tmp_path, monkeypatch):
+    from pr_agent.algo.repo_context import build_repo_context
+
+    _, provider = _make_repo_context_provider(tmp_path, monkeypatch)
+    snapshot = snapshot_settings(["config.repo_context_files"])
+    try:
+        get_settings().set("config.repo_context_files", ["AGENTS.md"])
+        repo_context = build_repo_context(provider)
+    finally:
+        restore_settings(snapshot)
+
+    assert "AGENTS.md" in repo_context
+    assert "base rules" in repo_context
+    assert "head rules" not in repo_context

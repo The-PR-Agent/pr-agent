@@ -17,9 +17,9 @@ from starlette_context import context
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import (
     PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION,
-    REPO_HOST_ONLY_KEYS_BY_SECTION,
     REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION,
     REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS,
+    is_repo_host_only_key,
 )
 from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_security
 from pr_agent.git_providers import get_git_provider_with_context
@@ -391,6 +391,15 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
         if not isinstance(contents, dict) or not contents:
             get_logger().debug(f"Skipping non-table or empty section: {section}")
             continue
+        if "__" in section or "." in section:
+            get_logger().warning(f"Ignoring section [{section}] from repo settings: '__' and '.' are not allowed here")
+            continue
+        dunder_keys = [key for key in contents if "__" in key]
+        if dunder_keys:
+            get_logger().warning(f"Ignoring key(s) {dunder_keys} in section [{section}]: '__' is not allowed here")
+            contents = {key: value for key, value in contents.items() if key not in dunder_keys}
+            if not contents:
+                continue
         if repo_settings_scope == "per_directory":
             if section.lower() not in REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS:
                 get_logger().warning(
@@ -484,13 +493,12 @@ def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
             if not contents:
                 continue
         else:
-            host_only_keys = REPO_HOST_ONLY_KEYS_BY_SECTION.get(section.lower(), frozenset())
-            rejected = [k for k in contents if k.lower() in host_only_keys]
+            rejected = [k for k in contents if is_repo_host_only_key(section, k)]
             if rejected:
                 get_logger().warning(
                     f"Ignoring host-only key(s) {rejected} in section [{section}] from repo settings"
                 )
-                contents = {k: v for k, v in contents.items() if k.lower() not in host_only_keys}
+                contents = {k: v for k, v in contents.items() if not is_repo_host_only_key(section, k)}
                 if not contents:
                     continue
         section_dict = copy.deepcopy(get_settings().as_dict().get(section.upper(), {}))
@@ -788,10 +796,10 @@ def handle_configurations_errors(config_errors, git_provider):
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
                 if config_type == "global":
                     # Global content is redacted, so we never render it — skip decoding it entirely.
-                    # Global settings live in a `pr-agent-settings` repo scoped per platform
-                    # (GitHub organization, GitLab group, or Bitbucket workspace).
-                    body += ("\n\nThe invalid configuration came from the global "
-                             "`pr-agent-settings` settings repository.")
+                    # Global settings live in the repo named by config.global_settings_repo, scoped
+                    # per platform (GitHub organization, GitLab group, or Bitbucket workspace).
+                    body += ("\n\nThe invalid configuration came from the global settings "
+                             "repository (`config.global_settings_repo`).")
                 else:
                     settings_content = err['settings']
                     configuration_file_content = (

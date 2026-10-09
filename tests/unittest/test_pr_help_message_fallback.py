@@ -37,7 +37,10 @@ def help_tool(tmp_path, monkeypatch):
         "openai.deployment_id": "primary-deployment",
         "openai.fallback_deployments": ["backup-deployment"],
     }
-    snapshot = snapshot_settings([*overrides, "pr_help_prompts.system", "pr_help_prompts.user"])
+    snapshot = snapshot_settings([
+        *overrides, "pr_help_prompts.system", "pr_help_prompts.user",
+        "litellm.custom_llm_provider", "config.custom_model_max_tokens",
+    ])
     for key, value in overrides.items():
         get_settings().set(key, value)
 
@@ -294,6 +297,17 @@ def test_prompt_budget_uses_handler_reported_output_limit(help_tool, monkeypatch
 
     assert tool._get_prompt_budget(PRIMARY) == 1_400
     tool.ai_handler.get_output_token_limit.assert_called_once_with(PRIMARY)
+
+
+@pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
+@pytest.mark.parametrize("reserve, expected", [(4096, 922000), (128000, 922000), (200000, 850000)])
+def test_help_budget_honors_native_gpt6_input_ceiling(help_tool, monkeypatch, model, reserve, expected):
+    tool, _, _ = help_tool
+    get_settings().set("litellm.custom_llm_provider", "openai")
+    get_settings().set("config.custom_model_max_tokens", 0)
+    tool.ai_handler.get_output_token_reserve = Mock(return_value=reserve)
+
+    assert tool._get_prompt_budget(model) == expected
 
 
 def test_prompt_budget_uses_handler_reported_output_reserve(help_tool, monkeypatch):

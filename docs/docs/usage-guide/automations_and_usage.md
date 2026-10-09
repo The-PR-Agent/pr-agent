@@ -20,11 +20,13 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 
 **Notes:**
 
-1. in addition to editing your local configuration file, you can also change any configuration value by adding it to the command line:
+1. In addition to editing your local configuration file, you can also change repository-configurable values by adding them to the command line:
 
 ```
 python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructions="focus on the file: ..."
 ```
+
+Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See [Configuration Options](./configuration_options.md#local-configuration-file) for details.
 
 2. You can print results locally, without publishing them, by setting in `configuration.toml`:
 
@@ -45,7 +47,9 @@ This is useful for debugging or experimenting with different tools.
 python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
 ```
 
-When a propagated tool error makes the request fail, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1. The default remains compatible with existing CLI behavior and exits with status 0; argparse parse and usage errors continue to exit with status 2.
+With `config.propagate_tool_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated tool error makes the request fail or a tool records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
+
+Tool error propagation is disabled by default, preserving the existing status 0 behavior for these tool failures. Argparse parse and usage errors continue to exit with status 2.
 
 ### CLI Health Check
 
@@ -88,7 +92,7 @@ For example, if you want to edit the `review` tool configurations, you can run:
 /review --pr_reviewer.extra_instructions="..." --pr_reviewer.require_score_review=false
 ```
 
-Any configuration value in [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) file can be similarly edited. Comment `/config` to see the list of available configurations.
+Most values in the [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) can be similarly edited. Host-controlled settings, including provider connection locations and credentials, cannot be changed through PR comments. Comment `/config` to see the list of available configurations.
 
 ## PR-Agent Automatic Feedback
 
@@ -255,7 +259,7 @@ env:
 Review result is output as JSON to `steps.{step-id}.outputs.review` property.
 The JSON structure is equivalent to the yaml data structure defined in [pr_reviewer_prompts.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml).
 
-`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML. On the GitHub App, each automatic command opens its check run as in progress before the tool runs, so the author sees that PR-Agent picked the pull request up before any output exists; the run is completed with the tool's output, or marked failed if the command did not finish.
+`github.publish_as_check_run` controls whether tool output (review, describe, improve) is published as a GitHub Check Run instead of a PR comment (default is `false`). When enabled, results appear in the "Checks" tab of the PR. Requires `checks: write` permission in the workflow YAML. On the GitHub App, each automatic command opens its check run as in progress before the tool runs, so the author sees that PR-Agent picked the pull request up before any output exists; while a chunked command runs, that in-progress run also shows the analyzed chunk count, for example `PR-Agent is running /review analyzed 2 of 3 chunks`. The run is completed with the tool's output, or marked failed if the command did not finish.
 
 Note that you can give additional config parameters by adding environment variables to `.github/workflows/pr_agent.yml`, or by using a `.pr_agent.toml` [configuration file](./configuration_options.md#global-configuration-file) in the root of your repo
 
@@ -354,7 +358,9 @@ Draft MRs and MRs matching the [ignore settings](additional_configurations.md#ig
 
 Similar to GitHub app, when running PR-Agent from BitBucket App, the default [configuration file](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) will be initially loaded.
 
-By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can edit and customize any configuration parameter. Note that you need to upload `.pr_agent.toml` prior to creating a PR, in order for the configuration to take effect.
+By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload `.pr_agent.toml` prior to creating a PR, in order for the configuration to take effect.
+
+Provider endpoint settings are host-controlled. Values for the endpoint keys listed in the [local configuration guide](./configuration_options.md#local-configuration-file) are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host.
 
 For example, if your local `.pr_agent.toml` file contains:
 

@@ -4,6 +4,11 @@ import re
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
+# Keep each glob's subset enumeration small and bound the additional regexes per list.
+_MAX_ENUMERATED_GLOBSTARS = 6
+_MAX_IGNORE_GLOB_VARIANT_REGEXES = 256
+_MAX_EXPANDED_GLOB_LENGTH = 256
+
 
 def filter_ignored(files, platform = 'github'):
     """Filter out files that match the ignore patterns."""
@@ -81,17 +86,80 @@ def filter_ignored(files, platform = 'github'):
                         if path and not r.match(path):
                             files_o.append(f)
                     files = files_o
+                else:
+                    get_logger().warning(
+                        f'No ignore filtering is implemented for platform {platform!r}, so all '
+                        f'{len(files)} changed file(s) are being sent to the model.',
+                        artifact={'platform': platform, 'file_count': len(files)})
+                    break
 
 
     except Exception as e:
-        get_logger().error(f"Could not filter file list: {e}")
+        get_logger().error(
+            f'Could not filter file list; filtering did not complete, so the returned list may still '
+            f'contain files that the [ignore] rules should have excluded. {e}')
 
     return files
 
+
+def _globstar_offsets(pattern: str) -> list[int]:
+    """Locate whole ``**/`` segments outside fnmatch bracket expressions."""
+    offsets = []
+    index = 0
+    last_close = pattern.rfind("]")
+    while index < len(pattern):
+        if pattern[index] == "[":
+            end = index + 1
+            if pattern[end:end + 1] == "!":
+                end += 1
+            end += 1  # fnmatch treats a leading ']' as a member, not the closing bracket
+            if end <= last_close:
+                while pattern[end] != "]":
+                    end += 1
+                index = end + 1
+            else:
+                index += 1  # an unclosed '[' is literal; continue scanning after it
+        elif pattern.startswith("**/", index) and (index == 0 or pattern[index - 1] == "/"):
+            offsets.append(index)
+            index += 3
+        else:
+            index += 1
+    return offsets
+
+
 def translate_globs_to_regexes(globs: list):
-    regexes = []
-    for pattern in globs:
-        regexes.append(fnmatch.translate(pattern))
-        if pattern.startswith("**/"): # cover root-level files
-            regexes.append(fnmatch.translate(pattern[3:]))
-    return regexes
+    """Expand standalone ``**/`` segments into separate zero-directory translations."""
+    regexes = {}
+    expandable = []
+    skipped = variants = 0
+    for pattern in dict.fromkeys(globs):
+        # Keep every configured glob and its existing root-level form before spending any quota.
+        forms = [pattern, pattern[3:]] if pattern.startswith("**/") else [pattern]
+        for form in forms:
+            if form:
+                regexes[fnmatch.translate(form)] = None
+        offsets = _globstar_offsets(pattern)
+        if len(offsets) > _MAX_ENUMERATED_GLOBSTARS or (offsets and len(pattern) > _MAX_EXPANDED_GLOB_LENGTH):
+            skipped += 1
+        elif offsets:
+            expandable.append((pattern.split("/"), [pattern[:offset].count("/") for offset in offsets]))
+
+    for segments, globstars in expandable:
+        for mask in range(1, 1 << len(globstars)):
+            dropped = {index for bit, index in enumerate(globstars) if mask >> bit & 1}
+            variant = "/".join(segment for index, segment in enumerate(segments) if index not in dropped)
+            if not variant:
+                continue
+            translation = fnmatch.translate(variant)
+            if translation in regexes:
+                continue
+            if variants >= _MAX_IGNORE_GLOB_VARIANT_REGEXES:
+                skipped += 1
+                break
+            regexes[translation] = None
+            variants += 1
+    if skipped:
+        get_logger().warning(
+            "Skipped zero-directory '**/' variants of some ignore globs; files only those "
+            "variants match are still analyzed", artifact={"globs": skipped})
+    return list(regexes)

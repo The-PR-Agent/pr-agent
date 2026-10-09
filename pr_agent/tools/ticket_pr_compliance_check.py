@@ -6,7 +6,6 @@ import traceback
 from urllib.parse import urlparse
 
 import aiohttp
-from atlassian import Jira
 
 from pr_agent.algo.pr_processing import OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
 from pr_agent.algo.token_budget import AttemptTokenBudget, FallbackEligibleError
@@ -15,12 +14,37 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
-# Compile the regex pattern once, outside the function
-GITHUB_TICKET_PATTERN = re.compile(
-    r'(https://github[^/]+/[^/]+/[^/]+/issues/\d+)'
-    r'|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)'
-    r'|(#\d+)'
-)
+
+def _github_ticket_pattern(base_url_html):
+    """Match full issue URLs only on the provider's configured HTTPS web origin."""
+    full_url = r"(?!)"
+    try:
+        origin = urlparse(base_url_html)
+        host = origin.hostname
+        port = origin.port
+        if (origin.scheme == "https" and host and origin.username is None and origin.password is None
+                and origin.path in ("", "/") and not origin.params and not origin.query and not origin.fragment
+                and not origin.netloc.endswith(":")):
+            host = f"[{host}]" if ":" in host else host
+            authority = re.escape(host)
+            authority += r"(?::443)?" if port in (None, 443) else f":{port}"
+            full_url = (
+                rf"(?<![\w@/])(?ai:https://{authority})/"
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.{1,2}/)[A-Za-z0-9._-]+/issues/0*[1-9][0-9]*"
+                r"(?![\w-]|/[\w-])"
+            )
+    except (AttributeError, TypeError, ValueError):
+        get_logger().warning(
+            "Could not parse the configured GitHub web origin; full issue-URL matching is disabled. "
+            "Shorthand matching will still be attempted."
+        )
+
+    # Keep the six capture groups and their spans used by explicit/custom references.
+    return re.compile(
+        rf"({full_url})"
+        r"|((?<![\w./-])([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)#(\d+)\b)"
+        r"|(#\d+)"
+    )
 # Option A: issue number at start of branch or after /, followed by - or end (e.g. feature/1-test-issue, 123-fix)
 BRANCH_ISSUE_PATTERN = re.compile(r"(?:^|/)(\d{1,6})(?=-|$)")
 # A bare "#12345" is as likely to be an error code as an issue, so a shorthand reference is
@@ -200,6 +224,15 @@ def _get_jira_client():
                 f"Jira is partially configured; skipping Jira ticket lookup. Missing: {', '.join(missing)}")
         return None
     try:
+        from atlassian import Jira
+    except ModuleNotFoundError:
+        get_logger().warning(
+            "Jira ticket lookup requires the Bitbucket integration dependencies. "
+            "Install pr-agent[bitbucket] to enable Jira support."
+        )
+        return None
+
+    try:
         return Jira(url=base_url, username=api_email, password=api_token, api_version=JIRA_API_VERSION)
     except Exception as e:
         get_logger().error(f"Failed to initialize Jira client: {e}",
@@ -358,7 +391,9 @@ MAX_ASANA_REQUEST_TIMEOUT = 60
 MAX_ASANA_TICKETS = 3
 MAX_GITHUB_TICKETS = 3
 MAX_GITHUB_TICKET_LOOKUPS = 30
+MAX_SUB_ISSUES_PER_TICKET = 10
 MAX_GITLAB_TICKETS = 3
+MAX_GITLAB_TICKET_LOOKUPS = 10
 GITLAB_TICKET_PATTERN = re.compile(
     r"(?P<url>https?://[^\s<>(),;]+)"
     r"|(?<![\w./-])(?P<project>[\w.-]+(?:/[\w.-]+)+)#(?P<project_issue>\d+)\b"
@@ -607,8 +642,9 @@ def _get_user_description_for_asana(git_provider) -> str:
     return description if isinstance(description, str) else ""
 
 
-def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
-    """Extract ``(project_path, issue_iid)`` references from a GitLab MR description."""
+def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_tickets=MAX_GITLAB_TICKETS,
+                                     *, source="description"):
+    """Extract ``(project_path, issue_iid)`` references from GitLab MR metadata."""
     if not isinstance(pr_description, str) or not pr_description:
         return []
 
@@ -657,15 +693,16 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url):
             seen.add(dedupe_key)
             references.append(reference)
 
-    if len(references) > MAX_GITLAB_TICKETS:
-        get_logger().info(f"Too many GitLab tickets found in MR description: {len(references)}")
-    return references[:MAX_GITLAB_TICKETS]
+    if len(references) > max_tickets:
+        get_logger().info(f"Too many GitLab tickets found in MR {source}: {len(references)}")
+    return references[:max_tickets]
 
 
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com',
-                                             max_tickets=MAX_GITHUB_TICKETS):
+                                             max_tickets=MAX_GITHUB_TICKETS, *, use_description_regex=True,
+                                             source="description"):
     """
-    Extract all ticket links from PR description
+    Extract ticket links, optionally using the description-only custom regex.
     """
     # Preserve first-seen order while de-duplicating, so the cap below selects a
     # deterministic subset (a plain set would slice an arbitrary, run-varying one).
@@ -680,7 +717,7 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
     try:
         custom_pattern = None
         custom_matches = []
-        custom_regex = get_settings().get("config.description_issue_regex", "")
+        custom_regex = get_settings().get("config.description_issue_regex", "") if use_description_regex else ""
         if custom_regex:
             try:
                 custom_pattern = re.compile(custom_regex)
@@ -693,7 +730,7 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
 
         candidates = []
         explicit_spans = []
-        for match in GITHUB_TICKET_PATTERN.finditer(pr_description):
+        for match in _github_ticket_pattern(base_url_html).finditer(pr_description):
             if match[1]:  # Full URL match
                 candidates.append((match.start(), match[1]))
                 explicit_spans.append(match.span())
@@ -710,6 +747,18 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                                        f"{base_url_html.strip('/')}/{repo_path}/issues/{issue_number}"))
 
         if custom_pattern is not None and repo_path:
+            # Reserve issue-shaped URL tokens on any host, including their suffixes,
+            # so custom captures cannot turn their numbers into local tickets.
+            # Suppress captures in these spans; admit URLs only on the configured origin.
+            issue_url_pattern = (
+                r'''(?ai:https?://)[^/\s?#<>"'`(){}]+/'''
+                r'''[^/\s?#<>"'`()\[\]{}]+/'''
+                r'''[^/\s?#<>"'`()\[\]{}]+/issues/'''
+                r'''[^/\s?#.,;:!<>"'`()\[\]{}]+'''
+                r'''(?:[/?#][^\s<>"'`()\[\]{}]*)?'''
+            )
+            explicit_spans.extend(match.span() for match in re.finditer(issue_url_pattern, pr_description))
+            explicit_spans.sort()
             explicit_index = 0
             for match in custom_matches:
                 issue_number = match[1]
@@ -732,10 +781,10 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
             _add(url)
 
         if len(github_tickets) > max_tickets:
-            get_logger().info(f"Too many tickets found in PR description: {len(github_tickets)}")
+            get_logger().info(f"Too many tickets found in PR {source}: {len(github_tickets)}")
             github_tickets = github_tickets[:max_tickets]
     except Exception as e:
-        get_logger().error(f"Error extracting tickets error= {e}",
+        get_logger().error(f"Error extracting tickets from PR {source}: {e}",
                            artifact={"traceback": traceback.format_exc()})
 
     return github_tickets
@@ -803,9 +852,8 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
     """
     Resolve the repository handle that owns the ticket at `ticket_url`.
 
-    A ticket linked from a PR description may live in a different repository than the PR
-    itself, so it must be fetched from its own repository. The PR's `repo_obj` is reused
-    when the ticket belongs to the PR's repository, to avoid an extra API call.
+    The PR's `repo_obj` is reused for its own tickets. Other repositories must pass the
+    provider's host-approved sibling and requester checks before any issue is fetched.
 
     `_parse_issue_url` drops the host, so `owner/repo` alone does not identify a repository
     when a description links across GitHub instances (e.g. GitHub Enterprise and github.com).
@@ -835,15 +883,14 @@ def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache
 
     pr_repo_name = getattr(git_provider, "repo", None) or ""
     pr_repo_obj = getattr(git_provider, "repo_obj", None)
-    is_pr_repo = repo_name.lower() == pr_repo_name.lower() and pr_repo_obj is not None
-    if is_pr_repo:
-        repo_obj = pr_repo_obj
-    else:
-        try:
-            repo_obj = git_provider.github_client.get_repo(repo_name)
-        except Exception as e:
-            repo_obj_cache[cache_key] = e
-            raise
+    try:
+        if repo_name.lower() == pr_repo_name.lower():
+            repo_obj = pr_repo_obj if pr_repo_obj is not None else git_provider.github_client.get_repo(repo_name)
+        else:
+            repo_obj = git_provider.get_sibling_repo(repo_name)
+    except Exception as e:
+        repo_obj_cache[cache_key] = e
+        raise
 
     repo_obj_cache[cache_key] = repo_obj
     return repo_obj
@@ -888,15 +935,20 @@ async def extract_tickets(git_provider):
             branch_tickets = extract_ticket_links_from_branch_name(
                 branch_name, git_provider.repo, git_provider.base_url_html
             )
+            title = _get_pr_title(git_provider)
+            title_tickets = extract_ticket_links_from_pr_description(
+                title if isinstance(title, str) else "", git_provider.repo, git_provider.base_url_html,
+                max_tickets=MAX_GITHUB_TICKET_LOOKUPS, use_description_regex=False, source="title",
+            )
             seen = set()
             merged = []
-            for link in description_tickets + branch_tickets:
+            for link in description_tickets + branch_tickets + title_tickets:
                 if link not in seen:
                     seen.add(link)
                     merged.append(link)
 
             if len(merged) > MAX_GITHUB_TICKETS:
-                get_logger().info(f"Too many GitHub tickets (description + branch): {len(merged)}")
+                get_logger().info(f"Too many GitHub tickets (description + branch + title): {len(merged)}")
             # Bound lookups separately so skipped PRs do not consume the issue budget.
             tickets = merged[:MAX_GITHUB_TICKET_LOOKUPS]
             tickets_content = []
@@ -911,7 +963,9 @@ async def extract_tickets(git_provider):
                     try:
                         repo_name, original_issue_number = git_provider._parse_issue_url(ticket)
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
-                        issue_main = repo_obj.get_issue(original_issue_number)
+                        if repo_obj is None:
+                            continue
+                        issue_main = git_provider.get_issue_content(repo_obj, original_issue_number)
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
@@ -927,13 +981,19 @@ async def extract_tickets(git_provider):
                     # Extract sub-issues
                     sub_issues_content = []
                     try:
-                        sub_issues = git_provider.fetch_sub_issues(ticket)
-                        for sub_issue_url in sub_issues:
+                        raw_sub_issues = git_provider.fetch_sub_issues(ticket) or []
+                        valid_sub_issues = [
+                            url for url in raw_sub_issues
+                            if isinstance(url, str) and url.strip()
+                        ]
+                        for sub_issue_url in sorted(valid_sub_issues)[:MAX_SUB_ISSUES_PER_TICKET]:
                             try:
                                 sub_repo, sub_issue_number = git_provider._parse_issue_url(sub_issue_url)
                                 sub_repo_obj = _get_repo_obj_for_ticket(git_provider, sub_issue_url, sub_repo,
                                                                         repo_obj_cache)
-                                sub_issue = sub_repo_obj.get_issue(sub_issue_number)
+                                if sub_repo_obj is None:
+                                    continue
+                                sub_issue = git_provider.get_issue_content(sub_repo_obj, sub_issue_number)
 
                                 sub_body = sub_issue.body or ""
                                 if len(sub_body) > MAX_TICKET_CHARACTERS:
@@ -984,17 +1044,44 @@ async def extract_tickets(git_provider):
             return tickets_content
 
         elif _provider_supports(git_provider, "supports_issue_reference_tickets"):
-            references = extract_gitlab_ticket_references(
+            description_references = extract_gitlab_ticket_references(
                 user_description,
                 git_provider.id_project,
                 git_provider.gitlab_url,
+                max_tickets=MAX_GITLAB_TICKET_LOOKUPS,
             )
+            title = _get_pr_title(git_provider)
+            title_references = extract_gitlab_ticket_references(
+                title if isinstance(title, str) else "", git_provider.id_project, git_provider.gitlab_url,
+                max_tickets=MAX_GITLAB_TICKET_LOOKUPS, source="title",
+            )
+            references = []
+            seen = set()
+            for project_path, issue_iid in description_references + title_references:
+                key = (project_path.casefold(), issue_iid)
+                if key not in seen:
+                    seen.add(key)
+                    references.append((project_path, issue_iid))
             tickets_content = []
-            for project_path, issue_iid in references:
+            for project_path, issue_iid in references[:MAX_GITLAB_TICKET_LOOKUPS]:
                 try:
                     # Only the issue manager is needed; avoid fetching unused project metadata.
                     project = git_provider.gl.projects.get(project_path, lazy=True)
                     issue = project.issues.get(issue_iid)
+
+                    issue_body = issue.description or ""
+                    if len(issue_body) > MAX_TICKET_CHARACTERS:
+                        issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
+
+                    tickets_content.append(
+                        {
+                            "ticket_id": issue.iid,
+                            "ticket_url": issue.web_url,
+                            "title": issue.title,
+                            "body": issue_body,
+                            "labels": ", ".join(issue.labels or []),
+                        }
+                    )
                 except Exception as e:
                     get_logger().error(
                         f"Error getting GitLab issue {project_path}#{issue_iid}: {e}",
@@ -1002,19 +1089,8 @@ async def extract_tickets(git_provider):
                     )
                     continue
 
-                issue_body = issue.description or ""
-                if len(issue_body) > MAX_TICKET_CHARACTERS:
-                    issue_body = issue_body[:MAX_TICKET_CHARACTERS] + "..."
-
-                tickets_content.append(
-                    {
-                        "ticket_id": issue.iid,
-                        "ticket_url": issue.web_url,
-                        "title": issue.title,
-                        "body": issue_body,
-                        "labels": ", ".join(issue.labels or []),
-                    }
-                )
+                if len(tickets_content) >= MAX_GITLAB_TICKETS:
+                    break
 
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
@@ -1087,13 +1163,18 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
         tickets_content = await extract_tickets(git_provider)
 
         if tickets_content:
-            # Store sub-issues along with main issues
+            # Preserve directly linked tickets before expanded sub-issues when prompt clipping keeps a prefix.
+            related_tickets.extend(tickets_content)
             for ticket in tickets_content:
                 if "sub_issues" in ticket and ticket["sub_issues"]:
+                    parent_url = ticket.get("ticket_url")
                     for sub_issue in ticket["sub_issues"]:
-                        related_tickets.append(sub_issue)  # Add sub-issues content
-
-                related_tickets.append(ticket)
+                        child = sub_issue.copy()
+                        if isinstance(parent_url, str) and parent_url.strip():
+                            child["parent_ticket_url"] = parent_url
+                            if ticket.get("title"):
+                                child["parent_ticket_title"] = ticket["title"]
+                        related_tickets.append(child)
 
             get_logger().info("Extracted tickets and sub-issues from PR description",
                               artifact={"tickets": related_tickets})

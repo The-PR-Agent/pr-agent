@@ -97,11 +97,35 @@ def test_get_secret_does_not_log_secret_name_or_raw_sdk_error(provider_logs):
     provider = object.__new__(gcs_provider.GoogleCloudStorageSecretProvider)
     provider.bucket = bucket
 
-    assert provider.get_secret(STORE_SECRET_NAME) == ""
+    with pytest.raises(RuntimeError) as caught:
+        provider.get_secret(STORE_SECRET_NAME)
+    assert caught.value is error
     bucket.blob.assert_called_once_with(STORE_SECRET_NAME)
     blob.download_as_text.assert_called_once_with()
     assert_safe_log(
         provider_logs,
         "Failed to get secret from Google Cloud Storage: RuntimeError",
+        level="WARNING",
+    )
+
+
+def test_get_secret_not_found_returns_empty_string(provider_logs):
+    from google.api_core.exceptions import NotFound
+
+    error = NotFound("Not found")
+    blob = MagicMock()
+    blob.download_as_text.side_effect = error
+    bucket = MagicMock()
+    bucket.blob.return_value = blob
+
+    provider = object.__new__(gcs_provider.GoogleCloudStorageSecretProvider)
+    provider.bucket = bucket
+
+    assert provider.get_secret(STORE_SECRET_NAME) == ""
+    bucket.blob.assert_called_once_with(STORE_SECRET_NAME)
+    blob.download_as_text.assert_called_once_with()
+    assert_safe_log(
+        provider_logs,
+        "Failed to get secret from Google Cloud Storage: NotFound",
         level="WARNING",
     )

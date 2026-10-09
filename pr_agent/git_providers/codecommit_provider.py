@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher, is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
@@ -19,7 +20,7 @@ from ..algo.comment_identity import (
 from ..algo.utils import load_large_diff
 from ..config_loader import get_settings
 from ..log import get_logger
-from .git_provider import GitProvider
+from .git_provider import GitProvider, cache_languages
 
 
 class PullRequestCCMimic:
@@ -79,6 +80,11 @@ class CodeCommitProvider(GitProvider):
     # cap is measured on what CodeCommit actually receives. Class-level, like
     # the other providers' max_comment_length, minus the truncation marker
     # limit_output_characters appends.
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        return policy_metadata(title=self.pr.title, sender=policy_value(self.pr, "author_arn"),
+                               repo_full_name=self.repo_name, source_branch=self.pr.source_branch,
+                               target_branch=self.pr.destination_branch)
+
     max_comment_length = 10240 - len("...")
 
     def __init__(self, pr_url: Optional[str] = None, incremental: Optional[bool] = False):
@@ -120,6 +126,7 @@ class CodeCommitProvider(GitProvider):
         self.pr = pr
         self.diff_files = None
         self.git_files = None
+        self._languages = None
 
     def get_files(self) -> list[CodeCommitFile]:
         # bring files from CodeCommit only once
@@ -170,9 +177,11 @@ class CodeCommitProvider(GitProvider):
         if len(self._get_target_contexts()) == 1:
             files = filter_ignored(files, platform="codecommit")
 
+        invalid_files_names = []
         for diff_item in files:
             # Skip "bad extensions" from language_extensions.toml, lockfiles and minified assets
             if not is_valid_file(diff_item.filename):
+                invalid_files_names.append(diff_item.filename)
                 continue
 
             patch_filename = ""
@@ -217,6 +226,7 @@ class CodeCommitProvider(GitProvider):
             )
             diff_files.append(info)
 
+        self.filtered_diff_file_names = invalid_files_names
         self.diff_files = diff_files
         return self.diff_files
 
@@ -411,9 +421,10 @@ class CodeCommitProvider(GitProvider):
         try:
             pr_id = f"{self.repo_name}/{self.pr_num}"
             return pr_id
-        except:
+        except AttributeError:
             return ""
 
+    @cache_languages
     def get_languages(self):
         """Return recognized language percentages for diff prioritization."""
         language_map = get_settings().get("language_extension_map_org", {}) or {}
@@ -540,6 +551,7 @@ class CodeCommitProvider(GitProvider):
         # Return our object that mimics PullRequest class from the PyGithub library
         # (This strategy was copied from the LocalGitProvider)
         mimic = PullRequestCCMimic(response.title, diff_files, targets=response.targets)
+        mimic.author_arn = getattr(response, "author_arn", None)
         mimic.description = response.description
         mimic.source_commit = response.targets[0].source_commit
         mimic.source_branch = response.targets[0].source_branch
@@ -644,7 +656,7 @@ class CodeCommitProvider(GitProvider):
                 identifiers,
                 identity_marker,
                 used_comment_ids,
-                lambda candidate: matcher(candidate, target),
+                lambda candidate, matcher=matcher: matcher(candidate, target),
             )
             if comment is not None:
                 return comment

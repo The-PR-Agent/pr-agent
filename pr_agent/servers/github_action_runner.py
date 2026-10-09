@@ -8,6 +8,7 @@ from typing import Optional, Union
 import dynaconf
 
 from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -25,6 +26,7 @@ from pr_agent.servers.github_common import (
     handle_line_comments,
     matches_review_state,
 )
+from pr_agent.servers.utils import is_ask_command_comment
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import PRDescription
 from pr_agent.tools.pr_reviewer import PRReviewer
@@ -78,6 +80,8 @@ async def _handle_request(url, body, notify=None):
     # behind by a previous command; the tool replaces it with its own on entry.
     init_run_details()
     result = await PRAgent().handle_request(url, body, notify=notify)
+    if result is RequestOutcome.SKIPPED:
+        return RequestOutcome.SKIPPED
     if result is False:
         _mark_action_failed()
     _fail_on_recorded_tool_error()
@@ -92,7 +96,7 @@ async def _handle_configured_command(url, command):
         get_logger().error("Failed to parse a configured command; skipping it.")
         _mark_action_failed()
         return
-    await _handle_request(url, command_args)
+    return await _handle_request(url, command_args)
 
 
 def _mark_action_failed():
@@ -195,7 +199,8 @@ async def _run_review_commands(event_payload):
     get_settings().pr_description.final_update_message = False
     get_logger().info(f"Running review commands: {review_commands}")
     for command in review_commands:
-        await _handle_configured_command(pr_url, command)
+        if await _handle_configured_command(pr_url, command) is RequestOutcome.SKIPPED:
+            return
 
 
 async def run_action():
@@ -333,7 +338,8 @@ async def run_action():
                 get_settings().pr_description.final_update_message = False
                 get_logger().info(f"Running push commands: {push_commands}")
                 for command in push_commands:
-                    await _handle_configured_command(pr_url, command)
+                    if await _handle_configured_command(pr_url, command) is RequestOutcome.SKIPPED:
+                        return
                 return
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("url")
@@ -397,7 +403,7 @@ async def run_action():
                     return
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
-                    if '/ask' in comment_body:
+                    if is_ask_command_comment(comment_body):
                         comment_body = handle_line_comments(event_payload, comment_body)
             except Exception as e:
                 get_logger().error(f"Failed to handle line comments: {e}")
@@ -497,9 +503,8 @@ async def run_action():
 def _inject_ci_conclusion(conclusion):
     """Tell the model how the workflow that triggered this run finished.
 
-    Mirrors the append-to-extra_instructions pattern already used for the
-    response-language instruction above and by _inject_artifact_context, so a
-    reviewer running after CI knows a failed/cancelled run without config
+    Adds the workflow conclusion to the reviewer's extra instructions so a
+    review running after CI knows a failed or cancelled run without config
     changes or new prompt variables.
     """
     if not conclusion:

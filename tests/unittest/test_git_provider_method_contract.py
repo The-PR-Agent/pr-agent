@@ -96,7 +96,7 @@ def _gitlab(monkeypatch) -> GitLabProvider:
     provider.mr.commits.return_value._list = [{"message": COMMIT_MESSAGE}]
     note = MagicMock()
     note.awardemojis.create.return_value = SimpleNamespace(id=REACTION_ID)
-    note.awardemojis.list.return_value = [SimpleNamespace(name=REACTION_ID, delete=MagicMock())]
+    note.awardemojis.get.return_value = SimpleNamespace(delete=MagicMock())
     provider.gl = MagicMock()
     provider.gl.projects.get.return_value.mergerequests.get.return_value.notes.get.return_value = note
     return provider
@@ -108,6 +108,7 @@ def _gitea(monkeypatch) -> GiteaProvider:
     provider.owner = "owner"
     provider.repo = "repo"
     provider.pr_number = 7
+    provider.sha = "head-sha"
     provider.enabled_pr = True
     provider.enabled_issue = False
     provider.issue_number = None
@@ -116,6 +117,7 @@ def _gitea(monkeypatch) -> GiteaProvider:
     provider.repo_api.add_reaction_comment.return_value = SimpleNamespace(id=REACTION_ID)
     provider.repo_api.remove_reaction_comment.return_value = SimpleNamespace(status=200)
     provider.repo_api.get_pr_commits.return_value = [{"commit": {"message": COMMIT_MESSAGE}}]
+    provider._set_pr_commits()
     return provider
 
 
@@ -324,7 +326,7 @@ METHOD_CONTRACTS = (
         noop_value=None,
         check_supported=lambda _: None,
         tiers=_tiers(
-            supported=("github", "gitlab", "gitea", "azure-devops", "bitbucket", "bitbucket-server"),
+            supported=("github", "gitlab", "gitea", "azure-devops", "bitbucket", "bitbucket-server", "local"),
         ),
         # Signature + return-annotation contract: the providers that fetch repo-context files
         # must expose the same hook so the cache can key on the revision being read.
@@ -350,7 +352,7 @@ def _build_github_suggestion_provider(monkeypatch, tmp_path) -> GithubProvider:
 def _build_gitlab_suggestion_provider(monkeypatch, tmp_path) -> GitLabProvider:
     provider = _gitlab(monkeypatch)
     provider.resolve_outdated_inline_threads = MagicMock()
-    provider.get_diff_files = MagicMock(return_value=[SimpleNamespace(filename="app.py", head_file="orig\n")])
+    provider.get_diff_files = MagicMock(return_value=[SimpleNamespace(filename="app.py", head_file="orig\n", patch="")])
     return provider
 
 
@@ -418,9 +420,6 @@ SUGGESTION_OUTCOME_CONTRACTS = (
         ),
         make_succeed=lambda p, mp, tmp: setattr(p, "send_inline_comment", MagicMock(return_value=True)),
         payload=SUGGESTION_PAYLOAD,
-        deliberate_mismatch=DeliberateMismatch(
-            "GitLab unconditionally returns True; issue #3129 owns reporting total failures."
-        ),
     ),
     SuggestionOutcomeContract(
         provider_name="gitea",

@@ -21,10 +21,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
-      checks: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -76,9 +75,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' && (github.event_name == 'pull_request_target' || github.event.issue.pull_request) }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -117,9 +116,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -143,9 +142,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -174,9 +173,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     steps:
       - name: PR Agent action step
         uses: the-pr-agent/pr-agent@main
@@ -204,9 +203,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -432,7 +431,12 @@ Point the action at the file with the `artifact_path` input. The path is resolve
           artifact_instructions: "These are the failing tests from this PR's CI run. Call out any suggestion that would not fix them."
 ```
 
-Setting `artifact_path` turns the feature on by itself; there is no separate enable switch to flip in the workflow. The file contents are wrapped in a labelled `CI Artifact` block and appended to the `extra_instructions` of each target tool.
+Setting `artifact_path` turns the feature on by itself; there is no separate enable switch to flip in the workflow. Supported target tools receive a dedicated artifact section in their prompt. The label and file contents are explicitly marked as untrusted data, while `artifact_instructions` appears separately as subordinate analysis guidance. The supported targets are `pr_reviewer`, `pr_description` and `pr_code_suggestions`; unsupported names are skipped with a warning.
+
+When overriding a supported tool's prompt, keep `artifact_context.instructions` in the system prompt and render
+`artifact_context.label`, `artifact_context.content`, `artifact_context.start_marker`, and `artifact_context.end_marker` in
+a clearly marked, untrusted section of the user prompt. This replaces the legacy `extra_instructions` behavior for CI
+artifacts.
 
 The remaining knobs live in the `[artifacts]` section of your configuration:
 
@@ -483,9 +487,9 @@ jobs:
     if: ${{ github.event.sender.type != 'Bot' }}
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
       pull-requests: write
-      contents: write
     name: Run pr agent on every pull request, respond to user comments
     steps:
       - name: PR Agent action step
@@ -554,16 +558,16 @@ If you encounter rate limiting:
 - **Solution**: Ensure your workflow has the correct permissions set:
   ```yaml
   permissions:
-    issues: write
-    pull-requests: write
-    contents: write
-  ```
-  If you cannot grant `contents: write`, set `config.restricted_mode = true` in your configuration. In that case you only need:
-  ```yaml
-  permissions:
+    contents: read
     issues: write
     pull-requests: write
   ```
+  The default tools need no additional scopes. Add `checks: write` only when
+  `github.publish_as_check_run` is enabled. Features that push repository contents, such as
+  `pr_update_changelog.push_changelog_changes`, require `contents: write`, and so does
+  `pr_questions.resolve_threads`, because GitHub gates thread resolution on that scope. If you omit
+  `contents: write`, enable `config.restricted_mode` so operations that need it are skipped or fall
+  back safely, and keep `pr_questions.resolve_threads` off, since restricted mode does not cover it.
   See the [Restricted Mode guide](../usage-guide/additional_configurations.md#restricted-mode) for details.
 
 **Error: "PR-Agent command was not run" for incomplete GitHub files**
@@ -736,6 +740,9 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
                   name: settings-volume
     ```
 
+    > Service images run as UID/GID `10001`: mounted secrets must be readable, and mounted data paths writable, by that user.
+    > Home-relative mounts belong under `/home/pragent`.
+
     > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI.KEY` and `GITHUB.USER_TOKEN`.
 
 6) Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
@@ -763,7 +770,7 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 
 > **Note:** When running PR-Agent from GitHub app, the default configuration file (configuration.toml) will be loaded.
 > However, you can override the default tool parameters by uploading a local configuration file `.pr_agent.toml`
-> To use organization-level global configuration, create `<organization>/pr-agent-settings` with a `.pr_agent.toml` file and install the GitHub App on that repository too.
+> To use organization-level global configuration, set `config.global_settings_repo = "pr-agent-settings"`, create `<organization>/pr-agent-settings` with a `.pr_agent.toml` file, and install the GitHub App on that repository too.
 > The app needs read access to the settings repository as well as the pull request repositories. This applies to both GitHub.com and GitHub Enterprise Server.
 > For more information please check out the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-app)
 ---

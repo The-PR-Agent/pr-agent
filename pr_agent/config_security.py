@@ -11,7 +11,7 @@
 # PR-Agent host's filesystem, so letting a repo set it would allow a malicious repo to read
 # sensitive host files (e.g. ~/.ssh/*) into the LLM prompt. `paths` therefore stays host-only.
 #
-# push_outputs: routes review data to operator-controlled sinks (webhook/slack/file). Letting a
+# push_outputs: routes review data to operator-controlled sinks (webhook/slack/telegram/file). Letting a
 # repo set any of these would let a malicious repo exfiltrate review data to an arbitrary host,
 # reach internal endpoints (SSRF), or append to arbitrary host files. The whole section is
 # therefore host-only (empty allowlist -> every key dropped).
@@ -25,12 +25,38 @@ REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "prompt_fragments": frozenset(),
 }
 
-# Individual settings in otherwise repository-configurable sections may also be
-# host-only. publish_error_details controls what service-side failure state is
-# disclosed in a PR comment, so the PR author must not be able to enable it.
+_CONNECTION_KEY_SUFFIXES = ("url", "base_url", "endpoint", "org", "key", "token", "secret")
+_REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION = {
+    "config": frozenset({"progress_gif_url"}),
+    "gitea": frozenset({"web_url"}),
+}
+_REPO_OVERRIDABLE_SUFFIX_SECTIONS = frozenset({"custom_labels", "language_extension_map_org"})
+
+
+# Keep individual settings in otherwise repository-configurable sections host-only.
+# Protect generic provider connection locations and credentials in every section,
+# using the exceptions above only for documented repository preferences.
 REPO_HOST_ONLY_KEYS_BY_SECTION = {
+    "aws": frozenset({"aws_access_key_id", "aws_region_name"}),
+    # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
+    "azure_ad": frozenset({"api_base"}),
+    "azure_devops": frozenset({"pat"}),
+    "bitbucket": frozenset({"auth_type"}),
+    "databricks": frozenset({"api_base"}),
+    "gerrit": frozenset({"webhook_password", "webhook_username"}),
+    "gitea": frozenset({"skip_ssl_verification", "ssl_ca_cert"}),
+    "github": frozenset({"deployment_type"}),
+    "gitlab": frozenset({"auth_type", "ssl_verify"}),
+    "huggingface": frozenset({"api_base"}),
+    # Jira lookups use the host's Atlassian credentials, so the reviewed repository must not
+    # choose the site or account they authenticate as, or widen the project allowlist they may read.
+    "jira": frozenset({"jira_api_email", "jira_site", "project_keys"}),
+    "moonshot": frozenset({"api_base"}),
+    "ollama": frozenset({"api_base"}),
+    "openai": frozenset({"api_base", "api_type", "api_version"}),
+    "openrouter": frozenset({"api_base"}),
     "pr_reviewer": frozenset({"publish_error_details"}),
-    # repo_context_sibling_repos lists the sibling repositories whose files a consuming repo
+    # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
     # triggers the read, not who chose the target or where the output lands, so a sibling
@@ -46,19 +72,39 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # an operator choice, and this is what makes it one: without it, [config] is otherwise
     # repo-configurable, so a reviewed repo's .pr_agent.toml or a comment argument could
     # supply the pattern. The operator still sets it through host configuration.
+    # global_settings_repo names the repository whose .pr_agent.toml applies to every repository
+    # in the namespace, so the operator chooses it, not a reviewed repo or a comment argument.
     # extra_config_url is host-only: the next apply_repo_settings() call fetches it over
     # HTTP(S) (attaching PR_AGENT_EXTRA_CONFIG_AUTH_HEADER) and merges *every* section of the
     # response into runtime settings without host-key filtering. A malicious reviewed repo
     # would otherwise repoint that fetch to an arbitrary internal URL (SSRF), exfiltrate the
     # auth header, and override secrets/model routing/output sinks wholesale. CLI arguments
     # for it are already blocked; the repo-settings entry point now matches.
+    # Provider request timeouts stay host-controlled so repository settings cannot lengthen
+    # worker occupancy across SDK retries. Command arguments enforce this same boundary.
     "config": frozenset({
         "extra_config_url",
         "description_issue_regex",
+        "global_settings_repo",
+        "http_request_timeout",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
     }),
 }
+
+
+def is_repo_host_only_key(section: str, key: str) -> bool:
+    """Return whether a repository must not override a setting."""
+    section = section.lower()
+    key = key.lower()
+    if key in REPO_HOST_ONLY_KEYS_BY_SECTION.get(section, frozenset()):
+        return True
+    return (
+        section not in _REPO_OVERRIDABLE_SUFFIX_SECTIONS
+        and key not in _REPO_OVERRIDABLE_SUFFIX_KEYS_BY_SECTION.get(section, frozenset())
+        and key.endswith(_CONNECTION_KEY_SUFFIXES)
+    )
+
 
 # Keys that repositories may still configure from their own default-branch settings but that
 # comment/CLI *arguments* must never override. repo_context_files selects which repository and
@@ -72,8 +118,20 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
 # such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
 # into a green workflow; the workflow's operator sets it instead.
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
-    "config": frozenset({"repo_context_files"}),
+    "config": frozenset({
+        "branch_issue_regex",
+        "fallback_models",
+        "num_retries",
+        "output_relevant_configurations",
+        "repo_context_files",
+    }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
+    "ignore": frozenset({"regex"}),
+    "pr_code_suggestions": frozenset({"parallel_calls"}),
+    "pr_questions": frozenset({"resolve_threads"}),
+    "pr_reviewer": frozenset({"max_number_of_calls"}),
+    "pr_similar_issue": frozenset({"force_update_dataset"}),
+    "pr_update_changelog": frozenset({"push_changelog_changes"}),
 }
 
 # Keys a per-directory `.pr_agent.toml` can never override, even when their section is
@@ -102,7 +160,7 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
         "enable_large_pr_chunking", "max_number_of_calls",
         "inline_key_issues", "enable_review_labels_security",
         "enable_review_labels_effort", "require_estimate_effort_to_review",
-        "require_security_review", "require_ticket_analysis_review",
+        "require_security_review", "require_ticket_analysis_review", "max_previous_findings_chars",
     }),
     "pr_description": frozenset({
         "publish_labels", "enable_large_pr_handling", "max_ai_calls", "async_ai_calls",
@@ -147,7 +205,10 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # into bounded regexes, whereas `ignore.regex` accepts arbitrary expressions that
 # filter_ignored() compiles and matches against every changed filename on every
 # review. A catastrophic-backtracking pattern committed in a nested file could
-# stall a worker, so nested files keep the bounded glob form only.
+# stall a worker, so nested files keep the bounded glob form only. The expansion
+# that glob form allows is bounded by the per-glob and per-list variant ceilings
+# in pr_agent/algo/file_filter.py; the number of globs a nested file may list is
+# not.
 #
 # The `config` section lists model-routing and output knobs but deliberately
 # excludes the repo-context builders: `repo_context_files` fetches every listed

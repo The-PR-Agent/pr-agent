@@ -22,8 +22,9 @@ class FakeTokenHandler:
 
 
 class FakeProvider:
-    def __init__(self, files):
+    def __init__(self, files, filtered_names=()):
         self.files = files
+        self.filtered_names = filtered_names
         self.diff_calls = 0
         self.language_calls = 0
 
@@ -34,6 +35,209 @@ class FakeProvider:
     def get_languages(self):
         self.language_calls += 1
         return {"Python": 100}
+
+    def get_filtered_diff_file_names(self):
+        return self.filtered_names
+
+
+@pytest.mark.parametrize("path", ["fresh", "prepared"])
+@pytest.mark.parametrize(
+    ("return_mode", "clip_first"),
+    [("list", False), ("remaining", False), ("coverage", False), ("coverage", True)],
+)
+def test_multi_diff_chunks_name_filtered_files(monkeypatch, path, return_mode, clip_first):
+    handler = FakeTokenHandler()
+    return_kwargs = {
+        "return_remaining_files": return_mode == "remaining",
+        "return_coverage": return_mode == "coverage",
+    }
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
+    file_dict = {
+        name: {"patch": f"## File: {name}\n" + "change " * (160 if clip_first and index == 0 else 80),
+               "tokens": 163 if clip_first and index == 0 else 83, "edit_type": EDIT_TYPE.MODIFIED}
+        for index, name in enumerate(("first.py", "second.py"))
+    }
+    if clip_first:
+        monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+        monkeypatch.setattr(pr_processing, "clip_tokens", lambda patch, *args, **kwargs: "clipped")
+    if path == "prepared":
+        prepared = pr_processing.PreparedPRDiff(
+            "", [], file_dict=file_dict, files_by_name={}, model="model",
+            add_line_numbers_to_hunks=True, token_handler=handler,
+        )
+        result = pr_processing.get_pr_multi_diffs(
+            provider, handler, "model", prepared_diff=prepared, **return_kwargs,
+        )
+    else:
+        monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+        monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: ([], 10_000, []))
+        monkeypatch.setattr(pr_processing, "handle_patch_deletions", lambda patch, *args: patch)
+        monkeypatch.setattr(
+            pr_processing, "decouple_and_convert_to_hunks_with_lines_numbers", lambda patch, file: patch,
+        )
+        provider.files = [
+            FilePatchInfo("old", "new", file_dict[name]["patch"], name, edit_type=EDIT_TYPE.MODIFIED)
+            for name in file_dict
+        ]
+        result = pr_processing.get_pr_multi_diffs(provider, handler, "model", **return_kwargs)
+
+    if return_mode == "coverage":
+        assert isinstance(result, pr_processing.PackedPRDiffs)
+        assert result.remaining_files_list == []
+        assert result.partial_files_list == (["first.py"] if clip_first else [])
+        chunks = result.chunks
+    elif return_mode == "remaining":
+        assert isinstance(result, tuple) and len(result) == 2
+        chunks, remaining = result
+        assert remaining == []
+    else:
+        assert isinstance(result, list)
+        chunks = result
+    assert len(chunks) == (1 if clip_first else 2)
+    assert all("pnpm-lock.yaml" in chunk for chunk in chunks)
+    assert all(handler.prompt_tokens + handler.count_tokens(chunk) <= 700 for chunk in chunks)
+
+
+def test_description_file_chunks_do_not_request_filtered_file_summaries(monkeypatch):
+    handler = FakeTokenHandler()
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_compressed_diff",
+        lambda *args, **kwargs: ([['## File: first.py\nchange'], ['## File: second.py\nchange']],
+                                 [4, 4], [], [], {}, [["first.py"], ["second.py"]]),
+    )
+
+    chunks, *_ = pr_processing.get_pr_diff_multiple_patchs(provider, handler, "model")
+
+    assert all("pnpm-lock.yaml" not in "\n".join(chunk) for chunk in chunks)
+
+
+def test_multi_diff_can_leave_metadata_out_of_hunk_conversion(monkeypatch):
+    handler = FakeTokenHandler()
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_extended_diff",
+        lambda *args, **kwargs: (["## File: app.py\n@@ -1 +1 @@\n-old\n+new"], 10, []),
+    )
+
+    chunks = pr_processing.get_pr_multi_diffs(
+        provider, handler, "model", include_filtered_file_names=False,
+    )
+
+    assert len(chunks) == 1
+    assert "pnpm-lock.yaml" not in chunks[0]
+
+
+def test_filtered_file_section_caps_number_of_names():
+    names = [f"asset_{index}.map" for index in range(55)]
+
+    section = pr_processing._filtered_file_section(names)
+
+    assert "asset_49.map" in section
+    assert "asset_50.map" not in section
+    assert "... and 5 more" in section
+
+
+def test_filtered_file_section_keeps_lockfile_after_fifty_assets():
+    names = [f"asset_{index}.map" for index in range(55)] + ["subdir/pnpm-lock.yaml"]
+
+    section = pr_processing._filtered_file_section(names)
+
+    assert "subdir/pnpm-lock.yaml" in section
+    assert section.index("subdir/pnpm-lock.yaml") < section.index("asset_0.map")
+    assert "... and 6 more" in section
+
+
+def test_filtered_file_names_never_append_a_partial_path():
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=["short.map", "3rdparty/longer-name.min.js"])
+    base = "source patch"
+    budget = len(base + "\n\n" + pr_processing._filtered_file_section(["short.map"])) + 5
+
+    result = pr_processing.append_filtered_file_names(base, provider, handler, budget)
+
+    assert result.endswith(pr_processing._filtered_file_section(["short.map"]))
+    assert "3rdparty" not in result
+    assert handler.count_tokens(result) <= budget
+
+
+def test_all_filtered_files_do_not_create_a_review_diff(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+
+    assert pr_processing.get_pr_diff(provider, handler, "model") == ""
+    assert pr_processing.get_pr_diff(provider, handler, "model", return_prepared=True).diff == ""
+
+
+def test_full_diff_repackages_when_exact_count_leaves_no_room_for_lockfile(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: (["x" * 690], 150, []),
+    )
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_compressed_diff",
+        lambda *args, **kwargs: ([['manifest patch']], [14], [], [], {}, [[]]),
+    )
+
+    diff = pr_processing.get_pr_diff(provider, handler, "model")
+
+    assert "manifest patch" in diff
+    assert "pnpm-lock.yaml" in diff
+    assert "x" * 690 not in diff
+
+
+def test_compressed_diff_prioritizes_unprocessed_source_over_filtered_assets(monkeypatch):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=[f"asset_{index}.map" for index in range(100)])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1_700)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(pr_processing, "pr_generate_extended_diff", lambda *args, **kwargs: (["large"], 10_000, []))
+    monkeypatch.setattr(
+        pr_processing, "pr_generate_compressed_diff",
+        lambda *args, **kwargs: (
+            [["changed code"]], [12], [], ["important.py"],
+            {"important.py": {"edit_type": EDIT_TYPE.MODIFIED}}, [[]],
+        ),
+    )
+
+    diff = pr_processing.get_pr_diff(provider, handler, "model")
+
+    assert "important.py" in diff
+    assert diff.index("important.py") < diff.index("Files changed but omitted")
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_get_pr_diff_names_filtered_lockfiles_without_their_contents(monkeypatch, compressed):
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 10_000)
+    monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
+    monkeypatch.setattr(
+        pr_processing,
+        "pr_generate_extended_diff",
+        lambda *args, **kwargs: (["package.json patch"], 10_000 if compressed else 18, []),
+    )
+    if compressed:
+        monkeypatch.setattr(
+            pr_processing,
+            "pr_generate_compressed_diff",
+            lambda *args, **kwargs: ([['package.json patch']], [18], [], [], {}, [[]]),
+        )
+
+    diff = pr_processing.get_pr_diff(provider, handler, "model")
+
+    assert "package.json patch" in diff
+    assert "Files changed but omitted from the diff" in diff
+    assert "pnpm-lock.yaml" in diff
 
 
 class CharacterTokenHandler(FakeTokenHandler):
@@ -170,7 +374,7 @@ def test_fast_path_rejects_a_join_that_exceeds_the_reserved_limit(
         pr_processing, "pr_generate_compressed_diff",
         lambda *args, **kwargs: ([["compressed"]], [12], [], [], {}, [[]]),
     )
-    monkeypatch.setattr(pr_processing, "_pack_pr_multi_diffs", lambda *args: ["compressed"])
+    monkeypatch.setattr(pr_processing, "_pack_pr_multi_diffs", lambda *args, **kwargs: ["compressed"])
 
     if packing_path == "single":
         result = pr_processing.get_pr_diff(
@@ -384,20 +588,25 @@ def test_multi_packing_does_not_assume_stripping_reduces_tokens(monkeypatch, pol
     settings.config.large_patch_policy = policy
     monkeypatch.setattr(pr_processing, "clip_tokens", lambda patch, *args, **kwargs: patch)
     try:
-        chunks, remaining = pr_processing._pack_pr_multi_diffs(
-            {"a.py": {"patch": " AB ", "tokens": 4}}, handler, 2, True, 4,
+        result = pr_processing._pack_pr_multi_diffs(
+            {"a.py": {"patch": " AB ", "tokens": 4}}, handler, 2, True, 4, return_coverage=True,
         )
     finally:
         settings.config.large_patch_policy = original_policy
 
-    assert chunks == []
-    assert remaining == ["a.py"]
+    assert result.chunks == []
+    assert result.remaining_files_list == ["a.py"]
+    assert result.partial_files_list == []
 
 
-def test_multi_packing_clips_with_exact_single_patch_count(monkeypatch):
+@pytest.mark.parametrize("stored_tokens", [4, 100], ids=["rendered-fit", "initial-admission"])
+def test_multi_packing_clips_with_exact_single_patch_count(monkeypatch, stored_tokens):
+    sentinel = "UNSEEN_TAIL_SENTINEL"
+    source_patch = f" A {sentinel} "
+
     class StripSensitiveHandler(CharacterTokenHandler):
         def count_tokens(self, patch):
-            return 100 if patch == "AB" else len(patch)
+            return 100 if patch == source_patch.strip() else len(patch)
 
     observed_counts = []
 
@@ -411,23 +620,73 @@ def test_multi_packing_clips_with_exact_single_patch_count(monkeypatch):
     settings.config.large_patch_policy = "clip"
     monkeypatch.setattr(pr_processing, "clip_tokens", clip_with_reported_count)
     try:
-        chunks, remaining = pr_processing._pack_pr_multi_diffs(
-            {"a.py": {"patch": " AB ", "tokens": 4}}, handler, 2, True, 4,
+        result = pr_processing._pack_pr_multi_diffs(
+            {"a.py": {"patch": source_patch, "tokens": stored_tokens}},
+            handler, 2, True, 4, return_coverage=True,
         )
     finally:
         settings.config.large_patch_policy = original_policy
 
-    assert chunks == ["A"]
-    assert remaining == []
+    assert result.chunks == ["A"]
+    assert sentinel not in result.chunks[0]
+    assert result.remaining_files_list == []
+    assert result.partial_files_list == ["a.py"]
     assert observed_counts == [100]
 
 
-def test_fresh_and_prepared_multi_diffs_fit_the_same_rendered_boundary(monkeypatch):
+def test_multi_packing_reports_only_emitted_clipped_files_in_source_order(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "large_patch_policy", "clip")
+    monkeypatch.setattr(pr_processing, "clip_tokens", lambda patch, *args, **kwargs: patch[:1])
+    file_dict = {
+        name: {"patch": f"{index} UNSEEN_TAIL_SENTINEL", "tokens": 100}
+        for index, name in enumerate(["z.py", "b.py", "a.py"])
+    }
+
+    result = pr_processing._pack_pr_multi_diffs(
+        file_dict, CharacterTokenHandler(), 2, False, 1, return_coverage=True,
+    )
+
+    assert result.chunks == ["0", "1"]
+    assert result.remaining_files_list == ["a.py"]
+    assert result.partial_files_list == ["z.py", "b.py"]
+
+
+@pytest.mark.parametrize("exact_fits", [True, False])
+def test_multi_packing_does_not_classify_unchanged_clip_as_partial(monkeypatch, exact_fits):
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "large_patch_policy", "clip")
+    clip_inputs = []
+
+    def unchanged_clip(patch, *args, **kwargs):
+        clip_inputs.append(patch)
+        return patch
+
+    monkeypatch.setattr(pr_processing, "clip_tokens", unchanged_clip)
+    patch = "visible RETAINED_TAIL_SENTINEL"
+    budget = len(patch) if exact_fits else len(patch) - 1
+    result = pr_processing._pack_pr_multi_diffs(
+        {"a.py": {"patch": patch, "tokens": budget + 1}},
+        CharacterTokenHandler(), 1, False, budget, return_coverage=True,
+    )
+
+    assert clip_inputs == [patch]
+    assert result.chunks == ([patch] if exact_fits else [])
+    assert result.remaining_files_list == ([] if exact_fits else ["a.py"])
+    assert result.partial_files_list == []
+
+
+@pytest.mark.parametrize("clip_patch", [False, True])
+def test_fresh_and_prepared_multi_diffs_fit_the_same_rendered_boundary(monkeypatch, clip_patch):
     handler = CharacterTokenHandler(prompt_tokens=11)
     files = _rendered_budget_files()
     patches, _, _ = pr_processing.pr_generate_extended_diff([{"files": files}], handler, True)
     reserve = 5_000
-    limit = handler.prompt_tokens + handler.count_tokens("\n".join(patches[:2])) + reserve - 1
+    input_budget = handler.count_tokens(patches[0] if clip_patch else "\n".join(patches[:2])) - 1
+    limit = handler.prompt_tokens + input_budget + reserve
+    if clip_patch:
+        monkeypatch.setitem(get_settings().config, "large_patch_policy", "clip")
+        monkeypatch.setattr(pr_processing, "clip_tokens", lambda patch, *args, **kwargs: "clipped")
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: limit)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda langs, files: [{"files": files}])
     monkeypatch.setattr(pr_processing, "extend_patch", lambda original, patch, *args, **kwargs: patch)
@@ -439,18 +698,22 @@ def test_fresh_and_prepared_multi_diffs_fit_the_same_rendered_boundary(monkeypat
     assert prepared.file_dict
 
     prepared_chunks = pr_processing.get_pr_multi_diffs(
-        provider, handler, "model", prepared_diff=prepared, return_remaining_files=True,
+        provider, handler, "model", prepared_diff=prepared, return_coverage=True,
         output_token_reserve=lambda model, default: reserve,
     )
     fresh_chunks = pr_processing.get_pr_multi_diffs(
-        FakeProvider(_rendered_budget_files()), handler, "model", return_remaining_files=True,
+        FakeProvider(_rendered_budget_files()), handler, "model", return_coverage=True,
         output_token_reserve=lambda model, default: reserve,
     )
 
     assert prepared_chunks == fresh_chunks
-    chunks, remaining = prepared_chunks
-    assert not remaining
-    assert len(chunks) > 1
+    chunks = prepared_chunks.chunks
+    assert prepared_chunks.remaining_files_list == []
+    assert prepared_chunks.partial_files_list == (list(prepared.file_dict) if clip_patch else [])
+    if clip_patch:
+        assert len(chunks) == 1
+    else:
+        assert len(chunks) > 1
     assert all(handler.prompt_tokens + handler.count_tokens(chunk) + reserve <= limit for chunk in chunks)
     assert provider.diff_calls == 1
 
@@ -1021,7 +1284,7 @@ def test_get_pr_multi_diffs_preserves_strict_full_diff_boundary(
     full_diff = "\n".join(probe_patches)
     context_window = probe_total + max(reserve, 1_500) + extra_capacity
 
-    def pack_diffs(*args):
+    def pack_diffs(*args, **kwargs):
         packed_budgets.append(args[-1])
         return ["compressed"]
 
@@ -1515,7 +1778,8 @@ def test_get_pr_multi_diffs_clips_large_patch_with_legacy_and_dynamic_reserve(
         settings.config.verbosity_level = original["verbosity_level"]
 
 
-def test_get_pr_multi_diffs_reports_the_files_the_token_budget_left_out(monkeypatch):
+@pytest.mark.parametrize("return_coverage", [False, True])
+def test_get_pr_multi_diffs_reports_the_files_the_token_budget_left_out(monkeypatch, return_coverage):
     # /review needs the same coverage list get_pr_diff returns, so the review footer can name
     # the files that were dropped even when the diff was reviewed in chunks.
     settings = get_settings()
@@ -1545,10 +1809,15 @@ def test_get_pr_multi_diffs_reports_the_files_the_token_budget_left_out(monkeypa
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 1700)
 
     try:
-        diffs, remaining_files = pr_processing.get_pr_multi_diffs(
+        result = pr_processing.get_pr_multi_diffs(
             provider, token_handler, "tiny-model", max_calls=1, add_line_numbers=False,
-            return_remaining_files=True
+            return_remaining_files=True, return_coverage=return_coverage,
         )
+        if return_coverage:
+            diffs, remaining_files = result.chunks, result.remaining_files_list
+            assert result.partial_files_list == []
+        else:
+            diffs, remaining_files = result
 
         assert len(diffs) == 1
         assert "first.py" in diffs[0]
@@ -1560,7 +1829,8 @@ def test_get_pr_multi_diffs_reports_the_files_the_token_budget_left_out(monkeypa
             setattr(settings.config, key, value)
 
 
-def test_get_pr_multi_diffs_reports_no_remaining_files_when_the_whole_diff_fits(monkeypatch):
+@pytest.mark.parametrize("return_coverage", [False, True])
+def test_get_pr_multi_diffs_reports_no_remaining_files_when_the_whole_diff_fits(monkeypatch, return_coverage):
     settings = get_settings()
     original_before = settings.config.patch_extra_lines_before
     original_after = settings.config.patch_extra_lines_after
@@ -1569,18 +1839,25 @@ def test_get_pr_multi_diffs_reports_no_remaining_files_when_the_whole_diff_fits(
 
     file_info = FilePatchInfo(base_file="old\n", head_file="new\n", patch="@@ -1 +1 @@\n-old\n+new",
                               filename="small.py", edit_type=EDIT_TYPE.MODIFIED)
-    provider = FakeProvider([file_info])
+    provider = FakeProvider([file_info], filtered_names=["pnpm-lock.yaml"])
     token_handler = FakeTokenHandler(prompt_tokens=100)
 
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 100000)
 
     try:
-        diffs, remaining_files = pr_processing.get_pr_multi_diffs(
-            provider, token_handler, "big-model", add_line_numbers=False, return_remaining_files=True
+        result = pr_processing.get_pr_multi_diffs(
+            provider, token_handler, "big-model", add_line_numbers=False, return_remaining_files=True,
+            return_coverage=return_coverage,
         )
+        if return_coverage:
+            diffs, remaining_files = result.chunks, result.remaining_files_list
+            assert result.partial_files_list == []
+        else:
+            diffs, remaining_files = result
 
         assert len(diffs) == 1
+        assert "pnpm-lock.yaml" in diffs[0]
         assert remaining_files == []
     finally:
         settings.config.patch_extra_lines_before = original_before

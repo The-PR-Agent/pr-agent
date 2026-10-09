@@ -8,6 +8,8 @@ import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
+from pr_agent.algo.pr_processing import PackedPRDiffs
+from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -351,7 +353,8 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
@@ -376,7 +379,8 @@ async def test_prepare_prediction_main_retains_files_omitted_by_chunk_limit(deco
 
     def packed_diffs(*args, **kwargs):
         chunks = ["chunk-a"]
-        return (chunks, ["unreviewed.py"]) if kwargs.get("return_remaining_files") else chunks
+        assert kwargs["return_coverage"] is True
+        return PackedPRDiffs(chunks, ["unreviewed.py"], [])
 
     try:
         with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=packed_diffs):
@@ -432,6 +436,83 @@ async def test_improve_reports_the_real_packer_omission_at_default_call_limit(mo
     assert tool._get_prediction.await_count == 3
     assert tool.remaining_files_list == ["fourth.py"]
     assert "fourth.py" in tool._get_suggestions_coverage_footer(suggestions_present=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decouple_hunks", [True, False])
+async def test_improve_reports_clipped_patch_missing_from_dispatched_prompt(monkeypatch, decouple_hunks):
+    snapshot = snapshot_settings((
+        "pr_code_suggestions.decouple_hunks",
+        "pr_code_suggestions.enable_suggestions_coverage_footer",
+        "config.large_patch_policy",
+    ))
+    settings = get_settings()
+    settings.pr_code_suggestions.decouple_hunks = decouple_hunks
+    settings.set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+    settings.config.large_patch_policy = "clip"
+    sentinel = "TAIL_SENTINEL_NEVER_SENT"
+    patch_text = "## File: 'clipped.py'\n@@ -1 +1 @@\n-old\n+new\n" + sentinel * 8
+
+    class CharacterTokenHandler:
+        @staticmethod
+        def count_tokens(text):
+            return len(text)
+
+    monkeypatch.setattr(pr_processing, "clip_tokens", lambda *args, **kwargs: patch_text.split(sentinel)[0])
+    packed = pr_processing._pack_pr_multi_diffs(
+        {"clipped.py": {"patch": patch_text, "tokens": len(patch_text)}},
+        CharacterTokenHandler(), max_calls=1, return_remaining_files=False,
+        token_budget=80, return_coverage=True,
+    )
+    assert sentinel not in packed.chunks[0]
+    assert packed.partial_files_list == ["clipped.py"]
+    assert packed.remaining_files_list == []
+
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    tool._get_prediction = AsyncMock(return_value={"code_suggestions": []})
+    if not decouple_hunks:
+        tool.convert_to_decoupled_with_line_numbers = AsyncMock(return_value=packed.chunks)
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=packed) as get_diffs:
+            await tool.prepare_prediction_main("primary-model")
+    finally:
+        restore_settings(snapshot)
+
+    assert get_diffs.call_args.kwargs["return_coverage"] is True
+    assert tool._get_prediction.await_count == 1
+    assert all(sentinel not in prompt for prompt in tool._get_prediction.await_args.args[1:])
+    assert tool.partial_files_list == ["clipped.py"]
+    assert "had patches clipped before analysis" in tool._get_suggestions_coverage_footer()
+    assert "`clipped.py`" in tool._get_suggestions_coverage_footer(suggestions_present=False)
+
+
+@pytest.mark.asyncio
+async def test_improve_larger_model_attempt_clears_prior_partial_coverage():
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    get_settings().pr_code_suggestions.decouple_hunks = True
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    tool._get_prediction = AsyncMock(return_value={"code_suggestions": []})
+    packed_by_model = {
+        "small-model": PackedPRDiffs(["clipped prompt"], [], ["clipped.py"]),
+        "large-model": PackedPRDiffs(["complete prompt with tail"], [], []),
+    }
+
+    def packed_diffs(provider, handler, model, **kwargs):
+        return packed_by_model[model]
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=packed_diffs):
+            await tool.prepare_prediction_main("small-model")
+            assert tool.partial_files_list == ["clipped.py"]
+            await tool.prepare_prediction_main("large-model")
+    finally:
+        restore_settings(snapshot)
+
+    assert tool._get_prediction.await_args.args[1] == "complete prompt with tail"
+    assert tool.partial_files_list == []
+    assert tool._get_suggestions_coverage_footer() == ""
 
 
 def test_limit_suggestions_per_file_keeps_highest_scores_stable_ties_and_other_files():
@@ -604,7 +685,8 @@ async def test_prepare_prediction_main_keeps_successful_chunks_when_one_parallel
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ):
             tool._get_prediction = fake_get_prediction
 
@@ -640,7 +722,8 @@ async def test_prepare_prediction_main_propagates_chunk_cancellation_after_waiti
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ):
             tool._get_prediction = fake_get_prediction
 
@@ -671,8 +754,8 @@ async def test_prepare_prediction_main_keeps_processing_after_one_sequential_chu
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(
-            ["chunk-a", "chunk-b", "chunk-c"], []
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=PackedPRDiffs(
+            ["chunk-a", "chunk-b", "chunk-c"], [], [],
         )):
             tool._get_prediction = fake_get_prediction
 
@@ -716,7 +799,8 @@ async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ):
             tool._get_prediction = fake_get_prediction
 
@@ -757,10 +841,10 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         with patch.object(
             pr_code_suggestions_module,
             "get_pr_multi_diffs",
-            side_effect=[(["stale unnumbered chunk"], ["stale.py"]),
-                         (["## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n1 +first",
+            side_effect=[PackedPRDiffs(["stale unnumbered chunk"], ["stale.py"], ["stale-clipped.py"]),
+                         PackedPRDiffs(["## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n1 +first",
                            "## File: 'second.py'\n@@ -0,0 +8 @@\n__new hunk__\n8 +second"],
-                          ["fallback-left-out.py"])],
+                          ["fallback-left-out.py"], ["fallback-clipped.py"])],
         ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
@@ -778,6 +862,7 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
     assert tool.total_chunk_count == 2
     assert len(data["code_suggestions"]) == 2
     assert tool.remaining_files_list == ["fallback-left-out.py"]
+    assert tool.partial_files_list == ["fallback-clipped.py"]
     assert len(get_pr_multi_diffs.call_args_list) == 2
     tool.convert_to_decoupled_with_line_numbers.assert_awaited_once_with(
         ["stale unnumbered chunk"],
@@ -788,6 +873,119 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         call.kwargs["output_token_reserve"] is tool.ai_handler.get_output_token_reserve
         for call in get_pr_multi_diffs.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_suggestions_append_filtered_names_after_hunk_conversion():
+    settings = get_settings()
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    settings.pr_code_suggestions.decouple_hunks = False
+    tool = _make_tool()
+    tool.git_provider.get_filtered_diff_file_names.return_value = ["pnpm-lock.yaml"]
+    tool.convert_to_decoupled_with_line_numbers = AsyncMock(return_value=["numbered source hunk"])
+    received = []
+
+    async def predict(model, numbered, unnumbered):
+        received.append((numbered, unnumbered))
+        return {"code_suggestions": []}
+
+    tool._get_prediction = predict
+    try:
+        with patch.object(
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["raw source hunk"], [], []),
+        ) as get_pr_multi_diffs:
+            await tool.prepare_prediction_main("model")
+    finally:
+        restore_settings(snapshot)
+
+    assert get_pr_multi_diffs.call_args.kwargs["include_filtered_file_names"] is False
+    assert tool.convert_to_decoupled_with_line_numbers.call_args.args[0] == ["raw source hunk"]
+    assert len(received) == 1
+    assert all("pnpm-lock.yaml" in prompt for prompt in received[0])
+    assert received[0][0].startswith("numbered source hunk\n\nFiles changed")
+
+
+@pytest.mark.asyncio
+async def test_suggestions_preserve_digit_prefixed_filtered_names_in_unnumbered_hunks():
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    get_settings().pr_code_suggestions.decouple_hunks = True
+    tool = _make_tool()
+    tool.git_provider.get_filtered_diff_file_names.return_value = ["3rdparty/lib.min.js"]
+    received = []
+
+    async def predict(model, numbered, unnumbered):
+        received.append((numbered, unnumbered))
+        return {"code_suggestions": []}
+
+    tool._get_prediction = predict
+    try:
+        with patch.object(
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["1 +source change"], [], []),
+        ) as get_pr_multi_diffs:
+            await tool.prepare_prediction_main("model")
+    finally:
+        restore_settings(snapshot)
+
+    assert get_pr_multi_diffs.call_args.kwargs["include_filtered_file_names"] is False
+    assert len(received) == 1
+    assert received[0][0].startswith("1 +source change")
+    assert received[0][1].startswith("+source change")
+    assert all("3rdparty/lib.min.js" in prompt for prompt in received[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decouple_hunks", [False, True])
+async def test_suggestions_send_deleted_names_without_deleted_lines(decouple_hunks):
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    get_settings().pr_code_suggestions.decouple_hunks = decouple_hunks
+    base = "a\nb\nc\nd\ne\nf\ndrop\ng\n"
+    files = [
+        FilePatchInfo(base_file="gone body\n", head_file="", patch="@@ -1 +0,0 @@\n-gone body",
+                      filename="123.py", edit_type=EDIT_TYPE.DELETED),
+        FilePatchInfo(base_file=base, head_file=base.replace("b\n", "B\n").replace("drop\n", ""),
+                      patch="@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -6,3 +6,2 @@\n f\n-drop\n g",
+                      filename="mixed.py", edit_type=EDIT_TYPE.MODIFIED),
+    ]
+    provider = MagicMock()
+    provider.get_diff_files.return_value = files
+    provider.get_languages.return_value = {"Python": 2}
+    provider.get_filtered_diff_file_names.return_value = []
+    tool = _make_tool(provider)
+    received = []
+
+    async def predict(model, numbered, unnumbered):
+        received.append((numbered, unnumbered))
+        return {"code_suggestions": []}
+
+    tool._get_prediction = predict
+    try:
+        await tool.prepare_prediction_main("model")
+    finally:
+        restore_settings(snapshot)
+
+    assert len(received) == 1
+    for prompt in received[0]:
+        assert "+B" in prompt
+        assert "gone body" not in prompt and "-drop" not in prompt
+        assert prompt.endswith("\n\nDeleted files:\n\n123.py") and prompt.count("123.py") == 1
+
+
+@pytest.mark.asyncio
+async def test_suggestions_skip_the_model_when_the_pr_only_deletes_files():
+    tool = _make_tool()
+    tool._get_prediction = AsyncMock()
+
+    def multi_diffs(*args, deleted_files, **kwargs):
+        deleted_files.append("gone.py")
+        return PackedPRDiffs([], [], [])
+
+    with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=multi_diffs):
+        data = await tool.prepare_prediction_main("model")
+
+    assert data == {"code_suggestions": []}
+    tool._get_prediction.assert_not_awaited()
 
 
 def test_suggestions_coverage_footer_reports_partial_runs_and_respects_flag():
@@ -835,6 +1033,32 @@ def test_suggestions_coverage_footer_reports_unanalyzed_files_without_failed_chu
     assert "not analyzed" in footer
 
 
+def test_suggestions_coverage_footer_keeps_failure_omission_and_clip_categories_bounded():
+    snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
+    tool = _make_tool()
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 3
+    tool.remaining_files_list = [f"omitted-{index}.py" for index in range(52)]
+    tool.partial_files_list = [f"clipped-{index}.py" for index in range(53)]
+
+    try:
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        footer = tool._get_suggestions_coverage_footer(suggestions_present=False)
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", False)
+        disabled_footer = tool._get_suggestions_coverage_footer()
+    finally:
+        restore_settings(snapshot)
+
+    assert footer.index("analysis chunks failed") < footer.index("were not analyzed")
+    assert footer.index("were not analyzed") < footer.index("had patches clipped before analysis")
+    assert "partially analyzed" not in footer
+    assert "failed chunks could not be analyzed" in footer
+    assert "omitted-49.py" in footer and "omitted-50.py" not in footer
+    assert "clipped-49.py" in footer and "clipped-50.py" not in footer
+    assert ", and 2 more" in footer and ", and 3 more" in footer
+    assert disabled_footer == ""
+
+
 @pytest.mark.asyncio
 async def test_run_appends_partial_suggestions_coverage_to_the_summary():
     snapshot = snapshot_settings([
@@ -848,6 +1072,7 @@ async def test_run_appends_partial_suggestions_coverage_to_the_summary():
     tool.generate_summarized_suggestions = MagicMock(return_value="Base suggestions body")
     tool.failed_chunk_count = 1
     tool.total_chunk_count = 2
+    tool.partial_files_list = ["clipped.py"]
 
     try:
         get_settings().set("config.publish_output", False)
@@ -860,6 +1085,7 @@ async def test_run_appends_partial_suggestions_coverage_to_the_summary():
         artifact = get_settings().data["artifact"]
         assert artifact.startswith("Base suggestions body")
         assert "1 of 2 analysis chunks failed" in artifact
+        assert "had patches clipped before analysis" in artifact and "`clipped.py`" in artifact
     finally:
         restore_settings(snapshot)
 
@@ -1934,18 +2160,22 @@ async def test_publish_no_suggestions_qualifies_omitted_files(publish_output_no_
 @pytest.mark.parametrize(("filename", "rendered_name"), [
     ("app`[@org/team](https://example.invalid).py", "``app`[@org/team](https://example.invalid).py``"),
     ("line\n@org/team.py", "`line\\n@org/team.py`"),
+    ("carriage\r# heading.py", "`carriage\\r# heading.py`"),
+    ("a``b.py", "```a``b.py```"),
     ("`edge`.py", "`` `edge`.py ``"),
+    (" space.py ", "`  space.py  `"),
 ])
+@pytest.mark.parametrize("coverage_kind", ["remaining_files_list", "partial_files_list"])
 @pytest.mark.asyncio
-async def test_publish_no_suggestions_escapes_omitted_filenames(
-    publish_output_no_suggestions, filename, rendered_name,
+async def test_publish_no_suggestions_escapes_coverage_filenames(
+    publish_output_no_suggestions, filename, rendered_name, coverage_kind,
 ):
     publish_output_no_suggestions(True)
     snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
     git_provider = MagicMock()
     git_provider.supports_code_suggestions_artifact.return_value = False
     tool = _make_tool(git_provider)
-    tool.remaining_files_list = [filename]
+    setattr(tool, coverage_kind, [filename])
 
     try:
         get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
@@ -1956,6 +2186,13 @@ async def test_publish_no_suggestions_escapes_omitted_filenames(
     body = git_provider.publish_comment.call_args.args[0]
     assert rendered_name in body
     assert "\n@org/team.py" not in body
+    assert "\r" not in body
+    assert "\n# heading.py" not in body
+    assert "\n- @org/team.py" not in body
+    if coverage_kind == "partial_files_list":
+        assert "had patches clipped before analysis" in body
+    else:
+        assert "not analyzed" in body
 
 
 @pytest.mark.asyncio
@@ -2069,6 +2306,7 @@ def _render_suggestions_user_prompt(prompt_key: str, discussion_context: str) ->
         "diff_no_line_numbers": "+value",
         "duplicate_prompt_examples": False,
         "suggestion_discussion_context": discussion_context,
+        "artifact_context": None,
     }
     environment = Environment(undefined=StrictUndefined, autoescape=True)
     return environment.from_string(get_settings().get(prompt_key)).render(variables)
@@ -2456,6 +2694,7 @@ async def test_azure_no_suggestions_uses_current_result_identity():
 
 
 def test_persistent_update_removes_progress_after_status_edit_failure():
+    details = init_run_details()
     initial_header = "## PR Code Suggestions"
     existing = MagicMock()
     existing.body = f"{initial_header}\n<!-- aaa1111 -->\n<table>old suggestions</table>"
@@ -2476,6 +2715,7 @@ def test_persistent_update_removes_progress_after_status_edit_failure():
     assert provider.edit_comment.call_count == 2
     provider.remove_comment.assert_called_once_with(progress_note)
     provider.publish_comment.assert_not_called()
+    assert details.command_failed is False
 
 
 def _persistent_provider(existing_comments):
@@ -2637,6 +2877,7 @@ def test_custom_heading_is_kept_when_a_history_section_already_exists():
 
 @pytest.mark.parametrize("raises", [False, True], ids=["returns-false", "raises"])
 def test_first_persistent_improve_edit_failure_publishes_visible_fallback(raises):
+    details = init_run_details()
     provider = MagicMock()
     provider.get_issue_comments.return_value = []
     provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
@@ -2669,6 +2910,7 @@ def test_first_persistent_improve_edit_failure_publishes_visible_fallback(raises
     provider.edit_comment.assert_called_once_with(progress, new_comment)
     provider.publish_comment.assert_called_once()
     provider.remove_comment.assert_called_once_with(progress)
+    assert details.command_failed is False
 
 
 class _LifecycleSuggestionProvider:
@@ -2772,10 +3014,13 @@ def test_persistent_improve_uses_newest_matching_comment():
     assert provider.published == []
 
 
-def test_persistent_improve_edit_failure_does_not_publish_duplicate_summary():
+@pytest.mark.parametrize("edit_result", [False, RuntimeError("edit failed")])
+def test_persistent_improve_edit_failure_does_not_publish_duplicate_summary(edit_result):
+    details = init_run_details()
     existing = _lifecycle_suggestion_comment("existing")
+    old_body = existing.body
     progress = SimpleNamespace(body="Preparing suggestions...", name="progress")
-    provider = _LifecycleSuggestionProvider([existing], edit_results=[False, False])
+    provider = _LifecycleSuggestionProvider([existing], edit_results=[edit_result, False])
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(
         provider,
@@ -2791,8 +3036,62 @@ def test_persistent_improve_edit_failure_does_not_publish_duplicate_summary():
     assert len(provider.published) == 1
     failure_body = provider.published[0][0]
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
-    assert "previous suggestions remain unchanged" in failure_body
+    assert "update could not be confirmed" in failure_body
     assert provider.removed == [progress]
+    assert existing.body == old_body
+    assert details.command_failed is True
+
+
+def test_failed_persistent_improve_update_relabels_retained_progress():
+    details = init_run_details()
+    existing = _lifecycle_suggestion_comment("existing")
+    progress = SimpleNamespace(body="Preparing suggestions...", name="progress")
+    provider = _persistent_provider([existing])
+    provider.supports_code_suggestion_state.return_value = False
+    provider.edit_comment.side_effect = [False, None]
+    provider.remove_comment.side_effect = RuntimeError("delete unavailable")
+
+    PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider, "new suggestions", PRCodeSuggestionsHeader.SUMMARY.value,
+        name="suggestions", progress_response=progress,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    provider.edit_comment.assert_called_with(
+        progress,
+        "The persistent suggestions update could not be confirmed. Check the existing suggestions before retrying."
+    )
+    provider.remove_comment.assert_called_once_with(progress)
+    provider.publish_comment.assert_called_once()
+    assert details.command_failed is True
+
+
+@pytest.mark.parametrize("cancel_at", ["primary", "progress_edit", "progress_remove", "warning"])
+def test_persistent_improve_update_failure_preserves_cancellation(cancel_at):
+    details = init_run_details()
+    existing = _lifecycle_suggestion_comment("existing")
+    progress = SimpleNamespace(body="Preparing suggestions...", name="progress")
+    provider = _persistent_provider([existing])
+    provider.supports_code_suggestion_state.return_value = False
+    provider.edit_comment.side_effect = (
+        [asyncio.CancelledError()] if cancel_at == "primary" else
+        [False, asyncio.CancelledError()] if cancel_at == "progress_edit" else [False, None]
+    )
+    if cancel_at == "progress_remove":
+        provider.remove_comment.side_effect = asyncio.CancelledError()
+    elif cancel_at == "warning":
+        provider.publish_comment.side_effect = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        PRCodeSuggestions.publish_persistent_comment_with_history(
+            provider, "new suggestions", PRCodeSuggestionsHeader.SUMMARY.value,
+            name="suggestions", progress_response=progress,
+            identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+            legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+        )
+
+    assert details.command_failed is (cancel_at != "primary")
 
 
 @pytest.mark.asyncio
@@ -2828,6 +3127,7 @@ async def test_no_suggestions_failure_removes_stale_progress_comment():
 
 
 def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary():
+    details = init_run_details()
     existing = _lifecycle_suggestion_comment("existing")
     provider = _LifecycleSuggestionProvider(
         [existing],
@@ -2850,7 +3150,39 @@ def test_stateful_no_history_edit_failure_has_no_duplicate_authoritative_summary
     assert len(provider.published) == 1
     failure_body = provider.published[0][0]
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in failure_body
-    assert "previous suggestions remain unchanged" in failure_body
+    assert "update could not be confirmed" in failure_body
+    assert details.command_failed is True
+
+
+def test_stateful_unconfirmed_edit_does_not_claim_previous_summary_is_unchanged(monkeypatch):
+    details = init_run_details()
+    existing = _lifecycle_suggestion_comment("existing")
+    provider = _LifecycleSuggestionProvider([existing], supports_state=True)
+
+    def applied_edit_with_lost_response(comment, body):
+        comment.body = body
+        raise RuntimeError("edit response unavailable")
+
+    monkeypatch.setattr(provider, "edit_comment", applied_edit_with_lost_response)
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{PRCodeSuggestionsHeader.SUMMARY.value}\n\n<table>new suggestions</table>",
+        PRCodeSuggestionsHeader.SUMMARY.value,
+        name="suggestions",
+        final_update_message=False,
+        max_previous_comments=0,
+        identity_marker=PRCodeSuggestionsIdentity.SUMMARY.value,
+        legacy_initial_header=PRCodeSuggestionsHeader.SUMMARY.value,
+    )
+
+    assert "new suggestions" in existing.body
+    assert result is provider.published[0][2]
+    assert len(provider.published) == 1
+    warning = provider.published[0][0]
+    assert "update could not be confirmed" in warning
+    assert "remain unchanged" not in warning
+    assert PRCodeSuggestionsIdentity.SUMMARY.value not in warning
+    assert details.command_failed is True
 
 
 @pytest.mark.asyncio

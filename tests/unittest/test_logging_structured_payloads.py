@@ -104,6 +104,10 @@ def test_a_rate_limited_diff_fetch_is_retried(monkeypatch, no_sleep, rate_limit_
     monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: MagicMock())
     provider = GithubProvider(pr_url=None)
     provider.pr = MagicMock()
+    provider.pr.head.sha = "head-sha"
+    provider.pr.base.sha = "base-sha"
+    provider.pr.base.ref = "main"
+    provider.pr.changed_files = 1
     attempts = []
 
     def rate_limited():
@@ -159,6 +163,7 @@ async def test_one_unreadable_ticket_link_keeps_the_others(monkeypatch):
         return SimpleNamespace(number=number, title="Issue", body="Body", labels=[])
 
     provider.repo_obj.get_issue.side_effect = get_issue
+    provider.get_issue_content = lambda repository, number: repository.get_issue(number)
     provider.get_user_description = lambda: "Fixes #1 and closes #2"
     provider.get_pr_branch = lambda: "fix/retry"
     provider.fetch_sub_issues = lambda issue_url: []

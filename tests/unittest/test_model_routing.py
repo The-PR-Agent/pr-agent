@@ -187,3 +187,104 @@ class TestAzureDeployments:
         asyncio.run(retry_with_fallback_models(fake_f, git_provider=_pr(num_files=1, hunks_per_file=1)))
 
         assert observed == [("tiny-model", "tiny-deployment"), ("fallback-1", "fallback-deployment")]
+
+
+class TestLazyHunkCounting:
+    @pytest.fixture
+    def counted_hunks(self, monkeypatch):
+        from pr_agent.algo import model_routing
+
+        calls = []
+
+        def tracked(files):
+            calls.append(files)
+            return count_hunks(files)
+
+        monkeypatch.setattr(model_routing, "count_hunks", tracked)
+        return calls
+
+    def test_file_only_rule_never_counts_hunks(self, settings, counted_hunks):
+        settings.set("model_routing.rules", [
+            {"max_files": 2, "model": "file-model"},
+        ])
+        provider = _pr(num_files=1, hunks_per_file=100)
+
+        assert route_primary_model(ModelType.REGULAR, provider) == ("file-model", None)
+        assert counted_hunks == []
+        assert provider.calls == 1
+
+    def test_file_limit_rejects_all_rules_without_scanning_patches(self, settings, counted_hunks):
+        settings.set("model_routing.rules", [
+            {"max_files": 1, "max_hunks": 100, "model": "tiny-model"},
+            {"max_files": 2, "max_hunks": 100, "model": "small-model"},
+        ])
+
+        assert route_primary_model(ModelType.REGULAR, _pr(num_files=3, hunks_per_file=100)) is None
+        assert counted_hunks == []
+
+    def test_hunks_counted_once_only_after_file_limit_passes(self, settings, counted_hunks):
+        settings.set("model_routing.rules", [
+            {"max_files": 1, "max_hunks": 100, "model": "wrong-model"},
+            {"max_files": 3, "max_hunks": 1, "model": "too-small"},
+            {"max_hunks": 6, "model": "right-model"},
+        ])
+        provider = _pr(num_files=2, hunks_per_file=2)
+
+        assert route_primary_model(ModelType.REGULAR, provider) == ("right-model", None)
+        assert len(counted_hunks) == 1
+        assert provider.calls == 1
+
+    def test_zero_hunks_are_counted_only_once(self, settings, counted_hunks):
+        settings.set("model_routing.rules", [
+            {"max_hunks": -1, "model": "not-matching"},
+            {"max_hunks": 0, "model": "empty-model"},
+        ])
+
+        assert route_primary_model(ModelType.REGULAR, _pr(num_files=0, hunks_per_file=0)) == (
+            "empty-model", None
+        )
+        assert len(counted_hunks) == 1
+
+    def test_skips_invalid_rules_without_counting_hunks(self, settings, counted_hunks):
+        settings.set("model_routing.rules", [
+            "not-a-rule",
+            {"model": "bad-limit", "max_hunks": "invalid"},
+            {"max_files": 1, "model": "file-model"},
+        ])
+
+        assert route_primary_model(ModelType.REGULAR, _pr(num_files=1, hunks_per_file=3)) == (
+            "file-model", None
+        )
+        assert counted_hunks == []
+
+    def test_deployment_ineligible_rules_do_not_scan_hunks(self, settings, counted_hunks, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from pr_agent.algo import model_routing
+
+        logger = MagicMock()
+        monkeypatch.setattr(model_routing, "get_logger", lambda: logger)
+        settings.set("openai.deployment_id", "primary-deployment")
+        settings.set("model_routing.rules", [
+            {"max_files": 2, "max_hunks": 100, "model": "missing-deployment"},
+        ])
+        provider = _pr(num_files=1, hunks_per_file=10)
+
+        assert route_primary_model(ModelType.REGULAR, provider) is None
+        assert counted_hunks == []
+        assert provider.calls == 1
+        logger.warning.assert_called_once()
+        assert "no deployment_id" in logger.warning.call_args.args[0]
+
+    def test_deployment_eligible_later_rule_counts_hunks_once(self, settings, counted_hunks):
+        settings.set("openai.deployment_id", "primary-deployment")
+        settings.set("model_routing.rules", [
+            {"max_hunks": 100, "model": "missing-deployment"},
+            {"max_hunks": 1, "deployment_id": "small-deployment", "model": "too-small"},
+            {"max_hunks": 5, "deployment_id": "large-deployment", "model": "large-model"},
+        ])
+        provider = _pr(num_files=1, hunks_per_file=3)
+
+        assert route_primary_model(ModelType.REGULAR, provider) == ("large-model", "large-deployment")
+        assert len(counted_hunks) == 1
+        assert provider.calls == 1

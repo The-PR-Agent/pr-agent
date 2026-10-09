@@ -7,6 +7,7 @@ import pytest
 from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
+import pr_agent.git_providers.gitea_provider as gitea_module
 from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as provider_utils
@@ -25,6 +26,79 @@ def test_incomplete_file_errors_share_only_provider_neutral_base():
     assert issubclass(IncompletePullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert issubclass(IncompleteBitbucketPullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert not issubclass(IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError)
+    assert issubclass(gitea_module.IncompleteGiteaPullRequestFilesError, IncompleteProviderPullRequestFilesError)
+    assert not issubclass(gitea_module.IncompleteGiteaPullRequestFilesError, IncompletePullRequestFilesError)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["published", "inspection_failure", "publication_failure", "disabled"])
+async def test_gitea_review_rejects_incomplete_real_provider_inventory(monkeypatch, outcome):
+    """Verify a failed SDK files page aborts the real /review route before model use."""
+    from giteapy.rest import ApiException
+
+    import pr_agent.tools.pr_reviewer as reviewer_module
+
+    settings = Mock()
+    settings.get.side_effect = lambda key, default=None: {
+        "GITEA.URL": "https://gitea.example.com",
+        "GITEA.PERSONAL_ACCESS_TOKEN": "test-token",
+    }.get(key, default)
+    monkeypatch.setattr(gitea_module, "get_settings", lambda: settings)
+    transport = Mock()
+    call_api = transport.call_api
+    call_api.side_effect = ApiException(status=502, reason="private/repo secret failure")
+    monkeypatch.setattr(gitea_module.giteapy, "ApiClient", lambda _config: transport)
+    monkeypatch.setattr(
+        gitea_module.RepoApi, "get_pull_request", lambda *_args, **_kwargs: SimpleNamespace(
+            head=SimpleNamespace(sha="head"), base=SimpleNamespace(sha="base", ref="main"))
+    )
+    monkeypatch.setattr(gitea_module.RepoApi, "get_pull_request_diff", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(gitea_module.RepoApi, "get_pr_commits", lambda *_args, **_kwargs: [{"sha": "head"}])
+    monkeypatch.setattr(gitea_module.RepoApi, "get_languages", lambda *_args, **_kwargs: {})
+
+    def comments(_provider):
+        if outcome == "inspection_failure":
+            raise RuntimeError("private comment lookup")
+        return []
+
+    monkeypatch.setattr(gitea_module.GiteaProvider, "get_issue_comments", comments)
+    published = []
+
+    def publish(_provider, body):
+        published.append(body)
+        if outcome == "publication_failure":
+            raise RuntimeError("private publication error")
+
+    monkeypatch.setattr(gitea_module.GiteaProvider, "publish_comment", publish)
+    providers = []
+
+    def provider_factory(_url):
+        provider = gitea_module.GiteaProvider("https://gitea.example.com/owner/repo/pulls/1")
+        providers.append(provider)
+        return provider
+
+    monkeypatch.setattr(reviewer_module, "get_git_provider_with_context", provider_factory)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", provider_factory)
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setattr(get_settings().config, "publish_output", outcome != "disabled", raising=False)
+    model_factory = Mock()
+
+    handled = await pr_agent_module.PRAgent(ai_handler=model_factory)._handle_request(
+        "https://gitea.example.com/owner/repo/pulls/1", "/review"
+    )
+
+    assert handled is False
+    model_factory.assert_not_called()
+    assert len(providers) == (1 if outcome == "disabled" else 2)
+    assert call_api.call_count == 1
+    if outcome == "disabled":
+        assert published == []
+    else:
+        assert len(published) == 1
+        assert "Gitea returned incomplete or unavailable" in published[0]
+        assert gitea_module.IncompleteGiteaPullRequestFilesError.notice_marker in published[0]
+        assert "private/repo" not in published[0]
+        assert "test-token" not in published[0]
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +113,7 @@ def reset_response_language():
 
 
 def _patch_request_dependencies(monkeypatch, validate_result=(True, None), update_settings_fn=None):
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     if update_settings_fn is None:
         update_settings_fn = _identity_args
 
@@ -139,8 +214,8 @@ async def test_prepared_override_wins_after_repo_settings_and_next_command_reloa
         async def run(self):
             observed.append(get_settings().get("PR_REVIEWER.EXTRA_INSTRUCTIONS"))
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
 
@@ -184,8 +259,8 @@ async def test_prepared_overrides_control_repository_loading(monkeypatch, settin
                              settings.pr_reviewer.require_tests_review,
                              settings.pr_reviewer.extra_instructions))
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
 
@@ -726,18 +801,25 @@ async def test_handle_request_auto_review_uses_reviewer_auto_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeypatch, tmp_path):
+async def test_auto_review_keeps_prepared_artifact_context_without_notifying(monkeypatch, tmp_path):
     artifact = tmp_path / "artifact.txt"
     artifact.write_text("AUTO_REVIEW_ARTIFACT", encoding="utf-8")
     settings = get_settings()
     original_artifacts = settings.get("ARTIFACTS")
     original_instructions = settings.pr_reviewer.extra_instructions
+    artifact_token = artifacts._artifact_context.set(None)
     observed = []
     notify = Mock()
 
     class FakeReviewer:
         def __init__(self, _pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
-            observed.append((is_answer, is_auto, args, str(settings.pr_reviewer.extra_instructions)))
+            observed.append((
+                is_answer,
+                is_auto,
+                args,
+                str(settings.pr_reviewer.extra_instructions),
+                artifacts.get_artifact_context("pr_reviewer"),
+            ))
 
         async def run(self):
             return None
@@ -767,15 +849,17 @@ async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeyp
         )
 
         assert handled is True
-        assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text in observed] == [
+        assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text, _context in observed] == [
             (False, True, ["--kept"])
         ]
         assert observed[0][3].startswith("Repository instructions")
-        assert observed[0][3].count("AUTO_REVIEW_ARTIFACT") == 1
+        assert observed[0][3].count("AUTO_REVIEW_ARTIFACT") == 0
+        assert observed[0][4]["content"] == "AUTO_REVIEW_ARTIFACT"
         notify.assert_not_called()
     finally:
         settings.set("ARTIFACTS", original_artifacts, merge=False)
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
+        artifacts._artifact_context.reset(artifact_token)
 
 
 @pytest.mark.asyncio
@@ -798,13 +882,15 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
     try:
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Unscoped instructions")
         _patch_request_dependencies(monkeypatch)
-        monkeypatch.setattr(artifacts, "load_artifact", fail_if_loaded)
+        monkeypatch.setattr(artifacts, "load_artifact_context", fail_if_loaded)
+        monkeypatch.setattr(artifacts, "_read_and_truncate", fail_if_loaded)
         monkeypatch.setitem(pr_agent_module.command2class, "review", FakeTool)
 
         handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/review")
 
         assert handled is True
         assert observed == ["Unscoped instructions"]
+        assert artifacts.get_artifact_context("pr_reviewer") is None
     finally:
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
         artifacts._artifact_context.reset(token)

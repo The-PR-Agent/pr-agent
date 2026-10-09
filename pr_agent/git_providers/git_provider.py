@@ -8,6 +8,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -24,6 +25,16 @@ from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import Range, process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+
+def cache_languages(get_languages):
+    """Cache non-empty language results per provider instance."""
+    @wraps(get_languages)
+    def wrapper(self):
+        if not getattr(self, "_languages", None):
+            self._languages = get_languages(self)
+        return self._languages
+    return wrapper
 
 
 def get_config_branch() -> str:
@@ -62,6 +73,11 @@ class CodeSuggestionThread:
     suggestion: str
     replies: list[tuple[str, str]] = field(default_factory=list)
     authored_by_agent: Optional[bool] = None
+
+    def text_replies(self) -> list[tuple[str, str]]:
+        """Return the replies that have a non-blank text message, stripped."""
+        return [(author, message.strip()) for author, message in self.replies
+                if isinstance(message, str) and message.strip()]
 
 
 def _discussion_context_budget() -> int:
@@ -268,6 +284,15 @@ def get_git_ssl_env() -> dict[str, str]:
 
 
 class GitProvider(ABC):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        """Return policy fields; None means unknown, empty values mean not applicable.
+
+        Omit unavailable fields or return None; only their rules are skipped.
+        Read expensive fields (such as labels) only when requested. Lookup errors
+        are handled by the policy layer, which allows the request to continue.
+        """
+        return {}
+
     @abstractmethod
     def is_supported(self, capability: str) -> bool:
         pass
@@ -325,8 +350,7 @@ class GitProvider(ABC):
         for thread in self._iter_code_suggestion_threads():
             if thread.authored_by_agent is False:
                 continue
-            replies = [(author, message.strip()) for author, message in thread.replies
-                       if isinstance(message, str) and message.strip()]
+            replies = thread.text_replies()
             discussion = {
                 "thread_id": thread.thread_id,
                 "status": thread.status,
@@ -347,8 +371,19 @@ class GitProvider(ABC):
         return context
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
-        """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this."""
+        """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this.
+
+        Inline /review key-issue threads carry the same dedup marker, so a provider may yield them too;
+        /review reads them to learn which findings a human resolved."""
         return iter(())
+
+    def _iter_review_threads(self) -> Iterator[CodeSuggestionThread]:
+        """Yield review threads with eligible dismissals reported as `resolved`.
+
+        Default to the existing iterator so GitLab and unsupported providers keep their behavior.
+        Providers may override this without expanding the /improve discussion context.
+        """
+        return self._iter_code_suggestion_threads()
 
     def supports_threaded_pr_questions(self) -> bool:
         return False
@@ -541,6 +576,10 @@ class GitProvider(ABC):
     @abstractmethod
     def get_diff_files(self) -> list[FilePatchInfo]:
         pass
+
+    def get_filtered_diff_file_names(self) -> list[str]:
+        """Return changed paths omitted from the diff by file-type filtering."""
+        return getattr(self, "filtered_diff_file_names", [])
 
     def get_incremental_commits(self, is_incremental) -> None:
         return None
@@ -760,14 +799,14 @@ class GitProvider(ABC):
         the provider has no organisation-level home for global settings.
 
         This is the hook that `_get_global_repo_settings` uses to decide which
-        namespace's `pr-agent-settings` repository (or equivalent) to consult.
+        namespace's `config.global_settings_repo` repository to consult.
         Providers that support global settings override this; the default is None,
         which disables global settings for the provider.
         """
         return None
 
     def _get_global_repo_settings(self):
-        """Load the namespace-wide `pr-agent-settings` .pr_agent.toml, if enabled.
+        """Load the namespace-wide `config.global_settings_repo` .pr_agent.toml, if set.
 
         This is a concrete template: it gates on `use_global_settings_file`, resolves
         the owning namespace via `get_owning_namespace()`, and delegates the actual
@@ -778,12 +817,13 @@ class GitProvider(ABC):
         """
         if not get_settings().config.use_global_settings_file:
             return ""
+        settings_repo = get_settings().config.global_settings_repo
         namespace = self.get_owning_namespace()
-        if not namespace:
+        if not settings_repo or not namespace:
             return ""
         return get_cached_global_settings(
             self._get_global_settings_cache_key(namespace),
-            lambda: self._fetch_global_repo_settings(namespace))
+            lambda: self._fetch_global_repo_settings(namespace, settings_repo))
 
     def _get_global_settings_cache_key(self, namespace: str) -> str:
         """Cache key for a namespace's global settings.
@@ -793,14 +833,22 @@ class GitProvider(ABC):
         """
         return f"{type(self).__name__}:{namespace}"
 
-    def _fetch_global_repo_settings(self, namespace: str):
-        """Fetch the raw `.pr_agent.toml` from the namespace's `pr-agent-settings`
+    def _fetch_global_repo_settings(self, namespace: str, settings_repo: str):
+        """Fetch the raw `.pr_agent.toml` from the namespace's `settings_repo`
         repository. Return "" for an expected "not found"/no-access result (so it is
         cached) and let transient/unexpected errors propagate. Overridden per provider."""
         return ""
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
+
+    def get_issue_content(self, repo_obj, issue_number: int):
+        """Fetch issue content within this provider's authorized repository boundary."""
+        raise NotImplementedError("This provider cannot fetch GitHub issue content")
+
+    def get_sibling_repo(self, repo_id: str):
+        """Resolve a host-approved sibling repository the requester may read."""
+        return None
 
     def get_sibling_repo_file_content(self, repo_id: str, file_path: str, from_default_branch: bool = False):
         """Fetch a single file from a sibling repository in the same namespace/owner.

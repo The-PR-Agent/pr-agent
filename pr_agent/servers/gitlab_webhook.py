@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, status
+from fastapi import APIRouter, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTasks
@@ -16,14 +16,20 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
+from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
+from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
+from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     get_pr_commands,
+    is_ask_command_comment,
     is_command_comment,
+    payload_log_summary,
     push_trigger_slot,
     shared_should_process_pr_logic,
 )
@@ -55,7 +61,9 @@ def get_fork_safe_secret_provider():
     return _secret_provider_state["provider"]
 
 
-async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None):
+async def handle_request(
+    api_url: str, body: str, log_context: dict, sender_id: str, notify=None
+) -> bool | RequestOutcome:
     log_context["action"] = body
     log_context["event"] = "pull_request" if body == "/review" else "comment"
     log_context["api_url"] = api_url
@@ -70,7 +78,7 @@ async def handle_request(api_url: str, body: str, log_context: dict, sender_id: 
             provider.set_command_actor(sender_id)
 
     with get_logger().contextualize(**log_context):
-        await PRAgent().handle_request(api_url, body, notify)
+        return await PRAgent().handle_request(api_url, body, notify)
 
 async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
                                    log_context: dict, data: dict):
@@ -97,7 +105,8 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                await agent.handle_request(api_url, new_command)
+                if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                    return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
 
@@ -198,14 +207,17 @@ async def _get_bot_user_id():
             gl = gitlab.Gitlab(
                 url=gitlab_url,
                 oauth_token=gitlab_token,
-                ssl_verify=ssl_verify
+                ssl_verify=ssl_verify,
+                timeout=get_http_request_timeout(),
             )
         else:
             gl = gitlab.Gitlab(
                 url=gitlab_url,
                 private_token=gitlab_token,
-                ssl_verify=ssl_verify
+                ssl_verify=ssl_verify,
+                timeout=get_http_request_timeout(),
             )
+        refresh_session_request_timeout(gl)
         gl.auth()
         return gl.user.id
 
@@ -251,36 +263,45 @@ def should_process_pr_logic(data) -> bool:
 
 
 def authenticate_gitlab_webhook(request: Request, log_context: dict):
-    request_token = request.headers.get("X-Gitlab-Token")
-    # Built only for a request that will actually consult it, so a cloud client that
-    # fails to initialize or read cannot drop webhooks authenticated by shared secret instead.
-    secret = None
-    if request_token:
+    request_token = request.headers.get("X-Gitlab-Token", "")
+    shared_secret = get_settings().get("GITLAB.SHARED_SECRET")
+    # Check the shared credential first to avoid cloud lookups, even during provider outages.
+    if not shared_secret or not hmac.compare_digest(request_token.encode(), str(shared_secret).encode()):
+        # Split at the last colon so a secret name or ARN can itself contain colons.
+        secret_name, separator, webhook_token = request_token.rpartition(":")
+        if not separator or not secret_name or not webhook_token:
+            get_logger().error("Failed to validate secret: X-Gitlab-Token is neither the shared secret "
+                               "nor <secret-name>:<webhook-token>")
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                                content=jsonable_encoder({"message": "unauthorized"}))
+
+        secret = None
         try:
             secret_provider = get_fork_safe_secret_provider()
-            secret = secret_provider.get_secret(request_token) if secret_provider else None
+            secret = secret_provider.get_secret(secret_name) if secret_provider else None
         except Exception as e:
-            get_logger().warning(f"Secret provider failed ({type(e).__name__}), falling back to the shared secret")
-    if secret:
+            get_logger().warning(f"Secret provider failed ({type(e).__name__})")
+        if not secret:
+            get_logger().error("Failed to validate secret")
+            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                                content=jsonable_encoder({"message": "unauthorized"}))
         try:
             secret_dict = json.loads(secret)
-            context["settings"].gitlab.personal_access_token = secret_dict["gitlab_token"]
+            if not isinstance(secret_dict, dict):
+                raise ValueError("Invalid webhook secret")
+            stored_token = secret_dict.get("webhook_token")
+            gitlab_token = secret_dict.get("gitlab_token")
+            if (not isinstance(stored_token, str) or not stored_token
+                    or not isinstance(gitlab_token, str) or not gitlab_token
+                    or not hmac.compare_digest(webhook_token.encode(), stored_token.encode())):
+                raise ValueError("Invalid webhook secret")
+            context["settings"].set("GITLAB.PERSONAL_ACCESS_TOKEN", gitlab_token)
             log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
         except Exception as e:
             get_logger().error(
                 f"Failed to validate the secret for the provided webhook token: {type(e).__name__}")
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
-    elif get_settings().get("GITLAB.SHARED_SECRET"):
-        secret = get_settings().get("GITLAB.SHARED_SECRET")
-        if not hmac.compare_digest(str(request_token or ""), str(secret)):
-            get_logger().error("Failed to validate secret")
-            return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                                content=jsonable_encoder({"message": "unauthorized"}))
-    else:
-        get_logger().error("Failed to validate secret")
-        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
-                            content=jsonable_encoder({"message": "unauthorized"}))
     gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
     if not gitlab_token:
         get_logger().error("No gitlab token found")
@@ -292,7 +313,6 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
 @router.post("/webhook")
 async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     start_time = datetime.now()
-    request_json = await request.json()
     context["settings"] = copy.deepcopy(global_settings)
 
     log_context = {"server_type": "gitlab_app"}
@@ -300,9 +320,10 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
     unauthorized_response = authenticate_gitlab_webhook(request, log_context)
     if unauthorized_response is not None:
         return unauthorized_response
+    request_json = await request.json()
 
     async def inner(data: dict):
-        get_logger().info("GitLab data", artifact=data)
+        get_logger().info("GitLab data", artifact=payload_log_summary(data, ("object_kind",)))
         sender = data.get("user", {}).get("username", "unknown")
         sender_id = data.get("user", {}).get("id", "unknown")
 
@@ -420,15 +441,38 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                         and command in ("/review", "/review_pr", "/improve", "/improve_code")):
                     body = f"{body} --comment_id={discussion_id}"
                 if (data.get('object_attributes', {}).get('type') == 'DiffNote'
-                        and isinstance(body, str) and '/ask' in body):  # /ask_line
+                        and is_ask_command_comment(body)):  # /ask_line
                     body = handle_ask_line(body, data)
 
-                await handle_request(
-                    url, body, log_context, sender_id, notify=lambda: provider.add_eyes_reaction(comment_id))
+                # A fresh collector, so the verdict below can only come from this command.
+                init_run_details()
+                dispatched = False
+
+                def notify_start_reaction():
+                    # Use `notify` as the gate on "was this a command": `PRAgent` calls it only
+                    # once it decides to run something. Re-parsing the comment here would be a
+                    # second opinion, and the dispatcher reads it with shlex and rewrites `/ask` on
+                    # a diff line into `/ask_line`.
+                    nonlocal dispatched
+                    dispatched = True
+                    # Keep start acknowledgement synchronous because notify is not awaitable.
+                    provider.add_eyes_reaction(comment_id)
+
+                result = await handle_request(
+                    url, body, log_context, sender_id, notify=notify_start_reaction)
+                if result is RequestOutcome.SKIPPED or not dispatched:
+                    return
+                # `propagate_tool_errors` is off, so a tool that failed internally still returns
+                # normally. Reading that as success would tick a comment whose command never ran.
+                # `bool()` rather than `result is not False`, so a `None` reads as failure here the
+                # same way it does in `pr_reviewer` and the GitHub App
+                # Offload outcome HTTP requests while preserving request-scoped settings.
+                await asyncio.to_thread(
+                    provider.react_to_outcome, comment_id, bool(result) and not command_failed())
 
     background_tasks.add_task(inner, request_json)
     end_time = datetime.now()
-    get_logger().info(f"Processing time: {end_time - start_time}", request=request_json)
+    get_logger().info(f"Processing time: {end_time - start_time}")
     return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
 
 
@@ -473,7 +517,7 @@ get_settings().config.git_provider = "gitlab"
 middleware = [Middleware(RawContextMiddleware)]
 if prometheus_metrics_enabled():
     attach_metrics_endpoint(router)
-app = FastAPI(middleware=middleware)
+app = create_server_app(middleware=middleware)
 app.include_router(router)
 
 

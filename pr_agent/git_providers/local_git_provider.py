@@ -4,12 +4,13 @@ from typing import List, Optional
 
 from git import Repo
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
-from pr_agent.git_providers.git_provider import GitProvider
+from pr_agent.git_providers.git_provider import GitProvider, cache_languages
 from pr_agent.log import get_logger
 
 
@@ -32,6 +33,11 @@ class LocalGitProvider(GitProvider):
     It supports the /review, /describe and /improve capabilities; each writes its output to a
     file (review.md, description.md, improve.md) since there is no hosted PR to comment on.
     """
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # A local comparison has branches, but no hosted PR author or labels.
+        return policy_metadata(title=self.pr.title, sender="", repo_full_name="",
+                               source_branch=self.head_branch_name, target_branch=self.target_branch_name)
 
     def __init__(self, target_branch_name, incremental=False):
         self.repo_path = _find_repository_root()
@@ -133,7 +139,7 @@ class LocalGitProvider(GitProvider):
         return diff_files
 
     def publish_description(self, pr_title: str, pr_body: str):
-        with open(self.description_path, "w") as file:
+        with open(self.description_path, "w", encoding="utf-8") as file:
             title = self.get_pr_title() if pr_title is None else pr_title
             file.write(title + '\n' + pr_body)
 
@@ -213,6 +219,7 @@ class LocalGitProvider(GitProvider):
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
         return True  # Not applicable to the local git provider, but required by the interface
 
+    @cache_languages
     def get_languages(self):
         """
         Calculate percentage of languages in repository. Used for hunk prioritisation.
@@ -240,7 +247,25 @@ class LocalGitProvider(GitProvider):
         return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     def get_pr_branch(self):
-        return self.repo.head
+        return self.head_branch_name
+
+    def get_repo_file_content(self, file_path: str, from_default_branch: bool = False) -> str:
+        """Get content of a file from the target branch.
+
+        Reads the committed target-branch version, never HEAD or the working tree, so the
+        reviewed changes cannot supply their own instruction files. A local checkout has no
+        separate default branch, so from_default_branch reads the target branch as well.
+        """
+        try:
+            blob = self.repo.commit(self.target_branch_name).tree / file_path
+        except KeyError:
+            return ""
+        if blob.type != "blob":
+            return ""
+        return blob.data_stream.read().decode("utf-8", errors="replace")
+
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+        return self.repo.commit(self.target_branch_name).hexsha
 
     def get_user_id(self):
         return -1  # Not used anywhere for the local provider, but required by the interface
@@ -249,8 +274,7 @@ class LocalGitProvider(GitProvider):
         commits_diff = list(self.repo.iter_commits(self.target_branch_name + '..HEAD'))
         # Get the commit messages and concatenate
         commit_messages = " ".join([commit.message for commit in commits_diff])
-        # TODO Handle the description better - maybe use gpt-3.5 summarisation here?
-        return commit_messages[:200]  # Use max 200 characters
+        return commit_messages
 
     def get_pr_title(self):
         """

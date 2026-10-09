@@ -1824,11 +1824,11 @@ def _sign_bedrock_mantle_request(self, *args, **kwargs):
                     for index, parameter in enumerate(parameters)
                     if parameter.name == "api_key"
                 )
-            except (StopIteration, TypeError, ValueError):
+            except (StopIteration, TypeError, ValueError) as error:
                 raise RuntimeError(
                     "LiteLLM's Bedrock Mantle signer did not expose api_key; "
                     "request-local bearer isolation cannot be applied"
-                )
+                ) from error
             api_key_index, api_key_parameter = api_key_parameter
             if api_key_parameter.kind == api_key_parameter.KEYWORD_ONLY:
                 kwargs["api_key"] = ""

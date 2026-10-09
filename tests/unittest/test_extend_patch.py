@@ -6,8 +6,9 @@ from pr_agent.algo.git_patch_processing import (
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
 )
-from pr_agent.algo.pr_processing import pr_generate_extended_diff
+from pr_agent.algo.pr_processing import get_pr_multi_diffs, pr_generate_extended_diff
 from pr_agent.algo.token_handler import TokenHandler
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.algo.utils import load_large_diff
 from pr_agent.config_loader import get_settings
 
@@ -123,6 +124,54 @@ class TestExtendPatch:
             "-    line(8)\n+    new_line(8)"
         )
         assert actual_output3 == expected_output_no_dynamic_context
+
+    @pytest.mark.parametrize("section_header", ["", "   "])
+    def test_headerless_hunk_uses_fixed_context_with_new_file(self, monkeypatch, section_header):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        preceding = [f"    line{i}" for i in range(1, 11)]
+        original = "\n".join([*preceding, "old"])
+        new = "\n".join([*preceding, "new"])
+        patch = f"@@ -11 +11 @@{section_header}\n-old\n+new"
+
+        extended = extend_patch(original, patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str=new)
+
+        assert extended.splitlines()[1].startswith("@@ -6,6 +6,6 @@")
+        assert extended.splitlines()[2:] == [*(f"     line{i}" for i in range(6, 11)), "-old", "+new"]
+
+    @pytest.mark.parametrize("new_header_line", ["anchor", "changed anchor"])
+    def test_dynamic_header_missing_or_mismatched_uses_fixed_context(self, monkeypatch, new_header_line):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        original_lines = ["anchor", *(f"line{i}" for i in range(2, 11)), "old"]
+        new_lines = [new_header_line, *original_lines[1:-1], "new"]
+        header = "missing" if new_header_line == "anchor" else "anchor"
+        patch = f"@@ -11 +11 @@ {header}\n-old\n+new"
+
+        extended = extend_patch("\n".join(original_lines), patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str="\n".join(new_lines))
+
+        assert extended.splitlines()[1].startswith("@@ -6,6 +6,6 @@")
+        assert extended.splitlines()[2:7] == [*(f" line{i}" for i in range(6, 11))]
+
+    def test_dynamic_context_resets_for_headerless_second_hunk(self, monkeypatch):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        original_lines = ["def first():", *(f"line{i}" for i in range(2, 11)), "old1",
+                          *(f"line{i}" for i in range(12, 22)), "old2"]
+        new_lines = ["new1" if line == "old1" else "new2" if line == "old2" else line
+                     for line in original_lines]
+        patch = "@@ -11 +11 @@ def first():\n-old1\n+new1\n@@ -22 +22 @@\n-old2\n+new2"
+
+        extended = extend_patch("\n".join(original_lines), patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str="\n".join(new_lines))
+
+        hunk_headers = [line for line in extended.splitlines() if line.startswith("@@")]
+        assert hunk_headers == ["@@ -1,11 +1,11 @@ ", "@@ -17,6 +17,6 @@ "]
 
 
 
@@ -284,3 +333,81 @@ class TestOmittedHunkCount:
                  "@@ -20,3 +20,3 @@\n ctx20\n-old21\n+new21\n ctx22")
         full, _ = extract_hunk_lines_from_patch(patch, "f.py", 13, 13, "right")
         assert "@@ -10,1 +12 @@" not in full
+
+
+class TestExtendedDiffDeletionHandling:
+    def _deleted_file(self):
+        return FilePatchInfo(base_file="one\ntwo\n", head_file="", patch="@@ -1,2 +0,0 @@\n-one\n-two",
+                             filename="gone.py", edit_type=EDIT_TYPE.DELETED)
+
+    def _mixed_file(self):
+        base = "\n".join(["a", "b", "c", "d", "e", "f", "drop", "g"]) + "\n"
+        head = "\n".join(["a", "B", "c", "d", "e", "f", "g"]) + "\n"
+        patch = "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -6,3 +6,2 @@\n f\n-drop\n g"
+        return FilePatchInfo(base_file=base, head_file=head, patch=patch, filename="mixed.py",
+                             edit_type=EDIT_TYPE.MODIFIED)
+
+    def _render(self, deleted_files=None):
+        languages = [{"language": "Python", "files": [self._deleted_file(), self._mixed_file()]}]
+        patches, _, _ = pr_generate_extended_diff(languages, TokenHandler("gpt-4"), add_line_numbers_to_hunks=False,
+                                                  deleted_files=deleted_files)
+        return "\n".join(patches)
+
+    def test_deletions_dropped_and_named_when_requested(self):
+        deleted = []
+        diff = self._render(deleted)
+        assert deleted == ["gone.py"]
+        assert "-one" not in diff and "-drop" not in diff
+        assert "+B" in diff
+
+    def test_deletions_kept_by_default(self):
+        diff = self._render()
+        assert "-one" in diff and "-drop" in diff
+
+    def test_over_budget_diff_collects_deleted_names(self):
+        files = [self._deleted_file()] + [
+            FilePatchInfo(base_file="x\n", head_file="y\n", patch="@@ -1 +1 @@\n-x\n+" + ("y " * 3000),
+                          filename=f"big{index}.py", edit_type=EDIT_TYPE.MODIFIED)
+            for index in range(4)
+        ]
+        provider = type("Provider", (), {"get_diff_files": lambda self: files,
+                                         "get_languages": lambda self: {"Python": len(files)}})()
+        deleted = []
+        chunks = get_pr_multi_diffs(provider, TokenHandler("gpt-4"), "gpt-4", deleted_files=deleted,
+                                    include_filtered_file_names=False)
+        assert len(chunks) > 1
+        assert deleted == ["gone.py"]
+        assert "-one" not in "\n".join(chunks)
+
+
+class TestExtendPatchZeroLengthHunks:
+    """`git diff -U0` numbers the line *before* a pure insertion or deletion."""
+
+    ORIGINAL = 'a\nb\nc\nd\ne\nf\n'
+
+    def test_pure_insertion_extended_both_sides(self):
+        # Use the `git diff -U0` output after inserting X between c and d
+        new_file = 'a\nb\nc\nX\nd\ne\nf\n'
+        actual = extend_patch(self.ORIGINAL, '@@ -3,0 +4 @@\n+X', patch_extra_lines_before=1,
+                              patch_extra_lines_after=1, filename='f.py', new_file_str=new_file)
+        assert actual == '\n@@ -3,2 +3,3 @@ \n c\n+X\n d'
+
+    def test_pure_deletion_extended_both_sides(self):
+        # Use the `git diff -U0` output after deleting c and d
+        new_file = 'a\nb\ne\nf\n'
+        actual = extend_patch(self.ORIGINAL, '@@ -3,2 +2,0 @@\n-c\n-d', patch_extra_lines_before=1,
+                              patch_extra_lines_after=1, filename='f.py', new_file_str=new_file)
+        assert actual == '\n@@ -2,4 +2,2 @@ \n b\n-c\n-d\n e'
+
+    def test_pure_insertion_extended_after_only(self):
+        new_file = 'a\nb\nc\nX\nd\ne\nf\n'
+        actual = extend_patch(self.ORIGINAL, '@@ -3,0 +4 @@\n+X', patch_extra_lines_before=0,
+                              patch_extra_lines_after=2, filename='f.py', new_file_str=new_file)
+        assert actual == '\n@@ -4,2 +4,3 @@ \n+X\n d\n e'
+
+    def test_pure_insertion_at_end_of_file_keeps_header(self):
+        # Keep the header as it was: nothing can be added after the last line
+        new_file = 'a\nb\nc\nd\ne\nf\nX\n'
+        actual = extend_patch(self.ORIGINAL, '@@ -6,0 +7 @@\n+X', patch_extra_lines_before=0,
+                              patch_extra_lines_after=2, filename='f.py', new_file_str=new_file)
+        assert actual == '\n@@ -6,0 +7,1 @@ \n+X'

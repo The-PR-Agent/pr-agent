@@ -1,6 +1,7 @@
 """Regression tests for provider-independent /help behavior."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -279,6 +280,32 @@ async def test_rendering_follows_capabilities(published_output, capabilities, ex
     comment = await run_walkthrough(StubProvider(**capabilities))
     assert expected in comment
     assert unexpected not in comment
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("publish_output", [False, True])
+async def test_unsupported_help_notice_obeys_publish_output(monkeypatch, publish_output):
+    saved = snapshot_settings(["config.publish_output"])
+    try:
+        get_settings().set("config.publish_output", publish_output)
+        provider = StubProvider(gfm_markdown=False, markdown_tables=False)
+        tool = PRHelpMessage.__new__(PRHelpMessage)
+        tool.git_provider = provider
+        tool.question_str = ""
+        tool.return_as_string = False
+        logger = MagicMock()
+        monkeypatch.setattr(pr_help_message_module, "get_logger", lambda: logger)
+
+        await tool.run()
+
+        if publish_output:
+            assert len(provider.published) == 1
+            assert UNSUPPORTED_MARKER in provider.published[0]
+        else:
+            assert provider.published == []
+            assert any(UNSUPPORTED_MARKER in str(call.args[0]) for call in logger.info.call_args_list)
+    finally:
+        restore_settings(saved)
 
 
 async def test_checkboxes_stay_disabled_by_configuration(published_output):

@@ -33,6 +33,7 @@ from pr_agent.algo.utils import process_description
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 from pr_agent.tools.pr_description import PRDescription, sanitize_diagram
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 KEYS_FIX = ["filename:", "language:", "changes_summary:", "changes_title:", "description:", "title:"]
 
@@ -216,6 +217,14 @@ class TestPrepareData:
 # _prepare_labels
 # ---------------------------------------------------------------------------
 class TestPrepareLabels:
+    @pytest.fixture(autouse=True)
+    def configured_labels(self):
+        snapshot = snapshot_settings(("config.enable_custom_labels", "custom_labels"))
+        get_settings().set("config.enable_custom_labels", True)
+        get_settings().set("custom_labels", {label: label for label in ("bug", "perf", "docs", "Refactor")})
+        yield
+        restore_settings(snapshot)
+
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_labels_list_is_returned_stripped(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
@@ -694,6 +703,7 @@ class TestDescriptionPromptGating:
         "language": "python",
         "diff": "diff",
         "extra_instructions": "",
+        "artifact_context": None,
         "skills_context": "",
         "repo_context": "",
         "commit_messages_str": "",

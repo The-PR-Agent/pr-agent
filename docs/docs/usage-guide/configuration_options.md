@@ -30,7 +30,9 @@ If you set `config.output_relevant_configurations` to True, each tool will also 
 
 `Platforms supported: GitHub, GitLab, Bitbucket, Azure DevOps`
 
-By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can edit and customize any configuration parameter. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent tools (either at PR creation or via manual trigger) for the configuration to take effect.
+By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent tools (either at PR creation or via manual trigger) for the configuration to take effect.
+
+Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host. The same restriction applies to provider authentication and TLS settings: `github.deployment_type`, `bitbucket.auth_type`, `gitlab.auth_type`, `gitlab.ssl_verify`, `gitea.skip_ssl_verification`, and `gitea.ssl_ca_cert`. Jira ticket lookups run with the host's Atlassian credentials, so `jira.jira_site`, `jira.jira_api_email`, and `jira.project_keys` are host-controlled as well. These settings are also rejected in command arguments.
 
 For example, if you set in `.pr_agent.toml`:
 
@@ -68,15 +70,18 @@ By default, configuration is read from the **default branch**, so only users who
 **Never set the config branch from untrusted or PR-derived input** (e.g. `--config-branch=$GITHUB_HEAD_REF` / `${{ github.head_ref }}` in CI). Doing so lets anyone who can push a branch to the repository supply their own `.pr_agent.toml` and control the review — for example pointing `model`/the API base at an attacker endpoint to exfiltrate the diff, injecting `extra_instructions`, or enabling auto-approval of their own PR. Always pin the config branch to a fixed, maintainer-controlled branch.
 :::
 
-:::note[GitHub and GitLab only]
-Branch selection is currently implemented for GitHub and GitLab. On all other platforms the `--config-branch` flag and `PR_AGENT_CONFIG_BRANCH` variable are ignored, and the local `.pr_agent.toml` is always read from the default branch.
+:::note[Provider branch behavior]
+Branch selection is currently implemented for GitHub and GitLab. Gitea ignores these options and reads
+the local `.pr_agent.toml` from the pull request target ref, which may differ from the default branch.
+Gerrit also ignores these options, but reads the file from the cloned default branch. Other platforms
+retain their provider-specific settings source.
 :::
 
 ## Global configuration file
 
 `Platforms supported: GitHub, GitLab, Bitbucket (cloud), Bitbucket Server, Azure DevOps, Gitea`
 
-Create a repository named `pr-agent-settings` at the organization level; its `.pr_agent.toml` (read from that repo's default branch) is used as a global configuration for every repository under the same organization:
+Name an organization-level settings repository with `global_settings_repo` in the deployment's own configuration; its `.pr_agent.toml` (read from that repo's default branch) is used as a global configuration for every repository under the same organization. The setting is empty by default, which turns this off, and a repository's `.pr_agent.toml` or a comment cannot set it. With `global_settings_repo = "pr-agent-settings"`, the repository read is:
 
 - **GitHub:** `<organization>/pr-agent-settings`
 - **GitLab:** `<top-level-group>/pr-agent-settings` (both GitLab.com and self-hosted GitLab)
@@ -87,34 +92,34 @@ Create a repository named `pr-agent-settings` at the organization level; its `.p
 
 Parameters from a local `.pr_agent.toml` file, in a specific repo, will override the global configuration parameters (the global file is merged *beneath* the repo-local one).
 For GitHub Enterprise Server, use the same organization-level repository on your GHES host.
-The app installation or token used by PR-Agent must have read access to both the pull request repository and the `pr-agent-settings` repository; otherwise, PR-Agent will skip the global configuration and continue with repository-local settings.
+The app installation or token used by PR-Agent must have read access to both the pull request repository and the settings repository; otherwise, PR-Agent will skip the global configuration and continue with repository-local settings.
 
 :::note[Caching]
-In long-running deployments (the GitHub App / webhook server), the fetched global settings are cached **in-process** for up to 15 minutes to avoid re-fetching on every webhook event, so a change to `pr-agent-settings` may take up to that long to take effect there. CLI and CI (GitHub Action) runs are short-lived processes, so they fetch the global settings once per invocation and always see the latest version.
+In long-running deployments (the GitHub App / webhook server), the fetched global settings are cached **in-process** for up to 15 minutes to avoid re-fetching on every webhook event, so a change to the settings repository may take up to that long to take effect there. CLI and CI (GitHub Action) runs are short-lived processes, so they fetch the global settings once per invocation and always see the latest version.
 :::
 
-Loading the global settings file is controlled by the `use_global_settings_file` flag, which is **enabled by default**. To opt out and rely only on each repo's local `.pr_agent.toml`, set:
+Loading the global settings file is controlled by the `use_global_settings_file` flag, which is **enabled by default** but reads nothing until `global_settings_repo` is set. To opt out and rely only on each repo's local `.pr_agent.toml`, set:
 
 ```toml
 [config]
 use_global_settings_file = false
 ```
 
-For example, in a GitHub organization named `my-org`:
+For example, with `global_settings_repo = "pr-agent-settings"` in a GitHub organization named `my-org`:
 
 - The file `my-org/pr-agent-settings/.pr_agent.toml` (read from that repository's default branch) serves as a global configuration file for all the repos in the organization.
 
-- A repository such as `my-org/my-repo` inherits that global configuration file, and may override any of its values in its own `.pr_agent.toml`.
+- A repository such as `my-org/my-repo` inherits that global configuration file, and may override its repository-configurable values in its own `.pr_agent.toml`.
 
 ## Project/Group level configuration file
 
 `Platforms supported: GitLab, Bitbucket Data Center`
 
-Create a repository named `pr-agent-settings` within a specific project (Bitbucket) or a group/subgroup (GitLab).
+Once `global_settings_repo` is set, the repository with that name within a specific project (Bitbucket) or a group/subgroup (GitLab) is read.
 The configuration file in this repository will apply to all repositories directly under the same project/group/subgroup.
 
 :::note[Note]
-For GitLab, in case of a repository nested in several sub groups, the lookup for a pr-agent-settings repo will be only on one level above such repository.
+For GitLab, in case of a repository nested in several sub groups, the lookup for the settings repository will be only on one level above such repository.
 :::
 
 ## External configuration URL

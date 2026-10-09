@@ -16,14 +16,9 @@ To print all the available configurations as a comment on your PR, you can use t
 
 <img src="/img/possible_config1.png" alt="possible_config1" width="512" />
 
-To view the **actual** configurations used for a specific tool, after all the user settings are applied, you can add for each tool a `--config.output_relevant_configurations=true` suffix.
-For example:
-
-```
-/improve --config.output_relevant_configurations=true
-```
-
-Will output an additional field showing the actual configurations used for the `improve` tool.
+To view the **actual** configurations used for a specific tool after all user settings are applied,
+an authorized operator can set `config.output_relevant_configurations=true` in `.pr_agent.toml`.
+Comment-supplied arguments cannot enable this output because it may disclose host-controlled settings.
 
 <img src="/img/possible_config2.png" alt="possible_config2" width="512" />
 
@@ -99,6 +94,12 @@ And to ignore Python files in all PRs using `regex` pattern, set in a configurat
 regex = ['.*\.py$']
 ```
 
+A `**/` segment in a `glob` pattern matches zero or more directories, so `src/**/generated_*.py` also ignores `src/generated_pb.py` and not only `src/api/generated_pb.py`. Note that `*` still matches across `/`, as in `['*.py']` above.
+
+Each ignore-glob list keeps at most 256 additional, distinct zero-directory regexes. Patterns with more than six standalone `**/` segments or more than 256 characters are not expanded. Configured patterns and the existing root-level form of a leading `**/` are always kept and do not count toward the limit. Skipped variants are reported once per list; files only those variants match are still analyzed.
+
+The limit applies separately to `ignore.glob` and each enabled `ignore_language_framework` list. Globs made entirely of stars and separators, such as `**/**/**`, can match every file after zero-directory expansion.
+
 ## Extra instructions
 
 All PR-Agent tools have a parameter called `extra_instructions`, that enables to add free-text extra instructions. Example usage:
@@ -154,7 +155,14 @@ expand_submodule_diffs = true
 
 When enabled, PR-Agent will fetch and attach diffs from the submodule repositories. The default is `false` to avoid extra GitLab API calls.
 
-Submodule URLs in `.gitmodules` may be absolute (`https://`, `ssh://`, `git@host:`) or relative (`../group/repo.git`). Relative URLs are resolved against the merge request's project path the same way git does, so submodules that live in a sibling group on the same GitLab instance are expanded too.
+Submodule URLs in `.gitmodules` may be absolute (`https://`, `ssh://`, `git@host:`) or relative (`../group/repo.git`). Relative URLs are resolved against the merge request's project path the same way git does.
+
+Because `.gitmodules` comes from the merge request head, the target project is chosen by whoever opened it. PR-Agent therefore authorizes each submodule target the same way it authorizes a [sibling repository](#context-from-sibling-repositories): the target must be listed in `config.repo_context_sibling_repos`, must sit in the merge request project's own top-level namespace, and must be readable by the user who triggered the command. Targets that fail any of these checks are skipped with a warning and the parent gitlink change is left in place. Add each submodule you want expanded to the allowlist:
+
+```toml
+[config]
+repo_context_sibling_repos = ["my-group/my-submodule"]
+```
 
 ## Post the review as a GitLab thread
 
@@ -342,10 +350,10 @@ callback_timeout_seconds = 30 # default
 
 ## Built-in OpenTelemetry command telemetry
 
-PR-Agent can emit its own [OpenTelemetry](https://opentelemetry.io/) signals for utilization and adoption tracking. These cover the **command** layer — how often each tool runs, on which git provider, and whether it succeeded — which no LLM-level integration can report, because many failures happen before any model call:
+PR-Agent can emit its own [OpenTelemetry](https://opentelemetry.io/) signals for utilization and adoption tracking. These cover the **command** layer — how often each tool runs, on which git provider, whether it succeeded, and how many tokens it consumes — which no LLM-level integration can report, because many failures happen before any model call:
 
 - **Traces**: one span per request, named `pr_agent <command>` (for example `pr_agent review`), carrying `pr_agent.command`, `pr_agent.args_count`, `vcs.provider.name`, a span status, and a bounded `error.type` on failure. Prompt and response content is never attached.
-- **Metrics**: `pr_agent.commands`, a counter of executed commands labeled by command and git provider.
+- **Metrics**: `pr_agent.commands`, a counter of executed commands labeled by command and git provider. `pr_agent.tokens` counts consumed tokens, labeled by command, git provider, `pr_agent.fallback_used` (true or false), and `gen_ai.token.type` (`input`, `output`, `cache_read`, or `cache_creation`). `pr_agent.ai_calls` counts successful model calls, labeled by command, git provider, and `pr_agent.fallback_used`. Zero values are skipped, so providers that do not report usage add no token timeseries (`pr_agent.ai_calls` still counts their calls).
 
 ### Two independent layers
 
@@ -384,7 +392,7 @@ This is the recommended topology for fleets: point every PR-Agent instance at th
 
 ### Exposing native Prometheus metrics
 
-Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the gunicorn-served apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command counter is translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
+Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the gunicorn-served apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
 
 ```toml
 [otel]
@@ -421,7 +429,7 @@ Notes:
 
 ## Bringing per-repo context files to PR-Agent
 
-`Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps`
+`Platforms supported: GitHub, GitLab, Gitea, Bitbucket, Azure DevOps, Local`
 
 To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
 
@@ -443,6 +451,8 @@ repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
 By default (`repo_context_from_default_branch = true`), instruction files are read from the repository's **default branch** — a single trusted source — so neither the PR nor its target branch can alter the guidance used to review it. This matches how Qodo Merge reads these files.
 
 Set `repo_context_from_default_branch = false` to instead read from the PR's **target (base) branch**. This respects branch-specific instructions (for example a release branch, or a stacked PR that carries its own `AGENTS.md`), at the cost of trusting whoever can write to that target branch. Even then, files are never read from the PR's own head.
+
+The local git provider has no separate default branch, so it always reads instruction files from the committed target branch (the branch passed as `--pr_url`), never from `HEAD` or uncommitted changes.
 
 ```toml
 [config]
@@ -503,6 +513,12 @@ PR-Agent allows you to automatically ignore certain PRs based on various criteri
 - PRs containing specific labels
 - PRs opened by specific users
 
+The title, author, label, repository, source-branch, and target-branch `ignore_*` rules also apply to
+comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In these paths,
+`ignore_pr_authors` matches the **PR author**, not the person posting the command. An ignored CLI
+request exits successfully without running the tool. Plain-diff CLI inputs (`--diff-file` and
+`--stdin`) have no PR metadata and are not excluded by these rules.
+
 ### Ignoring PRs with specific titles
 
 To ignore PRs with a specific title such as "[Bump]: ...", you can add the following to your `configuration.toml` file:
@@ -513,6 +529,12 @@ ignore_pr_title = ["\\[Bump\\]"]
 ```
 
 Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]", "^Auto"]`.
+
+The default `^Auto` pattern also matches ordinary titles such as "Autoscaling fix". Because title
+rules now apply to manual commands too, `/review`, `/ask`, and CLI `--pr_url` commands on such PRs
+are skipped. Set a narrower `ignore_pr_title` pattern or use `ignore_pr_title = []` in your
+configuration if that is not intended. A skipped request is logged without running the tool or
+posting command reactions.
 
 ### Ignoring PRs between specific branches
 

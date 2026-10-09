@@ -113,6 +113,34 @@ class TestGitLabProvider:
             mock_gitlab_client.http_get.side_effect = _current_mr_metadata
             return provider
 
+    def test_filtered_lockfile_name_is_available_without_ignored_paths(self, gitlab_provider):
+        def change(name):
+            return {
+                "old_path": name,
+                "new_path": name,
+                "diff": "@@ -1 +1 @@\n-old\n+new",
+                "new_file": False,
+                "deleted_file": False,
+                "renamed_file": False,
+            }
+
+        gitlab_provider._get_merge_request_changes = MagicMock(return_value={
+            "changes": [change("package.json"), change("pnpm-lock.yaml"), change("ignored.lock")],
+            "diff_refs": {"base_sha": "base", "head_sha": "head"},
+        })
+        mod = "pr_agent.git_providers.gitlab_provider"
+        with patch.object(
+            gitlab_provider, "_expand_submodule_changes", side_effect=lambda changes, refs: changes
+        ), patch(
+            f"{mod}.filter_ignored", side_effect=lambda changes, provider: changes[:2]
+        ), patch(f"{mod}.is_valid_file", side_effect=lambda name: name != "pnpm-lock.yaml"), patch.object(
+            gitlab_provider, "get_pr_file_content", return_value="content"
+        ):
+            diffs = gitlab_provider.get_diff_files()
+
+        assert [file.filename for file in diffs] == ["package.json"]
+        assert gitlab_provider.get_filtered_diff_file_names() == ["pnpm-lock.yaml"]
+
     def test_get_pr_file_content_success(self, gitlab_provider, mock_project):
         mock_file = MagicMock(ProjectFile)
         mock_file.decode.return_value = "# Changelog\n\n## v1.0.0\n- Initial release"
@@ -187,7 +215,9 @@ class TestGitLabProvider:
         content = gitlab_provider.get_repo_file_content("AGENTS.md")
 
         assert content == "repo context"
-        mock_gitlab_client.projects.get.assert_called_with("test/repo")
+        # a lazy handle: the MR target branch is the ref, so the project payload is not needed
+        # (the fixture already fetched the MR itself, so check the last call rather than the count)
+        mock_gitlab_client.projects.get.assert_called_with("test/repo", lazy=True)
         mock_project.files.get.assert_called_once_with(file_path="AGENTS.md", ref="release-1.0")
         mock_file.decode.assert_called_once()
 
@@ -448,13 +478,17 @@ class TestGitLabProvider:
         mock_project.files.create.assert_not_called()
 
     def test_create_or_update_pr_file_update_exception(self, gitlab_provider, mock_project):
-        mock_project.files.get.side_effect = Exception("Network error")
+        # Non-404 read failure on an existing file must propagate instead of creating anything.
+        error = GitlabGetError("500 Server Error", response_code=500)
+        mock_project.files.get.side_effect = error
 
-        with pytest.raises(Exception):
+        with pytest.raises(GitlabGetError) as raised:
             gitlab_provider.create_or_update_pr_file(
                 "CHANGELOG.md", "feature-branch", "content", "message",
                 expected_snapshot=FileContentSnapshot("old", True, "captured-commit"),
             )
+        assert raised.value is error
+        mock_project.files.create.assert_not_called()
 
     def test_has_create_or_update_pr_file_method(self, gitlab_provider):
         assert hasattr(gitlab_provider, "create_or_update_pr_file")
@@ -743,7 +777,8 @@ class TestGitLabProvider:
     def test_compare_submodule_cached(self, gitlab_provider):
         proj = MagicMock()
         proj.repository_compare.return_value = {"diffs": [{"diff": "d"}]}
-        with patch.object(gitlab_provider, "_project_by_path", return_value=proj) as m_pbp:
+        with patch.object(gitlab_provider, "_project_by_path", return_value=proj) as m_pbp, \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True):
             first = gitlab_provider._compare_submodule("grp/repo", "old", "new")
             second = gitlab_provider._compare_submodule("grp/repo", "old", "new")
 
@@ -766,6 +801,7 @@ class TestGitLabProvider:
         proj.repository_compare.return_value = comparison
 
         with patch.object(gitlab_provider, "_project_by_path", return_value=proj), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True), \
              patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
             first = gitlab_provider._compare_submodule("grp/repo", "old", "new")
             second = gitlab_provider._compare_submodule("grp/repo", "old", "new")
@@ -791,6 +827,7 @@ class TestGitLabProvider:
         proj.repository_compare.return_value = comparison
 
         with patch.object(gitlab_provider, "_project_by_path", return_value=proj), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True), \
              patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_logger:
             result = gitlab_provider._compare_submodule("grp/repo", "old", "new")
 
@@ -813,6 +850,7 @@ class TestGitLabProvider:
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
              patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"src/lib_a": "group/child.git"}), \
              patch.object(gitlab_provider, "_project_by_path", return_value=child_project), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True), \
              patch.object(gitlab_provider, "get_pr_file_content", return_value=""):
             files = gitlab_provider.get_diff_files()
 
@@ -828,6 +866,28 @@ class TestGitLabProvider:
 
         assert result == cached_diffs
         m_pbp.assert_not_called()
+
+    @pytest.mark.parametrize("allowlist, resolved, can_read, expanded", [
+        ([], "group/lib", True, False),
+        (["secret-org/lib"], "secret-org/lib", True, False),
+        (["group/lib"], "group/lib", False, False),
+        (["group/lib"], "group/renamed", True, False),
+        (["group/lib"], "group/lib", True, True),
+    ])
+    def test_compare_submodule_applies_sibling_checks(self, gitlab_provider, allowlist, resolved, can_read, expanded):
+        proj = MagicMock(path_with_namespace=resolved)
+        proj.repository_compare.return_value = {"diffs": [{"diff": "d"}]}
+        settings = MagicMock()
+        settings.config.get.side_effect = lambda key, default=None: (
+            allowlist if key == "repo_context_sibling_repos" else default)
+        with patch("pr_agent.git_providers.git_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_project_by_path", return_value=proj), \
+             patch.object(gitlab_provider, "get_owning_namespace", return_value="group"), \
+             patch.object(gitlab_provider, "_requester_can_read_sibling_project", return_value=can_read):
+            result = gitlab_provider._compare_submodule("group/lib", "old", "new")
+
+        assert proj.repository_compare.called is expanded
+        assert result == ([{"diff": "d"}] if expanded else [])
 
     def test_parse_merge_request_url_handles_nested_project_paths(self, gitlab_provider):
         project_path, mr_id = gitlab_provider._parse_merge_request_url(
@@ -1806,6 +1866,7 @@ class TestGitLabGlobalSettings:
         provider.gl.projects.get.return_value = proj
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider._get_global_repo_settings()
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
         provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
@@ -1822,6 +1883,7 @@ class TestGitLabGlobalSettings:
 
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider._get_global_repo_settings()
 
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
@@ -1838,6 +1900,7 @@ class TestGitLabGlobalSettings:
         provider.gl.projects.get.return_value = proj
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             result = provider._get_global_repo_settings()
         assert result == b"[pr_reviewer]\nnum_max_findings = 5\n"
         provider.gl.projects.get.assert_called_with("mygroup/pr-agent-settings")
@@ -1857,6 +1920,7 @@ class TestGitLabGlobalSettings:
         provider.gl.projects.get.return_value = proj
         with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
             ms.return_value.config.use_global_settings_file = True
+            ms.return_value.config.global_settings_repo = "pr-agent-settings"
             provider._get_global_repo_settings()
             provider._get_global_repo_settings()
         # Only one lookup for the settings project despite two calls (cached).
@@ -2627,6 +2691,7 @@ class TestGitLabIncrementalReview:
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
              patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"libs/sub": "group/child.git"}), \
              patch.object(gitlab_provider, "_project_by_path", return_value=child_project), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True), \
              patch.object(gitlab_provider, "get_pr_file_content", return_value=""):
             files = gitlab_provider.get_diff_files()
 
