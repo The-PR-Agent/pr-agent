@@ -37,7 +37,7 @@ def _provider(pages, comments):
             "pageInfo": {"hasNextPage": i < len(pages) - 1, "endCursor": f"cursor-{i}"},
         }}}}}
         responses.append((200, {}, json.dumps(payload)))
-    requester.requestJson.side_effect = responses
+    requester.graphql_query.side_effect = [({}, json.loads(response[2])) for response in responses]
     provider.github_client = SimpleNamespace(_Github__requester=requester)
     return provider, requester
 
@@ -57,10 +57,10 @@ def test_github_human_resolved_key_issue_is_dismissed_across_pages():
     assert _dismissed(provider) == [{"path": "app.py", "body": _BODY,
                                     "line_start": 2, "line_end": 2,
                                     "reply": "By design: caller releases it."}]
-    assert requester.requestJson.call_count == 2
-    queries = [call.kwargs["input"]["query"] for call in requester.requestJson.call_args_list]
+    assert requester.graphql_query.call_count == 2
+    queries = [call.args[0] for call in requester.graphql_query.call_args_list]
     assert all("resolvedBy { login }" in query for query in queries)
-    assert 'after: "cursor-0"' in queries[1]
+    assert requester.graphql_query.call_args_list[1].args[1]["cursor"] == "cursor-0"
     assert list(provider._iter_code_suggestion_threads()) == []
 
 

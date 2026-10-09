@@ -1030,36 +1030,30 @@ class GithubProvider(GitProvider):
         """List all review threads through the paginated GraphQL query used for resolution."""
         owner, repo_name = self.repo.split("/")
         cursor = None
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) {
+                    reviewThreads(first: 100, after: $cursor) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                            id
+                            isResolved
+                            resolvedBy { login }
+                            comments(first: 100) {
+                                nodes { id }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """
         while True:
-            after_clause = f', after: "{cursor}"' if cursor else ""
-            query = f"""
-            query {{
-                repository(owner: "{owner}", name: "{repo_name}") {{
-                    pullRequest(number: {self.pr_num}) {{
-                        reviewThreads(first: 100{after_clause}) {{
-                            pageInfo {{ hasNextPage endCursor }}
-                            nodes {{
-                                id
-                                isResolved
-                                resolvedBy {{ login }}
-                                comments(first: 100) {{
-                                    nodes {{ id }}
-                                }}
-                            }}
-                        }}
-                    }}
-                }}
-            }}
-            """
-            response_tuple = self.github_client._Github__requester.requestJson(
-                "POST", "/graphql", input={"query": query}
+            _, response = self.github_client._Github__requester.graphql_query(
+                query, {"owner": owner, "repo": repo_name, "number": self.pr_num, "cursor": cursor}
             )
-            if not (isinstance(response_tuple, tuple) and len(response_tuple) == 3):
-                raise RuntimeError("Unexpected GraphQL response format")
-            response_json = json.loads(response_tuple[2])
-            if response_json.get("errors"):
-                raise RuntimeError(f"GraphQL errors querying review threads: {response_json['errors']}")
-            review_threads = (response_json.get("data", {}).get("repository", {})
+            review_threads = (response.get("data", {}).get("repository", {})
                               .get("pullRequest", {}).get("reviewThreads", {}))
             yield from review_threads.get("nodes") or []
             page_info = review_threads.get("pageInfo") or {}

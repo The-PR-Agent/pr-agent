@@ -751,6 +751,15 @@ class _FakeRequester:
         self.calls.append(("json", method, url, input))
         return self._responses.pop(0)
 
+    def graphql_query(self, query, variables):
+        response = self.requestJson("POST", "/graphql", input={"query": query, "variables": variables})
+        if isinstance(response, Exception):
+            raise response
+        data = json.loads(response[2])
+        if data.get("errors"):
+            raise GithubException(400, data, {})
+        return ({}, data)
+
 
 def _make_provider_with_graphql(rest_comment_data, graphql_responses):
     """Build a provider wired with fake REST + GraphQL responses."""
@@ -794,7 +803,7 @@ class TestResolveCommentThread:
         assert len(requester.calls) == 4
         assert requester.calls[0][2].endswith("/pulls/comments/123")
         assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
-        assert "reviewThreads(first: 100)" in requester.calls[2][3]["query"]
+        assert "reviewThreads(first: 100, after: $cursor)" in requester.calls[2][3]["query"]
         assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
 
     @pytest.mark.parametrize(
@@ -819,7 +828,7 @@ class TestResolveCommentThread:
         assert provider.resolve_comment_thread(123) is True
         assert len(requester.calls) == 4
         assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
-        assert "reviewThreads(first: 100)" in requester.calls[2][3]["query"]
+        assert "reviewThreads(first: 100, after: $cursor)" in requester.calls[2][3]["query"]
         assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
         logger.warning.assert_called_once_with(f"Could not fetch root of comment 123: status {expected_status}")
 
@@ -970,7 +979,7 @@ class TestResolveCommentThread:
         result = provider.resolve_comment_thread(123)
 
         assert result is True
-        assert 'after: "cursor1"' in requester.calls[2][3]["query"]
+        assert requester.calls[2][3]["variables"]["cursor"] == "cursor1"
         assert "resolveReviewThread" in requester.calls[3][3]["query"]
 
     def test_handles_rest_api_exception(self):
