@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 from collections import Counter
@@ -9,6 +8,7 @@ from unidiff.errors import UnidiffParseError
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.review_json_output import write_review_json_output
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
@@ -144,15 +144,8 @@ class PlainDiffGitProvider(GitProvider):
         return False
 
     def publish_structured_review(self, review: dict):
-        if not self.json_output_path:
-            return
-        try:
-            with open(self.json_output_path, "w", encoding="utf-8") as fh:
-                json.dump(review, fh, indent=2)
-                fh.write("\n")
-        except (OSError, TypeError, ValueError) as e:
-            get_logger().error(f"Failed to write structured review to {self.json_output_path}: {e}")
-            raise
+        if self.json_output_path:
+            write_review_json_output(review, self.json_output_path)
 
     def publish_description(self, pr_title: str, pr_body: str):
         self._write_output(f"{pr_title}\n\n{pr_body}")

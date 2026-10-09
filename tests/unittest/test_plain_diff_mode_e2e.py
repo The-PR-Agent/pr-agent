@@ -3,6 +3,7 @@ import json
 import pytest
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 
@@ -69,17 +70,23 @@ def test_provider_end_to_end_files_and_output(cfg, capsys):
 
 def test_provider_writes_structured_review(cfg, tmp_path):
     output = tmp_path / "review.json"
+    other_output = tmp_path / "pr-review.json"
     cfg("plain_diff.content", DIFF)
     cfg("plain_diff.output_path", None)
     cfg("plain_diff.json_output_path", str(output))
     provider = PlainDiffGitProvider(None)
 
-    provider.publish_structured_review({"review": {"key_issues_to_review": []}, "usage": {}})
+    token = review_json_output_path.set(str(other_output))
+    try:
+        provider.publish_structured_review({"review": {"key_issues_to_review": []}, "usage": {}})
+    finally:
+        review_json_output_path.reset(token)
 
     assert json.loads(output.read_text()) == {
         "review": {"key_issues_to_review": []},
         "usage": {},
     }
+    assert not other_output.exists()
 
 
 def test_base_file_reconstructed_from_working_tree(cfg, tmp_path, monkeypatch):
