@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,6 +10,7 @@ from pr_agent.algo.inline_comment_dedup import (
     get_inline_comment_store,
     key_issue_fingerprint,
 )
+from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
@@ -39,6 +41,55 @@ def _make_prediction_reviewer(git_provider=None):
     reviewer.incremental = SimpleNamespace(is_incremental=False)
     reviewer.prediction = None
     return reviewer
+
+
+@pytest.mark.asyncio
+async def test_pr_review_json_is_written_after_publication(monkeypatch, tmp_path):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    output = tmp_path / "review.json"
+    provider = MagicMock()
+    provider.get_files.return_value = ["app.py"]
+    provider.should_publish_review_as_thread.return_value = False
+
+    def publish_comment(*args, **kwargs):
+        if not kwargs.get("is_temporary"):
+            assert not output.exists()
+
+    provider.publish_comment.side_effect = publish_comment
+
+    reviewer = _make_reviewer(provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+    reviewer._should_publish_review_no_suggestions = lambda _: True
+    expected = {"review": {"merge_recommendation": "needs_review"}, "usage": {}}
+
+    def prepare_review():
+        reviewer._structured_review_data = expected
+        return "## Review"
+
+    async def predict(*args, **kwargs):
+        reviewer.prediction = "review: valid"
+
+    reviewer._prepare_pr_review = prepare_review
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
+    settings = get_settings()
+    previous_publish = settings.config.publish_output
+    previous_persistent = settings.pr_reviewer.persistent_comment
+    token = review_json_output_path.set(str(output))
+    try:
+        settings.config.publish_output = True
+        settings.pr_reviewer.persistent_comment = False
+        await reviewer.run()
+    finally:
+        review_json_output_path.reset(token)
+        settings.config.publish_output = previous_publish
+        settings.pr_reviewer.persistent_comment = previous_persistent
+
+    assert json.loads(output.read_text(encoding="utf-8")) == expected
+    provider.publish_comment.assert_any_call("## Review")
 
 
 def test_review_failure_comment_publishes_known_reason_without_raw_error():
@@ -1374,6 +1425,35 @@ def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
     # (assert_called_once_with cannot catch this: dict equality ignores key order.)
     published = git_provider.publish_structured_review.call_args[0][0]
     assert list(published["review"].keys()) == ["key_issues_to_review", "security_concerns"]
+
+
+def test_prepare_review_captures_json_without_provider_hook(monkeypatch, tmp_path):
+    provider = MagicMock()
+    provider.publish_structured_review = None
+    provider.is_supported.return_value = False
+    provider.get_diff_files.return_value = []
+    reviewer = _make_prediction_reviewer(provider)
+    reviewer.prediction = "review:\n  merge_recommendation: needs_review\n  key_issues_to_review: []\n"
+    reviewer.vars = {}
+    reviewer.set_review_labels = MagicMock()
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+        lambda *args, **kwargs: "## Review",
+    )
+
+    from pr_agent.algo.run_details import init_run_details
+
+    init_run_details()
+    token = review_json_output_path.set(str(tmp_path / "review.json"))
+    try:
+        reviewer._prepare_pr_review()
+    finally:
+        review_json_output_path.reset(token)
+
+    assert reviewer._structured_review_data == {
+        "review": {"merge_recommendation": "needs_review", "key_issues_to_review": []},
+        "usage": {},
+    }
 
 
 def test_can_run_incremental_review_skips_auto_mode_without_new_commit():

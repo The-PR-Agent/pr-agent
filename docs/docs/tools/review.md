@@ -35,6 +35,14 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 /review --pr_reviewer.some_config1=... --pr_reviewer.some_config2=...
 ```
 
+From the CLI, save the parsed review and token usage as JSON for a later CI step:
+
+```bash
+pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output review.json review
+```
+
+The JSON file is written after the review completes. Place `--json-output` before `review` or `review_pr`.
+
 ### Automatic triggering
 
 To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):

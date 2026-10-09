@@ -48,6 +48,7 @@ from pr_agent.algo.review_finding_state import (
     reconcile_review_findings,
     render_previous_findings,
 )
+from pr_agent.algo.review_json_output import review_json_output_path, write_review_json_output
 from pr_agent.algo.review_merge import merge_review_chunks
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_command_failure, record_model_used
 from pr_agent.algo.run_output import (
@@ -303,6 +304,7 @@ class PRReviewer:
         persistent_write_failed = False
         self._progress_response = None
         self._chunk_progress = None
+        self._structured_review_data = None
         try:
             if not self.git_provider.get_files():
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping review")
@@ -523,6 +525,8 @@ class PRReviewer:
             if (partial_review_error is not None and not review_failed
                     and get_settings().config.get("propagate_tool_errors", False)):
                 raise partial_review_error
+            if not review_failed and self._structured_review_data is not None:
+                write_review_json_output(self._structured_review_data)
 
     def _review_finding_state_enabled(self) -> bool:
         settings = get_settings()
@@ -1305,7 +1309,7 @@ class PRReviewer:
             return ""
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
-        if callable(structured_publisher):
+        if callable(structured_publisher) or review_json_output_path.get():
             # Deep-copy the data: dict(data) is shallow, so structured_data["review"]
             # would alias data["review"], which is mutated right below (key reordering).
             # Hand implementers an isolated snapshot, since the hook is provider-neutral
@@ -1320,7 +1324,9 @@ class PRReviewer:
                     "total_tokens": details.total_tokens,
                 }
             structured_data["usage"] = usage
-            structured_publisher(structured_data)
+            self._structured_review_data = structured_data
+            if callable(structured_publisher):
+                structured_publisher(structured_data)
 
         # move data['review'] 'key_issues_to_review' key to the end of the dictionary
         if 'key_issues_to_review' in data['review']:
