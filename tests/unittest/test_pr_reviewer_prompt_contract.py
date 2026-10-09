@@ -184,6 +184,33 @@ def test_artifact_context_is_untrusted_user_input(monkeypatch):
     assert user.index("CI artifact label and content") < user.index("--PR Info--")
 
 
+@pytest.mark.parametrize("with_artifact", [False, True])
+def test_merge_recommendation_accounts_for_ci_artifact(monkeypatch, with_artifact):
+    reviewer = _build_reviewer(monkeypatch)
+    reviewer.vars["require_merge_recommendation"] = True
+    reviewer.vars["artifact_context"] = (
+        {
+            "label": "ci.log",
+            "content": "allowed-to-fail job failed",
+            "instructions": "Consider CI results.",
+            "start_marker": "<<<CI_ARTIFACT_BEGIN>>>",
+            "end_marker": "<<<CI_ARTIFACT_END>>>",
+        }
+        if with_artifact else None
+    )
+
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+    system = environment.from_string(get_settings().pr_review_prompt.system).render(reviewer.vars)
+    recommendation = next(line for line in system.splitlines() if "merge_recommendation: Literal" in line)
+
+    for value in ("no_concerns_found", "needs_review", "changes_required"):
+        assert value in recommendation
+    assert ("If it reports any concern, choose needs_review at best" in recommendation) is with_artifact
+    for concern in ("failed jobs (including allowed-to-fail jobs)", "planned destroys", "new vulnerabilities"):
+        assert (concern in recommendation) is with_artifact
+    assert ("both the diff and the CI artifact report no concerns" in recommendation) is with_artifact
+
+
 @pytest.mark.parametrize(
     "prompt_name",
     [
