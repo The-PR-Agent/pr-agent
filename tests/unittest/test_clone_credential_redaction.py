@@ -91,6 +91,29 @@ def test_clone_uses_clean_url_and_http_auth_header(tmp_path):
     assert "SECRET" not in captured["url"]
 
 
+@pytest.mark.parametrize("url", [
+    "https://example.test/team/repo.git?api_key=public&cache=1",
+    "https://example.test/api_token=public/repo.git",
+    "https://example.test/team/glpat-public-repo.git",
+    "https://example.test/team/AKIAIOSFODNN7EXAMPLE.git",
+])
+@pytest.mark.parametrize("userinfo", ["", "oauth2:SECRET@"])
+def test_clone_preserves_url_path_and_query_components(tmp_path, url, userinfo):
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider._prepare_clone_url_with_token = lambda _url: url.replace("https://", "https://" + userinfo)
+    provider._clone_inner = GitProvider._clone_inner.__get__(provider, BitbucketServerProvider)
+
+    with patch("pr_agent.git_providers.git_provider.get_git_ssl_env", return_value={}), \
+            patch("pr_agent.git_providers.git_provider.subprocess.run") as run:
+        result = provider.clone(url, str(tmp_path / "checkout"))
+
+    assert result is not None
+    assert run.call_args.args[0][-2] == url
+    if userinfo:
+        env = run.call_args.kwargs["env"]
+        assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Basic " + base64.b64encode(b"oauth2:SECRET").decode("ascii")
+
+
 def test_clone_preserves_inherited_git_config_entries(tmp_path):
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     provider._prepare_clone_url_with_token = lambda _url: "https://oauth2:SECRET@example/repo.git"

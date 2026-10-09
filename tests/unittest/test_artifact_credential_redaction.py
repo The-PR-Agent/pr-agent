@@ -26,7 +26,9 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
     ("Authorization: AWS4-HMAC-SHA256 Credential=synthetic-key, Signature=synthetic-signature",
      "synthetic-signature", "authorization_header"),
 ])
-def test_load_artifact_redacts_credentials_and_reports_only_counts(tmp_path, monkeypatch, content, credential, kind):
+def test_load_artifact_context_redacts_credentials_and_reports_only_counts(
+    tmp_path, monkeypatch, content, credential, kind,
+):
     path = tmp_path / "ci.log"
     path.write_text(content + "\nFAILED test_boundary: expected 3, got 4", encoding="utf-8")
     monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
@@ -36,7 +38,7 @@ def test_load_artifact_redacts_credentials_and_reports_only_counts(tmp_path, mon
     logger = MagicMock()
     monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
 
-    context = artifacts.load_artifact()
+    context = artifacts.load_artifact_context()["content"]
 
     assert credential not in context
     assert "FAILED test_boundary: expected 3, got 4" in context
@@ -178,6 +180,33 @@ def test_quoted_credential_crossing_read_boundary_is_redacted(tmp_path, quote):
         assert part not in context
     assert "truncated" in context
     assert len(context) <= 120
+    repeated_counts = {}
+    assert redact_credentials(context, redaction_counts=repeated_counts) == context
+    assert repeated_counts == {}
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize("suffix", ["", "\\"])
+def test_unclosed_quoted_credential_preserves_later_log_lines(tmp_path, monkeypatch, quote, ending, suffix):
+    path = tmp_path / "ci.log"
+    path.write_text("api_token=" + quote + "synthetic first second" + suffix + ending +
+                    "FAILED test_boundary: expected 3, got 4" + ending +
+                    'webhook_password="synthetic next secret"', encoding="utf-8", newline="")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    context = artifacts._read_and_truncate(path, 2000)
+
+    assert "synthetic" not in context
+    assert "first" not in context
+    assert "second" not in context
+    assert "next secret" not in context
+    assert "FAILED test_boundary: expected 3, got 4" in context
+    logger.warning.assert_called_once_with("Redacted CI artifact credentials by type: {'credential_assignment': 2}")
+    repeated_counts = {}
+    assert redact_credentials(context, redaction_counts=repeated_counts) == context
+    assert repeated_counts == {}
 
 
 @pytest.mark.parametrize("content", [
@@ -280,7 +309,7 @@ def test_valid_urls_at_end_of_artifact_are_preserved(tmp_path, monkeypatch, url,
     logger.warning.assert_not_called()
 
 
-def test_injected_and_reapplied_artifacts_use_redacted_context(tmp_path, monkeypatch):
+def test_injected_artifacts_retain_redacted_context_after_settings_change(tmp_path, monkeypatch):
     keys = ("artifacts", "pr_reviewer.extra_instructions", "pr_description.extra_instructions",
             "pr_code_suggestions.extra_instructions")
     snapshot = snapshot_settings(keys)
@@ -292,15 +321,15 @@ def test_injected_and_reapplied_artifacts_use_redacted_context(tmp_path, monkeyp
     monkeypatch.setenv("ARTIFACT_PATH", str(path))
     try:
         artifacts.inject_artifact_context()
+        monkeypatch.setattr(artifacts, "_read_and_truncate", MagicMock(side_effect=AssertionError("Unexpected reread")))
         for tool in ("pr_reviewer", "pr_description", "pr_code_suggestions"):
-            context = get_settings().get(tool).extra_instructions
+            context = artifacts.get_artifact_context(tool)["content"]
             assert "synthetic-bearer-value" not in context
             assert "sk-proj-synthetic-value" not in context
             assert "FAILED test_boundary" in context
         get_settings().set("pr_reviewer.extra_instructions", "Repository guidance")
-        artifacts.reapply_artifact_context()
-        context = get_settings().pr_reviewer.extra_instructions
-        assert "Repository guidance" in context
+        context = artifacts.get_artifact_context("pr_reviewer")["content"]
+        assert get_settings().pr_reviewer.extra_instructions == "Repository guidance"
         assert "synthetic-bearer-value" not in context
         assert "sk-proj-synthetic-value" not in context
         assert "FAILED test_boundary" in context

@@ -146,7 +146,8 @@ _CREDENTIAL_ASSIGNMENT_RE = re.compile(
     r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token|openai_key|openai_api_key|"
     r"user_token|personal_access_token|bearer_token|basic_token|api_token|api_key|pat|client_secret|"
     r"webhook_secret|shared_secret|webhook_password)\b[\"']?[ \t]*[:=][ \t]*)"
-    r"(\"(?:\\[\s\S]|[^\"\\])*(?:\"|\\?\Z)|'(?:\\[\s\S]|[^'\\])*(?:'|\\?\Z)|[^\s\"']+)"
+    r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*(?:\"|\\?(?=[\r\n]|\Z))|"
+    r"'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|\\?(?=[\r\n]|\Z))|[^\s\"']+)"
 )
 _GITLAB_TOKEN_RE = re.compile(r"\bglpat-[A-Za-z0-9_-]+")
 _AWS_ACCESS_KEY_RE = re.compile(r"\b(?:A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}\b")
@@ -537,11 +538,11 @@ class GitProvider(ABC):
             )
             ssl_env = os.environ.copy()
 
-        # Keep the credential out of every git argv: clone the redacted URL and resend the
+        # Keep the credential out of every git argv: remove URL userinfo and resend the
         # token as an http.extraHeader through the GIT_CONFIG_* environment. Git applies
         # that config to the subprocesses it spawns (including git-remote-http) without
         # putting the credential on any command line.
-        clean_repo_url = redact_credentials(repo_url)
+        clean_repo_url = _URL_USERINFO_RE.sub(lambda match: match.group("scheme"), repo_url)
         authorization_header = _clone_authorization_header(repo_url)
         if clean_repo_url != repo_url and authorization_header is not None:
             inherited_count = int(ssl_env.get("GIT_CONFIG_COUNT", "0"))
