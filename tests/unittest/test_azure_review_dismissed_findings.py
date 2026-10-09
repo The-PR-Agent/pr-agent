@@ -99,6 +99,24 @@ def test_only_root_marker_counts_and_improve_context_is_unchanged(provider):
     assert len(reviewer(provider)._load_dismissed_key_issues()) == 1
 
 
+def test_review_cleanup_does_not_change_suggestion_thread_parsing(provider):
+    item = thread()
+    item["isDeleted"] = True
+    item["comments"][0]["content"] = "Try this\n```suggestion\nreplacement\n```"
+    item["comments"] += [
+        {"content": "System reply", "commentType": "system"},
+        {"content": "Deleted reply", "isDeleted": True},
+    ]
+    provider._threads_cache = [item]
+
+    # Preserve /improve's existing selection and reply handling, even for these edge cases.
+    suggestions = list(provider._iter_code_suggestion_threads())
+    assert len(suggestions) == 1
+    assert suggestions[0].status == "wontFix"
+    assert suggestions[0].text_replies() == [(None, "System reply"), (None, "Deleted reply")]
+    assert reviewer(provider)._load_dismissed_key_issues() == []
+
+
 @pytest.mark.parametrize("case", ["deleted_thread", "deleted_root", "reply_root", "no_comments",
                                   "no_path", "no_position", "zero_line", "bool_line", "reversed_range"])
 def test_unusable_threads_are_ignored(provider, case):

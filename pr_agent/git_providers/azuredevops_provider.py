@@ -1454,70 +1454,72 @@ class AzureDevopsProvider(GitProvider):
         return comment_matches_any_identity(content.lstrip(), cls._AGENT_COMMENT_IDENTIFIERS)
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
-        return self._iter_inline_threads()
+        for thread in reversed(self._get_threads()):
+            comments = self._value(thread, "comments") or []
+            root_body = self._value(comments[0], "content") if comments else None
+            if not isinstance(root_body, str) or not _is_code_suggestion_body(root_body):
+                continue
+            yield self._parse_inline_thread(thread, comments)
 
     def _iter_review_threads(self) -> Iterator[CodeSuggestionThread]:
         default_status = get_settings().azure_devops.get("default_comment_status", "closed")
-        for thread in self._iter_inline_threads(include_key_issues=True):
-            # Azure does not identify the status-changing actor. Infer a dismissal only when
-            # it differs from the current creation default; historical defaults are unavailable.
-            if (thread.status not in ("wontFix", "byDesign") or thread.status == default_status
-                    or thread.authored_by_agent is not True
-                    or not KEY_ISSUE_LOCATION_MARKER_RE.search(thread.suggestion)
-                    or not isinstance(thread.file, str) or not thread.file.strip().lstrip("/")
-                    or self._suggestion_range_anchor(thread.start_line, thread.end_line) is None):
-                continue
-            thread.status = "resolved"
-            yield thread
-
-    def _iter_inline_threads(self, include_key_issues: bool = False) -> Iterator[CodeSuggestionThread]:
-        verify_author = bool(self._configured_stable_agent_identities())
         for thread in reversed(self._get_threads()):
             comments = self._value(thread, "comments") or []
-            if not comments:
+            root_body = self._value(comments[0], "content") if comments else None
+            if not isinstance(root_body, str) or not KEY_ISSUE_LOCATION_MARKER_RE.search(root_body):
                 continue
-            root_body = self._value(comments[0], "content")
-            if not isinstance(root_body, str) or not (
-                    _is_code_suggestion_body(root_body)
-                    or (include_key_issues and KEY_ISSUE_LOCATION_MARKER_RE.search(root_body))):
-                continue
-            if include_key_issues and (
-                    self._value(thread, "is_deleted", "isDeleted")
+            if (self._value(thread, "is_deleted", "isDeleted")
                     or self._value(comments[0], "is_deleted", "isDeleted")
                     or self._value(comments[0], "parent_comment_id", "parentCommentId") not in (None, 0)):
                 continue
-            authored_by_agent = None
-            if verify_author:
-                try:
-                    authored_by_agent = self.is_comment_authored_by_pr_agent(comments[0])
-                except RuntimeError:
-                    authored_by_agent = None
-            replies = []
-            for comment in comments[1:]:
-                if include_key_issues and (
-                        self._value(comment, "is_deleted", "isDeleted")
-                        or self._value(comment, "comment_type", "commentType") in ("system", 3)):
-                    continue
-                message = self._value(comment, "content")
-                if not isinstance(message, str) or AZURE_AGENT_PROGRESS_MARKER in message:
-                    continue
-                author = self._value(comment, "author")
-                author_name = (self._value(author, "display_name", "displayName")
-                               or self._value(author, "unique_name", "uniqueName"))
-                replies.append((author_name, message.replace(AZURE_AGENT_RESPONSE_MARKER, "")))
-            context = self._value(thread, "thread_context", "threadContext")
-            start_position = self._value(context, "right_file_start", "rightFileStart")
-            end_position = self._value(context, "right_file_end", "rightFileEnd") or start_position
-            yield CodeSuggestionThread(
-                thread_id=self._value(thread, "id"),
-                status=self._value(thread, "status"),
-                file=self._value(context, "file_path", "filePath"),
-                start_line=self._value(start_position, "line"),
-                end_line=self._value(end_position, "line"),
-                suggestion=root_body,
-                replies=replies,
-                authored_by_agent=authored_by_agent,
-            )
+            # Azure does not identify the status-changing actor. Infer a dismissal only when
+            # it differs from the current creation default; historical defaults are unavailable.
+            status = self._value(thread, "status")
+            if status not in ("wontFix", "byDesign") or status == default_status:
+                continue
+            review_comments = [comments[0]] + [
+                comment for comment in comments[1:]
+                if not self._value(comment, "is_deleted", "isDeleted")
+                and self._value(comment, "comment_type", "commentType") not in ("system", 3)
+            ]
+            parsed = self._parse_inline_thread(thread, review_comments)
+            if (parsed.authored_by_agent is not True
+                    or not isinstance(parsed.file, str) or not parsed.file.strip().lstrip("/")
+                    or self._suggestion_range_anchor(parsed.start_line, parsed.end_line) is None):
+                continue
+            parsed.status = "resolved"
+            yield parsed
+
+    def _parse_inline_thread(self, thread, comments: list) -> CodeSuggestionThread:
+        """Extract shared Azure fields from a selected thread and its selected comments."""
+        authored_by_agent = None
+        if self._configured_stable_agent_identities():
+            try:
+                authored_by_agent = self.is_comment_authored_by_pr_agent(comments[0])
+            except RuntimeError:
+                authored_by_agent = None
+        replies = []
+        for comment in comments[1:]:
+            message = self._value(comment, "content")
+            if not isinstance(message, str) or AZURE_AGENT_PROGRESS_MARKER in message:
+                continue
+            author = self._value(comment, "author")
+            author_name = (self._value(author, "display_name", "displayName")
+                           or self._value(author, "unique_name", "uniqueName"))
+            replies.append((author_name, message.replace(AZURE_AGENT_RESPONSE_MARKER, "")))
+        context = self._value(thread, "thread_context", "threadContext")
+        start_position = self._value(context, "right_file_start", "rightFileStart")
+        end_position = self._value(context, "right_file_end", "rightFileEnd") or start_position
+        return CodeSuggestionThread(
+            thread_id=self._value(thread, "id"),
+            status=self._value(thread, "status"),
+            file=self._value(context, "file_path", "filePath"),
+            start_line=self._value(start_position, "line"),
+            end_line=self._value(end_position, "line"),
+            suggestion=self._value(comments[0], "content"),
+            replies=replies,
+            authored_by_agent=authored_by_agent,
+        )
 
     def get_existing_inline_comment_fingerprints(self) -> set[str]:
         fingerprints = set()
