@@ -1454,18 +1454,24 @@ class AzureDevopsProvider(GitProvider):
         return comment_matches_any_identity(content.lstrip(), cls._AGENT_COMMENT_IDENTIFIERS)
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
+        verify_author = bool(self._configured_stable_agent_identities())
         for thread in reversed(self._get_threads()):
             comments = self._value(thread, "comments") or []
-            root_body = self._value(comments[0], "content") if comments else None
+            if not comments:
+                continue
+            root_body = self._value(comments[0], "content")
             if not isinstance(root_body, str) or not _is_code_suggestion_body(root_body):
                 continue
-            yield self._parse_inline_thread(thread, comments)
+            yield self._parse_inline_thread(thread, comments, verify_author)
 
     def _iter_review_threads(self) -> Iterator[CodeSuggestionThread]:
+        verify_author = bool(self._configured_stable_agent_identities())
         default_status = get_settings().azure_devops.get("default_comment_status", "closed")
         for thread in reversed(self._get_threads()):
             comments = self._value(thread, "comments") or []
-            root_body = self._value(comments[0], "content") if comments else None
+            if not comments:
+                continue
+            root_body = self._value(comments[0], "content")
             if not isinstance(root_body, str) or not KEY_ISSUE_LOCATION_MARKER_RE.search(root_body):
                 continue
             if (self._value(thread, "is_deleted", "isDeleted")
@@ -1482,7 +1488,7 @@ class AzureDevopsProvider(GitProvider):
                 if not self._value(comment, "is_deleted", "isDeleted")
                 and self._value(comment, "comment_type", "commentType") not in ("system", 3)
             ]
-            parsed = self._parse_inline_thread(thread, review_comments)
+            parsed = self._parse_inline_thread(thread, review_comments, verify_author)
             if (parsed.authored_by_agent is not True
                     or not isinstance(parsed.file, str) or not parsed.file.strip().lstrip("/")
                     or self._suggestion_range_anchor(parsed.start_line, parsed.end_line) is None):
@@ -1490,10 +1496,10 @@ class AzureDevopsProvider(GitProvider):
             parsed.status = "resolved"
             yield parsed
 
-    def _parse_inline_thread(self, thread, comments: list) -> CodeSuggestionThread:
+    def _parse_inline_thread(self, thread, comments: list, verify_author: bool) -> CodeSuggestionThread:
         """Extract shared Azure fields from a selected thread and its selected comments."""
         authored_by_agent = None
-        if self._configured_stable_agent_identities():
+        if verify_author:
             try:
                 authored_by_agent = self.is_comment_authored_by_pr_agent(comments[0])
             except RuntimeError:

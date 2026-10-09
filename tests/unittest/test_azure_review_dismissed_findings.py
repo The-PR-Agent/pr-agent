@@ -42,6 +42,25 @@ def reviewer(provider):
     return instance
 
 
+@pytest.mark.parametrize("review", [False, True])
+@pytest.mark.parametrize("verify_author", [False, True])
+def test_author_verification_gate_is_computed_once(provider, review, verify_author):
+    provider._configured_stable_agent_identities = MagicMock(return_value={BOT} if verify_author else set())
+    # Isolate the iterator's gate from the existing author verifier's own configuration reads.
+    provider.is_comment_authored_by_pr_agent = MagicMock(return_value=True)
+    items = [thread(), thread()]
+    if not review:
+        for item in items:
+            item["comments"][0]["content"] = "```suggestion\nreplacement\n```"
+    provider._threads_cache = items + [{"comments": []}]
+
+    results = list(provider._iter_review_threads() if review else provider._iter_code_suggestion_threads())
+
+    provider._configured_stable_agent_identities.assert_called_once_with()
+    assert provider.is_comment_authored_by_pr_agent.call_count == (2 if verify_author else 0)
+    assert len(results) == (0 if review and not verify_author else 2)
+
+
 @pytest.mark.parametrize("status", ["wontFix", "byDesign"])
 @pytest.mark.parametrize("default", ["closed", "wontFix", "byDesign"])
 def test_explicit_dismissal_only_when_different_from_default(provider, monkeypatch, status, default):
