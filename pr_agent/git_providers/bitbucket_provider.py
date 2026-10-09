@@ -607,9 +607,14 @@ class BitbucketProvider(GitProvider):
         try:
             url_repo = f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/"
             response_repo = requests.request(
-                "GET", url_repo, headers=self.headers, timeout=get_http_request_timeout()).json()
-            return response_repo['mainbranch']['name']
-        except (requests.RequestException, KeyError, TypeError):
+                "GET", url_repo, headers=self.headers, timeout=get_http_request_timeout())
+            response_repo.raise_for_status()
+            return response_repo.json()['mainbranch']['name']
+        except (requests.RequestException, KeyError, TypeError) as error:
+            if isinstance(error, requests.RequestException):
+                get_logger().warning(
+                    f"Failed to read the default branch of {self.workspace_slug}/{self.repo_slug} "
+                    f"({type(error).__name__}); using the pull request's destination branch instead")
             return self.pr.destination_branch
 
     def get_owning_namespace(self) -> str | None:
@@ -735,8 +740,7 @@ class BitbucketProvider(GitProvider):
                 return ""
             # Distinguish an unavailable file from a failed request to prevent an error response
             # body from being treated as repository instructions or changelog content.
-            if propagate_errors:
-                response.raise_for_status()
+            response.raise_for_status()
             contents = response.text
             return contents
         except Exception:
@@ -788,9 +792,13 @@ class BitbucketProvider(GitProvider):
             response = requests.request("GET", remote_link, headers=self.headers, timeout=get_http_request_timeout())
             if response.status_code == 404:  # not found
                 return ""
+            response.raise_for_status()
             contents = response.text
             return contents
-        except Exception:
+        except Exception as error:
+            if isinstance(error, requests.RequestException):
+                get_logger().warning(
+                    f"Failed to read {remote_link!r} ({type(error).__name__}); treating it as an empty file")
             return ""
 
     def get_commit_messages(self) -> str:

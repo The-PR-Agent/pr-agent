@@ -2341,3 +2341,93 @@ class TestBitbucketLocalSettingsRobustness:
             ms.return_value.config.use_global_settings_file = False
             result = provider.get_repo_settings()
         assert result == ""
+
+
+def _capture_logs(call, level="DEBUG"):
+    import io
+
+    from pr_agent.log import get_logger
+
+    buffer = io.StringIO()
+    handler_id = get_logger().add(buffer, level=level, format="{message}", colorize=False)
+    try:
+        call()
+    finally:
+        get_logger().remove(handler_id)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("status_code", [401, 429, 500])
+@pytest.mark.parametrize("operation", ["default_branch", "raw_file", "propagated_file"])
+def test_http_error_responses_do_not_become_repository_content(status_code, operation):
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.workspace_slug = "workspace"
+    provider.repo_slug = "repository"
+    provider.headers = {}
+    provider.pr = SimpleNamespace(source_branch="feature", destination_branch="main")
+    response = Response()
+    response.status_code = status_code
+    response.url = "https://api.bitbucket.org/2.0/repositories/workspace/repository/"
+    response._content = b'{"error": {"message": "request failed"}}'
+
+    def read():
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
+            if operation == "default_branch":
+                assert provider.get_repo_default_branch() == "main"
+            elif operation == "raw_file":
+                assert provider._get_pr_file_content(response.url) == ""
+            else:
+                with pytest.raises(HTTPError):
+                    provider.get_pr_file_content("file.py", "commit")
+
+    logs = _capture_logs(read, level="WARNING")
+    if operation == "propagated_file":
+        assert logs == ""
+    else:
+        assert "HTTPError" in logs
+        assert "request failed" not in logs
+
+
+def _bitbucket_failure(kind):
+    """Return a representative transport failure."""
+
+    if kind == "timeout":
+        return Timeout("read timed out")
+    assert kind == "connection", kind
+    return RequestsConnectionError("connection refused")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "connection"])
+def test_a_failed_default_branch_read_is_reported(failure):
+    """Report transport failures before using the destination branch."""
+
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.workspace_slug = "workspace"
+    provider.repo_slug = "repository"
+    provider.headers = {"Authorization": "Bearer token"}
+    provider.pr = MagicMock(destination_branch="main")
+
+    def read():
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=_bitbucket_failure(failure)):
+            return provider.get_repo_default_branch()
+
+    assert read() == "main", "the fallback still has to happen"
+    assert "Failed to read the default branch" in _capture_logs(read)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "connection"])
+def test_a_failed_file_read_is_reported(failure):
+    """Distinguish failed requests from missing files in the warning."""
+
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.headers = {"Authorization": "Bearer token"}
+    link = "https://bitbucket.org/workspace/repository/raw/file.py"
+
+    def read():
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
+                   side_effect=_bitbucket_failure(failure)):
+            return provider._get_pr_file_content(link)
+
+    assert read() == ""
+    assert f"Failed to read {link!r}" in _capture_logs(read)
