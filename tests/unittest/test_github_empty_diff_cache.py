@@ -57,7 +57,7 @@ def test_completed_diff_is_reused(filenames, in_request):
     assert [file.filename for file in first] == filenames
     assert second is first
     provider.get_files.assert_called_once_with()
-    provider.repo_obj.compare.assert_called_once_with("base", "head")
+    provider.repo_obj.compare.assert_not_called()
 
 
 def test_empty_request_cache_is_not_reused_by_another_provider(monkeypatch):
@@ -73,7 +73,7 @@ def test_empty_request_cache_is_not_reused_by_another_provider(monkeypatch):
 
     assert [file.filename for file in result] == ["file.py"]
     second.get_files.assert_called_once_with()
-    second.repo_obj.compare.assert_called_once_with("base", "head")
+    second.repo_obj.compare.assert_not_called()
 
 
 def _select_incremental_file(provider, file):
@@ -142,7 +142,7 @@ async def test_auto_commands_rebuild_diff_without_check_runs(monkeypatch, comman
     assert caches_before_command == [(None, None), (None, None)]
     assert results[0] is not results[1]
     assert provider.get_files.call_count == 2
-    assert provider.repo_obj.compare.call_count == 2
+    provider.repo_obj.compare.assert_not_called()
     provider.pr.get_files.assert_called_once_with()
 
 
@@ -268,7 +268,7 @@ def test_nonempty_diff_is_rebuilt_for_full_and_incremental_scopes(monkeypatch, i
 
     assert restored is not full
     assert provider.get_files.call_count == 3
-    assert provider.repo_obj.compare.call_count == 3
+    provider.repo_obj.compare.assert_not_called()
     provider.pr.get_files.assert_called_once_with()
 
 
@@ -297,4 +297,4 @@ def test_partial_failure_is_not_cached(monkeypatch, error_type):
 
     assert [file.filename for file in result] == ["first.py", "second.py"]
     assert provider.get_files.call_count == 2
-    assert provider.repo_obj.compare.call_count == 2
+    provider.repo_obj.compare.assert_not_called()

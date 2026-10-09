@@ -387,6 +387,96 @@ class TestGetDiffFilesContentReads:
         assert [call.args[1] for call in spy.call_args_list] == ["base-sha"]
 
 
+class TestLazyMergeBaseLookup:
+    @pytest.mark.parametrize("status", ["added", "removed", "modified"])
+    def test_compare_only_when_base_content_is_needed(self, patched_helpers, status):
+        file = _make_file(f"{status}.py", status)
+        provider = _make_provider_for_diff([file])
+        provider.repo_obj.compare = Mock(
+            return_value=SimpleNamespace(merge_base_commit=SimpleNamespace(sha="merge-base-sha"))
+        )
+        read = Mock(return_value="content")
+        provider._get_pr_file_content = read
+
+        provider.get_diff_files()
+
+        assert provider.repo_obj.compare.call_count == (0 if status == "added" else 1)
+        expected_refs = {
+            "added": ["head-sha"],
+            "removed": ["merge-base-sha"],
+            "modified": ["head-sha", "merge-base-sha"],
+        }
+        assert [call.args[1] for call in read.call_args_list] == expected_refs[status]
+
+    @pytest.mark.parametrize("files", [
+        [],
+        [_make_file("image.png", "modified")],
+    ])
+    def test_empty_or_unsupported_files_skip_compare(self, patched_helpers, files):
+        provider = _make_provider_for_diff(files)
+        provider.repo_obj.compare = Mock(side_effect=AssertionError("unnecessary compare"))
+        provider._get_pr_file_content = Mock(return_value="content")
+        if files:
+            with patch("pr_agent.git_providers.github_provider.is_valid_file", return_value=False):
+                provider.get_diff_files()
+        else:
+            provider.get_diff_files()
+        provider.repo_obj.compare.assert_not_called()
+
+    def test_filtered_files_skip_compare(self, patched_helpers):
+        provider = _make_provider_for_diff([_make_file("ignored.py", "modified")])
+        provider.repo_obj.compare = Mock(side_effect=AssertionError("unnecessary compare"))
+        with patch("pr_agent.git_providers.github_provider.filter_ignored", return_value=[]):
+            assert provider.get_diff_files() == []
+        provider.repo_obj.compare.assert_not_called()
+
+    def test_incremental_review_skips_merge_base(self, patched_helpers):
+        file = _make_file("changed.py", "modified")
+        provider = _make_provider_for_diff([file])
+        provider.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+        provider.unreviewed_files_map = {"changed.py": file}
+        provider.repo_obj.compare = Mock(side_effect=AssertionError("unnecessary compare"))
+        provider._get_pr_file_content = Mock(return_value="content")
+
+        provider.get_diff_files()
+
+        provider.repo_obj.compare.assert_not_called()
+        assert [call.args[1] for call in provider._get_pr_file_content.call_args_list] == [
+            "head-sha", "prev-sha",
+        ]
+
+    def test_merge_base_is_reused_across_content_reads(self, patched_helpers):
+        files = [_make_file("a.py", "modified"), _make_file("b.py", "renamed", previous_filename="old.py")]
+        provider = _make_provider_for_diff(files)
+        provider.repo_obj.compare = Mock(
+            return_value=SimpleNamespace(merge_base_commit=SimpleNamespace(sha="merge-base-sha"))
+        )
+        provider._get_pr_file_content = Mock(return_value="content")
+
+        provider.get_diff_files()
+
+        provider.repo_obj.compare.assert_called_once_with("base-sha", "head-sha")
+        assert [call.args[1] for call in provider._get_pr_file_content.call_args_list] == [
+            "head-sha", "merge-base-sha", "head-sha", "merge-base-sha",
+        ]
+        assert provider._get_pr_file_content.call_args_list[-1].kwargs["path"] == "old.py"
+
+    def test_failed_merge_base_keeps_existing_base_fallback(self, patched_helpers):
+        file = _make_file("changed.py", "modified")
+        provider = _make_provider_for_diff([file])
+        provider.repo_obj.compare = Mock(
+            side_effect=GithubException(500, {"message": "temporary failure"}, None)
+        )
+        provider._get_pr_file_content = Mock(return_value="content")
+
+        provider.get_diff_files()
+
+        provider.repo_obj.compare.assert_called_once()
+        assert [call.args[1] for call in provider._get_pr_file_content.call_args_list] == [
+            "head-sha", "base-sha",
+        ]
+
+
 class TestGetDiffFilesRename:
     """A pure GitHub rename carries no `.patch` and reports 0 additions/0
     deletions, so `previous_filename` is the only place the old path lives."""

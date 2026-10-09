@@ -446,22 +446,10 @@ class GithubProvider(GitProvider):
             invalid_files_names = []
             is_close_to_rate_limit = False
 
-            # The base.sha will point to the current state of the base branch (including
-            # parallel merges), not the original base commit when the PR was created
-            # We can fix this by finding the merge base commit between the PR head and base branches
-            # Note that The pr.head.sha is actually correct as is - it points to the latest commit in your PR branch.
-            # This SHA isn't affected by parallel merges to the base branch since it's specific to your PR's branch.
+            # Resolve the merge base only when pre-change content is needed.
+            merge_base_commit = None
             repo = self.repo_obj
             pr = self.pr
-            try:
-                compare = repo.compare(pr.base.sha, pr.head.sha) # communication with GitHub
-                merge_base_commit = compare.merge_base_commit
-            except (GithubException, RequestException) as e:
-                get_logger().error(f"Failed to get merge base commit: {e}")
-                merge_base_commit = pr.base
-            if merge_base_commit.sha != pr.base.sha:
-                get_logger().info(
-                    f"Using merge base commit {merge_base_commit.sha} instead of base commit ")
 
             counter_valid = 0
             for file in files:
@@ -500,9 +488,19 @@ class GithubProvider(GitProvider):
                         if avoid_load or file.status == "added":
                             original_file_content_str = ""
                         else:
+                            if merge_base_commit is None:
+                                # Use the merge base instead of a potentially advanced target branch.
+                                try:
+                                    compare = repo.compare(pr.base.sha, pr.head.sha)
+                                    merge_base_commit = compare.merge_base_commit
+                                except (GithubException, RequestException) as e:
+                                    get_logger().error(f"Failed to get merge base commit: {e}")
+                                    merge_base_commit = pr.base
+                                if merge_base_commit.sha != pr.base.sha:
+                                    get_logger().info(
+                                        f"Using merge base commit {merge_base_commit.sha} instead of base commit ")
                             original_file_content_str = self._get_pr_file_content(
                                 file, merge_base_commit.sha, path=old_filename)
-                            # original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
                         if not patch:
                             patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
 
