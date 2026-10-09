@@ -179,7 +179,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>require_merge_recommendation</b></td>
-    <td>If set to true, the tool will add a section describing what the review found: no_concerns_found, needs_review or changes_required. The value reports the model's findings, not a guarantee about the code.</td>
+    <td>If set to true, the tool will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model's findings, not a guarantee about the code.</td>
   </tr>
   <tr>
     <td><b>require_priority_files</b></td>
