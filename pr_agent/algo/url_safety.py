@@ -20,10 +20,10 @@ REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
 def ip_is_blocked(addr) -> bool:
-    """Reject non-public IP ranges (SSRF guard): private/loopback/link-local (incl. cloud
-    metadata 169.254.0.0/16), reserved, multicast, unspecified."""
+    """Reject non-public IP ranges, including shared/CGNAT and site-local addresses."""
     return (addr.is_private or addr.is_loopback or addr.is_link_local
-            or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
+            or addr.is_reserved or addr.is_multicast or addr.is_unspecified
+            or not addr.is_global or getattr(addr, "is_site_local", False))
 
 
 async def host_resolves_public(host: str) -> bool:
