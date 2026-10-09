@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.pr_processing import PackedPRDiffs
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import DESCRIBE_PROGRESS_COMMENT, PRDescription
@@ -146,7 +147,7 @@ async def _run_chunked_review(reviewer, chunk_count=2):
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch(
             "pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-            return_value=([f"chunk-{index}" for index in range(chunk_count)], []),
+            return_value=PackedPRDiffs([f"chunk-{index}" for index in range(chunk_count)], [], []),
         ),
         patch("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock()),
         _stub_ticket_budget_fit(reviewer),
@@ -290,7 +291,7 @@ async def test_review_progress_counts_include_chunks_an_earlier_attempt_finished
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-0", "chunk-1"], [])),
+              return_value=PackedPRDiffs(["chunk-0", "chunk-1"], [], [])),
     ):
         await reviewer._prepare_chunked_prediction("model")
 
@@ -309,7 +310,7 @@ async def test_review_progress_never_moves_backward_across_a_fallback(published_
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-0", "chunk-1"], [])),
+              return_value=PackedPRDiffs(["chunk-0", "chunk-1"], [], [])),
     ):
         with pytest.raises(RuntimeError):
             await reviewer._prepare_chunked_prediction("model-a")
@@ -429,7 +430,7 @@ async def _run_chunked_suggestions(tool, chunk_count=3, **overrides):
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
         patch(
             "pr_agent.tools.pr_code_suggestions.get_pr_multi_diffs",
-            return_value=(chunks, []),
+            return_value=PackedPRDiffs(chunks, [], []),
         ),
         patch(
             "pr_agent.tools.pr_code_suggestions.AttemptTokenBudget.for_prompt_attempt",

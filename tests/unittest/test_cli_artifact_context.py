@@ -127,4 +127,4 @@ extra_instructions = "Repository instructions"
     assert "UNSELECTED_ARTIFACT" not in str(reviewer_context)
     assert "CI_FAILURE_MARKER" not in description
     assert description_context is None
-    read.assert_called_once_with(report.resolve(), 50000)
+    read.assert_called_once_with(report.resolve(), 50000, "start")

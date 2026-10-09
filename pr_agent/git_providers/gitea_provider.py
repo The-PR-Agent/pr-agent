@@ -826,6 +826,7 @@ class GiteaProvider(GitProvider):
                 repo=settings_repo,
                 commit_sha=default_branch,
                 filepath=".pr_agent.toml",
+                propagate_errors=True,
             )
             return content.encode('utf-8')
         except ApiException as e:
@@ -981,7 +982,8 @@ class GiteaProvider(GitProvider):
                 owner=self.owner,
                 repo=self.repo,
                 commit_sha=ref,
-                filepath=file_path
+                filepath=file_path,
+                propagate_errors=True,
             )
             return content
         except ApiException as e:
@@ -1214,8 +1216,9 @@ class RepoApi(giteapy.RepositoryApi):
             self.logger.error(f"Unexpected error: {e}")
             return {}
 
-    def get_file_content(self, owner: str, repo: str, commit_sha: str, filepath: str) -> str:
-        """Get raw file content from a specific commit"""
+    def get_file_content(self, owner: str, repo: str, commit_sha: str, filepath: str,
+                         *, propagate_errors: bool = False) -> str:
+        """Get raw content, optionally preserving fetch errors for guidance cache owners."""
 
         try:
             url = f'/repos/{owner}/{repo}/raw/{filepath}'
@@ -1249,9 +1252,16 @@ class RepoApi(giteapy.RepositoryApi):
             return ""
 
         except ApiException as e:
+            if propagate_errors:
+                # Cache owners log this exception; do not carry response content into their logs.
+                e.body = None
+                e.headers = None
+                raise
             self.logger.error(f"Error getting file: {filepath}, content: {e}")
             return ""
         except Exception as e:
+            if propagate_errors:
+                raise
             self.logger.error(f"Unexpected error: {e}")
             return ""
 

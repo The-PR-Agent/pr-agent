@@ -233,6 +233,42 @@ class TestReadAndTruncate:
         result = _read_and_truncate(f, 30)
         assert len(result) <= 30
 
+    def test_truncate_from_end_keeps_the_tail_and_leads_with_the_marker(self, tmp_path):
+        f = tmp_path / "build.log"
+        f.write_text("BUILD START\n" + "noise\n" * 100 + "FINAL VERDICT: FAILED")
+        result = _read_and_truncate(f, 100, truncate_from="end")
+        assert len(result) <= 100
+        assert result.startswith("[... content truncated due to size limit ...]")
+        assert "FINAL VERDICT: FAILED" in result
+        assert "BUILD START" not in result
+
+    def test_truncate_from_start_keeps_today_s_behaviour(self, tmp_path):
+        f = tmp_path / "build.log"
+        f.write_text("BUILD START\n" + "noise\n" * 100 + "FINAL VERDICT")
+        result = _read_and_truncate(f, 100, truncate_from="start")
+        assert result.startswith("BUILD START")
+        assert result.endswith("[... content truncated due to size limit ...]")
+        assert "FINAL VERDICT" not in result
+
+    def test_truncate_from_end_with_multibyte_content_never_decodes_across_a_boundary(self, tmp_path):
+        f = tmp_path / "unicode.log"
+        f.write_text("é" * 500 + "TAI", encoding="utf-8")
+        result = _read_and_truncate(f, 60, truncate_from="end")
+        assert len(result) <= 60
+        assert result.endswith("TAI")
+        assert "�" not in result
+
+    def test_truncate_from_end_normalizes_crlf_like_start(self, tmp_path):
+        f = tmp_path / "windows.log"
+        f.write_bytes(b"line1\r\nline2\r\nVERDICT\r\n")
+        assert _read_and_truncate(f, 22, truncate_from="end") == _read_and_truncate(f, 22)
+
+    def test_truncate_from_end_without_truncation_reads_whole_file(self, tmp_path):
+        f = tmp_path / "small.log"
+        f.write_text("whole file")
+        result = _read_and_truncate(f, 50000, truncate_from="end")
+        assert result == "whole file"
+
 
 class TestInjectArtifactContext:
     """The injection step shared by the GitHub Action runner and the CLI."""

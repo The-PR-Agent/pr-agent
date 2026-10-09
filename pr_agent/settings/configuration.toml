@@ -177,7 +177,7 @@ require_todo_scan=false
 require_ticket_analysis_review=true
 # Opt-in structured assessment fields. Each adds one field to the review output and to the model's output schema.
 require_risk_assessment=false # ask the model for an overall risk level (low/medium/high)
-require_merge_recommendation=false # ask the model for a merge recommendation (safe_to_merge/merge_with_caution/changes_required)
+require_merge_recommendation=false # ask the model for a merge recommendation (no_concerns_found/needs_review/changes_required)
 require_failure_modes=false # ask for up to three concrete failure scenarios and their detection/coverage
 require_priority_files=false # ask the model which files a human should inspect first
 # general options
@@ -189,7 +189,8 @@ persistent_comment=true
 review_heading = "PR Reviewer Guide"
 persistent_finding_state=true # Persist review finding state across complete review runs.
 # Character budget for the findings stored by earlier reviews, given to /review as context so it keeps their wording
-# instead of re-raising them reworded (needs persistent_finding_state); 0 disables it.
+# instead of re-raising them reworded, and skips findings whose GitLab inline thread a human resolved
+# (needs persistent_finding_state); 0 disables it.
 max_previous_findings_chars = 8000
 
 inline_key_issues=false # Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab).
@@ -602,6 +603,10 @@ artifact_label = ""
 target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions"]
 # Max artifact size in characters (content is truncated if exceeded)
 max_artifact_size = 50000
+# Which end of the file to keep when truncating: "start" (default, keeps the beginning) or
+# "end" (keeps the tail, where build logs carry their verdict - failure, plan summary or
+# test result).
+truncate_from = "start"
 
 [mosaico]
 bearer_tokens = {} # principal names to distinct bearer secrets; empty permits anonymous trusted-network use

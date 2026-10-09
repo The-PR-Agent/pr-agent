@@ -36,6 +36,10 @@ _ALLOWLIST = {
         "artifacts",
         "artifact_label",
     ): "artifacts_settings.get('artifact_label', '') in pr_agent/algo/artifacts.py",
+    (
+        "artifacts",
+        "truncate_from",
+    ): "artifacts_settings.get('truncate_from', 'start') in pr_agent/algo/artifacts.py",
     # [config] helpers that re-index the section from a variable or expression
     (
         "config",

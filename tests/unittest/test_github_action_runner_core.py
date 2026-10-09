@@ -1440,7 +1440,7 @@ async def test_action_configured_commands_share_one_artifact_context_after_real_
         context["content"].count("ACTION_CONFIGURED_ARTIFACT") == 1
         for _text, context in observed
     )
-    read.assert_called_once_with(artifact.resolve(), 50000)
+    read.assert_called_once_with(artifact.resolve(), 50000, "start")
 
 
 @pytest.mark.asyncio

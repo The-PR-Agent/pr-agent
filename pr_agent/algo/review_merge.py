@@ -30,7 +30,7 @@ MAX_EFFORT = 5
 MAX_SUB_PRS = 3
 CONTRIBUTION_TIME_CASES = ("best_case", "average_case", "worst_case")
 RISK_LEVELS = ("low", "medium", "high")
-MERGE_RECOMMENDATIONS = ("safe_to_merge", "merge_with_caution", "changes_required")
+MERGE_RECOMMENDATIONS = ("no_concerns_found", "needs_review", "changes_required")
 
 _DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([mh])", re.IGNORECASE)
 _WHITESPACE_RE = re.compile(r"\s+")
