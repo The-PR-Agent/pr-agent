@@ -577,7 +577,7 @@ class TestParseCodeSuggestionGfm:
         assert out.startswith("<table>")
         assert "<tr><td>relevant file</td><td>src/app.py</td></tr>" in out
         assert "<strong>" in out and "Use a constant" in out
-        assert "<a href='https://example.com/diff#L10'>" in out
+        assert "<a href='https://example.com/diff#L10'>foo = 1</a>" in out
         assert out.rstrip().endswith("<hr>")
 
     def test_relevant_line_without_link(self):
@@ -587,20 +587,12 @@ class TestParseCodeSuggestionGfm:
             "relevant_line": "`foo = 1`",
         }
         out = parse_code_suggestion(suggestion, gfm_supported=True)
-        # No "](" link delimiter → no anchor, just the (leading-backtick
-        # stripped) literal line.
+        # No "](" link delimiter → no anchor, just the backtick-stripped
+        # literal line.
         assert "<a href=" not in out
         assert "<tr><td>relevant line</td>" in out
-        assert "foo = 1" in out
+        assert "<td>foo = 1</td>" in out
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "parse_code_suggestion only left-strips a leading backtick from "
-            "relevant_line; the trailing backtick is not stripped. This xfail "
-            "encodes the desired symmetric stripping behavior."
-        ),
-    )
     def test_relevant_line_strips_both_backticks(self):
         suggestion = {
             "relevant_file": "src/app.py",
