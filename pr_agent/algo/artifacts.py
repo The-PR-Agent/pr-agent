@@ -98,22 +98,24 @@ def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") 
     from the start keeps the part the review actually needs.
     """
     keep_end = str(truncate_from).strip().lower() == "end"
+    read_size = max_size + _REDACTION_LOOKAHEAD
     try:
         if keep_end:
             # Seek to a bounded tail window so a huge artifact is never read whole.
             with open(path, "rb") as f:
                 f.seek(0, os.SEEK_END)
                 file_size = f.tell()
-                f.seek(max(0, file_size - 4 * (max_size + 1)))
-                raw = f.read(4 * (max_size + 1))
+                f.seek(max(0, file_size - 4 * read_size))
+                raw = f.read(4 * read_size)
             # Match the text-mode branch, which normalizes CRLF and CR newlines.
             content = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-            if len(content) > max_size + 1:
-                content = content[-(max_size + 1):]
+            # Keep extra leading context until credentials have been redacted.
+            if len(content) > read_size:
+                content = content[-read_size:]
         else:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 # Read bounded lookahead before redacting the kept beginning.
-                content = f.read(max_size + _REDACTION_LOOKAHEAD)
+                content = f.read(read_size)
     except (OSError, IOError) as e:
         get_logger().warning(f"Failed to read artifact file {path}: {e}")
         return ""

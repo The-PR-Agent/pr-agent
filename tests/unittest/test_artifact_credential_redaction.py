@@ -353,3 +353,88 @@ def test_injected_artifacts_retain_redacted_context_after_settings_change(tmp_pa
     finally:
         restore_settings(snapshot)
         artifacts._artifact_context.reset(token)
+
+
+@pytest.mark.parametrize("template, kind", [
+    ("api_key={value}", "credential_assignment"),
+    ('webhook_password="{value} second part"', "credential_assignment"),
+    ("webhook_password='{value} second part'", "credential_assignment"),
+    ("Authorization: Bearer {value}", "authorization_header"),
+    ("glpat-{value}", "gitlab_token"),
+    ("https://ci-user:{value}@example.com/log", "url_userinfo"),
+    ('AWS_SECRET_ACCESS_KEY="{value}"', "credential_assignment"),
+])
+@pytest.mark.parametrize("max_size", [30, 120])
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+def test_tail_cut_redacts_credentials_before_retaining_suffix(tmp_path, monkeypatch, template, kind, max_size, ending):
+    value = "synthetic-" + "x" * 160 + "-leaked-suffix"
+    verdict = "FAILED test_tail_boundary"
+    path = tmp_path / "tail.log"
+    path.write_text(("noise" + ending) * 2000 + template.format(value=value) + ending + verdict,
+                    encoding="utf-8", newline="")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    context = artifacts._read_and_truncate(path, max_size, truncate_from="end")
+
+    assert "leaked-suffix" not in context
+    assert "xxxxxxxx" not in context
+    assert context.endswith(verdict)
+    assert len(context) <= max_size
+    if max_size > len(artifacts._TRUNCATION_MARKER_START):
+        assert context.startswith(artifacts._TRUNCATION_MARKER_START)
+    logger.warning.assert_called_once_with(f"Redacted CI artifact credentials by type: {{{kind!r}: 1}}")
+    counts = {}
+    assert redact_credentials(context, redaction_counts=counts) == context
+    assert counts == {}
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+def test_tail_cut_redacts_aws_key_when_budget_is_smaller_than_marker(tmp_path, monkeypatch, ending):
+    path = tmp_path / "aws-tail.log"
+    path.write_text(("noise" + ending) * 2000 + "AKIA" + "B" * 16 + ending + "FAILED tail test",
+                    encoding="utf-8", newline="")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    context = artifacts._read_and_truncate(path, 30, truncate_from="end")
+
+    assert "BBBB" not in context
+    assert context.endswith("FAILED tail test")
+    assert len(context) <= 30
+    logger.warning.assert_called_once_with("Redacted CI artifact credentials by type: {'aws_access_key': 1}")
+
+
+@pytest.mark.parametrize("ending", ["", "  ", "\r\n"])
+def test_tail_cut_redacts_incomplete_userinfo_at_eof(tmp_path, monkeypatch, ending):
+    path = tmp_path / "url-tail.log"
+    path.write_text("noise\n" * 2000 + "https://ci-user:synthetic-" + "x" * 160 + "-leaked-suffix" + ending,
+                    encoding="utf-8", newline="")
+    logger = MagicMock()
+    monkeypatch.setattr(artifacts, "get_logger", lambda: logger)
+
+    context = artifacts._read_and_truncate(path, 120, truncate_from="end")
+
+    assert "leaked-suffix" not in context
+    assert "xxxxxxxx" not in context
+    assert context.startswith(artifacts._TRUNCATION_MARKER_START)
+    assert len(context) <= 120
+    logger.warning.assert_called_once_with("Redacted CI artifact credentials by type: {'incomplete_url_userinfo': 1}")
+
+
+def test_load_artifact_context_keeps_redacted_tail_from_settings(tmp_path, monkeypatch):
+    path = tmp_path / "tail.log"
+    path.write_text("noise\n" * 2000 + "api_key=synthetic-" + "x" * 160 + "-leaked-suffix\nFAILED tail test",
+                    encoding="utf-8")
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+    monkeypatch.setattr(artifacts, "get_settings", lambda: SimpleNamespace(get=lambda *_: {
+        "enable": True, "artifact_path": str(path), "max_artifact_size": 120, "truncate_from": " END ",
+    }))
+
+    context = artifacts.load_artifact_context()["content"]
+
+    assert "leaked-suffix" not in context
+    assert "xxxxxxxx" not in context
+    assert context.startswith(artifacts._TRUNCATION_MARKER_START)
+    assert context.endswith("FAILED tail test")
+    assert len(context) <= 120
