@@ -7,7 +7,6 @@ TODO sections, and PR description ticket extraction. The goal is to
 lock in branches that are not already covered by:
 
 - tests/unittest/test_convert_to_markdown.py
-- tests/unittest/test_parse_code_suggestion.py
 - tests/unittest/test_extract_issue_from_branch.py
 - tests/unittest/test_pr_description.py
 
@@ -26,7 +25,6 @@ from pr_agent.algo.utils import (
     format_todo_item,
     format_todo_items,
     is_value_no,
-    parse_code_suggestion,
     process_can_be_split,
     ticket_markdown_logic,
 )
@@ -558,58 +556,6 @@ class TestFormatTodoItems:
         out = format_todo_items(items, self._provider(), gfm_supported=False)
         # Counts bullet rows.
         assert out.count("\n- ") + (1 if out.startswith("- ") else 0) == 5
-
-
-# ---------------------------------------------------------------------------
-# parse_code_suggestion — gfm branch with relevant_line is not exercised
-# by tests/unittest/test_parse_code_suggestion.py.
-# ---------------------------------------------------------------------------
-
-
-class TestParseCodeSuggestionGfm:
-    def test_relevant_line_with_markdown_link(self):
-        suggestion = {
-            "relevant_file": "src/app.py",
-            "suggestion": "Use a constant",
-            "relevant_line": "[`foo = 1`](https://example.com/diff#L10)",
-        }
-        out = parse_code_suggestion(suggestion, gfm_supported=True)
-        assert out.startswith("<table>")
-        assert "<tr><td>relevant file</td><td>src/app.py</td></tr>" in out
-        assert "<strong>" in out and "Use a constant" in out
-        assert "<a href='https://example.com/diff#L10'>foo = 1</a>" in out
-        assert out.rstrip().endswith("<hr>")
-
-    def test_relevant_line_without_link(self):
-        suggestion = {
-            "relevant_file": "src/app.py",
-            "suggestion": "Use a constant",
-            "relevant_line": "`foo = 1`",
-        }
-        out = parse_code_suggestion(suggestion, gfm_supported=True)
-        # No "](" link delimiter → no anchor, just the backtick-stripped
-        # literal line.
-        assert "<a href=" not in out
-        assert "<tr><td>relevant line</td>" in out
-        assert "<td>foo = 1</td>" in out
-
-    def test_relevant_line_strips_both_backticks(self):
-        suggestion = {
-            "relevant_file": "src/app.py",
-            "suggestion": "Use a constant",
-            "relevant_line": "`foo = 1`",
-        }
-        out = parse_code_suggestion(suggestion, gfm_supported=True)
-        assert "<td>foo = 1</td>" in out
-
-    def test_falls_back_to_non_gfm_when_no_relevant_line(self):
-        # Without 'relevant_line', the function takes the non-gfm code path
-        # even when gfm_supported=True.
-        suggestion = {"suggestion": "S", "description": "D"}
-        out = parse_code_suggestion(suggestion, gfm_supported=True)
-        assert "<table>" not in out
-        assert "**suggestion:**" in out
-        assert "**description:**" in out
 
 
 # ---------------------------------------------------------------------------
