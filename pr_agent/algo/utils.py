@@ -240,7 +240,8 @@ def convert_to_markdown_v2(output_data: dict,
 
     review_data = {k: v for k, v in output_data["review"].items() if k != "todo_summary"}
     for key, value in review_data.items():
-        if value is None or value == '' or value == {} or value == []:
+        if value is None or value == '' or value == {} or value == [] or (
+                key.lower() == 'insights_from_user_answers' and is_value_no(value)):
             if key.lower() not in ['can_be_split', 'key_issues_to_review', 'review_priority_files', 'failure_modes']:
                 continue
         key_nice = key.replace('_', ' ').capitalize()

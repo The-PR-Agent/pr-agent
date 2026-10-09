@@ -8,7 +8,7 @@ Python list repr into the PR.
 import pytest
 
 from pr_agent.algo.review_merge import merge_review_chunks
-from pr_agent.algo.utils import is_value_no
+from pr_agent.algo.utils import convert_to_markdown_v2, is_value_no
 
 
 def _merged(*chunk_values, field="security_concerns"):
@@ -76,6 +76,20 @@ def test_both_findings_fields_flatten(field):
 
     assert "A finding" in merged
     assert "['" not in merged
+
+
+def test_merged_no_insights_do_not_render_a_no_section():
+    """The merge's canonical "No" is suppressed for security concerns but was
+    rendered verbatim for insights_from_user_answers, so a chunked review with
+    no insights printed 'Insights from user answers: No'."""
+    data = merge_review_chunks([
+        {"review": {"insights_from_user_answers": "No"}},
+        {"review": {"insights_from_user_answers": ""}},
+    ])
+
+    markdown = convert_to_markdown_v2(data)
+
+    assert "Insights from user answers" not in markdown
 
 
 def test_failure_modes_merge_valid_cases_in_chunk_order_and_cap_at_three():
