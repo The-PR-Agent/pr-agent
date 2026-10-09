@@ -1244,7 +1244,7 @@ class GithubProvider(GitProvider):
         for comment in invalid_comments:
             try:
                 fixed_comment = copy.deepcopy(comment)  # avoid modifying the original comment dict for later logging
-                opener = re.search(r"(`{3,})suggestion", comment["body"])
+                opener = re.search(r"(?<!`)(`{3,})suggestion", comment["body"])
                 if opener:
                     # Keep what follows the block, where the dedup markers live. The
                     # block may be fenced with more than three backticks.
@@ -2207,7 +2207,7 @@ class GithubProvider(GitProvider):
                                 diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
                                              f"```diff\n{patch.rstrip()}\n```")
                                 # replace ```suggestion ... ``` with diff_code, using regex:
-                                body = re.sub(r'(`{3,})suggestion.*?\1', lambda _, dc=diff_code: dc, body,
+                                body = re.sub(r'(?<!`)(`{3,})suggestion.*?\1', lambda _, dc=diff_code: dc, body,
                                               flags=re.DOTALL)
                                 body += "\n\n</details>"
                                 suggestion['relevant_lines_start'] = new_start

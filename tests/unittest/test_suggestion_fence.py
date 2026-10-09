@@ -86,3 +86,12 @@ def test_three_backtick_blocks_are_read_as_before():
     assert extract_suggestion_code(body) == "return new()"
     description, code = GerritProvider.__new__(GerritProvider).split_suggestion(body)
     assert code == "return new()\n"
+
+
+def test_gerrit_split_keeps_a_literal_suggestion_example_in_the_code():
+    improved = "Example:\n\n```suggestion\nnew()\n```\n\nEnd."
+    body = f"{HEADER}\n````suggestion\n{improved}\n````"
+
+    description, code = GerritProvider.__new__(GerritProvider).split_suggestion(body)
+
+    assert code == improved + "\n"

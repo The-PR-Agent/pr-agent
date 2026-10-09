@@ -54,7 +54,7 @@ _MARKER_RES = (BODY_MARKER_RE, CODE_MARKER_RE, KEY_ISSUE_LOCATION_MARKER_RE)
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
-_CODE_BLOCK_RE = re.compile(r"(`{3,})suggestion[^\n]*\n(.*?)\1", re.DOTALL)
+_CODE_BLOCK_RE = re.compile(r"(?<!`)(`{3,})suggestion[^\n]*\n(.*?)\1", re.DOTALL)
 _DIFF_BLOCK_RE = re.compile(r"```diff[^\n]*\n(.*?)```", re.DOTALL)
 
 

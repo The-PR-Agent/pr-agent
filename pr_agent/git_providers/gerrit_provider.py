@@ -442,7 +442,7 @@ class GerritProvider(GitProvider):
         context = []
         for line in msg.splitlines():
             opener = re.match(r'(`{3,})suggestion', line)
-            if opener:
+            if opener and not fence:
                 fence = opener.group(1)
                 continue
             if line.startswith(fence or '```'):

@@ -179,7 +179,7 @@ class BitbucketServerProvider(GitProvider):
                 patch_orig = "\n".join(diff)
                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                 diff_code = f"\n\n```diff\n{patch.rstrip()}\n```"
-                body = re.sub(r'(`{3,})suggestion.*?\1', lambda _: diff_code, body, flags=re.DOTALL)
+                body = re.sub(r'(?<!`)(`{3,})suggestion.*?\1', lambda _: diff_code, body, flags=re.DOTALL)
             except Exception as e:
                 get_logger().exception(f"Bitbucket failed to get diff code for publishing, error: {e}")
                 return None
