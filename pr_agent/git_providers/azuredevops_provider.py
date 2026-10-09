@@ -22,6 +22,7 @@ from ..algo.comment_identity import (
 )
 from ..algo.file_filter import filter_ignored
 from ..algo.inline_comment_dedup import (
+    KEY_ISSUE_LOCATION_MARKER_RE,
     body_with_markers,
     code_fingerprint,
     extract_suggestion_code,
@@ -1453,13 +1454,37 @@ class AzureDevopsProvider(GitProvider):
         return comment_matches_any_identity(content.lstrip(), cls._AGENT_COMMENT_IDENTIFIERS)
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
+        return self._iter_inline_threads()
+
+    def _iter_review_threads(self) -> Iterator[CodeSuggestionThread]:
+        default_status = get_settings().azure_devops.get("default_comment_status", "closed")
+        for thread in self._iter_inline_threads(include_key_issues=True):
+            # Azure does not identify the status-changing actor. Infer a dismissal only when
+            # it differs from the current creation default; historical defaults are unavailable.
+            if (thread.status not in ("wontFix", "byDesign") or thread.status == default_status
+                    or thread.authored_by_agent is not True
+                    or not KEY_ISSUE_LOCATION_MARKER_RE.search(thread.suggestion)
+                    or not isinstance(thread.file, str) or not thread.file.strip().lstrip("/")
+                    or self._suggestion_range_anchor(thread.start_line, thread.end_line) is None):
+                continue
+            thread.status = "resolved"
+            yield thread
+
+    def _iter_inline_threads(self, include_key_issues: bool = False) -> Iterator[CodeSuggestionThread]:
         verify_author = bool(self._configured_stable_agent_identities())
         for thread in reversed(self._get_threads()):
             comments = self._value(thread, "comments") or []
             if not comments:
                 continue
             root_body = self._value(comments[0], "content")
-            if not isinstance(root_body, str) or not _is_code_suggestion_body(root_body):
+            if not isinstance(root_body, str) or not (
+                    _is_code_suggestion_body(root_body)
+                    or (include_key_issues and KEY_ISSUE_LOCATION_MARKER_RE.search(root_body))):
+                continue
+            if include_key_issues and (
+                    self._value(thread, "is_deleted", "isDeleted")
+                    or self._value(comments[0], "is_deleted", "isDeleted")
+                    or self._value(comments[0], "parent_comment_id", "parentCommentId") not in (None, 0)):
                 continue
             authored_by_agent = None
             if verify_author:
@@ -1469,6 +1494,10 @@ class AzureDevopsProvider(GitProvider):
                     authored_by_agent = None
             replies = []
             for comment in comments[1:]:
+                if include_key_issues and (
+                        self._value(comment, "is_deleted", "isDeleted")
+                        or self._value(comment, "comment_type", "commentType") in ("system", 3)):
+                    continue
                 message = self._value(comment, "content")
                 if not isinstance(message, str) or AZURE_AGENT_PROGRESS_MARKER in message:
                     continue

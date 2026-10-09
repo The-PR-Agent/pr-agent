@@ -84,7 +84,7 @@ def test_gitlab_ignores_bot_resolved_open_unverifiable_and_suggestion_threads():
 def test_provider_without_thread_support_and_failing_provider_add_nothing():
     assert _reviewer(BitbucketProvider.__new__(BitbucketProvider))._load_dismissed_key_issues() == []
     failing = MagicMock()
-    failing._iter_code_suggestion_threads.side_effect = RuntimeError("boom")
+    failing._iter_review_threads.side_effect = RuntimeError("boom")
     assert _reviewer(failing)._load_dismissed_key_issues() == []
 
 

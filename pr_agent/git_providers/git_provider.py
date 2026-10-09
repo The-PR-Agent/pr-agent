@@ -377,6 +377,14 @@ class GitProvider(ABC):
         /review reads them to learn which findings a human resolved."""
         return iter(())
 
+    def _iter_review_threads(self) -> Iterator[CodeSuggestionThread]:
+        """Yield review threads with eligible dismissals reported as `resolved`.
+
+        Default to the existing iterator so GitLab and unsupported providers keep their behavior.
+        Providers may override this without expanding the /improve discussion context.
+        """
+        return self._iter_code_suggestion_threads()
+
     def supports_threaded_pr_questions(self) -> bool:
         return False
 

@@ -681,14 +681,14 @@ class PRReviewer:
         return render_previous_findings(parsed.state, max_chars, self._load_dismissed_key_issues())
 
     def _load_dismissed_key_issues(self) -> list[dict]:
-        """Return the inline key issues whose thread someone other than PR-Agent resolved, newest first.
+        """Return inline key issues whose threads indicate an eligible dismissal, newest first.
 
-        Only threads PR-Agent verifiably opened count, so a provider that cannot tell who resolved a thread
-        (or reports no threads) adds nothing.
+        Only threads PR-Agent verifiably opened count. Providers determine eligible dismissal statuses;
+        Azure infers a decision from an explicit dismissal differing from its configured creation default.
         """
         dismissed = []
         try:
-            for thread in self.git_provider._iter_code_suggestion_threads():
+            for thread in self.git_provider._iter_review_threads():
                 if (thread.status != "resolved" or thread.authored_by_agent is not True
                         or not KEY_ISSUE_LOCATION_MARKER_RE.search(thread.suggestion)):
                     continue

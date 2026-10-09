@@ -173,6 +173,13 @@ to-do list.
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
 | `final_update_message` | true |  |
+Azure DevOps also supplies verified PR-Agent inline key issues as dismissed when their status is `wontFix`
+or `byDesign` and differs from `azure_devops.default_comment_status`. Matching defaults, `fixed`, `closed`,
+active, and pending threads do not count as dismissals. This requires a stable
+`azure_devops_server.agent_identity` and infers a human decision from the current configuration; it cannot
+verify the status-changing actor or historical defaults. Dismissed findings share the existing
+`max_previous_findings_chars` budget and may be reported again if the code makes them worse.
+
 **review labels**
 
 | Key | Default | Description |
