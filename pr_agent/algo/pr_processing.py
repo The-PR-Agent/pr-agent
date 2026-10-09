@@ -421,6 +421,9 @@ def _pack_pr_multi_diffs(file_dict: dict,
         return _count_raw_and_stripped_tokens(token_handler, rendered)
 
     def clip_single_patch(filename, patch):
+        if file_dict[filename].get("content_fetch_failed", False):
+            get_logger().warning(f"Unreadable-file notice too large, skipping: {filename}")
+            return None
         if get_settings().config.get("large_patch_policy", "skip") != "clip":
             get_logger().warning(f"Patch too large, skipping: {filename}")
             return None
@@ -677,6 +680,7 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler,
                 'patch': note,
                 'tokens': token_handler.count_tokens(note),
                 'edit_type': file.edit_type,
+                'content_fetch_failed': True,
             }
             continue
 
@@ -1019,6 +1023,15 @@ def get_pr_multi_diffs(git_provider: GitProvider,
         new_file_content_str = file.head_file
         patch = file.patch
         if not patch:
+            if not getattr(file, "content_fetch_failed", False):
+                continue
+            notice = _unreadable_file_notice(file)
+            file_dict[file.filename] = {
+                'patch': notice,
+                'tokens': token_handler.count_tokens(notice),
+                'edit_type': file.edit_type,
+                'content_fetch_failed': True,
+            }
             continue
 
         # Remove delete-only hunks
