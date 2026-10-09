@@ -103,7 +103,7 @@ class BitbucketProvider(GitProvider):
             elif self.auth_type == "bearer":
                 try:
                     self.bearer_token = context.get("bitbucket_bearer_token", None)
-                except:
+                except Exception:
                     self.bearer_token = None
 
                 if not self.bearer_token:
@@ -609,7 +609,7 @@ class BitbucketProvider(GitProvider):
             response_repo = requests.request(
                 "GET", url_repo, headers=self.headers, timeout=get_http_request_timeout()).json()
             return response_repo['mainbranch']['name']
-        except:
+        except (requests.RequestException, KeyError, TypeError):
             return self.pr.destination_branch
 
     def get_owning_namespace(self) -> str | None:

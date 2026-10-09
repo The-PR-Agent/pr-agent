@@ -73,7 +73,8 @@ def parse_failure_modes(value: object) -> List[dict]:
 
 
 class Review(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # extra_instructions and [artifacts] may request fields beyond the prompt schema
+    model_config = ConfigDict(extra="allow")
 
     ticket_compliance_check: Optional[List[TicketCompliance]] = None
     estimated_effort_to_review: Optional[StrictInt] = Field(

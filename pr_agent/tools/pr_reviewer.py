@@ -506,6 +506,7 @@ class PRReviewer:
                 review_failed
                 and not isinstance(review_error, IncompleteProviderPullRequestFilesError)
                 and get_settings().config.publish_output
+                and _as_bool(get_settings().pr_reviewer.get("publish_review_failure_comment", True))
                 and (
                     persistent_write_failed
                     or not get_settings().config.get("is_auto_command", False)
@@ -1214,8 +1215,7 @@ class PRReviewer:
     def _load_review_yaml(prediction: str) -> dict:
         return load_yaml(prediction.strip(),
                          keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
-                                        "merge_recommendation:", "failure_modes:", "security_concerns:",
-                                        "key_issues_to_review:",
+                                        "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
                                         "relevant_file:", "relevant_line:", "suggestion:"],
                         first_key='review', last_key='security_concerns')
 

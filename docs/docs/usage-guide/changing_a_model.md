@@ -987,6 +987,7 @@ the `azure_text` and `text-completion-openai` routes always use `max_tokens`.
 Use a value supported by the selected model. GPT-6 Astra, Sol, Luna, and GPT-6.1 Sol support
 at most 128,000 output tokens, including reasoning tokens.
 PR-Agent does not automatically clamp this setting to the model's output limit.
+Values below 4096 are raised to 4096, and non-numeric or negative values are ignored; both log a warning.
 When Claude extended thinking is enabled, `extended_thinking_max_output_tokens` takes precedence.
 For models with small context windows, keep in mind that prompt and completion tokens share the
 model's context window: size `config.max_model_tokens` so the packed prompt leaves room for the

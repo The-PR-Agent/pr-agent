@@ -172,7 +172,7 @@ class TestMaxOutputTokens:
         assert exposed_limit == 0
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("value", "expected"), [(400.5, 400), (True, 1), (False, 0)])
+    @pytest.mark.parametrize(("value", "expected"), [(40000.5, 40000), (True, 4096), (False, 0)])
     async def test_existing_int_coercion_is_preserved(self, monkeypatch, value, expected):
         kwargs, exposed_limit = await _run(monkeypatch, "gpt-4o", {"max_output_tokens": value})
 
@@ -181,6 +181,24 @@ class TestMaxOutputTokens:
             assert kwargs["max_tokens"] == expected
         else:
             assert "max_tokens" not in kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("value", "expected", "warned"), [
+        (0, 0, False),
+        ("abc", 0, True),
+        (-5, 0, True),
+        (100, 4096, True),
+        (8000, 8000, False),
+    ])
+    async def test_invalid_or_too_small_values_are_warned(self, monkeypatch, value, expected, warned):
+        logger = MagicMock()
+        monkeypatch.setattr(litellm_handler, "get_logger", lambda: logger)
+        kwargs, exposed_limit = await _run(monkeypatch, "gpt-4o", {"max_output_tokens": value})
+
+        assert exposed_limit == expected
+        assert kwargs.get("max_tokens") == (expected or None)
+        warnings = [call.args[0] for call in logger.warning.call_args_list]
+        assert any("config.max_output_tokens" in message for message in warnings) == warned
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -364,12 +382,12 @@ class TestMaxOutputTokens:
     async def test_general_limit_is_live_while_handler_controls_are_snapshots(self, monkeypatch):
         model = "openrouter/google/gemini-2.5-pro"
         config_values = {"max_output_tokens": 16000}
-        openrouter = {"max_tokens": 4096}
+        openrouter = {"max_tokens": 10000}
         active_settings = _make_settings(config_values, openrouter)
         monkeypatch.setattr(litellm_handler, "get_settings", lambda: active_settings)
         handler = litellm_handler.LiteLLMAIHandler()
 
-        config_values["max_output_tokens"] = 2048
+        config_values["max_output_tokens"] = 6000
         openrouter["max_tokens"] = 1024
 
         with patch(
@@ -377,10 +395,10 @@ class TestMaxOutputTokens:
             new_callable=AsyncMock,
         ) as mock_call:
             mock_call.return_value = _mock_response()
-            assert handler.get_output_token_limit(model) == 2048
+            assert handler.get_output_token_limit(model) == 6000
             await handler.chat_completion(model=model, system="sys", user="usr")
 
-        assert mock_call.call_args.kwargs["max_tokens"] == 2048
+        assert mock_call.call_args.kwargs["max_tokens"] == 6000
 
     @pytest.mark.asyncio
     async def test_extended_thinking_limit_is_snapshotted_for_accessor_and_request(self, monkeypatch):

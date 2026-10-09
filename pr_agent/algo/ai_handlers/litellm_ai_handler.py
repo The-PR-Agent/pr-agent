@@ -145,6 +145,8 @@ from pr_agent.config_loader import get_settings, get_verbosity_level, global_set
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
+# Lowest config.max_output_tokens honored; Bedrock Claude with thinking needs this much to answer.
+MIN_MAX_OUTPUT_TOKENS = 4096
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
 _IMAGE_NOT_ALIVE_MESSAGE = (
     "The image link is not [alive](img_path).\n"
@@ -2263,11 +2265,33 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
         return extended_thinking_budget_tokens, extended_thinking_max_output_tokens
 
+    @classmethod
+    def _configured_max_output_tokens(cls) -> int:
+        """Return config.max_output_tokens, warning about values that would unset or undercut the cap."""
+        value = get_settings().config.get("max_output_tokens", 0)
+        output_tokens = cls._coerce_token_value(value)
+        if value is None or value is False or value == 0 or str(value).strip() in ("", "0"):
+            return 0
+        if output_tokens == 0:
+            get_logger().warning(f"Ignoring invalid config.max_output_tokens: {value!r}")
+            return 0
+        if output_tokens < 0:
+            get_logger().warning(f"Ignoring negative config.max_output_tokens: {output_tokens}")
+            return 0
+        if output_tokens < MIN_MAX_OUTPUT_TOKENS:
+            get_logger().warning(
+                f"Raising config.max_output_tokens from {output_tokens} to {MIN_MAX_OUTPUT_TOKENS}: "
+                f"smaller caps can leave no room for the answer when reasoning is enabled"
+            )
+            return MIN_MAX_OUTPUT_TOKENS
+        return output_tokens
+
     def _resolve_output_token_limit(self, model: str, openrouter_model: str | None) -> int:
         """Return the final positive output cap selected by PR-Agent request controls."""
-        output_tokens = self._coerce_token_value(get_settings().config.get("max_output_tokens", 0))
         if self._claude_thinking_mode(model) == "extended":
             _, output_tokens = self._get_claude_extended_thinking_limits()
+        else:
+            output_tokens = self._configured_max_output_tokens()
 
         if openrouter_model:
             openrouter_output_tokens = self._coerce_token_value(self._openrouter_controls.get("max_tokens", 0))

@@ -250,6 +250,7 @@ class GerritProvider(GitProvider):
         self.repo = Repo(self.repo_path)
         assert self.repo
         self.pr_url = base_url
+        self._commit_diffs = None
         self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
 
     def get_pr_title(self):
@@ -324,15 +325,28 @@ class GerritProvider(GitProvider):
         except (IndexError, KeyError, OSError, UnicodeDecodeError, ValueError):
             return b""
 
-    def get_diff_files(self) -> list[FilePatchInfo]:
-        diffs = list(
-            self.repo.head.commit.diff(
-                self.repo.head.commit.parents[0],  # previous commit
-                create_patch=True,
-                R=True
+    def _get_commit_diffs(self) -> list:
+        """Return the cached, unfiltered commit diff, including rename detection and patches.
+
+        Keep filtering in callers so repository settings loaded after construction
+        take effect on every read.
+        """
+        diffs = getattr(self, '_commit_diffs', None)
+        if diffs is None:
+            diffs = list(
+                self.repo.head.commit.diff(
+                    self.repo.head.commit.parents[0],  # previous commit
+                    create_patch=True,
+                    R=True
+                )
             )
-        )
-        diffs = filter_ignored(diffs, "gerrit")
+            self._commit_diffs = diffs
+        return diffs
+
+    def get_diff_files(self) -> list[FilePatchInfo]:
+        # Apply ignore rules at call time: __init__ reads the diff before repository
+        # settings are loaded.
+        diffs = filter_ignored(self._get_commit_diffs(), 'gerrit')
 
         diff_files = []
         for diff_item in diffs:
@@ -373,13 +387,13 @@ class GerritProvider(GitProvider):
         return diff_files
 
     def get_files(self):
-        diff_index = self.repo.head.commit.diff(
-            self.repo.head.commit.parents[0],  # previous commit
-            R=True
-        )
-        # Get the list of changed files
-        diff_files = [item.a_path for item in diff_index]
-        return diff_files
+        # Read names from the filtered raw diff to avoid another walk or blob decoding.
+        # Use the destination path for renames and the original path for deletions.
+        return [
+            path
+            for path in (diff.b_path or diff.a_path for diff in filter_ignored(self._get_commit_diffs(), 'gerrit'))
+            if path
+        ]
 
     @cache_languages
     def get_languages(self):
@@ -472,8 +486,20 @@ class GerritProvider(GitProvider):
             patch = diff(cwd=self.repo_path)
             patch_id = uuid.uuid4().hex[0:4]
             path = "/".join(["codium-ai", self.refspec, patch_id])
-            full_path = upload_patch(patch, path)
-            reset_local_changes(self.repo_path)
+            uploaded = False
+            try:
+                full_path = upload_patch(patch, path)
+                uploaded = True
+            finally:
+                try:
+                    reset_local_changes(self.repo_path)
+                except Exception as cleanup_error:
+                    if uploaded:
+                        raise
+                    get_logger().warning(
+                        "Failed to reset Gerrit edits after upload failed in {}: {}; stderr: {!r}",
+                        self.repo_path, cleanup_error, getattr(cleanup_error, "stderr", None),
+                    )
             msg.append(f'* {description}\n{full_path}')
 
         if msg:

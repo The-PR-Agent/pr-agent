@@ -1708,6 +1708,20 @@ class TestBitbucketServerProvider:
         with pytest.raises(HTTPError, match="500 Internal Server Error"):
             provider.get_repo_file_content("AGENTS.md")
 
+    @pytest.mark.parametrize("pr_url", [
+        "https://bb.example.com/projects/AAA/repos/my-repo/pull-requests/5",
+        "https://bb.example.com/projects/AAA/repos/my-repo/pull-requests/5/",
+        "https://bb.example.com/projects/AAA/repos/my-repo/pull-requests/5/overview",
+    ])
+    def test_get_line_link_uses_the_canonical_pr_url(self, pr_url):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.pr_url = pr_url
+        provider.pr_num = 5
+        base = "https://bb.example.com/projects/AAA/repos/my-repo/pull-requests/5/diff#src%2Fa+b.py"
+
+        assert provider.get_line_link("src/a b.py", 12) == f"{base}?t=12"
+        assert provider.get_line_link("src/a b.py", -1) == base
+
     def test_get_languages_returns_language_names(self):
         # get_languages() must key on language NAMES (e.g. "Python"), not raw
         # extensions ("py"): sort_files_by_main_languages() maps names back to

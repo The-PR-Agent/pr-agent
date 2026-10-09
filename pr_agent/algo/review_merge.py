@@ -267,7 +267,11 @@ def _merge_ticket_compliance(values: List[Any]) -> list:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            ticket = _normalize_text(entry.get("ticket_url"))
+            ticket_url = _normalize_text(entry.get("ticket_url"))
+            ticket = ("url", ticket_url) if ticket_url else (
+                "missing_url",
+                tuple(sorted((str(key), _normalize_text(field_value)) for key, field_value in entry.items())),
+            )
             if ticket not in merged:
                 merged[ticket] = dict(entry)
                 continue

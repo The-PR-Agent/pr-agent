@@ -1458,9 +1458,14 @@ async def test_review_run_does_not_edit_forged_persistent_comment_without_author
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_auto_command", [False, True])
-async def test_review_run_surfaces_failed_persistent_write(monkeypatch, is_auto_command):
+@pytest.mark.parametrize("publish_review_failure_comment", [True, False])
+async def test_review_run_surfaces_failed_persistent_write(
+        monkeypatch, is_auto_command, publish_review_failure_comment):
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.config, "is_auto_command", is_auto_command, raising=False)
+    monkeypatch.setattr(
+        settings.pr_reviewer, "publish_review_failure_comment", publish_review_failure_comment, raising=False
+    )
     old_body = add_pr_review_identity(
         "previous review", PRReviewIdentity.REGULAR.value
     )
@@ -1484,9 +1489,10 @@ async def test_review_run_surfaces_failed_persistent_write(monkeypatch, is_auto_
     non_temporary = [
         body for body, is_temporary, _kwargs in provider.published if not is_temporary
     ]
-    assert non_temporary == ["Failed to review PR"]
+    assert non_temporary == (["Failed to review PR"] if publish_review_failure_comment else [])
     assert not any(
-        comment_matches_identity(non_temporary[0], identifier)
+        comment_matches_identity(body, identifier)
+        for body in non_temporary
         for identifier in get_pr_review_comment_identifiers(full=True, incremental=False)
     )
     # The error was swallowed to publish that comment instead, so the run still has to say it
@@ -1501,6 +1507,7 @@ async def test_a_successful_run_is_not_recorded_as_failed(monkeypatch, is_auto_c
     """The control: recording on failure must not turn every run into a failure."""
     settings = _settings(monkeypatch)
     monkeypatch.setattr(settings.config, "is_auto_command", is_auto_command, raising=False)
+    monkeypatch.setattr(settings.pr_reviewer, "publish_review_failure_comment", False)
     provider = _ReviewRunProvider(comments=[], supports_state=True, authored=True)
     reviewer = _reviewer_for_run(provider)
     reviewer._review_state_result = SimpleNamespace(changed=True)
@@ -1509,6 +1516,10 @@ async def test_a_successful_run_is_not_recorded_as_failed(monkeypatch, is_auto_c
     await reviewer.run()
 
     assert command_failed() is False
+    assert any(
+        "review output" in body
+        for body, is_temporary, _kwargs in provider.published if not is_temporary
+    )
 
 
 def test_persistent_publish_success_rejects_none_and_false():

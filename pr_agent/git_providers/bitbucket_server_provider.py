@@ -501,10 +501,12 @@ class BitbucketServerProvider(GitProvider):
         return True
 
     def get_line_link(self, relevant_file: str, relevant_line_start: int, relevant_line_end: int = None) -> str:
+        # Build on the canonical PR URL: a pasted browser URL usually ends in /overview.
+        pr_web_url = self._get_pr_web_url()
         if relevant_line_start == -1:
-            link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}"
+            link = f"{pr_web_url}/diff#{quote_plus(relevant_file)}"
         else:
-            link = f"{self.pr_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
+            link = f"{pr_web_url}/diff#{quote_plus(relevant_file)}?t={relevant_line_start}"
         return link
 
     def publish_inline_comments(self, comments: list[dict]) -> bool:

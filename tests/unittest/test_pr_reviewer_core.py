@@ -9,6 +9,7 @@ from pr_agent.algo.inline_comment_dedup import (
     get_inline_comment_store,
     key_issue_fingerprint,
 )
+from pr_agent.algo.run_details import command_failed
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
@@ -299,6 +300,30 @@ def test_review_schema_requires_enabled_prompt_fields_only():
     get_logger.return_value.warning.assert_not_called()
 
 
+def test_load_review_yaml_preserves_failure_modes_during_scalar_repair():
+    prediction = """review:
+  security_concerns: Risk: unexpected input
+  key_issues_to_review: []
+  failure_modes:
+    - what: Lost update
+      where: app.py:10
+      trigger: Concurrent requests
+      detected_by: A failing test
+      covered_in_this_pr: false
+"""
+    review = PRReviewer._load_review_yaml(prediction)["review"]
+
+    assert review["security_concerns"].strip() == "Risk: unexpected input"
+    assert review["failure_modes"] == [{
+        "what": "Lost update",
+        "where": "app.py:10",
+        "trigger": "Concurrent requests",
+        "detected_by": "A failing test",
+        "covered_in_this_pr": False,
+    }]
+    assert review["failure_modes"][0]["covered_in_this_pr"] is False
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_review_schema_requires_failure_modes_only_when_enabled(enabled):
     reviewer = _make_reviewer()
@@ -340,6 +365,16 @@ def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
             assert push.call_args.kwargs["payload"]["failure_modes"] == expected
 
 
+def test_review_schema_allows_fields_requested_through_extra_instructions():
+    reviewer = _make_prediction_reviewer()
+    with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
+        assert reviewer._validate_review_schema({
+            "review": {"key_issues_to_review": [], "pipeline_status": [{"job": "unit", "status": "failed"}]},
+        }) is True
+
+    get_logger.return_value.warning.assert_not_called()
+
+
 def test_review_schema_reports_none_for_missing_fields():
     reviewer = _make_prediction_reviewer()
     with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
@@ -353,12 +388,16 @@ def test_review_schema_reports_none_for_missing_fields():
 def test_review_schema_logs_all_pydantic_validation_errors():
     reviewer = _make_prediction_reviewer()
     with patch("pr_agent.tools.pr_reviewer.get_logger") as get_logger:
-        assert reviewer._validate_review_schema({"review": {"unexpected_extra_key": "val"}}) is False
+        assert reviewer._validate_review_schema({"review": {
+            "key_issues_to_review": [],
+            "risk_level": "critical",
+            "merge_recommendation": "approve",
+        }}) is False
 
     warnings = [call.kwargs for call in get_logger.return_value.warning.call_args_list]
     logged_fields = [w["artifact"]["field"] for w in warnings]
-    assert "review.key_issues_to_review" in logged_fields
-    assert "review.unexpected_extra_key" in logged_fields
+    assert "review.risk_level" in logged_fields
+    assert "review.merge_recommendation" in logged_fields
 
 
 def test_review_schema_runs_require_checks_when_pydantic_validation_fails():
@@ -368,13 +407,13 @@ def test_review_schema_runs_require_checks_when_pydantic_validation_fails():
         assert reviewer._validate_review_schema({
             "review": {
                 "key_issues_to_review": [],
-                "unexpected_extra_key": "val",
+                "risk_level": "critical",
             }
         }) is False
 
     warnings = [call.kwargs for call in get_logger.return_value.warning.call_args_list]
     logged_fields = [w["artifact"]["field"] for w in warnings]
-    assert "review.unexpected_extra_key" in logged_fields
+    assert "review.risk_level" in logged_fields
     assert "review.score" in logged_fields
 
 
@@ -832,8 +871,13 @@ async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_rev
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize(
+    ("publish_review_failure_comment", "expect_failure_comment"),
+    [(None, True), (False, False), ("false", False)],
+    ids=["default", "disabled", "quoted-false"],
+)
 async def test_run_removes_its_progress_comment_when_review_generation_fails(
-        monkeypatch, propagate_tool_errors):
+        monkeypatch, propagate_tool_errors, publish_review_failure_comment, expect_failure_comment):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
     progress_comment = MagicMock()
@@ -858,11 +902,14 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
         "publish_output": settings.config.publish_output,
         "is_auto_command": settings.config.get("is_auto_command", False),
         "propagate_tool_errors": settings.config.get("propagate_tool_errors", False),
+        "publish_review_failure_comment": settings.pr_reviewer.get("publish_review_failure_comment", True),
     }
     try:
         settings.config.publish_output = True
         settings.config.is_auto_command = False
         settings.config.propagate_tool_errors = propagate_tool_errors
+        if publish_review_failure_comment is not None:
+            settings.pr_reviewer.publish_review_failure_comment = publish_review_failure_comment
 
         if propagate_tool_errors:
             with pytest.raises(RuntimeError, match="model unavailable") as exc_info:
@@ -874,13 +921,15 @@ async def test_run_removes_its_progress_comment_when_review_generation_fails(
         settings.config.publish_output = original["publish_output"]
         settings.config.is_auto_command = original["is_auto_command"]
         settings.config.propagate_tool_errors = original["propagate_tool_errors"]
+        settings.pr_reviewer.publish_review_failure_comment = original["publish_review_failure_comment"]
 
-    assert git_provider.publish_comment.call_args_list == [
-        (("Preparing review...",), {"is_temporary": True}),
-        (("Failed to review PR",), {}),
-    ]
+    expected_comments = [(("Preparing review...",), {"is_temporary": True})]
+    if expect_failure_comment:
+        expected_comments.append((("Failed to review PR",), {}))
+    assert git_provider.publish_comment.call_args_list == expected_comments
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.remove_initial_comment.assert_not_called()
+    assert command_failed() is True
 
 
 @pytest.mark.asyncio

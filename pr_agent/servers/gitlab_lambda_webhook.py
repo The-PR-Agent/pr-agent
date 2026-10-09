@@ -12,7 +12,7 @@ except Exception as e:
     try:
         from pr_agent.log import get_logger
         get_logger().debug(f"AWS Secrets Manager initialization failed, falling back to environment variables: {e}")
-    except:
+    except ImportError:
         # Fail completely silently if log module is not available
         pass
 

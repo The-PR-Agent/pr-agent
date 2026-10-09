@@ -126,7 +126,7 @@ def apply_secrets_manager_config():
         try:
             from pr_agent.log import get_logger
             get_logger().debug(f"Secret provider not configured: {e}")
-        except:
+        except ImportError:
             # Fail completely silently if log module is not available
             pass
 
@@ -138,7 +138,7 @@ def apply_secrets_to_config(secrets: dict):
     try:
         # Dynamic import to avoid potential circular dependency
         from pr_agent.log import get_logger
-    except:
+    except ImportError:
         def get_logger():
             class DummyLogger:
                 def debug(self, msg): pass

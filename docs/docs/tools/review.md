@@ -69,6 +69,13 @@ for the authoritative default values.
     <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
   </tr>
   <tr>
+    <td><b>publish_review_failure_comment</b></td>
+    <td>
+      Set to false to suppress the "Failed to review PR" comment, including when a persistent review comment
+      cannot be updated. Successful review output and the command's failure status are unchanged. Default is true.
+    </td>
+  </tr>
+  <tr>
     <td><b>publish_error_details</b></td>
     <td>
       If set to true, a failed manual review comment includes a deterministic, sanitized failure reason for known
