@@ -220,6 +220,13 @@ def _apply_settings_from_file(path: str, label: str):
                 continue
             section_dict = copy.deepcopy(get_settings().as_dict().get(section, {}))
             for key, value in contents.items():
+                # Dynaconf looks keys up case-insensitively, so drop any existing
+                # key with the same name in a different casing before adding the
+                # file's key. Otherwise both survive and the effective value
+                # depends on dict ordering (mirrors apply_repo_settings below).
+                for existing_key in list(section_dict):
+                    if existing_key.lower() == key.lower():
+                        del section_dict[existing_key]
                 section_dict[key] = value
             get_settings().unset(section)
             get_settings().set(section, section_dict, merge=False)

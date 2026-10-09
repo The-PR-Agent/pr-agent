@@ -465,6 +465,28 @@ alpha = "overwritten"
     assert get_settings().get(f"{_TEST_SECTION}.untouched") == "keep-me"
 
 
+def test_apply_settings_file_merges_keys_case_insensitively(tmp_path, settings_sandbox):
+    """A key from the extra file must replace an existing key with different
+    casing instead of sitting beside it. Dynaconf looks keys up
+    case-insensitively, so keeping both makes the effective value depend on
+    dict ordering — e.g. a file's 'extra_instructions' can be shadowed by a
+    default 'Extra_Instructions'."""
+    settings = get_settings()
+    settings.set(_TEST_SECTION, {"Extra_Instructions": "from-default"}, merge=False)
+
+    path = _write_toml(tmp_path, "extra.toml", f"""
+[{_TEST_SECTION}]
+extra_instructions = "from-file"
+""")
+    _apply_settings_from_file(path, label="extra")
+
+    assert settings.get(f"{_TEST_SECTION}.extra_instructions") == "from-file"
+    stored = settings.as_dict().get(_TEST_SECTION.upper(), {})
+    assert sum(key.lower() == "extra_instructions" for key in stored) == 1, (
+        "case-variant duplicates must be collapsed to a single key"
+    )
+
+
 def test_apply_settings_file_silently_skips_missing_path(settings_sandbox):
     # A canary value that must remain unchanged when the function is a no-op
     get_settings().set(f"{_TEST_SECTION}.canary", "untouched")
