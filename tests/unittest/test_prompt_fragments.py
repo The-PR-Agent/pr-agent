@@ -311,7 +311,7 @@ def test_review_tools_share_an_identical_skills_prefix():
     skills_context block, so a prompt-cache breakpoint on the system message
     reads one cache entry across the tools instead of writing three (#4007)."""
     rendered = [
-        Environment().from_string(_skills_prelude(name)).render({"skills_context": "sample skill"})
+        Environment(autoescape=True).from_string(_skills_prelude(name)).render({"skills_context": "sample skill"})
         for name in _SKILLS_PREFIX_TEMPLATES
     ]
 
@@ -325,4 +325,4 @@ def test_skills_prefix_is_the_only_skills_block_and_vanishes_when_empty(prompt_n
 
     assert system.count("{%- if skills_context %}") == 1
     assert system.count("{{ skills_context }}") == 1
-    assert Environment().from_string(_skills_prelude(prompt_name)).render({"skills_context": ""}) == ""
+    assert Environment(autoescape=True).from_string(_skills_prelude(prompt_name)).render({"skills_context": ""}) == ""
