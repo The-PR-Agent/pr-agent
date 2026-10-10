@@ -1685,9 +1685,11 @@ class PRReviewer:
                 review_labels = []
                 has_valid_security_verdict = False
                 if get_settings().pr_reviewer.enable_review_labels_effort:
-                    estimated_effort = data['review']['estimated_effort_to_review_[1-5]']
+                    estimated_effort = data['review'].get('estimated_effort_to_review_[1-5]')
                     estimated_effort_number = None
-                    if isinstance(estimated_effort, str):
+                    if estimated_effort is None:
+                        get_logger().warning("Missing estimated_effort_to_review_[1-5] in review data")
+                    elif isinstance(estimated_effort, str):
                         try:
                             estimated_effort_number = int(estimated_effort.split(',')[0])
                         except ValueError:

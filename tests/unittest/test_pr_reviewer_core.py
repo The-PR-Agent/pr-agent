@@ -1561,6 +1561,22 @@ def test_set_review_labels_keeps_existing_security_label_when_verdict_is_missing
     assert "keep-me" in published
 
 
+def test_set_review_labels_still_publishes_when_effort_field_is_missing(review_label_settings):
+    # estimated_effort_to_review_[1-5] is optional in the review schema, and a
+    # chunked review only carries the keys its chunks emitted, so it can be
+    # absent. A missing effort must not abort the whole label update and
+    # silently drop the security label along with it.
+    git_provider = MagicMock()
+    git_provider.get_pr_labels.return_value = []
+    reviewer = _make_reviewer(git_provider)
+    data = {"review": {"security_concerns": "SQL injection: the order id is concatenated into the query\n"}}
+
+    reviewer.set_review_labels(data)
+
+    published = git_provider.publish_labels.call_args[0][0]
+    assert "Possible security concern" in published
+
+
 def test_set_review_labels_does_not_label_security_free_localized_review(review_label_settings):
     # With a non-English response language the model is told to keep the exact
     # English 'No' sentinel, so a security-free review must not get the label.
