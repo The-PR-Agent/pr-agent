@@ -17,7 +17,7 @@ from pr_agent.algo.comment_identity import (
     comment_matches_identity,
 )
 from pr_agent.algo.run_details import get_run_details, init_run_details
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
@@ -232,6 +232,29 @@ def parse_command(command: str) -> list[str]:
     return [action] + args
 
 
+def _reencode_quoted_setting_args(command: str, args: list[str]) -> list[str]:
+    """Keep quoted setting values as strings in raw command strings.
+
+    The raw request parser strips quotes before ``update_settings_from_args``
+    hands values to ``yaml.safe_load``, which coerces ``"true"`` to a boolean or
+    a colon-prefixed string to a mapping. When the original command quoted a
+    value that YAML would coerce to a non-string, re-encode it as JSON so the
+    applied setting keeps the string the user typed, matching ``parse_command``.
+    Plain scalars such as ``--pr_reviewer.num_max_findings=3`` keep their normal
+    type conversion.
+    """
+    encoded = []
+    for argument in args:
+        if argument.startswith("--") and "=" in argument:
+            key, value = argument.split("=", 1)
+            if f'{key}="{value}"' in command:
+                _, parsed = _fix_key_value(key, value)
+                if not isinstance(parsed, str):
+                    argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
+        encoded.append(argument)
+    return encoded
+
+
 def _validation_args(args: list[str]) -> list[str]:
     """Project setting arguments to their keys for command-line validation.
 
@@ -363,12 +386,14 @@ class PRAgent:
             # comment, which silently truncated questions such as "/ask what does #123 do?".
             # This input is a single already-parsed command, never a shell script.
             lexer.commenters = ''
-            action, *args = list(lexer)
+            action, *raw_args = list(lexer)
+            args = _reencode_quoted_setting_args(request, raw_args)
         else:
-            action, *args = request
+            action, *raw_args = request
+            args = raw_args
 
         # validate args
-        is_valid, arg = CliArgs.validate_user_args(_validation_args(args))
+        is_valid, arg = CliArgs.validate_user_args(_validation_args(raw_args))
         if not is_valid:
             get_logger().error(
                 f"CLI argument for param '{arg}' is forbidden. Use instead a configuration file."
