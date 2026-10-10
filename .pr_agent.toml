@@ -1,7 +1,10 @@
 # NOTE: This file is consumed by Qodo's "free for open source" agent
 # (the `qodo-free-for-open-source-projects` bot) — a separate, hosted, closed-source
-# service. It is NOT read by the open-source pr-agent in this repository; some keys
-# below (e.g. the [review_agent] section) only exist in that hosted agent.
+# service. Some keys below (e.g. the [review_agent] section) only exist in that hosted agent.
+#
+# The open-source pr-agent run by .github/workflows/pr-agent-review.yaml reads it too and
+# applies the keys it recognises (e.g. [pr_reviewer]). The workflow's environment settings
+# take precedence, and it does not use the [github_app] command lists.
 
 [pr_reviewer]
 enable_review_labels_effort = true
