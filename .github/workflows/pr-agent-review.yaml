@@ -62,9 +62,11 @@ jobs:
               else {action: "opened", pull_request: ., sender: {type: "User"},
                     repository: {full_name: $repository}}
               end' > "$GITHUB_WORKSPACE/pr-agent-event.json"
-            echo "event_name=pull_request_target" >> "$GITHUB_OUTPUT"
-            echo "event_path=/github/workspace/pr-agent-event.json" >> "$GITHUB_OUTPUT"
-            echo "host_event_path=$GITHUB_WORKSPACE/pr-agent-event.json" >> "$GITHUB_OUTPUT"
+            {
+              echo "event_name=pull_request_target"
+              echo "event_path=/github/workspace/pr-agent-event.json"
+              echo "host_event_path=$GITHUB_WORKSPACE/pr-agent-event.json"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           [[ "$COMMENT_ID" =~ ^[0-9]+$ ]] || { echo "Invalid comment ID"; exit 1; }
@@ -80,9 +82,11 @@ jobs:
             else {action: "created", comment: $c, issue: $i, sender: $c.user,
                   repository: {full_name: $repository}}
             end' > "$GITHUB_WORKSPACE/pr-agent-event.json"
-          echo "event_path=/github/workspace/pr-agent-event.json" >> "$GITHUB_OUTPUT"
-          echo "host_event_path=$GITHUB_WORKSPACE/pr-agent-event.json" >> "$GITHUB_OUTPUT"
-          echo "event_name=issue_comment" >> "$GITHUB_OUTPUT"
+          {
+            echo "event_path=/github/workspace/pr-agent-event.json"
+            echo "host_event_path=$GITHUB_WORKSPACE/pr-agent-event.json"
+            echo "event_name=issue_comment"
+          } >> "$GITHUB_OUTPUT"
 
       # Comment commands spend the sponsored key, so only users with write access to the
       # repository may run them (author_association alone also admits triage and read roles).
