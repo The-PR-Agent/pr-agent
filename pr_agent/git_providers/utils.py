@@ -800,19 +800,23 @@ def handle_configurations_errors(config_errors, git_provider):
 
         for err in config_errors:
             if err:
-                err_message = err['error']
                 config_type = err['category']
+                # Parser/security diagnostics can contain private table names or values,
+                # even when the shared file body is omitted from the comment.
+                err_message = (
+                    "Invalid shared configuration; check the settings repository and server logs for details."
+                    if config_type in {"global", "group"} else err['error']
+                )
                 header = f"❌ **PR-Agent failed to apply '{config_type}' repo settings**"
                 body = (
                     f"{header}\n\nThe configuration file needs to be a valid "
                     "[TOML](https://docs.pr-agent.ai/usage-guide/configuration_options/), please fix it.\n\n"
                 )
                 body += f"___\n\n**Error message:**\n`{err_message}`\n\n"
-                if config_type == "global":
-                    # Global content is redacted, so we never render it — skip decoding it entirely.
-                    # Global settings live in the repo named by config.global_settings_repo, scoped
-                    # per platform (GitHub organization, GitLab group, or Bitbucket workspace).
-                    body += ("\n\nThe invalid configuration came from the global settings "
+                if config_type in {"global", "group"}:
+                    # Shared settings may contain private values: never render their contents
+                    # into a reviewed repository, including GitLab subgroup configuration.
+                    body += (f"\n\nThe invalid configuration came from the {config_type} settings "
                              "repository (`config.global_settings_repo`).")
                 else:
                     settings_content = err['settings']

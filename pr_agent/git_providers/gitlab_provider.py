@@ -1,4 +1,6 @@
 import difflib
+import hashlib
+import json
 import posixpath
 import re
 import urllib.parse
@@ -48,6 +50,7 @@ from .git_provider import (
     FileContentSnapshot,
     GitProvider,
     IncrementalPR,
+    get_cached_global_settings,
     get_config_branch,
     redact_credentials,
 )
@@ -2041,6 +2044,9 @@ class GitLabProvider(GitProvider):
         global_settings = self._get_global_repo_settings()
         if global_settings:
             settings_files.append(("global", global_settings))
+        group_settings = self._get_group_repo_settings()
+        if group_settings:
+            settings_files.append(("group", group_settings))
         try:
             project = self.gl.projects.get(self.id_project, lazy=True)
             contents = None
@@ -2162,16 +2168,58 @@ class GitLabProvider(GitProvider):
                     raise
         return result
 
+    def _get_group_repo_settings(self) -> bytes | str:
+        """Load only the closest subgroup's settings, excluding the global top-level group."""
+        if not get_settings().config.use_global_settings_file:
+            return ""
+        settings_repo = get_settings().config.global_settings_repo
+        if not settings_repo:
+            return ""
+        project_path = str(self.id_project or "")
+        if project_path.isascii() and project_path.isdigit():
+            try:
+                project_path = self.gl.projects.get(project_path).path_with_namespace
+            except (GitlabError, RequestException, AttributeError):
+                get_logger().warning("Failed to resolve GitLab project path for subgroup settings")
+                return ""
+        if not isinstance(project_path, str):
+            return ""
+        namespace = project_path.split("/")[:-1]
+        for depth in range(len(namespace), 1, -1):
+            group = "/".join(namespace[:depth])
+            contents = get_cached_global_settings(
+                self._get_global_settings_cache_key(group),
+                lambda group=group: self._fetch_global_repo_settings(group, settings_repo))
+            # python-gitlab returns bytes for a found file, including b"". An empty
+            # closest file still wins; only the absent sentinel (str "") falls back.
+            if contents != "":
+                return contents
+        return ""
+
     def _get_global_settings_cache_key(self, group: str) -> str:
-        return f"gitlab:{getattr(self, 'gitlab_url', '')}:{group}"
+        """Scope both tiers to the settings project and the client's actual credentials."""
+        host = getattr(self, "gitlab_url", None)
+        settings_repo = get_settings().config.global_settings_repo
+        credentials = []
+        for auth_type in ("oauth_token", "private_token", "job_token"):
+            token = getattr(self.gl, auth_type, None)
+            if isinstance(token, str) and token:
+                credentials.append((auth_type, token))
+        if not isinstance(host, str) or not host or not isinstance(settings_repo, str) or not credentials:
+            # Unknown credentials must never share another request's cached settings.
+            return ""
+        identity = hashlib.sha256(json.dumps(credentials).encode("utf-8")).hexdigest()
+        return json.dumps(("gitlab", host.rstrip("/"), group, settings_repo, identity))
 
     def _fetch_global_repo_settings(self, group, settings_repo):
         try:
             project = self.gl.projects.get(f"{group}/{settings_repo}")
             return project.files.get(file_path='.pr_agent.toml', ref=project.default_branch).decode()
-        except GitlabGetError:
-            # A missing settings project/file is an expected fallback -> return "" (cached).
-            return ""
+        except GitlabGetError as e:
+            if e.response_code in (403, 404):
+                # A missing/inaccessible settings project or file is an expected fallback.
+                return ""
+            raise
         # Transient/unexpected errors propagate so the caller does not cache the failure.
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
