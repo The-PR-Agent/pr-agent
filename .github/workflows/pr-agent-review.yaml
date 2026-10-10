@@ -98,7 +98,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
-          EVENT_FILE: ${{ steps.replay.outputs.host_event_path || github.event_path }}
+          REPLAY_EVENT_FILE: ${{ steps.replay.outputs.host_event_path }}
         shell: bash
         run: |
           set -euo pipefail
@@ -106,6 +106,8 @@ jobs:
             echo "allowed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # github.event_path is empty in step expressions; the runner always sets GITHUB_EVENT_PATH.
+          EVENT_FILE=${REPLAY_EVENT_FILE:-$GITHUB_EVENT_PATH}
           body=$(jq -r '.comment.body // ""' "$EVENT_FILE")
           command=${body%%[[:space:]]*}
           case "$command" in
