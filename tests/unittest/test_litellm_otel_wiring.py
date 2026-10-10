@@ -11,7 +11,6 @@ import litellm
 import pytest
 
 import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_ai_handler
-from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 
 REQUEST_SPAN_ENV = "USE_OTEL_LITELLM_REQUEST_SPAN"
 
@@ -47,7 +46,7 @@ def _build(monkeypatch, **values):
     monkeypatch.setattr(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.get_settings", lambda: _settings(**values)
     )
-    return LiteLLMAIHandler()
+    return litellm_ai_handler.LiteLLMAIHandler()
 
 
 def test_turn_off_message_logging_reaches_litellm(monkeypatch):
