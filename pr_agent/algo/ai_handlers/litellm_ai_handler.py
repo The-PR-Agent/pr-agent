@@ -176,6 +176,7 @@ PROVIDER_SETTING_PATHS = {
     "codestral": {"api_key": "CODESTRAL.KEY"},
     "cohere": {"api_key": "COHERE.KEY"},
     "cohere_chat": {"api_key": "COHERE.KEY"},
+    "compactifai": {"api_key": "COMPACTIFAI.KEY"},
     "dashscope": {"api_key": "DASHSCOPE.KEY"},
     "databricks": {"api_key": "DATABRICKS.API_KEY", "api_base": "DATABRICKS.API_BASE"},
     "deepinfra": {"api_key": "DEEPINFRA.KEY"},

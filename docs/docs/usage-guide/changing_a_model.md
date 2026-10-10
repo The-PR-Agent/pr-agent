@@ -523,6 +523,57 @@ key = ...
 
 (you can obtain a deepseek-v4 key from [here](https://platform.deepseek.com/api_keys))
 
+### CompactifAI
+
+To use [CompactifAI](https://docs.compactif.ai/), select a model with LiteLLM's
+`compactifai/` prefix, for example:
+
+```toml
+[config] # in configuration.toml
+model = "compactifai/glm-5-3"
+fallback_models = ["compactifai/glm-5-2"]
+reasoning_effort = "high"
+additional_reasoning_effort_models = ["compactifai/glm-5-3", "compactifai/glm-5-2"]
+```
+
+Set `config.custom_model_max_tokens` to a positive limit for PR-Agent's
+context-window budgeting, within the verified limits of your CompactifAI
+deployment. This is required until the selected model's input limit is available
+in PR-Agent's registry or the installed LiteLLM metadata.
+CompactifAI's public model pages do not currently specify those limits.
+
+PR-Agent also caps the effective budget with `config.max_model_tokens`, which
+defaults to 32,000. To use a larger verified budget, raise both
+`config.custom_model_max_tokens` and `config.max_model_tokens`; the effective limit
+is the smaller of the two values.
+
+This budgeting limit is not the amount of space available for the changed-code diff.
+PR-Agent reserves output tokens and subtracts fixed prompt tokens before fitting
+the diff, so its usable capacity is lower. Account for these reservations when
+choosing your verified limits.
+
+Provide your API key in `.secrets.toml`:
+
+```toml
+[compactifai]
+key = "..."
+```
+
+Alternatively, set `COMPACTIFAI__KEY` or LiteLLM's native `COMPACTIFAI_API_KEY`
+environment variable. The configured key takes precedence over the native
+environment variable. LiteLLM uses `https://api.compactif.ai/v1` automatically;
+no OpenAI API key or endpoint override is required.
+
+Other [available models](https://docs.compactif.ai/models/) include
+`compactifai/quasar-438b`. When selecting it, include that model ID in
+`config.additional_reasoning_effort_models` as well. The explicit list enables
+reasoning when the installed LiteLLM metadata does not yet recognize these models.
+Use `"high"`, which is supported by GLM-5.2, GLM-5.3 and Quasar-438B; PR-Agent's
+default `"medium"` is not a supported effort for these models. See the
+[GLM-5.3](https://docs.compactif.ai/models/glm_5_3/),
+[GLM-5.2](https://docs.compactif.ai/models/glm_5_2/) and
+[Quasar-438B](https://docs.compactif.ai/models/quasar_438b/) documentation.
+
 ### GLM (Z.AI)
 
 To use GLM models with Z.AI (Zhipu), for example, set:
