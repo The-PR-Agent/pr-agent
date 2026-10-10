@@ -1340,7 +1340,7 @@ class GithubProvider(GitProvider):
         return self.validate_comments_inside_hunks(code_suggestions_with_fingerprints)
 
     def _build_code_suggestion_payload(self, suggestion: dict) -> dict:
-        body = suggestion["body"]
+        body = self.limit_output_characters(suggestion["body"], self.max_comment_chars)
         relevant_file = suggestion["relevant_file"]
         relevant_lines_start = suggestion["relevant_lines_start"]
         relevant_lines_end = suggestion["relevant_lines_end"]

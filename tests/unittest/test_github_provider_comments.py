@@ -471,6 +471,39 @@ def test_publish_code_suggestions_single_line_payload_shape():
     assert "start_line" not in payload and "start_side" not in payload
 
 
+def test_publish_code_suggestions_limits_body_length():
+    """Suggestion bodies over max_comment_chars must be clamped before create_review.
+
+    Unlike publish_comment and create_inline_comment, the batch suggestion payload
+    was never length-limited, so an oversized improved-code block made create_review
+    return 422 and the whole batch was dropped by the verification fallback.
+    """
+    provider = _make_provider(max_chars=25)
+
+    payload = provider._build_code_suggestion_payload({
+        "body": "```suggestion\n" + "A" * 100 + "\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 7,
+        "relevant_lines_end": 7,
+    })
+
+    assert payload["body"].endswith("...")
+    assert len(payload["body"]) == provider.max_comment_chars
+
+
+def test_publish_code_suggestions_does_not_trim_short_body():
+    provider = _make_provider(max_chars=25)
+
+    payload = provider._build_code_suggestion_payload({
+        "body": "```suggestion\nfix\n```",
+        "relevant_file": "src/foo.py",
+        "relevant_lines_start": 7,
+        "relevant_lines_end": 7,
+    })
+
+    assert payload["body"] == "```suggestion\nfix\n```"
+
+
 def test_publish_code_suggestions_skips_invalid_ranges():
     """Suggestions with missing/negative start, or end<start, must be skipped silently."""
     provider = _make_provider()
