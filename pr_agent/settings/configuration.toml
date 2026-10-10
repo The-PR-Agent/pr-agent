@@ -494,7 +494,7 @@ callback_timeout_seconds = 30 # max seconds to wait for pending litellm callback
 base_models = {}
 # Optional: set a profile per model (fallbacks included), keyed by the exact model name.
 # An entry here takes priority over model_id for that model.
-# model_ids = {"bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0" = "arn:aws:bedrock:...", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "arn:aws:bedrock:..."}
+# model_ids = {"bedrock/us.anthropic.claude-sonnet-4-6" = "arn:aws:bedrock:...", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "arn:aws:bedrock:..."}
 # Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}]
 # (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models
 # whose name contains "claude" or that are listed in a Claude thinking override; LiteLLM adds the

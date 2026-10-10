@@ -250,8 +250,6 @@ MAX_TOKENS = {
     'text-embedding-ada-002': 8000,
     'gpt-3.5-turbo': 16000,
     'gpt-3.5-turbo-0125': 16000,
-    'gpt-3.5-turbo-1106': 16000,
-    'gpt-3.5-turbo-16k': 16000,
     'gpt-4': 8000,
     'gpt-4-0613': 8000,
     'gpt-5.2': 400000,  # 400K, but may be limited by config.max_model_tokens
@@ -278,61 +276,28 @@ MAX_TOKENS = {
     'o1': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o3-mini': 204800,  # 200K, but may be limited by config.max_model_tokens
     'o3-mini-2025-01-31': 204800,  # 200K, but may be limited by config.max_model_tokens
-    'claude-instant-1': 100000,
-    'claude-2': 100000,
-    'deepseek/deepseek-chat': 128000,  # 128K, but may be limited by config.max_model_tokens
     'zai/glm-5.2': 1000000,  # 1M per LiteLLM (issue #3196); kept pinned: absent from LiteLLM's bundled cost map
     'openai/qwq-plus': 131072,  # 131K context length, but may be limited by config.max_model_tokens
     "openrouter/auto": 2000000,  # 2M context length, but may be limited by config.max_model_tokens
     "openrouter/free": 200000,  # 200K context length, but may be limited by config.max_model_tokens
     "openrouter/fusion": 1000000,  # 1M context length, but may be limited by config.max_model_tokens
     "openrouter/pareto-code": 2000000,  # 2M context length, but may be limited by config.max_model_tokens
-    'replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1': 4096,
-    'meta-llama/Llama-2-7b-chat-hf': 4096,
-    'vertex_ai/codechat-bison': 6144,
-    'vertex_ai/codechat-bison-32k': 32000,
     # -- Vertex AI Claude --------------------------------------------------
-    'vertex_ai/claude-3-5-haiku@20241022': 100000,
-    'vertex_ai/claude-3-sonnet@20240229': 100000,
-    'vertex_ai/claude-3-opus@20240229': 100000,
-    'vertex_ai/claude-3-5-sonnet@20240620': 100000,
-    'vertex_ai/claude-3-5-sonnet-v2@20241022': 100000,
     'vertex_ai/claude-sonnet-4@20250514': 200000,
     # -- Vertex AI non-Claude / Gemini -------------------------------------
-    'vertex_ai/gemini-2.5-flash-preview-04-17': 1048576,
     'vertex_ai/gemini-3.1-flash': 1048576,
     'vertex_ai/gemini-3.1-pro': 1048576,
     'vertex_ai/gemini-3.5-pro': 1048576,
     'vertex_ai/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
-    'vertex_ai/gemma2': 8200,
-    'gemini/gemini-2.5-flash-preview-04-17': 1048576,
     'gemini/gemini-3.1-flash': 1048576,
     'gemini/gemini-3.1-pro': 1048576,
     'gemini/gemini-3.5-pro': 1048576,
     'gemini/gemini-3.8-flash': 1048576,  # kept pinned: absent from LiteLLM's bundled cost map
-    'codechat-bison': 6144,
-    'codechat-bison-32k': 32000,
-    # -- Anthropic Claude --------------------------------------------------
-    'anthropic.claude-v2': 100000,
-    'anthropic/claude-3-opus-20240229': 100000,
-    'anthropic/claude-3-5-sonnet-20240620': 100000,
-    'anthropic/claude-3-5-sonnet-20241022': 100000,
-    'anthropic/claude-sonnet-4-20250514': 200000,
-    # -- Bare Claude -------------------------------------------------------
-    # -- Haiku -------------------------------------------------------------
-    'anthropic/claude-3-5-haiku-20241022': 100000,
     # -- Bedrock Claude ----------------------------------------------------
-    'bedrock/anthropic.claude-v2': 100000,
-    'bedrock/anthropic.claude-3-sonnet-20240229-v1:0': 100000,
-    'bedrock/anthropic.claude-3-5-haiku-20241022-v1:0': 100000,
-    'bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0': 100000,
-    'bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0': 100000,
     'bedrock/anthropic.claude-sonnet-4-20250514-v1:0': 200000,
     # -- Bedrock Claude (cross-region) -------------------------------------
-    "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/us.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
-    "bedrock/apac.anthropic.claude-3-5-sonnet-20241022-v2:0": 100000,
     "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     # -- Non-Claude models -------------------------------------------------
     "bedrock_mantle/xai.grok-4.3": 1000000,
@@ -350,8 +315,6 @@ MAX_TOKENS = {
     'bedrock/converse/moonshotai.kimi-k3': 1000000,
     'bedrock/converse/us.moonshotai.kimi-k3': 1000000,
     'bedrock/converse/global.moonshotai.kimi-k3': 1000000,
-    'groq/moonshotai/kimi-k2-instruct': 131072,
-    'groq/deepseek-r1-distill-llama-70b': 128000,
     'groq/llama-3.3-70b-versatile': 128000,
     'groq/llama-3.1-8b-instant': 128000,
     'sambanova/MiniMax-M3': 192000,
@@ -360,9 +323,6 @@ MAX_TOKENS = {
     'sambanova/Meta-Llama-3.3-70B-Instruct': 128000,
     'sambanova/gpt-oss-120b': 128000,
     'sambanova/DeepSeek-V3.1': 128000,
-    'xai/grok-2': 131072,
-    'xai/grok-2-1212': 131072,
-    'xai/grok-2-latest': 131072,
     'xai/grok-3-fast': 131072,
     "xai/grok-build-latest": 500000,  # kept pinned: absent from LiteLLM's bundled cost map
     "openrouter/x-ai/grok-4.5": 500000,  # kept pinned: absent from LiteLLM's bundled cost map

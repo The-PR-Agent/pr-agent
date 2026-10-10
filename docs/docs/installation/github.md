@@ -329,8 +329,8 @@ To use Amazon Bedrock models with static IAM credentials:
 ```yaml
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        config.model: "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
-        config.fallback_models: '["bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"]'
+        config.model: "bedrock/us.anthropic.claude-sonnet-4-6"
+        config.fallback_models: '["bedrock/us.anthropic.claude-sonnet-4-6"]'
         aws.AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws.AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws.AWS_REGION_NAME: "us-east-1"
@@ -343,13 +343,13 @@ When the GitHub Actions runner is on AWS infrastructure (EC2, ECS, EKS), use the
 ```yaml
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        config.model: "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
-        config.fallback_models: '["bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"]'
+        config.model: "bedrock/us.anthropic.claude-sonnet-4-6"
+        config.fallback_models: '["bedrock/us.anthropic.claude-sonnet-4-6"]'
         AWS_USE_IMDS: "true"
-        # AWS_REGION_NAME: us-east-1  # optional if instance metadata provides the region
+        AWS_REGION_NAME: us-east-1  # source region for the US inference profile
 ```
 
-The IAM role must have `bedrock:InvokeModel` on the target model ARN. See [Bedrock model configuration](../usage-guide/changing_a_model.md#amazon-bedrock) for the full IAM policy example and supported models.
+The IAM role must have `bedrock:InvokeModel` on the inference profile and its destination foundation models. See [Bedrock model configuration](../usage-guide/changing_a_model.md#amazon-bedrock) for the full IAM policy example and supported models.
 
 To route calls through a VPC interface endpoint, add `AWS_BEDROCK_RUNTIME_ENDPOINT` alongside the credentials above:
 

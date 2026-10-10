@@ -212,7 +212,7 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
     try:
         settings.set("config.model", "gpt-4o")
         settings.set("config.model_weak", "")
-        settings.set("config.fallback_models", ["claude-2"])
+        settings.set("config.fallback_models", ["claude-sonnet-4-6"])
         settings.set("config.max_model_tokens", 3000)
         settings.set("config.max_output_tokens", 100)
         settings.set("openai.deployment_id", None)
@@ -228,8 +228,8 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
 
         await question.run()
 
-        request = next(item for item in ai_handler.requests if item["model"] == "claude-2")
-        assert "claude-2" in counter_calls
+        request = next(item for item in ai_handler.requests if item["model"] == "claude-sonnet-4-6")
+        assert "claude-sonnet-4-6" in counter_calls
         assert (
             len(request["system"] + request["user"])
             + 2 * MESSAGE_FRAMING_TOKEN_ALLOWANCE

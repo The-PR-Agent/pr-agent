@@ -1282,7 +1282,6 @@ class TestNoLiteLLMDuplicates:
     # LiteLLM now has matching metadata; removing these pins would change custom-limit precedence.
     PRESERVED_MODEL_LIMITS = {
         "vertex_ai/claude-sonnet-4@20250514",
-        "anthropic/claude-sonnet-4-20250514",
         "bedrock/moonshotai.kimi-k3",
         "bedrock/us.moonshotai.kimi-k3",
         "bedrock/global.moonshotai.kimi-k3",

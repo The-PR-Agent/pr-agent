@@ -173,17 +173,18 @@ api_base = ... # the base url for your Hugging Face inference endpoint
 
 ### Replicate
 
-To use Llama2 model with Replicate, for example, set:
+To use Llama 3 with Replicate, for example, set:
 
 ```toml
 [config] # in configuration.toml
-model = "replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1"
-fallback_models=["replicate/llama-2-70b-chat:2c1608e18606fad2812020dc541930f2d0495ce32eee50074220b87300bc16e1"]
+model = "replicate/meta/meta-llama-3-8b-instruct"
+fallback_models=["replicate/meta/meta-llama-3-8b-instruct"]
+custom_model_max_tokens=8000 # Set an explicit limit because the locked LiteLLM version has no metadata for this model.
 [replicate] # in .secrets.toml
 key = ...
 ```
 
-(you can obtain a Llama2 key from [here](https://replicate.com/replicate/llama-2-70b-chat/api))
+(you can obtain a Replicate API token from [here](https://replicate.com/account/api-tokens))
 
 Also, review the [.secrets_template.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/.secrets_template.toml) file for instructions on how to set keys for other models.
 
@@ -238,16 +239,17 @@ OpenRouter routes (`openrouter/x-ai/grok-4.5`, `openrouter/x-ai/grok-4.6`) apply
 
 ### Vertex AI
 
-Vertex AI needs the `google` extra (`pip install "pr-agent[google]"`). To use Google's Vertex AI platform and its associated models (chat-bison/codechat-bison) set:
+Vertex AI needs the `google` extra (`pip install "pr-agent[google]"`). To use Gemini 3.8 Flash on Google's Vertex AI platform, set:
 
 ```toml
 [config] # in configuration.toml
-model = "vertex_ai/codechat-bison"
-fallback_models="vertex_ai/codechat-bison"
+model = "vertex_ai/gemini-3.8-flash"
+fallback_models=["vertex_ai/gemini-3.8-flash"]
+no_temperature_models=["gemini-3.8-flash"] # Omit temperature for this model, including the fallback.
 
 [vertexai] # in .secrets.toml
 vertex_project = "my-google-cloud-project"
-vertex_location = ""
+vertex_location = "global"
 ```
 
 Your [application default credentials](https://cloud.google.com/docs/authentication/application-default-credentials) will be used for authentication so there is no need to set explicit credentials in most environments.
@@ -300,14 +302,16 @@ To use Amazon Bedrock and its foundational models, add the below configuration:
 
 ```toml
 [config] # in configuration.toml
-model="bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
-fallback_models=["bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"]
+model="bedrock/us.anthropic.claude-sonnet-4-6"
+fallback_models=["bedrock/us.anthropic.claude-sonnet-4-6"]
 
 [aws]
 AWS_ACCESS_KEY_ID="..."
 AWS_SECRET_ACCESS_KEY="..."
-AWS_REGION_NAME="..."
+AWS_REGION_NAME="us-east-1"
 ```
+
+This example uses the US cross-region inference profile for [Claude Sonnet 4.6](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4-6.html). Enable model access and allow invocation of the profile and its destination foundation models as shown below.
 
 You can also use the new Meta Llama 4 models available on Amazon Bedrock:
 
@@ -408,13 +412,18 @@ Minimal GitHub Actions workflow (no AWS secret keys required):
     command: review
 ```
 
-The IAM role must have `bedrock:InvokeModel` permission on the target model ARN, for example:
+The IAM role must have `bedrock:InvokeModel` permission on the inference profile and its destination foundation models. For the US profile invoked from `us-east-1`, replace `123456789012` with your AWS account ID:
 
 ```json
 {
   "Effect": "Allow",
   "Action": "bedrock:InvokeModel",
-  "Resource": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0"
+  "Resource": [
+    "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-4-6",
+    "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6",
+    "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6",
+    "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6"
+  ]
 }
 ```
 
@@ -426,8 +435,8 @@ To invoke an [application inference profile](https://docs.aws.amazon.com/bedrock
 
 ```toml
 [config] # in configuration.toml
-model="bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"
-fallback_models=["bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0"]
+model="bedrock/us.anthropic.claude-sonnet-4-6"
+fallback_models=["bedrock/us.anthropic.claude-sonnet-4-6"]
 
 [aws]
 AWS_ACCESS_KEY_ID="..."
@@ -446,7 +455,7 @@ To give a fallback its own application inference profile, list it in `litellm.mo
 
 ```toml
 [litellm]
-model_ids = {"bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0" = "your-primary-profile-arn", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "your-fallback-profile-arn"}
+model_ids = {"bedrock/us.anthropic.claude-sonnet-4-6" = "your-primary-profile-arn", "bedrock/qwen.qwen3-235b-a22b-2507-v1:0" = "your-fallback-profile-arn"}
 ```
 
 ##### Prompt caching and run cost with an ARN

@@ -113,7 +113,7 @@ def non_openai_question_settings():
     ]
     snapshot = snapshot_settings(keys)
     settings = get_settings()
-    settings.set("config.model", "anthropic/claude-3-5-sonnet-20240620")
+    settings.set("config.model", "anthropic/claude-sonnet-4-6")
     settings.set("config.fallback_models", [])
     settings.set("model_routing.enable", False)
     settings.set("openai.key", None)
@@ -137,7 +137,7 @@ async def test_question_reaches_configured_handler_without_openai_key(
 
     await tool.run()
 
-    assert [call["model"] for call in handler.calls] == ["anthropic/claude-3-5-sonnet-20240620"]
+    assert [call["model"] for call in handler.calls] == ["anthropic/claude-sonnet-4-6"]
     assert tool.question_str in handler.calls[0]["user"]
     assert "Enable automatic review in the repository settings." in handler.calls[0]["user"]
     assert "Enable automatic review in the repository settings." in tool.git_provider.published[0]
@@ -160,7 +160,7 @@ async def test_question_uses_configured_handler_error_path_without_openai_key(
     else:
         assert await tool.run() == ""
 
-    assert [call["model"] for call in handler.calls] == ["anthropic/claude-3-5-sonnet-20240620"]
+    assert [call["model"] for call in handler.calls] == ["anthropic/claude-sonnet-4-6"]
     assert tool.git_provider.published == []
 
 
