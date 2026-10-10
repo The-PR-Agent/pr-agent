@@ -68,7 +68,7 @@ to-do list.
 | `repo_context_files` | ["AGENTS.md"] | Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable local context. A structured entry {"repo_id" = ..., "file_path" = ...} selects a sibling default-branch file from the same namespace/owner; repo_id must be in the host-issued repo_context_sibling_repos allowlist below. Reads use the sibling default branch and share repo_context_max_lines; repository settings may select entries, comment arguments cannot override this key |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |
 | `repo_context_max_lines` | 500 | Maximum total rendered lines for repo context, including wrapper tags |
-| `repo_context_sibling_repos` | [] | Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. On GitHub, this also approves repositories for linked-issue and sub-issue ticket context. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution |
+| `repo_context_sibling_repos` | [] | Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries and GitHub ticket lookups may select. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution |
 | `repo_context_max_sibling_files` | 5 | Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository's .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build. |
 **token limits**
 
@@ -157,7 +157,7 @@ to-do list.
 | `require_todo_scan` | false |  |
 | `require_ticket_analysis_review` | true |  |
 | `require_risk_assessment` | false | ask the model for an overall risk level (low/medium/high) |
-| `require_merge_recommendation` | false | ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge) |
+| `require_merge_recommendation` | false | ask the model for a merge recommendation (no_concerns_found/needs_review/changes_required) |
 | `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
 **general options**
@@ -175,14 +175,6 @@ to-do list.
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |
 | `final_update_message` | true |  |
-
-Azure DevOps also supplies verified PR-Agent inline key issues as dismissed when their status is `wontFix`
-or `byDesign` and differs from `azure_devops.default_comment_status`. Matching defaults, `fixed`, `closed`,
-active, and pending threads do not count as dismissals. This requires a stable
-`azure_devops_server.agent_identity` and infers a human decision from the current configuration; it cannot
-verify the status-changing actor or historical defaults. Dismissed findings share the existing
-`max_previous_findings_chars` budget and may be reported again if the code makes them worse.
-
 **review labels**
 
 | Key | Default | Description |
@@ -443,7 +435,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `jira_requirements_field` | "" | Custom field id holding acceptance criteria / requirements, mapped to the ticket "requirements" section. Instance-specific (e.g. "customfield_10127"); empty disables it. |
-| `project_keys` | [] | Optional allowlist of Jira project keys, e.g. ["PROJ", "OPS"]. When non-empty, key-shaped text with another prefix ("SHA-256", "UTF-8", "ISO-8601") is dropped before any lookup, so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys; a supplied list with no valid entry disables the lookup rather than widening it. Empty (default) looks up every key found. Host-only, like jira_site and jira_api_email: repository settings and comment arguments cannot change them. |
+| `project_keys` | [] | Optional allowlist of Jira project keys, e.g. ["PROJ", "OPS"]. When non-empty, key-shaped text with another prefix ("SHA-256", "UTF-8", "ISO-8601") is dropped before any lookup, so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys; a supplied list with no valid entry disables the lookup rather than widening it. Empty (default) looks up every key found when require_project_keys is false. Host-only, like jira_site, jira_api_email and require_project_keys: repository settings and comment arguments cannot change them. |
+| `require_project_keys` | false | When true, require at least one valid project key in project_keys for Jira ticket lookup. If project_keys is empty or unset, Jira ticket lookup is skipped. Defaults to false for backward compatibility. Host-only: repository settings and comment arguments cannot change it. |
 
 
 ## `[litellm]` {#litellm}
@@ -470,7 +463,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `provider_only` | [] | restrict routing to these upstream providers only, a hard allowlist (e.g. ["z-ai"]); empty = OpenRouter default routing |
 | `provider_order` | [] | preferred provider order; ignored when provider_only is set; empty = unset |
 | `allow_fallbacks` | true | when provider_order is set, allow routing beyond the listed providers |
-| `reasoning_effort` | "" | Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for reasoning-capable models (probed against litellm's bundled reasoning metadata or the Grok registry, or listed in additional_reasoning_effort_models). Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max". OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility. Model-specific support varies. For models not covered by PR-Agent's clamps, do not assume "none" disables reasoning; check the selected model and provider's support. |
+| `reasoning_effort` | "" | Invalid reasoning_effort values are warned about and treated as unset. Empty inherits config.reasoning_effort for reasoning-capable models (probed against litellm's bundled reasoning metadata or the Grok registry, or listed in additional_reasoning_effort_models). Valid values: "none", "minimal", "low", "medium", "high", "xhigh", "max". OpenRouter normalizes "max" to "xhigh" for LiteLLM/OpenRouter compatibility. Model-specific support varies. For models not covered by the clamps below, do not assume "none" disables reasoning; check the selected model and provider's support. |
 | `reasoning_max_tokens` | 0 | Use a positive value to override global effort and non-none OpenRouter-specific efforts. Keep reasoning disabled for explicit openrouter.reasoning_effort = "none", except on Grok 4.5/4.6, Gemini 3.7/3.8 Flash, and the GPT-6 models whose pages omit "none" (GPT-6 Astra and GPT-6.1 Sol). Clamp "none" to the lowest supported effort there before applying the budget, so a positive budget wins. Keep max_tokens greater than the reasoning budget where the provider requires it. |
 | `max_tokens` | 0 | hard cap on completion tokens for the request; 0 = unset |
 

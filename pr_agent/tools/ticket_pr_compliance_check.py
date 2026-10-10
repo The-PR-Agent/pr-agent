@@ -109,11 +109,13 @@ def _jira_cloud_base_url():
 def _jira_project_keys():
     """
     Return the configured jira.project_keys allowlist as a set of project keys, or None
-    when nothing was supplied (look up every key found).
+    when nothing was supplied and require_project_keys is false (look up every key found).
 
     Only three values count as "nothing was supplied": the option missing entirely, the
     shipped empty list, and a top-level string that is blank, the last because
     `jira__project_keys=""` is how a shell spells an unset environment variable.
+    When jira.require_project_keys is true and nothing was supplied, lookup is skipped
+    with a warning and an empty set is returned.
 
     Everything else is a supplied value and is judged on its entries. Entries that are not
     plain upper-case project keys, including a blank one (so `[""]` is a malformed
@@ -124,11 +126,24 @@ def _jira_project_keys():
     key-shaped string. Accepts a list or a comma-separated string, the latter for
     environment-variable overrides (jira__project_keys="PROJ,OPS").
     """
+    require_keys = bool(get_settings().get("JIRA.REQUIRE_PROJECT_KEYS", False))
     configured = get_settings().get("JIRA.PROJECT_KEYS", None)
     if configured is None:
+        if require_keys:
+            get_logger().warning(
+                "jira.require_project_keys is enabled but jira.project_keys is not set; "
+                "skipping Jira ticket lookup"
+            )
+            return set()
         return None
     if isinstance(configured, str):
         if not configured.strip():
+            if require_keys:
+                get_logger().warning(
+                    "jira.require_project_keys is enabled but jira.project_keys is blank; "
+                    "skipping Jira ticket lookup"
+                )
+                return set()
             return None
         configured = configured.split(",")
     elif not isinstance(configured, (list, tuple)):
@@ -140,6 +155,12 @@ def _jira_project_keys():
         return set()
     if not configured:
         # The shipped default. An empty container carries no entry to be wrong about.
+        if require_keys:
+            get_logger().warning(
+                "jira.require_project_keys is enabled but jira.project_keys is empty; "
+                "skipping Jira ticket lookup"
+            )
+            return set()
         return None
     allowed = set()
     for index, item in enumerate(configured):
