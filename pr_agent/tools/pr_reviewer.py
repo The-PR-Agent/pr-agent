@@ -43,6 +43,7 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_finding_state import (
+    _as_line,
     append_review_state,
     parse_review_state,
     reconcile_review_findings,
@@ -147,15 +148,6 @@ def _as_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().casefold() in ("1", "true", "yes", "on")
     return False
-
-
-def _as_line_number(value) -> Optional[int]:
-    """Parse an optional positive line number, tolerating null or empty values."""
-    try:
-        line = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return line if line > 0 else None
 
 
 def _review_failure_comment(error: Exception) -> str:
@@ -737,9 +729,9 @@ class PRReviewer:
             "path": path,
             "body": f"**{header}**\n\n{content}" if header else content,
         }
-        start = _as_line_number(issue.get("start_line"))
+        start = _as_line(issue.get("start_line"))
         if start is not None:
-            end = _as_line_number(issue.get("end_line")) or start
+            end = _as_line(issue.get("end_line")) or start
             finding["line_start"] = start
             finding["line_end"] = max(start, end)
         return finding
@@ -1445,8 +1437,8 @@ class PRReviewer:
         issue_header = (issue.get("issue_header") or "").strip()
         if issue_header.lower() == "possible bug":
             issue_header = "Possible Issue"
-        start_line = _as_line_number(issue.get("start_line")) or 0
-        end_line = _as_line_number(issue.get("end_line")) or start_line
+        start_line = _as_line(issue.get("start_line")) or 0
+        end_line = _as_line(issue.get("end_line")) or start_line
 
         if not relevant_file or not issue_content or start_line < 1 or end_line < start_line:
             get_logger().warning("Review finding has no usable location, keeping it in the summary",
