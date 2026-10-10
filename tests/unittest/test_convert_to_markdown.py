@@ -161,9 +161,8 @@ class TestConvertToMarkdown:
     def test_key_issue_with_non_numeric_lines_keeps_finding_in_summary(self, field, invalid_value):
         """A non-integer start_line/end_line must not silently drop the finding.
 
-        The review summary, inline comments, and the persisted finding state used to
-        disagree: inline and state tolerated malformed line fields while the summary
-        dropped the finding. The finding must render in the summary without lines.
+        The finding must render in the summary, using the start line when the end
+        line is invalid.
         """
         valid_other = {'start_line': 30, 'end_line': 14}
         valid_other[field] = invalid_value
@@ -180,7 +179,10 @@ class TestConvertToMarkdown:
 
         assert 'Possible security issue' in output
         assert 'Credentials are logged on the error path.' in output
-        mock_git_provider.get_line_link.assert_not_called()
+        if field == 'end_line':
+            mock_git_provider.get_line_link.assert_called_once_with('src/utils.py', 30, 30)
+        else:
+            mock_git_provider.get_line_link.assert_not_called()
 
     def test_key_issue_with_omitted_text_keeps_empty_fallback(self):
         input_data = {'review': {'key_issues_to_review': [{

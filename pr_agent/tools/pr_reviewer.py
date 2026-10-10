@@ -43,7 +43,6 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.repo_context import build_repo_context
 from pr_agent.algo.review_finding_state import (
-    _as_line,
     append_review_state,
     parse_review_state,
     reconcile_review_findings,
@@ -62,6 +61,7 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
+    _as_line,
     convert_to_markdown_v2,
     is_value_no,
     load_yaml,
