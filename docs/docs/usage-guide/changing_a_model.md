@@ -933,6 +933,8 @@ The existing Chat Completions path is used; access depends on your OpenAI accoun
 
 ### Anthropic models
 
+PR-Agent registers existing Claude Sonnet 4.6 and Opus 4.6 aliases with a 1,000,000-token context window. `config.max_model_tokens` still caps the usable prompt budget unless a tool explicitly bypasses that cap.
+
 ```toml
 [config]
 enable_claude_extended_thinking = false # Set to true to enable extended thinking feature

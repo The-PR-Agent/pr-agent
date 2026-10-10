@@ -43,10 +43,10 @@ _CLAUDE_MODEL_FAMILIES = [
         "bedrock_regions": ("global", "us"),
         "extra_bedrock": ("anthropic.claude-opus-4-7-v1:0",),
     },
-    # ── 200K-context models with extended thinking ────────────────────────
+    # ── Models with extended thinking ────────────────────────────────────
     {
         "model_id": "claude-sonnet-4-6",
-        "max_tokens": 200000,
+        "max_tokens": 1000000,
         "bedrock_regions": ("us", "au", "eu", "jp", "apac", "global"),
         "extra_bedrock_regions": {
             "anthropic.claude-sonnet-4-6-v1:0": (
@@ -57,15 +57,15 @@ _CLAUDE_MODEL_FAMILIES = [
     },
     {
         "model_id": "claude-opus-4-6",
-        "max_tokens": 200000,
+        "max_tokens": 1000000,
         "bedrock_name": "claude-opus-4-6-v1:0",
         "bedrock_regions": ("global", "eu", "au", "jp", "apac", "us"),
         "extra_aliases": {
-            "claude-opus-4-6-20260120": 200000,
-            "anthropic/claude-opus-4-6-20260120": 200000,
-            "vertex_ai/claude-opus-4-6@20260120": 200000,
-            "bedrock/anthropic.claude-opus-4-6-20260120-v1:0": 200000,
-            "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0": 200000,
+            "claude-opus-4-6-20260120": 1000000,
+            "anthropic/claude-opus-4-6-20260120": 1000000,
+            "vertex_ai/claude-opus-4-6@20260120": 1000000,
+            "bedrock/anthropic.claude-opus-4-6-20260120-v1:0": 1000000,
+            "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0": 1000000,
         },
         "extended_thinking": True,
     },

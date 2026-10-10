@@ -774,7 +774,7 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -849,7 +849,7 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -1129,7 +1129,7 @@ class TestGetMaxTokens:
 
         # Context window tokens
         for alias in expected_max_tokens_aliases:
-            assert MAX_TOKENS[alias] == 200000
+            assert MAX_TOKENS[alias] == 1000000
 
         # Extended thinking: 9 aliases
         expected_thinking_aliases = {
@@ -1274,6 +1274,28 @@ class TestGetMaxTokens:
 
         assert get_max_tokens(model) == 32000
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
+
+
+class TestCorrectedClaudeWindows:
+
+    @pytest.mark.parametrize("model, window", [
+        ("anthropic/claude-sonnet-4-6", 1000000),
+        ("bedrock/global.anthropic.claude-sonnet-4-6", 1000000),
+        ("vertex_ai/claude-opus-4-6", 1000000),
+        ("claude-opus-4-6-20260120", 1000000),
+    ])
+    @pytest.mark.parametrize("cap", [0, 150000, 1100000])
+    def test_static_window_precedence_and_cap(self, monkeypatch, model, window, cap):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 12345,
+                "max_model_tokens": cap,
+            })(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        assert MAX_TOKENS[model] == window
+        assert get_max_tokens(model) == (min(window, cap) if cap else window)
+        assert get_max_tokens(model, ignore_max_model_tokens=True) == window
 
 
 class TestNoLiteLLMDuplicates:
