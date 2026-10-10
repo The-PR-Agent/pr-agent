@@ -311,6 +311,37 @@ def _log_anthropic_cache_warning(model: str, reason: str) -> None:
     )
 
 
+_REQUEST_CALLBACK_CONFIG_KEYS = {
+    "success_callback": "LITELLM.SUCCESS_CALLBACK",
+    "failure_callback": "LITELLM.FAILURE_CALLBACK",
+    "service_callback": "LITELLM.SERVICE_CALLBACK",
+}
+# litellm dispatches callbacks from process-global module attributes. The first handler
+# construction snapshots them so a request without a callback config restores this baseline
+# instead of inheriting the previous request's callbacks (and forwarding its prompts to
+# that endpoint). Embedders that register callback globals without touching configuration
+# stay intact, because that registration is exactly what the baseline holds.
+_request_callback_baseline = None
+_request_callback_written = {}
+
+
+def _apply_request_callback_settings(settings) -> None:
+    """Scope litellm's callback globals to this request's settings."""
+    global _request_callback_baseline
+    if _request_callback_baseline is None:
+        _request_callback_baseline = {
+            name: copy.deepcopy(getattr(litellm, name, None))
+            for name in _REQUEST_CALLBACK_CONFIG_KEYS
+        }
+    for name, config_key in _REQUEST_CALLBACK_CONFIG_KEYS.items():
+        configured = settings.get(config_key, None)
+        if configured:
+            setattr(litellm, name, configured)
+            _request_callback_written[name] = configured
+        elif getattr(litellm, name, None) == _request_callback_written.get(name):
+            setattr(litellm, name, _request_callback_baseline[name])
+
+
 class LiteLLMAIHandler(BaseAiHandler):
     """Handle chat completions across supported providers through LiteLLM.
 
@@ -504,12 +535,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if global_settings.get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
         self._initialize_aws_request_credentials(settings)
-        if settings.get("LITELLM.SUCCESS_CALLBACK", None):
-            litellm.success_callback = settings.litellm.success_callback
-        if settings.get("LITELLM.FAILURE_CALLBACK", None):
-            litellm.failure_callback = settings.litellm.failure_callback
-        if settings.get("LITELLM.SERVICE_CALLBACK", None):
-            litellm.service_callback = settings.litellm.service_callback
+        _apply_request_callback_settings(settings)
         # litellm callbacks attach full prompt and response content unless message logging is disabled.
         if settings.get("LITELLM.TURN_OFF_MESSAGE_LOGGING", False):
             litellm.turn_off_message_logging = True
