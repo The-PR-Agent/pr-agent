@@ -87,6 +87,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "description_issue_regex",
         "global_settings_repo",
         "http_request_timeout",
+        "stream_cleanup_timeout",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
     }),

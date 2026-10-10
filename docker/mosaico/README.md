@@ -29,6 +29,10 @@ This is not a fork and it never becomes one:
 
 ## Quick start (standalone, no demonstrator)
 
+The example image predates stream cleanup deadlines. When using a release that
+implements `config.stream_cleanup_timeout`, replace the image tag in both
+Docker commands below with that pinned release.
+
 Boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:
 
 ```bash
@@ -165,10 +169,20 @@ Two outcomes:
   Set `MOSAICO__HEALTH_TIMEOUT_SECONDS` in the agent container's environment to override
   the default; with Compose, add it to the service's `environment` mapping.
   Invalid values make `/health` return the generic unhealthy response (503), not the default timeout.
+  Stream cleanup deadlines require an image that includes this implementation;
+  the pinned `0.41.0-mosaico_agent` image predates it.
   The bundled Compose probe has its own 25-second HTTP timeout. Stream cleanup may continue
-  after `/health` times out without delaying its unhealthy response; it has no separate
-  wait budget or local stream admission limit. Allow a margin over the health timeout in
-  the HTTP timeout and Docker's `healthcheck.timeout` so registration can run.
+  after `/health` times out without delaying its unhealthy response. Host-only
+  `config.stream_cleanup_timeout` limits cleanup waiting after completion or failure
+  (default: 5 seconds, capped at 30). Consumer cancellation propagates without waiting for
+  this budget. Expiry ends the wait without cancelling the closer. In either case, cleanup
+  continues in the background and remains tracked until the task finishes. Every acquired
+  stream gets a close attempt, including during bursts of concurrent completions.
+  This does not guarantee resource release. Blocking SDK work can exceed the deadline,
+  and cancellation-resistant closers can delay event-loop shutdown. Pending closers are
+  not capped; tasks that never finish remain tracked.
+  Allow a margin over the health timeout in the HTTP timeout and Docker's
+  `healthcheck.timeout` so registration can run.
   Check `API_BASE`/`API_KEY`/`MODEL_NAME`, not the compose file.
 - **Agent registers but the reference agent never reaches it.** The advertised card URL is
   `localhost`; see the `AGENT_CARD_HOST`/`AGENT_CARD_PORT` section above.
