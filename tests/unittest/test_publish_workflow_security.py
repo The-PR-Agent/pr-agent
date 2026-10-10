@@ -1,5 +1,6 @@
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -201,3 +202,93 @@ def test_release_finalize_keeps_uv_lock_in_sync() -> None:
     assert run.index("scripts/set_pyproject_version.py") < run.index("uv lock")
     assert "git diff --quiet pyproject.toml uv.lock" in commit_step["run"]
     assert "git add pyproject.toml uv.lock" in commit_step["run"]
+
+
+@pytest.mark.parametrize("revision", ["main", "older-main", "annotated-tag", "side-branch", "missing-main"])
+def test_published_commit_must_belong_to_main(tmp_path: Path, revision: str) -> None:
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
+    steps = workflow["jobs"]["prepare"]["steps"]
+    guard = next(step for step in steps if step.get("name") == "Require published commit to be on main")
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+    assert checkout["with"] == {
+        "ref": "${{ github.sha }}",
+        "fetch-depth": 0,
+        "persist-credentials": False,
+    }
+    assert steps.index(checkout) < steps.index(guard)
+    assert "if" not in guard
+
+    def git(*args: str) -> str:
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True, stderr=subprocess.PIPE).strip()
+
+    git("init", "-b", "main")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base")
+    older_main = git("rev-parse", "HEAD")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "main")
+    main = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/main", main)
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "tag", "-a", "v1.2.3", "-m", "release")
+    git("checkout", "-b", "side", older_main)
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "side")
+    sha = {
+        "main": main,
+        "older-main": older_main,
+        "annotated-tag": git("rev-parse", "v1.2.3"),
+        "side-branch": git("rev-parse", "HEAD"),
+        "missing-main": main,
+    }[revision]
+    if revision == "missing-main":
+        git("update-ref", "-d", "refs/remotes/origin/main")
+
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", guard["run"]],
+        cwd=tmp_path,
+        env={**os.environ, "GITHUB_SHA": sha},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    if revision in {"side-branch", "missing-main"}:
+        assert result.returncode != 0
+        assert "The published commit must be part of main history." in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+
+
+def test_pypi_build_is_separate_from_trusted_publisher() -> None:
+    jobs = yaml.safe_load(PUBLISH_WORKFLOW.read_text())["jobs"]
+    build = jobs["build-pypi"]
+    publisher = jobs["publish-pypi"]
+    assert build["needs"] == "prepare"
+    assert build["permissions"] == {"contents": "read"}
+    assert "environment" not in build
+    assert "secrets." not in str(build)
+    assert publisher["needs"] == ["prepare", "build-pypi"]
+    assert publisher["environment"] == "release"
+    assert publisher["permissions"] == {"id-token": "write"}
+    assert jobs["publish-docker"]["needs"] == "prepare"
+    assert "prepare" in jobs["finalize"]["needs"]
+    assert "publish-pypi" in jobs["finalize"]["needs"]
+
+    upload = next(step for step in build["steps"] if step.get("uses", "").startswith("actions/upload-artifact@"))
+    download, publish = publisher["steps"]
+    assert download["uses"].startswith("actions/download-artifact@")
+    assert download["with"]["name"] == upload["with"]["name"]
+    assert download["with"]["path"] == upload["with"]["path"] == "dist/"
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert publish["uses"].startswith("pypa/gh-action-pypi-publish@")
+    assert publish["with"]["attestations"] is True
+    assert publish["with"]["skip-existing"] is True
+    assert "password" not in publish["with"]
+    assert "user" not in publish["with"]
+    assert "secrets." not in str(publisher)
+
+
+def test_release_build_tools_are_pinned() -> None:
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
+    build = next(step for step in workflow["jobs"]["build-pypi"]["steps"] if step.get("name") == "Build distributions")
+    install, command = build["run"].splitlines()
+    assert install.startswith("python -m pip install build==") and command == "python -m build"
+    project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text())
+    assert all("==" in requirement for requirement in project["build-system"]["requires"])
