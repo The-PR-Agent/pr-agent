@@ -80,6 +80,7 @@ def _github(monkeypatch) -> GithubProvider:
     provider = GithubProvider.__new__(GithubProvider)
     provider.base_url = "https://api.github.example"
     provider.repo = "owner/repo"
+    provider.max_comment_chars = 65000
     provider.pr = MagicMock()
     provider.pr.get_issue_comments.return_value = [SimpleNamespace(body=COMMENT_BODY)]
     provider.pr.get_commits.return_value = [SimpleNamespace(commit=SimpleNamespace(message=COMMIT_MESSAGE))]
