@@ -200,14 +200,18 @@ async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monk
     assert tool.failed_chunk_count == 0
 
 
-async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeypatch):
+@pytest.mark.parametrize("unprocessed_kind", ["remaining", "partial"])
+async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeypatch, unprocessed_kind):
     get_settings().set("config.fallback_models", ["gpt-4.1"])
     tool, calls = make_tool(monkeypatch, {})
     packed_models = []
 
     def pack_for_model(_provider, _token_handler, model, **_kwargs):
         packed_models.append(model)
-        return PackedPRDiffs([], ["primary-only.py"], []) if model == "gpt-4o" else PackedPRDiffs(["a"], [], [])
+        if model == "gpt-4o":
+            return (PackedPRDiffs([], ["primary-only.py"], []) if unprocessed_kind == "remaining"
+                    else PackedPRDiffs([], [], ["primary-only.py"]))
+        return PackedPRDiffs(["a"], [], [])
 
     monkeypatch.setattr(module, "get_pr_multi_diffs", pack_for_model)
 
@@ -217,6 +221,27 @@ async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeyp
     assert [(model, chunk) for model, chunk, _, _ in calls] == [("gpt-4.1", "a")]
     assert [suggestion["relevant_file"] for suggestion in result["code_suggestions"]] == ["a.py"]
     assert tool.remaining_files_list == []
+    assert tool.partial_files_list == []
+
+
+@pytest.mark.parametrize("decouple_hunks", [True, False])
+async def test_no_analyzable_diff_skips_outer_fallback(configured, monkeypatch, decouple_hunks):
+    get_settings().set("pr_code_suggestions.decouple_hunks", decouple_hunks)
+    tool, calls = make_tool(monkeypatch, {})
+    packed_models = []
+
+    def pack_for_model(_provider, _token_handler, model, **_kwargs):
+        packed_models.append(model)
+        return PackedPRDiffs([], [], [])
+
+    monkeypatch.setattr(module, "get_pr_multi_diffs", pack_for_model)
+
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+
+    assert result == {"code_suggestions": []}
+    assert packed_models == ["gpt-4o"] * (1 if decouple_hunks else 2)
+    assert calls == []
+    assert tool.total_chunk_count == 0
 
 
 async def test_partial_success_on_outer_fallback_only_tries_later_models(configured, monkeypatch):

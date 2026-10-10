@@ -2177,8 +2177,8 @@ class PRCodeSuggestions:
                 diffs[0] = _append_metadata_section(
                     diffs[0], attempt_token_handler.prompt_tokens + attempt_token_handler.count_tokens(diffs[0]),
                     section, max_tokens, attempt_token_handler, whole_lines=True)[0]
-        elif deleted_files and not self.remaining_files_list:
-            return {"code_suggestions": []}  # only deletions: nothing a suggestion could anchor on
+        elif not self.patches_diff_list and not self.remaining_files_list and not self.partial_files_list:
+            return {"code_suggestions": []}
 
         if self.patches_diff_list:
             get_logger().info(f"Number of PR chunk calls: {len(self.patches_diff_list)}")
