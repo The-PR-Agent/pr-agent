@@ -1914,11 +1914,13 @@ class TestGitLabGlobalSettings:
 
     def test_result_is_cached(self):
         provider = self._provider()
+        provider.gl.oauth_token = "fake_token"
         proj = MagicMock()
         proj.default_branch = "main"
         proj.files.get.return_value.decode.return_value = b"[pr_reviewer]\nx = 1\n"
         provider.gl.projects.get.return_value = proj
-        with patch("pr_agent.git_providers.git_provider.get_settings") as ms:
+        with patch("pr_agent.git_providers.git_provider.get_settings") as ms, \
+             patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=ms.return_value):
             ms.return_value.config.use_global_settings_file = True
             ms.return_value.config.global_settings_repo = "pr-agent-settings"
             provider._get_global_repo_settings()
