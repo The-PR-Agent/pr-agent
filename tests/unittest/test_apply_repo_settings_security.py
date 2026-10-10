@@ -424,6 +424,21 @@ def test_repo_settings_cannot_override_provider_endpoint_keys(monkeypatch, setti
     assert _section(settings, section).get(key) == "host-controlled"
 
 
+def test_repo_settings_cannot_override_stream_cleanup_timeout(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b"[config]\nstream_cleanup_timeout = 30\n")
+    captured = _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.stream_cleanup_timeout", 0.25)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert provider.get_repo_settings_calls == 1
+    assert captured["errors"] is None
+    assert _section(settings, "config").get("stream_cleanup_timeout") == 0.25
+
+
 def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(
         repo_settings_bytes=(b'[ollama]\napi_key = "repo-key"\ntimeout = 30\n')

@@ -100,6 +100,10 @@ FORBIDDEN_ARGS = [
     "--config.http_request_timeout=600",
     "--config__http_request_timeout=600",
     '--config={"http_request_timeout": 600}',
+    # Keep stream cleanup deadlines host-controlled, like provider request timeouts.
+    "--config.stream_cleanup_timeout=30",
+    "--config__stream_cleanup_timeout=30",
+    '--config={"stream_cleanup_timeout": 30}',
     # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_tool_errors=false",

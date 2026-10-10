@@ -1,14 +1,18 @@
 """Raise a real openai.APIError when a streaming response arrives empty."""
 import asyncio
+import copy
 from contextvars import ContextVar
 from types import SimpleNamespace
 
 import openai
 import pytest
+from dynaconf.utils.parse_conf import DynaconfFormatError
 from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
+from starlette_context import request_cycle_context
 
 from pr_agent.algo.ai_handlers import litellm_helpers
 from pr_agent.algo.ai_handlers.litellm_helpers import _handle_streaming_response
+from pr_agent.config_loader import get_settings, global_settings
 
 
 class Chunk:
@@ -28,6 +32,137 @@ class Stream:
             for chunk in self.chunks:
                 yield chunk
         return generate()
+
+
+async def test_stalled_cleanup_does_not_delay_a_completed_result(monkeypatch):
+    monkeypatch.setitem(get_settings().config, "stream_cleanup_timeout", 0.02)
+    release, closed = asyncio.Event(), asyncio.Event()
+    previous_tasks = set(litellm_helpers._stream_close_tasks)
+
+    class StalledStream(Stream):
+        async def aclose(self):
+            try:
+                await release.wait()
+            finally:
+                closed.set()
+
+    try:
+        result = await asyncio.wait_for(
+            _handle_streaming_response(StalledStream([Chunk("ping", "stop")])), timeout=0.5,
+        )
+        assert result[0] == "ping"
+        assert not closed.is_set()
+        tasks = litellm_helpers._stream_close_tasks - previous_tasks
+        assert len(tasks) == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=0.5)
+        assert closed.is_set()
+        await asyncio.sleep(0)
+        assert not (litellm_helpers._stream_close_tasks - previous_tasks)
+    finally:
+        tasks = litellm_helpers._stream_close_tasks - previous_tasks
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_cancelled_consumer_cleanup_continues_after_its_wait_deadline(monkeypatch):
+    monkeypatch.setitem(get_settings().config, "stream_cleanup_timeout", 0.02)
+    started, release, closed, expired = (asyncio.Event() for _ in range(4))
+    warnings = []
+
+    def record_warning(message):
+        warnings.append(message)
+        expired.set()
+
+    monkeypatch.setattr(litellm_helpers, "_warn_stream_cleanup", record_warning)
+    previous_tasks = set(litellm_helpers._stream_close_tasks)
+
+    class CancelledStream(Stream):
+        def __aiter__(self):
+            async def generate():
+                raise asyncio.CancelledError
+                yield
+            return generate()
+
+        async def aclose(self):
+            started.set()
+            try:
+                await release.wait()
+            finally:
+                closed.set()
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await _handle_streaming_response(CancelledStream([]))
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        await asyncio.wait_for(expired.wait(), timeout=0.5)
+        assert warnings == [
+            "Stream cleanup remains pending after 0.02 seconds; cleanup continues in the background"
+        ]
+        assert not closed.is_set()
+        tasks = litellm_helpers._stream_close_tasks - previous_tasks
+        assert len(tasks) == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=0.5)
+        assert closed.is_set()
+        await asyncio.sleep(0)
+        assert not (litellm_helpers._stream_close_tasks - previous_tasks)
+    finally:
+        tasks = litellm_helpers._stream_close_tasks - previous_tasks
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.parametrize("count", [65, 100])
+async def test_concurrent_fast_closers_are_all_called(count):
+    attempts = []
+    previous_tasks = set(litellm_helpers._stream_close_tasks)
+
+    class FastStream:
+        async def aclose(self):
+            attempts.append(self)
+
+    streams = [FastStream() for _ in range(count)]
+    await asyncio.gather(*(litellm_helpers._close_stream(stream) for stream in streams))
+    await asyncio.sleep(0)
+    assert set(attempts) == set(streams)
+    assert len(attempts) == count
+    assert not (litellm_helpers._stream_close_tasks - previous_tasks)
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, None, "invalid", float("inf"), float("nan"), 10**400])
+def test_invalid_cleanup_timeout_uses_a_finite_default(monkeypatch, value):
+    warnings = []
+    monkeypatch.setattr(litellm_helpers, "_warn_stream_cleanup", warnings.append)
+    monkeypatch.setitem(get_settings().config, "stream_cleanup_timeout", value)
+    assert litellm_helpers._stream_cleanup_timeout() == litellm_helpers.DEFAULT_STREAM_CLEANUP_TIMEOUT_SECONDS
+    assert warnings == ["Ignoring invalid config.stream_cleanup_timeout; using the default"]
+
+
+def test_cleanup_timeout_cannot_exceed_its_ceiling(monkeypatch):
+    monkeypatch.setitem(get_settings().config, "stream_cleanup_timeout", 600)
+    assert litellm_helpers._stream_cleanup_timeout() == litellm_helpers.MAX_STREAM_CLEANUP_TIMEOUT_SECONDS
+
+
+async def test_unresolved_host_setting_cannot_replace_a_completed_result(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(litellm_helpers, "_warn_stream_cleanup", warnings.append)
+    monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "true")
+    monkeypatch.delenv("PR_AGENT_MISSING_CLEANUP_TEST", raising=False)
+    with request_cycle_context({"settings": copy.deepcopy(global_settings)}):
+        get_settings().set("AUTO_CAST_FOR_DYNACONF", True)
+        get_settings().set("CONFIG", {
+            "stream_cleanup_timeout": "@format {env[PR_AGENT_MISSING_CLEANUP_TEST]}",
+        }, merge=False)
+        with pytest.raises(DynaconfFormatError):
+            get_settings().get("config.stream_cleanup_timeout")
+        result = await _handle_streaming_response(Stream([Chunk("ping", "stop")]))
+    assert result[0] == "ping"
+    assert warnings == [
+        "Unable to resolve config.stream_cleanup_timeout: DynaconfFormatError; using the default"
+    ]
 
 
 def collect(chunks):
@@ -300,7 +435,8 @@ def test_litellm_stream_exposes_consumer_correlation_restore_hook():
     assert callable(getattr(CustomStreamWrapper, "_restore_consumer_correlation_context", None))
 
 
-async def test_stream_close_waits_until_completion_and_observes_late_failure(monkeypatch):
+@pytest.mark.parametrize("failure_type", [ValueError, asyncio.CancelledError, BaseException])
+async def test_stream_close_waits_until_completion_and_observes_late_failure(monkeypatch, failure_type):
     started, release, finished = (asyncio.Event() for _ in range(3))
     warnings = []
     previous_tasks = set(litellm_helpers._stream_close_tasks)
@@ -312,7 +448,7 @@ async def test_stream_close_waits_until_completion_and_observes_late_failure(mon
         async def aclose(self):
             started.set()
             await release.wait()
-            raise ValueError("private-late-provider-error")
+            raise failure_type("private-late-provider-error")
 
         def _restore_consumer_correlation_context(self):
             restored_in.append(asyncio.current_task())
@@ -341,10 +477,15 @@ async def test_stream_close_waits_until_completion_and_observes_late_failure(mon
         closer.add_done_callback(lambda _: finished.set())
         release.set()
         await asyncio.wait_for(finished.wait(), timeout=5)
-        assert closer.result() is None
+        if failure_type is asyncio.CancelledError:
+            assert closer.cancelled()
+        elif failure_type is BaseException:
+            assert isinstance(closer.exception(), BaseException)
+        else:
+            assert closer.result() is None
         assert closer not in litellm_helpers._stream_close_tasks
         assert len(warnings) == 1
-        assert "ValueError" in warnings[0]
+        assert failure_type.__name__ in warnings[0]
         assert "private-late-provider-error" not in warnings[0]
     finally:
         release.set()
@@ -389,6 +530,47 @@ async def test_repeated_cancellation_during_close_propagates_without_cancelling_
         await asyncio.gather(
             task, *(litellm_helpers._stream_close_tasks - previous_tasks), return_exceptions=True,
         )
+
+
+async def test_real_litellm_deadline_keeps_underlying_cleanup_alive(monkeypatch):
+    monkeypatch.setitem(get_settings().config, "stream_cleanup_timeout", 0.02)
+    started, release, closed, cancelled = (asyncio.Event() for _ in range(4))
+    previous_tasks = set(litellm_helpers._stream_close_tasks)
+
+    class UnderlyingStream:
+        async def aclose(self):
+            started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            closed.set()
+
+    stream = object.__new__(CustomStreamWrapper)
+    stream.completion_stream = UnderlyingStream()
+    stream.logging_obj = SimpleNamespace(
+        _restore_correlation_context=lambda: None,
+        _restore_correlation_context_if_unclaimed=lambda: None,
+    )
+    try:
+        await asyncio.wait_for(litellm_helpers._close_stream(stream), timeout=0.5)
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        await asyncio.sleep(0)
+        assert stream.completion_stream is None
+        assert not cancelled.is_set()
+        assert not closed.is_set()
+        tasks = litellm_helpers._stream_close_tasks - previous_tasks
+        assert len(tasks) == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=0.5)
+        await asyncio.sleep(0)
+        assert closed.is_set()
+        assert not cancelled.is_set()
+        assert not (litellm_helpers._stream_close_tasks - previous_tasks)
+    finally:
+        release.set()
+        await asyncio.gather(*(litellm_helpers._stream_close_tasks - previous_tasks), return_exceptions=True)
 
 
 async def test_real_litellm_single_cancellation_does_not_reach_close():

@@ -37,10 +37,18 @@ Invalid values produce the generic unhealthy response (503), rather than using t
 When increasing the budget, also allow sufficient time in any external health-check client
 and container healthcheck; the bundled Compose probe uses a separate 25-second HTTP timeout.
 
+Stream cleanup deadlines require an image that includes this implementation;
+the pinned `0.41.0-mosaico_agent` image predates it.
+
 Chat and health-probe streams attempt cleanup on completion, failure, or cancellation.
-Consumer cancellation does not interrupt stream cleanup, which may continue after `/health`
-times out while the event loop remains active. Cleanup has no separate wait budget or
-configuration key and does not impose a local stream admission limit.
+Host-only `config.stream_cleanup_timeout` limits cleanup waiting after completion or failure
+(5 seconds by default, capped at 30). Consumer cancellation propagates without waiting for
+this budget. Expiry ends the wait without cancelling the closer. In either case, cleanup
+continues in the background and remains tracked until the task finishes. Every acquired
+stream gets a close attempt, including during bursts of concurrent completions.
+This does not guarantee resource release. Blocking SDK work can exceed the wait deadline,
+and cancellation-resistant closers can delay event-loop shutdown. Pending closers are not
+capped; tasks that never finish remain tracked.
 
 The advertised agent card carries the skills `review`, `improve`, `describe`, and `ask`, the
 name `"PR-Agent Solution Agent"`, a `version` derived from the running build (never
@@ -90,6 +98,10 @@ script's environment when the server map is configured. For the Compose overlay,
 credential separately. Both probes continue to work without a token in anonymous mode.
 
 ### Run the standalone container
+
+The example image predates stream cleanup deadlines. When using a release that
+implements `config.stream_cleanup_timeout`, replace the image tag in both
+Docker commands below with that pinned release.
 
 The server boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:
 

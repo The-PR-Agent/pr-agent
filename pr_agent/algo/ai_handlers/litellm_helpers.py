@@ -15,6 +15,8 @@ DEFAULT_CALLBACK_TIMEOUT_SECONDS = 30
 MAX_DRAIN_ROUNDS = 5
 FLUSH_RESERVE_SECONDS = 1.0  # cap for each terminal phase reservation
 CANCELLATION_CLEANUP_SECONDS = 0.1
+DEFAULT_STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
+MAX_STREAM_CLEANUP_TIMEOUT_SECONDS = 30.0
 _stream_close_tasks = set()
 _LITELLM_CALLBACK_ATTRS = (
     "callbacks",
@@ -92,21 +94,54 @@ async def _aclose_quietly(response):
         _warn_stream_cleanup(f"Failed to close streaming response: {type(error).__name__}")
 
 
-async def _close_stream(response):
-    """Let consumer cancellation propagate without interrupting stream cleanup."""
+def _stream_cleanup_timeout():
     try:
+        value = get_settings().get("config.stream_cleanup_timeout", DEFAULT_STREAM_CLEANUP_TIMEOUT_SECONDS)
+    except Exception as error:
+        # Preserve inference results when a lazy host setting cannot be resolved.
+        _warn_stream_cleanup(
+            f"Unable to resolve config.stream_cleanup_timeout: {type(error).__name__}; using the default"
+        )
+        return DEFAULT_STREAM_CLEANUP_TIMEOUT_SECONDS
+    try:
+        timeout = 0.0 if isinstance(value, bool) else float(value)
+    except Exception:
+        timeout = 0.0
+    if not isfinite(timeout) or timeout <= 0:
+        _warn_stream_cleanup("Ignoring invalid config.stream_cleanup_timeout; using the default")
+        return DEFAULT_STREAM_CLEANUP_TIMEOUT_SECONDS
+    return min(timeout, MAX_STREAM_CLEANUP_TIMEOUT_SECONDS)
+
+
+async def _close_stream(response):
+    """Bound cleanup waiting without cancelling the closer or replacing the result."""
+    try:
+        timeout = _stream_cleanup_timeout()
         task = asyncio.ensure_future(_aclose_quietly(response))
-        # Keep a strong reference when a cancelled consumer leaves cleanup running.
         _stream_close_tasks.add(task)
-        task.add_done_callback(_stream_close_tasks.discard)
+
+        def report_cleanup_deadline():
+            if not task.done():
+                _warn_stream_cleanup(
+                    f"Stream cleanup remains pending after {timeout:g} seconds; cleanup continues in the background"
+                )
+
+        deadline = asyncio.get_running_loop().call_later(timeout, report_cleanup_deadline)
+
+        def release_cleanup(completed):
+            deadline.cancel()
+            _stream_close_tasks.discard(completed)
+            if completed.cancelled():
+                _warn_stream_cleanup("Failed to close streaming response: CancelledError")
+            else:
+                error = completed.exception()
+                if error is not None:
+                    _warn_stream_cleanup(f"Failed to close streaming response: {type(error).__name__}")
+
+        task.add_done_callback(release_cleanup)
         # Skip waiting while cancellation unwinds, even without a task.cancel() request.
         if not asyncio.current_task().cancelling() and not isinstance(sys.exception(), asyncio.CancelledError):
-            try:
-                await asyncio.shield(task)
-            except asyncio.CancelledError:
-                if asyncio.current_task().cancelling():
-                    raise
-                _warn_stream_cleanup("Failed to close streaming response: CancelledError")
+            await asyncio.wait((task,), timeout=timeout)
     finally:
         # LiteLLM's close task cannot restore the consuming task's correlation IDs.
         restore = getattr(type(response), "_restore_consumer_correlation_context", None)
