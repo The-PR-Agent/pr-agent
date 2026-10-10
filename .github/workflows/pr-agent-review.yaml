@@ -128,6 +128,20 @@ jobs:
               ;;
           esac
 
+      # Post as the "PR Agent" GitHub App instead of github-actions[bot] once its client ID
+      # variable and private key secret are configured; until then the workflow token is used.
+      - name: Create PR Agent app token
+        id: app-token
+        if: steps.authorize.outputs.allowed == 'true' && vars.PR_AGENT_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ vars.PR_AGENT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.PR_AGENT_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-issues: write
+          permission-pull-requests: write
+
       - name: Run sponsored PR-Agent
         if: steps.authorize.outputs.allowed == 'true'
         uses: docker://pragent/pr-agent:github_action
@@ -138,7 +152,7 @@ jobs:
             export GITHUB_EVENT_PATH=$PR_AGENT_EVENT_PATH;
             exec /entrypoint.sh"
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           PR_AGENT_EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
           PR_AGENT_EVENT_PATH: ${{ steps.replay.outputs.event_path || '/github/workflow/event.json' }}
           OPENAI_KEY: ${{ secrets.QODO_SPONSORSHIP_LLM_KEY }}
