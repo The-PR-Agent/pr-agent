@@ -166,6 +166,40 @@ def test_filtered_file_names_never_append_a_partial_path():
     assert handler.count_tokens(result) <= budget
 
 
+def test_whole_line_metadata_keeps_full_section_with_one_exact_probe():
+    handler = CharacterTokenHandler(prompt_tokens=3)
+    base = "patch"
+    section = "Deleted files:\n\nold.py"
+    max_tokens = handler.prompt_tokens + len(base + "\n\n" + section)
+
+    result, tokens, clipped = pr_processing._append_metadata_section(
+        base, handler.prompt_tokens + len(base), section, max_tokens, handler, whole_lines=True,
+    )
+
+    assert result == base + "\n\n" + section
+    assert clipped == section
+    assert tokens == max_tokens
+    assert handler.count_calls <= 2  # separator and full candidate; no prefix probes
+
+
+def test_whole_line_metadata_bounds_token_checks_when_many_files_are_omitted():
+    handler = CharacterTokenHandler(prompt_tokens=7)
+    base = "modified diff\n" * 1_000
+    names = [f"archived/file_{index:04d}.py" for index in range(512)]
+    section = "Deleted files:\n\n" + "\n".join(names)
+    retained = "Deleted files:\n\n" + "\n".join(names[:4])
+    max_tokens = handler.prompt_tokens + len(base + "\n\n" + retained)
+
+    result, tokens, clipped = pr_processing._append_metadata_section(
+        base, handler.prompt_tokens + len(base), section, max_tokens, handler, whole_lines=True,
+    )
+
+    assert result == base + "\n\n" + retained
+    assert clipped == retained
+    assert tokens == max_tokens
+    assert handler.count_calls <= 32  # includes full-section probe and separator
+
+
 def test_all_filtered_files_do_not_create_a_review_diff(monkeypatch):
     handler = CharacterTokenHandler(prompt_tokens=0)
     provider = FakeProvider([], filtered_names=["pnpm-lock.yaml"])

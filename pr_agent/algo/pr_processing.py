@@ -79,12 +79,27 @@ def _append_metadata_section(
     if whole_lines:
         lines = section.splitlines()
         # A heading without a filename conveys no useful filtered-file information.
-        for count in range(len(lines), 2, -1):
-            clipped_section = "\n".join(lines[:count])
-            candidate = final_diff + separator + clipped_section
-            candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(token_handler, candidate)
-            if candidate_tokens <= max_tokens:
-                return candidate, candidate_tokens, clipped_section
+        if len(lines) > 2:
+            heading, filenames = lines[:2], lines[2:]
+            result = (final_diff, curr_token, "")
+
+            def fits(prefix: list[str]) -> bool:
+                nonlocal result
+                clipped_section = "\n".join(heading + prefix)
+                candidate = final_diff + separator + clipped_section
+                candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(
+                    token_handler, candidate
+                )
+                if candidate_tokens <= max_tokens:
+                    result = (candidate, candidate_tokens, clipped_section)
+                    return True
+                return False
+
+            # Check the full section first to avoid extra probes in the common case.
+            if not fits(filenames):
+                # Accept only verified prefixes when token counts are non-monotone.
+                _find_verified_fitting_prefix_length(filenames, len(filenames) - 1, fits)
+            return result
     else:
         section_tokens = token_handler.count_tokens(section)
         clipped_section = clip_tokens(section, section_budget, num_input_tokens=section_tokens)
