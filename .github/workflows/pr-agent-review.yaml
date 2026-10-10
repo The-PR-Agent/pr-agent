@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       comment_id:
-        description: ID of an existing /describe or /improve PR comment to replay
+        description: ID of an existing PR-Agent command comment to replay
         required: false
         type: string
       pr_number:
@@ -21,12 +21,9 @@ permissions:
   issues: write
   pull-requests: write
 
-concurrency:
-  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || inputs.comment_id }}
-  cancel-in-progress: false
-
 jobs:
   pr_agent_job:
+    # A cheap pre-filter only: the "Authorize comment command" step is the real gate.
     if: >-
       github.event.sender.type != 'Bot' &&
       (
@@ -36,15 +33,16 @@ jobs:
           github.event_name == 'issue_comment' &&
           github.event.issue.pull_request &&
           contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association) &&
-          (
-            github.event.comment.body == '/describe' || startsWith(github.event.comment.body, '/describe ') ||
-            github.event.comment.body == '/improve' || startsWith(github.event.comment.body, '/improve ')
-          )
+          startsWith(github.event.comment.body, '/')
         )
       )
+    # Job-level so comments that skip the job never join the group and cancel a queued command.
+    concurrency:
+      group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number || inputs.comment_id }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    name: Describe PRs and suggest improvements
+    name: Run PR-Agent
     steps:
       - name: Load PR event for manual replay
         if: github.event_name == 'workflow_dispatch'
@@ -66,6 +64,7 @@ jobs:
               end' > "$GITHUB_WORKSPACE/pr-agent-event.json"
             echo "event_name=pull_request_target" >> "$GITHUB_OUTPUT"
             echo "event_path=/github/workspace/pr-agent-event.json" >> "$GITHUB_OUTPUT"
+            echo "host_event_path=$GITHUB_WORKSPACE/pr-agent-event.json" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           [[ "$COMMENT_ID" =~ ^[0-9]+$ ]] || { echo "Invalid comment ID"; exit 1; }
@@ -78,17 +77,55 @@ jobs:
             --arg repository "$GH_REPO" '
             $comment[0] as $c | $issue[0] as $i |
             if $i.pull_request == null then error("Comment must belong to a pull request")
-            elif ($c.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")) | not then
-              error("Comment must be from a maintainer or collaborator")
-            elif ($c.body | test("^/(describe|improve)( |$)")) | not then
-              error("Only /describe and /improve can be replayed")
             else {action: "created", comment: $c, issue: $i, sender: $c.user,
                   repository: {full_name: $repository}}
             end' > "$GITHUB_WORKSPACE/pr-agent-event.json"
           echo "event_path=/github/workspace/pr-agent-event.json" >> "$GITHUB_OUTPUT"
+          echo "host_event_path=$GITHUB_WORKSPACE/pr-agent-event.json" >> "$GITHUB_OUTPUT"
           echo "event_name=issue_comment" >> "$GITHUB_OUTPUT"
 
+      # Comment commands spend the sponsored key, so only users with write access to the
+      # repository may run them (author_association alone also admits triage and read roles).
+      # /config and /settings are left out because they print configuration into the PR;
+      # /similar_issue and /help_docs are left out because they cannot run in this setup.
+      - name: Authorize comment command
+        id: authorize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ steps.replay.outputs.event_name || github.event_name }}
+          EVENT_FILE: ${{ steps.replay.outputs.host_event_path || github.event_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "issue_comment" ]]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          body=$(jq -r '.comment.body // ""' "$EVENT_FILE")
+          command=${body%%[[:space:]]*}
+          case "$command" in
+            /describe|/review|/improve|/ask|/help|/add_docs|/generate_labels|/update_changelog) ;;
+            *)
+              echo "::notice::Skipping: this comment command is not enabled for PR-Agent"
+              echo "allowed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          login=$(jq -r '.comment.user.login // ""' "$EVENT_FILE")
+          role=$(gh api "repos/$GH_REPO/collaborators/$login/permission" --jq '.role_name' 2>/dev/null || echo none)
+          case "$role" in
+            admin|maintain|write)
+              echo "allowed=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::notice::Skipping: comment commands require write access to the repository"
+              echo "allowed=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
       - name: Run sponsored PR-Agent
+        if: steps.authorize.outputs.allowed == 'true'
         uses: docker://pragent/pr-agent:github_action
         with:
           entrypoint: /bin/sh
@@ -111,7 +148,9 @@ jobs:
           CONFIG__MAX_OUTPUT_TOKENS: '8192'
           CONFIG__LOG_LEVEL: INFO
           CONFIG__OUTPUT_RUN_DETAILS: 'true'
-          PR_DESCRIPTION__PUBLISH_DESCRIPTION_AS_COMMENT: 'true'
+          # Write the generated description into the PR body, keeping the author's text in it.
+          PR_DESCRIPTION__PUBLISH_DESCRIPTION_AS_COMMENT: 'false'
+          PR_DESCRIPTION__ADD_ORIGINAL_USER_DESCRIPTION: 'true'
           GITHUB_ACTION_CONFIG__AUTO_DESCRIBE: 'true'
           GITHUB_ACTION_CONFIG__AUTO_REVIEW: 'false'
           GITHUB_ACTION_CONFIG__AUTO_IMPROVE: 'true'
