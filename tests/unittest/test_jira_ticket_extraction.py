@@ -1,3 +1,4 @@
+from contextlib import suppress
 from string import ascii_uppercase
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
@@ -27,6 +28,7 @@ _JIRA_KEYS = (
     "JIRA.JIRA_API_TOKEN",
     "JIRA.JIRA_REQUIREMENTS_FIELD",
     "JIRA.PROJECT_KEYS",
+    "JIRA.REQUIRE_PROJECT_KEYS",
 )
 
 
@@ -35,7 +37,11 @@ def restore_jira_settings():
     saved = {key: get_settings().get(key, None) for key in _JIRA_KEYS}
     yield
     for key, value in saved.items():
-        get_settings().set(key, value)
+        if value is None:
+            with suppress(KeyError):
+                get_settings().unset(key, force=True)
+        else:
+            get_settings().set(key, value)
 
 
 class TestFindJiraTickets:
@@ -465,6 +471,33 @@ class TestExtractJiraTickets:
             result = extract_jira_tickets("PROJ-1 SHA-256")
         assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "SHA-256"]
         assert len(result) == 2
+
+    @pytest.mark.parametrize("value", [[], (), "", "   ", None])
+    def test_require_project_keys_skips_when_empty_or_unsupplied(self, value):
+        """When jira.require_project_keys is enabled, empty, missing, or blank
+        jira.project_keys skips lookup instead of widening to every key found."""
+        self._configure_jira()
+        get_settings().set("JIRA.REQUIRE_PROJECT_KEYS", True)
+        get_settings().set("JIRA.PROJECT_KEYS", value)
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert any("require_project_keys" in c for c in warning_calls)
+
+    def test_require_project_keys_permits_allowlisted_keys(self):
+        """When jira.require_project_keys is enabled and project_keys contains valid keys,
+        lookups for those projects succeed while others are filtered out."""
+        self._configure_jira()
+        get_settings().set("JIRA.REQUIRE_PROJECT_KEYS", True)
+        get_settings().set("JIRA.PROJECT_KEYS", ["PROJ"])
+        client = self._fake_client()
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("PROJ-1 SHA-256 OTHER-2")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1"]
+        assert [t["ticket_id"] for t in result] == ["PROJ-1"]
 
     @pytest.mark.parametrize("entries", [[""], [" "], ["", ""], ",", " , "])
     def test_supplied_blank_project_keys_fail_closed(self, entries):

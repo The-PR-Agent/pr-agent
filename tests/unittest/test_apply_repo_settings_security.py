@@ -494,6 +494,7 @@ def test_repo_settings_cannot_override_provider_authentication_or_tls(
         ("project_keys", ["PROJ"], '["PROJ", "HR"]'),
         ("jira_site", "host-org", '"other-org"'),
         ("jira_api_email", "bot@host.example", '"other@repo.example"'),
+        ("require_project_keys", True, "false"),
     ],
 )
 def test_repo_settings_cannot_widen_jira_lookup_scope(
@@ -510,7 +511,8 @@ def test_repo_settings_cannot_widen_jira_lookup_scope(
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
-    assert _section(settings, "jira").get(key) == host_value
+    jira_section = {k.lower(): v for k, v in _section(settings, "jira").items()}
+    assert jira_section.get(key.lower()) == host_value
     assert CliArgs.validate_user_args([f"--jira.{key}=untrusted"])[0] is False
 
 
