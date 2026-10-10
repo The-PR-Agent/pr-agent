@@ -1103,6 +1103,64 @@ async def test_synchronize_event_triggers_push_commands_on_pull_request_target(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command_fails", [False, True])
+async def test_synchronize_reuses_host_snapshot_per_invocation(monkeypatch, tmp_path, command_fails):
+    get_settings().as_dict()
+    settings = copy.deepcopy(get_settings())
+    settings.set("CONFIG.EXTRA_CONFIG_URL", "https://config.example/host.toml")
+    settings.set("CONFIG.USE_REPO_SETTINGS_FILE", False)
+    settings.set("GITHUB_ACTION_CONFIG", {
+        "handle_push_trigger": True,
+        "push_trigger_ignore_merge_commits": False,
+        "push_trigger_ignore_bot_commits": False,
+        "push_commands": ["/describe", "/improve"],
+    }, merge=False)
+    monkeypatch.setattr(github_action_runner, "get_settings", lambda: settings)
+    monkeypatch.setattr(git_utils, "get_settings", lambda: settings)
+    monkeypatch.setattr(git_utils, "get_git_provider_with_context", lambda _url: Mock())
+    monkeypatch.setattr(github_action_runner, "_inject_artifact_context", lambda: None)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_synchronize_event(tmp_path)))
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    config = tmp_path / "host.toml"
+    acquisitions, observed = [], []
+
+    def acquire(source):
+        acquisitions.append(source)
+        return str(config), False
+
+    class FakeAgent:
+        async def handle_request(self, url, body, notify=None):
+            git_utils.apply_repo_settings(url)
+            observed.append(settings.get("CONFIG.MODEL"))
+            config.write_text('[config]\nmodel = "changed-mid-invocation"\n', encoding="utf-8")
+            if command_fails:
+                raise RuntimeError("command failed")
+
+    monkeypatch.setattr(git_utils, "_resolve_extra_config_to_file", acquire)
+    monkeypatch.setattr(github_action_runner, "PRAgent", FakeAgent)
+    config.write_text('[config]\nmodel = "first-invocation"\n', encoding="utf-8")
+    if command_fails:
+        with pytest.raises(RuntimeError, match="command failed"):
+            await github_action_runner.run_action()
+    else:
+        await github_action_runner.run_action()
+    assert acquisitions == ["https://config.example/host.toml"]
+    assert observed == ["first-invocation"] * (1 if command_fails else 2)
+
+    config.write_text('[config]\nmodel = "outside-invocation"\n', encoding="utf-8")
+    git_utils.apply_host_settings()
+    assert settings.get("CONFIG.MODEL") == "outside-invocation"
+
+    command_fails = False
+    observed.clear()
+    config.write_text('[config]\nmodel = "next-invocation"\n', encoding="utf-8")
+    await github_action_runner.run_action()
+    assert acquisitions == ["https://config.example/host.toml"] * 3
+    assert observed == ["next-invocation"] * 2
+
+
+@pytest.mark.asyncio
 async def test_synchronize_skips_merge_commit(monkeypatch, tmp_path, restore_github_settings):
     handled = []
     _patch_synchronize_deps(monkeypatch, handled, ["/describe"])

@@ -149,7 +149,9 @@ Accepted values:
 - `file:///path/to/shared.toml` — read from the local filesystem
 - A bare filesystem path — same as `file://`
 
-GitLab comment webhooks apply this host layer before their first provider lookup; repository and per-directory settings remain part of normal command dispatch.
+Within a webhook request, CLI invocation or GitHub Action invocation, PR-Agent selects and acquires the external configuration source once, then reapplies that snapshot before each command. Changes to the external file, or recovery after a failed fetch, take effect in the next request or invocation. GitLab comment webhooks apply this host layer before their first provider lookup; repository and per-directory settings remain part of normal command dispatch.
+
+Cached snapshots are limited to 1 MB for both local and remote sources.
 
 GitLab tokens obtained from a secret provider during webhook authentication remain bound to that request. External files and environment reapplication cannot replace those authenticated credentials.
 

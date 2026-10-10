@@ -20,6 +20,7 @@ from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.utils import host_settings_scope
 from pr_agent.log import get_logger, setup_logger
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -34,12 +35,15 @@ _PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset({
 })
 _JSON_REVIEW_COMMANDS = frozenset({"review", "review_pr"})
 _OUTPUT_OPTIONS = ("--output", "--json-output")
-_CLI_CONTEXT_CACHES = ("git_provider", "repo_settings", "git_files", "diff_files", "authenticated_provider_settings")
+_CLI_CONTEXT_CACHES = (
+    "git_provider", "repo_settings", "git_files", "diff_files",
+    "external_host_settings_source", "external_host_settings", "authenticated_provider_settings",
+)
 
 
 @contextmanager
 def _cli_settings_scope():
-    """Give one CLI invocation its own settings and target-derived caches."""
+    """Copy caller settings while resetting request-scoped caches and guards."""
     try:
         scope_data = context.copy()
     except Exception:
@@ -51,7 +55,8 @@ def _cli_settings_scope():
     cm = request_cycle_context(scope_data)
     cm.__enter__()
     try:
-        yield
+        with host_settings_scope():
+            yield
     finally:
         # Reset the context even when BaseException would skip the bare generator's cleanup.
         cm.__exit__(None, None, None)

@@ -7,6 +7,8 @@ import re
 import tempfile
 import tomllib
 import traceback
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import urlparse
 from urllib.request import Request, url2pathname, urlopen
 
@@ -25,6 +27,8 @@ from pr_agent.custom_merge_loader import MAX_TOML_SIZE_IN_BYTES, validate_file_s
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import get_config_branch
 from pr_agent.log import get_logger
+
+_host_settings_invocation: ContextVar[dict | None] = ContextVar("host_settings_invocation", default=None)
 
 _MAX_EXTRA_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB cap for a remote .toml
 _FETCH_TIMEOUT_SECONDS = 10
@@ -180,7 +184,17 @@ def _reapply_env_overrides():
         _restore_authenticated_provider_settings()
 
 
-def _apply_settings_from_file(path: str, label: str):
+def _host_settings_file_allowed(path: str, max_bytes: int) -> bool:
+    if os.path.splitext(path)[1].lower() != ".toml":
+        get_logger().warning("Ignoring extra host settings: only .toml files are allowed")
+        return False
+    if os.path.getsize(path) > max_bytes:
+        get_logger().warning("Ignoring oversized extra host settings")
+        return False
+    return True
+
+
+def _apply_settings_from_file(path: str, label: str, *, display_name: str | None = None):
     """
     Merge an external .toml settings file into the global settings, section-by-section.
     Uses the same custom_merge_loader as repo-local settings so security checks
@@ -188,7 +202,11 @@ def _apply_settings_from_file(path: str, label: str):
     """
     if not path or not os.path.isfile(path):
         return
+    log_source = display_name or path
+    stage = "load"
     try:
+        if not _host_settings_file_allowed(path, MAX_TOML_SIZE_IN_BYTES):
+            return
         dynconf_kwargs = {
             "core_loaders": [],
             "loaders": ["pr_agent.custom_merge_loader"],
@@ -227,6 +245,7 @@ def _apply_settings_from_file(path: str, label: str):
             )
             new_settings = Dynaconf(settings_files=[path])
 
+        stage = "merge"
         merged_sections = []
         for section, contents in new_settings.as_dict().items():
             if not contents:
@@ -240,38 +259,106 @@ def _apply_settings_from_file(path: str, label: str):
         # Restore env-var precedence: the section-level unset()/set() above can
         # silently overwrite values originally sourced from env vars. Replay
         # env_loader so the env layer remains the top of the precedence stack.
+        stage = "restore precedence"
         _reapply_env_overrides()
         # Do NOT log the merged dict: external/repo .pr_agent.toml may contain
         # secrets (e.g. openai.key, gitlab.personal_access_token) that would
         # otherwise leak into CI logs. Section names are safe and sufficient
         # for debugging which file contributed what.
         get_logger().info(
-            f"Applied {label} settings from {path} (sections merged: {sorted(merged_sections)})"
+            f"Applied {label} settings from {log_source} (sections merged: {sorted(merged_sections)})"
         )
     except Exception as e:
-        get_logger().warning(f"Failed to apply {label} settings from {path}: {e}")
+        get_logger().warning(f"Failed to {stage} {label} settings from {log_source}: {type(e).__name__}")
+
+
+@contextmanager
+def host_settings_scope():
+    """Give a non-web invocation its own external host-settings snapshot."""
+    token = _host_settings_invocation.set({})
+    try:
+        yield
+    finally:
+        _host_settings_invocation.reset(token)
 
 
 def apply_host_settings():
-    """Merge CONFIG.EXTRA_CONFIG_URL before provider initializers read connection settings."""
+    """Apply trusted external settings, sharing acquisition within a request or invocation."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
-    extra_source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+    scope = _host_settings_invocation.get()
+    if scope is None and context.exists():
+        scope = context
+    if scope is not None and "external_host_settings_source" in scope:
+        source = scope["external_host_settings_source"]
+    else:
+        source = get_settings().get("CONFIG.EXTRA_CONFIG_URL", None)
+        if scope is not None:
+            scope["external_host_settings_source"] = source
+    if source is None or (isinstance(source, str) and not source.strip()):
+        _restore_authenticated_provider_settings()
+        return
+    if not isinstance(source, str):
+        get_logger().warning(f"Ignoring CONFIG.EXTRA_CONFIG_URL: expected str, got {type(source).__name__}")
+        _restore_authenticated_provider_settings()
+        return
+
+    source = source.strip()
+    cache = scope.setdefault("external_host_settings", {}) if scope is not None else None
+    temporary_files = []
+    display_name = "<extra host settings>"
+    stage = "resolve"
     try:
-        if isinstance(extra_source, str) and extra_source.strip():
-            extra_path, extra_is_temp = _resolve_extra_config_to_file(extra_source)
-            if extra_path:
-                try:
-                    _apply_settings_from_file(extra_path, label="extra")
-                finally:
-                    if extra_is_temp:
-                        try:
-                            os.remove(extra_path)
-                        except Exception as error:
-                            get_logger().error(f"Failed to remove temp extra config {extra_path}: {error}")
-        elif extra_source is not None and not isinstance(extra_source, str):
-            get_logger().warning(f"Ignoring CONFIG.EXTRA_CONFIG_URL: expected str, got {type(extra_source).__name__}")
+        parsed = None if _WINDOWS_DRIVE_PATH_RE.match(source) else urlparse(source)
+        if parsed and parsed.scheme.lower() in ("http", "https", "file"):
+            if parsed.scheme.lower() in ("http", "https"):
+                # Keep credentials in URL paths out of replay diagnostics too.
+                parsed = parsed._replace(path="", params="", query="", fragment="")
+            display_name = _safe_url_for_log(parsed.geturl())
+        else:
+            display_name = source
+        if cache is None:
+            path, temporary = _resolve_extra_config_to_file(source)
+            if temporary and path:
+                temporary_files.append(path)
+            if path:
+                stage = "apply"
+                _apply_settings_from_file(path, label="extra", display_name=display_name)
+            return
+
+        if source not in cache:
+            cache[source] = None
+            path, temporary = _resolve_extra_config_to_file(source)
+            if temporary and path:
+                temporary_files.append(path)
+            if path:
+                stage = "read"
+                # Bound retained snapshots by the same limit used for remote acquisition.
+                max_snapshot_bytes = min(MAX_TOML_SIZE_IN_BYTES, _MAX_EXTRA_CONFIG_BYTES)
+                if not _host_settings_file_allowed(path, max_snapshot_bytes):
+                    return
+                with open(path, "rb") as settings_file:
+                    payload = settings_file.read(max_snapshot_bytes + 1)
+                if len(payload) > max_snapshot_bytes:
+                    get_logger().warning("Ignoring oversized extra host settings")
+                    return
+                cache[source] = payload
+
+        if cache[source] is not None:
+            stage = "replay"
+            path = _write_settings_temp(cache[source], temporary_files)
+            # Replay the host layer before each command, including environment precedence.
+            _apply_settings_from_file(path, label="extra", display_name=display_name)
+    except Exception as error:
+        get_logger().warning(
+            f"Failed to {stage} extra host settings from {display_name}: {type(error).__name__}"
+        )
     finally:
         _restore_authenticated_provider_settings()
+        for path in temporary_files:
+            try:
+                os.remove(path)
+            except OSError as error:
+                get_logger().warning(f"Failed to remove extra settings temporary file: {type(error).__name__}")
 
 
 def apply_repo_settings(pr_url):

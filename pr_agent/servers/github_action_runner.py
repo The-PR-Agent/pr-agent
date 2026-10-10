@@ -19,7 +19,7 @@ from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
-from pr_agent.git_providers.utils import apply_repo_settings
+from pr_agent.git_providers.utils import apply_repo_settings, host_settings_scope
 from pr_agent.log import get_logger, setup_logger
 from pr_agent.servers.github_common import (
     _reformat_quote_ask_command,
@@ -204,6 +204,11 @@ async def _run_review_commands(event_payload):
 
 
 async def run_action():
+    with host_settings_scope():
+        await _run_action()
+
+
+async def _run_action():
     # Get environment variables
     GITHUB_EVENT_NAME = os.environ.get('GITHUB_EVENT_NAME')
     GITHUB_EVENT_PATH = os.environ.get('GITHUB_EVENT_PATH')

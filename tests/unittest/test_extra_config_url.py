@@ -838,12 +838,11 @@ def test_resolve_does_not_log_url_credentials(urlopen_stub):
     assert "baduser" not in combined, "URL username leaked into log output"
 
 
+@pytest.mark.parametrize(("suffix", "oversized"), [(".toml", False), (".ini", False), (".toml", True)])
 def test_apply_settings_file_loads_when_dynaconf_lacks_security_flags(
-    tmp_path, settings_sandbox, monkeypatch
+    tmp_path, settings_sandbox, monkeypatch, suffix, oversized
 ):
-    """Regression: older Dynaconf versions reject load_dotenv/envvar_prefix
-    kwargs. _apply_settings_from_file must still load the file via the fallback
-    instead of dropping the merge entirely."""
+    """Preserve file guards and valid fallback loading when Dynaconf lacks security flags."""
     import pr_agent.git_providers.utils as utils_mod
 
     real_dynaconf = utils_mod.Dynaconf
@@ -862,15 +861,19 @@ def test_apply_settings_file_loads_when_dynaconf_lacks_security_flags(
 
     monkeypatch.setattr(utils_mod, "Dynaconf", _FakeDynaconf)
 
-    path = _write_toml(tmp_path, "extra.toml", f"""
+    path = _write_toml(tmp_path, f"extra{suffix}", f"""
 [{_TEST_SECTION}]
 fallback_key = "from-old-dynaconf"
 """)
+    if oversized:
+        monkeypatch.setattr(utils_mod, "MAX_TOML_SIZE_IN_BYTES", 1)
+    get_settings().set(f"{_TEST_SECTION}.fallback_key", "host-controlled")
     _apply_settings_from_file(path, label="extra")
 
-    assert call_log["strict"] == 1, "must first try the hardened Dynaconf kwargs"
-    assert call_log["fallback"] == 1, "must fall back when TypeError is raised"
-    assert get_settings().get(f"{_TEST_SECTION}.fallback_key") == "from-old-dynaconf"
+    expected_calls = 0 if oversized or suffix != ".toml" else 1
+    assert call_log == {"strict": expected_calls, "fallback": expected_calls}
+    expected_value = "from-old-dynaconf" if expected_calls else "host-controlled"
+    assert get_settings().get(f"{_TEST_SECTION}.fallback_key") == expected_value
 
 
 def test_settings_sandbox_restores_auto_cast_env_var(monkeypatch):
