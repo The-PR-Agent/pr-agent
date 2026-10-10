@@ -62,6 +62,7 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
+    _as_line,
     convert_to_markdown_v2,
     is_value_no,
     load_yaml,
@@ -732,12 +733,9 @@ class PRReviewer:
             "path": path,
             "body": f"**{header}**\n\n{content}" if header else content,
         }
-        try:
-            start = int(str(issue.get("start_line", 0)).strip())
-            end = int(str(issue.get("end_line", start)).strip())
-        except (TypeError, ValueError):
-            start, end = 0, 0
-        if start > 0:
+        start = _as_line(issue.get("start_line"))
+        if start is not None:
+            end = _as_line(issue.get("end_line")) or start
             finding["line_start"] = start
             finding["line_end"] = max(start, end)
         return finding
@@ -1445,11 +1443,8 @@ class PRReviewer:
         issue_header = (issue.get("issue_header") or "").strip()
         if issue_header.lower() == "possible bug":
             issue_header = "Possible Issue"
-        try:
-            start_line = int(str(issue.get("start_line", 0)).strip())
-            end_line = int(str(issue.get("end_line", 0)).strip())
-        except ValueError:
-            start_line, end_line = 0, 0
+        start_line = _as_line(issue.get("start_line")) or 0
+        end_line = _as_line(issue.get("end_line")) or start_line
 
         if not relevant_file or not issue_content or start_line < 1 or end_line < start_line:
             get_logger().warning("Review finding has no usable location, keeping it in the summary",

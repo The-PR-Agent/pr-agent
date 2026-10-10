@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
+from pr_agent.algo.utils import _as_line
 
 STATE_SCHEMA_VERSION = 1
 DEFAULT_MAX_RESOLVED_FINDINGS = 20
@@ -42,14 +43,6 @@ def _timestamp(value: str | None) -> str:
     if value:
         return value
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _as_line(value: Any) -> int | None:
-    try:
-        line = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return line if line > 0 else None
 
 
 def normalize_finding(finding: Mapping[str, Any]) -> dict[str, Any] | None:

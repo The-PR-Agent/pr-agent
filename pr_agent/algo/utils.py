@@ -48,6 +48,14 @@ _YAML_INDENTED_LINE_RE = re.compile(r"[\n\r\x85\u2028\u2029] ")
 _YAML_UNSEPARATED_BLOCK_SCALAR_COMMENT_RE = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?#")
 
 
+def _as_line(value: Any) -> int | None:
+    try:
+        line = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return line if line > 0 else None
+
+
 def encode_user_text_arg(value: str) -> str:
     return _ENCODED_USER_TEXT_PREFIX + quote(value, safe="")
 
@@ -442,11 +450,8 @@ def convert_to_markdown_v2(output_data: dict,
                         if issue_header.lower() == 'possible bug':
                             issue_header = 'Possible Issue'  # Make the header less frightening
                         issue_content = issue.get('issue_content', '').strip()
-                        try:
-                            start_line = int(str(issue.get('start_line', 0)).strip())
-                            end_line = int(str(issue.get('end_line', 0)).strip())
-                        except (TypeError, ValueError):
-                            start_line, end_line = 0, 0
+                        start_line = _as_line(issue.get('start_line')) or 0
+                        end_line = _as_line(issue.get('end_line')) or start_line
                         valid_lines = start_line > 0 and end_line >= start_line
                         relevant_lines_str = extract_relevant_lines_str(
                             end_line, files, relevant_file, start_line, dedent=True) if valid_lines else ""
