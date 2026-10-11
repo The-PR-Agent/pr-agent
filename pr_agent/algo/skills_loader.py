@@ -274,6 +274,9 @@ _SYMBOLIC_LANGUAGE_ALIASES = (
     ("f#", " fsharp "),
     ("objective-c", " objc "),
 )
+# Single-letter language names the generic length filter would otherwise drop;
+# "c" and "r" carry the whole main-language signal when nothing else matches.
+_SINGLE_LETTER_LANGUAGE_TOKENS = frozenset({"c", "r"})
 
 
 def _relevance_tokens(text: str) -> frozenset:
@@ -284,7 +287,8 @@ def _relevance_tokens(text: str) -> frozenset:
         lowered = lowered.replace(symbolic, alias)
     return frozenset(
         token for token in re.findall(r"[a-z0-9]+", lowered)
-        if len(token) > 1 and token not in _RELEVANCE_STOPWORDS
+        if (len(token) > 1 and token not in _RELEVANCE_STOPWORDS)
+        or token in _SINGLE_LETTER_LANGUAGE_TOKENS
     )
 
 
@@ -365,7 +369,8 @@ def format_skills_context(skills: list[Skill], max_tokens: int, relevance_hint: 
                         )
                     else:
                         get_logger().warning(
-                            f"First skill '{skill.name}' exceeded budget ({kept_tokens}/{tokens} tokens kept); truncated"
+                            f"First skill '{skill.name}' exceeded budget "
+                            f"({kept_tokens}/{tokens} tokens kept); truncated"
                         )
                 else:
                     dropped = [s.name for s in order[len(pieces):]]

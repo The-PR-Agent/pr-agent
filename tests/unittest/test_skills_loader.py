@@ -600,6 +600,22 @@ class TestSelectSkills:
         csharp_skill = _skill("csharp-guidelines", "Use when reviewing C# code.")
         assert select_skills([other, csharp_skill], relevance_hint="Update the C# service")[0] is csharp_skill
 
+    def test_single_letter_language_names_survive_a_forced_cap(self):
+        """A bare C or R hint must still rank its language skill under a cap.
+
+        Regression from review: the generic length filter dropped single-letter
+        tokens, so a C-language hint produced no hint tokens at all and the
+        alphabetical survivor won the cap.
+        """
+        general = _skill("a-general", "General guidance")
+        c_skill = _skill("z-c-guidelines", "Use for C")
+
+        ranked = select_skills([general, c_skill], relevance_hint="C", max_skills=1)
+        assert ranked == [c_skill]
+        r_skill = _skill("z-r-guidelines", "Use for R")
+        ranked = select_skills([general, r_skill], relevance_hint="R", max_skills=1)
+        assert ranked == [r_skill]
+
 
 class TestRelevanceBudget:
     def test_budget_drop_keeps_the_relevant_skill(self):
