@@ -5,9 +5,10 @@ from __future__ import annotations
 import copy
 import json
 import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 from pr_agent.algo.inline_comment_dedup import key_issue_fingerprint
 from pr_agent.algo.utils import _as_line
@@ -42,7 +43,7 @@ class ReconciliationResult:
 def _timestamp(value: str | None) -> str:
     if value:
         return value
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def normalize_finding(finding: Mapping[str, Any]) -> dict[str, Any] | None:

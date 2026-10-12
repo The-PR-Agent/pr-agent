@@ -30,7 +30,7 @@ class RunDetails:
     # Model that produced the answer, which differs from `config.model` when a fallback
     # took over. Stays None when no prediction succeeded, which the renderer reads as
     # "nothing worth showing".
-    model_used: Optional[str] = None
+    model_used: str | None = None
     # Retain every model contributing to a merged review; keep scalar output for other tools.
     models_used: list[str] = field(default_factory=list)
     # Sticky: once a fallback has won, a later success on the primary model must not
@@ -101,7 +101,7 @@ def init_run_details() -> RunDetails:
     return details
 
 
-def get_run_details() -> Optional[RunDetails]:
+def get_run_details() -> RunDetails | None:
     """Return the collector for the current run, or None if not initialized."""
     return _run_details.get()
 
@@ -199,7 +199,7 @@ def add_token_usage(usage) -> None:
     )
 
 
-def _as_decimal_cost(cost_usd) -> Optional[Decimal]:
+def _as_decimal_cost(cost_usd) -> Decimal | None:
     """Normalize a positive finite USD value without introducing float math.
 
     Zero is rejected on purpose: litellm.completion_cost returns 0.0 both for
@@ -218,7 +218,7 @@ def _as_decimal_cost(cost_usd) -> Optional[Decimal]:
     return cost
 
 
-def record_ai_call(usage=None, model: Optional[str] = None, cost_usd=None) -> None:
+def record_ai_call(usage=None, model: str | None = None, cost_usd=None) -> None:
     """Count one successful AI call and accumulate usage and known cost."""
     details = get_run_details()
     if details is None:

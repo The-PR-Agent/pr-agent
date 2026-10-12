@@ -1,13 +1,12 @@
 import json
 from contextvars import ContextVar
-from typing import Optional
 
 from pr_agent.log import get_logger
 
-review_json_output_path: ContextVar[Optional[str]] = ContextVar("review_json_output_path", default=None)
+review_json_output_path: ContextVar[str | None] = ContextVar("review_json_output_path", default=None)
 
 
-def write_review_json_output(review: dict, path: Optional[str] = None) -> None:
+def write_review_json_output(review: dict, path: str | None = None) -> None:
     path = path or review_json_output_path.get()
     if not path:
         return

@@ -16,7 +16,7 @@ Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", 
 route_and_run NEVER raises; on failure/empty it returns an honest fallback string."""
 import re
 from collections import deque
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 import aiohttp
 
@@ -124,7 +124,7 @@ def _routing_prefix(text: str) -> str:
     return text[:end]
 
 
-def _explicit_verb(text: str) -> Optional[str]:
+def _explicit_verb(text: str) -> str | None:
     """Return the first non-negated command, scanning each whitespace token once."""
     low = _routing_prefix(text).lower()
     prior_starts = deque(maxlen=4)
@@ -236,7 +236,7 @@ def _ask_needs_context_fallback() -> str:
     return "PR-Agent requires a PR URL or a supplied diff."
 
 
-async def _fetch_public_diff(pr_url: str) -> Optional[str]:
+async def _fetch_public_diff(pr_url: str) -> str | None:
     """Fetch the public unified diff for a GitHub/GitLab PR/MR URL by appending '.diff'.
     Returns the diff text, or None on any failure. No auth - public repos only. SSRF-guarded:
     https-only and the host (and every redirect hop) must resolve to public IPs; degrades to

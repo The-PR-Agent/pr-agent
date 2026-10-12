@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 
 class ExporterType:
@@ -19,12 +18,12 @@ class OtlpProtocol:
 @dataclass
 class TelemetryConfig:
     is_enabled: bool = False
-    exporter_type: Optional[str] = None
-    service_name: Optional[str] = None
-    service_version: Optional[str] = None
-    environment: Optional[str] = None
-    otlp_endpoint: Optional[str] = None
-    otlp_headers: Optional[Dict[str, str]] = None
+    exporter_type: str | None = None
+    service_name: str | None = None
+    service_version: str | None = None
+    environment: str | None = None
+    otlp_endpoint: str | None = None
+    otlp_headers: dict[str, str] | None = None
     otlp_timeout: int = 3  # seconds; hard deadline per export call, retries included
     otlp_protocol: str = OtlpProtocol.HTTP
-    prometheus_multiproc_dir: Optional[str] = None  # shared dir for multiprocess metrics
+    prometheus_multiproc_dir: str | None = None  # shared dir for multiprocess metrics

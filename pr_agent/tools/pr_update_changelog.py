@@ -3,7 +3,6 @@ import copy
 import re
 from datetime import date
 from functools import partial
-from typing import Tuple
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -267,7 +266,7 @@ class PRUpdateChangelog:
             return ""
         return strip_wrapping_code_fence(response)
 
-    def _prepare_changelog_update(self) -> Tuple[str, str]:
+    def _prepare_changelog_update(self) -> tuple[str, str]:
         answer = strip_wrapping_code_fence(self.prediction.strip()).strip()
         if hasattr(self, "changelog_file"):
             existing_content = self.changelog_file

@@ -1,6 +1,5 @@
 from os.path import abspath, dirname, join
 from pathlib import Path
-from typing import Optional
 
 from dynaconf import Dynaconf
 from starlette_context import context
@@ -86,7 +85,7 @@ def get_verbosity_level() -> int:
         return 0
 
 
-def _find_repository_root() -> Optional[Path]:
+def _find_repository_root() -> Path | None:
     """
     Identify project root directory by recursively searching for the .git directory in the parent directories.
     """

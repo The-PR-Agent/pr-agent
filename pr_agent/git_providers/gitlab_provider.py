@@ -2,9 +2,9 @@ import difflib
 import posixpath
 import re
 import urllib.parse
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Iterator, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 import gitlab
@@ -68,7 +68,7 @@ def _is_stale_file_update_error(error: GitlabUpdateError) -> bool:
     return getattr(error, "response_code", None) == 400 and "changed since you started editing" in message
 
 
-def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
+def _parse_gitlab_iso_datetime(value) -> datetime | None:
     """Parse a GitLab ISO 8601 datetime string into a naive UTC datetime.
 
     GitLab returns timestamps with timezone info (e.g. "2024-01-15T14:30:00.000+02:00").
@@ -79,7 +79,7 @@ def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
         return None
     if isinstance(value, datetime):
         if value.tzinfo is not None:
-            return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value.astimezone(UTC).replace(tzinfo=None)
         return value
     if not isinstance(value, str):
         return None
@@ -87,7 +87,7 @@ def _parse_gitlab_iso_datetime(value) -> Optional[datetime]:
         s = value.replace("Z", "+00:00")
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is not None:
-            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            dt = dt.astimezone(UTC).replace(tzinfo=None)
         return dt
     except (ValueError, AttributeError):
         return None
@@ -237,7 +237,7 @@ class _GitLabIncrementalNote:
     grow from the very first run instead.
     """
 
-    def __init__(self, note, mr_web_url: Optional[str] = None):
+    def __init__(self, note, mr_web_url: str | None = None):
         self._note = note
         self.id = getattr(note, 'id', None)
         self.body = getattr(note, 'body', '') or ''
@@ -260,7 +260,7 @@ class GitLabProvider(GitProvider):
                                target_branch=self.mr.target_branch,
                                labels=self.get_pr_labels() if "labels" in required_fields else ())
 
-    def __init__(self, merge_request_url: Optional[str] = None, incremental: Optional[bool] = False):
+    def __init__(self, merge_request_url: str | None = None, incremental: bool | None = False):
         gitlab_url = get_settings().get("GITLAB.URL", None)
         if not gitlab_url:
             raise ValueError("GitLab URL is not set in the config file")
@@ -679,7 +679,7 @@ class GitLabProvider(GitProvider):
     # "https://gitlab.com/pragent/pr-agent/-/blob/t1", suffix: "?ref_type=heads"
     # In case git url is not provided, provider will use PR context (which includes branch)
     # to determine the prefix and suffix.
-    def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
+    def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> tuple[str, str]:
         repo_path = ""
         if not repo_git_url and not self.pr_url:
             get_logger().error("Cannot get canonical URL parts: missing either context PR URL or a repo GIT URL")
@@ -741,7 +741,7 @@ class GitLabProvider(GitProvider):
         "suggestions": _SUGGESTIONS_STABLE_ANCHORS + _SUGGESTIONS_LEGACY_ANCHORS,
     }
 
-    def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None, kind: str = "review"):
+    def get_incremental_commits(self, incremental: IncrementalPR | None = None, kind: str = "review"):
         """Populate state needed for an incremental run.
 
         Mirrors `GithubProvider.get_incremental_commits` for `/review -i`, and also supports
@@ -985,7 +985,7 @@ class GitLabProvider(GitProvider):
                 selected_note = candidate
         return selected_note
 
-    def _get_own_user_id(self) -> Optional[int]:
+    def _get_own_user_id(self) -> int | None:
         """ID of the authenticated user (the one posting pr-agent notes), or None when
         it cannot be determined. Cached per provider instance."""
         if not hasattr(self, '_own_user_id'):
@@ -1617,7 +1617,7 @@ class GitLabProvider(GitProvider):
     def send_inline_comment(self, body: str, edit_type: str, found: bool, relevant_file: str,
                             relevant_line_in_file: str,
                             source_line_no: int, target_file: str, target_line_no: int,
-                            original_suggestion=None, as_draft: bool = False) -> Optional[bool]:
+                            original_suggestion=None, as_draft: bool = False) -> bool | None:
         """Return True for creation, None for deduplication, and False for failure."""
         if not found:
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
@@ -1755,7 +1755,7 @@ class GitLabProvider(GitProvider):
                 get_logger().exception(f"Failed to create comment in MR {self.id_mr}")
                 return False
 
-    def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> Optional[dict]:
+    def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> dict | None:
         _changes = self._get_merge_request_changes()
         _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []), _changes["diff_refs"])
         changes = _changes
@@ -2227,7 +2227,7 @@ class GitLabProvider(GitProvider):
                 return ""
             raise
 
-    def _get_review_requester_id(self) -> Optional[int]:
+    def _get_review_requester_id(self) -> int | None:
         # Prefer the authenticated command actor when one is known: comment commands can pass
         # arbitrary arguments, so sibling context must be authorized against whoever actually
         # issued the command, not the MR author. Fall back to the MR author only when no actor
@@ -2281,7 +2281,7 @@ class GitLabProvider(GitProvider):
         # internal projects, and for low-access members of private projects.
         return isinstance(access_level, int) and access_level >= _GITLAB_ACCESS_LEVEL_REPORTER
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         # The MR target branch (the branch being merged into) is the cached revision; the
         # project default branch is consulted when from_default_branch is requested or no MR
         # target exists, mirroring get_repo_file_content. Both are branch names, so the project
@@ -2292,7 +2292,7 @@ class GitLabProvider(GitProvider):
                 return target_branch
         return self._project_default_branch()
 
-    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> int | None:
         try:
             if not self.id_mr:
                 get_logger().warning("Cannot add a reaction: merge request ID is not set.")
@@ -2339,7 +2339,7 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to remove reaction, error: {e}")
             return False
 
-    def _parse_merge_request_url(self, merge_request_url: str) -> Tuple[str, int]:
+    def _parse_merge_request_url(self, merge_request_url: str) -> tuple[str, int]:
         parsed_url = urlparse(merge_request_url)
 
         path_parts = parsed_url.path.strip('/').split('/')

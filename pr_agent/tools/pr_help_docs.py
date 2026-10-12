@@ -131,7 +131,7 @@ def map_documentation_files_to_contents(base_path: str, doc_files: list[str],
         returned_dict = {}
         for file in doc_files:
             try:
-                with open(file, 'r', encoding='utf-8') as f:
+                with open(file, encoding='utf-8') as f:
                     content = f.read()
                     # Skip files with no text content
                     if not re.search(r'[a-zA-Z]', content):
@@ -368,7 +368,7 @@ class PredictionPreparator:
             raise e
 
 
-class PRHelpDocs(object):
+class PRHelpDocs:
     def __init__(self, ctx_url, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler,
              args: tuple[str] = None, return_as_string: bool = False):
         try:

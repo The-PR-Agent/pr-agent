@@ -1,16 +1,15 @@
 import os
 
 os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
-import json
 import logging
 import sys
-from enum import Enum
+from enum import StrEnum
 from string import Formatter
 
 from loguru import logger
 
 
-class LoggingFormat(str, Enum):
+class LoggingFormat(StrEnum):
     CONSOLE = "CONSOLE"
     JSON = "JSON"
 

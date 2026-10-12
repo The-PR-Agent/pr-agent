@@ -19,7 +19,8 @@ added to the prompt later still survives the merge instead of disappearing from 
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Hashable, List, Optional
+from collections.abc import Callable, Hashable
+from typing import Any
 
 from pr_agent.algo.comment_identity import as_review_text
 from pr_agent.algo.output_models import parse_failure_modes
@@ -36,7 +37,7 @@ _DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([mh])", re.IGNORECASE)
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def merge_review_chunks(chunk_outputs: List[dict]) -> dict:
+def merge_review_chunks(chunk_outputs: list[dict]) -> dict:
     """Reduce the parsed review of every chunk to a single `{'review': {...}}` dict."""
     reviews = [chunk["review"] for chunk in chunk_outputs
                if isinstance(chunk, dict) and isinstance(chunk.get("review"), dict)]
@@ -76,7 +77,7 @@ def _rule_name(key: str) -> str:
     return normalized
 
 
-def _first_non_empty(values: List[Any]) -> Any:
+def _first_non_empty(values: list[Any]) -> Any:
     for value in values:
         if value is not None and value != "" and value != [] and value != {}:
             return value
@@ -87,7 +88,7 @@ def _normalize_text(value: Any) -> str:
     return _WHITESPACE_RE.sub(" ", str(value if value is not None else "")).strip().lower()
 
 
-def _as_int(value: Any) -> Optional[int]:
+def _as_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -98,7 +99,7 @@ def _as_int(value: Any) -> Optional[int]:
         return None
 
 
-def _merge_effort(values: List[Any]) -> Any:
+def _merge_effort(values: list[Any]) -> Any:
     """Effort is a 1-5 judgement, so the merged review reports the hardest chunk.
 
     Summing would saturate at 5 for any PR of a few modest chunks, and the field would stop
@@ -110,7 +111,7 @@ def _merge_effort(values: List[Any]) -> Any:
     return max(1, min(MAX_EFFORT, max(numbers)))
 
 
-def _merge_score(values: List[Any]) -> Any:
+def _merge_score(values: list[Any]) -> Any:
     """Lowest score wins: a clean chunk must not raise the grade of a bad one."""
     scored = [(number, value) for number, value in ((_as_int(value), value) for value in values)
               if number is not None]
@@ -119,9 +120,9 @@ def _merge_score(values: List[Any]) -> Any:
     return min(scored, key=lambda pair: pair[0])[1]
 
 
-def _worst_of(order: tuple) -> Callable[[List[Any]], Any]:
+def _worst_of(order: tuple) -> Callable[[list[Any]], Any]:
     """Pick the value ranked last in `order`; values outside it are ignored."""
-    def merge(values: List[Any]) -> Any:
+    def merge(values: list[Any]) -> Any:
         ranked = [(order.index(choice), value) for choice, value
                   in ((_normalize_text(value).replace(" ", "_"), value) for value in values)
                   if choice in order]
@@ -150,7 +151,7 @@ def _reported_text(value: Any) -> str:
     return "" if is_value_no(text) else text
 
 
-def _merge_findings_text(values: List[Any]) -> Any:
+def _merge_findings_text(values: list[Any]) -> Any:
     """Union the chunks that reported something; 'No' only when every chunk said no."""
     reported, seen = [], set()
     for value in values:
@@ -170,7 +171,7 @@ def _merge_findings_text(values: List[Any]) -> Any:
     return "\n\n".join(reported)
 
 
-def _merge_relevant_tests(values: List[Any]) -> Any:
+def _merge_relevant_tests(values: list[Any]) -> Any:
     """A test added in any chunk is a test added by the PR."""
     for value in values:
         if not is_value_no(value):
@@ -178,8 +179,8 @@ def _merge_relevant_tests(values: List[Any]) -> Any:
     return _first_non_empty(values)
 
 
-def _union_of_lists(identity: Callable[[Any], Hashable]) -> Callable[[List[Any]], list]:
-    def merge(values: List[Any]) -> list:
+def _union_of_lists(identity: Callable[[Any], Hashable]) -> Callable[[list[Any]], list]:
+    def merge(values: list[Any]) -> list:
         merged, seen = [], set()
         for value in values:
             for item in value if isinstance(value, list) else []:
@@ -217,20 +218,20 @@ def _sub_pr_identity(sub_pr: Any) -> Hashable:
     return _normalize_text(sub_pr.get("title"))
 
 
-def _merge_todo_sections(values: List[Any]) -> Any:
+def _merge_todo_sections(values: list[Any]) -> Any:
     return _union_of_lists(_todo_identity)(values) or _first_non_empty(values)
 
 
-def _merge_can_be_split(values: List[Any]) -> list:
+def _merge_can_be_split(values: list[Any]) -> list:
     # the prompt asks for at most 3 sub-PRs, so the merged list keeps the same bound
     return _union_of_lists(_sub_pr_identity)(values)[:MAX_SUB_PRS]
 
 
-def _merge_failure_modes(values: List[Any]) -> list:
+def _merge_failure_modes(values: list[Any]) -> list:
     return parse_failure_modes([item for value in values if isinstance(value, list) for item in value])
 
 
-def _merge_priority_files(values: List[Any]) -> list:
+def _merge_priority_files(values: list[Any]) -> list:
     merged, seen = [], set()
     for value in values:
         for item in value if isinstance(value, list) else []:
@@ -255,7 +256,7 @@ def _union_bullet_lines(first: str, second: str) -> str:
     return "\n".join(lines)
 
 
-def _merge_ticket_compliance(values: List[Any]) -> list:
+def _merge_ticket_compliance(values: list[Any]) -> list:
     """One entry per ticket; its bullet lists are unioned across the chunks that saw it.
 
     A requirement that one chunk met and another did not ends up in both lists, which
@@ -284,7 +285,7 @@ def _merge_ticket_compliance(values: List[Any]) -> list:
     return list(merged.values())
 
 
-def _duration_minutes(value: Any) -> Optional[float]:
+def _duration_minutes(value: Any) -> float | None:
     match = _DURATION_RE.fullmatch(str(value if value is not None else "").strip())
     if not match:
         return None
@@ -298,7 +299,7 @@ def _format_duration(minutes: float) -> str:
     return f"{int(hours)}h" if float(hours).is_integer() else f"{hours:.1f}h"
 
 
-def _merge_contribution_time(values: List[Any]) -> Any:
+def _merge_contribution_time(values: list[Any]) -> Any:
     """The chunks partition the change, so the time to write them adds up."""
     estimates = [value for value in values if isinstance(value, dict)]
     if not estimates:

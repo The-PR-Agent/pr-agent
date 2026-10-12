@@ -1,6 +1,5 @@
 # Language Selection, source: https://github.com/bigcode-project/bigcode-dataset/blob/main/language_selection/programming-languages-to-file-extensions.json  # noqa E501
 from collections.abc import Callable
-from typing import Dict
 
 from pr_agent.config_loader import get_settings
 
@@ -40,7 +39,7 @@ def is_valid_file(filename:str, bad_extensions=None) -> bool:
     return filename.split('.')[-1].lower() not in bad_extensions_lower
 
 
-def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str], str | None]:
+def build_language_file_matcher(language_extension_map: dict) -> Callable[[str], str | None]:
     """Build a filename classifier from the configured language extensions."""
     exact_to_language = {}
     folded_to_languages = {}
@@ -78,7 +77,7 @@ def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str],
     return get_language
 
 
-def numeric_languages(languages: Dict) -> Dict:
+def numeric_languages(languages: dict) -> dict:
     """
     Keep only the {language: size} entries of a provider's get_languages() result. PyGithub 2.x
     adds a "url" string to every GET dict it returns, and a str cannot be ranked against sizes.
@@ -86,7 +85,7 @@ def numeric_languages(languages: Dict) -> Dict:
     return {k: v for k, v in (languages or {}).items() if isinstance(v, (int, float))}
 
 
-def sort_files_by_main_languages(languages: Dict, files: list):
+def sort_files_by_main_languages(languages: dict, files: list):
     """
     Sort files by their main language, put the files that are in the main language first and the rest files after
     """

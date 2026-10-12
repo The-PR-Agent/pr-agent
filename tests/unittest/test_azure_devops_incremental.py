@@ -32,7 +32,7 @@ def _comment(body, published_date, last_updated_date=None):
 
 class TestNaiveUtc:
     def test_strips_tz_from_aware(self):
-        aware = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.timezone.utc)
+        aware = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.UTC)
         naive = _to_naive_utc(aware)
         assert naive.tzinfo is None
         assert naive == _dt.datetime(2024, 1, 1, 12, 0)
@@ -47,7 +47,7 @@ class TestNaiveUtc:
 
 class TestAzureCommitAdapter:
     def test_exposes_github_shape(self):
-        date = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.timezone.utc)
+        date = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.UTC)
         raw = _raw_commit("abc123", "fix bug", date, parents=["p1"])
         adapter = _AzureCommitAdapter(raw)
         assert adapter.sha == "abc123"
@@ -93,7 +93,7 @@ class TestGetIncrementalCommits:
 
     def test_previous_review_accepts_custom_heading_with_stable_identity(self):
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.UTC)
         marked = _comment(
             (
                 "## Guideline Compliance Check 🔍\n\n"
@@ -152,15 +152,15 @@ class TestGetIncrementalCommits:
     def test_populates_commits_range_and_files(self):
         provider = self._make_provider()
 
-        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.UTC)
         old = _raw_commit(
-            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"],
+            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC), parents=["p0"],
         )
         new1 = _raw_commit(
-            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["old1"],
+            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["old1"],
         )
         new2 = _raw_commit(
-            "new2", "third", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc), parents=["new1"],
+            "new2", "third", _dt.datetime(2024, 6, 3, tzinfo=_dt.UTC), parents=["new1"],
         )
         # Azure returns newest-first.
         provider.azure_devops_client.get_pull_request_commits = MagicMock(
@@ -194,12 +194,12 @@ class TestGetIncrementalCommits:
     def test_populates_files_from_sdk_change_objects(self):
         provider = self._make_provider()
 
-        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.UTC)
         old = _raw_commit(
-            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"],
+            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC), parents=["p0"],
         )
         new = _raw_commit(
-            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["old1"],
+            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["old1"],
         )
         provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[new, old])
         provider.get_issue_comments = MagicMock(
@@ -218,12 +218,12 @@ class TestGetIncrementalCommits:
 
     def test_skips_merge_commits(self):
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
         merge = _raw_commit(
-            "m1", "merge", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc),
+            "m1", "merge", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC),
             parents=["a", "b"],
         )
-        old = _raw_commit("o", "old", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc))
+        old = _raw_commit("o", "old", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC))
         provider.azure_devops_client.get_pull_request_commits = MagicMock(
             return_value=[merge, old]
         )
@@ -237,13 +237,13 @@ class TestGetIncrementalCommits:
 
     def test_all_merge_commits_falls_back_to_full(self):
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
         merge1 = _raw_commit(
-            "m1", "merge1", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc),
+            "m1", "merge1", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC),
             parents=["a", "b"],
         )
         merge2 = _raw_commit(
-            "m2", "merge2", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc),
+            "m2", "merge2", _dt.datetime(2024, 6, 3, tzinfo=_dt.UTC),
             parents=["c", "d"],
         )
         provider.azure_devops_client.get_pull_request_commits = MagicMock(
@@ -265,9 +265,9 @@ class TestGetIncrementalCommits:
         # silently running with full diffs (which happens if commits_range is non-empty but
         # last_seen_commit_sha is None).
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
-        new1 = _raw_commit("n1", "c1", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["p"])
-        new2 = _raw_commit("n2", "c2", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc), parents=["n1"])
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
+        new1 = _raw_commit("n1", "c1", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["p"])
+        new2 = _raw_commit("n2", "c2", _dt.datetime(2024, 6, 3, tzinfo=_dt.UTC), parents=["n1"])
         provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[new2, new1])
         provider.get_issue_comments = MagicMock(
             return_value=[_comment("## PR Reviewer Guide", review_time)]
@@ -286,12 +286,12 @@ class TestGetIncrementalCommits:
         # None must still be included in commits_range when it is positioned after the last-seen
         # baseline, instead of being dropped by a per-commit date comparison.
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
-        old = _raw_commit("old1", "seen", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"])
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
+        old = _raw_commit("old1", "seen", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC), parents=["p0"])
         # A missing-date commit positioned BETWEEN the baseline and a later dated commit is the
         # case the old date-comparison logic dropped (it kept only the dated-new commit's index).
         mid_nodate = _raw_commit("mid", "no date", None, parents=["old1"])
-        newest_dated = _raw_commit("new", "dated", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["mid"])
+        newest_dated = _raw_commit("new", "dated", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["mid"])
         # Azure returns newest-first.
         provider.azure_devops_client.get_pull_request_commits = MagicMock(
             return_value=[newest_dated, mid_nodate, old]

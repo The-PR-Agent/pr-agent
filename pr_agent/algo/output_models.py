@@ -1,7 +1,7 @@
 """Pydantic models for structured outputs described by prompt templates."""
 
-from enum import Enum
-from typing import List, Literal, Optional, Union
+from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError, field_validator
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, Valida
 class SubPR(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    relevant_files: List[str]
+    relevant_files: list[str]
     title: str
 
 
@@ -59,7 +59,7 @@ class FailureMode(BaseModel):
     covered_in_this_pr: StrictBool
 
 
-def parse_failure_modes(value: object) -> List[dict]:
+def parse_failure_modes(value: object) -> list[dict]:
     """Keep at most three valid cases, including when review validation only warns."""
     modes = []
     for entry in value if isinstance(value, list) else []:
@@ -76,22 +76,22 @@ class Review(BaseModel):
     # extra_instructions and [artifacts] may request fields beyond the prompt schema
     model_config = ConfigDict(extra="allow")
 
-    ticket_compliance_check: Optional[List[TicketCompliance]] = None
-    estimated_effort_to_review: Optional[StrictInt] = Field(
+    ticket_compliance_check: list[TicketCompliance] | None = None
+    estimated_effort_to_review: StrictInt | None = Field(
         default=None, alias="estimated_effort_to_review_[1-5]", ge=1, le=5
     )
-    risk_level: Optional[Literal["low", "medium", "high"]] = None
-    merge_recommendation: Optional[Literal["no_concerns_found", "needs_review", "changes_required"]] = None
-    failure_modes: Optional[List[FailureMode]] = Field(default=None, max_length=3)
-    review_priority_files: Optional[List[str]] = None
-    contribution_time_cost_estimate: Optional[ContributionTimeCostEstimate] = None
-    score: Optional[StrictInt] = Field(default=None, ge=0, le=100)
-    relevant_tests: Optional[Literal["Yes", "No"]] = None
-    insights_from_user_answers: Optional[str] = None
-    key_issues_to_review: List[KeyIssuesComponentLink]
-    security_concerns: Optional[str] = None
-    todo_sections: Optional[Union[List[TodoSection], str]] = None
-    can_be_split: Optional[List[SubPR]] = Field(default=None, max_length=3)
+    risk_level: Literal["low", "medium", "high"] | None = None
+    merge_recommendation: Literal["no_concerns_found", "needs_review", "changes_required"] | None = None
+    failure_modes: list[FailureMode] | None = Field(default=None, max_length=3)
+    review_priority_files: list[str] | None = None
+    contribution_time_cost_estimate: ContributionTimeCostEstimate | None = None
+    score: StrictInt | None = Field(default=None, ge=0, le=100)
+    relevant_tests: Literal["Yes", "No"] | None = None
+    insights_from_user_answers: str | None = None
+    key_issues_to_review: list[KeyIssuesComponentLink]
+    security_concerns: str | None = None
+    todo_sections: list[TodoSection] | str | None = None
+    can_be_split: list[SubPR] | None = Field(default=None, max_length=3)
 
     @field_validator("risk_level", "merge_recommendation", "relevant_tests", mode="before")
     @classmethod
@@ -116,7 +116,7 @@ class CodeSuggestion(BaseModel):
 
 
 class PRCodeSuggestions(BaseModel):
-    code_suggestions: List[CodeSuggestion]
+    code_suggestions: list[CodeSuggestion]
 
 
 class CodeSuggestionFeedback(BaseModel):
@@ -129,10 +129,10 @@ class CodeSuggestionFeedback(BaseModel):
 
 
 class PRCodeSuggestionsFeedback(BaseModel):
-    code_suggestions: List[CodeSuggestionFeedback]
+    code_suggestions: list[CodeSuggestionFeedback]
 
 
-class PRType(str, Enum):
+class PRType(StrEnum):
     BUG_FIX = "Bug fix"
     TESTS = "Tests"
     ENHANCEMENT = "Enhancement"
@@ -142,37 +142,37 @@ class PRType(str, Enum):
 
 class FileDescription(BaseModel):
     filename: str
-    changes_summary: Optional[str] = None
+    changes_summary: str | None = None
     changes_title: str
     label: str
 
 
 class PRDescription(BaseModel):
-    type: List[PRType] = Field(min_length=1)
-    description: Optional[str] = None
+    type: list[PRType] = Field(min_length=1)
+    description: str | None = None
     title: str
-    changes_diagram: Optional[str] = None
-    pr_files: Optional[List[FileDescription]] = Field(default=None, max_length=20)
+    changes_diagram: str | None = None
+    pr_files: list[FileDescription] | None = Field(default=None, max_length=20)
 
 
 class PRDescriptionAssembled(PRDescription):
     """Validate the final description after file chunks and uncovered files are joined."""
 
-    pr_files: Optional[List[FileDescription]] = None
+    pr_files: list[FileDescription] | None = None
 
 
 class PRDescriptionHeaders(BaseModel):
-    type: List[PRType] = Field(min_length=1)
-    description: Optional[str] = None
+    type: list[PRType] = Field(min_length=1)
+    description: str | None = None
     title: str
-    changes_diagram: Optional[str] = None
+    changes_diagram: str | None = None
 
 
 class PRFilesWalkthrough(BaseModel):
-    pr_files: List[FileDescription]
+    pr_files: list[FileDescription]
 
 
-class Label(str, Enum):
+class Label(StrEnum):
     BUG_FIX = "Bug fix"
     TESTS = "Tests"
     ENHANCEMENT = "Enhancement"
@@ -181,7 +181,7 @@ class Label(str, Enum):
 
 
 class Labels(BaseModel):
-    labels: List[str]
+    labels: list[str]
 
     @field_validator("labels", mode="before")
     @classmethod
@@ -229,7 +229,7 @@ class CodeDocumentationItem(BaseModel):
 class CodeDocumentation(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    code_documentation: List[CodeDocumentationItem] = Field(alias="Code Documentation")
+    code_documentation: list[CodeDocumentationItem] = Field(alias="Code Documentation")
 
     @field_validator("code_documentation", mode="after")
     @classmethod
@@ -255,8 +255,8 @@ class RelevantSection(BaseModel):
 class DocHelper(BaseModel):
     user_question: str
     response: str
-    relevant_sections: List[RelevantSection]
-    question_is_relevant: Optional[int] = Field(default=None, ge=0, le=1)
+    relevant_sections: list[RelevantSection]
+    question_is_relevant: int | None = Field(default=None, ge=0, le=1)
 
 
 class FileIdxAndPath(BaseModel):
@@ -266,4 +266,4 @@ class FileIdxAndPath(BaseModel):
 
 class DocHeadingsHelper(BaseModel):
     user_question: str
-    relevant_files_ranking: List[FileIdxAndPath]
+    relevant_files_ranking: list[FileIdxAndPath]

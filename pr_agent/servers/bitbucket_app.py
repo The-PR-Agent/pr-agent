@@ -60,7 +60,7 @@ def _is_valid_client_key(client_key: str) -> bool:
 def _compute_qsh(method: str, path: str) -> str:
     """Compute the Atlassian Connect qsh for a request that carries no query string."""
     canonical_path = path.rstrip("/") or "/"
-    return hashlib.sha256(f"{method.upper()}&{canonical_path}&".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{method.upper()}&{canonical_path}&".encode()).hexdigest()
 
 
 def _bitbucket_client_secret_name(client_key: str) -> str:
@@ -128,8 +128,7 @@ async def get_bearer_token(shared_secret: str, client_key: str):
 @router.get("/")
 async def handle_manifest(request: Request, response: Response):
     cur_dir = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(cur_dir, "atlassian-connect.json"), "rt") as f:
-        manifest = f.read()
+    manifest = open(os.path.join(cur_dir, "atlassian-connect.json")).read()
     try:
         manifest = manifest.replace("app_key", get_settings().bitbucket.app_key)
         manifest = manifest.replace("base_url", get_settings().bitbucket.base_url)

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
@@ -93,8 +93,8 @@ class TestCodeCommitProvider:
         comment = {
             "commentId": comment_id,
             "content": body,
-            "creationDate": created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "lastModifiedDate": last_modified_at or created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "creationDate": created_at or datetime(2024, 1, 1, tzinfo=UTC),
+            "lastModifiedDate": last_modified_at or created_at or datetime(2024, 1, 1, tzinfo=UTC),
             "authorArn": "arn:aws:iam::123456789012:user/pr-agent",
         }
         comment.update(overrides)
@@ -786,7 +786,7 @@ class TestCodeCommitProvider:
                 self._comment(
                     existing_body,
                     comment_id="target-b-old",
-                    created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                    created_at=datetime(2024, 1, 2, tzinfo=UTC),
                 ),
                 before_commit_id="shared-destination-commit",
                 after_commit_id="source-commit-b-old",
@@ -795,7 +795,7 @@ class TestCodeCommitProvider:
                 self._comment(
                     existing_body,
                     comment_id="target-a-old",
-                    created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+                    created_at=datetime(2024, 1, 1, tzinfo=UTC),
                 ),
                 before_commit_id="shared-destination-commit",
                 after_commit_id="source-commit-a-old",
@@ -823,13 +823,13 @@ class TestCodeCommitProvider:
             "old": self._comment(
                 "older answer",
                 comment_id="old-comment",
-                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                last_modified_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+                created_at=datetime(2024, 1, 1, tzinfo=UTC),
+                last_modified_at=datetime(2024, 1, 10, tzinfo=UTC),
             ),
             "new": self._comment(
                 "newer answer",
                 comment_id="new-comment",
-                created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                created_at=datetime(2024, 1, 2, tzinfo=UTC),
             ),
         }
         provider.codecommit_client.get_comments_for_pull_request.return_value = [
@@ -854,10 +854,10 @@ class TestCodeCommitProvider:
             "a-new": "/answer new answer",
         }
         dates_by_name = {
-            "q-old": datetime(2024, 1, 1, tzinfo=timezone.utc),
-            "a-old": datetime(2024, 1, 2, tzinfo=timezone.utc),
-            "q-new": datetime(2024, 1, 3, tzinfo=timezone.utc),
-            "a-new": datetime(2024, 1, 4, tzinfo=timezone.utc),
+            "q-old": datetime(2024, 1, 1, tzinfo=UTC),
+            "a-old": datetime(2024, 1, 2, tzinfo=UTC),
+            "q-new": datetime(2024, 1, 3, tzinfo=UTC),
+            "a-new": datetime(2024, 1, 4, tzinfo=UTC),
         }
         provider.codecommit_client.get_comments_for_pull_request.return_value = [
             self._comment_group(
@@ -889,13 +889,13 @@ class TestCodeCommitProvider:
             "old": self._comment(
                 body,
                 comment_id="old-comment",
-                created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
-                last_modified_at=datetime(2024, 1, 10, tzinfo=timezone.utc),
+                created_at=datetime(2024, 1, 1, tzinfo=UTC),
+                last_modified_at=datetime(2024, 1, 10, tzinfo=UTC),
             ),
             "new": self._comment(
                 body,
                 comment_id="new-comment",
-                created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                created_at=datetime(2024, 1, 2, tzinfo=UTC),
             ),
         }
         provider.codecommit_client.get_comments_for_pull_request.return_value = [
@@ -934,7 +934,7 @@ class TestCodeCommitProvider:
                 self._comment(
                     "valid new",
                     comment_id="valid-new",
-                    created_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+                    created_at=datetime(2024, 1, 2, tzinfo=UTC),
                 )
             ),
         ]

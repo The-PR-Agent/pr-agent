@@ -1,7 +1,6 @@
 import os
 import sys
 from collections import Counter
-from typing import List, Optional
 
 from unidiff.errors import UnidiffParseError
 
@@ -18,7 +17,7 @@ from pr_agent.log import get_logger
 
 
 class PullRequestMimic:
-    def __init__(self, title: str, diff_files: List[FilePatchInfo]):
+    def __init__(self, title: str, diff_files: list[FilePatchInfo]):
         self.title = title
         self.diff_files = diff_files
 
@@ -52,7 +51,7 @@ class PlainDiffGitProvider(GitProvider):
         self.diff_files = None
         self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
 
-    def get_diff_files(self) -> List[FilePatchInfo]:
+    def get_diff_files(self) -> list[FilePatchInfo]:
         if self.diff_files is not None:
             return self.diff_files
         try:
@@ -86,7 +85,7 @@ class PlainDiffGitProvider(GitProvider):
                         )
                     elif os.path.isfile(candidate):
                         try:
-                            with open(candidate, "r", encoding="utf-8") as fh:
+                            with open(candidate, encoding="utf-8") as fh:
                                 head = fh.read()
                         except (OSError, UnicodeDecodeError) as e:
                             get_logger().info(f"Could not read working-tree file {f.filename}: {e}")
@@ -98,7 +97,7 @@ class PlainDiffGitProvider(GitProvider):
         self.diff_files = files
         return files
 
-    def get_files(self) -> List[str]:
+    def get_files(self) -> list[str]:
         return [f.filename for f in self.get_diff_files()]
 
     def get_incremental_commits(self, incremental):
@@ -243,7 +242,7 @@ class PlainDiffGitProvider(GitProvider):
     def remove_comment(self, comment):
         pass
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:

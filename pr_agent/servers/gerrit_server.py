@@ -1,5 +1,5 @@
 import copy
-from enum import Enum
+from enum import StrEnum
 from json import JSONDecodeError
 
 import uvicorn
@@ -47,7 +47,7 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B
         )
 
 
-class Action(str, Enum):
+class Action(StrEnum):
     review = "review"
     describe = "describe"
     ask = "ask"

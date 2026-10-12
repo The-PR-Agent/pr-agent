@@ -7,7 +7,6 @@ import textwrap
 import traceback
 from datetime import datetime
 from functools import partial
-from typing import Dict, List, Optional
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -104,7 +103,7 @@ def get_reflection_failure_score() -> int:
     return _as_threshold("pr_code_suggestions.score_on_reflection_failure", 7, 0)
 
 
-def apply_reflection_failure_score(suggestions: List[Dict]) -> None:
+def apply_reflection_failure_score(suggestions: list[dict]) -> None:
     """Assign the configured fallback score and mark it as not model-assigned."""
     score = get_reflection_failure_score()
     for suggestion in suggestions:
@@ -112,7 +111,7 @@ def apply_reflection_failure_score(suggestions: List[Dict]) -> None:
         suggestion["score_why"] = _REFLECTION_FAILURE_SCORE_WHY
 
 
-def filter_suggestions_by_score_threshold(suggestions: List[Dict], call_index: int = 0) -> List[Dict]:
+def filter_suggestions_by_score_threshold(suggestions: list[dict], call_index: int = 0) -> list[dict]:
     """Keep suggestions scored at or above pr_code_suggestions.suggestions_score_threshold.
 
     A suggestion whose score cannot be read is dropped, as before.
@@ -1080,7 +1079,7 @@ class PRCodeSuggestions:
 
         return data
 
-    async def _self_reflect_with_fallback(self, suggestion_list: List, patches_diff: str, model: str) -> str:
+    async def _self_reflect_with_fallback(self, suggestion_list: list, patches_diff: str, model: str) -> str:
         """Reflect over the reasoning models, returning the first non-empty response.
 
         self_reflect_on_suggestions swallows its errors and returns "", so an empty response is
@@ -1204,7 +1203,7 @@ class PRCodeSuggestions:
         return suggestion
 
     @staticmethod
-    def _parse_line_number(value) -> Optional[int]:
+    def _parse_line_number(value) -> int | None:
         """Convert an anchor value to an int, or None when it cannot be a line number.
 
         Rejects booleans, fractional floats (int() truncates them), and non-finite
@@ -1278,7 +1277,7 @@ class PRCodeSuggestions:
             return False
         return True
 
-    def _prepare_pr_code_suggestions(self, predictions: str) -> Dict:
+    def _prepare_pr_code_suggestions(self, predictions: str) -> dict:
         data = load_yaml(predictions.strip(),
                          keys_fix_yaml=["relevant_file", "suggestion_content", "existing_code", "improved_code"],
                          first_key="code_suggestions", last_key="label")
@@ -1338,12 +1337,12 @@ class PRCodeSuggestions:
         return data
 
     @staticmethod
-    def _suggestion_file_key(suggestion: Dict) -> str:
+    def _suggestion_file_key(suggestion: dict) -> str:
         relevant_file = suggestion.get("relevant_file", "") if isinstance(suggestion, dict) else ""
         return relevant_file.strip() if isinstance(relevant_file, str) else ""
 
     @staticmethod
-    def _suggestion_score(suggestion: Dict) -> int:
+    def _suggestion_score(suggestion: dict) -> int:
         try:
             return int(suggestion.get("score", 0))
         except (AttributeError, TypeError, ValueError):
@@ -1355,7 +1354,7 @@ class PRCodeSuggestions:
             and self.git_provider.is_supported("gfm_markdown")
         )
 
-    def _limit_suggestions_per_file(self, suggestions: List[Dict]) -> List[Dict]:
+    def _limit_suggestions_per_file(self, suggestions: list[dict]) -> list[dict]:
         raw_limit = get_settings().get("pr_code_suggestions.max_suggestions_per_file", 0)
         try:
             max_suggestions_per_file = int(raw_limit)
@@ -1569,7 +1568,7 @@ class PRCodeSuggestions:
         relevant_lines_start: int,
         relevant_lines_end: int,
         new_code_snippet: str,
-    ) -> Optional[bool]:
+    ) -> bool | None:
         """Return False only when a verified replacement makes valid Python fail compilation."""
         if not relevant_file.lower().endswith((".py", ".pyi", ".pyw")):
             return None
@@ -1605,7 +1604,7 @@ class PRCodeSuggestions:
         return True
 
     @staticmethod
-    def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> Optional[List[str]]:
+    def _get_patch_range_lines(patch, relevant_lines_start, relevant_lines_end) -> list[str] | None:
         target_lines = {}
         target_line = None
         target_remaining = 0
@@ -1879,7 +1878,7 @@ class PRCodeSuggestions:
 
         return suggestion
 
-    def remove_line_numbers(self, patches_diff_list: List[str]) -> List[str]:
+    def remove_line_numbers(self, patches_diff_list: list[str]) -> list[str]:
         # create a copy of the patches_diff_list, without line numbers for '__new hunk__' sections
         try:
             self.patches_diff_list_no_line_numbers = []
@@ -1948,7 +1947,7 @@ class PRCodeSuggestions:
             label="code suggestions",
         )
 
-    def _recovery_chain(self, model: str, settings) -> Optional[tuple]:
+    def _recovery_chain(self, model: str, settings) -> tuple | None:
         """Return the invocation-local fallback chain and current position after routing.
 
         The outer retry_with_fallback_models wrapper replaces the configured primary
@@ -2228,7 +2227,7 @@ class PRCodeSuggestions:
         model,
         *,
         attempt_budget: AttemptTokenBudget | None = None,
-    ) -> List[str]:
+    ) -> list[str]:
         with get_logger().contextualize(sub_feature='convert_to_decoupled_with_line_numbers'):
             try:
                 if attempt_budget is None:
@@ -2278,7 +2277,7 @@ class PRCodeSuggestions:
                 })
                 return []
 
-    def generate_summarized_suggestions(self, data: Dict) -> str:
+    def generate_summarized_suggestions(self, data: dict) -> str:
         try:
             pr_body = f"{format_pr_code_suggestions_header()}\n\n"
 
@@ -2430,7 +2429,7 @@ class PRCodeSuggestions:
             return "Low"
 
     async def self_reflect_on_suggestions(self,
-                                          suggestion_list: List,
+                                          suggestion_list: list,
                                           patches_diff: str,
                                           model: str,
                                           prev_suggestions_str: str = "",

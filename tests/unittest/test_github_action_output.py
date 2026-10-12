@@ -14,7 +14,7 @@ class TestGitHubOutput:
 
         github_action_output(output_data, key_name)
 
-        with open(str(tmp_path / 'output'), 'r') as f:
+        with open(str(tmp_path / 'output')) as f:
             env_value = f.read()
 
         actual_key = env_value.split('=')[0]
@@ -63,7 +63,7 @@ class TestGitHubOutput:
 
         github_action_output(output_data, key_name)
 
-        with open(str(tmp_path / 'output'), 'r') as f:
+        with open(str(tmp_path / 'output')) as f:
             env_value = f.read()
 
         actual_key = env_value.split('=')[0]

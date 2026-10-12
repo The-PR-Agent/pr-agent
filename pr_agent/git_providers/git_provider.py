@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, Optional, Tuple
+from typing import Any
 from urllib.parse import urlsplit
 
 from pr_agent.algo.comment_identity import (
@@ -67,12 +67,12 @@ class CodeSuggestionThread:
     """
     thread_id: Any
     status: Any
-    file: Optional[str]
-    start_line: Optional[int]
-    end_line: Optional[int]
+    file: str | None
+    start_line: int | None
+    end_line: int | None
     suggestion: str
     replies: list[tuple[str, str]] = field(default_factory=list)
-    authored_by_agent: Optional[bool] = None
+    authored_by_agent: bool | None = None
 
     def text_replies(self) -> list[tuple[str, str]]:
         """Return the replies that have a non-blank text message, stripped."""
@@ -507,7 +507,7 @@ class GitProvider(ABC):
     # ('https://git_provider.com/projects/MY_PROJECT/repos/MY_REPO/.../<MY_BRANCH>', '?=<SOME HEADER>')
     # so that to properly view the file: docs/readme.md -> <PREFIX>/docs/readme.md<SUFFIX> ->
     # https://git_provider.com/projects/MY_PROJECT/repos/MY_REPO/<MY_BRANCH>/docs/readme.md?=<SOME HEADER>)
-    def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> Tuple[str, str]:
+    def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> tuple[str, str]:
         get_logger().warning("Not implemented! Returning empty prefix and suffix")
         return ("", "")
 
@@ -520,7 +520,7 @@ class GitProvider(ABC):
     #                self.repo_url, tmp_dir, remove_dest_folder=False)
     #            print(returned_obj.path) #Use returned_obj.path.
     #    #From this point, returned_obj.path may be deleted at any point and therefore must not be used.
-    class ScopedClonedRepo(object):
+    class ScopedClonedRepo:
         def __init__(self, dest_folder):
             self.path = dest_folder
 
@@ -836,7 +836,7 @@ class GitProvider(ABC):
         Defaults to no per-directory support."""
         return {}
 
-    def get_owning_namespace(self) -> Optional[str]:
+    def get_owning_namespace(self) -> str | None:
         """Return the org/group/workspace that owns this repository, or None when
         the provider has no organisation-level home for global settings.
 
@@ -926,7 +926,7 @@ class GitProvider(ABC):
         """
         self._command_actor = actor
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         """Return the ref (commit SHA or branch name) that repo-context files are read from.
 
         The repo-context cache key (pr_agent/algo/repo_context.py) includes this ref so a
@@ -1171,7 +1171,7 @@ class GitProvider(ABC):
     def get_pr_labels(self, update=False):
         pass
 
-    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> int | None:
         """Add a named reaction to a comment, returning its id.
 
         Returns None when the provider has no reaction API, when the name is empty, or when
@@ -1180,7 +1180,7 @@ class GitProvider(ABC):
         """
         return None
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         """Acknowledge a comment command with the configured start reaction."""
         if disable_eyes:
             return None
@@ -1194,7 +1194,7 @@ class GitProvider(ABC):
             self._start_reaction = (issue_comment_id, reaction_id)
         return reaction_id
 
-    def react_to_outcome(self, issue_comment_id: int, succeeded: bool) -> Optional[int]:
+    def react_to_outcome(self, issue_comment_id: int, succeeded: bool) -> int | None:
         """Replace the start reaction with the configured outcome reaction.
 
         Both outcome reactions are unset by default, so nothing changes unless an operator asks

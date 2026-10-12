@@ -1,7 +1,6 @@
 import hashlib
 import time
-from enum import Enum
-from typing import List
+from enum import StrEnum
 
 import openai
 from pydantic import BaseModel, Field
@@ -28,14 +27,14 @@ def _get_embedding_client(api_key: str):
     return _EMBEDDING_CLIENTS[api_key]
 
 
-def _embed(texts: List[str]) -> List[List[float]]:
+def _embed(texts: list[str]) -> list[list[float]]:
     """Embed texts with the openai>=1.0 client that requirements.txt pins."""
     client = _get_embedding_client(get_settings().openai.key)
     response = client.embeddings.create(input=texts, model=MODEL)
     return [record.embedding for record in response.data]
 
 
-def _embed_with_fallback(texts: List[str]) -> List[List[float]]:
+def _embed_with_fallback(texts: list[str]) -> list[list[float]]:
     """Embed a list, falling back to one by one, and refuse to return an all-zero set."""
     try:
         return _embed(texts)
@@ -414,7 +413,7 @@ class PRSimilarIssue:
             return
         relevant_issues_number_list.append(issue_number)
         relevant_comment_number_list.append(comment_number)
-        score_list.append(str("{:.2f}".format(score)))
+        score_list.append(str(f"{score:.2f}"))
 
     async def run(self):
         if not self.supported:
@@ -898,7 +897,7 @@ class PRSimilarIssue:
         get_logger().info('Done')
 
 
-class IssueLevel(str, Enum):
+class IssueLevel(StrEnum):
     ISSUE = "issue"
     COMMENT = "comment"
 
@@ -920,7 +919,7 @@ class Record(BaseModel):
 
 
 class Corpus(BaseModel):
-    documents: List[Record] = Field(default=[])
+    documents: list[Record] = Field(default=[])
 
     def append(self, r: Record):
         self.documents.append(r)

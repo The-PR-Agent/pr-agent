@@ -1,7 +1,6 @@
 import copy
 import textwrap
 from functools import partial
-from typing import Dict
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -156,7 +155,7 @@ class PRAddDocs:
 
         return response
 
-    def _prepare_pr_code_docs(self) -> Dict:
+    def _prepare_pr_code_docs(self) -> dict:
         docs = self.prediction.strip()
         data = load_yaml(docs)
         if isinstance(data, list):

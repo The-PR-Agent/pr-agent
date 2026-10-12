@@ -5,7 +5,7 @@ import multiprocessing
 import traceback
 from collections import deque
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiohttp
 from starlette_context import request_cycle_context
@@ -70,7 +70,7 @@ def _get_polling_request_timeout() -> float:
 def _remaining_polling_timeout(deadline: float) -> float:
     remaining = deadline - asyncio.get_running_loop().time()
     if remaining <= 0:
-        raise asyncio.TimeoutError("Comment history request timed out")
+        raise TimeoutError("Comment history request timed out")
     return remaining
 
 
@@ -142,7 +142,7 @@ async def _fetch_comment_history(session, url, headers) -> list:
     for attempt in range(2):
         try:
             comments = await _fetch_comment_history_scan(session, url, headers, deadline)
-        except asyncio.TimeoutError as error:
+        except TimeoutError as error:
             if attempt:
                 raise _CommentPaginationDrift("Comment history changed during polling") from error
             raise
@@ -167,7 +167,7 @@ def now() -> str:
     Returns:
         str: The current UTC time in ISO 8601 format.
     """
-    now_utc = datetime.now(timezone.utc).isoformat()
+    now_utc = datetime.now(UTC).isoformat()
     now_utc = now_utc.replace("+00:00", "Z")
     return now_utc
 

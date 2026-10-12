@@ -8,7 +8,7 @@ differ: a backend either supports the operation, has nothing to do, or declares 
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from types import SimpleNamespace
 from typing import get_type_hints
@@ -188,7 +188,7 @@ def _codecommit(monkeypatch) -> CodeCommitProvider:
             "comments": [{
                 "commentId": "comment-1",
                 "content": COMMENT_BODY,
-                "creationDate": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "creationDate": datetime(2024, 1, 1, tzinfo=UTC),
             }],
         }
     ]

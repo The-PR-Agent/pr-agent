@@ -10,7 +10,6 @@ import uuid
 from collections import Counter, namedtuple
 from pathlib import Path
 from tempfile import mkdtemp
-from typing import Optional
 
 import requests
 import urllib3.util
@@ -30,8 +29,7 @@ from pr_agent.log import get_logger
 def _call(*command, **kwargs) -> (int, str, str):
     res = subprocess.run(
         command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=True,
         **kwargs,
     )
@@ -181,7 +179,7 @@ def adopt_to_gerrit_message(message):
 def add_suggestion(src_filename, context: str, start, end: int):
     # Rewrite the file in place with its own line endings, so the patch built from
     # `git diff` holds only the suggestion: no CRLF-to-LF rewrite and no mode change.
-    with open(src_filename, "r", encoding="utf-8", newline="") as src:
+    with open(src_filename, encoding="utf-8", newline="") as src:
         lines = src.readlines()
     # Match the ending of the first replaced line, falling back to the first line.
     anchor = lines[start - 1] if 0 < start <= len(lines) else (lines[0] if lines else "")
@@ -267,7 +265,7 @@ class GerritProvider(GitProvider):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         raise NotImplementedError(
             'Adding reactions is not implemented for the gerrit provider')
 

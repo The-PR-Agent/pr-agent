@@ -1,4 +1,5 @@
 import json
+from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -2277,10 +2278,10 @@ def test_azure_lifecycle_matches_descriptor_identity(mock_get_settings):
 
 
 def test_azure_newest_comment_order_is_chronological_across_threads():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     def timestamp(second):
-        return datetime(2026, 1, 1, 0, 0, second, tzinfo=timezone.utc)
+        return datetime(2026, 1, 1, 0, 0, second, tzinfo=UTC)
 
     def comment(comment_id, body, second):
         return Comment(

@@ -7,7 +7,6 @@ import os
 import re
 import time
 import traceback
-from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
@@ -109,7 +108,7 @@ class GithubProvider(GitProvider):
                                target_branch=policy_value(pr, "base", "ref"),
                                labels=self.get_pr_labels() if "labels" in required_fields else ())
 
-    def __init__(self, pr_url: Optional[str] = None):
+    def __init__(self, pr_url: str | None = None):
         self.repo_obj = None
         try:
             self.installation_id = context.get("installation_id", None)
@@ -147,7 +146,7 @@ class GithubProvider(GitProvider):
         else: #Instantiated the provider without a PR / Issue
             self.pr_commits = None
 
-    def _get_issue_handle(self, issue_url) -> Optional[Issue]:
+    def _get_issue_handle(self, issue_url) -> Issue | None:
         repo_name, issue_number = self._parse_issue_url(issue_url)
         if not repo_name or not issue_number:
             get_logger().error(f"Given url: {issue_url} is not a valid issue.")
@@ -172,7 +171,7 @@ class GithubProvider(GitProvider):
             context.pop("diff_files", None)
         self.incremental = IncrementalPR(False)
 
-    def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None):
+    def get_incremental_commits(self, incremental: IncrementalPR | None = None):
         # Constructed per call: a default in the signature is one object shared by every provider that omits it.
         # Invalidate completed diffs when the file scope is being reconfigured.
         self.diff_files = None
@@ -242,7 +241,7 @@ class GithubProvider(GitProvider):
     # "https://github.com/the-pr-agent/pr-agent/blob/v0.8", suffix: ""
     # In case git url is not provided, provider will use PR context (which includes
     # branch) to determine the prefix and suffix.
-    def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> Tuple[str, str]:
+    def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> tuple[str, str]:
         owner = None
         repo = None
         scheme_and_netloc = None
@@ -864,7 +863,7 @@ class GithubProvider(GitProvider):
             get_logger().warning(f"Failed to create check run, error: {e}")
             return False
 
-    def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> Optional[int]:
+    def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> int | None:
         pr = getattr(self, 'pr', None)
         if not pr:
             return None
@@ -1417,7 +1416,7 @@ class GithubProvider(GitProvider):
     def get_pr_branch(self):
         return self.pr.head.ref
 
-    def get_owning_namespace(self, *, resolved: bool = False) -> Optional[str]:
+    def get_owning_namespace(self, *, resolved: bool = False) -> str | None:
         # Be robust to providers built without full __init__ (e.g. __new__ in tests/helpers):
         # without a repo there is no org to resolve, so skip global settings quietly.
         if not getattr(self, "repo", None):
@@ -1740,7 +1739,7 @@ class GithubProvider(GitProvider):
         # repo context records a fetch error instead of silently dropping the sibling file.
         return bool(sibling_repo.has_in_collaborators(requester_login))
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         # Match get_repo_file_content: the PR target (base) commit is the cached revision.
         # When the default branch is read (explicitly, or because no PR base exists) resolve
         # its head commit so a push to the default branch invalidates cached content within
@@ -1762,7 +1761,7 @@ class GithubProvider(GitProvider):
     # The reaction API accepts only this closed set; anything else is rejected with 422.
     SUPPORTED_REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 
-    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> int | None:
         if reaction not in self.SUPPORTED_REACTIONS:
             get_logger().warning(
                 f"GitHub does not support the reaction {reaction!r}; "
@@ -1790,7 +1789,7 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to remove eyes reaction, error: {e}")
             return False
 
-    def _parse_pr_url(self, pr_url: str) -> Tuple[str, int]:
+    def _parse_pr_url(self, pr_url: str) -> tuple[str, int]:
         parsed_url = urlparse(pr_url)
 
         if parsed_url.path.startswith('/api/v3'):
@@ -1818,7 +1817,7 @@ class GithubProvider(GitProvider):
 
         return repo_name, pr_number
 
-    def _parse_issue_url(self, issue_url: str) -> Tuple[str, int]:
+    def _parse_issue_url(self, issue_url: str) -> tuple[str, int]:
         parsed_url = urlparse(issue_url)
 
         if parsed_url.path.startswith('/api/v3'): #Check if came from github app

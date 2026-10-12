@@ -1,38 +1,38 @@
 from __future__ import annotations
 
 import string
-from enum import Enum
-from typing import Iterable
+from collections.abc import Iterable
+from enum import StrEnum
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 
-class PRReviewHeader(str, Enum):
+class PRReviewHeader(StrEnum):
     REGULAR = "## PR Reviewer Guide"
     INCREMENTAL = "## Incremental PR Reviewer Guide"
 
 
-class PRReviewIdentity(str, Enum):
+class PRReviewIdentity(StrEnum):
     REGULAR = "<!-- pr-agent:review:full -->"
     INCREMENTAL = "<!-- pr-agent:review:incremental -->"
 
 
-class PRCodeSuggestionsHeader(str, Enum):
+class PRCodeSuggestionsHeader(StrEnum):
     SUMMARY = "## PR Code Suggestions ✨"
 
 
-class PRCodeSuggestionsIdentity(str, Enum):
+class PRCodeSuggestionsIdentity(StrEnum):
     SUMMARY = "<!-- pr-agent:improve:summary -->"
     NO_SUGGESTIONS = "<!-- pr-agent:improve:no-suggestions -->"
     UNANCHORED = "<!-- pr-agent:improve:unanchored -->"
 
 
-class PRCommandNoticeIdentity(str, Enum):
+class PRCommandNoticeIdentity(StrEnum):
     INCOMPLETE_BITBUCKET_FILES = "<!-- pr-agent:bitbucket-incomplete-files -->"
 
 
-class PRDescriptionHeader(str, Enum):
+class PRDescriptionHeader(StrEnum):
     DIAGRAM_WALKTHROUGH = "Diagram Walkthrough"
     FILE_WALKTHROUGH = "File Walkthrough"
 

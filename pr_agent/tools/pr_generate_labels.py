@@ -1,6 +1,5 @@
 import copy
 from functools import partial
-from typing import List
 
 from pydantic import ValidationError
 
@@ -228,7 +227,7 @@ class PRGenerateLabels:
             field = ".".join(str(part) for part in first_error["loc"]) or "$"
             raise FallbackEligibleError(f"Invalid labels model output at {field}: {first_error['msg']}") from error
 
-    def _prepare_labels(self) -> List[str]:
+    def _prepare_labels(self) -> list[str]:
         pr_types = self.data["labels"].copy()
 
         # convert lowercase labels to original case

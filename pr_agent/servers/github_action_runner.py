@@ -3,7 +3,6 @@ import json
 import os
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Optional, Union
 
 import dynaconf
 
@@ -37,10 +36,10 @@ class _ActionStatus:
     failed: bool = False
 
 
-_action_status: ContextVar[Optional[_ActionStatus]] = ContextVar("pr_agent_action_status", default=None)
+_action_status: ContextVar[_ActionStatus | None] = ContextVar("pr_agent_action_status", default=None)
 
 
-def is_true(value: Union[str, bool]) -> bool:
+def is_true(value: str | bool) -> bool:
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -48,7 +47,7 @@ def is_true(value: Union[str, bool]) -> bool:
     return False
 
 
-def get_setting_or_env(key: str, default: Union[str, bool] = None) -> Union[str, bool]:
+def get_setting_or_env(key: str, default: str | bool = None) -> str | bool:
     try:
         value = get_settings().get(key, default)
     except AttributeError:  # TBD still need to debug why this happens on GitHub Actions
@@ -240,7 +239,7 @@ async def run_action():
 
     # Load the event payload
     try:
-        with open(GITHUB_EVENT_PATH, 'r') as f:
+        with open(GITHUB_EVENT_PATH) as f:
             event_payload = json.load(f)
     except json.decoder.JSONDecodeError as e:
         print(f"Failed to parse JSON: {e}")

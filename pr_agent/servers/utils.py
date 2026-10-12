@@ -5,9 +5,10 @@ import re
 import secrets
 import time
 from collections import defaultdict
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Sequence
+from typing import Any
 
 from fastapi import HTTPException
 

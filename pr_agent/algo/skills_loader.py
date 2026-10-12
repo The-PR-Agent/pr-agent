@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
 
 import yaml
 from starlette_context import context
@@ -75,16 +74,16 @@ class Skill:
     name: str
     description: str
     body: str
-    resources: Tuple[SkillResource, ...] = field(default_factory=tuple)
+    resources: tuple[SkillResource, ...] = field(default_factory=tuple)
 
 
-def _expand_skill_path(raw_path: object) -> Optional[str]:
+def _expand_skill_path(raw_path: object) -> str | None:
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
     return os.path.expanduser(os.path.expandvars(raw_path.strip()))
 
 
-def _expanded_skill_paths(paths: List[str]) -> Tuple[str, ...]:
+def _expanded_skill_paths(paths: list[str]) -> tuple[str, ...]:
     """Return the normalized path values used by discovery and cache keys."""
     expanded_paths = []
     for raw_path in paths or []:
@@ -98,7 +97,7 @@ def _count_tokens(text: str) -> int:
     return len(TokenEncoder.get_token_encoder().encode(text, disallowed_special=()))
 
 
-def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
+def _gather_resources(skill_md_path: str) -> tuple[SkillResource, ...]:
     """Walk the skill's directory tree and collect sibling ``*.md`` files.
 
     SKILL.md itself is excluded. Subdirectories named ``scripts`` or ``assets``
@@ -106,7 +105,7 @@ def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
     is treated as a separate skill and not descended into.
     """
     skill_dir = os.path.dirname(skill_md_path)
-    resources: List[SkillResource] = []
+    resources: list[SkillResource] = []
 
     for root, dirs, files in os.walk(skill_dir):
         dirs[:] = [d for d in dirs if d not in _EXCLUDED_RESOURCE_DIRS]
@@ -130,7 +129,7 @@ def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
                 )
                 continue
             try:
-                with open(full, "r", encoding="utf-8") as fh:
+                with open(full, encoding="utf-8") as fh:
                     content = fh.read()
             except (OSError, UnicodeDecodeError) as e:
                 get_logger().warning(f"Skill resource unreadable: {full} ({e})")
@@ -142,10 +141,10 @@ def _gather_resources(skill_md_path: str) -> Tuple[SkillResource, ...]:
     return tuple(resources)
 
 
-def _parse_skill_file(file_path: str) -> Optional[Skill]:
+def _parse_skill_file(file_path: str) -> Skill | None:
     """Parse a single SKILL.md file. Returns None and logs a warning on malformed input."""
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             content = f.read()
     except (OSError, UnicodeDecodeError) as e:
         get_logger().warning(f"Skill file unreadable: {file_path} ({e})")
@@ -194,7 +193,7 @@ def _parse_skill_file(file_path: str) -> Optional[Skill]:
     )
 
 
-def discover_skills(paths: List[str]) -> List[Skill]:
+def discover_skills(paths: list[str]) -> list[Skill]:
     """Scan the given filesystem paths for ``*/SKILL.md`` files.
 
     Each entry in ``paths`` may be either a directory containing skill
@@ -202,7 +201,7 @@ def discover_skills(paths: List[str]) -> List[Skill]:
     Environment variables and ``~`` are expanded. Missing paths are skipped
     with a warning.
     """
-    skills: List[Skill] = []
+    skills: list[Skill] = []
     seen: set = set()
 
     for raw_path in paths or []:
@@ -249,7 +248,7 @@ def _format_skill(skill: Skill) -> str:
     return "\n".join(parts).rstrip()
 
 
-def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
+def format_skills_context(skills: list[Skill], max_tokens: int) -> str:
     """Format skills into a prompt-ready string under a token budget.
 
     Skills are emitted in order; once the running token count would exceed the
@@ -266,7 +265,7 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
     separator = "\n\n---\n\n"
     sep_tokens = _count_tokens(separator)
     marker_tokens = _count_tokens(truncate_marker)
-    pieces: List[str] = []
+    pieces: list[str] = []
     used = 0
     for skill in skills:
         formatted = _format_skill(skill)
@@ -302,7 +301,7 @@ def format_skills_context(skills: List[Skill], max_tokens: int) -> str:
     return separator.join(pieces).strip()
 
 
-def _get_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional[int], Optional[str]]) -> Optional[str]:
+def _get_cached_context(cache_settings: tuple[bool, tuple[object, ...], int | None, str | None]) -> str | None:
     try:
         if context.get(_CONTEXT_CACHE_SETTINGS_KEY, None) != cache_settings:
             return None
@@ -314,7 +313,7 @@ def _get_cached_context(cache_settings: Tuple[bool, Tuple[object, ...], Optional
 
 
 def _set_cached_context(
-    cache_settings: Tuple[bool, Tuple[object, ...], Optional[int], Optional[str]], value: str
+    cache_settings: tuple[bool, tuple[object, ...], int | None, str | None], value: str
 ) -> None:
     try:
         context[_CONTEXT_CACHE_SETTINGS_KEY] = cache_settings

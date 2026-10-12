@@ -1,6 +1,6 @@
 import copy
 import os
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from starlette.background import BackgroundTasks
@@ -71,7 +71,7 @@ async def get_body(request: Request):
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
     return body
 
-async def handle_request(body: Dict[str, Any], event: str):
+async def handle_request(body: dict[str, Any], event: str):
     """Process Gitea webhook events"""
     action = body.get("action")
     if not action:
@@ -93,7 +93,7 @@ async def handle_request(body: Dict[str, Any], event: str):
 
     return {}
 
-async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: PRAgent):
+async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle pull request events"""
     pr = body.get("pull_request", {})
     if not pr:
@@ -127,7 +127,7 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
         # for command in commands_on_push:
         #     await agent.handle_request(api_url, command)
 
-async def handle_comment_event(body: Dict[str, Any], event: str, action: str, agent: PRAgent):
+async def handle_comment_event(body: dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle comment events"""
     comment = body.get("comment", {})
     if not comment:

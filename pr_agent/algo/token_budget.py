@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal
 
 from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment

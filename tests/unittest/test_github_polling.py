@@ -365,7 +365,7 @@ async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out
         scan_calls += 1
         if scan_calls == 1:
             return None
-        raise asyncio.TimeoutError("retry deadline exhausted")
+        raise TimeoutError("retry deadline exhausted")
 
     monkeypatch.setattr(github_polling, "_fetch_comment_history_scan", scan)
     notification = {

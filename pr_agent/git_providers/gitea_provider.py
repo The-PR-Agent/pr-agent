@@ -1,7 +1,7 @@
 import functools
 import json
 from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 from urllib.parse import quote, urlparse
 
 import giteapy
@@ -50,7 +50,7 @@ class IncompleteGiteaPullRequestFilesError(IncompleteProviderPullRequestFilesErr
 class _GiteaCommitAdapter:
     """Mimics PyGithub `Commit` shape (.sha, .html_url) over a raw Gitea commit payload."""
 
-    def __init__(self, raw: Dict[str, Any]):
+    def __init__(self, raw: dict[str, Any]):
         raw = raw or {}
         self.sha = raw.get("sha", "")
         self.html_url = raw.get("html_url", "")
@@ -82,9 +82,9 @@ class GiteaProvider(GitProvider):
                                target_branch=policy_value(pr, "base", "ref"),
                                labels=self.get_pr_labels() if "labels" in required_fields else ())
 
-    _base_url_html: Optional[str] = None  # resolved on first use, see base_url_html
+    _base_url_html: str | None = None  # resolved on first use, see base_url_html
 
-    def __init__(self, url: Optional[str] = None):
+    def __init__(self, url: str | None = None):
         super().__init__()
         self.logger = get_logger()
 
@@ -103,7 +103,7 @@ class GiteaProvider(GitProvider):
 
         self.repo_settings = get_settings().get("GITEA.REPO_SETTING", None)
         configuration = giteapy.Configuration()
-        configuration.host = "{}/api/v1".format(self.base_url)
+        configuration.host = f"{self.base_url}/api/v1"
         configuration.api_key['Authorization'] = f'token {self.gitea_access_token}'
 
         if get_settings().get("GITEA.SKIP_SSL_VERIFICATION", False):
@@ -271,7 +271,7 @@ class GiteaProvider(GitProvider):
             path = path[len("/api/v1/repos"):]
         return path.strip('/').split('/')
 
-    def _parse_pr_url(self, pr_url: str) -> Tuple[str, str, int]:
+    def _parse_pr_url(self, pr_url: str) -> tuple[str, str, int]:
         path_parts = self._url_path_parts(pr_url)
         if len(path_parts) < 4 or path_parts[2] != 'pulls':
             raise ValueError("The provided URL does not appear to be a Gitea PR URL")
@@ -286,7 +286,7 @@ class GiteaProvider(GitProvider):
 
         return owner, repo, pr_number
 
-    def _parse_issue_url(self, issue_url: str) -> Tuple[str, str, int]:
+    def _parse_issue_url(self, issue_url: str) -> tuple[str, str, int]:
         path_parts = self._url_path_parts(issue_url)
         if len(path_parts) < 4 or path_parts[2] != 'issues':
             raise ValueError("The provided URL does not appear to be a Gitea issue URL")
@@ -431,7 +431,7 @@ class GiteaProvider(GitProvider):
         self.publish_inline_comments([payload])
 
 
-    def publish_inline_comments(self, comments: List[Dict[str, Any]],body : str = "Inline comment") -> bool:
+    def publish_inline_comments(self, comments: list[dict[str, Any]],body : str = "Inline comment") -> bool:
         try:
             response = self.repo_api.create_inline_comment(
                 owner=self.owner,
@@ -455,7 +455,7 @@ class GiteaProvider(GitProvider):
         self.logger.info("Inline comment published")
         return True
 
-    def publish_code_suggestions(self, suggestions: List[Dict[str, Any]]) -> bool:
+    def publish_code_suggestions(self, suggestions: list[dict[str, Any]]) -> bool:
         """Publish code suggestions"""
         publishable_count = 0
         published_count = 0
@@ -487,7 +487,7 @@ class GiteaProvider(GitProvider):
         return published_count > 0 or publishable_count == 0
 
 
-    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> int | None:
         """Add a named reaction to a comment"""
         try:
             comments = self.repo_api.list_all_comments(
@@ -579,7 +579,7 @@ class GiteaProvider(GitProvider):
             filepath=filename
         )
 
-    def get_diff_files(self) -> List[FilePatchInfo]:
+    def get_diff_files(self) -> list[FilePatchInfo]:
         """Get files that were modified in the PR"""
         if self.diff_files is not None:
             return self.diff_files
@@ -689,7 +689,7 @@ class GiteaProvider(GitProvider):
         except AttributeError:
             return ""
 
-    def _get_changed_files(self) -> List[Dict[str, Any]]:
+    def _get_changed_files(self) -> list[dict[str, Any]]:
         """Cache only a complete changed-file inventory, including a valid empty one."""
         if self.git_files is None:
             try:
@@ -703,7 +703,7 @@ class GiteaProvider(GitProvider):
             self.git_files = files
         return self.git_files
 
-    def get_files(self) -> List[str]:
+    def get_files(self) -> list[str]:
         """Get all files in the PR"""
         return [file["filename"] for file in self._get_changed_files()]
 
@@ -711,7 +711,7 @@ class GiteaProvider(GitProvider):
         """Get number of files changed in the PR"""
         return len(self._get_changed_files())
 
-    def get_issue_comments(self) -> List[Dict[str, Any]]:
+    def get_issue_comments(self) -> list[dict[str, Any]]:
         """Get all comments in the PR"""
         index = self.issue_number if self.enabled_issue else self.pr_number
         comments = self.repo_api.list_all_comments(
@@ -726,7 +726,7 @@ class GiteaProvider(GitProvider):
         return comments
 
     @cache_languages
-    def get_languages(self) -> Set[str]:
+    def get_languages(self) -> set[str]:
         """Get programming languages used in the repository"""
         languages = self.repo_api.get_languages(
             owner=self.owner,
@@ -755,7 +755,7 @@ class GiteaProvider(GitProvider):
 
         return self.pr.body if self.pr.body else ""
 
-    def get_pr_labels(self,update=False) -> List[str]:
+    def get_pr_labels(self,update=False) -> list[str]:
         """Get labels assigned to the PR"""
         if not update:
             if not self.pr.labels:
@@ -807,7 +807,7 @@ class GiteaProvider(GitProvider):
 
         return settings_files if settings_files else ""
 
-    def get_owning_namespace(self) -> Optional[str]:
+    def get_owning_namespace(self) -> str | None:
         return getattr(self, "owner", None)
 
     def _get_global_settings_cache_key(self, owner: str) -> str:
@@ -870,7 +870,7 @@ class GiteaProvider(GitProvider):
                 pr_number=self.pr_number
             )
 
-    def publish_labels(self, labels: List[int]) -> None:
+    def publish_labels(self, labels: list[int]) -> None:
         """Publish labels to the PR"""
         if not labels:
             self.logger.error("No labels provided to publish")
@@ -994,7 +994,7 @@ class GiteaProvider(GitProvider):
                 return ""
             raise
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         if from_default_branch:
             return self.repo_api.repo_get(self.owner, self.repo).default_branch
         # Only trust the PR target (base) ref — never the PR head (self.sha).
@@ -1008,7 +1008,7 @@ class RepoApi(giteapy.RepositoryApi):
         super().__init__(client)
 
     def create_inline_comment(self, owner: str, repo: str, pr_number: int,
-                              body : str ,commit_id : str, comments: List[Dict[str, Any]]):
+                              body : str ,commit_id : str, comments: list[dict[str, Any]]):
         body = {
             "body": body,
             "comments": comments,
@@ -1106,7 +1106,7 @@ class RepoApi(giteapy.RepositoryApi):
             index=pr_number
         )
 
-    def edit_pull_request(self, owner: str, repo: str, pr_number: int, body: str, title: Optional[str] = None):
+    def edit_pull_request(self, owner: str, repo: str, pr_number: int, body: str, title: str | None = None):
         """Edit pull request description"""
         body = {
             "body": body
@@ -1301,7 +1301,7 @@ class RepoApi(giteapy.RepositoryApi):
             auth_settings=['AuthorizationHeaderToken']
         )
 
-    def add_labels(self, owner: str, repo: str, issue_number: int, labels: List[int]):
+    def add_labels(self, owner: str, repo: str, issue_number: int, labels: list[int]):
         body = {
             "labels": labels
         }

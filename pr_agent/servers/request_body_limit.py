@@ -1,4 +1,4 @@
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 from fastapi import FastAPI
 from starlette.middleware import Middleware
@@ -65,7 +65,7 @@ class RequestBodyLimitMiddleware:
         await response(scope, receive, send)
 
 
-def get_max_request_body_size(max_body_size: Optional[int] = None) -> int:
+def get_max_request_body_size(max_body_size: int | None = None) -> int:
     """Resolve the shared positive body limit for FastAPI and Starlette servers."""
     if max_body_size is None:
         max_body_size = get_settings().config.max_webhook_request_body_bytes
@@ -80,8 +80,8 @@ def get_max_request_body_size(max_body_size: Optional[int] = None) -> int:
 
 
 def create_server_app(
-    middleware: Optional[Iterable[Middleware]] = None,
-    max_body_size: Optional[int] = None,
+    middleware: Iterable[Middleware] | None = None,
+    max_body_size: int | None = None,
 ) -> FastAPI:
     """Build a FastAPI server with the shared request-body limit enabled."""
     max_body_size = get_max_request_body_size(max_body_size)

@@ -185,7 +185,7 @@ def run(inargs=None, args=None):
     if diff_mode:
         if args.diff_file:
             try:
-                with open(args.diff_file, "r", encoding="utf-8") as fh:
+                with open(args.diff_file, encoding="utf-8") as fh:
                     diff_content = fh.read()
             except OSError as e:
                 parser.error(f"Could not read --diff-file '{args.diff_file}': {e}")

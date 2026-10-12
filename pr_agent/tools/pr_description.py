@@ -4,7 +4,6 @@ import re
 import traceback
 from functools import partial
 from graphlib import TopologicalSorter
-from typing import List, Tuple
 
 import yaml
 from pydantic import ValidationError
@@ -811,7 +810,7 @@ class PRDescription:
             payload[field] = filter_generated_labels(values if isinstance(values, list) else [])
         return payload
 
-    def _prepare_labels(self) -> List[str]:
+    def _prepare_labels(self) -> list[str]:
         pr_labels = []
 
         # If the 'PR Type' key is present in the dictionary, split its value by comma and assign it to 'pr_types'
@@ -838,7 +837,7 @@ class PRDescription:
             get_logger().error(f"Error converting labels to original case {self.pr_id}: {e}")
         return filter_generated_labels(pr_labels)
 
-    def _prepare_pr_answer_with_markers(self) -> Tuple[str, str]:
+    def _prepare_pr_answer_with_markers(self) -> tuple[str, str]:
         get_logger().info(f"Using description marker replacements {self.pr_id}")
 
         # Remove the 'PR Title' key from the dictionary
@@ -894,7 +893,7 @@ class PRDescription:
 
         return title, body
 
-    def _prepare_pr_answer(self) -> Tuple[str, str, str]:
+    def _prepare_pr_answer(self) -> tuple[str, str, str]:
         """
         Prepare the PR description based on the AI prediction data.
 
@@ -1142,7 +1141,7 @@ DIAGRAM_SQUARE_NODE_PATTERN = re.compile(
 )
 
 
-def _diagram_label_positions(line: str) -> List[bool]:
+def _diagram_label_positions(line: str) -> list[bool]:
     """For each position in the line, whether it sits inside an existing label."""
     square_depth = 0
     in_double_quotes = False
@@ -1226,7 +1225,7 @@ def _strip_diagram_labels(line: str) -> str:
     return line
 
 
-def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
+def _parse_diagram_edges(lines: list[str]) -> list[tuple[str, str]]:
     """Extract the directed edges of a mermaid flowchart body, tolerating its syntax variants."""
     edges = []
     for raw_line in lines:
@@ -1260,7 +1259,7 @@ def _parse_diagram_edges(lines: List[str]) -> List[Tuple[str, str]]:
     return edges
 
 
-def _longest_diagram_chain(edges: List[Tuple[str, str]]) -> int:
+def _longest_diagram_chain(edges: list[tuple[str, str]]) -> int:
     """Length, in nodes, of the longest path through the graph. Raises ValueError on a cycle."""
     predecessors = {}
     for source, target in edges:

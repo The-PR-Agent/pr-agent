@@ -2,7 +2,6 @@ import difflib
 import subprocess
 from collections import Counter
 from types import SimpleNamespace
-from typing import Optional, Tuple
 from urllib.parse import quote, quote_plus, urlparse
 
 from atlassian.bitbucket import Bitbucket
@@ -29,8 +28,8 @@ class BitbucketServerProvider(GitProvider):
                                target_branch=policy_value(self.pr, "toRef", "displayId"))
 
     def __init__(
-            self, pr_url: Optional[str] = None, incremental: Optional[bool] = False,
-            bitbucket_client: Optional[Bitbucket] = None,
+            self, pr_url: str | None = None, incremental: bool | None = False,
+            bitbucket_client: Bitbucket | None = None,
     ):
         self.bitbucket_server_url = None
         self.workspace_slug = None
@@ -92,7 +91,7 @@ class BitbucketServerProvider(GitProvider):
     # suffix: "?at=refs%2Fheads%2Fmy_branch"
     # In case git url is not provided, provider will use PR context (which includes branch) to
     # determine the prefix and suffix.
-    def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> Tuple[str, str]:
+    def get_canonical_url_parts(self, repo_git_url:str=None, desired_branch:str=None) -> tuple[str, str]:
         workspace_name = None
         project_name = None
         if not repo_git_url:
@@ -158,7 +157,7 @@ class BitbucketServerProvider(GitProvider):
         ref = self.get_repo_context_ref(from_default_branch)
         return self.get_file(file_path, ref)
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         if from_default_branch:
             default_branch_dict = self.bitbucket_client.get_default_branch(self.workspace_slug, self.repo_slug)
             return default_branch_dict.get('displayId') or self.pr.toRef['latestCommit']
@@ -619,7 +618,7 @@ class BitbucketServerProvider(GitProvider):
             get_logger().warning(f"Failed to get head SHA, error: {e}")
             return ""
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
@@ -638,7 +637,7 @@ class BitbucketServerProvider(GitProvider):
         return f"{parsed_url.scheme}://{parsed_url.netloc}"
 
     @staticmethod
-    def _parse_pr_url(pr_url: str) -> Tuple[str, str, int]:
+    def _parse_pr_url(pr_url: str) -> tuple[str, str, int]:
         # pr url format: f"{bitbucket_server}/projects/{project_name}/repos/{repository_name}/pull-requests/{pr_id}"
         parsed_url = urlparse(pr_url)
 

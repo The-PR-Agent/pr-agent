@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import traceback
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from typing import Callable, List, Tuple
 
 import openai
 
@@ -606,7 +606,7 @@ def pr_generate_extended_diff(pr_languages: list,
                               add_line_numbers_to_hunks: bool,
                               patch_extra_lines_before: int = 0,
                               patch_extra_lines_after: int = 0,
-                              deleted_files: list | None = None) -> Tuple[list, int, list]:
+                              deleted_files: list | None = None) -> tuple[list, int, list]:
     total_tokens = token_handler.prompt_tokens  # initial tokens
     patches_extended = []
     patches_extended_tokens = []
@@ -665,7 +665,7 @@ def pr_generate_compressed_diff(top_langs: list, token_handler: TokenHandler,
                                 soft_token_budget: int, hard_token_budget: int,
                                 convert_hunks_to_line_numbers: bool,
                                 large_pr_handling: bool,
-                                ) -> Tuple[list, list, list, list, dict, list]:
+                                ) -> tuple[list, list, list, list, dict, list]:
     """Prepare patches using the caller's soft and hard diff-only capacities."""
     deleted_files_list = []
 
@@ -872,7 +872,7 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
         get_settings().set("openai.deployment_id", original_deployment_id)
 
 
-def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:
+def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> list[str]:
     if model_type == ModelType.WEAK:
         model = get_model('model_weak')
     elif model_type == ModelType.REASONING:
@@ -889,7 +889,7 @@ def _get_all_models(model_type: ModelType = ModelType.REGULAR) -> List[str]:
     return all_models
 
 
-def _get_all_deployments(all_models: List[str]) -> List[str]:
+def _get_all_deployments(all_models: list[str]) -> list[str]:
     deployment_id = get_settings().get("openai.deployment_id", None)
     fallback_deployments = get_settings().get("openai.fallback_deployments", [])
     if not isinstance(fallback_deployments, list) and fallback_deployments:

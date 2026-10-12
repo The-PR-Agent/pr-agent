@@ -3,7 +3,7 @@ import re
 import secrets
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional, TypedDict
+from typing import TypedDict
 from urllib.parse import urlsplit
 
 from pr_agent.config_loader import get_settings
@@ -26,12 +26,12 @@ class ArtifactPromptContext(TypedDict):
     end_marker: str
 
 
-_artifact_context: ContextVar[Optional[tuple[ArtifactPromptContext, frozenset[str]]]] = ContextVar(
+_artifact_context: ContextVar[tuple[ArtifactPromptContext, frozenset[str]] | None] = ContextVar(
     "pr_agent_artifact_context", default=None
 )
 
 
-def get_artifact_context(tool_name: str) -> Optional[ArtifactPromptContext]:
+def get_artifact_context(tool_name: str) -> ArtifactPromptContext | None:
     """Return the separate CI artifact prompt context for a targeted tool."""
     payload = _artifact_context.get()
     if payload is None:
@@ -40,7 +40,7 @@ def get_artifact_context(tool_name: str) -> Optional[ArtifactPromptContext]:
     return context if tool_name.lower() in targets else None
 
 
-def resolve_artifact_path(path: str) -> Optional[Path]:
+def resolve_artifact_path(path: str) -> Path | None:
     if not path:
         return None
     try:
@@ -113,10 +113,10 @@ def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") 
             if len(content) > read_size:
                 content = content[-read_size:]
         else:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            with open(path, encoding="utf-8", errors="replace") as f:
                 # Read bounded lookahead before redacting the kept beginning.
                 content = f.read(read_size)
-    except (OSError, IOError) as e:
+    except OSError as e:
         get_logger().warning(f"Failed to read artifact file {path}: {e}")
         return ""
 
@@ -146,7 +146,7 @@ def _read_and_truncate(path: Path, max_size: int, truncate_from: str = "start") 
     return content
 
 
-def load_artifact_context() -> Optional[ArtifactPromptContext]:
+def load_artifact_context() -> ArtifactPromptContext | None:
     try:
         artifacts_settings = get_settings().get("ARTIFACTS", {})
     except AttributeError:

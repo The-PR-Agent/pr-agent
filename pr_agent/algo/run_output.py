@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from importlib.metadata import PackageNotFoundError, version
 
@@ -51,7 +50,7 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
         channels = cfg.get("channels", []) or []
         record = {
             "type": message_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "payload": payload or {},
         }
         if markdown is not None:
@@ -184,23 +183,20 @@ def show_run_details(gfm_supported: bool) -> str:
 def get_version() -> str:
     # First check pyproject.toml if running directly out of the pr-agent repository
     if os.path.exists("pyproject.toml"):
-        if sys.version_info >= (3, 11):
-            import tomllib
-            try:
-                with open("pyproject.toml", "rb") as f:
-                    data = tomllib.load(f)
-            except (OSError, ValueError) as e:  # tomllib raises TOMLDecodeError, or UnicodeDecodeError on non-UTF-8
-                get_logger().warning(f"Unable to read pyproject.toml, falling back to package metadata: {e}")
-            else:
-                # only trust this file when it is pr-agent's own pyproject.toml, otherwise an
-                # unrelated project in the current working directory would dictate our version
-                project = data.get("project", {})
-                if project.get("name") == "pr-agent":
-                    if "version" in project:
-                        return project["version"]
-                    get_logger().warning("Version not found in pyproject.toml")
+        import tomllib
+        try:
+            with open("pyproject.toml", "rb") as f:
+                data = tomllib.load(f)
+        except (OSError, ValueError) as e:  # tomllib raises TOMLDecodeError, or UnicodeDecodeError on non-UTF-8
+            get_logger().warning(f"Unable to read pyproject.toml, falling back to package metadata: {e}")
         else:
-            get_logger().warning("Unable to determine local version from pyproject.toml")
+            # only trust this file when it is pr-agent's own pyproject.toml, otherwise an
+            # unrelated project in the current working directory would dictate our version
+            project = data.get("project", {})
+            if project.get("name") == "pr-agent":
+                if "version" in project:
+                    return project["version"]
+                get_logger().warning("Version not found in pyproject.toml")
 
     # Otherwise get the installed pip package version
     try:

@@ -2,7 +2,7 @@ import copy
 import os
 import time
 import uuid
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import uvicorn
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -119,12 +119,12 @@ async def get_body(request):
     return body
 
 
-async def handle_comments_on_pr(body: Dict[str, Any],
+async def handle_comments_on_pr(body: dict[str, Any],
                                 event: str,
                                 sender: str,
                                 sender_id: str,
                                 action: str,
-                                log_context: Dict[str, Any],
+                                log_context: dict[str, Any],
                                 agent: PRAgent):
     if "comment" not in body:
         return {}
@@ -174,12 +174,12 @@ async def handle_comments_on_pr(body: Dict[str, Any],
         else:
             get_logger().info(f"User {sender=} is not eligible to process comment on PR {api_url=}")
 
-async def handle_new_pr_opened(body: Dict[str, Any],
+async def handle_new_pr_opened(body: dict[str, Any],
                                event: str,
                                sender: str,
                                sender_id: str,
                                action: str,
-                               log_context: Dict[str, Any],
+                               log_context: dict[str, Any],
                                agent: PRAgent):
 
     pull_request, api_url = _check_pull_request_event(action, body, log_context)
@@ -243,13 +243,13 @@ def _finish_auto_command_check_run(provider, name: str | None, command, succeede
         get_logger().warning(f"Failed to complete the {name} check run: {e}")
 
 
-async def handle_pull_request_review_submitted(body: Dict[str, Any],
+async def handle_pull_request_review_submitted(body: dict[str, Any],
                                                event: str,
                                                sender: str,
                                                sender_id: str,
                                                sender_type: str,
                                                action: str,
-                                               log_context: Dict[str, Any],
+                                               log_context: dict[str, Any],
                                                agent: PRAgent):
     pull_request, api_url = _check_pull_request_event(action, body, log_context)
     if not (pull_request and api_url):
@@ -291,12 +291,12 @@ async def handle_pull_request_review_submitted(body: Dict[str, Any],
         get_logger().info(f"User {sender=} is not eligible to process review on PR {api_url=}")
 
 
-async def handle_push_trigger_for_new_commits(body: Dict[str, Any],
+async def handle_push_trigger_for_new_commits(body: dict[str, Any],
                         event: str,
                         sender: str,
                         sender_id: str,
                         action: str,
-                        log_context: Dict[str, Any],
+                        log_context: dict[str, Any],
                         agent: PRAgent):
     pull_request, api_url = _check_pull_request_event(action, body, log_context)
     if not (pull_request and api_url):
@@ -380,7 +380,7 @@ def should_process_pr_logic(body) -> bool:
     return shared_should_process_pr_logic(body, provider="github")
 
 
-async def _dispatch_request(body: Dict[str, Any], event: str, action: str):
+async def _dispatch_request(body: dict[str, Any], event: str, action: str):
     """Return False when a command fails, preserving ignored events as completed work."""
     agent = PRAgent()
     log_context, sender, sender_id, sender_type = get_log_context(body, event, action, build_number)
@@ -424,7 +424,7 @@ async def _dispatch_request(body: Dict[str, Any], event: str, action: str):
     return {}
 
 
-async def handle_request(body: Dict[str, Any], event: str, delivery_id: str | None = None):
+async def handle_request(body: dict[str, Any], event: str, delivery_id: str | None = None):
     """
     Handle incoming GitHub webhook requests.
 
@@ -456,7 +456,7 @@ async def handle_request(body: Dict[str, Any], event: str, delivery_id: str | No
     return {}
 
 
-def _check_pull_request_event(action: str, body: dict, log_context: dict) -> Tuple[Dict[str, Any], str]:
+def _check_pull_request_event(action: str, body: dict, log_context: dict) -> tuple[dict[str, Any], str]:
     invalid_result = {}, ""
     pull_request = body.get("pull_request")
     if not pull_request:

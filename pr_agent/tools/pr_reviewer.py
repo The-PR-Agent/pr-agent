@@ -3,7 +3,6 @@ import copy
 import datetime
 import re
 from functools import partial
-from typing import List, Optional, Tuple
 
 from pydantic import ValidationError
 
@@ -283,7 +282,7 @@ class PRReviewer:
             get_settings().pr_review_prompt.user
         )
 
-    def parse_incremental(self, args: List[str]):
+    def parse_incremental(self, args: list[str]):
         is_incremental = False
         if args and len(args) >= 1:
             arg = args[0]
@@ -608,7 +607,7 @@ class PRReviewer:
             and implementation is not GitProvider.supports_review_finding_state
         )
 
-    def _persistent_review_comment_exists(self) -> Optional[bool]:
+    def _persistent_review_comment_exists(self) -> bool | None:
         """Whether a comment already carries the full-review identity.
 
         Returns None when the provider's comments could not be read at all, so a caller
@@ -717,7 +716,7 @@ class PRReviewer:
         return dismissed
 
     @staticmethod
-    def _review_finding_from_issue(issue: dict) -> Optional[dict]:
+    def _review_finding_from_issue(issue: dict) -> dict | None:
         if not isinstance(issue, dict):
             return None
         path = str(issue.get("relevant_file") or issue.get("path") or "").strip()
@@ -741,7 +740,7 @@ class PRReviewer:
         return finding
 
     @classmethod
-    def _review_findings_from_data(cls, data: dict) -> Optional[list[dict]]:
+    def _review_findings_from_data(cls, data: dict) -> list[dict] | None:
         review = data.get("review")
         if not isinstance(review, dict):
             return None
@@ -1185,7 +1184,7 @@ class PRReviewer:
             if progress is not None:
                 await progress.record_settled()
 
-    async def _get_prediction(self, model: str, patches_diff: Optional[str] = None) -> str:
+    async def _get_prediction(self, model: str, patches_diff: str | None = None) -> str:
         """
         Generate an AI prediction for the pull request review.
 
@@ -1435,7 +1434,7 @@ class PRReviewer:
 
         return markdown_text
 
-    def _build_key_issue_comment(self, issue, diff_files: dict) -> Optional[dict]:
+    def _build_key_issue_comment(self, issue, diff_files: dict) -> dict | None:
         if not isinstance(issue, dict):
             return None
         relevant_file = (issue.get("relevant_file") or "").strip()
@@ -1582,7 +1581,7 @@ class PRReviewer:
             data["review"].pop("key_issues_to_review", None)
         return data
 
-    def _get_user_answers(self) -> Tuple[str, str]:
+    def _get_user_answers(self) -> tuple[str, str]:
         """
         Retrieves the question and answer strings from the discussion messages related to a pull request.
 
@@ -1639,7 +1638,7 @@ class PRReviewer:
         not_enough_commits = num_new_commits < num_commits_threshold
         # checking if the commits are not too recent to start the review
         recent_commits_threshold = (
-            datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+            datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
             - datetime.timedelta(minutes=get_settings().pr_reviewer.minimal_minutes_for_incremental_review)
         )
         last_seen_commit_date = (
@@ -1649,7 +1648,7 @@ class PRReviewer:
         # naive datetime. Normalize to naive UTC so the comparison cannot raise
         # TypeError, matching how the GitLab and Azure providers emit commit dates.
         if last_seen_commit_date is not None and last_seen_commit_date.tzinfo is not None:
-            last_seen_commit_date = last_seen_commit_date.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+            last_seen_commit_date = last_seen_commit_date.astimezone(datetime.UTC).replace(tzinfo=None)
         all_commits_too_recent = (
             last_seen_commit_date > recent_commits_threshold if self.incremental.last_seen_commit else False
         )

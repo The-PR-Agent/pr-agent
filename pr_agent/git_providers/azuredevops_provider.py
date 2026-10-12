@@ -4,8 +4,8 @@ import datetime as _dt
 import difflib
 import re
 from collections import Counter
+from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import Iterator, Optional, Tuple
 from urllib.parse import quote, unquote, urlparse
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
@@ -103,7 +103,7 @@ def _to_naive_utc(dt):
     if dt is None:
         return None
     if getattr(dt, "tzinfo", None) is not None:
-        return dt.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        return dt.astimezone(_dt.UTC).replace(tzinfo=None)
     return dt
 
 
@@ -212,7 +212,7 @@ class AzureDevopsProvider(GitProvider):
     )
 
     def __init__(
-            self, pr_url: Optional[str] = None, incremental: Optional[bool] = False
+            self, pr_url: str | None = None, incremental: bool | None = False
     ):
         if not AZURE_DEVOPS_AVAILABLE:
             raise ImportError(
@@ -239,7 +239,7 @@ class AzureDevopsProvider(GitProvider):
         if pr_url:
             self.set_pr(pr_url)
 
-    def _resolve_diff_file_path(self, relevant_file: str) -> Optional[str]:
+    def _resolve_diff_file_path(self, relevant_file: str) -> str | None:
         if not isinstance(relevant_file, str) or not relevant_file.strip():
             return None
         relevant_file = relevant_file.strip().strip("`").strip()
@@ -255,7 +255,7 @@ class AzureDevopsProvider(GitProvider):
                 self._diff_path_map = path_map
         return path_map.get(relevant_file) or path_map.get(relevant_file.lstrip("/"))
 
-    def _get_suggestion_end_offset(self, relevant_file: str, relevant_lines_end: int) -> Optional[int]:
+    def _get_suggestion_end_offset(self, relevant_file: str, relevant_lines_end: int) -> int | None:
         for file in self.diff_files or []:
             if file.filename != relevant_file or not isinstance(file.head_file, str):
                 continue
@@ -267,7 +267,7 @@ class AzureDevopsProvider(GitProvider):
         return None
 
     @staticmethod
-    def _render_suggestion_as_diff(body: str, original_suggestion: Optional[dict]) -> str:
+    def _render_suggestion_as_diff(body: str, original_suggestion: dict | None) -> str:
         """Azure DevOps has no committable suggestion blocks, so a ```suggestion fence is
         published verbatim and renders as an uneditable raw block. Replace it with a diff
         block, the same way the Bitbucket providers do."""
@@ -772,7 +772,7 @@ class AzureDevopsProvider(GitProvider):
                     f"run, error: {e}")
         return settings_files if settings_files else ""
 
-    def get_owning_namespace(self) -> Optional[str]:
+    def get_owning_namespace(self) -> str | None:
         # In Azure DevOps the owning namespace is the organization, not the project
         # (the org contains projects which contain repos). It is configured via
         # azure_devops.org, which may be a bare org name or a full collection URL.
@@ -833,7 +833,7 @@ class AzureDevopsProvider(GitProvider):
                 return ""
             raise
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         # The PR target (base) commit is the cached revision; the default branch is selected by
         # omitting the version, so it carries no explicit ref, mirroring get_repo_file_content.
         if from_default_branch:
@@ -1563,7 +1563,7 @@ class AzureDevopsProvider(GitProvider):
         return fingerprints
 
     @staticmethod
-    def _suggestion_range_anchor(start_line, end_line) -> Optional[str]:
+    def _suggestion_range_anchor(start_line, end_line) -> str | None:
         if (not isinstance(start_line, int) or isinstance(start_line, bool)
                 or not isinstance(end_line, int) or isinstance(end_line, bool)
                 or start_line < 1 or end_line < start_line):
@@ -1579,7 +1579,7 @@ class AzureDevopsProvider(GitProvider):
             fingerprints.add(code_fp)
 
     @staticmethod
-    def _value(value, attribute: str, serialized_attribute: Optional[str] = None):
+    def _value(value, attribute: str, serialized_attribute: str | None = None):
         if isinstance(value, dict):
             return value.get(serialized_attribute or attribute)
         return getattr(value, attribute, None)
@@ -1756,7 +1756,7 @@ class AzureDevopsProvider(GitProvider):
     def get_issue_comments_newest_first(self):
         return list(self.get_issue_comments())
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:
@@ -1805,7 +1805,7 @@ class AzureDevopsProvider(GitProvider):
             get_logger().exception(f"Failed to set thread status, error: {e}")
 
     @staticmethod
-    def _parse_pr_url(pr_url: str) -> Tuple[str, str, int]:
+    def _parse_pr_url(pr_url: str) -> tuple[str, str, int]:
         parsed_url = urlparse(pr_url)
         path_parts = parsed_url.path.strip("/").split("/")
         num_parts = len(path_parts)
@@ -1828,7 +1828,7 @@ class AzureDevopsProvider(GitProvider):
         return workspace_slug, repo_slug, pr_number
 
     @staticmethod
-    def _get_azure_devops_client() -> Tuple[GitClient, WorkItemTrackingClient]:
+    def _get_azure_devops_client() -> tuple[GitClient, WorkItemTrackingClient]:
         org = get_settings().azure_devops.get("org", None)
         pat = get_settings().azure_devops.get("pat", None)
 
