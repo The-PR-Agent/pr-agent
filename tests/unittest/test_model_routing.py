@@ -7,12 +7,16 @@ import asyncio
 import pytest
 
 from pr_agent.algo.model_routing import count_hunks, route_primary_model
-from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
+from pr_agent.algo.pr_processing import (
+    FallbackEligibleError,
+    get_effective_fallback_chain,
+    retry_with_fallback_models,
+)
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from tests.unittest._settings_helpers import restore_settings, snapshot_settings
+from tests.unittest._settings_helpers import SENTINEL, restore_settings, snapshot_settings
 
 _TRACKED_KEYS = (
     "config.model",
@@ -106,6 +110,147 @@ class TestRouting:
     def test_configured_fallbacks_follow_the_routed_primary(self, settings):
         calls = _models_tried(_pr(num_files=1, hunks_per_file=1), fail=("tiny-model",))
         assert calls == ["tiny-model", "fallback-1"]
+
+    def test_routed_model_repeating_in_fallbacks_keeps_distinct_fallbacks_first(self, settings):
+        settings.set("config.fallback_models", ["tiny-model", "fallback-1"])
+        calls = _models_tried(_pr(num_files=1, hunks_per_file=1), fail=("tiny-model",))
+        assert calls == ["tiny-model", "fallback-1"]
+
+    def test_routed_collision_recovers_with_the_displaced_primary(self, settings):
+        settings.set("config.fallback_models", ["tiny-model"])
+        init_run_details()
+        calls = _models_tried(_pr(num_files=1, hunks_per_file=1), fail=("tiny-model",))
+        assert calls == ["tiny-model", "primary-model"]
+        assert get_run_details().model_used == "primary-model"
+        assert get_run_details().fallback_used is True
+
+    def test_successful_routed_collision_does_not_attempt_fallbacks(self, settings):
+        settings.set("config.fallback_models", ["tiny-model"])
+        init_run_details()
+        assert _models_tried(_pr(num_files=1, hunks_per_file=1)) == ["tiny-model"]
+        assert get_run_details().model_used == "tiny-model"
+        assert get_run_details().fallback_used is False
+
+    @pytest.mark.parametrize("deployment", [SENTINEL, None, ""])
+    @pytest.mark.parametrize("fallback_deployments", [SENTINEL, None, [], "", [None], [""], " "])
+    def test_empty_deployments_match_routed_endpoints(self, settings, deployment, fallback_deployments):
+        restore_settings({"openai.deployment_id": deployment,
+                          "openai.fallback_deployments": fallback_deployments})
+        settings.set("config.fallback_models", ["tiny-model"])
+        original_deployment = settings.get("openai.deployment_id")
+        previous_chain = get_effective_fallback_chain()
+        expected = (("tiny-model", None), ("primary-model", None))
+        observed = []
+
+        async def fake_f(model):
+            observed.append((model, settings.get("openai.deployment_id")))
+            assert get_effective_fallback_chain() == expected
+            raise FallbackEligibleError("endpoint failed")
+
+        with pytest.raises(Exception, match="Failed to generate prediction with any model"):
+            asyncio.run(retry_with_fallback_models(fake_f, git_provider=_pr(1, 1)))
+
+        assert observed == list(expected)
+        assert settings.get("openai.deployment_id") == original_deployment
+        assert get_effective_fallback_chain() == previous_chain
+
+    @pytest.mark.parametrize("outcome", ["routed-success", "primary-success", "exhausted", "fatal"])
+    @pytest.mark.parametrize("fallback_deployments", [["", None, ""], ",,"])
+    def test_mixed_empty_deployments_preserve_primary_and_restore_context(self, settings, outcome,
+                                                                        fallback_deployments):
+        settings.set("openai.deployment_id", "")
+        settings.set("config.fallback_models", ["tiny-model", "primary-model", "tiny-model"])
+        settings.set("openai.fallback_deployments", fallback_deployments)
+        expected = (("tiny-model", None), ("primary-model", None))
+        previous_chain = get_effective_fallback_chain()
+        observed = []
+
+        async def fake_f(model):
+            observed.append((model, settings.get("openai.deployment_id")))
+            assert get_effective_fallback_chain() == expected
+            if outcome == "fatal":
+                raise ValueError("not eligible for fallback")
+            if outcome == "exhausted" or (outcome == "primary-success" and model == "tiny-model"):
+                raise FallbackEligibleError("endpoint failed")
+            return model
+
+        if outcome in ("fatal", "exhausted"):
+            error = ValueError if outcome == "fatal" else Exception
+            with pytest.raises(error):
+                asyncio.run(retry_with_fallback_models(fake_f, git_provider=_pr(1, 1)))
+        else:
+            result = asyncio.run(retry_with_fallback_models(fake_f, git_provider=_pr(1, 1)))
+            assert result == ("tiny-model" if outcome == "routed-success" else "primary-model")
+
+        assert observed == list(expected[:1] if outcome in ("fatal", "routed-success") else expected)
+        assert settings.get("openai.deployment_id") == ""
+        assert get_effective_fallback_chain() == previous_chain
+
+    @pytest.mark.parametrize("routed", [True, False])
+    @pytest.mark.parametrize("deployment", [None, "", " "])
+    @pytest.mark.parametrize("fallbacks", [[], ["fallback-1"]])
+    def test_noncolliding_chains_keep_raw_deployments(self, settings, routed, deployment, fallbacks):
+        settings.set("openai.deployment_id", "")
+        settings.set("config.fallback_models", fallbacks)
+        settings.set("openai.fallback_deployments", [deployment])
+        settings.set("model_routing.enable", routed)
+        expected = (("tiny-model", None) if routed else ("primary-model", ""),)
+        if fallbacks:
+            expected += (("fallback-1", deployment),)
+        observed = []
+
+        async def fake_f(model):
+            observed.append((model, settings.get("openai.deployment_id")))
+            assert get_effective_fallback_chain() == expected
+            raise FallbackEligibleError("endpoint failed")
+
+        with pytest.raises(Exception, match="Failed to generate prediction with any model"):
+            asyncio.run(retry_with_fallback_models(fake_f, git_provider=_pr(1, 1)))
+
+        assert observed == list(expected)
+        assert settings.get("openai.deployment_id") == ""
+
+    @pytest.mark.parametrize("fallbacks, routed, expected", [
+        ([("tiny-model", "tiny-deployment")], ("tiny-model", "tiny-deployment"),
+         [("tiny-model", "tiny-deployment"), ("primary-model", "primary-deployment")]),
+        ([("fallback-1", "other"), ("tiny-model", "tiny-deployment"), ("fallback-1", "other")],
+         ("tiny-model", "tiny-deployment"),
+         [("tiny-model", "tiny-deployment"), ("fallback-1", "other"), ("primary-model", "primary-deployment")]),
+        ([("tiny-model", "tiny-deployment"), ("primary-model", "primary-deployment"), ("fallback-1", "other")],
+         ("tiny-model", "tiny-deployment"),
+         [("tiny-model", "tiny-deployment"), ("primary-model", "primary-deployment"), ("fallback-1", "other")]),
+        ([("primary-model", "primary-deployment")], ("primary-model", "primary-deployment"),
+         [("primary-model", "primary-deployment")]),
+        ([("tiny-model", "other-deployment")], ("tiny-model", "tiny-deployment"),
+         [("tiny-model", "tiny-deployment"), ("tiny-model", "other-deployment")]),
+        ([], ("tiny-model", "tiny-deployment"), [("tiny-model", "tiny-deployment")]),
+        ([("fallback-1", "other"), ("fallback-1", "other")], ("tiny-model", "tiny-deployment"),
+         [("tiny-model", "tiny-deployment"), ("fallback-1", "other"), ("fallback-1", "other")]),
+    ])
+    def test_routed_chain_exhaustion_preserves_endpoint_order_and_restores_context(self, settings,
+                                                                                  fallbacks, routed, expected):
+        settings.set("openai.deployment_id", "primary-deployment")
+        settings.set("config.fallback_models", [model for model, _ in fallbacks])
+        # Surplus deployments are ignored, not attached to the restored primary.
+        settings.set("openai.fallback_deployments", [deployment for _, deployment in fallbacks] + ["surplus"])
+        settings.set("model_routing.rules", [
+            {"max_hunks": 3, "model": routed[0], "deployment_id": routed[1]},
+        ])
+        observed = []
+        previous_chain = get_effective_fallback_chain()
+
+        async def fake_f(model):
+            observed.append((model, get_settings().get("openai.deployment_id")))
+            assert get_effective_fallback_chain() == tuple(expected)
+            raise FallbackEligibleError("endpoint failed")
+
+        with pytest.raises(Exception, match="Failed to generate prediction with any model") as error:
+            asyncio.run(retry_with_fallback_models(fake_f, git_provider=_pr(num_files=1, hunks_per_file=1)))
+
+        assert observed == expected
+        assert f"any model of {[model for model, _ in expected]}" in str(error.value)
+        assert get_settings().get("openai.deployment_id") == "primary-deployment"
+        assert get_effective_fallback_chain() == previous_chain
 
     def test_weak_tier_is_not_routed(self, settings):
         provider = _pr(num_files=1, hunks_per_file=1)

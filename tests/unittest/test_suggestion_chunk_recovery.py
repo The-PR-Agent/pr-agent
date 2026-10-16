@@ -503,6 +503,16 @@ async def test_recovered_run_details_report_primary_model_and_sticky_fallback(co
     assert details.num_ai_calls == 0
 
 
+@pytest.mark.parametrize("fallback_deployment", ["primary", "secondary"])
+def test_recovery_chain_distinguishes_deployments_for_the_same_model(configured, monkeypatch, fallback_deployment):
+    chain = [("gpt-4o", "primary"), ("gpt-4o", fallback_deployment)]
+    monkeypatch.setattr(module, "get_effective_fallback_chain", lambda: chain)
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+
+    expected = None if fallback_deployment == "primary" else (chain, 1)
+    assert tool._recovery_chain("gpt-4o", get_settings()) == expected
+
+
 async def test_ambiguous_model_deployment_chain_keeps_partial_result(configured, monkeypatch):
     get_settings().set("config.fallback_models", ["gpt-4o", "gpt-4.1"])
     get_settings().set("openai.fallback_deployments", ["primary", "last"])
@@ -571,6 +581,32 @@ async def test_routed_primary_recovers_failed_slots_with_configured_fallback(con
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
     assert [m for m, _, _, _ in calls] == ["gpt-4o-mini"] * 3 + ["gpt-4.1"]
     assert get_settings().get("openai.deployment_id") == "primary"
+    tool.git_provider.get_diff_files.assert_called_once_with()
+
+
+@pytest.mark.parametrize("parallel", [True, False])
+@pytest.mark.parametrize("deployment, fallback_deployments", [(None, []), ("", []), (None, [""]), ("", [None])])
+async def test_routed_collision_recovers_failed_chunks_with_displaced_primary(configured, monkeypatch, parallel,
+                                                                            deployment, fallback_deployments):
+    get_settings().set("pr_code_suggestions.parallel_calls", parallel)
+    get_settings().set("config.model", "gpt-5.6")
+    get_settings().set("config.fallback_models", ["gpt-5.6-terra"])
+    get_settings().set("openai.deployment_id", deployment)
+    get_settings().set("openai.fallback_deployments", fallback_deployments)
+    get_settings().set("model_routing.enable", True)
+    get_settings().set("model_routing.rules", [{"model": "gpt-5.6-terra", "max_files": 10}])
+    tool, calls = make_tool(monkeypatch, {("gpt-5.6-terra", "b"): RuntimeError("failure")})
+    tool.git_provider.get_diff_files.return_value = [FilePatchInfo("old()\n", "old()\n", "", c + ".py") for c in "abc"]
+
+    result = await retry_with_fallback_models(tool.prepare_prediction_main, git_provider=tool.git_provider)
+
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert [(model, chunk, dep) for model, chunk, dep, _ in calls] == [
+        ("gpt-5.6-terra", "a", None), ("gpt-5.6-terra", "b", None), ("gpt-5.6-terra", "c", None),
+        ("gpt-5.6", "b", None),
+    ]
+    assert tool.failed_chunk_count == 0
+    assert get_settings().get("openai.deployment_id") == deployment
     tool.git_provider.get_diff_files.assert_called_once_with()
 
 

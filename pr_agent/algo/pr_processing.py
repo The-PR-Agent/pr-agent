@@ -831,13 +831,19 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
                                      git_provider: GitProvider | None = None):
     all_models = _get_all_models(model_type)
     all_deployments = _get_all_deployments(all_models)
-    routed = route_primary_model(model_type, git_provider)
-    if routed:
-        # A cheaper primary for a small pull request; config.fallback_models still follow it.
-        all_models[0], all_deployments[0] = routed
     # Ignore surplus deployment entries when fewer fallback models are configured; this matches
     # the existing retry loop, which stops as soon as the first successful model returns.
-    effective_chain = tuple(zip(all_models, all_deployments[:len(all_models)], strict=True))
+    configured_chain = tuple(zip(all_models, all_deployments[:len(all_models)], strict=True))
+    effective_chain = configured_chain
+    routed = route_primary_model(model_type, git_provider)
+    if routed:
+        effective_chain = (routed, *configured_chain[1:])
+        # Routing treats empty deployment IDs as absent; compare equivalent endpoint pairs.
+        normalized_chain = tuple((model, deployment or None) for model, deployment in configured_chain)
+        if routed in normalized_chain[1:]:
+            # Retain the displaced primary, appending it only when it is not already present.
+            # Keep other fallbacks in order and distinguish deployments of the same model.
+            effective_chain = tuple(dict.fromkeys((routed, *normalized_chain[1:], normalized_chain[0])))
     original_deployment_id = get_settings().get("openai.deployment_id", None)
     context_token = _effective_fallback_chain.set(effective_chain)
     attempt_errors = []
@@ -859,9 +865,9 @@ async def retry_with_fallback_models(f: Callable, model_type: ModelType = ModelT
                     f"Failed to generate prediction with {model}",
                     artifact={"error": e},
                 )
-                if i == len(all_models) - 1:  # If it's the last iteration
+                if i == len(effective_chain) - 1:  # If it's the last iteration
                     raise Exception(
-                        f"Failed to generate prediction with any model of {all_models}. "
+                        f"Failed to generate prediction with any model of {[model for model, _ in effective_chain]}. "
                         f"Attempts: {'; '.join(attempt_errors)}"
                     ) from e
             else:
