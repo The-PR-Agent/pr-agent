@@ -766,6 +766,19 @@ def _get_user_description_for_asana(git_provider) -> str:
     return description if isinstance(description, str) else ""
 
 
+def _gitlab_web_origin(parsed_url):
+    """Return the HTTP(S) origin, or None for an unusable authority."""
+    try:
+        scheme = parsed_url.scheme.lower()
+        hostname = parsed_url.hostname
+        port = parsed_url.port
+        if scheme not in ("http", "https") or not hostname:
+            return None
+        return scheme, hostname.lower(), port if port is not None else (443 if scheme == "https" else 80)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_tickets=MAX_GITLAB_TICKETS,
                                      *, source="description"):
     """Extract ``(project_path, issue_iid)`` references from GitLab MR metadata."""
@@ -774,10 +787,10 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
 
     try:
         provider_url = urlparse(gitlab_url or "")
-        provider_host = provider_url.hostname or ""
+        provider_origin = _gitlab_web_origin(provider_url)
         provider_base_path = provider_url.path.rstrip("/")
     except (AttributeError, TypeError, ValueError):
-        provider_host = ""
+        provider_origin = None
         provider_base_path = ""
 
     references = []
@@ -788,7 +801,7 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
                 parsed_ticket_url = urlparse(match.group("url").rstrip(".:!?'\\\"]}`*"))
             except ValueError:
                 continue
-            if not provider_host or parsed_ticket_url.hostname != provider_host:
+            if provider_origin is None or _gitlab_web_origin(parsed_ticket_url) != provider_origin:
                 continue
 
             ticket_path = parsed_ticket_url.path

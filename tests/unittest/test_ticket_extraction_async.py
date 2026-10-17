@@ -1259,6 +1259,102 @@ class TestGitLabExtraction:
                 "https://gitlab.com",
                 [("group/repo", 7)],
             ),
+            (
+                'https://gitlab.com:443/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [("group/repo", 7)],
+            ),
+            (
+                'https://gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com:443',
+                [("group/repo", 7)],
+            ),
+            (
+                'http://gitlab.com:80/group/repo/-/issues/7',
+                "group/repo",
+                'http://gitlab.com',
+                [("group/repo", 7)],
+            ),
+            (
+                'http://gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'http://gitlab.com:80',
+                [("group/repo", 7)],
+            ),
+            (
+                'https://GITLAB.com/group/repo/-/issues/7',
+                "group/repo",
+                'HTTPS://GitLab.COM',
+                [("group/repo", 7)],
+            ),
+            (
+                'https://user:password@gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [("group/repo", 7)],
+            ),
+            (
+                'https://gitlab.com@other.example/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [],
+            ),
+            (
+                'http://gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [],
+            ),
+            (
+                'https://gitlab.com:8443/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [],
+            ),
+            (
+                'https://gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com:8443',
+                [],
+            ),
+            (
+                'https://gitlab.com:8444/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com:8443',
+                [],
+            ),
+            (
+                'https://gitlab.com:bad/group/repo/-/issues/7 #8',
+                "group/repo",
+                'https://gitlab.com',
+                [("group/repo", 8)],
+            ),
+            (
+                'https://gitlab.com:65536/group/repo/-/issues/7 #8',
+                "group/repo",
+                'https://gitlab.com',
+                [("group/repo", 8)],
+            ),
+            (
+                'https://gitlab.com/group/repo/-/issues/7 #8',
+                "group/repo",
+                'https://gitlab.com:bad',
+                [("group/repo", 8)],
+            ),
+            (
+                'https://gitlab.com/group/repo/-/issues/7 #8',
+                "group/repo",
+                'ftp://gitlab.com',
+                [("group/repo", 8)],
+            ),
+            (
+                'https://gitlab.com/gitlab-other/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com/gitlab',
+                [],
+            ),
         ],
     )
     def test_url_reference_boundaries(self, description, repo_path, gitlab_url, expected):
@@ -1300,6 +1396,37 @@ class TestGitLabExtraction:
         ]
         provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
         project.issues.get.assert_called_once_with(7)
+
+    @pytest.mark.parametrize("source", ["description", "title"])
+    @pytest.mark.parametrize(
+        ("linked_origin", "accepted"),
+        [("http://gitlab.com", False), ("https://gitlab.com:8443", False), ("https://gitlab.com:443", True)],
+    )
+    def test_full_url_origin_controls_sdk_lookup(self, source, linked_origin, accepted, settings_snapshot):
+        reference = f"{linked_origin}/group/repo/-/issues/7"
+        provider, project = _make_gitlab_provider(reference if source == "description" else "")
+        provider.mr = SimpleNamespace(title=reference if source == "title" else "No ticket", source_branch="main")
+        # Derive the configured project from an MR URL accepted by the provider.
+        provider.id_project, _ = provider._parse_merge_request_url(
+            "https://gitlab.com/group/repo/-/merge_requests/4"
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        if not accepted:
+            assert result == []
+            provider.gl.projects.get.assert_not_called()
+            project.issues.get.assert_not_called()
+        else:
+            assert result == [{
+                "ticket_id": 7,
+                "ticket_url": "https://gitlab.com/group/repo/-/issues/7",
+                "title": "GitLab issue",
+                "body": "Issue body",
+                "labels": "bug, backend",
+            }]
+            provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+            project.issues.get.assert_called_once_with(7)
 
 
 # ---------------------------------------------------------------------------
