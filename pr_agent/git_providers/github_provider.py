@@ -869,9 +869,10 @@ class GithubProvider(GitProvider):
         if not pr:
             return None
         url = f"{self.base_url}/repos/{self.repo}/commits/{head_sha}/check-runs"
+        parameters = {"check_name": check_run_name}
         while url:
             try:
-                headers, data = pr._requester.requestJsonAndCheck("GET", url)
+                headers, data = pr._requester.requestJsonAndCheck("GET", url, parameters=parameters)
             except (GithubException, RequestException) as e:
                 get_logger().warning(f"Failed to look up existing check runs, error: {e}")
                 return None
@@ -883,6 +884,7 @@ class GithubProvider(GitProvider):
                 get_logger().warning(f"Failed to read the check runs payload, error: {e}")
                 return None
             url = _next_page_url(headers)
+            parameters = None  # Use the filter embedded in the next-page URL.
         return None
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
