@@ -69,6 +69,20 @@ class TestParsePrUrl:
         assert repo == "owner/repo"
         assert num == 55
 
+    def test_api_v3_in_query_does_not_change_url_classification(self):
+        p = _bare_provider()
+        assert p._parse_pr_url("https://github.com/owner/repo/pull/123?note=/api/v3") == ("owner/repo", 123)
+
+    def test_api_v30_path_is_not_github_api_prefix(self):
+        p = _bare_provider()
+        with pytest.raises(ValueError):
+            p._parse_pr_url("https://github.com/api/v30/repos/owner/repo/pulls/1")
+
+    def test_api_hostname_lookalike_is_not_github_api(self):
+        p = _bare_provider()
+        with pytest.raises(ValueError):
+            p._parse_pr_url("https://fakeapi.github.com.evil.net/repos/owner/repo/pulls/1")
+
     def test_trailing_slash(self):
         p = _bare_provider()
         repo, num = p._parse_pr_url("https://github.com/owner/repo/pull/3/")
@@ -126,6 +140,20 @@ class TestParseIssueUrl:
         )
         assert repo == "owner/repo"
         assert num == 8
+
+    def test_api_v3_in_query_does_not_change_url_classification(self):
+        p = _bare_provider()
+        assert p._parse_issue_url("https://github.com/owner/repo/issues/123?note=/api/v3") == ("owner/repo", 123)
+
+    def test_api_v30_path_is_not_github_api_prefix(self):
+        p = _bare_provider()
+        with pytest.raises(ValueError):
+            p._parse_issue_url("https://github.com/api/v30/repos/owner/repo/issues/1")
+
+    def test_api_hostname_lookalike_is_not_github_api(self):
+        p = _bare_provider()
+        with pytest.raises(ValueError):
+            p._parse_issue_url("https://fakeapi.github.com.evil.net/repos/owner/repo/issues/1")
 
     def test_invalid_url_non_integer(self):
         p = _bare_provider()
