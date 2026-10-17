@@ -824,9 +824,7 @@ class TestResolveCommentThread:
     def test_resolves_reply_after_first_hundred_comments(self):
         thread = {
             "id": "PRRT_target", "isResolved": False,
-            "comments": {"nodes": [{"id": "PRR_root"}] + [
-                {"id": f"PRR_reply_{i}"} for i in range(1, 100)
-            ]},
+            "comments": {"nodes": [{"id": "PRR_root"}]},
         }
         resolved = _make_graphql_response({"resolveReviewThread": {"thread": {"isResolved": True}}})
         provider, requester = _make_provider_with_graphql(
@@ -839,6 +837,8 @@ class TestResolveCommentThread:
         assert requester.calls[0][2].endswith("/pulls/comments/123")
         assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
         assert "reviewThreads(first: 100, after: $cursor)" in requester.calls[2][3]["query"]
+        assert "comments(first: $comment_limit)" in requester.calls[2][3]["query"]
+        assert requester.calls[2][3]["variables"]["comment_limit"] == 1
         assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
 
     @pytest.mark.parametrize(
@@ -864,6 +864,7 @@ class TestResolveCommentThread:
         assert len(requester.calls) == 4
         assert requester.calls[1][:3] == ("check", "GET", "https://api.github.com/repos/owner/repo/pulls/comments/10")
         assert "reviewThreads(first: 100, after: $cursor)" in requester.calls[2][3]["query"]
+        assert requester.calls[2][3]["variables"]["comment_limit"] == 100
         assert 'threadId: "PRRT_target"' in requester.calls[3][3]["query"]
         logger.warning.assert_called_once_with(f"Could not fetch root of comment 123: status {expected_status}")
 

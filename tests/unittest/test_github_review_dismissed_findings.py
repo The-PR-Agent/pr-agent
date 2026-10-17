@@ -60,6 +60,8 @@ def test_github_human_resolved_key_issue_is_dismissed_across_pages():
     assert requester.graphql_query.call_count == 2
     queries = [call.args[0] for call in requester.graphql_query.call_args_list]
     assert all("resolvedBy { login }" in query for query in queries)
+    assert all(call.args[1]["comment_limit"] == 100
+               for call in requester.graphql_query.call_args_list)
     assert requester.graphql_query.call_args_list[1].args[1]["cursor"] == "cursor-0"
     assert list(provider._iter_code_suggestion_threads()) == []
 

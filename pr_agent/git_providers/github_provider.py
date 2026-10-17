@@ -1056,12 +1056,12 @@ class GithubProvider(GitProvider):
     def supports_thread_resolution(self) -> bool:
         return True
 
-    def _review_thread_nodes(self):
-        """List all review threads through the paginated GraphQL query used for resolution."""
+    def _review_thread_nodes(self, *, root_only: bool = False):
+        """List review threads, optionally fetching only their root comment IDs."""
         owner, repo_name = self.repo.split("/")
         cursor = None
         query = """
-        query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+        query($owner: String!, $repo: String!, $number: Int!, $cursor: String, $comment_limit: Int!) {
             repository(owner: $owner, name: $repo) {
                 pullRequest(number: $number) {
                     reviewThreads(first: 100, after: $cursor) {
@@ -1070,7 +1070,7 @@ class GithubProvider(GitProvider):
                             id
                             isResolved
                             resolvedBy { login }
-                            comments(first: 100) {
+                            comments(first: $comment_limit) {
                                 nodes { id }
                             }
                         }
@@ -1081,7 +1081,10 @@ class GithubProvider(GitProvider):
         """
         while True:
             _, response = self.github_client._Github__requester.graphql_query(
-                query, {"owner": owner, "repo": repo_name, "number": self.pr_num, "cursor": cursor}
+                query, {
+                    "owner": owner, "repo": repo_name, "number": self.pr_num, "cursor": cursor,
+                    "comment_limit": 1 if root_only else 100,
+                }
             )
             review_threads = (response.get("data", {}).get("repository", {})
                               .get("pullRequest", {}).get("reviewThreads", {}))
@@ -1148,11 +1151,13 @@ class GithubProvider(GitProvider):
                 "GET", f"{self.base_url}/repos/{self.repo}/pulls/comments/{comment_id}"
             )
             # Fetch the root to find replies beyond the first comment page.
-            if data.get("in_reply_to_id"):
+            root_only = not data.get("in_reply_to_id")
+            if not root_only:
                 try:
                     headers, data = self.pr._requester.requestJsonAndCheck(
                         "GET", f"{self.base_url}/repos/{self.repo}/pulls/comments/{data['in_reply_to_id']}"
                     )
+                    root_only = True
                 except (GithubException, RequestException) as e:
                     get_logger().warning(
                         f"Could not fetch root of comment {comment_id}: status {getattr(e, 'status', 'network error')}"
@@ -1165,7 +1170,7 @@ class GithubProvider(GitProvider):
             # Find the review thread containing this comment (paginated)
             thread_id = None
             is_already_resolved = False
-            for thread in self._review_thread_nodes():
+            for thread in self._review_thread_nodes(root_only=root_only):
                 comment_ids = [c["id"] for c in thread.get("comments", {}).get("nodes", [])]
                 if comment_node_id in comment_ids:
                     if thread.get("isResolved"):
