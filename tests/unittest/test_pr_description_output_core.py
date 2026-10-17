@@ -703,6 +703,40 @@ class TestPrepareFileLabelsEdgeCases:
         assert "'" not in recovered_name
         assert '"' not in recovered_name
 
+    def test_null_required_field_skips_only_that_file(self):
+        # A null/empty required field passes the old key-presence check and
+        # then raised on .strip(), which dropped the file through the broad
+        # except while its valid siblings were kept. An empty field must skip
+        # only the offending file.
+        obj = _make_instance()
+        obj.vars = {"include_file_summary_changes": True}
+        obj.data = {
+            "pr_files": [
+                {
+                    "filename": "src/ok.py",
+                    "changes_title": "Keep me",
+                    "changes_summary": "Valid summary.",
+                    "label": "backend",
+                },
+                {
+                    "filename": "src/null_label.py",
+                    "changes_title": "Null label",
+                    "changes_summary": "Valid summary.",
+                    "label": None,
+                },
+                {
+                    "filename": "src/empty_summary.py",
+                    "changes_title": "Empty summary",
+                    "changes_summary": "   ",
+                    "label": "backend",
+                },
+            ]
+        }
+
+        labels = obj._prepare_file_labels()
+
+        assert labels == {"backend": [("src/ok.py", "Keep me", "Valid summary.")]}
+
 
 # ---------------------------------------------------------------------------
 # prompt gating for enable_pr_description

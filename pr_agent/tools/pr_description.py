@@ -986,26 +986,17 @@ class PRDescription:
         for file in self.data['pr_files']:
             try:
                 required_fields = ['changes_title', 'filename', 'label']
-                if not all(field in file for field in required_fields):
+                if self.vars.get('include_file_summary_changes', True):
+                    required_fields.append('changes_summary')
+                if not all(isinstance(file.get(field), str) and file[field].strip() for field in required_fields):
                     # can happen for example if a YAML generation was interrupted in the middle (no more tokens)
                     get_logger().warning(f"Missing required fields in file label dict {self.pr_id}, skipping file",
                                          artifact={"file": file})
                     continue
-                if not file.get('changes_title'):
-                    get_logger().warning(
-                        f"Empty changes title or summary in file label dict {self.pr_id}, skipping file",
-                        artifact={"file": file},
-                    )
-                    continue
-                filename = file['filename'].replace("'", "`").replace('"', '`')
-                changes_summary = file.get('changes_summary', "")
-                if not changes_summary and self.vars.get('include_file_summary_changes', True):
-                    get_logger().warning("Empty changes summary in file label dict, skipping file",
-                                         artifact={"file": file})
-                    continue
-                changes_summary = changes_summary.strip()
+                filename = file['filename'].replace("'", "`").replace('"', "`")
+                changes_summary = (file.get('changes_summary') or "").strip()
                 changes_title = file['changes_title'].strip()
-                label = file.get('label').strip().lower()
+                label = file['label'].strip().lower()
                 if label not in file_label_dict:
                     file_label_dict[label] = []
                 file_label_dict[label].append((filename, changes_title, changes_summary))
