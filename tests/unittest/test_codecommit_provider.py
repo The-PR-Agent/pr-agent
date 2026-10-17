@@ -168,7 +168,7 @@ class TestCodeCommitProvider:
             ),
         ],
     )
-    def test_get_diff_files_skips_non_utf8_file_and_keeps_utf8_sibling(
+    def test_get_diff_files_marks_non_utf8_file_unreadable_and_keeps_utf8_sibling(
         self,
         non_utf8_file,
         invalid_path,
@@ -186,12 +186,16 @@ class TestCodeCommitProvider:
 
         diff_files = provider.get_diff_files()
 
-        assert [diff_file.filename for diff_file in diff_files] == ["good.py"]
-        assert diff_files[0].base_file == "before\n"
-        assert diff_files[0].head_file == "after\n"
-        assert "-before" in diff_files[0].patch
-        assert "+after" in diff_files[0].patch
-        assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+        assert [diff_file.filename for diff_file in diff_files] == [non_utf8_file.filename, "good.py"]
+        assert diff_files[0].content_fetch_failed is True
+        assert diff_files[0].patch == ""
+        assert diff_files[0].base_file == diff_files[0].head_file == ""
+        assert diff_files[0].edit_type == non_utf8_file.edit_type
+        assert diff_files[1].base_file == "before\n"
+        assert diff_files[1].head_file == "after\n"
+        assert "-before" in diff_files[1].patch
+        assert "+after" in diff_files[1].patch
+        assert diff_files[1].edit_type == EDIT_TYPE.MODIFIED
         assert provider.diff_files is diff_files
 
     def test_get_diff_files_filters_invalid_extension_before_fetching_content(self):
