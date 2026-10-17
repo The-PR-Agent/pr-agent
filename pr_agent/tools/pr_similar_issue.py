@@ -70,17 +70,17 @@ def _qdrant_collection_name(base_name: str) -> str:
     return f"{base_name}-v2"
 
 
-def _lancedb_similar_search(table, query_vector, repo_name_for_index):
-    """Search a lancedb table with the same cosine metric and five-hit limit as the other backends.
+def _lancedb_similar_search(table, query_vector, repo_name_for_index, limit=5):
+    """Search a lancedb table with the same cosine metric and requested limit as the other backends.
 
-    Pinecone and qdrant both return cosine similarity and request five hits; lancedb's default
+    Pinecone and qdrant both return cosine similarity; lancedb's default
     squared-L2 metric would otherwise make ``1 - _distance`` meaningless. Cosine distance keeps the
     printed score (``1 - _distance``) equal to the cosine similarity reported elsewhere.
     """
     return (
         table.search(query_vector)
         .distance_type("cosine")
-        .limit(5)
+        .limit(limit)
         .where(f"metadata.repo='{repo_name_for_index}'", prefilter=True)
         .to_list()
     )
@@ -416,6 +416,36 @@ class PRSimilarIssue:
         relevant_comment_number_list.append(comment_number)
         score_list.append(str("{:.2f}".format(score)))
 
+    @classmethod
+    def _select_similar_hits(cls, hits, original_issue_number):
+        """Select up to five distinct non-self issues in the backend's ranked order."""
+        issues, comments, scores = [], [], []
+        for rid, score in hits:
+            try:
+                if "example_issue_" in rid:
+                    continue
+                parts = rid.split(".")
+                if not parts[0].startswith("issue_"):
+                    continue
+                issue_number = int(parts[0][len("issue_"):])
+                if issue_number == original_issue_number:
+                    continue
+                if len(parts) != 2:
+                    continue
+                if parts[1] == "issue":
+                    comment_number = -1
+                elif parts[1].startswith("comment_"):
+                    comment_number = int(parts[1][len("comment_"):])
+                else:
+                    continue
+            except (ValueError, TypeError, AttributeError, IndexError):
+                get_logger().debug(f"Failed to parse similar issue ID: {rid}")
+                continue
+            cls._record_similar_hit(issues, comments, scores, issue_number, comment_number, score)
+            if len(issues) == 5:
+                break
+        return issues, comments, scores
+
     async def run(self):
         if not self.supported:
             message = "The /similar_issue tool is not supported by the configured git provider."
@@ -445,80 +475,46 @@ class PRSimilarIssue:
         relevant_comment_number_list = []
         score_list = []
 
-        if get_settings().pr_similar_issue.vectordb == "pinecone":
+        vectordb = get_settings().pr_similar_issue.vectordb
+        if vectordb == "pinecone":
             pinecone_index = self.pc.Index(name=self.index_name)
-            res = pinecone_index.query(vector=embeds[0],
-                                    top_k=5,
-                                    filter={"repo": self.repo_name_for_index},
-                                    namespace=self.pinecone_namespace,
-                                    include_metadata=True).to_dict()
 
-            for r in res['matches']:
-                # skip example issue
-                if 'example_issue_' in r["id"]:
-                    continue
+        for limit in (5, 10):
+            if vectordb == "pinecone":
+                res = pinecone_index.query(
+                    vector=embeds[0],
+                    top_k=limit,
+                    filter={"repo": self.repo_name_for_index},
+                    namespace=self.pinecone_namespace,
+                    include_metadata=True,
+                ).to_dict()["matches"]
+                hits = ((r["id"], r["score"]) for r in res)
+            elif vectordb == "lancedb":
+                res = _lancedb_similar_search(self.table, embeds[0], self.repo_name_for_index, limit=limit)
+                hits = ((r["id"], 1 - r["_distance"]) for r in res)
+            elif vectordb == "qdrant":
+                from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-                try:
-                    issue_number = int(r["id"].split('.')[0].split('_')[-1])
-                except (ValueError, KeyError, AttributeError):
-                    get_logger().debug(f"Failed to parse issue number from {r['id']}")
-                    continue
+                res = self.qdrant.search(
+                    collection_name=self.qdrant_collection_name,
+                    query_vector=embeds[0],
+                    limit=limit,
+                    query_filter=Filter(
+                        must=[FieldCondition(key="metadata.repo", match=MatchValue(value=self.repo_name_for_index))]
+                    ),
+                    with_payload=True,
+                )
+                hits = ((r.payload["id"], r.score) for r in res)
+            else:
+                break
 
-                if original_issue_number == issue_number:
-                    continue
-                comment_number = int(r["id"].split('.')[1].split('_')[-1]) if 'comment' in r["id"] else -1
-                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
-                                         score_list, issue_number, comment_number, r['score'])
-            get_logger().info('Done')
-
-        elif get_settings().pr_similar_issue.vectordb == "lancedb":
-            res = _lancedb_similar_search(self.table, embeds[0], self.repo_name_for_index)
-
-            for r in res:
-                # skip example issue
-                if 'example_issue_' in r["id"]:
-                    continue
-
-                try:
-                    issue_number = int(r["id"].split('.')[0].split('_')[-1])
-                except (ValueError, KeyError, AttributeError):
-                    get_logger().debug(f"Failed to parse issue number from {r['id']}")
-                    continue
-
-                if original_issue_number == issue_number:
-                    continue
-                comment_number = int(r["id"].split('.')[1].split('_')[-1]) if 'comment' in r["id"] else -1
-                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
-                                         score_list, issue_number, comment_number, 1 - r['_distance'])
-            get_logger().info('Done')
-
-        elif get_settings().pr_similar_issue.vectordb == "qdrant":
-            from qdrant_client.models import FieldCondition, Filter, MatchValue
-            res = self.qdrant.search(
-                collection_name=self.qdrant_collection_name,
-                query_vector=embeds[0],
-                limit=5,
-                query_filter=Filter(
-                    must=[FieldCondition(key="metadata.repo", match=MatchValue(value=self.repo_name_for_index))]
-                ),
-                with_payload=True,
+            # Approximate-search prefixes can change: use only the terminal response.
+            relevant_issues_number_list, relevant_comment_number_list, score_list = self._select_similar_hits(
+                hits, original_issue_number
             )
-
-            for r in res:
-                rid = r.payload.get("id", "")
-                if 'example_issue_' in rid:
-                    continue
-                try:
-                    issue_number = int(rid.split('.')[0].split('_')[-1])
-                except Exception:
-                    get_logger().debug(f"Failed to parse issue number from {rid}")
-                    continue
-                if original_issue_number == issue_number:
-                    continue
-                comment_number = int(rid.split('.')[1].split('_')[-1]) if 'comment' in rid else -1
-                self._record_similar_hit(relevant_issues_number_list, relevant_comment_number_list,
-                                         score_list, issue_number, comment_number, r.score)
-            get_logger().info('Done')
+            if len(relevant_issues_number_list) == 5 or len(res) < limit:
+                break
+        get_logger().info('Done')
 
         get_logger().info('Publishing response...')
         similar_issues_str = "### Similar Issues\n___\n\n"

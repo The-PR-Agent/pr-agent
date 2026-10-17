@@ -1,5 +1,7 @@
 """Embed with the openai>=1.0 client that requirements.txt pins."""
+import asyncio
 import inspect
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -136,3 +138,180 @@ async def test_pinecone_query_branch_runs(monkeypatch):
     assert queried, "run() never entered the pinecone branch"
     assert queried[0]["vector"] == [0.5]
     assert queried[0]["namespace"] == psi._pinecone_namespace("example/repo")
+
+
+@pytest.fixture(params=["pinecone", "lancedb", "qdrant"])
+def query_tool(monkeypatch, request):
+    """Exercise each query branch with ranked rows and an observable publication sink."""
+    backend = request.param
+    state = SimpleNamespace(attempts=[], responses=[], published=[], embedded=[], fetched=[], publish=True)
+
+    def query(**kwargs):
+        state.attempts.append(kwargs)
+        rows = state.responses.pop(0)
+        if isinstance(rows, BaseException):
+            raise rows
+        if rows is None:
+            if backend == "pinecone":
+                return SimpleNamespace(to_dict=lambda: {})
+            if backend == "lancedb":
+                return [{}]
+            return [SimpleNamespace(payload={}, score=0.9)]
+        if backend == "pinecone":
+            return SimpleNamespace(to_dict=lambda: {"matches": [{"id": rid, "score": score} for rid, score in rows]})
+        if backend == "lancedb":
+            return [{"id": rid, "_distance": 1 - score} for rid, score in rows]
+        return [SimpleNamespace(payload={"id": rid}, score=score) for rid, score in rows]
+
+    class Builder:
+        def distance_type(self, value):
+            self.metric = value
+            return self
+
+        def limit(self, value):
+            self.count = value
+            return self
+
+        def where(self, expression, prefilter=False):
+            self.filter = (expression, prefilter)
+            return self
+
+        def to_list(self):
+            return query(vector=[0.5], metric=self.metric, limit=self.count, filter=self.filter)
+
+    def embed(texts):
+        state.embedded.append(texts)
+        return [[0.5]]
+
+    def get_issue(number):
+        state.fetched.append(number)
+        return SimpleNamespace(
+            title=f"Issue {number}", body="Body", number=number,
+            html_url=f"https://github.com/example/repo/issues/{number}",
+            get_comments=lambda: [SimpleNamespace(html_url=f"https://example.test/{number}#comment-0")],
+            create_comment=state.published.append,
+        )
+
+    monkeypatch.setattr(psi, "_embed", embed)
+    monkeypatch.setattr(psi, "get_settings", lambda: SimpleNamespace(
+        config=SimpleNamespace(publish_output=state.publish),
+        pr_similar_issue=SimpleNamespace(vectordb=backend, skip_comments=True),
+    ))
+    monkeypatch.setitem(sys.modules, "qdrant_client.models", SimpleNamespace(
+        FieldCondition=SimpleNamespace, Filter=SimpleNamespace, MatchValue=SimpleNamespace,
+    ))
+    tool = psi.PRSimilarIssue.__new__(psi.PRSimilarIssue)
+    tool.supported = True
+    tool.issue_url = "https://github.com/example/repo/issues/1"
+    tool.index_name = "issues"
+    tool.repo_name_for_index = "example-repo"
+    tool.pinecone_namespace = psi._pinecone_namespace("example/repo")
+    tool.qdrant_collection_name = "issues-v2"
+    tool.pc = SimpleNamespace(Index=lambda name: SimpleNamespace(query=query))
+    tool.qdrant = SimpleNamespace(search=query)
+    tool.table = SimpleNamespace(search=lambda vector: Builder())
+    tool.git_provider = SimpleNamespace(
+        _parse_issue_url=lambda url: ("example/repo", 1), repo_obj=SimpleNamespace(get_issue=get_issue),
+    )
+    state.tool = tool
+    yield state
+    assert len(state.embedded) == 1
+    for call in state.attempts:
+        if backend == "pinecone":
+            assert call == dict(vector=[0.5], top_k=call["top_k"], filter={"repo": "example-repo"},
+                                namespace=tool.pinecone_namespace, include_metadata=True)
+        elif backend == "lancedb":
+            assert call == dict(vector=[0.5], metric="cosine", limit=call["limit"],
+                                filter=("metadata.repo='example-repo'", True))
+        else:
+            assert call["collection_name"] == "issues-v2"
+            assert call["query_vector"] == [0.5]
+            assert call["with_payload"] is True
+            condition, = call["query_filter"].must
+            assert (condition.key, condition.match.value) == ("metadata.repo", "example-repo")
+
+
+def _limits(state):
+    return [call.get("top_k", call.get("limit")) for call in state.attempts]
+
+
+@pytest.mark.asyncio
+async def test_healthy_query_keeps_five_results_and_one_request(query_tool):
+    state = query_tool
+    state.responses = [[(f"issue_{n}.issue", 0.9) for n in range(2, 7)]]
+    await state.tool.run()
+    assert _limits(state) == [5]
+    assert state.fetched == [1, 2, 3, 4, 5, 6]
+    assert len(state.published) == 1
+    assert "5. **[Issue 6]" in state.published[0]
+
+
+@pytest.mark.asyncio
+async def test_full_filtered_query_retries_and_uses_only_terminal_order(query_tool):
+    state = query_tool
+    state.responses = [
+        [("issue_1.issue", 1), ("issue_1.comment_bad", 0.99), ("example_issue_repo", 0.98),
+         ("issue_20.issue", 0.97), ("issue_20.comment_0", 0.96)],
+        [("issue_1.issue", 1), ("issue_2.comment_bad", 0.99), ("issue_3.comment_0", 0.95),
+         ("issue_3.issue", 0.94), ("issue_4.issue", 0.90), ("bad.issue", 0.89),
+         ("issue_5.issue", 0.80), ("issue_6.issue", 0.70), ("issue_7.issue", 0.60), ("issue_8.issue", 0.5)],
+    ]
+    await state.tool.run()
+    assert _limits(state) == [5, 10]
+    assert state.fetched == [1, 3, 4, 5, 6, 7]
+    assert len(state.published) == 1
+    body = state.published[0]
+    assert "1. **[Issue 3](https://example.test/3#comment-0)** (score=0.95)" in body
+    assert "2. **[Issue 4](https://github.com/example/repo/issues/4)** (score=0.90)" in body
+    assert "5. **[Issue 7]" in body
+    assert "Issue 20" not in body
+
+
+@pytest.mark.asyncio
+async def test_short_response_does_not_retry(query_tool):
+    state = query_tool
+    state.responses = [[("issue_1.issue", 1), ("issue_2.issue", 0.8)]]
+    await state.tool.run()
+    assert _limits(state) == [5]
+    assert state.fetched == [1, 2]
+    assert len(state.published) == 1
+
+
+@pytest.mark.asyncio
+async def test_second_full_response_cannot_start_a_third_query(query_tool):
+    state = query_tool
+    state.responses = [[("issue_1.issue", 1)] * 5, [("issue_1.issue", 1)] * 10]
+    state.publish = False
+    await state.tool.run()
+    assert _limits(state) == [5, 10]
+    assert state.published == []
+    assert state.fetched == [1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("query failed"), asyncio.CancelledError(), None])
+async def test_retry_failure_does_not_publish_partial_first_response(query_tool, failure):
+    state = query_tool
+    state.responses = [[("issue_2.issue", 0.9)] * 5, failure]
+    with pytest.raises(type(failure) if failure is not None else KeyError):
+        await state.tool.run()
+    assert _limits(state) == [5, 10]
+    assert state.published == []
+    assert state.fetched == [1]
+
+
+@pytest.mark.asyncio
+async def test_unresolved_comment_url_prevents_publication(query_tool):
+    state = query_tool
+    state.responses = [[("issue_2.comment_9", 0.9)]]
+    with pytest.raises(IndexError):
+        await state.tool.run()
+    assert state.published == []
+
+
+@pytest.mark.parametrize("rid", [None, 17, "bad.issue", "issue_bad.comment_0", "issue_2.comment_bad",
+                                  "issue_2.bad_comment_0", "issue_2.comment_0.extra", "issue_1.comment_bad",
+                                  "example_issue_repo", "other_2.issue", "issue_2.garbage", "issue_2"])
+def test_ineligible_ids_leave_valid_hits_aligned(rid):
+    hits = [(rid, 1), ("issue_2.comment_0", 0.9), ("issue_2.issue", 0.8), ("issue_3.issue", 0.7)]
+    assert psi.PRSimilarIssue._select_similar_hits(hits, 1) == ([2, 3], [0, -1], ["0.90", "0.70"])
