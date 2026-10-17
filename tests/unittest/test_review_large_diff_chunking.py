@@ -16,7 +16,8 @@ from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
-_TRACKED_KEYS = ("pr_reviewer.enable_large_pr_chunking", "pr_reviewer.max_number_of_calls")
+_TRACKED_KEYS = ("pr_reviewer.enable_large_pr_chunking", "pr_reviewer.max_number_of_calls",
+                 "pr_reviewer.num_max_findings")
 
 CHUNK_A = """review:
   score: 90
@@ -130,6 +131,77 @@ async def test_a_truncated_diff_is_reviewed_chunk_by_chunk_and_merged(chunking_e
     assert reviewer.review_failed_chunk_count == 0
     # the coverage footer keeps reporting what even chunking could not fit
     assert reviewer.remaining_files_list == ["still_left_out.py"]
+
+
+def _findings_chunk(prefix, count):
+    lines = ["review:", "  score: 50", "  key_issues_to_review:"]
+    for index in range(count):
+        lines += [
+            "    - relevant_file: |",
+            f"        {prefix}{index}.py",
+            "      issue_header: |",
+            f"        Issue {prefix}{index}",
+            "      issue_content: |",
+            f"        problem {index} in {prefix}",
+            "      start_line: 10",
+            "      end_line: 12",
+        ]
+    lines += ["  security_concerns: |", "    No", ""]
+    return "\n".join(lines)
+
+
+@pytest.mark.asyncio
+async def test_chunked_review_caps_findings_to_the_configured_limit(chunking_enabled):
+    """Every chunk may report its own full allowance, so the merged review must be cut back."""
+    get_settings().set("pr_reviewer.num_max_findings", 3)
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(
+        side_effect=[_findings_chunk("a", 3), _findings_chunk("b", 3)])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    issues = reviewer.prediction_data["review"]["key_issues_to_review"]
+    assert len(issues) == 3
+    # chunk order wins, so the kept findings are the whole of the first chunk
+    assert [issue["relevant_file"].strip() for issue in issues] == ["a0.py", "a1.py", "a2.py"]
+
+
+@pytest.mark.asyncio
+async def test_a_capped_chunked_review_does_not_resolve_earlier_findings(chunking_enabled):
+    """A finding cut by the limit is left out, not absent, so resolution must stay off."""
+    get_settings().set("pr_reviewer.num_max_findings", 3)
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(
+        side_effect=[_findings_chunk("a", 3), _findings_chunk("b", 3)])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    previous = reconcile_review_findings(
+        None,
+        [{"path": "fixed.py", "body": "old fixed problem", "line_start": 3, "line_end": 4}],
+        allow_resolution=False,
+        head_sha="head-1",
+    ).state
+    reviewer._review_finding_state_enabled = lambda: True
+    reviewer._load_review_finding_state = lambda: ParsedReviewState(previous, present=True, valid=True)
+    reviewer._review_head_sha = lambda: "head-2"
+    reviewer._review_run_id = lambda: "run-2"
+
+    reviewer._prepare_review_finding_state(reviewer.prediction_data)
+
+    state = reviewer._review_state_result.state
+    assert state["last_run"]["complete"] is False
+    assert next(f for f in state["findings"] if f["path"] == "fixed.py")["state"] == "ACTIVE"
 
 
 @pytest.mark.asyncio

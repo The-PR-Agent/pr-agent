@@ -1163,7 +1163,11 @@ class PRReviewer:
         raw_predictions = [chunk_results[index][0] for index in indices]
         chunk_outputs = [chunk_results[index][1] for index in indices]
         self.prediction = "\n".join(raw_predictions)
-        self.prediction_data = merge_review_chunks(chunk_outputs)
+        try:
+            max_findings = int(get_settings().pr_reviewer.num_max_findings)
+        except (TypeError, ValueError):
+            max_findings = None
+        self.prediction_data = merge_review_chunks(chunk_outputs, max_findings=max_findings)
         self.review_chunk_count = len(self._chunked_patches_diff_list)
         self.review_failed_chunk_count = self.review_chunk_count - len(chunk_results)
         self.remaining_files_list = self._chunked_remaining_files_list

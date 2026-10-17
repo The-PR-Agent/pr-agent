@@ -79,6 +79,45 @@ def test_findings_survive_a_chunk_that_found_nothing():
     assert merged["review"]["key_issues_to_review"] == [_issue()]
 
 
+def test_merged_findings_are_cut_to_the_configured_limit():
+    # every chunk may report its own full allowance, so the union can exceed the limit
+    issues = [_issue(file=f"{name}.py", content=f"problem in {name}") for name in "abcd"]
+    merged = merge_review_chunks([
+        _chunk(key_issues_to_review=issues[:2]),
+        _chunk(key_issues_to_review=issues[2:]),
+    ], max_findings=3)
+
+    assert merged["review"]["key_issues_to_review"] == issues[:3]
+
+
+def test_the_finding_cap_keeps_chunk_order_and_drops_from_the_tail():
+    first, second, third = (_issue(file="a.py"),
+                            _issue(file="b.py", content="b"),
+                            _issue(file="c.py", content="c"))
+    merged = merge_review_chunks([_chunk(key_issues_to_review=[first, second, third])],
+                                 max_findings=2)
+
+    assert merged["review"]["key_issues_to_review"] == [first, second]
+
+
+def test_a_review_within_the_limit_is_kept_whole():
+    issue = _issue()
+    merged = merge_review_chunks([_chunk(key_issues_to_review=[issue]),
+                                  _chunk(key_issues_to_review=[])], max_findings=3)
+
+    assert merged["review"]["key_issues_to_review"] == [issue]
+
+
+def test_no_cap_is_applied_when_the_limit_is_absent():
+    issues = [_issue(file=f"{name}.py", content=f"problem in {name}") for name in "abcd"]
+    merged = merge_review_chunks([
+        _chunk(key_issues_to_review=issues[:2]),
+        _chunk(key_issues_to_review=issues[2:]),
+    ])
+
+    assert merged["review"]["key_issues_to_review"] == issues
+
+
 def test_a_security_concern_in_one_chunk_wins_over_the_chunks_that_found_none():
     merged = merge_review_chunks([
         _chunk(security_concerns="No"),

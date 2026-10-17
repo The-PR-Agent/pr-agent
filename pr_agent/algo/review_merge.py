@@ -7,6 +7,8 @@ one verdict. Three rules cover the schema:
 
 - Fields that report what a chunk *found* - key issues, security concerns, TODO sections,
   priority files, sub-PRs, ticket bullet lists - are unioned in chunk order, dropping repeats.
+  The merged key issues are then cut to `max_findings`, the per-review limit that
+  `num_max_findings` advertises, because every chunk may report its own full allowance.
 - Fields that are one *judgement* about the whole PR - score, risk level, merge
   recommendation, review effort, "does the PR have tests" - take the most conservative value
   any chunk reported, so a merged review is never less alarming than its worst chunk.
@@ -36,8 +38,15 @@ _DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([mh])", re.IGNORECASE)
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
-def merge_review_chunks(chunk_outputs: List[dict]) -> dict:
-    """Reduce the parsed review of every chunk to a single `{'review': {...}}` dict."""
+def merge_review_chunks(chunk_outputs: List[dict], max_findings: Optional[int] = None) -> dict:
+    """Reduce the parsed review of every chunk to a single `{'review': {...}}` dict.
+
+    `max_findings` is the per-review limit from `num_max_findings`. Each chunk may report up
+    to that many findings about its own part of the diff, so the union can be several times
+    larger; passing the limit cuts the merged list back to what a single-call review would
+    publish. A cut finding is treated as left out rather than absent, which the
+    `len(findings) < num_max_findings` resolution guard already reads correctly.
+    """
     reviews = [chunk["review"] for chunk in chunk_outputs
                if isinstance(chunk, dict) and isinstance(chunk.get("review"), dict)]
     if not reviews:
@@ -46,6 +55,7 @@ def merge_review_chunks(chunk_outputs: List[dict]) -> dict:
         review = dict(reviews[0])
         if "failure_modes" in review:
             review["failure_modes"] = parse_failure_modes(review["failure_modes"])
+        _cap_key_issues(review, max_findings)
         return {"review": review}
 
     # keep the prompt's field order, which is also the order the review is rendered in
@@ -65,7 +75,25 @@ def merge_review_chunks(chunk_outputs: List[dict]) -> dict:
             get_logger().warning(f"Failed to merge review field '{key}' across chunks, "
                                  f"keeping the first chunk's value, error: {e}")
             merged[key] = _first_non_empty(values)
+    _cap_key_issues(merged, max_findings)
     return {"review": merged}
+
+
+def _cap_key_issues(review: dict, max_findings: Optional[int]) -> None:
+    """Cut the merged findings to the per-review limit, in place.
+
+    Without the cut, N chunks can each publish `num_max_findings` issues, so a chunked review
+    exceeds the configured maximum that a single-call review respects.
+    """
+    if max_findings is None:
+        return
+    try:
+        limit = max(0, int(max_findings))
+    except (TypeError, ValueError):
+        return
+    issues = review.get("key_issues_to_review")
+    if isinstance(issues, list) and len(issues) > limit:
+        review["key_issues_to_review"] = issues[:limit]
 
 
 def _rule_name(key: str) -> str:
