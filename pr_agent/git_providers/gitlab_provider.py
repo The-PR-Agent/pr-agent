@@ -1,6 +1,7 @@
 import difflib
 import posixpath
 import re
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -61,6 +62,18 @@ class DiffNotFoundError(Exception):
 
 class IncompleteGitLabDiffError(DiffNotFoundError):
     """Represent an incomplete GitLab merge-request diff response."""
+
+
+class GitLabDiffNotReadyError(IncompleteGitLabDiffError):
+    """GitLab is still generating the diff; a later attempt may succeed."""
+
+
+# A large merge request can still be generating its diff when PR-Agent first asks for it:
+# changes_count reports a trailing "+" (or is empty), or diff refs lag behind the pages. Those
+# transient states are retried with this bounded backoff before giving up; inconsistent counts
+# and mid-collection metadata movement keep failing immediately as before.
+_DIFF_READY_RETRY_DELAYS = (2, 5, 10)
+_diff_ready_sleep = time.sleep
 
 
 def _is_stale_file_update_error(error: GitlabUpdateError) -> bool:
@@ -609,6 +622,29 @@ class GitLabProvider(GitProvider):
         """Collect all MR diff pages with stable metadata and their matching refs."""
         project_id = quote(str(self.id_project), safe="")
         path = f"/projects/{project_id}/merge_requests/{self.id_mr}"
+        attempts = len(_DIFF_READY_RETRY_DELAYS) + 1
+        for attempt, delay in enumerate((*_DIFF_READY_RETRY_DELAYS, None), start=1):
+            try:
+                return self._collect_merge_request_changes(path)
+            except GitLabDiffNotReadyError as e:
+                if delay is None:
+                    raise IncompleteGitLabDiffError(
+                        f"{e} after {attempt} attempts. GitLab may still be preparing this large "
+                        "merge request; re-run the command in a few minutes."
+                    ) from e
+                get_logger().warning(
+                    f"Merge request {self.id_mr} diff not ready yet "
+                    f"(attempt {attempt}/{attempts}), retrying in {delay}s: {e}"
+                )
+                _diff_ready_sleep(delay)
+        # Unreachable in practice: the final loop iteration always re-raises. Keeps the
+        # explicit return contract if the delays tuple ever changes shape.
+        raise IncompleteGitLabDiffError(
+            f"GitLab merge request {self.id_mr} diff collection ended without a verdict"
+        )
+
+    def _collect_merge_request_changes(self, path: str) -> dict:
+        """Collect the diff pages once, failing on unstable or not-yet-ready responses."""
         for attempt in range(2):
             before = self.gl.http_get(path)
             changes = self.gl.http_list(f"{path}/diffs", get_all=True)
@@ -623,7 +659,7 @@ class GitLabProvider(GitProvider):
             changes_count = after.get("changes_count")
             if isinstance(changes_count, str):
                 if not changes_count or changes_count.endswith("+"):
-                    raise IncompleteGitLabDiffError(
+                    raise GitLabDiffNotReadyError(
                         f"GitLab merge request {self.id_mr} diff collection is incomplete or not ready"
                     )
                 if changes_count.isdecimal() and len(changes) != int(changes_count):
@@ -634,7 +670,7 @@ class GitLabProvider(GitProvider):
             if changes and (not isinstance(diff_refs, dict) or any(
                 not isinstance(diff_refs.get(key), str) or not diff_refs[key] for key in ("base_sha", "head_sha")
             )):
-                raise IncompleteGitLabDiffError(
+                raise GitLabDiffNotReadyError(
                     f"GitLab merge request {self.id_mr} diff refs are not ready"
                 )
             return {"changes": changes, "diff_refs": diff_refs if isinstance(diff_refs, dict) else {}}

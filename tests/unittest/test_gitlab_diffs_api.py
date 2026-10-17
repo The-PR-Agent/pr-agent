@@ -10,8 +10,17 @@ import requests
 from requests.adapters import BaseAdapter
 
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers import gitlab_provider
 from pr_agent.git_providers.git_provider import IncrementalPR
 from pr_agent.git_providers.gitlab_provider import GitLabProvider, IncompleteGitLabDiffError
+
+
+@pytest.fixture(autouse=True)
+def diff_ready_sleep(monkeypatch):
+    """Make not-ready diff retries instant and record the delays they asked for."""
+    delays = []
+    monkeypatch.setattr(gitlab_provider, "_diff_ready_sleep", delays.append)
+    return delays
 
 
 def _change(path, **kwargs):
@@ -144,12 +153,46 @@ def test_pruned_patch_on_later_page_is_reconstructed_from_both_blobs(provider_fa
     assert len(transport.diff_requests) == 2
 
 
-@pytest.mark.parametrize("count", ["1000+", "1+", "3", "0", ""])
-def test_incomplete_or_unready_collection_is_not_cached(provider_factory, count):
-    provider, _ = provider_factory([(200, [_change("a.py"), _change("b.py")], {})], count)
-    with pytest.raises(IncompleteGitLabDiffError):
+@pytest.mark.parametrize("count", ["1000+", "1+", ""])
+def test_unready_collection_is_retried_then_raises_and_is_not_cached(provider_factory, count, diff_ready_sleep):
+    attempts = len(gitlab_provider._DIFF_READY_RETRY_DELAYS) + 1
+    provider, transport = provider_factory([(200, [_change("a.py"), _change("b.py")], {})] * attempts, count)
+    with pytest.raises(IncompleteGitLabDiffError, match="not ready.*re-run the command"):
         provider.get_files()
     assert provider.git_files is None
+    assert len(transport.diff_requests) == attempts
+    assert diff_ready_sleep == list(gitlab_provider._DIFF_READY_RETRY_DELAYS)
+
+
+@pytest.mark.parametrize("count", ["3", "0"])
+def test_inconsistent_counts_fail_immediately_without_retries(provider_factory, count, diff_ready_sleep):
+    provider, transport = provider_factory([(200, [_change("a.py"), _change("b.py")], {})], count)
+    with pytest.raises(IncompleteGitLabDiffError, match="but reported"):
+        provider.get_files()
+    assert provider.git_files is None
+    assert len(transport.diff_requests) == 1
+    assert diff_ready_sleep == []
+
+
+def test_unready_collection_recovers_within_the_retry_budget(provider_factory, diff_ready_sleep):
+    unready, ready = _metadata(count="5+"), _metadata(count="1")
+    provider, transport = provider_factory(
+        [(200, [_change("a.py")], {})] * 2,
+        metadata_responses=_metadata_reads(unready, unready, ready, ready),
+    )
+    assert provider.get_files() == ["a.py"]
+    assert len(transport.diff_requests) == 2
+    assert diff_ready_sleep == list(gitlab_provider._DIFF_READY_RETRY_DELAYS[:1])
+
+
+def test_diff_refs_lag_recovers_within_the_retry_budget(provider_factory, diff_ready_sleep):
+    lagging = {**_metadata(count="1"), "diff_refs": None}
+    provider, _ = provider_factory(
+        [(200, [_change("a.py")], {})] * 2,
+        metadata_responses=_metadata_reads(lagging, lagging, _metadata(count="1"), _metadata(count="1")),
+    )
+    assert provider.get_files() == ["a.py"]
+    assert diff_ready_sleep == list(gitlab_provider._DIFF_READY_RETRY_DELAYS[:1])
 
 
 def test_absent_count_is_distinct_from_an_unready_empty_count(provider_factory):
@@ -340,13 +383,16 @@ def test_continuous_movement_fails_before_use_and_can_recover(provider_factory, 
 @pytest.mark.parametrize("method", ["get_files", "get_diff_files", "get_pr_file_paths", "get_relevant_diff"])
 def test_nonempty_collection_requires_usable_fresh_refs(provider_factory, refs, method):
     metadata = {**_metadata(count="1"), "diff_refs": refs}
-    provider, _ = provider_factory(
-        [(200, [_change("a.py")], {})], metadata_responses=_metadata_reads(metadata, metadata),
+    attempts = len(gitlab_provider._DIFF_READY_RETRY_DELAYS) + 1
+    provider, transport = provider_factory(
+        [(200, [_change("a.py")], {})] * attempts,
+        metadata_responses=_metadata_reads(*[metadata, metadata] * attempts),
     )
     args = ["a.py", "new"] if method == "get_relevant_diff" else []
     with pytest.raises(IncompleteGitLabDiffError, match="diff refs are not ready"):
         getattr(provider, method)(*args)
     assert provider.git_files is None and provider.diff_files is None
+    assert len(transport.diff_requests) == attempts
     provider.get_pr_file_content.assert_not_called()
 
 
