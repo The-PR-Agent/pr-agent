@@ -53,23 +53,28 @@ def _valid_suggestion(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_get_prediction_rejects_a_clipped_suggestion_chunk():
+async def test_get_prediction_rejects_over_budget_chunk_without_truncating():
     tool = _make_tool()
     tool.ai_handler.chat_completion = AsyncMock()
-    tool._suggestion_attempt_budget = SimpleNamespace(
+    budget = SimpleNamespace(
         model="attempt-model",
-        fit_optional_text=MagicMock(
-            return_value=SimpleNamespace(
-                optional_text="clipped diff",
-                system_prompt="system",
-                user_prompt="user",
-            )
-        ),
+        render_prompt_templates=MagicMock(return_value=("system", "user")),
+        prepare_request=MagicMock(return_value=SimpleNamespace(input_tokens=101)),
+        input_token_limit=MagicMock(return_value=100),
     )
+    tool._suggestion_attempt_budget = budget
 
     with pytest.raises(ValueError, match="complete suggestion chunk"):
         await tool._get_prediction("attempt-model", "numbered diff", "complete diff")
 
+    budget.render_prompt_templates.assert_called_once_with({
+        "diff": "numbered diff",
+        "diff_no_line_numbers": "complete diff",
+    })
+    budget.prepare_request.assert_called_once_with(tool.ai_handler, "system", "user")
+    budget.input_token_limit.assert_called_once_with(
+        pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True
+    )
     tool.ai_handler.chat_completion.assert_not_awaited()
 
 

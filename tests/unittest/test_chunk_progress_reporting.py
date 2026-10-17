@@ -78,8 +78,16 @@ class _FakeBudget:
     def require_input_capacity(self, *_args, **_kwargs):
         return None
 
-    def fit_optional_text(self, optional_text, *_args, **_kwargs):
-        return SimpleNamespace(optional_text=optional_text)
+    def render_prompt_templates(self, variables):
+        return "system", variables["diff_no_line_numbers"]
+
+    def prepare_request(self, _handler, system_prompt, user_prompt):
+        return SimpleNamespace(
+            input_tokens=0, system_prompt=system_prompt, user_prompt=user_prompt
+        )
+
+    def input_token_limit(self, *_args, **_kwargs):
+        return 1
 
 
 def _review_progress_editor(**overrides):

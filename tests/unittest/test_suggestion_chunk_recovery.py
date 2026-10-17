@@ -149,7 +149,7 @@ async def test_larger_fallback_recovers_when_earlier_one_is_over_budget(configur
 
 
 @pytest.mark.asyncio
-async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured, monkeypatch):
+async def test_recovery_skips_over_budget_fallback_without_truncation(configured, monkeypatch):
     tool, _calls = make_tool(monkeypatch, {})
     tool._recovery_chain = MagicMock(
         return_value=(
@@ -164,16 +164,21 @@ async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured
     recovered = {"code_suggestions": []}
     tool._predict_chunks = AsyncMock(return_value=[recovered])
 
+    prepared_inputs = []
+
     class FakeBudget:
         def __init__(self, model):
             self.model = model
 
-        def render_prompt_templates(self, _variables):
+        def render_prompt_templates(self, variables):
+            prepared_inputs.append((self.model, variables["diff"], variables["diff_no_line_numbers"]))
             return "system", "user"
 
-        def fit_optional_text(self, optional_text, *_args, **_kwargs):
-            fitted_text = "clipped" if self.model == "gpt-4o-mini" else optional_text
-            return SimpleNamespace(optional_text=fitted_text)
+        def prepare_request(self, *_args):
+            return SimpleNamespace(input_tokens=101 if self.model == "gpt-4o-mini" else 100)
+
+        def input_token_limit(self, *_args, **_kwargs):
+            return 100
 
     monkeypatch.setattr(
         module.AttemptTokenBudget,
@@ -190,6 +195,10 @@ async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured
         [("numbered-b", "complete-b")],
     )
     assert results[1] is recovered
+    assert prepared_inputs == [
+        ("gpt-4o-mini", "numbered-b", "complete-b"),
+        ("gpt-4.1", "numbered-b", "complete-b"),
+    ]
 
 
 async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monkeypatch):

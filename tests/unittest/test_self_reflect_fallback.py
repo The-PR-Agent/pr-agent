@@ -209,11 +209,11 @@ def _prediction_tool():
     tool.pr_code_suggestions_prompt_user = "user"
     tool._suggestion_attempt_budget = SimpleNamespace(
         model="primary-model",
-        fit_optional_text=MagicMock(return_value=SimpleNamespace(
-            optional_text="complete diff",
-            system_prompt="system",
-            user_prompt="user",
+        render_prompt_templates=MagicMock(return_value=("system", "user")),
+        prepare_request=MagicMock(return_value=SimpleNamespace(
+            input_tokens=10, system_prompt="system", user_prompt="user"
         )),
+        input_token_limit=MagicMock(return_value=100),
     )
     tool._self_reflect_with_fallback = AsyncMock(return_value="")
     return tool
