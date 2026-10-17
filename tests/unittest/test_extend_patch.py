@@ -66,18 +66,17 @@ class TestExtendPatch:
     # Tests the functionality of extending a patch with multiple hunks.
     def test_multiple_hunks(self):
         original_file_str = 'line1\nline2\nline3\nline4\nline5\nline6'
-        patch_str = '@@ -2,3 +2,3 @@ init()\n-line2\n+new_line2\n line3\n line4\n@@ -4,1 +4,1 @@ init2()\n-line4\n+new_line4'  # noqa: E501
+        patch_str = '@@ -2,3 +2,3 @@ init()\n-line2\n+new_line2\n line3\n line4\n@@ -5,1 +5,1 @@ init2()\n-line5\n+new_line5'  # noqa: E501
         num_lines = 1
         original_allow_dynamic_context = get_settings(use_context=False).config.allow_dynamic_context
 
         get_settings(use_context=False).config.allow_dynamic_context = False
-        expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5\n\n@@ -3,3 +3,3 @@ init2()\n line3\n-line4\n+new_line4\n line5' # noqa: E501
+        expected_output = '\n@@ -1,4 +1,4 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n\n@@ -5,2 +5,2 @@ init2()\n-line5\n+new_line5\n line6' # noqa: E501
         actual_output = extend_patch(original_file_str, patch_str,
                                      patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
         assert actual_output == expected_output
 
         get_settings(use_context=False).config.allow_dynamic_context = True
-        expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5\n\n@@ -3,3 +3,3 @@ init2()\n line3\n-line4\n+new_line4\n line5' # noqa: E501
         actual_output = extend_patch(original_file_str, patch_str,
                                      patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
         assert actual_output == expected_output
@@ -333,6 +332,16 @@ class TestOmittedHunkCount:
                  "@@ -20,3 +20,3 @@\n ctx20\n-old21\n+new21\n ctx22")
         full, _ = extract_hunk_lines_from_patch(patch, "f.py", 13, 13, "right")
         assert "@@ -10,1 +12 @@" not in full
+
+
+def test_extended_context_stops_at_adjacent_hunks():
+    original = "".join(f"l{i}\n" for i in range(1, 11))
+    patch = "@@ -3 +3 @@\n-l3\n+L3\n@@ -6 +6 @@\n-l6\n+L6"
+
+    extended = extend_patch(original, patch, patch_extra_lines_before=5, patch_extra_lines_after=3)
+
+    assert extended == ("\n@@ -1,5 +1,5 @@ \n l1\n l2\n-l3\n+L3\n l4\n l5\n"
+                        "\n@@ -6,4 +6,4 @@ \n-l6\n+L6\n l7\n l8\n l9")
 
 
 class TestExtendedDiffDeletionHandling:

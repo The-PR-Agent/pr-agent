@@ -85,9 +85,16 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
     len_original_lines = len(file_original_lines)
     patch_lines = patch_str.splitlines()
     extended_patch_lines = []
+    hunk_starts = [(i, int(match.group(1))) for i, line in enumerate(patch_lines)
+                   if (match := RE_HUNK_HEADER.match(line))]
+    next_hunk_start = {
+        current[0]: following[1] for current, following in zip(hunk_starts, hunk_starts[1:], strict=False)
+    }
 
     is_valid_hunk = True
     start1, size1, start2, size2 = -1, -1, -1, -1
+    extra_lines_after = 0
+    last_extended_old_line = 0
     try:
         for i,line in enumerate(patch_lines):
             if line.startswith('@@'):
@@ -95,11 +102,11 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                 # identify hunk header
                 if match:
                     # finish processing previous hunk
-                    if is_valid_hunk and (start1 != -1 and patch_extra_lines_after > 0):
+                    if is_valid_hunk and (start1 != -1 and extra_lines_after > 0):
                         delta_lines_original = [
                             f' {line}'
                             for line in file_original_lines[
-                                start1 + size1 - 1:start1 + size1 - 1 + patch_extra_lines_after
+                                start1 + size1 - 1:start1 + size1 - 1 + extra_lines_after
                             ]
                         ]
                         extended_patch_lines.extend(delta_lines_original)
@@ -113,6 +120,11 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                     if size2 == 0:
                         start2 += 1
 
+                    extra_lines_after = min(
+                        patch_extra_lines_after,
+                        max(0, next_hunk_start.get(i, len_original_lines + 1) - start1 - size1),
+                    )
+
                     is_valid_hunk = check_if_hunk_lines_matches_to_file(i, file_original_lines, patch_lines, start1)
 
                     if is_valid_hunk and (patch_extra_lines_before > 0 or patch_extra_lines_after > 0):
@@ -122,11 +134,16 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                             size1=size1,
                             start2=start2,
                             size2=size2,
+                            extra_lines_after=extra_lines_after,
+                            last_extended_old_line=last_extended_old_line,
                         ):
-                            extended_start1 = max(1, start1 - patch_lines_before)
-                            extended_size1 = size1 + (start1 - extended_start1) + patch_extra_lines_after
-                            extended_start2 = max(1, start2 - patch_lines_before)
-                            extended_size2 = size2 + (start2 - extended_start2) + patch_extra_lines_after
+                            lines_before = min(patch_lines_before, start1 - 1, start2 - 1,
+                                               start1 - last_extended_old_line - 1)
+                            lines_before = max(0, lines_before)
+                            extended_start1 = start1 - lines_before
+                            extended_size1 = size1 + lines_before + extra_lines_after
+                            extended_start2 = start2 - lines_before
+                            extended_size2 = size2 + lines_before + extra_lines_after
                             if extended_start1 - 1 + extended_size1 > len_original_lines:
                                 # we cannot extend beyond the original file
                                 delta_cap = extended_start1 - 1 + extended_size1 - len_original_lines
@@ -217,6 +234,7 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
                         f'@@ -{extended_start1},{extended_size1} '
                         f'+{extended_start2},{extended_size2} @@ {section_header}')
                     extended_patch_lines.extend(delta_lines_original)  # one to zero based
+                    last_extended_old_line = extended_start1 + extended_size1 - 1
                     continue
             extended_patch_lines.append(line)
     except Exception as e:
@@ -224,8 +242,8 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
         return patch_str
 
     # finish processing last hunk
-    if start1 != -1 and patch_extra_lines_after > 0 and is_valid_hunk:
-        delta_lines_original = file_original_lines[start1 + size1 - 1:start1 + size1 - 1 + patch_extra_lines_after]
+    if start1 != -1 and extra_lines_after > 0 and is_valid_hunk:
+        delta_lines_original = file_original_lines[start1 + size1 - 1:start1 + size1 - 1 + extra_lines_after]
         # add space at the beginning of each extra line
         delta_lines_original = [f' {line}' for line in delta_lines_original]
         extended_patch_lines.extend(delta_lines_original)
