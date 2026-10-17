@@ -2102,6 +2102,34 @@ class TestGiteaAddedFileBaseFetch:
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     @patch("pr_agent.git_providers.gitea_provider.RepoApi")
     @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_raw_diff_is_fetched_only_when_diff_files_are_needed(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [{"filename": "src/app.py", "additions": 1, "deletions": 1, "status": "modified"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+
+        repo_api.get_pull_request_diff.assert_not_called()
+        repo_api.get_pr_commits.assert_not_called()
+        assert provider.get_files() == ["src/app.py"]
+        repo_api.get_pull_request_diff.assert_not_called()
+        repo_api.get_pr_commits.assert_not_called()
+
+        assert [file.filename for file in provider.get_diff_files()] == ["src/app.py"]
+        provider.get_diff_files()
+        repo_api.get_pull_request_diff.assert_called_once_with(owner="owner", repo="repo", pr_number=1)
+        repo_api.get_pr_commits.assert_not_called()
+
+        repo_api.get_pr_commits.return_value = [{
+            "sha": "head-sha", "html_url": "https://gitea.example.com/commit/head-sha",
+            "commit": {"message": "Fix bug"},
+        }]
+        assert "Fix bug" in provider.get_commit_messages()
+        assert provider.get_latest_commit_url() == "https://gitea.example.com/commit/head-sha"
+        repo_api.get_pr_commits.assert_called_once_with(owner="owner", repo="repo", pr_number=1)
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
     def test_added_file_does_not_fetch_base_content(
         self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
     ):

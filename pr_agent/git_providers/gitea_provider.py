@@ -126,7 +126,7 @@ class GiteaProvider(GitProvider):
         self.pr = None
         self.git_files = None
         self.file_contents = {}
-        self.file_diffs = {}
+        self.file_diffs = None
         self.sha = None
         self.base_sha = ""
         self.base_ref = ""
@@ -135,6 +135,9 @@ class GiteaProvider(GitProvider):
         self.comments_list = []
         self._published_inline_comment_bodies: list[str] = []
         self.unreviewed_files_map = dict()
+        self.pr_commits = None
+        self.last_commit = None
+        self.last_commit_id = None
 
         if "pulls" in url:
             self.pr_url = url
@@ -146,16 +149,14 @@ class GiteaProvider(GitProvider):
                 pr_number=self.pr_number
             )
             self.sha = self.pr.head.sha if self.pr.head.sha else ""
-            self.__add_file_diff()
-            self._set_pr_commits()
+            self.last_commit = _GiteaCommitAdapter({"sha": self.sha})
+            self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha if self.pr.base.sha else ""
             self.base_ref = self.pr.base.ref if self.pr.base.ref else ""
         elif "issues" in url:
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
             self.enabled_issue = True
-        else:
-            self.pr_commits = None
 
     @property
     def base_url_html(self) -> str:
@@ -340,6 +341,8 @@ class GiteaProvider(GitProvider):
         return self.pr_url
 
     def get_latest_commit_url(self) -> str:
+        if getattr(self, "enabled_pr", True) and self.pr_commits is None:
+            self._set_pr_commits()
         return self.last_commit.html_url if self.last_commit else ""
 
     def get_pr_head_sha(self) -> str:
@@ -573,6 +576,8 @@ class GiteaProvider(GitProvider):
     def get_commit_messages(self)-> str:
         """Get commit messages for the PR"""
         max_tokens = get_settings().get("CONFIG.MAX_COMMITS_TOKENS", None)
+        if getattr(self, "enabled_pr", True) and self.pr_commits is None:
+            self._set_pr_commits()
         if not self.pr_commits:
             self.logger.error("Failed to get commit messages")
             return ""
@@ -620,6 +625,11 @@ class GiteaProvider(GitProvider):
         # lazily inside their diff fetch. See #2620.
         diff_git_files = filter_ignored(list(self._get_changed_files()), platform="gitea")
 
+        # Metadata-only commands do not need the full raw diff. Fetch it once on
+        # the first diff read that contains an eligible file.
+        if diff_git_files and getattr(self, "file_diffs", None) is None:
+            self.__add_file_diff()
+
         invalid_files_names = []
         counter_valid = 0
         diff_files = []
@@ -634,7 +644,7 @@ class GiteaProvider(GitProvider):
 
             counter_valid += 1
             avoid_load = False
-            patch = self.file_diffs.get(filename,"")
+            patch = (self.file_diffs or {}).get(filename, "")
             head_file = ""
             base_file = ""
 
