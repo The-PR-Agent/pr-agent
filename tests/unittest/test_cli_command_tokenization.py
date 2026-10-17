@@ -83,6 +83,18 @@ def _tokenize_like_string_request(command):
             '/ask what does "#123" do?',
             ["what", "does", "#123", "do?"],
         ),
+        (
+            '/review --pr_reviewer.extra_instructions="true" --pr_reviewer.extra_instructions=true',
+            ['--pr_reviewer.extra_instructions="true"', '--pr_reviewer.extra_instructions=true'],
+        ),
+        (
+            '/review --pr_reviewer.extra_instructions=true --pr_reviewer.extra_instructions="true"',
+            ['--pr_reviewer.extra_instructions=true', '--pr_reviewer.extra_instructions="true"'],
+        ),
+        (
+            "/review --pr_reviewer.extra_instructions='literal' --pr_reviewer.extra_instructions=\"true\"",
+            ["--pr_reviewer.extra_instructions='literal'", '--pr_reviewer.extra_instructions="true"'],
+        ),
     ],
 )
 def test_string_request_preserves_quoted_setting_values(command, expected_args):

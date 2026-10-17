@@ -132,7 +132,7 @@ def _publish_incomplete_files_comment(
     except Exception:
         get_logger().exception("Failed to publish the incomplete-files notice")
 
-def _split_command(command: str) -> list[tuple[str, bool]]:
+def _split_command(command: str, *, single_quotes: bool = True) -> list[tuple[str, bool]]:
     """Split an auto command and retain whether each token was quoted.
 
     ``shlex.split`` removes quote markers before setting overrides are handed to
@@ -144,7 +144,8 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
     Apostrophes inside a word remain literal, matching the legacy request parser
     (for example, ``What's``). An apostrophe at a token boundary or immediately
     after ``=`` still starts a single-quoted value, as used by the documented
-    webhook configuration examples.
+    webhook configuration examples. Raw request parsing disables single quotes
+    to match its shlex lexer.
     """
     tokens = []
     token = []
@@ -182,7 +183,7 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
                 quote = character
                 value_was_quoted = equals_seen
                 token_started = True
-            elif character == "'" and (not token_started or command[index - 1] == "="):
+            elif single_quotes and character == "'" and (not token_started or command[index - 1] == "="):
                 quote = character
                 value_was_quoted = equals_seen
                 token_started = True
@@ -242,14 +243,16 @@ def _reencode_quoted_setting_args(command: str, args: list[str]) -> list[str]:
     applied setting keeps the string the user typed, matching ``parse_command``.
     Plain scalars such as ``--pr_reviewer.num_max_findings=3`` keep their normal
     type conversion. Quoted lists keep their list type.
+    Match quote flags by argument position so repeated values retain their own types.
     """
     try:
-        quoted = {token for token, value_was_quoted in _split_command(command) if value_was_quoted}
+        tokens = _split_command(command, single_quotes=False)[1:]
     except ValueError:
-        quoted = set()
+        tokens = []
     encoded = []
-    for argument in args:
-        if argument in quoted and argument.startswith("--") and "=" in argument:
+    for index, argument in enumerate(args):
+        value_was_quoted = index < len(tokens) and tokens[index][0] == argument and tokens[index][1]
+        if value_was_quoted and argument.startswith("--") and "=" in argument:
             key, value = argument.split("=", 1)
             _, parsed = _fix_key_value(key, value)
             if not isinstance(parsed, (str, list)):
