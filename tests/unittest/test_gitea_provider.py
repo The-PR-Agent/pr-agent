@@ -10,7 +10,7 @@ from giteapy.rest import ApiException
 from starlette_context import context, request_cycle_context
 from urllib3.response import HTTPResponse
 
-from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import global_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.git_providers.gitea_provider import GiteaProvider, IncompleteGiteaPullRequestFilesError, RepoApi
@@ -1456,6 +1456,33 @@ class TestGiteaProviderInlineCommentStatus:
             {"body": "**Suggestion:** one", "path": "a.py", "old_position": 0, "new_position": 3},
             {"body": "**Suggestion:** two", "path": "b.py", "old_position": 0, "new_position": 12},
         ]
+
+    @staticmethod
+    def _provider_with_diff():
+        provider = TestGiteaProviderInlineCommentStatus._provider(create_inline_comment_result=True)
+        provider.max_comment_chars = 65000
+        provider.diff_files = [FilePatchInfo(base_file="a = 1\nc = 3\n", head_file="a = 1\nb = 2\nc = 3\n",
+                                             patch="@@ -1,2 +1,3 @@\n a = 1\n+b = 2\n c = 3\n",
+                                             filename="a.py")]
+        return provider
+
+    def test_publish_inline_comment_anchors_the_found_line_to_the_new_file(self):
+        provider = self._provider_with_diff()
+
+        provider.publish_inline_comment("finding", "a.py", "b = 2")
+
+        sent = provider.repo_api.create_inline_comment.call_args.kwargs["comments"]
+        assert sent == [{"body": "finding", "path": "a.py", "old_position": 0, "new_position": 2}]
+
+    def test_publish_inline_comment_skips_a_line_missing_from_the_diff(self):
+        # Gitea has no file-level review comments, so the old fallback sent an empty
+        # comment. Forgejo answers that with a 500 and keeps the PENDING review it
+        # opened for it, so nothing must be sent at all.
+        provider = self._provider_with_diff()
+
+        provider.publish_inline_comment("finding", "a.py", "not in the diff")
+
+        provider.repo_api.create_inline_comment.assert_not_called()
 
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     def test_create_inline_comment_submits_as_comment_not_pending(self, mock_api_client_cls):

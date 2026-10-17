@@ -419,16 +419,15 @@ class GiteaProvider(GitProvider):
                                                                                 relevant_line_in_file,
                                                                                 )
         if position == -1:
+            # Gitea has no file-level review comments. An empty one fails with a 500 and
+            # leaves behind the PENDING review Gitea opened for it, so skip the post.
             get_logger().info(f"Could not find position for {relevant_file} {relevant_line_in_file}")
-            subject_type = "FILE"
-        else:
-            subject_type = "LINE"
+            return
 
         path = relevant_file.strip()
         # absolute_position is a new-file line; Gitea only honours new_position while
         # old_position is 0, otherwise it anchors the comment to the old side.
-        payload = (dict(body=body, path=path, old_position=0, new_position=absolute_position)
-                   if subject_type == "LINE" else {})
+        payload = dict(body=body, path=path, old_position=0, new_position=absolute_position)
         self.publish_inline_comments([payload])
 
 
