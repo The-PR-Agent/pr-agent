@@ -1292,7 +1292,7 @@ class PRCodeSuggestions:
 
         # remove or edit invalid suggestions
         suggestion_list = []
-        one_sentence_summary_list = []
+        accepted_suggestion_keys = []
         for i, suggestion in enumerate(data['code_suggestions']):
             try:
                 needed_keys = ['one_sentence_summary', 'label', 'relevant_file']
@@ -1312,7 +1312,13 @@ class PRCodeSuggestions:
                     if CRITICAL_LABEL in suggestion['label'].lower():
                         suggestion['label'] = 'possible issue'
 
-                if suggestion['one_sentence_summary'] in one_sentence_summary_list:
+                file_key = self._suggestion_file_key(suggestion)
+                summary = suggestion['one_sentence_summary']
+                if any(
+                    (seen_summary is summary or seen_summary == summary)
+                    and (seen_file == file_key or not seen_file or not file_key)
+                    for seen_file, seen_summary in accepted_suggestion_keys
+                ):
                     get_logger().debug(f"Skipping suggestion {i + 1}, because it is a duplicate: {suggestion}")
                     continue
 
@@ -1324,7 +1330,9 @@ class PRCodeSuggestions:
 
                 if ('existing_code' in suggestion) and ('improved_code' in suggestion):
                     suggestion = self._truncate_if_needed(suggestion)
-                    one_sentence_summary_list.append(suggestion['one_sentence_summary'])
+                    accepted_suggestion_keys.append(
+                        (self._suggestion_file_key(suggestion), suggestion['one_sentence_summary'])
+                    )
                     suggestion_list.append(suggestion)
                 else:
                     get_logger().info(
