@@ -678,3 +678,21 @@ def test_repo_settings_reject_dotted_section_name(monkeypatch, settings_snapshot
     assert captured["errors"] is None
     config = _section(settings, "config")
     assert config.get("extra_config_url") == ""
+
+
+@pytest.mark.parametrize("category", ["global", "group", "local"])
+@pytest.mark.parametrize("host_enabled", [False, True])
+def test_repo_settings_cannot_override_group_settings_opt_in(monkeypatch, settings_snapshot, category, host_enabled):
+    untrusted_value = "false" if host_enabled else "true"
+    contents = f"[config]\nuse_group_settings_file = {untrusted_value}\n[pr_reviewer]\nnum_max_findings = 11\n"
+    provider = FakeGitProvider(repo_settings_bytes=[(category, contents.encode())])
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.use_group_settings_file", host_enabled)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.config.use_group_settings_file is host_enabled
+    assert settings.pr_reviewer.num_max_findings == 11

@@ -353,3 +353,50 @@ def test_shared_settings_error_redacts_content_and_diagnostics(provider_cls, cat
     assert "private_table" not in body
     assert "Cannot declare" not in body
     assert "Configuration content" not in body
+
+
+@pytest.mark.parametrize("override", [None, "local"])
+def test_apply_repo_settings_merges_global_group_and_local(monkeypatch, override):
+    settings = get_settings()
+    original_config = copy.deepcopy(settings.as_dict()["PR_REVIEWER"])
+    local = '[pr_reviewer]\nnum_max_findings = 7\n'
+    if override is not None:
+        local += f'extra_instructions = "{override}"\n'
+    provider = FakeErrorReportingProvider([
+        ("global", b'[pr_reviewer]\nextra_instructions = "global"\nenable_intro_text = false\n'),
+        ("group", b'[pr_reviewer]\nextra_instructions = "group"\nnum_max_findings = 3\n'),
+        ("local", local.encode()),
+    ])
+    monkeypatch.setattr(utils, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.delenv("AUTO_CAST_FOR_DYNACONF", raising=False)
+    try:
+        apply_repo_settings("https://gitlab.example.com/org/team/service/-/merge_requests/1")
+        assert settings.pr_reviewer.extra_instructions == (override or "group")
+        assert settings.pr_reviewer.num_max_findings == 7
+        assert settings.pr_reviewer.enable_intro_text is False
+        assert provider.comments == []
+    finally:
+        settings.unset("pr_reviewer")
+        settings.set("pr_reviewer", original_config, merge=False)
+
+
+def test_malformed_group_settings_does_not_block_global_or_local(monkeypatch):
+    settings = get_settings()
+    original_config = copy.deepcopy(settings.as_dict()["PR_REVIEWER"])
+    provider = FakeErrorReportingProvider([
+        ("global", b'[pr_reviewer]\nenable_intro_text = false\n'),
+        ("group", b'[private_group_section\n'),
+        ("local", b'[pr_reviewer]\nextra_instructions = "local-applied"\n'),
+    ])
+    monkeypatch.setattr(utils, "get_git_provider_with_context", lambda pr_url: provider)
+    monkeypatch.delenv("AUTO_CAST_FOR_DYNACONF", raising=False)
+    try:
+        apply_repo_settings("https://gitlab.example.com/org/team/service/-/merge_requests/1")
+        assert settings.pr_reviewer.enable_intro_text is False
+        assert settings.pr_reviewer.extra_instructions == "local-applied"
+        assert len(provider.comments) == 1
+        assert "group settings repository" in provider.comments[0]
+        assert "private_group_section" not in provider.comments[0]
+    finally:
+        settings.unset("pr_reviewer")
+        settings.set("pr_reviewer", original_config, merge=False)

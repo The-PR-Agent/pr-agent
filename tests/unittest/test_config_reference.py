@@ -32,6 +32,7 @@ def test_config_reference_covers_every_active_key():
     assert {
         "model",
         "http_request_timeout",
+        "use_group_settings_file",
         "enable_auto_approval",
         "reaction_on_start",
         "reaction_on_failure",
