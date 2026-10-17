@@ -59,16 +59,15 @@ def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
     return files
 
 
-def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
-    """Reverse-apply a single-file unified diff to head (new) content to recover
-    base (original) content. Returns "" if the patch does not cleanly apply."""
+def reconstruct_base_file_checked(head_file_str: str, patch_str: str) -> str | None:
+    """Reverse-apply a patch, returning None when it does not match the head file."""
     try:
         patch_set = PatchSet(patch_str)
     except UnidiffParseError as e:
         get_logger().info(f"Could not parse patch for base reconstruction: {e}")
-        return ""
+        return None
     if len(patch_set) != 1:
-        return ""
+        return None
 
     head_lines = head_file_str.splitlines()
     base_lines: list[str] = []
@@ -80,7 +79,7 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
         # the change instead, so its start already is the 0-based insertion point.
         hunk_head_start = hunk.target_start if hunk.target_length == 0 else hunk.target_start - 1
         if hunk_head_start < head_idx or hunk_head_start > len(head_lines):
-            return ""  # out-of-order / out-of-bounds hunk
+            return None  # out-of-order / out-of-bounds hunk
         base_lines.extend(head_lines[head_idx:hunk_head_start])
         head_idx = hunk_head_start
 
@@ -88,12 +87,12 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
             value = line.value.rstrip("\r\n")
             if line.is_context:
                 if head_idx >= len(head_lines) or head_lines[head_idx] != value:
-                    return ""
+                    return None
                 base_lines.append(head_lines[head_idx])
                 head_idx += 1
             elif line.is_added:  # present only in head: verify + skip
                 if head_idx >= len(head_lines) or head_lines[head_idx] != value:
-                    return ""
+                    return None
                 head_idx += 1
             elif line.is_removed:  # present only in base: emit, don't consume head
                 base_lines.append(value)
@@ -106,3 +105,9 @@ def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
     if base_lines and head_file_str.endswith("\n"):
         result += "\n"
     return result
+
+
+def reconstruct_base_file(head_file_str: str, patch_str: str) -> str:
+    """Reverse-apply a patch, returning "" when it does not match the head file."""
+    result = reconstruct_base_file_checked(head_file_str, patch_str)
+    return result if result is not None else ""

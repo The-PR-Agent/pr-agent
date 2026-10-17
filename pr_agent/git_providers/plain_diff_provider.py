@@ -12,7 +12,7 @@ from pr_agent.algo.review_json_output import write_review_json_output
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
-from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file, to_hunk_only_patch
+from pr_agent.git_providers.diff_parsing import parse_unified_diff, reconstruct_base_file_checked, to_hunk_only_patch
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
@@ -90,8 +90,15 @@ class PlainDiffGitProvider(GitProvider):
                                 head = fh.read()
                         except (OSError, UnicodeDecodeError) as e:
                             get_logger().info(f"Could not read working-tree file {f.filename}: {e}")
-            f.head_file = head
-            f.base_file = reconstruct_base_file(head, f.patch) if head else ""
+            base = reconstruct_base_file_checked(head, f.patch) if head else None
+            if base is None:
+                if head:
+                    get_logger().info(f"Working-tree file does not match diff; using patch-only context: {f.filename}")
+                f.head_file = ""
+                f.base_file = ""
+            else:
+                f.head_file = head
+                f.base_file = base
             # Reconstruction needs the full patch (with --- /+++ headers); the
             # rest of the pipeline expects hunk-only patches, so normalize after.
             f.patch = to_hunk_only_patch(f.patch)

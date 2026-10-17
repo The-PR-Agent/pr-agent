@@ -121,6 +121,31 @@ def test_base_file_reconstructed_from_working_tree(cfg, tmp_path, monkeypatch):
     assert "line2-changed" not in files[0].base_file
 
 
+def test_drifted_working_tree_uses_patch_only_context(cfg, tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "foo.py").write_text("unrelated working-tree content\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg("plain_diff.content", DIFF)
+
+    file = PlainDiffGitProvider(None).get_diff_files()[0]
+
+    assert file.head_file == ""
+    assert file.base_file == ""
+    assert "+line2-changed" in file.patch
+
+
+def test_added_file_with_empty_base_keeps_matching_head(cfg, tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "new.py").write_text("hello\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg("plain_diff.content", "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+hello\n")
+
+    file = PlainDiffGitProvider(None).get_diff_files()[0]
+
+    assert file.head_file == "hello\n"
+    assert file.base_file == ""
+
+
 def test_base_file_reconstructed_when_run_from_subdirectory(cfg, tmp_path, monkeypatch):
     """Regression for the CWD-vs-repo-root bug: enrichment must still find
     working-tree files when the CLI is run from a subdirectory of the repo."""
