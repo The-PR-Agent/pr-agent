@@ -78,7 +78,9 @@ def provider_factory():
         provider.diff_files = None
         provider.incremental = IncrementalPR(False)
         provider._expand_submodule_changes = Mock(side_effect=lambda changes, diff_refs: changes)
-        provider.get_pr_file_content = Mock(side_effect=lambda path, ref: "old\n" if ref == "base" else "new\n")
+        provider.get_pr_file_content = Mock(
+            side_effect=lambda path, ref, **_kwargs: "old\n" if ref == "base" else "new\n"
+        )
         return provider, transport
 
     yield make
@@ -140,7 +142,10 @@ def test_pruned_patch_on_later_page_is_reconstructed_from_both_blobs(provider_fa
 
     assert [file.filename for file in files] == ["visible.py", "pruned.py"]
     assert "-old" in files[1].patch and "+new" in files[1].patch
-    provider.get_pr_file_content.assert_has_calls([call("pruned.py", "base"), call("pruned.py", "head")])
+    strict = {"propagate_errors": True, "missing_is_error": True}
+    provider.get_pr_file_content.assert_has_calls([
+        call("pruned.py", "base", **strict), call("pruned.py", "head", **strict)
+    ])
     assert len(transport.diff_requests) == 2
 
 
@@ -281,7 +286,7 @@ def test_fresh_metadata_supplies_count_and_blob_refs_without_mutating_cached_mr(
     )
     cached_mr = provider.mr
     cached_refs = dict(cached_mr.diff_refs)
-    provider.get_pr_file_content.side_effect = lambda path, ref: "old\n" if ref == "fresh-base" else "new\n"
+    provider.get_pr_file_content.side_effect = lambda path, ref, **_kwargs: "old\n" if ref == "fresh-base" else "new\n"
 
     files = provider.get_diff_files()
 
@@ -290,7 +295,10 @@ def test_fresh_metadata_supplies_count_and_blob_refs_without_mutating_cached_mr(
     assert provider.mr is cached_mr
     assert provider.mr.changes_count == "1000+"
     assert provider.mr.diff_refs == cached_refs
-    assert provider.get_pr_file_content.call_args_list == [call("a.py", "fresh-base"), call("a.py", "fresh-head")]
+    strict = {"propagate_errors": True, "missing_is_error": True}
+    assert provider.get_pr_file_content.call_args_list == [
+        call("a.py", "fresh-base", **strict), call("a.py", "fresh-head", **strict)
+    ]
     assert provider._expand_submodule_changes.call_args.args[1] == fresh["diff_refs"]
     assert len(transport.requests) == 3
 
@@ -402,8 +410,10 @@ def test_incremental_ref_movement_falls_back_to_fresh_full_collection(provider_f
     assert provider.git_files is None and provider.diff_files is None
     assert provider.unreviewed_files_map == {}
     assert [file.filename for file in provider.get_diff_files()] == ["a.py", "b.py"]
+    strict = {"propagate_errors": True, "missing_is_error": True}
     provider.get_pr_file_content.assert_has_calls([
-        call("a.py", fresh["diff_refs"]["base_sha"]), call("a.py", fresh["diff_refs"]["head_sha"]),
+        call("a.py", fresh["diff_refs"]["base_sha"], **strict),
+        call("a.py", fresh["diff_refs"]["head_sha"], **strict),
     ])
     assert len(transport.diff_requests) == 2
     assert len(transport.requests) == 6

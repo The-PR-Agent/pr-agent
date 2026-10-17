@@ -1000,13 +1000,14 @@ class GitLabProvider(GitProvider):
                 self._own_user_id = None
         return self._own_user_id
 
-    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False,
+                            missing_is_error: bool = False) -> str:
         try:
             file_obj = self.gl.projects.get(self.id_project, lazy=True).files.get(file_path, branch)
             content = file_obj.decode()
             return decode_if_bytes(content)
         except GitlabGetError as e:
-            if propagate_errors and getattr(e, "response_code", None) != 404:
+            if propagate_errors and (missing_is_error or getattr(e, "response_code", None) != 404):
                 raise
             return ''
         except (GitlabError, RequestException, ValueError, AttributeError) as e:
@@ -1159,17 +1160,37 @@ class GitLabProvider(GitProvider):
 
             # allow only a limited number of files to be fully loaded. We can manage the rest with diffs only
             counter_valid += 1
+            content_fetch_failed = False
             if counter_valid < MAX_FILES_ALLOWED_FULL or not diff['diff']:
-                original_file_content_str = (
-                    ''
-                    if not incremental_active and diff['new_file']
-                    else self.get_pr_file_content(diff['old_path'], base_sha_for_content)
+                # Missing GitLab patches require every applicable content read. Treat an
+                # unexpected 404 as a failed read, or an empty side would invent changes.
+                strict_options = {"propagate_errors": True, "missing_is_error": True} if not diff['diff'] else {}
+                old_options = (
+                    {"propagate_errors": True}
+                    if incremental_active and diff['new_file'] and not diff['diff'] else strict_options
                 )
-                new_file_content_str = (
-                    ''
-                    if not incremental_active and diff['deleted_file']
-                    else self.get_pr_file_content(diff['new_path'], head_sha_for_content)
+                new_options = (
+                    {"propagate_errors": True}
+                    if incremental_active and diff['deleted_file'] and not diff['diff'] else strict_options
                 )
+                try:
+                    original_file_content_str = (
+                        ''
+                        if not incremental_active and diff['new_file']
+                        else self.get_pr_file_content(diff['old_path'], base_sha_for_content, **old_options)
+                    )
+                    new_file_content_str = (
+                        ''
+                        if not incremental_active and diff['deleted_file']
+                        else self.get_pr_file_content(diff['new_path'], head_sha_for_content, **new_options)
+                    )
+                except Exception as e:
+                    if diff['diff']:
+                        raise
+                    get_logger().warning(f"Cannot reconstruct missing GitLab patch for {diff['new_path']}: {e}")
+                    original_file_content_str = ''
+                    new_file_content_str = ''
+                    content_fetch_failed = True
             else:
                 if counter_valid == MAX_FILES_ALLOWED_FULL:
                     get_logger().info("Too many files in PR, will avoid loading full content for rest of files")
@@ -1190,7 +1211,7 @@ class GitLabProvider(GitProvider):
 
             filename = diff['new_path']
             patch = diff['diff']
-            if not patch:
+            if not patch and not content_fetch_failed:
                 patch = load_large_diff(filename, new_file_content_str, original_file_content_str)
 
 
@@ -1205,7 +1226,8 @@ class GitLabProvider(GitProvider):
                               edit_type=edit_type,
                               old_filename=None if diff['old_path'] == diff['new_path'] else diff['old_path'],
                               num_plus_lines=num_plus_lines,
-                              num_minus_lines=num_minus_lines, ))
+                              num_minus_lines=num_minus_lines,
+                              content_fetch_failed=content_fetch_failed, ))
         if invalid_files_names:
             get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
