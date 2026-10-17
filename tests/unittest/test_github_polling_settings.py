@@ -27,7 +27,7 @@ def test_process_comment_sync_scopes_settings_per_comment():
 
     # Patch one level below run_handle_request so the real asyncio.run path
     # executes and the test pins that the contextvar survives it.
-    async def fake_async_handle_request(pr_url, rest_of_comment, comment_id, git_provider):
+    async def fake_async_handle_request(pr_url, rest_of_comment, comment_id):
         settings = get_settings()
         captured["settings"] = settings
         captured["publish_progress"] = settings.get("CONFIG.PUBLISH_OUTPUT_PROGRESS")
@@ -37,7 +37,6 @@ def test_process_comment_sync_scopes_settings_per_comment():
         return True
 
     with (
-        patch.object(github_polling, "get_git_provider", return_value=MagicMock()),
         patch.object(github_polling, "async_handle_request", side_effect=fake_async_handle_request),
         patch.object(github_polling, "litellm_callbacks_registered", return_value=False),
     ):
@@ -65,10 +64,7 @@ async def test_process_comment_scopes_settings_per_comment():
     agent = MagicMock()
     agent.handle_request = AsyncMock(side_effect=fake_handle_request)
 
-    with (
-        patch.object(github_polling, "get_git_provider", return_value=MagicMock()),
-        patch.object(github_polling, "PRAgent", return_value=agent),
-    ):
+    with patch.object(github_polling, "PRAgent", return_value=agent):
         await github_polling.process_comment("https://example/pr/2", "/describe", 456)
 
     agent.handle_request.assert_awaited_once()
@@ -81,14 +77,13 @@ def test_consecutive_comments_do_not_share_state():
     tickets_before = global_settings.get("related_tickets", None)
     seen = []
 
-    async def fake_async_handle_request(pr_url, rest_of_comment, comment_id, git_provider):
+    async def fake_async_handle_request(pr_url, rest_of_comment, comment_id):
         settings = get_settings()
         seen.append(settings.get("related_tickets", None))
         settings.set("related_tickets", [{"ticket_id": 1, "pr": pr_url}])
         return True
 
     with (
-        patch.object(github_polling, "get_git_provider", return_value=MagicMock()),
         patch.object(github_polling, "async_handle_request", side_effect=fake_async_handle_request),
         patch.object(github_polling, "litellm_callbacks_registered", return_value=False),
     ):
@@ -107,7 +102,7 @@ async def test_failed_comment_does_not_pin_settings_on_the_calling_context():
     # comment's settings active for everything that runs later in the task.
     settings_before = get_settings()
 
-    with patch.object(github_polling, "get_git_provider", side_effect=ValueError("bad PR url")):
+    with patch.object(github_polling, "PRAgent", side_effect=ValueError("bad PR url")):
         await github_polling.process_comment("https://example/pr/3", "/review", 789)
 
     assert get_settings() is settings_before
@@ -118,8 +113,52 @@ def test_cancellation_does_not_pin_settings_on_the_calling_context():
     # still leave the scope through _polling_settings_scope's finally.
     settings_before = get_settings()
 
-    with patch.object(github_polling, "get_git_provider", side_effect=KeyboardInterrupt):
+    with patch.object(github_polling, "run_handle_request", side_effect=KeyboardInterrupt):
         with pytest.raises(KeyboardInterrupt):
             github_polling.process_comment_sync("https://example/pr/4", "/review", 999)
 
     assert get_settings() is settings_before
+
+
+@pytest.mark.asyncio
+async def test_async_polling_gets_provider_only_when_notifying():
+    provider = MagicMock()
+    agent = MagicMock()
+
+    async def handle(pr_url, command, notify):
+        getter.assert_not_called()
+        notify()
+        return True
+
+    agent.handle_request = AsyncMock(side_effect=handle)
+    with (
+        patch.object(github_polling, "get_git_provider", side_effect=AssertionError("eager provider")),
+        patch.object(github_polling, "get_git_provider_with_context", return_value=provider) as getter,
+        patch.object(github_polling, "PRAgent", return_value=agent),
+    ):
+        await github_polling.process_comment("https://example/pr/5", "/review", 5)
+
+    getter.assert_called_once_with("https://example/pr/5")
+    provider.add_eyes_reaction.assert_called_once_with(5)
+
+
+def test_sync_polling_gets_provider_only_when_notifying():
+    provider = MagicMock()
+    agent = MagicMock()
+
+    async def handle(pr_url, command, notify):
+        getter.assert_not_called()
+        notify()
+        return True
+
+    agent.handle_request = AsyncMock(side_effect=handle)
+    with (
+        patch.object(github_polling, "get_git_provider", side_effect=AssertionError("eager provider")),
+        patch.object(github_polling, "get_git_provider_with_context", return_value=provider) as getter,
+        patch.object(github_polling, "PRAgent", return_value=agent),
+        patch.object(github_polling, "litellm_callbacks_registered", return_value=False),
+    ):
+        github_polling.process_comment_sync("https://example/pr/6", "/review", 6)
+
+    getter.assert_called_once_with("https://example/pr/6")
+    provider.add_eyes_reaction.assert_called_once_with(6)
