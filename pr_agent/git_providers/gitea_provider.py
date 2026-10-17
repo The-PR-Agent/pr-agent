@@ -1275,7 +1275,8 @@ class RepoApi(giteapy.RepositoryApi):
         """Get raw content, optionally preserving fetch errors for guidance cache owners."""
 
         try:
-            url = f'/repos/{owner}/{repo}/raw/{filepath}'
+            encoded_filepath = quote(filepath, safe="/")
+            url = f'/repos/{owner}/{repo}/raw/{encoded_filepath}'
             query_params = []
             if commit_sha:
                 query_params.append(('ref', commit_sha))

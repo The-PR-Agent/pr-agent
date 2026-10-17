@@ -3,6 +3,7 @@ import json
 from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import giteapy
 import pytest
@@ -26,6 +27,38 @@ def guidance_raw_api(monkeypatch):
 
 def _guidance_response(body=b"", status=200, *, headers=None, reason=None):
     return HTTPResponse(body=BytesIO(body), status=status, headers=headers, reason=reason, preload_content=False)
+
+
+@pytest.mark.parametrize("ref", ["base-sha", "feature/nested#branch?", ""])
+@pytest.mark.parametrize("filepath", [
+    "src/plain.py",
+    "src/report#draft.py",
+    "src/question?.py",
+    "src/literal%2Fname.py",
+    "src/space name.py",
+    "src/你好.py",
+    "nested/deep/a+b&c.py",
+])
+def test_gitea_raw_file_paths_preserve_filename_and_ref(monkeypatch, filepath, ref):
+    configuration = giteapy.Configuration()
+    configuration.host = "https://gitea.example/api/v1"
+    client = giteapy.ApiClient(configuration)
+    api = RepoApi(client)
+    # Exercise SDK/urllib3 URL parsing; replace only the final HTTP transport.
+    transport = MagicMock(return_value=_guidance_response(b"file contents"))
+    monkeypatch.setattr("urllib3.HTTPSConnectionPool.urlopen", transport)
+
+    try:
+        assert api.get_file_content("owner", "repo", ref, filepath) == "file contents"
+        transport.assert_called_once()
+        method, target = transport.call_args.args[:2]
+        parsed = urlsplit(target)
+        assert method == "GET"
+        assert unquote(parsed.path) == f"/api/v1/repos/owner/repo/raw/{filepath}"
+        assert parse_qs(parsed.query) == ({"ref": [ref]} if ref else {})
+        assert not parsed.fragment
+    finally:
+        client.rest_client.pool_manager.clear()
 
 
 @pytest.mark.parametrize("propagate_errors", [False, True])
