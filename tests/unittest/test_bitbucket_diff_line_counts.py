@@ -98,14 +98,15 @@ class TestBitbucketCloudLineCounts:
 
     def test_added_file_reports_only_additions(self):
         diff_file = _cloud_diff_file(ADDED_RAW_DIFF, status="added", lines_added=3,
-                                     old_filename=None)
+                                     filename="src/generated.py", old_filename=None)
 
         assert diff_file.num_plus_lines == 3
         assert diff_file.num_minus_lines == 0
         assert diff_file.edit_type == EDIT_TYPE.ADDED
 
     def test_removed_file_reports_only_deletions(self):
-        diff_file = _cloud_diff_file(REMOVED_RAW_DIFF, status="removed", lines_removed=2)
+        diff_file = _cloud_diff_file(REMOVED_RAW_DIFF, status="removed", lines_removed=2,
+                                     filename="src/legacy.py")
 
         assert diff_file.num_plus_lines == 0
         assert diff_file.num_minus_lines == 2

@@ -18,6 +18,7 @@ from pr_agent.config_loader import global_settings
 from pr_agent.git_providers import BitbucketServerProvider
 from pr_agent.git_providers.bitbucket_provider import (
     BitbucketProvider,
+    _diff_header_paths,
     _get_identity_request_timeout,
 )
 from pr_agent.git_providers.git_provider import FileContentSnapshot, IncompleteBitbucketPullRequestFilesError
@@ -639,8 +640,41 @@ index 1111111..2222222 100644
         provider._get_pr_file_content.assert_not_called()
         assert provider.diff_files is None
 
+    def test_get_diff_files_aligns_reordered_patches_by_path(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/second.py", "src/first.py"])
+        provider.pr.diff.return_value = (
+            provider.pr.diff.return_value
+            .replace("-old\n+new\n", "-old second\n+new second\n", 1)
+            .replace("-old\n+new\n", "-old first\n+new first\n", 1)
+        )
+        with patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats):
+            files = provider.get_diff_files()
+
+        assert [file.filename for file in files] == ["src/first.py", "src/second.py"]
+        assert "+new first" in files[0].patch
+        assert "+new second" in files[1].patch
+
+    @pytest.mark.parametrize("header,paths", [
+        ('diff --git "a/has space.py" "b/has space.py"', ("has space.py", "has space.py")),
+        (r'diff --git "a/caf\303\251.py" "b/caf\303\251.py"', ("café.py", "café.py")),
+    ])
+    def test_diff_header_paths_decode_quoted_git_paths(self, header, paths):
+        assert _diff_header_paths(header + "\n") == paths
+
+    @pytest.mark.parametrize("patch_paths", [
+        ["src/first.py", "src/other.py"],
+        ["src/first.py", "src/first.py"],
+    ])
+    def test_get_diff_files_rejects_same_count_wrong_or_duplicate_path(self, patch_paths):
+        provider, diffstats = self._aggregate_diff_provider(patch_paths)
+        with patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats):
+            with pytest.raises(IncompleteBitbucketPullRequestFilesError):
+                provider.get_diff_files()
+
+        assert provider.diff_files is None
+
     def test_get_diff_files_aligns_ignored_files_before_completeness_check(self):
-        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider, diffstats = self._aggregate_diff_provider(["src/second.py", "src/first.py"])
         settings = MagicMock()
         settings.get.return_value = True
         with (
@@ -660,6 +694,7 @@ index 1111111..2222222 100644
         provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
         diffstats[0].new.path = "pnpm-lock.yaml"
         diffstats[0].old.path = "pnpm-lock.yaml"
+        provider.pr.diff.return_value = provider.pr.diff.return_value.replace("src/first.py", "pnpm-lock.yaml")
         with patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=diffstats):
             files = provider.get_diff_files()
 

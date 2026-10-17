@@ -1,3 +1,4 @@
+import ast
 import difflib
 import json
 import math
@@ -51,6 +52,35 @@ def _gef_filename(diff):
 
 def _split_raw_diff(raw_diff: str) -> list[str]:
     return [part for part in re.split(r"(?m)(?=^diff --git )", raw_diff) if part.startswith("diff --git ")]
+
+
+_DIFF_HEADER_RE = re.compile(r'^diff --git ("(?:\\.|[^"\\])*"|\S+) ("(?:\\.|[^"\\])*"|\S+)$')
+
+
+def _diff_header_paths(patch: str) -> tuple[str, str] | None:
+    """Read the old and new paths from a Git diff header, including quoted paths."""
+    header = patch.split("\n", 1)[0].rstrip("\r")
+    match = _DIFF_HEADER_RE.fullmatch(header)
+    if not match:
+        return None
+    paths = []
+    for token in match.groups():
+        try:
+            path = ast.literal_eval(token) if token.startswith('"') else token
+            if token.startswith('"') and re.search(r"\\[0-7]{3}", token):
+                path = path.encode("latin-1").decode("utf-8")
+        except (SyntaxError, ValueError, UnicodeError):
+            return None
+        if not path.startswith(("a/", "b/")):
+            return None
+        paths.append(path[2:])
+    return paths[0], paths[1]
+
+
+def _diffstat_paths(diff) -> tuple[str, str]:
+    old_path = diff.old.path or diff.new.path
+    new_path = diff.new.path or diff.old.path
+    return old_path, new_path
 
 
 def _diffstat_line_count(diff, field: str) -> Optional[int]:
@@ -333,14 +363,25 @@ class BitbucketProvider(GitProvider):
                 raise ValueError(f"Failed to decode PR patch with encodings {encodings_to_try}") from e
 
         diff_split = _split_raw_diff(pr_patches)
-        # filter all elements of 'diff_split' that are of indices in 'diffs_original' that are not in 'diffs'
-        if len(diff_split) > len(diffs) and len(diffs_original) == len(diff_split):
-            diff_split = [diff_split[i] for i in range(len(diff_split)) if diffs_original[i] in diffs]
-        if len(diff_split) != len(diffs):
+        patches_by_path = {}
+        for patch in diff_split:
+            paths = _diff_header_paths(patch)
+            if paths is None or paths in patches_by_path:
+                raise IncompleteBitbucketPullRequestFilesError(
+                    "Bitbucket aggregate diff contains an invalid or duplicate file header"
+                )
+            patches_by_path[paths] = patch
+
+        original_paths = {_diffstat_paths(diff) for diff in diffs_original}
+        kept_paths = [_diffstat_paths(diff) for diff in diffs]
+        if (len(original_paths) != len(diffs_original) or len(set(kept_paths)) != len(kept_paths)
+                or not patches_by_path.keys() <= original_paths
+                or not set(kept_paths) <= patches_by_path.keys()):
             get_logger().error(f"Error - failed to split the diff into {len(diffs)} parts")
             raise IncompleteBitbucketPullRequestFilesError(
                 "Bitbucket aggregate diff does not match its changed-file inventory"
             )
+        diff_split = [patches_by_path[paths] for paths in kept_paths]
         # Bitbucket headers vary by change type and may include mode or rename
         # metadata. Keep only the unified-diff hunks consumed downstream.
         for i, patch in enumerate(diff_split):
