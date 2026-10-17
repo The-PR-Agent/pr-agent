@@ -6,6 +6,7 @@ from git import Repo
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
+from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -122,21 +123,14 @@ class LocalGitProvider(GitProvider):
                               old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path
                               )
             )
-        self.diff_files = diff_files
-        return diff_files
+        self.diff_files = filter_ignored(diff_files, platform="local")
+        return self.diff_files
 
     def get_files(self) -> List[str]:
         """
         Returns a list of files with changes in the diff.
         """
-        diff_index = self.repo.head.commit.diff(
-            self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),
-            R=True
-        )
-        # Use the current path for renames and modifications; deleted files
-        # have no new-side path and therefore fall back to their old path.
-        diff_files = [item.b_path or item.a_path for item in diff_index]
-        return diff_files
+        return [file.filename for file in self.get_diff_files()]
 
     def publish_description(self, pr_title: str, pr_body: str):
         with open(self.description_path, "w", encoding="utf-8") as file:

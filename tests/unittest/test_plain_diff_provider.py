@@ -11,7 +11,7 @@ from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path",
-                  "config.git_provider", "config.publish_output"]
+                  "config.git_provider", "config.publish_output", "ignore.glob", "ignore.regex"]
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +87,18 @@ diff --git a/weird.zzz b/weird.zzz
  p
 +q
 """
+
+
+def test_plain_diff_applies_ignore_rules_to_files_and_patches(cfg, monkeypatch):
+    cfg("plain_diff.content", _MULTI_LANG_DIFF)
+    cfg("ignore.glob", ["foo.py"])
+    cfg("ignore.regex", [])
+    monkeypatch.setattr("pr_agent.git_providers.plain_diff_provider._find_repository_root", lambda: None)
+
+    provider = PlainDiffGitProvider(None)
+    assert provider.get_files() == ["app.js", "weird.zzz"]
+    assert [file.filename for file in provider.get_diff_files()] == ["app.js", "weird.zzz"]
+
 
 _FILENAME_MATCHING_DIFF = """diff --git a/upper.C b/upper.C
 --- a/upper.C

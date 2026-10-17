@@ -50,7 +50,7 @@ def filter_ignored(files, platform = 'github'):
         # keep filenames that _don't_ match the ignore regex
         if files:
             for r in compiled_patterns:
-                if platform in ('github', 'codecommit'):
+                if platform in ('github', 'codecommit', 'local', 'plain_diff'):
                     files = [f for f in files if (f.filename and not r.match(f.filename))]
                 elif platform == 'bitbucket':
                     files_o = []

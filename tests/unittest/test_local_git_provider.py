@@ -147,6 +147,29 @@ def test_get_files_returns_new_path_for_renamed_file(tmp_path):
     assert provider.get_files() == ["new.py"]
 
 
+def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
+    repo = _make_repo(tmp_path, ["generated/schema.py", "src/app.py"])
+    target_branch_name = repo.active_branch.name
+    repo.git.checkout("-b", "feature")
+    for name in ("generated/schema.py", "src/app.py"):
+        (tmp_path / name).write_text("changed\n")
+    repo.index.add(["generated/schema.py", "src/app.py"])
+    repo.index.commit("change both files")
+
+    provider = object.__new__(LocalGitProvider)
+    provider.repo = repo
+    provider.target_branch_name = target_branch_name
+    provider.diff_files = None
+    snapshot = snapshot_settings(["IGNORE.GLOB", "IGNORE.REGEX"])
+    try:
+        get_settings().set("IGNORE.GLOB", ["generated/**"])
+        get_settings().set("IGNORE.REGEX", [])
+        assert provider.get_files() == ["src/app.py"]
+        assert [file.filename for file in provider.get_diff_files()] == ["src/app.py"]
+    finally:
+        restore_settings(snapshot)
+
+
 def test_get_diff_files_deleted_file_falls_back_to_old_path(tmp_path):
     # A plain deletion has no "new side": GitPython sets diff_item.b_path to None.
     # The filename must fall back to a_path (the old path) instead of None, or
