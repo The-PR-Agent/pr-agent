@@ -167,7 +167,7 @@ def _github_provider(monkeypatch, deployment_type, comments, bot_login, user_log
 def _wire_reviewer(monkeypatch, provider):
     monkeypatch.setattr("pr_agent.tools.pr_reviewer.get_git_provider_with_context", lambda url: provider)
     monkeypatch.setattr("pr_agent.tools.pr_reviewer.build_repo_context", lambda git_provider: "")
-    monkeypatch.setattr("pr_agent.tools.pr_reviewer.get_skills_context", lambda: "")
+    monkeypatch.setattr("pr_agent.tools.pr_reviewer.get_skills_context", lambda *args, **kwargs: "")
 
     async def no_tickets(git_provider, vars):
         return None
