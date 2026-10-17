@@ -465,6 +465,25 @@ class TestPRUpdateChangelog:
         provider.get_pr_file_content.assert_called_once_with("CHANGELOG.md", "feature-branch")
         provider.create_or_update_pr_file.assert_not_called()
 
+    def test_fork_push_is_skipped_before_changelog_snapshot(self, mock_ai_handler):
+        provider = self._make_no_push_provider(extra_spec=["create_or_update_pr_file", "get_pr_file_content_snapshot"])
+        provider.is_supported.return_value = False
+
+        with (
+            patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider),
+            patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"),
+            patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
+        ):
+            self._configure_settings(mock_settings)
+            mock_settings.return_value.config.restricted_mode = False
+            tool = PRUpdateChangelog("https://example.com/pr/1", ai_handler=lambda: mock_ai_handler)
+
+        assert tool.push_skipped_reason == "not supported for this pull request"
+        assert tool.commit_changelog is False
+        provider.get_pr_file_content_snapshot.assert_not_called()
+        provider.get_pr_file_content.assert_called_once_with("CHANGELOG.md", "feature-branch")
+        provider.create_or_update_pr_file.assert_not_called()
+
     @pytest.mark.parametrize("content", ["", "# Changelog\n\n## v1.0.0\n- Existing entry"])
     def test_strict_read_accepts_successful_empty_and_nonempty_content(self, mock_ai_handler, content):
         provider = self._make_push_provider()

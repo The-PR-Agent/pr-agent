@@ -330,6 +330,10 @@ def test_the_bitbucket_source_writes_carry_a_timeout():
     provider.workspace_slug = "workspace"
     provider.repo_slug = "repository"
     provider.headers = {"Authorization": "Bearer token"}
+    provider.pr = MagicMock(source_branch="feature", data={
+        "source": {"repository": {"uuid": "{repository}"}},
+        "destination": {"repository": {"uuid": "{repository}"}},
+    })
     response = MagicMock(status_code=200, text="")
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
@@ -350,7 +354,9 @@ def test_the_bitbucket_snapshot_read_carries_a_timeout():
     provider.repo_slug = "repository"
     provider.headers = {"Authorization": "Bearer token"}
     provider.pr = MagicMock(source_branch="feature",
-                            data={"source": {"commit": {"hash": "a1b2c3d4e5f6"}}})
+                            data={"source": {"repository": {"uuid": "{repository}"},
+                                             "commit": {"hash": "a1b2c3d4e5f6"}},
+                                  "destination": {"repository": {"uuid": "{repository}"}}})
     response = MagicMock(status_code=200, text="body")
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",
@@ -494,7 +500,9 @@ def test_a_repository_cannot_change_the_host_timeout_at_a_client(monkeypatch):
     provider.repo_slug = "repository"
     provider.headers = {"Authorization": "Bearer token"}
     provider.pr = MagicMock(source_branch="feature",
-                            data={"source": {"commit": {"hash": "a1b2c3d4e5f6"}}})
+                            data={"source": {"repository": {"uuid": "{repository}"},
+                                             "commit": {"hash": "a1b2c3d4e5f6"}},
+                                  "destination": {"repository": {"uuid": "{repository}"}}})
     response = MagicMock(status_code=200, text="file body")
 
     with patch("pr_agent.git_providers.bitbucket_provider.requests.request",

@@ -69,7 +69,10 @@ class PRUpdateChangelog:
             elif not hasattr(self.git_provider, "get_pr_file_content_snapshot"):
                 self.push_skipped_reason = "guarded file writes are not supported for this git provider"
             elif not self.git_provider.is_supported("push_code"):
-                self.push_skipped_reason = "restricted by configuration (restricted_mode)"
+                self.push_skipped_reason = (
+                    "restricted by configuration (restricted_mode)"
+                    if get_settings().config.restricted_mode else "not supported for this pull request"
+                )
         # Push only when it was requested AND is possible; otherwise fall back to a comment.
         self.commit_changelog = self.push_changelog_changes and self.push_skipped_reason is None
 

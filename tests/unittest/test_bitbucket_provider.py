@@ -38,6 +38,12 @@ class TestBitbucketProvider:
         provider.workspace_slug = "workspace"
         provider.repo_slug = "repository"
         provider.headers = {"Authorization": "Bearer test-value"}
+        provider.pr = MagicMock()
+        provider.pr.source_branch = "feature"
+        provider.pr.data = {
+            "source": {"repository": {"uuid": "{base-repo}"}, "commit": {"hash": "a1b2c3d4e5f6"}},
+            "destination": {"repository": {"uuid": "{base-repo}"}},
+        }
         return provider
 
     @staticmethod
@@ -234,9 +240,6 @@ class TestBitbucketProvider:
     @pytest.mark.parametrize("status_code,content", [(200, "old content"), (200, ""), (404, "not found")])
     def test_file_snapshot_reads_immutable_source_commit(self, status_code, content):
         provider = self._source_write_provider()
-        provider.pr = MagicMock()
-        provider.pr.source_branch = "feature"
-        provider.pr.data = {"source": {"commit": {"hash": "a1b2c3d4e5f6"}}}
         response = self._source_write_response(status_code)
         response._content = content.encode("utf-8")
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
@@ -251,9 +254,7 @@ class TestBitbucketProvider:
 
     def test_file_snapshot_propagates_server_failure(self):
         provider = self._source_write_provider()
-        provider.pr = MagicMock()
-        provider.pr.source_branch = "feature"
-        provider.pr.data = {"source": {"commit": {"hash": "captured-source-commit"}}}
+        provider.pr.data["source"]["commit"]["hash"] = "captured-source-commit"
         response = self._source_write_response(500)
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response):
             with pytest.raises(HTTPError) as raised:
@@ -263,12 +264,46 @@ class TestBitbucketProvider:
     @pytest.mark.parametrize("revision", [None, ""])
     def test_file_snapshot_rejects_missing_source_commit(self, revision):
         provider = self._source_write_provider()
-        provider.pr = MagicMock()
-        provider.pr.source_branch = "feature"
-        provider.pr.data = {"source": {"commit": {"hash": revision}}}
+        provider.pr.data["source"]["commit"]["hash"] = revision
         with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as request:
             with pytest.raises(ValueError):
                 provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+        request.assert_not_called()
+
+    @pytest.mark.parametrize("source_repository", [
+        {"uuid": "{fork-repo}"},
+        None,
+    ])
+    def test_fork_changelog_write_is_rejected_before_api_request(self, source_repository):
+        provider = self._source_write_provider()
+        provider.pr.data["source"]["repository"] = source_repository
+
+        assert provider.is_supported("push_code") is False
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as request:
+            with pytest.raises(ValueError, match="fork pull request"):
+                provider.get_pr_file_content_snapshot("CHANGELOG.md", "feature")
+            with pytest.raises(ValueError, match="fork pull request"):
+                provider.create_or_update_pr_file(
+                    "CHANGELOG.md", "feature", "new content",
+                    expected_snapshot=FileContentSnapshot("old", True, "a1b2c3d4e5f6"),
+                )
+        request.assert_not_called()
+
+    def test_same_repository_name_allows_write_when_uuids_are_absent(self):
+        provider = self._source_write_provider()
+        provider.pr.data["source"]["repository"] = {"full_name": "workspace/repository"}
+        provider.pr.data["destination"]["repository"] = {"full_name": "workspace/repository"}
+
+        assert provider._pr_head_in_base_repo() is True
+
+    def test_changelog_write_rejects_another_branch(self):
+        provider = self._source_write_provider()
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request") as request:
+            with pytest.raises(ValueError, match="PR source branch"):
+                provider.create_or_update_pr_file(
+                    "CHANGELOG.md", "main", "new content",
+                    expected_snapshot=FileContentSnapshot("old", True, "a1b2c3d4e5f6"),
+                )
         request.assert_not_called()
 
     @pytest.mark.parametrize("status_code", [200, 201, 204])

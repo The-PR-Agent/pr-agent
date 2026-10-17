@@ -272,9 +272,33 @@ class BitbucketProvider(GitProvider):
     def is_supported(self, capability: str) -> bool:
         if capability in ['publish_inline_comments', 'get_labels', 'gfm_markdown']:
             return False
-        if capability == "push_code" and get_settings().config.restricted_mode:
-            return False
+        if capability == "push_code":
+            return not get_settings().config.restricted_mode and self._pr_head_in_base_repo()
         return True
+
+    def _pr_head_in_base_repo(self) -> bool:
+        """Check that the source branch belongs to the repository used by the write API."""
+        data = getattr(self.pr, "data", None)
+        if not isinstance(data, dict):
+            return False
+        source = data.get("source")
+        destination = data.get("destination")
+        if not isinstance(source, dict) or not isinstance(destination, dict):
+            return False
+        source_repo = source.get("repository")
+        destination_repo = destination.get("repository")
+        if not isinstance(source_repo, dict) or not isinstance(destination_repo, dict):
+            return False
+
+        source_uuid = source_repo.get("uuid")
+        destination_uuid = destination_repo.get("uuid")
+        if isinstance(source_uuid, str) and source_uuid and isinstance(destination_uuid, str) and destination_uuid:
+            return source_uuid.casefold() == destination_uuid.casefold()
+        source_name = source_repo.get("full_name")
+        destination_name = destination_repo.get("full_name")
+        return (isinstance(source_name, str) and bool(source_name)
+                and isinstance(destination_name, str) and bool(destination_name)
+                and source_name.casefold() == destination_name.casefold())
 
     def set_pr(self, pr_url: str):
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
@@ -749,6 +773,8 @@ class BitbucketProvider(GitProvider):
             return ""
 
     def get_pr_file_content_snapshot(self, file_path: str, branch: str) -> FileContentSnapshot:
+        if not self._pr_head_in_base_repo():
+            raise ValueError("Cannot snapshot a fork pull request for writing")
         if branch != self.pr.source_branch:
             raise ValueError("Bitbucket file snapshots require the PR source branch")
         revision = self.pr.data["source"]["commit"]["hash"]
@@ -766,6 +792,10 @@ class BitbucketProvider(GitProvider):
     def create_or_update_pr_file(
         self, file_path: str, branch: str, contents="", message="", *, expected_snapshot: FileContentSnapshot
     ) -> None:
+        if not self._pr_head_in_base_repo():
+            raise ValueError("Cannot write to a fork pull request")
+        if branch != self.pr.source_branch:
+            raise ValueError("Bitbucket file writes require the PR source branch")
         if not isinstance(expected_snapshot.revision, str) or not expected_snapshot.revision:
             raise ValueError("Bitbucket file write requires the captured source commit")
         url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/")
