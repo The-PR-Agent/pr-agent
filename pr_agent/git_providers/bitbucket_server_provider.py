@@ -275,35 +275,6 @@ class BitbucketServerProvider(GitProvider):
 
         head_sha = self.pr.fromRef['latestCommit']
 
-        # if Bitbucket api version is >= 8.16 then use the merge-base api for 2-way diff calculation
-        if self.bitbucket_api_version is not None and self.bitbucket_api_version >= parse_version("8.16"):
-            try:
-                base_sha = self.bitbucket_client.get(self._get_merge_base())['id']
-            except Exception as e:
-                get_logger().error(f"Failed to get the best common ancestor for PR: {self.pr_url}, \nerror: {e}")
-                raise e
-        else:
-            source_commits_list = list(self.bitbucket_client.get_pull_requests_commits(
-                self.workspace_slug,
-                self.repo_slug,
-                self.pr_num
-            ))
-            # if Bitbucket api version is None or < 7.0 then do a simple diff with a guaranteed common ancestor
-            base_sha = source_commits_list[-1]['parents'][0]['id']
-            # if Bitbucket api version is 7.0-8.15 then use 2-way diff functionality for the base_sha
-            if self.bitbucket_api_version is not None and self.bitbucket_api_version >= parse_version("7.0"):
-                try:
-                    destination_commits = list(
-                        self.bitbucket_client.get_commits(self.workspace_slug, self.repo_slug, base_sha,
-                                                          self.pr.toRef['latestCommit']))
-                    base_sha = self.get_best_common_ancestor(source_commits_list, destination_commits, base_sha)
-                except Exception as e:
-                    get_logger().error(
-                        f"Failed to get the commit list for calculating best common ancestor "
-                        f"for PR: {self.pr_url}, \nerror: {e}"
-                    )
-                    raise e
-
         diff_files = []
         invalid_files_names = []
         original_file_content_str = ""
@@ -311,13 +282,47 @@ class BitbucketServerProvider(GitProvider):
 
         changes_original = self._get_pull_request_changes()
         changes = filter_ignored(changes_original, 'bitbucket_server')
+        retained_changes = []
         for change in changes:
             file_path = change['path']['toString']
             if not is_valid_file(file_path.split("/")[-1]):
                 get_logger().info(f"Skipping a non-code file: {file_path}")
                 invalid_files_names.append(file_path)
                 continue
+            retained_changes.append(change)
 
+        if any(change['type'] != 'ADD' for change in retained_changes):
+            # if Bitbucket api version is >= 8.16 then use the merge-base api for 2-way diff calculation
+            if self.bitbucket_api_version is not None and self.bitbucket_api_version >= parse_version("8.16"):
+                try:
+                    base_sha = self.bitbucket_client.get(self._get_merge_base())['id']
+                except Exception as e:
+                    get_logger().error(f"Failed to get the best common ancestor for PR: {self.pr_url}, \nerror: {e}")
+                    raise e
+            else:
+                source_commits_list = list(self.bitbucket_client.get_pull_requests_commits(
+                    self.workspace_slug,
+                    self.repo_slug,
+                    self.pr_num
+                ))
+                # if Bitbucket api version is None or < 7.0 then do a simple diff with a guaranteed common ancestor
+                base_sha = source_commits_list[-1]['parents'][0]['id']
+                # if Bitbucket api version is 7.0-8.15 then use 2-way diff functionality for the base_sha
+                if self.bitbucket_api_version is not None and self.bitbucket_api_version >= parse_version("7.0"):
+                    try:
+                        destination_commits = list(
+                            self.bitbucket_client.get_commits(self.workspace_slug, self.repo_slug, base_sha,
+                                                              self.pr.toRef['latestCommit']))
+                        base_sha = self.get_best_common_ancestor(source_commits_list, destination_commits, base_sha)
+                    except Exception as e:
+                        get_logger().error(
+                            f"Failed to get the commit list for calculating best common ancestor "
+                            f"for PR: {self.pr_url}, \nerror: {e}"
+                        )
+                        raise e
+
+        for change in retained_changes:
+            file_path = change['path']['toString']
             old_filename = None
             match change['type']:
                 case 'ADD':

@@ -1,8 +1,9 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from atlassian.bitbucket import Bitbucket
+from packaging.version import parse as parse_version
 from requests import Request, Response
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import HTTPError, Timeout
@@ -1194,6 +1195,143 @@ index 1111111..2222222 100644
         assert provider.get_languages() == {"Python": 0}
 
 class TestBitbucketServerProvider:
+    @staticmethod
+    def _diff_provider(version, changes):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.diff_files = None
+        provider._pr_changes = None
+        provider.pr = SimpleNamespace(fromRef={"latestCommit": "head"}, toRef={"latestCommit": "target"})
+        provider.pr_url = "https://git.example.com/projects/AAA/repos/my-repo/pull-requests/1"
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 1
+        provider.bitbucket_api_version = parse_version(version) if version else None
+        provider.bitbucket_client = MagicMock()
+        provider.bitbucket_client.get.return_value = {"id": "merge-base"}
+        provider.bitbucket_client.get_pull_requests_commits.return_value = [
+            {"id": "head", "parents": [{"id": "parent-base"}]}
+        ]
+        provider.bitbucket_client.get_commits.return_value = []
+        provider.bitbucket_client.get_pull_requests_changes.return_value = changes
+        provider.get_file = MagicMock(side_effect=lambda path, ref: f"{path}@{ref}\n")
+        return provider
+
+    @pytest.mark.parametrize("version,changes,ignored,invalid", [
+        (None, [], False, []),
+        ("6.0", [{"path": {"toString": "new.py"}, "type": "ADD"}], False, []),
+        ("7.0", [{"path": {"toString": "ignored.py"}, "type": "MODIFY"}], True, []),
+        ("8.15", [{"path": {"toString": "image.png"}, "type": "MODIFY"}], False, ["image.png"]),
+        ("8.16", [{"path": {"toString": "new.py"}, "type": "ADD"}], False, []),
+    ])
+    def test_get_diff_files_skips_base_without_retained_base_consumer(
+        self, version, changes, ignored, invalid, monkeypatch
+    ):
+        provider = self._diff_provider(version, changes)
+        if ignored:
+            monkeypatch.setattr(global_settings.ignore, "glob", ["ignored.py"])
+
+        files = provider.get_diff_files()
+
+        assert [file.filename for file in files] == (["new.py"] if changes and not ignored and not invalid else [])
+        assert provider.filtered_diff_file_names == invalid
+        provider.bitbucket_client.get_pull_requests_commits.assert_not_called()
+        provider.bitbucket_client.get_commits.assert_not_called()
+        provider.bitbucket_client.get.assert_not_called()
+        if files:
+            provider.get_file.assert_called_once_with("new.py", "head")
+            assert files[0].base_file == ""
+            assert files[0].head_file == "new.py@head\n"
+            assert files[0].edit_type == EDIT_TYPE.ADDED
+        else:
+            provider.get_file.assert_not_called()
+
+    @pytest.mark.parametrize("version,change_type,expected_reads,edit_type,old_filename", [
+        ("8.16", "DELETE", [call("new.py", "merge-base")], EDIT_TYPE.DELETED, None),
+        ("8.16", "MOVE", [call("old.py", "merge-base"), call("new.py", "head")], EDIT_TYPE.RENAMED, "old.py"),
+        ("8.16", "RENAME", [call("old.py", "merge-base"), call("new.py", "head")], EDIT_TYPE.RENAMED, "old.py"),
+        ("8.16", "MODIFY", [call("new.py", "merge-base"), call("new.py", "head")], EDIT_TYPE.MODIFIED, None),
+        (None, "UNKNOWN", [call("new.py", "parent-base"), call("new.py", "head")], EDIT_TYPE.MODIFIED, None),
+    ])
+    def test_get_diff_files_retained_types_resolve_base_once(
+        self, version, change_type, expected_reads, edit_type, old_filename
+    ):
+        provider = self._diff_provider(version, [
+            {"path": {"toString": "new.py"}, "srcPath": {"toString": "old.py"}, "type": change_type}
+        ])
+
+        files = provider.get_diff_files()
+
+        if version:
+            provider.bitbucket_client.get.assert_called_once_with(provider._get_merge_base())
+        else:
+            provider.bitbucket_client.get.assert_not_called()
+            provider.bitbucket_client.get_pull_requests_commits.assert_called_once_with("AAA", "my-repo", 1)
+        provider.get_file.assert_has_calls(expected_reads)
+        assert provider.get_file.call_count == len(expected_reads)
+        assert files[0].edit_type == edit_type
+        assert files[0].old_filename == old_filename
+        assert files[0].base_file == f"{expected_reads[0].args[0]}@{expected_reads[0].args[1]}\n"
+
+    def test_get_diff_files_mixed_add_then_modify_preserves_order_and_resolves_base_first(self):
+        changes = [
+            {"path": {"toString": "added.py"}, "type": "ADD"},
+            {"path": {"toString": "changed.py"}, "type": "MODIFY"},
+        ]
+        provider = self._diff_provider("8.15", changes)
+        events = []
+        provider.bitbucket_client.get_pull_requests_commits.side_effect = lambda *args: events.append("base") or [
+            {"id": "head", "parents": [{"id": "parent-base"}]}
+        ]
+        provider.get_file.side_effect = lambda path, ref: events.append(f"content:{path}") or f"{path}@{ref}\n"
+
+        files = provider.get_diff_files()
+
+        assert events == ["base", "content:added.py", "content:changed.py", "content:changed.py"]
+        provider.bitbucket_client.get_commits.assert_called_once_with("AAA", "my-repo", "parent-base", "target")
+        assert [file.filename for file in files] == ["added.py", "changed.py"]
+        assert [file.edit_type for file in files] == [EDIT_TYPE.ADDED, EDIT_TYPE.MODIFIED]
+        assert files[0].base_file == ""
+        assert files[1].base_file == "changed.py@parent-base\n"
+        assert provider.get_diff_files() is files
+        provider.bitbucket_client.get_pull_requests_changes.assert_called_once()
+
+    def test_get_diff_files_base_error_precedes_all_content_reads(self):
+        provider = self._diff_provider("8.16", [
+            {"path": {"toString": "added.py"}, "type": "ADD"},
+            {"path": {"toString": "changed.py"}, "type": "MODIFY"},
+        ])
+        provider.bitbucket_client.get.side_effect = RuntimeError("base failed")
+
+        with pytest.raises(RuntimeError, match="base failed"):
+            provider.get_diff_files()
+
+        provider.get_file.assert_not_called()
+        assert provider.diff_files is None
+
+    def test_get_diff_files_change_error_precedes_base_request(self):
+        provider = self._diff_provider("8.16", [])
+        provider.bitbucket_client.get_pull_requests_changes.side_effect = RuntimeError("changes failed")
+        provider.bitbucket_client.get.side_effect = RuntimeError("base failed")
+
+        with pytest.raises(RuntimeError, match="changes failed"):
+            provider.get_diff_files()
+
+        provider.bitbucket_client.get.assert_not_called()
+        provider.get_file.assert_not_called()
+
+    def test_get_diff_files_truthy_cache_and_empty_result_cache_behavior(self):
+        provider = self._diff_provider("8.16", [])
+        cached = [_added_file()]
+        provider.diff_files = cached
+        assert provider.get_diff_files() is cached
+        provider.bitbucket_client.get_pull_requests_changes.assert_not_called()
+
+        provider.diff_files = None
+        assert provider.get_diff_files() == []
+        assert provider.get_diff_files() == []
+        provider.bitbucket_client.get_pull_requests_changes.assert_called_once()
+        provider.bitbucket_client.get.assert_not_called()
+
     @staticmethod
     def _code_suggestion(line: int):
         return {
