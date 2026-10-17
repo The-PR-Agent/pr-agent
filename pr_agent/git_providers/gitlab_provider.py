@@ -2037,6 +2037,9 @@ class GitLabProvider(GitProvider):
         return list(reversed(self.get_issue_comments()))
 
     def get_repo_settings(self):
+        # A real acquisition starts before global work, which can itself fail.
+        self._resolved_config_branch = ""
+        self._repo_settings_failed = True
         settings_files = []
         global_settings = self._get_global_repo_settings()
         if global_settings:
@@ -2047,8 +2050,9 @@ class GitLabProvider(GitProvider):
             config_branch = get_config_branch()
             if config_branch:
                 try:
-                    contents = project.files.get(file_path='.pr_agent.toml', ref=config_branch).decode()
-                    self._resolved_config_branch = config_branch
+                    root_file = project.files.get(file_path='.pr_agent.toml', ref=config_branch)
+                    contents = root_file.decode()
+                    self._resolved_config_branch = self._settings_commit_id(root_file.commit_id)
                 except GitlabGetError as e:
                     # Fall back to the default branch only for a missing branch/file (404); let
                     # other errors propagate so a fallback cannot mask them and apply unintended
@@ -2059,62 +2063,78 @@ class GitLabProvider(GitProvider):
                         f"No .pr_agent.toml on branch '{config_branch}', falling back to default branch")
             if contents is None:
                 main_branch = self._project_default_branch()
-                contents = project.files.get(file_path='.pr_agent.toml', ref=main_branch).decode()
-                self._resolved_config_branch = main_branch or ""
+                root_file = project.files.get(file_path='.pr_agent.toml', ref=main_branch)
+                contents = root_file.decode()
+                self._resolved_config_branch = self._settings_commit_id(root_file.commit_id)
+            self._repo_settings_failed = False
             if contents:
                 settings_files.append(("local", contents))
         except GitlabGetError as e:
             if getattr(e, "response_code", None) == 404:
+                self._repo_settings_failed = False
                 get_logger().debug("No local .pr_agent.toml found; using existing settings")
             else:
                 get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
-        except (GitlabError, RequestException, AttributeError) as e:
+        except (GitlabError, RequestException, AttributeError, ValueError) as e:
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
         return settings_files if settings_files else ""
 
-    def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
-        """Recursively list every `.pr_agent.toml` at *ref* ("" = default branch).
+    @staticmethod
+    def _settings_commit_id(value: str) -> str:
+        """Require an immutable GitLab commit ID before retaining a settings snapshot."""
+        if not isinstance(value, str) or not value:
+            raise ValueError("Missing or invalid GitLab settings commit ID")
+        return value
 
-        Follows the same branch resolution as get_repo_settings(): when the root
-        lookup resolved a config, the tree is read from that same branch
-        (``_resolved_config_branch``) so nested configs cannot come from a branch
-        the root does not use; if that tree has vanished since (404), skip nested
-        configs rather than mixing in another branch. Otherwise *ref* is used,
-        falling back to the project default branch when it is empty or when its
-        tree does not exist (404), so a stale config branch does not hide nested
-        configs on the default branch.
+    def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
+        """List nested configs at the commit that supplied the root or its absence.
+
+        A successful root response supplies its commit without an extra lookup.
+        A missing root has no identity: resolve the requested/default ref, then
+        confirm the root is still absent at that immutable commit before listing.
+        If a root appeared, skip nested settings for this acquisition because the
+        caller has already applied the original root result.
         """
-        if not getattr(self, "gl", None) or not getattr(self, "id_project", None):
+        if (not getattr(self, "gl", None) or not getattr(self, "id_project", None)
+                or getattr(self, "_repo_settings_failed", False)):
             return [], ""
         project = self.gl.projects.get(self.id_project, lazy=True)
-        root_branch = getattr(self, "_resolved_config_branch", "")
-        resolved_ref = root_branch or ref or self._project_default_branch()
-        try:
-            return self._list_config_tree_paths(project, resolved_ref), resolved_ref
-        except GitlabGetError as e:
-            if getattr(e, "response_code", None) != 404:
-                raise
-            if root_branch:
-                get_logger().debug(
-                    f"No repository tree for branch '{resolved_ref}' that supplied the root .pr_agent.toml; "
-                    "skipping per-directory settings instead of reading them from another branch")
+        root_commit = getattr(self, "_resolved_config_branch", "")
+        if root_commit:
+            try:
+                return self._list_config_tree_paths(project, root_commit), root_commit
+            except GitlabGetError as e:
+                if getattr(e, "response_code", None) != 404:
+                    raise
+                get_logger().debug("The root settings commit has no tree; skipping nested settings")
                 return [], ""
-            if resolved_ref == self._project_default_branch():
-                get_logger().debug("No repository tree found for per-directory settings; skipping")
-                return [], ""
-        # Match the root config fallback for a caller-provided branch hint: a missing branch/tree is an
-        # expected reason to retry the default branch; other errors propagate so they are not masked.
-        get_logger().debug(
-            f"No repository tree for branch '{resolved_ref}' while listing per-directory settings; "
-            "falling back to default branch")
-        resolved_ref = self._project_default_branch()
-        try:
-            return self._list_config_tree_paths(project, resolved_ref), resolved_ref
-        except GitlabGetError as e:
-            if getattr(e, "response_code", None) == 404:
-                get_logger().debug("No repository tree found for per-directory settings; skipping")
-                return [], ""
-            raise
+
+        self._repo_settings_failed = True
+        default_ref = self._project_default_branch()
+        refs = [ref] if ref else []
+        if default_ref not in refs:
+            refs.append(default_ref)
+        for candidate_ref in refs:
+            try:
+                commit = self._settings_commit_id(project.commits.get(candidate_ref).id)
+                try:
+                    project.files.get(file_path=".pr_agent.toml", ref=commit)
+                except GitlabGetError as e:
+                    if getattr(e, "response_code", None) != 404:
+                        raise
+                else:
+                    get_logger().debug("Root settings appeared during acquisition; skipping nested settings")
+                    return [], ""
+                paths = self._list_config_tree_paths(project, commit)
+            except GitlabGetError as e:
+                if getattr(e, "response_code", None) != 404:
+                    raise
+                continue
+            self._resolved_config_branch = commit
+            self._repo_settings_failed = False
+            return paths, commit
+        get_logger().debug("No repository tree found for per-directory settings; skipping")
+        return [], ""
 
     @staticmethod
     def _list_config_tree_paths(project, ref: str) -> list[str]:
