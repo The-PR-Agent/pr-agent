@@ -226,7 +226,7 @@ class BitbucketServerProvider(GitProvider):
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
-    def get_file(self, path: str, commit_id: str):
+    def get_file(self, path: str, commit_id: str, *, missing_is_error: bool = False):
         file_content = ""
         try:
             file_content = self.bitbucket_client.get_content_of_file(self.workspace_slug,
@@ -235,6 +235,8 @@ class BitbucketServerProvider(GitProvider):
                                                                      commit_id)
         except HTTPError as e:
             if getattr(getattr(e, "response", None), "status_code", None) == 404:
+                if missing_is_error:
+                    raise
                 get_logger().debug(f"File {path} not found at commit id: {commit_id}")
                 return file_content
             raise
@@ -322,28 +324,28 @@ class BitbucketServerProvider(GitProvider):
             match change['type']:
                 case 'ADD':
                     edit_type = EDIT_TYPE.ADDED
-                    new_file_content_str = self.get_file(file_path, head_sha)
+                    new_file_content_str = self.get_file(file_path, head_sha, missing_is_error=True)
                     new_file_content_str = decode_if_bytes(new_file_content_str)
                     original_file_content_str = ""
                 case 'DELETE':
                     edit_type = EDIT_TYPE.DELETED
                     new_file_content_str = ""
-                    original_file_content_str = self.get_file(file_path, base_sha)
+                    original_file_content_str = self.get_file(file_path, base_sha, missing_is_error=True)
                     original_file_content_str = decode_if_bytes(original_file_content_str)
                 case 'MOVE' | 'RENAME':
                     edit_type = EDIT_TYPE.RENAMED
                     source_path = change.get('srcPath') or {}
                     original_file_path = source_path.get('toString', file_path)
                     old_filename = original_file_path if original_file_path != file_path else None
-                    original_file_content_str = self.get_file(original_file_path, base_sha)
+                    original_file_content_str = self.get_file(original_file_path, base_sha, missing_is_error=True)
                     original_file_content_str = decode_if_bytes(original_file_content_str)
-                    new_file_content_str = self.get_file(file_path, head_sha)
+                    new_file_content_str = self.get_file(file_path, head_sha, missing_is_error=True)
                     new_file_content_str = decode_if_bytes(new_file_content_str)
                 case _:
                     edit_type = EDIT_TYPE.MODIFIED
-                    original_file_content_str = self.get_file(file_path, base_sha)
+                    original_file_content_str = self.get_file(file_path, base_sha, missing_is_error=True)
                     original_file_content_str = decode_if_bytes(original_file_content_str)
-                    new_file_content_str = self.get_file(file_path, head_sha)
+                    new_file_content_str = self.get_file(file_path, head_sha, missing_is_error=True)
                     new_file_content_str = decode_if_bytes(new_file_content_str)
 
             patch = load_large_diff(file_path, new_file_content_str, original_file_content_str, show_warning=False)

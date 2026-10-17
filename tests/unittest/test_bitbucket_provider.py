@@ -1694,6 +1694,45 @@ class TestBitbucketServerProvider:
 
         assert provider.get_repo_file_content("AGENTS.md") == ""
 
+    @pytest.mark.parametrize(("change_type", "missing_path", "missing_ref"), [
+        ("MODIFY", "app.py", "base-sha"),
+        ("MODIFY", "app.py", "head-sha"),
+        ("ADD", "app.py", "head-sha"),
+        ("DELETE", "app.py", "base-sha"),
+        ("RENAME", "old.py", "base-sha"),
+        ("RENAME", "app.py", "head-sha"),
+    ])
+    def test_missing_diff_content_does_not_create_a_patch(self, change_type, missing_path, missing_ref):
+        provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+        provider.workspace_slug = "AAA"
+        provider.repo_slug = "my-repo"
+        provider.pr_num = 1
+        provider.pr = SimpleNamespace(fromRef={"latestCommit": "head-sha"})
+        provider.bitbucket_api_version = None
+        provider.diff_files = []
+        provider.bitbucket_client = MagicMock()
+        provider.bitbucket_client.get_pull_requests_commits.return_value = [
+            {"parents": [{"id": "base-sha"}]}
+        ]
+        change = {"type": change_type, "path": {"toString": "app.py"}}
+        if change_type == "RENAME":
+            change["srcPath"] = {"toString": "old.py"}
+        provider._get_pull_request_changes = MagicMock(return_value=[change])
+        response = MagicMock(status_code=404)
+        error = HTTPError("404 Not Found")
+        error.response = response
+
+        def get_content(_workspace, _repo, path, ref):
+            if (path, ref) == (missing_path, missing_ref):
+                raise error
+            return "file content\n"
+
+        provider.bitbucket_client.get_content_of_file.side_effect = get_content
+        with patch("pr_agent.git_providers.bitbucket_server_provider.load_large_diff") as load_diff:
+            with pytest.raises(HTTPError, match="404 Not Found"):
+                provider.get_diff_files()
+            load_diff.assert_not_called()
+
     def test_get_repo_file_content_propagates_non_404_errors(self):
         provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
         provider.workspace_slug = "AAA"
