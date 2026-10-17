@@ -130,16 +130,16 @@ class CodeCommitProvider(GitProvider):
 
     def get_files(self) -> list[CodeCommitFile]:
         # bring files from CodeCommit only once
-        if self.git_files:
+        if self.git_files is not None:
             return self.git_files
 
-        self.git_files = []
+        git_files = []
         for target in self._get_target_contexts():
             differences = self.codecommit_client.get_differences(
                 target["repository_name"], target["comparison_base_commit"], target["source_commit"]
             )
             for item in differences:
-                self.git_files.append(
+                git_files.append(
                     CodeCommitFile(
                         item.before_blob_path,
                         item.before_blob_id,
@@ -152,6 +152,7 @@ class CodeCommitProvider(GitProvider):
                         comparison_base_commit=target["comparison_base_commit"],
                     )
                 )
+        self.git_files = git_files
         return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
