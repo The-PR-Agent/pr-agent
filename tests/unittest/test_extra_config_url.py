@@ -3,6 +3,7 @@ import tempfile
 from urllib.error import HTTPError
 
 import pytest
+from starlette_context import request_cycle_context
 
 from pr_agent.cli import set_parser
 from pr_agent.config_loader import get_settings
@@ -185,6 +186,28 @@ def test_resolve_fetches_http_url_into_tempfile(urlopen_stub):
             os.remove(path)
 
 
+def test_resolve_reuses_http_payload_only_within_request(urlopen_stub, monkeypatch):
+    url = "https://config.example.test/shared.toml"
+    from unittest.mock import Mock
+
+    logger = Mock()
+    monkeypatch.setattr(git_utils, "get_logger", lambda: logger)
+    for expected in (SAMPLE_TOML, b'[config]\nmodel = "next-request"\n'):
+        urlopen_stub.body = expected
+        with request_cycle_context({}):
+            for _ in range(2):
+                path, is_temp = _resolve_extra_config_to_file(url)
+                try:
+                    assert is_temp
+                    with open(path, "rb") as stream:
+                        assert stream.read() == expected
+                finally:
+                    os.remove(path)
+                urlopen_stub.body = b'[config]\nmodel = "changed-mid-request"\n'
+    assert len(urlopen_stub.calls) == 2
+    assert logger.info.call_count == 2
+
+
 def test_resolve_injects_auth_header_from_env(urlopen_stub, monkeypatch):
     fake_token = "TEST-AUTH-TOKEN-NOT-REAL"
     urlopen_stub.required_header = ("Private-Token", fake_token)
@@ -248,6 +271,23 @@ def test_resolve_rejects_oversized_response(urlopen_stub):
     assert urlopen_stub.response.read_sizes
     assert all(size >= 0 for size in urlopen_stub.response.read_sizes)
     assert sum(urlopen_stub.response.read_sizes) <= git_utils._MAX_EXTRA_CONFIG_BYTES + 1
+
+
+def test_resolve_retries_oversized_response_within_request(urlopen_stub):
+    url = "https://config.example.test/shared.toml"
+    with request_cycle_context({}):
+        urlopen_stub.body = b"x" * (git_utils._MAX_EXTRA_CONFIG_BYTES + 1)
+        assert _resolve_extra_config_to_file(url) == (None, False)
+        urlopen_stub.body = SAMPLE_TOML
+        path, is_temp = _resolve_extra_config_to_file(url)
+        try:
+            assert is_temp
+            with open(path, "rb") as stream:
+                assert stream.read() == SAMPLE_TOML
+        finally:
+            if path:
+                os.remove(path)
+    assert len(urlopen_stub.calls) == 2
 
 
 def test_resolve_malformed_auth_header_warns_and_drops(urlopen_stub, monkeypatch):

@@ -337,7 +337,7 @@ def test_run_restores_propagation_setting_when_callback_drain_raises(monkeypatch
 
 
 def test_run_scopes_settings_and_target_caches_between_invocations(monkeypatch):
-    expected_target_caches = ("git_provider", "repo_settings", "git_files", "diff_files")
+    expected_target_caches = ("git_provider", "repo_settings", "git_files", "diff_files", "extra_config_payloads")
     outer_settings = copy.deepcopy(global_settings)
     outer_settings.set("CONFIG.GIT_PROVIDER", "github")
     outer_context = {
@@ -348,6 +348,7 @@ def test_run_scopes_settings_and_target_caches_between_invocations(monkeypatch):
         "repo_settings": "outer-settings",
         "git_files": ["outer.py"],
         "diff_files": ["outer.diff"],
+        "extra_config_payloads": {"https://config.example.test/shared.toml": b"outer-payload"},
     }
     seen = []
 

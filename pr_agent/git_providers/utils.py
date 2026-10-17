@@ -130,18 +130,26 @@ def _resolve_extra_config_to_file(source):
             )
 
     try:
-        req = Request(source, headers=headers, method="GET")
-        with urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
-            data = resp.read(_MAX_EXTRA_CONFIG_BYTES + 1)
+        # Reuse remote payloads within a request; each replay still uses a fresh tempfile.
+        fetched = context.setdefault("extra_config_payloads", {}) if context.exists() else {}
+        cache_hit = source in fetched
+        if cache_hit:
+            data = fetched[source]
+        else:
+            req = Request(source, headers=headers, method="GET")
+            with urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
+                data = resp.read(_MAX_EXTRA_CONFIG_BYTES + 1)
         if len(data) > _MAX_EXTRA_CONFIG_BYTES:
             get_logger().warning(
                 f"Extra config exceeds {_MAX_EXTRA_CONFIG_BYTES} bytes, skipping: {safe_url}"
             )
             return None, False
+        fetched[source] = data
         fd, tmp_path = tempfile.mkstemp(suffix=".toml")
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        get_logger().info(f"Fetched extra config from {safe_url} ({len(data)} bytes)")
+        if not cache_hit:
+            get_logger().info(f"Fetched extra config from {safe_url} ({len(data)} bytes)")
         return tmp_path, True
     except Exception as e:
         get_logger().warning(f"Failed to fetch extra config from {safe_url}: {e}")
