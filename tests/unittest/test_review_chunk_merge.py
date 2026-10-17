@@ -250,6 +250,75 @@ def test_ticket_compliance_without_urls_does_not_collapse_unrelated_entries():
     ]
 
 
+def _ticket_entry(ticket_url, met, not_met=""):
+    return {"ticket_url": ticket_url, "fully_compliant_requirements": met,
+            "not_compliant_requirements": not_met, "requires_further_human_verification": ""}
+
+
+def test_ticket_written_as_url_id_and_shortened_url_merges_into_one_entry():
+    related = [{"ticket_id": 12, "ticket_url": "https://github.com/acme/widgets/issues/12",
+                "title": "Widgets"}]
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry("https://github.com/acme/widgets/issues/12",
+                                                      "- A", "- B")]),
+        _chunk(ticket_compliance_check=[_ticket_entry("#12", "- A\n- B")]),
+        _chunk(ticket_compliance_check=[_ticket_entry("https://github.com/.../issues/12", "- B")]),
+    ], related_tickets=related)
+
+    entries = merged["review"]["ticket_compliance_check"]
+    assert len(entries) == 1
+    assert entries[0]["ticket_url"] == "https://github.com/acme/widgets/issues/12"
+    assert entries[0]["fully_compliant_requirements"] == "- A\n- B"
+    assert entries[0]["not_compliant_requirements"] == "- B"
+
+
+def test_ticket_variants_stay_separate_without_related_tickets():
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry("https://github.com/acme/widgets/issues/12",
+                                                      "- A")]),
+        _chunk(ticket_compliance_check=[_ticket_entry("#12", "- B")]),
+    ])
+
+    assert [t["ticket_url"] for t in merged["review"]["ticket_compliance_check"]] == [
+        "https://github.com/acme/widgets/issues/12", "#12"]
+
+
+def test_a_ticket_that_matches_no_related_ticket_keeps_its_own_url():
+    related = [{"ticket_id": 12, "ticket_url": "https://github.com/acme/widgets/issues/12",
+                "title": "Widgets"}]
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry("https://tracker/99", "- A")]),
+    ], related_tickets=related)
+
+    assert merged["review"]["ticket_compliance_check"][0]["ticket_url"] == "https://tracker/99"
+
+
+def test_a_shared_trailing_number_does_not_merge_unrelated_tickets():
+    related = [
+        {"ticket_id": 12, "ticket_url": "https://github.com/acme/widgets/issues/12"},
+        {"ticket_id": 12, "ticket_url": "https://github.com/acme/gadgets/issues/12"},
+    ]
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry("#12", "- A")]),
+        _chunk(ticket_compliance_check=[_ticket_entry("https://github.com/acme/gadgets/issues/12",
+                                                      "- B")]),
+    ], related_tickets=related)
+
+    assert [t["ticket_url"] for t in merged["review"]["ticket_compliance_check"]] == [
+        "#12", "https://github.com/acme/gadgets/issues/12"]
+
+
+def test_the_canonical_ticket_url_is_an_exact_url_match_taken_verbatim():
+    related = [{"ticket_id": 7, "ticket_url": "https://github.com/acme/widgets/issues/7"}]
+    merged = merge_review_chunks([
+        _chunk(ticket_compliance_check=[_ticket_entry("HTTPS://GitHub.com/acme/widgets/issues/7",
+                                                      "- A")]),
+    ], related_tickets=related)
+
+    assert merged["review"]["ticket_compliance_check"][0]["ticket_url"] == (
+        "https://github.com/acme/widgets/issues/7")
+
+
 def test_contribution_time_adds_up_across_the_chunks():
     merged = merge_review_chunks([
         _chunk(contribution_time_cost_estimate={"best_case": "45m", "average_case": "2h",
