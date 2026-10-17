@@ -306,17 +306,22 @@ class PRSimilarIssue:
 
                 self._update_table_with_issues(issues, repo_name_for_index, ingest=ingest, force_refresh=force_refresh)
             else:  # update table if needed
-                issues_to_update = []
+                issues_to_scan = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
                 for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
                     if scanned >= self.max_issues_to_scan:
                         break
-                    number = issue.number
-                    issue_key = f"issue_{number}"
-                    issue_id = issue_key + "." + "issue"
-                    res = self.table.search().limit(len(self.table)).where(f"id='{issue_id}'").to_list()
-                    if not any(r['metadata']['repo'] == repo_name_for_index for r in res):
-                        issues_to_update.append(issue)
+                    issues_to_scan.append(issue)
+
+                indexed_ids = set()
+                if issues_to_scan:
+                    rows = self.table.search().limit(len(self.table)).where(
+                        f"metadata.repo='{repo_name_for_index}'"
+                    ).select(["id", "metadata"]).to_list()
+                    indexed_ids = {row['id'] for row in rows}
+                issues_to_update = [
+                    issue for issue in issues_to_scan if f"issue_{issue.number}.issue" not in indexed_ids
+                ]
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')

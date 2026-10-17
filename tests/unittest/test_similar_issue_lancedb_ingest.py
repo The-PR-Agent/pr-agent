@@ -129,6 +129,8 @@ class _FakeLanceQuery:
     def __init__(self, table):
         self._table = table
         self._id_filter = None
+        self._repo_filter = None
+        self._columns = None
 
     def limit(self, limit):
         return self
@@ -136,12 +138,23 @@ class _FakeLanceQuery:
     def where(self, expr, prefilter=False):
         if expr.startswith("id="):
             self._id_filter = expr[expr.index("=") + 1 :].strip("'\"")
+        elif expr.startswith("metadata.repo="):
+            self._repo_filter = expr[expr.index("=") + 1 :].strip("'\"")
+        return self
+
+    def select(self, columns):
+        self._columns = columns
         return self
 
     def to_list(self):
-        if self._id_filter is None:
-            return list(self._table.rows)
-        return [row for row in self._table.rows if row["id"] == self._id_filter]
+        rows = [
+            row for row in self._table.rows
+            if (self._id_filter is None or row["id"] == self._id_filter)
+            and (self._repo_filter is None or row["metadata"]["repo"] == self._repo_filter)
+        ]
+        if self._columns is not None:
+            return [{column: row[column] for column in self._columns} for row in rows]
+        return rows
 
 
 class _FakeSearchableTable:
@@ -149,11 +162,13 @@ class _FakeSearchableTable:
         self.rows = rows
         self.add_calls = []
         self.delete_calls = []
+        self.search_calls = 0
 
     def __len__(self):
         return len(self.rows)
 
     def search(self, query=None):
+        self.search_calls += 1
         return _FakeLanceQuery(self)
 
     def add(self, df):
@@ -532,6 +547,7 @@ def test_constructor_backfills_an_older_index_gap(monkeypatch):
     """A normal constructor run re-adds an older issue missing below the newest indexed one."""
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _FakeSearchableTable([
+        _lancedb_row("issue_5.issue", "org-repo-a"),
         _lancedb_row("issue_6.issue", "org-repo-b"),
         _lancedb_row("example_issue_org-repo-b", "org-repo-b"),
     ])
@@ -554,12 +570,35 @@ def test_constructor_backfills_an_older_index_gap(monkeypatch):
     assert "issue_5.issue" in ids
     assert ids.count("example_issue_org-repo-b") == 1
     assert fake_db.table.add_calls == [1]
+    assert fake_db.table.search_calls == 3  # sentinel, one index scan, and ingest check
 
     PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
 
     ids = [row["id"] for row in fake_db.table.rows]
-    assert ids.count("issue_5.issue") == 1
+    own_issue_rows = [
+        row for row in fake_db.table.rows
+        if row["id"] == "issue_5.issue" and row["metadata"]["repo"] == "org-repo-b"
+    ]
+    assert len(own_issue_rows) == 1
     assert fake_db.table.add_calls == [1]  # gap filled, nothing new to add
+    assert fake_db.table.search_calls == 5
+
+
+def test_constructor_checks_many_indexed_issues_with_one_query(monkeypatch):
+    rows = [_lancedb_row("example_issue_org-repo-b", "org-repo-b")]
+    rows.extend(_lancedb_row(f"issue_{number}.issue", "org-repo-b") for number in range(1, 101))
+    fake_db = FakeDB(["codium-ai-pr-agent-issues"])
+    fake_db.table = _FakeSearchableTable(rows)
+    _stub_constructor_dependencies(monkeypatch, fake_db)
+    monkeypatch.setattr(_FakeRepo, "get_issues", lambda self, state="all": [
+        _fake_issue(number) for number in range(1, 101)
+    ])
+    monkeypatch.setattr(_LanceSettings.pr_similar_issue, "max_issues_to_scan", 100)
+
+    PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
+
+    assert fake_db.table.search_calls == 2  # sentinel lookup and one index scan
+    assert fake_db.table.add_calls == []
 
 
 def test_concurrent_first_runs_do_not_duplicate_rows(monkeypatch):
