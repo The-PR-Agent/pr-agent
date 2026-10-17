@@ -216,6 +216,30 @@ class TestGetIncrementalCommits:
 
         assert "/src/sdk.py" in provider.unreviewed_files_map
 
+    @pytest.mark.parametrize("failed_commit", ["new1", "new2"])
+    def test_partial_commit_changes_fall_back_to_full_review(self, failed_commit):
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
+        old = _raw_commit("old", "seen", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc))
+        new1 = _raw_commit("new1", "first", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["old"])
+        new2 = _raw_commit("new2", "second", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc), parents=["new1"])
+        provider.azure_devops_client.get_pull_request_commits.return_value = [new2, new1, old]
+        provider.get_issue_comments = MagicMock(return_value=[_comment("## PR Reviewer Guide", review_time)])
+
+        changes = SimpleNamespace(changes=[{"item": {"path": "/visible.py", "gitObjectType": "blob"}}])
+
+        def get_changes(**kwargs):
+            if kwargs["commit_id"] == failed_commit:
+                raise RuntimeError("Azure changes unavailable")
+            return changes
+
+        provider.azure_devops_client.get_changes = MagicMock(side_effect=get_changes)
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is False
+        assert provider.unreviewed_files_map == {}
+
     def test_skips_merge_commits(self):
         provider = self._make_provider()
         review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)

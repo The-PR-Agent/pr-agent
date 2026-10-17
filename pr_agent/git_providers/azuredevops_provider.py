@@ -644,17 +644,19 @@ class AzureDevopsProvider(GitProvider):
                 if path:
                     candidate_paths.append(path)
 
+        if had_errors:
+            get_logger().warning(
+                "Failed to fetch changes for incremental commits; falling back to full review."
+            )
+            self.incremental.is_incremental = False
+            return
+
         if candidate_paths:
             deduped = list(dict.fromkeys(candidate_paths))
             filtered = filter_ignored(deduped, "azure")
             for path in filtered:
                 if is_valid_file(path):
                     self.unreviewed_files_map[path] = path
-        elif had_errors and self.incremental.commits_range:
-            get_logger().warning(
-                "Failed to fetch changes for incremental commits; falling back to full review."
-            )
-            self.incremental.is_incremental = False
         elif self.incremental.commits_range and not non_merge_seen:
             get_logger().info(
                 "Incremental range only contains merge commits; falling back to full review."
