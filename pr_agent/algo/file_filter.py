@@ -10,6 +10,23 @@ _MAX_IGNORE_GLOB_VARIANT_REGEXES = 256
 _MAX_EXPANDED_GLOB_LENGTH = 256
 
 
+def _file_path(file, platform):
+    if platform in ('github', 'codecommit'):
+        return file.filename
+    if platform == 'bitbucket':
+        new, old = getattr(file, 'new', None), getattr(file, 'old', None)
+        return (new and new.path) or (old and old.path)
+    if platform == 'bitbucket_server':
+        return file.get('path', {}).get('toString')
+    if platform == 'gitlab':
+        return file.get('new_path') or file.get('old_path')
+    if platform == 'azure':
+        return file.lstrip('/')
+    if platform == 'gitea':
+        return file.get('filename', '')
+    return file.b_path or file.a_path
+
+
 def filter_ignored(files, platform = 'github'):
     """Filter out files that match the ignore patterns."""
 
@@ -47,51 +64,23 @@ def filter_ignored(files, platform = 'github'):
         if files and not isinstance(files, list):
             files = list(files)
 
-        # keep filenames that _don't_ match the ignore regex
-        if files:
-            for r in compiled_patterns:
-                if platform in ('github', 'codecommit'):
-                    files = [f for f in files if (f.filename and not r.match(f.filename))]
-                elif platform == 'bitbucket':
-                    files_o = []
-                    for f in files:
-                        new, old = getattr(f, 'new', None), getattr(f, 'old', None)
-                        path = (new and new.path) or (old and old.path)
-                        if path and not r.match(path):
-                            files_o.append(f)
-                    files = files_o
-                elif platform == 'bitbucket_server':
-                    files = [
-                        f for f in files
-                        if f.get('path', {}).get('toString') and not r.match(f['path']['toString'])
-                    ]
-                elif platform == 'gitlab':
-                    files_o = []
-                    for f in files:
-                        path = f.get('new_path') or f.get('old_path')
-                        if path and not r.match(path):
-                            files_o.append(f)
-                    files = files_o
-                elif platform == 'azure':
-                    # Azure DevOps returns item paths with a leading slash ("/src/app.cs").
-                    # The patterns are anchored, so strip it before matching; otherwise no
-                    # pattern ever matches and [ignore] is inert on Azure.
-                    files = [f for f in files if not r.match(f.lstrip('/'))]
-                elif platform == 'gitea':
-                    files = [f for f in files if not r.match(f.get("filename", ""))]
-                elif platform == "gerrit":
-                    files_o = []
-                    for f in files:
-                        path = f.b_path or f.a_path
-                        if path and not r.match(path):
-                            files_o.append(f)
-                    files = files_o
-                else:
-                    get_logger().warning(
-                        f'No ignore filtering is implemented for platform {platform!r}, so all '
-                        f'{len(files)} changed file(s) are being sent to the model.',
-                        artifact={'platform': platform, 'file_count': len(files)})
-                    break
+        if files and compiled_patterns:
+            if platform not in (
+                'github', 'codecommit', 'bitbucket', 'bitbucket_server', 'gitlab', 'azure', 'gitea', 'gerrit'
+            ):
+                get_logger().warning(
+                    f'No ignore filtering is implemented for platform {platform!r}, so all '
+                    f'{len(files)} changed file(s) are being sent to the model.',
+                    artifact={'platform': platform, 'file_count': len(files)})
+                return files
+
+            keep_pathless = platform in ('azure', 'gitea')
+            filtered = []
+            for file in files:
+                path = _file_path(file, platform)
+                if (path or keep_pathless) and not any(pattern.match(path) for pattern in compiled_patterns):
+                    filtered.append(file)
+            files = filtered
 
 
     except Exception as e:

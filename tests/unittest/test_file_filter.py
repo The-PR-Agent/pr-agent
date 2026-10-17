@@ -771,39 +771,44 @@ class TestFilterFailureIsReported:
 
         assert filter_ignored(list(files), platform='github') == files
 
-    def test_failure_after_an_earlier_pass_returns_that_pass_s_result(self, monkeypatch):
-        """Pin the partly filtered state the message describes.
-
-        `filename` raises once two passes have read it, so the first pattern drops
-        `vendor/lib.py` and the second fails part-way. The result is the first pass's
-        list: shorter than the input, so "the unfiltered list is being used" would be
-        false, yet `vendor/lib.py` is gone, so it is not a safe list either.
-        """
+    def test_failure_during_a_scan_returns_the_original_list(self, monkeypatch):
         monkeypatch.setattr(global_settings.ignore, 'regex', [r'^vendor/', r'^secrets/'])
         monkeypatch.setattr(global_settings.ignore, 'glob', [])
         monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
 
-        class _FailsOnThirdRead:
-            def __init__(self):
+        class _FailsOnRead:
+            @property
+            def filename(self):
+                raise RuntimeError('boom')
+
+        files = [type('', (object,), {'filename': 'vendor/lib.py'})(), _FailsOnRead()]
+
+        captured = {}
+        errors = _capture_errors(lambda: captured.setdefault('result', filter_ignored(list(files), 'github')))
+
+        assert captured['result'] == files
+        assert len(errors) == 1, f"Expected the failure to be reported once, got {errors}"
+        assert 'filtering did not complete' in errors[0]
+
+    def test_path_is_read_once_per_file_with_multiple_patterns(self, monkeypatch):
+        monkeypatch.setattr(global_settings.ignore, 'regex', [r'^vendor/', r'^secrets/', r'.*\.py$'])
+        monkeypatch.setattr(global_settings.ignore, 'glob', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        class _File:
+            def __init__(self, filename):
+                self._filename = filename
                 self.reads = 0
 
             @property
             def filename(self):
                 self.reads += 1
-                if self.reads > 2:
-                    raise RuntimeError('boom')
-                return 'src/app.py'
+                return self._filename
 
-        files = [type('', (object,), {'filename': 'vendor/lib.py'})(), _FailsOnThirdRead()]
+        files = [_File('vendor/lib.py'), _File('secrets/token.txt'), _File('src/app.py'), _File('README.md')]
 
-        captured = {}
-        errors = _capture_errors(lambda: captured.setdefault('result', filter_ignored(list(files), 'github')))
-        result = captured['result']
-
-        assert len(result) == 1
-        assert result[0] is files[1]
-        assert len(errors) == 1, f"Expected the failure to be reported once, got {errors}"
-        assert 'filtering did not complete' in errors[0]
+        assert filter_ignored(files) == [files[-1]]
+        assert [file.reads for file in files] == [1, 1, 1, 1]
 
 
 class TestGlobstarLimits:
