@@ -110,20 +110,22 @@ def _jira_cloud_base_url():
 def _jira_project_keys():
     """
     Return the configured jira.project_keys allowlist as a set of project keys, or None
-    when nothing was supplied (look up every key found).
+    when a wildcard was supplied (look up every key found).
 
-    Only three values count as "nothing was supplied": the option missing entirely, the
-    shipped empty list, and a top-level string that is blank, the last because
-    `jira__project_keys=""` is how a shell spells an unset environment variable.
+    An unconfigured setting (None) or a top-level string that is blank (the shell spelling
+    of an unset environment variable, `jira__project_keys=""`) defaults to the wildcard
+    behaviour, returning None.
+    A wildcard ("*") in the list or string means look up every key found, returning None.
+    An empty list or container disables Jira ticket lookups, returning an empty set.
 
     Everything else is a supplied value and is judged on its entries. Entries that are not
-    plain upper-case project keys, including a blank one (so `[""]` is a malformed
-    override rather than a second spelling of the default), are ignored with a warning,
-    and a supplied value left with no valid entry yields an empty set, which drops every
-    key. So does a value that is not a list at all (a boolean or number from a YAML or CLI
-    override). A typo fails closed instead of silently widening the lookup to every
-    key-shaped string. Accepts a list or a comma-separated string, the latter for
-    environment-variable overrides (jira__project_keys="PROJ,OPS").
+    plain upper-case project keys (or "*"), including a blank one (so `[""]` is a malformed
+    override), are ignored with a warning, and a supplied value left with no valid entry
+    yields an empty set, which drops every key. So does a value that is not a list at all
+    (a boolean or number from a YAML or CLI override). A typo fails closed instead of
+    silently widening the lookup to every key-shaped string. Accepts a list or a
+    comma-separated string, the latter for environment-variable overrides
+    (jira__project_keys="PROJ,OPS").
     """
     configured = get_settings().get("JIRA.PROJECT_KEYS", None)
     if configured is None:
@@ -140,13 +142,15 @@ def _jira_project_keys():
             "skipping Jira ticket lookup until it is fixed")
         return set()
     if not configured:
-        # The shipped default. An empty container carries no entry to be wrong about.
-        return None
+        # An empty container disables Jira ticket lookups.
+        return set()
     allowed = set()
     for index, item in enumerate(configured):
         # Only strings are candidates: a TOML/YAML boolean or null in the list must not
         # be stringified into a key-shaped label ("TRUE", "NONE") that then filters.
         key = item.strip() if isinstance(item, str) else item
+        if key == "*":
+            return None
         if not isinstance(key, str) or not JIRA_PROJECT_KEY_PATTERN.match(key):
             # The entry is named by position and type, never quoted back. Its content is
             # configuration this tool does not control: it can be long, hold a secret
@@ -264,8 +268,9 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
 
     # Optional allowlist: key-shaped false positives like "SHA-256" or "UTF-8" match the
     # regex but aren't real Jira keys. Filtering by known project prefixes here means they
-    # never consume one of the MAX_JIRA_FETCH_ATTEMPTS lookups below. Empty keeps today's
-    # behaviour; a supplied but invalid allowlist drops every key (see _jira_project_keys).
+    # never consume one of the MAX_JIRA_FETCH_ATTEMPTS lookups below. Wildcard ["*"] keeps
+    # unfiltered behaviour; an empty list disables lookup; a supplied but invalid allowlist
+    # drops every key (see _jira_project_keys).
     allowed_projects = _jira_project_keys()
     if allowed_projects is not None:
         # Partitioned in one pass: the candidate list is not capped until lookups begin,

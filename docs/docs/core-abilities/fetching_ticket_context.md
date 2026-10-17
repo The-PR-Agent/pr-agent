@@ -269,7 +269,8 @@ Ticket detection matches any `PROJECT-123` shaped text, so strings like `SHA-256
 `UTF-8` or `ISO-8601` in a title or description each cost an authenticated lookup that
 returns 404. If your deployment works with a known set of Jira projects, list their keys
 in the host's `project_keys`; keys with any other prefix are then dropped before any lookup (they are
-named once at debug level in the log). Leave the list empty to look up every key found.
+named once at debug level in the log). By default, `project_keys = ["*"]` looks up every key found.
+Set `project_keys = []` to disable Jira ticket lookups.
 `project_keys`, `jira_site` and `jira_api_email` are host-only: a repository's `.pr_agent.toml`
 or a comment command cannot change them.
 
@@ -278,12 +279,10 @@ or a comment command cannot change them.
 project_keys = ["PROJ", "OPS"]
 ```
 
-Entries are plain upper-case project keys (letters only, as Jira writes them); anything
-else (a lower-case label, a full ticket key, a URL, a blank entry) is ignored with a
+Entries are plain upper-case project keys (letters only, as Jira writes them) or `"*"` to allow all keys.
+Anything else (a lower-case label, a full ticket key, a URL, a blank entry) is ignored with a
 warning. If the list is set but none of its entries is valid, no Jira lookup is made at all
-until it is fixed, so a typo cannot silently widen the lookup again. Only a missing option,
-the empty list, and an environment override set to the empty string mean "look up every
-key".
+until it is fixed, so a typo cannot silently widen the lookup again.
 
 ### How to link a PR to a Jira ticket
 

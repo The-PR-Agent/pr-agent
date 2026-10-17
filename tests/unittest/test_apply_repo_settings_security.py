@@ -513,7 +513,8 @@ def test_repo_settings_cannot_widen_jira_lookup_scope(
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
-    assert _section(settings, "jira").get(key) == host_value
+    jira_section = {k.lower(): v for k, v in _section(settings, "jira").items()}
+    assert jira_section.get(key.lower()) == host_value
     assert CliArgs.validate_user_args([f"--jira.{key}=untrusted"])[0] is False
 
 
