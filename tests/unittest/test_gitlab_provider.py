@@ -2117,7 +2117,8 @@ class TestGitLabIncrementalReview:
         c.created_at = committed_date
         return c
 
-    def test_get_incremental_commits_no_previous_review_falls_back(self, gitlab_provider):
+    @pytest.mark.parametrize("kind", ["review", "suggestions"])
+    def test_get_incremental_commits_no_previous_review_falls_back(self, gitlab_provider, kind):
         gitlab_provider.mr.notes.list.return_value = [
             self._make_note(1, "Just a comment", "2024-05-01T10:00:00Z"),
         ]
@@ -2125,9 +2126,10 @@ class TestGitLabIncrementalReview:
             self._make_commit("c1", "2024-05-02T10:00:00Z"),
         ]
 
-        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+        gitlab_provider.get_incremental_commits(IncrementalPR(True), kind=kind)
 
         assert gitlab_provider.incremental.is_incremental is False
+        gitlab_provider.mr.commits.assert_not_called()
 
     def test_get_incremental_commits_picks_commits_after_review(self, gitlab_provider, mock_project):
         # Previous review at T=10:00. Commit c0 at 09:00 (before), c1 and c2 at 11:00 (after).
@@ -2160,6 +2162,7 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
         assert set(gitlab_provider.unreviewed_files_map.keys()) == {"a.py", "b.py"}
         mock_project.repository_compare.assert_called_once_with("c0", "head")
+        gitlab_provider.mr.commits.assert_called_once_with()
 
     def test_get_incremental_commits_no_new_commits_yields_empty_set(self, gitlab_provider, mock_project):
         gitlab_provider.mr.notes.list.return_value = [

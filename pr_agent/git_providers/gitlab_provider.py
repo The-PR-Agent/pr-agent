@@ -764,10 +764,6 @@ class GitLabProvider(GitProvider):
         self._get_incremental_commits()
 
     def _get_incremental_commits(self):
-        if not getattr(self, 'mr_commits', None):
-            # gitlab returns commits newest-first; reverse to match PyGithub's oldest-first ordering
-            self.mr_commits = list(self.mr.commits())[::-1]
-
         kind = getattr(self, '_incremental_kind', 'review')
         prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
         self.previous_review = (
@@ -781,6 +777,10 @@ class GitLabProvider(GitProvider):
             )
             self.incremental.is_incremental = False
             return
+
+        if not getattr(self, 'mr_commits', None):
+            # gitlab returns commits newest-first; reverse to match PyGithub's oldest-first ordering
+            self.mr_commits = list(self.mr.commits())[::-1]
 
         self.incremental.commits_range = self.get_commit_range()
         if not self.incremental.commits_range:
