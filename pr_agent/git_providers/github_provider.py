@@ -64,7 +64,7 @@ from .git_provider import (
 
 
 def _next_page_url(headers: dict) -> str:
-    link = headers.get("Link", "")
+    link = next((value for key, value in headers.items() if key.lower() == "link"), "")
     if not link:
         return ""
     for part in link.split(","):
@@ -2017,18 +2017,41 @@ class GithubProvider(GitProvider):
                 get_logger().exception(f"Failed to read the labels payload, error: {e}")
                 return None
 
-        # obtain the latest labels. Maybe they changed while the AI was running
-        try:
-            headers, labels = self.pr._requester.requestJsonAndCheck(
-                "GET", f"{self.pr.issue_url}/labels")
-        except (GithubException, RequestException) as e:
-            get_logger().exception(f"Failed to get labels, error: {e}")
-            return None
-        try:
-            return [label['name'] for label in labels]
-        except (KeyError, TypeError) as e:
-            get_logger().exception(f"Failed to read the labels payload, error: {e}")
-            return None
+        # Refresh every page without allowing malformed or incomplete pages to replace labels.
+        url = f"{self.pr.issue_url}/labels"
+        label_names = []
+        visited_urls = set()
+        while url:
+            if url in visited_urls:
+                get_logger().warning("Failed to refresh labels: repeated pagination URL")
+                return None
+            visited_urls.add(url)
+            try:
+                headers, labels = self.pr._requester.requestJsonAndCheck("GET", url)
+            except (GithubException, RequestException) as e:
+                get_logger().exception(f"Failed to get labels, error: {e}")
+                return None
+            try:
+                if not isinstance(labels, list):
+                    raise TypeError("Expected a list of labels")
+                names = [label["name"] for label in labels]
+                if not all(isinstance(name, str) for name in names):
+                    raise TypeError("Expected string label names")
+                label_names.extend(names)
+                next_url = _next_page_url(headers)
+                if next_url:
+                    original = urlparse(f"{self.pr.issue_url}/labels")
+                    next_page = urlparse(next_url)
+                    if (next_page.scheme, next_page.netloc) != (original.scheme, original.netloc):
+                        raise ValueError("Invalid label pagination URL")
+                    # Only reuse query parameters; never fetch the link's untrusted path.
+                    url = original._replace(query=next_page.query).geturl()
+                else:
+                    url = ""
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
+                get_logger().exception(f"Failed to read the labels payload, error: {e}")
+                return None
+        return label_names
 
     def get_commit_messages(self) -> str:
         """
