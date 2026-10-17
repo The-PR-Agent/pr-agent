@@ -157,9 +157,37 @@ def test_absent_count_is_distinct_from_an_unready_empty_count(provider_factory):
     assert provider.get_files() == ["a.py"]
 
 
-def test_complete_empty_merge_request(provider_factory):
-    provider, _ = provider_factory([(200, [], {})], count="0")
+@pytest.mark.parametrize("changes", [[], [_change("uv.lock")]], ids=["no-changes", "lockfile-only"])
+def test_empty_diff_result_is_cached_until_scope_reset(provider_factory, changes):
+    response = (200, changes, {})
+    provider, transport = provider_factory([response, response], count=str(len(changes)))
+
+    files = provider.get_diff_files()
+    assert files == []
+    assert provider.get_diff_files() is files
+    assert len(transport.diff_requests) == 1
+    assert len(transport.requests) == 3
+    provider.get_pr_file_content.assert_not_called()
+
+    provider.get_incremental_commits(IncrementalPR(False))
+    assert provider.diff_files is None
     assert provider.get_diff_files() == []
+    assert len(transport.diff_requests) == 2
+
+
+def test_unready_empty_diff_remains_retryable(provider_factory):
+    pending = {**_metadata(count=None), "changes_count": None, "diff_refs": None}
+    ready = _metadata(count="1")
+    provider, transport = provider_factory(
+        [(200, [], {}), (200, [_change("ready.py")], {})],
+        count=None,
+        metadata_responses=_metadata_reads(pending, pending, ready, ready),
+    )
+
+    assert provider.get_diff_files() == []
+    assert provider.diff_files is None
+    assert [file.filename for file in provider.get_diff_files()] == ["ready.py"]
+    assert len(transport.diff_requests) == 2
 
 
 def test_empty_patch_without_omission_flags_retains_reconstruction(provider_factory):

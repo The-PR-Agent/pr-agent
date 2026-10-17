@@ -107,6 +107,12 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
+            # Reset empty diff caches between auto commands that may use different ignore rules.
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):

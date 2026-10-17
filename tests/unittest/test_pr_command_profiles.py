@@ -594,3 +594,27 @@ async def test_bitbucket_app_push_uses_shared_dedupe_slot(monkeypatch, proceed):
     assert len(calls) == int(proceed)
     if proceed:
         assert calls[0][0] == ["/review"]
+
+
+async def test_gitlab_auto_commands_invalidate_cached_empty_diffs(monkeypatch):
+    from pr_agent.git_providers.gitlab_provider import GitLabProvider
+
+    settings = copy.deepcopy(global_settings)
+    settings.set("config.disable_auto_feedback", False)
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.diff_files = None
+    api_url = "https://gitlab.example/group/repo/-/merge_requests/7"
+    seen = []
+
+    class Agent:
+        async def handle_request(self, _url, _command):
+            seen.append(provider.diff_files)
+            provider.diff_files = []
+            return True
+
+    monkeypatch.setattr(gitlab_webhook, "should_process_pr_logic", lambda _: True)
+    monkeypatch.setattr(gitlab_webhook, "get_pr_commands", lambda _: ["/review", "/improve"])
+    with request_cycle_context({"settings": settings, "git_provider": {api_url: provider}}):
+        await gitlab_webhook._perform_commands_gitlab("pr_commands", Agent(), api_url, {}, {})
+
+    assert seen == [None, None]

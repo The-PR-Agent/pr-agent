@@ -637,7 +637,8 @@ class GitLabProvider(GitProvider):
                 raise IncompleteGitLabDiffError(
                     f"GitLab merge request {self.id_mr} diff refs are not ready"
                 )
-            return {"changes": changes, "diff_refs": diff_refs if isinstance(diff_refs, dict) else {}}
+            return {"changes": changes, "diff_refs": diff_refs if isinstance(diff_refs, dict) else {},
+                    "changes_count": changes_count}
 
     def is_supported(self, capability: str) -> bool:
         if capability in ['create_inline_comment', 'publish_inline_comments']: # gfm_markdown is supported in gitlab !
@@ -1110,7 +1111,7 @@ class GitLabProvider(GitProvider):
             or renamed files in the merge request.
         """
 
-        if self.diff_files:
+        if self.diff_files is not None:
             return self.diff_files
 
         incremental_active = bool(
@@ -1210,6 +1211,11 @@ class GitLabProvider(GitProvider):
             get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
 
         self.filtered_diff_file_names = invalid_files_names
+        # Retry provisional empty diffs until GitLab reports a verified change count.
+        if not diff_files and not incremental_active:
+            change_count = mr_changes.get("changes_count")
+            if not isinstance(change_count, str) or not change_count.isdecimal():
+                return diff_files
         self.diff_files = diff_files
         return diff_files
 
