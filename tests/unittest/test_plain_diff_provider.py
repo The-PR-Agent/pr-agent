@@ -2,6 +2,7 @@ import io
 import sys
 
 import pytest
+from git import Repo
 
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
@@ -66,6 +67,30 @@ def test_get_diff_files(cfg):
     assert len(files) == 1
     assert files[0].filename == "foo.py"
     assert files[0].edit_type == EDIT_TYPE.MODIFIED
+
+
+@pytest.mark.parametrize("quote_path", ["true", "false"])
+@pytest.mark.parametrize("filename", ["测试.py", 'quote"name.py', "tab\tname.py", "back\\slash.py"])
+def test_git_quoted_paths_preserve_working_tree_context(cfg, tmp_path, monkeypatch, filename, quote_path):
+    repo = Repo.init(tmp_path)
+    path = tmp_path / filename
+    path.write_text("before\n", encoding="utf-8")
+    repo.index.add([filename])
+    path.write_text("after\n", encoding="utf-8")
+    diff = repo.git.execute([
+        "git", "-c", f"core.quotePath={quote_path}", "diff", "--no-ext-diff", "--no-textconv", "--", filename,
+    ])
+    monkeypatch.chdir(tmp_path)
+    cfg("plain_diff.content", diff)
+    cfg("plain_diff.output_path", None)
+
+    provider = PlainDiffGitProvider(None)
+    file = provider.get_diff_files()[0]
+
+    assert provider.get_files() == [filename]
+    assert file.head_file == "after\n"
+    assert file.base_file == "before\n"
+    assert provider.get_languages() == {"Python": 100.0}
 
 
 _MULTI_LANG_DIFF = """diff --git a/foo.py b/foo.py
