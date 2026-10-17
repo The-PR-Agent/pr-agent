@@ -196,20 +196,29 @@ class TestIdentifyImageInComment:
             question_str="explain this ![image](https://example.com/foo.png)"
         )
         result = pr.identify_image_in_comment()
-        # Current contract: parses out content between the parentheses after
-        # the literal "![image]" marker (strips surrounding parens).
         assert result == "https://example.com/foo.png"
         assert pr.vars["img_path"] == "https://example.com/foo.png"
+
+    def test_markdown_image_excludes_trailing_question_text(self):
+        pr = _make_pr_questions(
+            question_str='What changed? ![image](https://example.com/foo.png "preview") Please explain.'
+        )
+        assert pr.identify_image_in_comment() == "https://example.com/foo.png"
+        assert pr.vars["img_path"] == "https://example.com/foo.png"
+
+    def test_markdown_image_with_other_alt_text_and_extensionless_url(self):
+        pr = _make_pr_questions(
+            question_str="Review ![Screenshot](https://github.com/user-attachments/assets/1234) please"
+        )
+        assert pr.identify_image_in_comment() == "https://github.com/user-attachments/assets/1234"
+        assert pr.vars["img_path"] == "https://github.com/user-attachments/assets/1234"
 
     def test_direct_image_url_png(self):
         pr = _make_pr_questions(
             question_str="please look at https://example.com/diagram.png and answer"
         )
         result = pr.identify_image_in_comment()
-        # Current behavior captures everything from "https://" to end of string
-        # (including any trailing text). We assert the prefix / contains the URL,
-        # rather than the exact full match, to remain robust to that quirk.
-        assert result.startswith("https://example.com/diagram.png")
+        assert result == "https://example.com/diagram.png"
         assert pr.vars["img_path"] == result
 
     def test_direct_image_url_jpg(self):

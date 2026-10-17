@@ -148,10 +148,11 @@ class PRQuestions:
 
     def identify_image_in_comment(self):
         img_path = ''
-        if '![image]' in self.question_str:
-            # assuming structure:
-            # /ask question ...  > ![image](img_path)
-            img_path = self.question_str.split('![image]')[1].strip().strip('()')
+        markdown_image = re.search(
+            r'!\[[^\]\n]*\]\(\s*(https://[^\s)]+)(?:\s+[^)\n]*)?\)', self.question_str, re.IGNORECASE
+        )
+        if markdown_image:
+            img_path = markdown_image.group(1)
             self.vars['img_path'] = img_path
         elif 'https://' in self.question_str:
             # direct image link
