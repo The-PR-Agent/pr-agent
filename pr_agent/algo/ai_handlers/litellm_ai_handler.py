@@ -2772,7 +2772,10 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         try:
             timeout = aiohttp.ClientTimeout(total=_IMAGE_HEAD_TIMEOUT_SECONDS)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with (
+                asyncio.timeout(_IMAGE_HEAD_TIMEOUT_SECONDS),
+                aiohttp.ClientSession(timeout=timeout, trust_env=True) as session,
+            ):
                 status = await with_safe_redirects(session, img_path, _status, method="HEAD")
         except Exception as e:
             get_logger().error(f"Error fetching image: {img_path}", e)

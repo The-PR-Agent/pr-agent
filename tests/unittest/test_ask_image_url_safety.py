@@ -4,10 +4,14 @@ Covers the fix for #3829: the /ask image probe must be https-only and follow a b
 number of redirects, re-validating every hop against the SSRF guard instead of letting
 `requests.head` follow an unbounded redirect chain.
 """
+import asyncio
+import threading
+
 import aiohttp
 import pytest
 
 from pr_agent.algo import url_safety
+from pr_agent.algo.ai_handlers import litellm_ai_handler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import (
     _IMAGE_NOT_ALIVE_MESSAGE,
     LiteLLMAIHandler,
@@ -179,3 +183,48 @@ async def test_image_probe_blocks_redirect_to_internal_host(monkeypatch):
     assert error == _IMAGE_NOT_ALIVE_MESSAGE
     # The unsafe second hop must never be requested.
     assert len(session.requested) == 1
+
+
+@pytest.mark.asyncio
+async def test_image_probe_deadline_covers_blocked_dns(monkeypatch):
+    resolver_entered = threading.Event()
+    resolver_release = threading.Event()
+    resolver_done = threading.Event()
+
+    def blocked_getaddrinfo(*args, **kwargs):
+        resolver_entered.set()
+        try:
+            resolver_release.wait(2)
+            return [(2, 1, 6, "", ("140.82.121.4", 0))]
+        finally:
+            resolver_done.set()
+
+    class ObservedSession(_Session):
+        exited = False
+        cancelled = False
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.exited = True
+            self.cancelled = exc_type is asyncio.CancelledError
+            return await super().__aexit__(exc_type, exc, tb)
+
+    session = ObservedSession([_Resp(200)])
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: session)
+    monkeypatch.setattr(url_safety.socket, "getaddrinfo", blocked_getaddrinfo)
+    monkeypatch.setattr(litellm_ai_handler, "_IMAGE_HEAD_TIMEOUT_SECONDS", 0.05)
+
+    try:
+        # The longer watchdog bounds the unpatched baseline without becoming the oracle.
+        async with asyncio.timeout(0.5):
+            error = await LiteLLMAIHandler._image_url_error("https://example.com/a.png")
+        assert resolver_entered.is_set()
+        assert error == "Error fetching image: https://example.com/a.png"
+        assert session.exited
+        assert session.cancelled
+        assert session.requested == []
+        assert not resolver_done.is_set()
+    finally:
+        resolver_release.set()
+        assert await asyncio.wait_for(asyncio.to_thread(resolver_done.wait, 1), 1.5)
+        await asyncio.sleep(0)
+    assert session.requested == []

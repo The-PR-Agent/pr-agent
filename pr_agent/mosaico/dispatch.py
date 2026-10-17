@@ -14,6 +14,7 @@ Inbound text may be a whole forwarded conversation, one part per turn: "{role}: 
 Capture is DEFENSIVE everywhere: get_settings().get("data", {}).get("artifact", "")
 (several tool paths never set it, and handle_request swallows exceptions -> False).
 route_and_run NEVER raises; on failure/empty it returns an honest fallback string."""
+import asyncio
 import re
 from collections import deque
 from typing import NamedTuple, Optional
@@ -245,7 +246,10 @@ async def _fetch_public_diff(pr_url: str) -> Optional[str]:
     headers = {"User-Agent": "pr-agent-mosaico"}
     try:
         timeout = aiohttp.ClientTimeout(total=_DIFF_FETCH_TIMEOUT_S)
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with (
+            asyncio.timeout(_DIFF_FETCH_TIMEOUT_S),
+            aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
+        ):
             async def _consume(response, url):
                 if response.status != 200:
                     get_logger().info(f"MOSAICO: diff fetch {url} -> HTTP {response.status}")

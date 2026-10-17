@@ -5,6 +5,8 @@ Pins: each path returns a string and NEVER raises; no-files/no-suggestions/empty
 with no exception escaping.
 
 asyncio_mode=auto."""
+import asyncio
+
 import aiohttp
 import pytest
 
@@ -716,6 +718,53 @@ class TestFetchPublicDiff:
         result = await dispatch._fetch_public_diff("https://github.com/o/r/pull/1")
         assert len(result) == 200000
 
+    @pytest.mark.asyncio
+    async def test_fetch_deadline_covers_streamed_body(self, monkeypatch):
+        stream_started = asyncio.Event()
+        stream_release = asyncio.Event()
+        stream_cancelled = False
+
+        class BlockingResp(_FakeResp):
+            exited = False
+
+            async def iter_chunked(self, n):
+                nonlocal stream_cancelled
+                stream_started.set()
+                try:
+                    await stream_release.wait()
+                    yield b"diff --git a/a b/a\n"
+                except asyncio.CancelledError:
+                    stream_cancelled = True
+                    raise
+
+            async def __aexit__(self, *args):
+                self.exited = True
+                return await super().__aexit__(*args)
+
+        class ObservedSession(_FakeSession):
+            exited = False
+
+            async def __aexit__(self, *args):
+                self.exited = True
+                return await super().__aexit__(*args)
+
+        response = BlockingResp(200, b"")
+        session = ObservedSession(response)
+        monkeypatch.setattr(dispatch, "_url_is_safe", _always_safe)
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: session)
+        monkeypatch.setattr(dispatch, "_DIFF_FETCH_TIMEOUT_S", 0.05)
+
+        try:
+            async with asyncio.timeout(0.5):
+                result = await dispatch._fetch_public_diff("https://github.com/o/r/pull/1")
+            assert stream_started.is_set()
+            assert result is None
+            assert stream_cancelled
+            assert response.exited
+            assert session.exited
+        finally:
+            stream_release.set()
+
 
 # ---------------------------------------------------------------------------
 # SSRF guard unit tests
@@ -796,6 +845,52 @@ class TestFetchPublicDiffSSRF:
         monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: _RedirectSession())
         result = await dispatch._fetch_public_diff(f"https://{PUBLIC_HOST}/o/r/pull/1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_deadline_covers_redirect_validation(self, monkeypatch):
+        redirect_validation_started = asyncio.Event()
+        redirect_validation_release = asyncio.Event()
+        redirect_validation_cancelled = False
+        requested = []
+
+        async def blocking_second_hop(url):
+            nonlocal redirect_validation_cancelled
+            if url.endswith("/next"):
+                redirect_validation_started.set()
+                try:
+                    await redirect_validation_release.wait()
+                except asyncio.CancelledError:
+                    redirect_validation_cancelled = True
+                    raise
+            return True
+
+        class ObservedSession(_FakeSession):
+            exited = False
+
+            def request(self, method, url, allow_redirects=True):
+                requested.append((method, url, allow_redirects))
+                return super().request(method, url, allow_redirects=allow_redirects)
+
+            async def __aexit__(self, *args):
+                self.exited = True
+                return await super().__aexit__(*args)
+
+        response = _FakeResp(302, b"", headers={"Location": "https://github.com/next"})
+        session = ObservedSession(response)
+        monkeypatch.setattr(dispatch, "_url_is_safe", blocking_second_hop)
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: session)
+        monkeypatch.setattr(dispatch, "_DIFF_FETCH_TIMEOUT_S", 0.05)
+
+        try:
+            async with asyncio.timeout(0.5):
+                result = await dispatch._fetch_public_diff("https://github.com/o/r/pull/1")
+            assert redirect_validation_started.is_set()
+            assert result is None
+            assert redirect_validation_cancelled
+            assert session.exited
+            assert requested == [("GET", "https://github.com/o/r/pull/1.diff", False)]
+        finally:
+            redirect_validation_release.set()
 
 
 # ---------------------------------------------------------------------------
