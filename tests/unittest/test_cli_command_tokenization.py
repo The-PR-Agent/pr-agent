@@ -37,6 +37,30 @@ def test_run_command_preserves_quoted_arguments(monkeypatch, command, expected_c
     assert args.rest == expected_args
 
 
+@pytest.mark.parametrize(
+    ("command", "expected_args"),
+    [
+        (
+            "/review --ignore.glob=\"['*.py', '*.lock']\"",
+            ["--ignore.glob=['*.py', '*.lock']"],
+        ),
+        (
+            "/review --pr_reviewer.extra_instructions='be concise please'",
+            ['--pr_reviewer.extra_instructions="be concise please"'],
+        ),
+    ],
+)
+def test_parse_command_keeps_quoted_lists_as_lists(command, expected_args):
+    parsed = agent_module.parse_command(command)
+    assert parsed[0].lstrip("/") == "review"
+    assert parsed[1:] == expected_args
+
+
+def test_prepare_command_applies_quoted_list_as_list(settings_snapshot):
+    agent_module.prepare_command("/review --ignore.glob=\"['*.py', '*.lock']\"")
+    assert settings_snapshot.get("ignore.glob") == ["*.py", "*.lock"]
+
+
 def test_run_command_rejects_unclosed_quote_before_dispatch(monkeypatch):
     run = Mock()
     monkeypatch.setattr(cli, "run", run)

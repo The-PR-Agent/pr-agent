@@ -227,7 +227,13 @@ def parse_command(command: str) -> list[str]:
     for argument, value_was_quoted in token_args:
         if value_was_quoted and argument.startswith("--") and "=" in argument:
             key, value = argument.split("=", 1)
-            argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
+            _, parsed = _fix_key_value(key, value)
+            # A quoted list such as --ignore.glob="['*.py']" is the user's explicit list value,
+            # so JSON-encoding it would collapse it into a string and silently disable list
+            # settings. Other quoted values keep being encoded so update_settings_from_args
+            # cannot coerce "true" to a boolean or a colon-prefixed value to a mapping.
+            if not isinstance(parsed, list):
+                argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
         args.append(argument)
     return [action] + args
 
