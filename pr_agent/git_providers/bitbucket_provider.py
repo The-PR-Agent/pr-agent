@@ -734,7 +734,7 @@ class BitbucketProvider(GitProvider):
             elif branch == self.pr.destination_branch:
                 branch = self.pr.data["destination"]["commit"]["hash"]
             url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
-                   f"{branch}/{file_path}")
+                   f"{branch}/{quote(file_path, safe='/')}")
             response = requests.request("GET", url, headers=self.headers, timeout=get_http_request_timeout())
             if response.status_code == 404:  # not found
                 return ""
@@ -755,7 +755,7 @@ class BitbucketProvider(GitProvider):
         if not isinstance(revision, str) or not revision:
             raise ValueError("Bitbucket file snapshot is missing its source commit")
         url = (f"https://api.bitbucket.org/2.0/repositories/{self.workspace_slug}/{self.repo_slug}/src/"
-               f"{revision}/{file_path}")
+               f"{revision}/{quote(file_path, safe='/')}")
         response = requests.request(
             "GET", url, headers=self.headers, timeout=get_http_request_timeout())
         if response.status_code == 404:

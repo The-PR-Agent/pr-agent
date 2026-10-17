@@ -249,6 +249,42 @@ class TestBitbucketProvider:
             timeout=DEFAULT_HTTP_REQUEST_TIMEOUT,
         )
 
+    def test_file_content_reads_encoded_path(self):
+        provider = self._source_write_provider()
+        provider.pr = MagicMock()
+        provider.pr.source_branch = "feature"
+        provider.pr.data = {"source": {"commit": {"hash": "a1b2c3"}}}
+        response = self._source_write_response(200)
+        response._content = b"file contents"
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
+            assert provider.get_pr_file_content("src/a#b?c%.py", "feature") == "file contents"
+
+        request.assert_called_once_with(
+            "GET", "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/"
+            "a1b2c3/src/a%23b%3Fc%25.py", headers=provider.headers,
+            timeout=DEFAULT_HTTP_REQUEST_TIMEOUT,
+        )
+
+    def test_file_snapshot_reads_encoded_path(self):
+        provider = self._source_write_provider()
+        provider.pr = MagicMock()
+        provider.pr.source_branch = "feature"
+        provider.pr.data = {"source": {"commit": {"hash": "a1b2c3"}}}
+        response = self._source_write_response(200)
+        response._content = b"file contents"
+
+        with patch("pr_agent.git_providers.bitbucket_provider.requests.request", return_value=response) as request:
+            assert provider.get_pr_file_content_snapshot("src/a#b?c%.py", "feature") == FileContentSnapshot(
+                "file contents", True, "a1b2c3"
+            )
+
+        request.assert_called_once_with(
+            "GET", "https://api.bitbucket.org/2.0/repositories/workspace/repository/src/"
+            "a1b2c3/src/a%23b%3Fc%25.py", headers=provider.headers,
+            timeout=DEFAULT_HTTP_REQUEST_TIMEOUT,
+        )
+
     def test_file_snapshot_propagates_server_failure(self):
         provider = self._source_write_provider()
         provider.pr = MagicMock()
