@@ -127,7 +127,8 @@ class GithubProvider(GitProvider):
         self.diff_files = None
         self.git_files = None
         self.incremental = IncrementalPR(False)
-        self._resolved_config_branch: str | None = None
+        self._repo_settings_snapshot: tuple[str, str] | None = None
+        self._repo_settings_acquired = False
         self._check_run_ids: dict = {}
         self._check_runs_in_progress: set = set()
         self._check_run_base_summaries: dict = {}
@@ -1475,20 +1476,31 @@ class GithubProvider(GitProvider):
             if isinstance(body, str) and body and body not in recent:
                 recent.append(body)
 
+    def _resolve_settings_snapshot(self, ref: str) -> tuple[str, str]:
+        commit = self.repo_obj.get_commit(ref)
+        # PyGithub initially derives sha from the URL, which can still name a branch.
+        commit.complete()
+        return commit.sha, commit.commit.tree.sha
+
     def get_repo_settings(self):
+        self._repo_settings_snapshot = None
+        self._repo_settings_acquired = True
         settings_files = []
         global_settings = self._get_global_repo_settings()
         if global_settings:
             settings_files.append(("global", global_settings))
 
         config_branch = get_config_branch()
+        config_snapshot = None
+        default_snapshot = None
         if config_branch:
             # Only treat a missing branch/file (GithubException) as an expected
             # reason to fall back to the default branch. Unexpected errors are
             # left to propagate so they aren't masked by a silent fallback.
             try:
-                contents = self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
-                self._resolved_config_branch = config_branch
+                config_snapshot = self._resolve_settings_snapshot(config_branch)
+                contents = self.repo_obj.get_contents(".pr_agent.toml", ref=config_snapshot[0]).decoded_content
+                self._repo_settings_snapshot = config_snapshot
                 if settings_files:
                     settings_files.append(("local", contents))
                     return settings_files
@@ -1502,9 +1514,14 @@ class GithubProvider(GitProvider):
                 get_logger().debug(
                     f"No .pr_agent.toml on branch '{config_branch}', falling back to default branch")
         try:
-            # more logical to take 'pr_agent.toml' from the default branch
-            contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
-            self._resolved_config_branch = getattr(self.repo_obj, "default_branch", "") or ""
+            default_branch = self.repo_obj.default_branch
+            if config_branch == default_branch:
+                # The same root was already absent at this snapshot; do not resolve it again.
+                self._repo_settings_snapshot = config_snapshot
+                return settings_files if settings_files else ""
+            default_snapshot = self._resolve_settings_snapshot(default_branch)
+            contents = self.repo_obj.get_contents(".pr_agent.toml", ref=default_snapshot[0]).decoded_content
+            self._repo_settings_snapshot = default_snapshot
             if config_branch and not settings_files:
                 return contents
             settings_files.append(("local", contents))
@@ -1512,6 +1529,8 @@ class GithubProvider(GitProvider):
             # A missing local .pr_agent.toml (404) is expected for most repos; log it quietly to
             # avoid warning noise, and surface only unexpected errors as warnings.
             if e.status == 404:
+                # Preserve configured nested-only preference when neither root exists.
+                self._repo_settings_snapshot = config_snapshot or default_snapshot
                 get_logger().debug("No local .pr_agent.toml found; using existing settings")
             else:
                 get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
@@ -1521,41 +1540,34 @@ class GithubProvider(GitProvider):
         return settings_files if settings_files else ""
 
     def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
-        """Recursively list every `.pr_agent.toml` at *ref* ("" = default branch).
-
-        Follows the same branch resolution as get_repo_settings(): when the root
-        lookup resolved a config, the tree is read from that same branch
-        (``_resolved_config_branch``). When the root lookup resolved nothing (no
-        root ``.pr_agent.toml`` anywhere), the tree is read from *ref* -- the
-        CONFIG.CONFIG_BRANCH / PR_AGENT_CONFIG_BRANCH hint, or the repository
-        default branch when *ref* is empty -- falling back to the default branch
-        on a 404. Returns ``(paths, resolved_ref)`` where *resolved_ref* is the
-        branch the tree was actually read from; an empty *paths* list means the
-        recursive tree hit GitHub's truncation cap and per-directory settings had
-        to be skipped.
-        """
+        """List settings at the root acquisition's tree, returning its commit for content reads."""
         repo = getattr(self, "repo_obj", None)
         if repo is None:
             return [], ""
-        resolved_ref = self._resolved_config_branch or ref or ""
+        if getattr(self, "_repo_settings_acquired", False):
+            snapshot = self._repo_settings_snapshot
+            if snapshot is None:
+                # Root acquisition failed; a new branch lookup could mix settings.
+                return [], ""
+            commit_sha, tree_sha = snapshot
+            try:
+                return self._list_config_tree_paths(repo, tree_sha), commit_sha
+            except GithubException as e:
+                if e.status != 404:
+                    raise
+                get_logger().debug("Selected settings tree is unavailable; skipping per-directory settings")
+                return [], commit_sha
+
+        # Standalone tree callers have no root payload to preserve.
+        selected_ref = ref or repo.default_branch
         try:
-            if not resolved_ref:
-                resolved_ref = repo.default_branch
-            return self._list_config_tree_paths(repo, resolved_ref), resolved_ref
+            commit_sha, tree_sha = self._resolve_settings_snapshot(selected_ref)
+            return self._list_config_tree_paths(repo, tree_sha), commit_sha
         except GithubException as e:
-            if e.status == 404 and resolved_ref:
-                # Branch or tree not found (possibly deleted between root and per-dir
-                # resolution). Fall back to the default branch; matches the root config
-                # fallback when CONFIG_BRANCH is stale.
-                get_logger().debug(
-                    f"No git tree for branch '{resolved_ref}' while listing per-directory "
-                    "settings; falling back to default branch"
-                )
-                resolved_ref = repo.default_branch
-                return self._list_config_tree_paths(repo, resolved_ref), resolved_ref
-            # Unlike 404, a 403/5xx is not an expected fallback signal: propagate so it
-            # is not masked by a silent downgrade (matches get_repo_settings()).
-            raise
+            if e.status != 404 or selected_ref == repo.default_branch:
+                raise
+            commit_sha, tree_sha = self._resolve_settings_snapshot(repo.default_branch)
+            return self._list_config_tree_paths(repo, tree_sha), commit_sha
 
     def _list_config_tree_paths(self, repo, ref: str) -> list[str]:
         """Fetch a recursive tree at *ref* and return its `.pr_agent.toml` blob paths.
@@ -1568,7 +1580,7 @@ class GithubProvider(GitProvider):
         tree = repo.get_git_tree(ref, recursive=True)
         if getattr(tree, "truncated", False):
             get_logger().warning(
-                f"Git tree for branch '{ref}' is truncated by GitHub's recursive-tree "
+                f"Git tree '{ref}' is truncated by GitHub's recursive-tree "
                 "limit; skipping per-directory settings for this repository"
             )
             return []

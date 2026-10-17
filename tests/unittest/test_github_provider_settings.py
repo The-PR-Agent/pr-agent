@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,6 +38,12 @@ class FakeContent:
 
 
 class FakeRepo:
+    default_branch = "main"
+
+    def get_commit(self, ref):
+        return SimpleNamespace(sha="local-commit", commit=SimpleNamespace(tree=SimpleNamespace(sha="local-tree")),
+                               complete=lambda: None)
+
     def __init__(self, files=None):
         self.files = files or {}
 
@@ -211,6 +218,7 @@ def test_get_repo_settings_config_branch_non_404_error_propagates(monkeypatch):
     # A non-404 error loading the config branch must NOT be masked by a silent default-branch fallback.
     provider = _provider()  # no global settings repo -> _get_global returns "" quietly
     provider.repo_obj = MagicMock()
+    provider.repo_obj.get_commit.return_value = FakeRepo().get_commit("release")
     provider.repo_obj.get_contents.side_effect = GithubException(403, {"message": "Forbidden"}, {})
     monkeypatch.setenv("PR_AGENT_CONFIG_BRANCH", "release")
     settings = get_settings()

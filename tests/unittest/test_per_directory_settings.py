@@ -993,7 +993,12 @@ max_output_tokens = 999999
 def _github_provider(repo_obj):
     provider = GithubProvider.__new__(GithubProvider)
     provider.repo_obj = repo_obj
-    provider._resolved_config_branch = None
+    provider._repo_settings_snapshot = None
+    provider._repo_settings_acquired = False
+    repo_obj.default_branch = "main"
+    repo_obj.get_commit.side_effect = lambda ref: SimpleNamespace(
+        sha=f"{ref}-commit", commit=SimpleNamespace(tree=SimpleNamespace(sha=f"{ref}-tree")), complete=lambda: None,
+    )
     return provider
 
 
@@ -1011,35 +1016,37 @@ class TestGithubProviderPerDirectory:
 
         paths, resolved_ref = provider.get_repo_settings_tree()
 
-        assert resolved_ref == "main"
+        assert resolved_ref == "main-commit"
         assert paths == [".pr_agent.toml", "services/auth/.pr_agent.toml"]
-        repo_obj.get_git_tree.assert_called_once_with("main", recursive=True)
+        repo_obj.get_git_tree.assert_called_once_with("main-tree", recursive=True)
 
-    def test_get_repo_settings_tree_uses_resolved_config_branch(self):
+    def test_get_repo_settings_tree_uses_selected_snapshot(self):
         repo_obj = MagicMock()
         repo_obj.get_git_tree.return_value = SimpleNamespace(tree=[])
         provider = _github_provider(repo_obj)
-        provider._resolved_config_branch = "cfg-branch"
+        provider._repo_settings_snapshot = ("cfg-commit", "cfg-tree")
+        provider._repo_settings_acquired = True
 
         _, resolved_ref = provider.get_repo_settings_tree("")
 
-        assert resolved_ref == "cfg-branch"
-        repo_obj.get_git_tree.assert_called_once_with("cfg-branch", recursive=True)
+        assert resolved_ref == "cfg-commit"
+        repo_obj.get_git_tree.assert_called_once_with("cfg-tree", recursive=True)
 
-    def test_resolved_config_branch_beats_explicit_ref(self):
-        # get_repo_settings() stores the branch it actually read the root config
+    def test_selected_snapshot_beats_explicit_ref(self):
+        # get_repo_settings() stores the snapshot it actually read the root config
         # from (already fallback-resolved), so it must win over a CONFIG_BRANCH hint:
         # when that branch exists without a root .pr_agent.toml the tree must follow
         # the root config onto the default branch instead of reading a stale branch.
         repo_obj = MagicMock()
         repo_obj.get_git_tree.return_value = SimpleNamespace(tree=[], truncated=False)
         provider = _github_provider(repo_obj)
-        provider._resolved_config_branch = "resolved-default"
+        provider._repo_settings_snapshot = ("resolved-default-commit", "resolved-default-tree")
+        provider._repo_settings_acquired = True
 
         _, resolved_ref = provider.get_repo_settings_tree("stale-config-branch")
 
-        assert resolved_ref == "resolved-default"
-        repo_obj.get_git_tree.assert_called_once_with("resolved-default", recursive=True)
+        assert resolved_ref == "resolved-default-commit"
+        repo_obj.get_git_tree.assert_called_once_with("resolved-default-tree", recursive=True)
 
     def test_truncated_tree_skips_per_directory_settings(self):
         from loguru import logger as loguru_logger
@@ -1062,7 +1069,7 @@ class TestGithubProviderPerDirectory:
             loguru_logger.remove(sink_id)
 
         assert paths == []
-        assert resolved_ref == "big-branch"
+        assert resolved_ref == "big-branch-commit"
         assert any("truncated" in line for line in captured_lines)
 
     def test_get_repo_settings_tree_falls_back_to_default_on_404(self):
@@ -1078,11 +1085,11 @@ class TestGithubProviderPerDirectory:
 
         paths, resolved_ref = provider.get_repo_settings_tree("missing-branch")
 
-        assert resolved_ref == "main"
+        assert resolved_ref == "main-commit"
         assert paths == ["svc/.pr_agent.toml"]
         assert repo_obj.get_git_tree.call_args_list == [
-            call("missing-branch", recursive=True),
-            call("main", recursive=True),
+            call("missing-branch-tree", recursive=True),
+            call("main-tree", recursive=True),
         ]
 
     def test_get_repo_settings_tree_surfaces_unexpected_errors(self):
@@ -1128,6 +1135,50 @@ class TestGithubProviderPerDirectory:
         # complete PR file set with rename metadata is returned, never the reviewed subset.
         assert result == full_files
         assert [entry.previous_filename for entry in result] == ["legacy/api.py", None]
+
+
+    def test_root_enabled_settings_stay_pinned_when_branch_moves(self, fresh_global_settings, monkeypatch):
+        repo = MagicMock()
+        provider = _github_provider(repo)
+        provider._get_global_repo_settings = lambda: ""
+        provider.get_pr_file_paths = lambda: ["svc/api.py"]
+        repo.get_git_tree.return_value = SimpleNamespace(
+            tree=[SimpleNamespace(path="svc/.pr_agent.toml", type="blob")], truncated=False,
+        )
+        current = "a"
+
+        def resolve(ref):
+            return SimpleNamespace(sha=current, commit=SimpleNamespace(tree=SimpleNamespace(sha=current + "-tree")),
+                                   complete=lambda: None)
+
+        def content(path, ref=None):
+            nonlocal current
+            selected = current if ref in (None, "main") else ref
+            if path == ".pr_agent.toml":
+                current = "b"
+                return SimpleNamespace(decoded_content=b"[config]\nenable_per_directory_settings = true\n"
+                                       b"[pr_reviewer]\nnum_max_findings = 9\n")
+            return SimpleNamespace(decoded_content=(
+                f"[pr_reviewer]\nextra_instructions = 'snapshot-{selected}'\n".encode()
+            ))
+
+        repo.get_commit.side_effect = resolve
+        repo.get_contents.side_effect = content
+        monkeypatch.setattr("pr_agent.git_providers.utils.get_git_provider_with_context", lambda url: provider)
+        monkeypatch.setattr("pr_agent.git_providers.github_provider.get_config_branch", lambda: "")
+        with request_cycle_context({}):
+            context["settings"] = copy.deepcopy(global_settings)
+            get_settings().config.enable_per_directory_settings = False
+            for _ in range(2):
+                git_utils.apply_repo_settings("https://github.com/org/repo/pull/1")
+                assert get_settings().pr_reviewer.num_max_findings == 9
+                assert get_settings().pr_reviewer.extra_instructions == "snapshot-a"
+            repo.get_commit.assert_called_once_with("main")
+            assert repo.get_git_tree.call_args_list == [call("a-tree", recursive=True)] * 2
+            assert repo.get_contents.call_args_list[0] == call(".pr_agent.toml", ref="a")
+        provider.get_repo_settings()
+        assert repo.get_commit.call_count == 2
+        assert repo.get_contents.call_args == call(".pr_agent.toml", ref="b")
 
 
 def _gitlab_provider(gl, id_project="1"):
