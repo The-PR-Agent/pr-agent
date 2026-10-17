@@ -15,6 +15,14 @@ NO_NEWLINE_AT_EOF_MARKER = r'\ No newline at end of file'
 _SPLITLINES_BREAK_CHARS = "\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
+def split_diff_lines(text: str) -> list[str]:
+    """Split on line feeds only, as git does; ``str.splitlines()`` also breaks on U+2028, form feeds, etc."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
 def to_hunk_only_patch(patch_str: str) -> str:
     """Drop unified-diff file metadata before the first hunk.
 
@@ -80,10 +88,10 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
     allow_dynamic_context = get_settings().config.allow_dynamic_context
     patch_extra_lines_before_dynamic = get_settings().config.max_extra_lines_before_dynamic_context
 
-    file_original_lines = original_file_str.splitlines()
-    file_new_lines = new_file_str.splitlines() if new_file_str else []
+    file_original_lines = split_diff_lines(original_file_str)
+    file_new_lines = split_diff_lines(new_file_str) if new_file_str else []
     len_original_lines = len(file_original_lines)
-    patch_lines = patch_str.splitlines()
+    patch_lines = split_diff_lines(patch_str)
     extended_patch_lines = []
 
     is_valid_hunk = True
@@ -398,7 +406,7 @@ __old hunk__
         patch_with_lines_str = ""
 
     rendered_hunks = []
-    patch_lines = patch.splitlines()
+    patch_lines = split_diff_lines(patch)
     new_content_lines = []
     old_content_lines = []
     match = None
@@ -502,7 +510,7 @@ def extract_hunk_lines_from_patch(patch: str, file_name, line_start, line_end, s
             line_end = -1
         patch_with_lines_str = f"\n\n## File: '{file_name.strip()}'\n\n"
         selected_lines = ""
-        patch_lines = patch.splitlines()
+        patch_lines = split_diff_lines(patch)
         match = None
         start1, size1, start2, size2 = -1, -1, -1, -1
         skip_hunk = False

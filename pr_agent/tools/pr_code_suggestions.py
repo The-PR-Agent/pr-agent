@@ -20,7 +20,7 @@ from pr_agent.algo.comment_identity import (
     format_pr_code_suggestions_header,
     hidden_marker_forms,
 )
-from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers
+from pr_agent.algo.git_patch_processing import decouple_and_convert_to_hunks_with_lines_numbers, split_diff_lines
 from pr_agent.algo.pr_processing import (
     DELETED_FILES_,
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
@@ -1266,7 +1266,7 @@ class PRCodeSuggestions:
                                            'relevant_lines_end': relevant_lines_end})
             return False
         if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
-            range_resolvable = relevant_lines_end <= len(diff_file.head_file.splitlines())
+            range_resolvable = relevant_lines_end <= len(split_diff_lines(diff_file.head_file))
         else:
             range_resolvable = self._get_patch_range_lines(
                 diff_file.patch, relevant_lines_start, relevant_lines_end) is not None
@@ -1588,7 +1588,7 @@ class PRCodeSuggestions:
             get_logger().warning(f"Could not validate Python suggestion syntax: {e}")
             return None
 
-        file_lines = diff_file.head_file.splitlines()
+        file_lines = split_diff_lines(diff_file.head_file)
         if (relevant_lines_start < 1
                 or relevant_lines_end < relevant_lines_start
                 or relevant_lines_end > len(file_lines)):
@@ -1609,7 +1609,7 @@ class PRCodeSuggestions:
         target_lines = {}
         target_line = None
         target_remaining = 0
-        for line in (patch or "").splitlines():
+        for line in split_diff_lines(patch or ""):
             hunk_match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
             if hunk_match:
                 target_line = int(hunk_match.group(1))
@@ -1637,7 +1637,7 @@ class PRCodeSuggestions:
         if diff_file is None:
             return False, "the file content is unavailable", False
         if diff_file.head_file and getattr(diff_file, "head_file_is_complete", True):
-            file_lines = diff_file.head_file.splitlines()
+            file_lines = split_diff_lines(diff_file.head_file)
             if relevant_lines_end > len(file_lines):
                 return False, "the anchored range is outside the file", False
             anchored_lines = file_lines[relevant_lines_start - 1:relevant_lines_end]
@@ -1811,7 +1811,7 @@ class PRCodeSuggestions:
             for file in self.diff_files:
                 if file.filename.strip() == relevant_file:
                     if file.head_file and getattr(file, "head_file_is_complete", True):
-                        file_lines = file.head_file.splitlines()
+                        file_lines = split_diff_lines(file.head_file)
                         if relevant_lines_start > len(file_lines):
                             get_logger().warning(
                                 "Could not dedent code snippet, because relevant_lines_start is out of range",

@@ -31,6 +31,7 @@ from pr_agent.algo.git_patch_processing import (
     NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
+    split_diff_lines,
     to_hunk_only_patch,
 )
 from pr_agent.algo.language_handler import build_language_file_matcher
@@ -541,7 +542,7 @@ def extract_relevant_lines_str(end_line, files, relevant_file, start_line, deden
                                 continue
                             relevant_lines_str += line[1:] + '\n'
                     else:
-                        relevant_file_lines = file.head_file.splitlines()
+                        relevant_file_lines = split_diff_lines(file.head_file)
                         relevant_lines_str = "\n".join(relevant_file_lines[start_line - 1:end_line])
 
                     if dedent and relevant_lines_str:
@@ -1401,7 +1402,7 @@ def find_line_number_of_relevant_line_in_file(diff_files: List[FilePatchInfo],
     for file in diff_files:
         if file.filename and (file.filename.strip() == relevant_file):
             patch = file.patch
-            patch_lines = patch.splitlines()
+            patch_lines = split_diff_lines(patch)
             delta = 0
             start1, size1, start2, size2 = 0, 0, 0, 0
             if absolute_position != -1: # matching absolute to relative
