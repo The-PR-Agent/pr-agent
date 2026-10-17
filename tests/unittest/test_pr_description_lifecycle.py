@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from pr_agent.algo.run_details import command_failed
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
     IncompleteBitbucketPullRequestFilesError,
@@ -25,6 +26,7 @@ _TRACKED_SETTINGS = (
     "pr_description.final_update_message",
     "pr_description.generate_ai_title",
     "pr_description.publish_description_as_comment",
+    "pr_description.publish_description_as_comment_persistent",
     "pr_description.publish_labels",
     "pr_description.use_description_markers",
 )
@@ -216,16 +218,16 @@ async def test_run_appends_partial_description_coverage_to_output(monkeypatch):
         restore_settings(settings_snapshot)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("propagate_tool_errors", [False, True])
-async def test_run_reports_description_publication_failure(monkeypatch, propagate_tool_errors):
+@pytest.fixture
+def published_description(monkeypatch):
     settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
     try:
         provider = MagicMock()
         progress_comment = MagicMock(name="progress_comment")
         provider.publish_comment.return_value = progress_comment
-        provider.publish_description.side_effect = RuntimeError("permission denied")
         provider.is_supported.return_value = False
+        provider.get_latest_commit_url.return_value = "https://example.test/commit/123"
+        provider.get_pr_url.return_value = "https://example.test/pull/1"
         description = _make_description(provider)
         description.prediction = "generated"
         description._prepare_data = MagicMock()
@@ -235,7 +237,6 @@ async def test_run_reports_description_publication_failure(monkeypatch, propagat
         monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
         _configure_published_run()
         settings = get_settings()
-        settings.config.propagate_tool_errors = propagate_tool_errors
         settings.pr_description.enable_help_comment = False
         settings.pr_description.enable_help_text = False
         settings.pr_description.enable_semantic_files_types = False
@@ -244,21 +245,113 @@ async def test_run_reports_description_publication_failure(monkeypatch, propagat
         settings.pr_description.publish_description_as_comment = False
         settings.pr_description.publish_labels = False
         settings.pr_description.use_description_markers = False
-
-        if propagate_tool_errors:
-            with pytest.raises(RuntimeError, match="permission denied"):
-                await description.run()
-        else:
-            assert await description.run() == ""
-
-        provider.publish_description.assert_called_once()
-        assert call("Failed to update PR description") in provider.publish_comment.call_args_list
-        assert not any(
-            "updated to latest commit" in str(published) for published in provider.publish_comment.call_args_list
-        )
-        provider.remove_comment.assert_called_once_with(progress_comment)
+        yield description, provider, progress_comment
     finally:
         restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+async def test_run_reports_description_publication_failure(published_description, propagate_tool_errors):
+    description, provider, progress_comment = published_description
+    provider.publish_description.side_effect = RuntimeError("permission denied")
+    get_settings().config.propagate_tool_errors = propagate_tool_errors
+
+    if propagate_tool_errors:
+        with pytest.raises(RuntimeError, match="permission denied"):
+            await description.run()
+    else:
+        assert await description.run() == ""
+
+    provider.publish_description.assert_called_once()
+    assert command_failed()
+    assert call("Failed to update PR description") in provider.publish_comment.call_args_list
+    provider.get_latest_commit_url.assert_not_called()
+    provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+@pytest.mark.parametrize("failed_step", ["get_latest_commit_url", "get_pr_url", "publish_comment"])
+async def test_run_keeps_description_success_when_final_feedback_fails(
+    published_description, propagate_tool_errors, failed_step
+):
+    description, provider, progress_comment = published_description
+    get_settings().config.propagate_tool_errors = propagate_tool_errors
+    error = RuntimeError("optional feedback failed")
+    if failed_step == "publish_comment":
+        # The final comment may have reached the provider before the error; never retry it.
+        provider.publish_comment.side_effect = [progress_comment, error]
+    else:
+        getattr(provider, failed_step).side_effect = error
+
+    assert await description.run() == ""
+
+    provider.publish_description.assert_called_once()
+    assert not command_failed()
+    assert call("Failed to update PR description") not in provider.publish_comment.call_args_list
+    assert provider.publish_comment.call_count == (2 if failed_step == "publish_comment" else 1)
+    provider.edit_comment.assert_called_once_with(progress_comment, "PR description generation finished.")
+    provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", ["disabled", "automatic", "no_commit_url"])
+async def test_run_skips_optional_feedback_without_changing_description_success(published_description, gate):
+    description, provider, _ = published_description
+    settings = get_settings()
+    settings.pr_description.final_update_message = gate != "disabled"
+    settings.config.is_auto_command = gate == "automatic"
+    if gate == "no_commit_url":
+        provider.get_latest_commit_url.return_value = None
+
+    assert await description.run() == ""
+
+    provider.publish_description.assert_called_once()
+    assert not command_failed()
+    provider.get_pr_url.assert_not_called()
+    if gate != "no_commit_url":
+        provider.get_latest_commit_url.assert_not_called()
+    assert provider.publish_comment.call_count == (0 if gate == "automatic" else 1)
+
+
+@pytest.mark.asyncio
+async def test_run_propagates_cancellation_after_description_update(published_description):
+    description, provider, progress_comment = published_description
+    provider.get_latest_commit_url.side_effect = asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await description.run()
+
+    provider.publish_description.assert_called_once()
+    assert not command_failed()
+    provider.get_pr_url.assert_not_called()
+    provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [False, True])
+async def test_run_keeps_description_comment_delivery_failures_strict(published_description, persistent):
+    description, provider, progress_comment = published_description
+    settings = get_settings()
+    settings.config.propagate_tool_errors = True
+    settings.pr_description.publish_description_as_comment = True
+    settings.pr_description.publish_description_as_comment_persistent = persistent
+    error = RuntimeError("description comment failed")
+    if persistent:
+        provider.publish_persistent_comment.side_effect = error
+    else:
+        provider.publish_comment.side_effect = [progress_comment, error]
+
+    with pytest.raises(RuntimeError, match="description comment failed"):
+        await description.run()
+
+    assert command_failed()
+    provider.publish_description.assert_not_called()
+    provider.get_latest_commit_url.assert_not_called()
+    provider.remove_comment.assert_called_once_with(progress_comment)
+    if persistent:
+        assert provider.publish_persistent_comment.call_args.kwargs["final_update_message"] is False
 
 
 @pytest.mark.asyncio

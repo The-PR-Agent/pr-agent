@@ -280,14 +280,19 @@ class PRDescription:
                         get_settings().pr_description.final_update_message
                         and not get_settings().config.get('is_auto_command', False)
                     ):
-                        latest_commit_url = self.git_provider.get_latest_commit_url()
-                        if latest_commit_url:
-                            pr_url = self.git_provider.get_pr_url()
-                            update_comment = (
-                                f"**[PR Description]({pr_url})** "
-                                f"updated to latest commit ({latest_commit_url})"
+                        try:
+                            latest_commit_url = self.git_provider.get_latest_commit_url()
+                            if latest_commit_url:
+                                pr_url = self.git_provider.get_pr_url()
+                                update_comment = (
+                                    f"**[PR Description]({pr_url})** "
+                                    f"updated to latest commit ({latest_commit_url})"
+                                )
+                                self.git_provider.publish_comment(update_comment)
+                        except Exception as feedback_error:
+                            get_logger().exception(
+                                f"PR description updated, but final update message failed: {feedback_error}"
                             )
-                            self.git_provider.publish_comment(update_comment)
             else:
                 get_logger().info('PR description, but not published since publish_output is False.')
                 get_settings().data = {"artifact": pr_body}
