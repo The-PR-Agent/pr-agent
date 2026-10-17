@@ -1,7 +1,10 @@
+from codecs import BOM_UTF16_BE
+
 import pytest
 
 from pr_agent.algo.git_patch_processing import (
     RE_HUNK_HEADER,
+    decode_if_bytes,
     extend_patch,
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
@@ -14,6 +17,15 @@ from pr_agent.config_loader import get_settings
 
 get_settings(use_context=False).set("CONFIG.CLI_MODE", True)
 get_settings(use_context=False).config.allow_dynamic_context = False
+
+
+def test_decode_utf16_big_endian_with_bom():
+    content = BOM_UTF16_BE + "hello world".encode("utf-16-be")
+    assert decode_if_bytes(content) == "hello world"
+
+
+def test_decode_latin1_without_bom():
+    assert decode_if_bytes(b"caf\xe9") == "caf\xe9"
 
 
 class TestExtendPatch:

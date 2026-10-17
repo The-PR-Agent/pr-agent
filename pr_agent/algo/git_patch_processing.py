@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import traceback
+from codecs import BOM_UTF16_BE, BOM_UTF16_LE
 
 from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -55,16 +56,15 @@ def extend_patch(original_file_str, patch_str, patch_extra_lines_before=0,
 
 def decode_if_bytes(original_file_str):
     if isinstance(original_file_str, (bytes, bytearray)):
+        if original_file_str.startswith((BOM_UTF16_LE, BOM_UTF16_BE)):
+            try:
+                return original_file_str.decode('utf-16')
+            except UnicodeDecodeError:
+                pass
         try:
             return original_file_str.decode('utf-8')
         except UnicodeDecodeError:
-            encodings_to_try = ['iso-8859-1', 'latin-1', 'ascii', 'utf-16']
-            for encoding in encodings_to_try:
-                try:
-                    return original_file_str.decode(encoding)
-                except UnicodeDecodeError:
-                    continue
-            return ""
+            return original_file_str.decode('latin-1')
     return original_file_str
 
 

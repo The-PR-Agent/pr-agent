@@ -503,8 +503,7 @@ class TestGiteaProvider:
         repo_api = RepoApi(mock_api_client)
 
         content = repo_api.get_file_content('owner', 'repo', 'sha1', 'notes.txt')
-        assert content != '', "non-UTF-8 text must not be dropped to an empty string"
-        assert all(ch in content for ch in "hello world"), "the underlying text should survive the fallback decode"
+        assert content == "hello world"
         args, kwargs = mock_api_client.call_api.call_args
         assert args[0] == '/repos/owner/repo/raw/notes.txt'
         assert kwargs.get('query_params') == [('ref', 'sha1')]
