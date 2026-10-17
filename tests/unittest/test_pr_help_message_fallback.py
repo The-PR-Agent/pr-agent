@@ -74,6 +74,89 @@ def count_message_characters(*, messages, **_kwargs):
     return sum(len(message["content"]) for message in messages)
 
 
+@pytest.fixture
+def selectable_docs(help_tool, monkeypatch):
+    tool, _, _ = help_tool
+    root = tool._fixture_doc.parents[1]
+    tool._fixture_doc.write_text("# Review\n" + "R" * 900, encoding="utf-8")
+    for path, content in [
+        ("tools/describe.md", "# Describe\nDescribe a pull request."),
+        ("usage-guide/changing_a_model.md", "# Models\nChoose a model."),
+        ("installation/azure.md", "# Azure\nInstall the Azure integration."),
+    ]:
+        doc = root / path
+        doc.parent.mkdir(parents=True, exist_ok=True)
+        doc.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(pr_help_message, "_get_help_docs_root", lambda: root)
+    get_settings().set("pr_help_prompts.system", "system")
+    get_settings().set("pr_help_prompts.user", "{{ question }}\n{{ snippets }}")
+    monkeypatch.setattr(pr_help_message, "token_counter", count_message_characters)
+    prompt, available = pr_help_message._load_help_docs_prompt()
+    tool.vars["snippets"] = str(prompt)
+    tool._help_doc_frames = getattr(prompt, "help_doc_frames", ())
+    return tool, str(prompt), available
+
+
+@pytest.mark.parametrize(("question", "target"), [
+    ("How do I describe a PR?", "tools/describe.md"),
+    ("How do I change a model?", "usage-guide/changing_a_model.md"),
+    ("How do I install Azure?", "installation/azure.md"),
+])
+def test_constrained_question_retains_complete_matching_document(selectable_docs, monkeypatch, question, target):
+    tool, raw, available = selectable_docs
+    tool.vars["question"] = question
+    # Count the normalized request, including overhead added by the handler.
+    tool.ai_handler.normalize_request_prompts = lambda model, system, user: (system, "normalized:" + user)
+    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: 210)
+
+    system, user, fitted = tool._fit_prompts(tool.vars, BACKUP)
+
+    assert fitted.startswith(f"==file name==\n\n/{target}\n")
+    assert tool._get_fitted_docs_files(raw, fitted, available) == {target}
+    assert len(system) + len(user) <= 210
+    assert tool.vars["snippets"] == raw
+    # Reordering is local to a constrained attempt; the next full-fit attempt is unchanged.
+    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: 10_000)
+    assert tool._fit_prompts(tool.vars, PRIMARY)[2] == raw
+
+
+@pytest.mark.parametrize("question", ["Please help me", "How do I use tools?", "How do I review?"])
+def test_no_unique_fitting_document_preserves_baseline_order(selectable_docs, monkeypatch, question):
+    tool, raw, _ = selectable_docs
+    tool.vars["question"] = question
+    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: 210)
+    with_frames = tool._fit_prompts(tool.vars, BACKUP)
+    tool._help_doc_frames = ()
+
+    assert tool._fit_prompts(tool.vars, BACKUP) == with_frames
+    assert raw.startswith("==file name==\n\n/tools/describe.md")
+
+
+async def test_fallback_selects_question_document_and_limits_citations(selectable_docs, monkeypatch):
+    tool, raw, _ = selectable_docs
+    tool.question_str = "How do I install Azure?"
+    tool.vars["question"] = tool.question_str
+    limits = {PRIMARY: 10_000, BACKUP: 180}
+    monkeypatch.setattr(tool, "_get_prompt_budget", lambda model: limits[model])
+    tool.ai_handler.chat_completion.side_effect = [TimeoutError("primary unavailable"), (
+        "response: Install the Azure integration.\nrelevant_sections:\n"
+        "  - file_name: /installation/azure.md\n"
+        "  - file_name: /tools/review.md\n", "stop",
+    )]
+
+    await tool.run()
+
+    assert attempted_models(tool) == [PRIMARY, BACKUP]
+    primary, backup = [call.kwargs for call in tool.ai_handler.chat_completion.await_args_list]
+    assert raw in primary["user"]
+    assert backup["user"].split("==file name==", 1)[1].startswith("\n\n/installation/azure.md")
+    assert len(backup["system"]) + len(backup["user"]) <= limits[BACKUP]
+    [call] = tool.git_provider.publish_comment.call_args_list
+    assert "https://docs.pr-agent.ai/installation/azure/" in call.args[0]
+    assert "https://docs.pr-agent.ai/tools/review/" not in call.args[0]
+    assert type(tool.vars["snippets"]) is str
+
+
 async def test_model_prompt_preserves_question_and_documentation_markup(help_tool):
     tool, _, _ = help_tool
     question = "What does `<review enabled=\"true\"> & 'notes'` mean?"

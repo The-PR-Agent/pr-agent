@@ -5,6 +5,7 @@ from importlib.resources import files as package_files
 from importlib.resources.abc import Traversable
 from math import ceil, isfinite
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 from jinja2 import StrictUndefined, select_autoescape
 from jinja2.sandbox import SandboxedEnvironment
@@ -46,6 +47,35 @@ HELP_DOCS_PRIORITY_PATHS = (
     "/faq/",
 )
 HELP_DOCS_INDEX_NAMES = tuple(f"/index{suffix}" for suffix in HELP_DOCS_SUFFIXES)
+_QUESTION_STOPWORDS = frozenset(
+    "a agent an and are as at be by can do does for from get help how i in is it me my of on or "
+    "please pr the to use using what when where with".split()
+)
+
+
+class _HelpDocFrame(NamedTuple):
+    relative_file_path: str
+    exact_frame: str
+
+
+class _HelpDocsPrompt(str):
+    def __new__(cls, text: str, frames: tuple[_HelpDocFrame, ...]):
+        prompt = super().__new__(cls, text)
+        prompt.help_doc_frames = frames
+        return prompt
+
+
+def _question_terms(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower())) - _QUESTION_STOPWORDS
+
+
+def _select_help_doc(question: str, frames: tuple[_HelpDocFrame, ...]) -> int | None:
+    terms = _question_terms(question)
+    scores = [len(terms & _question_terms(frame.relative_file_path)) for frame in frames]
+    best = max(scores, default=0)
+    if best and scores.count(best) == 1:
+        return scores.index(best)
+    return None
 
 
 def _is_help_doc_included(relative_path: PurePosixPath) -> bool:
@@ -119,6 +149,7 @@ def _iter_help_docs(root: Traversable) -> list[tuple[PurePosixPath, Traversable]
 def _load_help_docs_prompt() -> tuple[str, set[str]]:
     docs_root = _get_help_docs_root()
     sections = []
+    frames = []
     available_docs_files = set()
     for relative_path, document in _iter_help_docs(docs_root):
         try:
@@ -135,12 +166,13 @@ def _load_help_docs_prompt() -> tuple[str, set[str]]:
             f"\n==file name==\n\n/{relative_file_path}\n\n"
             f"==file content==\n\n{content}\n=========\n\n"
         )
+        frames.append(_HelpDocFrame(relative_file_path, sections[-1]))
         available_docs_files.add(relative_file_path)
 
     if not sections:
         raise FileNotFoundError(f"No readable Markdown documentation was found for /help in {docs_root}")
 
-    return "".join(sections).strip(), available_docs_files
+    return _HelpDocsPrompt("".join(sections).strip(), tuple(frames)), available_docs_files
 
 
 class PRHelpMessage:
@@ -307,8 +339,28 @@ class PRHelpMessage:
                 f"The /help prompt exceeds the token limit for {model} with a truncation marker"
             )
 
-        keep_chars = max(len(raw_snippets) - 1, 0)
-        while keep_chars > 0:
+        minimum_keep = 0
+        minimum_snippets = TRUNCATION_MARKER
+        minimum_prompts = marker_prompts
+        frames = getattr(self, "_help_doc_frames", ())
+        if (
+            isinstance(frames, tuple)
+            and all(isinstance(frame, _HelpDocFrame) for frame in frames)
+            and "".join(frame.exact_frame for frame in frames).strip() == raw_snippets
+        ):
+            winner = _select_help_doc(variables.get("question", ""), frames)
+            if winner is not None:
+                selected_prefix = frames[winner].exact_frame.strip()
+                selected_snippets = selected_prefix + TRUNCATION_MARKER
+                selected_prompts = render(selected_snippets)
+                if self._count_prompt_tokens(model, *selected_prompts) <= prompt_budget:
+                    ordered_frames = (frames[winner], *frames[:winner], *frames[winner + 1:])
+                    raw_snippets = "".join(frame.exact_frame for frame in ordered_frames).strip()
+                    minimum_keep = len(selected_prefix)
+                    minimum_snippets, minimum_prompts = selected_snippets, selected_prompts
+
+        keep_chars = max(len(raw_snippets) - 1, minimum_keep)
+        while keep_chars > minimum_keep:
             candidate = raw_snippets[:keep_chars].rstrip() + TRUNCATION_MARKER
             candidate_prompts = render(candidate)
             candidate_tokens = self._count_prompt_tokens(model, *candidate_prompts)
@@ -318,12 +370,12 @@ class PRHelpMessage:
                 )
                 return candidate_prompts[0], candidate_prompts[1], candidate
             next_keep_chars = max(1, int(keep_chars * prompt_budget / candidate_tokens))
-            keep_chars = min(keep_chars - 1, next_keep_chars)
+            keep_chars = max(minimum_keep, min(keep_chars - 1, next_keep_chars))
 
         get_logger().warning(
             f"Documentation was clipped for /help to fit the {prompt_budget}-token input limit for {model}"
         )
-        return marker_prompts[0], marker_prompts[1], TRUNCATION_MARKER
+        return minimum_prompts[0], minimum_prompts[1], minimum_snippets
 
     @staticmethod
     def _get_fitted_docs_files(
@@ -435,7 +487,9 @@ class PRHelpMessage:
         init_run_details()
         if self.question_str:
             try:
-                self.vars["snippets"], self._available_docs_files = _load_help_docs_prompt()
+                loaded_prompt, self._available_docs_files = _load_help_docs_prompt()
+                self.vars["snippets"] = str(loaded_prompt)
+                self._help_doc_frames = tuple(getattr(loaded_prompt, "help_doc_frames", ()))
                 self._model_visible_docs_files = set()
             except FileNotFoundError:
                 get_logger().exception("Unable to load the PR-Agent help documentation")

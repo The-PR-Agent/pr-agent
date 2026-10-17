@@ -47,6 +47,14 @@ def test_packaged_help_docs_are_filtered_and_priority_sorted(tmp_path, monkeypat
     assert "compression_strategy" not in prompt
     assert "finetuning_benchmark" not in prompt
     assert available_docs_files == {"index.md", "tools/review.md", "reference/other.md"}
+    assert isinstance(prompt, str)
+    assert isinstance(prompt.help_doc_frames, tuple)
+    assert [frame.relative_file_path for frame in prompt.help_doc_frames] == [
+        "index.md", "tools/review.md", "reference/other.md",
+    ]
+    assert "".join(frame.exact_frame for frame in prompt.help_doc_frames).strip() == prompt
+    with pytest.raises(AttributeError):
+        prompt.help_doc_frames[0].exact_frame = "replacement"
 
 
 def test_source_checkout_is_used_when_packaged_docs_are_absent(tmp_path, monkeypatch):
