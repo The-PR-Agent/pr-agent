@@ -2143,19 +2143,17 @@ class TestGiteaAddedFileBaseFetch:
     def test_only_added_files_skip_the_base_fetch(
         self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
     ):
-        """The skip set is exactly {added}.
-
-        deleted and renamed files are left fetching, matching GithubProvider. A rename
-        still resolves to "" today because the new path is absent at base_sha, and
-        fetching the pre-rename path is a separate gap; this test deliberately does not
-        assert on that content so it cannot block that follow-up.
-        """
+        """Fetch base content for deleted and renamed files, but not added files."""
         files = [
             {"filename": "gone.py", "additions": 0, "deletions": 3, "status": "deleted"},
-            {"filename": "renamed.py", "additions": 1, "deletions": 1, "status": "renamed"},
+            {"filename": "renamed.py", "previous_filename": "original.py",
+             "additions": 1, "deletions": 1, "status": "renamed"},
             {"filename": "changed.py", "additions": 1, "deletions": 1, "status": "modified"},
         ]
         provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        repo_api.get_file_content.side_effect = lambda **kwargs: (
+            f"{kwargs['commit_sha']}:{kwargs['filepath']}"
+        )
 
         diff_files = provider.get_diff_files()
 
@@ -2164,10 +2162,14 @@ class TestGiteaAddedFileBaseFetch:
             for call in repo_api.get_file_content.call_args_list
             if call.kwargs.get("commit_sha") == "base-sha"
         )
-        assert base_reads == ["changed.py", "gone.py", "renamed.py"]
+        assert base_reads == ["changed.py", "gone.py", "original.py"]
         assert [f.edit_type for f in diff_files] == [
             EDIT_TYPE.DELETED, EDIT_TYPE.RENAMED, EDIT_TYPE.MODIFIED,
         ]
+        assert diff_files[1].filename == "renamed.py"
+        assert diff_files[1].old_filename == "original.py"
+        assert diff_files[1].base_file == "base-sha:original.py"
+        assert diff_files[1].head_file == "head-sha:renamed.py"
 
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     @patch("pr_agent.git_providers.gitea_provider.RepoApi")
