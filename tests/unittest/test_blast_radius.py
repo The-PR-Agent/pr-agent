@@ -21,6 +21,8 @@ _KEYS = (
 )
 
 STRUCTURE = {"reach": 69, "cross_domain": True, "sensitive_domains": []}
+SMALL_CHURN = {"files": 1, "added": 1, "deleted": 0}
+LARGE_CHURN = {"files": 40, "added": 500, "deleted": 0}
 
 
 @pytest.fixture
@@ -65,6 +67,31 @@ def test_churn_band():
     assert br.churn_band({"files": 7, "added": 1, "deleted": 0}) == "moderate"
     assert br.churn_band({"files": 40, "added": 10, "deleted": 0}) == "large"
     assert br.churn_band({"files": 2, "added": 300, "deleted": 200}) == "large"
+
+
+@pytest.mark.parametrize(("reach", "expected"), [
+    (0, "narrow"), (3, "narrow"), (4, "moderate"), (25, "moderate"), (26, "wide"),
+])
+def test_reach_band_boundaries(reach, expected):
+    assert br.reach_band(reach) == expected
+
+
+@pytest.mark.parametrize(("files", "added", "deleted", "expected"), [
+    (1, 49, 0, "small"),
+    (1, 25, 24, "small"),
+    (1, 50, 0, "moderate"),
+    (1, 25, 25, "moderate"),
+    (5, 1, 0, "small"),
+    (6, 1, 0, "moderate"),
+    (1, 400, 0, "moderate"),
+    (1, 200, 200, "moderate"),
+    (1, 401, 0, "large"),
+    (1, 201, 200, "large"),
+    (30, 1, 0, "moderate"),
+    (31, 1, 0, "large"),
+])
+def test_churn_band_boundaries(files, added, deleted, expected):
+    assert br.churn_band({"files": files, "added": added, "deleted": deleted}) == expected
 
 
 def test_compose_low():
@@ -113,6 +140,45 @@ def test_compose_reach_only_when_no_churn():
     assert risk["band"] == "Moderate"
     assert any("reach" in reason for reason in risk["reasons"])
     assert not any("churn" in reason for reason in risk["reasons"])
+
+
+def test_compose_cross_domain_alone_is_moderate():
+    risk = br.compose_risk(
+        {"reach": 2, "cross_domain": True, "sensitive_domains": []},
+        {"files": 1, "added": 2, "deleted": 0},
+    )
+    assert risk["band"] == "Moderate"
+    assert risk["level"] == 1
+    assert risk["reasons"] == ["narrow reach (2 projects)", "small churn (1 file, +2/-0)", "cross-domain change"]
+
+
+@pytest.mark.parametrize(("reach", "churn", "expected"), [
+    (2, {"files": 1, "added": 1, "deleted": 0}, "High"),
+    (4, {"files": 6, "added": 60, "deleted": 0}, "High"),
+    (50, {"files": 1, "added": 1, "deleted": 0}, "Critical"),
+    (2, {"files": 31, "added": 1, "deleted": 0}, "Critical"),
+    (2, {"files": 1, "added": 401, "deleted": 0}, "Critical"),
+    (26, None, "Critical"),
+    (2, None, "High"),
+])
+def test_compose_sensitive_escalation_by_reach_or_churn(reach, churn, expected):
+    risk = br.compose_risk({"reach": reach, "cross_domain": False, "sensitive_domains": ["auth"]}, churn)
+    assert risk["band"] == expected
+    assert risk["level"] == br.BANDS.index(expected)
+
+
+@pytest.mark.parametrize(("structure", "churn", "expected"), [
+    ({"reach": 50, "sensitive_domains": ["auth"]}, SMALL_CHURN, "sensitive domain (escalates regardless of size)"),
+    ({"reach": 50}, LARGE_CHURN, "wide reach and large churn"),
+    ({"reach": 50}, SMALL_CHURN, "wide reach"),
+    ({"reach": 2}, LARGE_CHURN, "large churn"),
+    ({"reach": 2, "cross_domain": True}, SMALL_CHURN, "cross-domain change"),
+    ({"reach": 2}, SMALL_CHURN, "contained reach and churn"),
+    ({"reach": 2}, None, "contained reach and churn"),
+    (None, None, "contained reach and churn"),
+])
+def test_driver_names_the_strongest_axis(structure, churn, expected):
+    assert br.driver(structure, churn) == expected
 
 
 def test_count_patch_lines_ignores_headers():
@@ -285,6 +351,57 @@ def test_path_band_caps_sensitive_and_spread_at_moderate():
     assert band == "Moderate"
 
 
+@pytest.mark.parametrize(("areas", "cross_area", "churn", "expected"), [
+    (10, False, SMALL_CHURN, "Low"),
+    (11, False, SMALL_CHURN, "Moderate"),
+    (1, True, SMALL_CHURN, "Low"),
+    (1, False, {"files": 1, "added": 50, "deleted": 0}, "Low"),
+    (2, True, {"files": 1, "added": 50, "deleted": 0}, "Moderate"),
+    (2, True, LARGE_CHURN, "Moderate"),
+    (2, False, LARGE_CHURN, "Moderate"),
+])
+def test_path_band_triggers(areas, cross_area, churn, expected):
+    assert br.path_band({"areas": areas, "cross_area": cross_area, "sensitive_hits": []}, churn) == expected
+
+
+@pytest.mark.parametrize(("signal", "churn", "reason"), [
+    ({"areas": 1, "cross_area": False, "sensitive_hits": ["auth"]}, LARGE_CHURN, "sensitive path match"),
+    ({"areas": 1, "cross_area": False, "sensitive_hits": []}, LARGE_CHURN, "large churn"),
+    ({"areas": 11, "cross_area": True, "sensitive_hits": []}, SMALL_CHURN, "cross-area change"),
+    ({"areas": 11, "cross_area": False, "sensitive_hits": []}, SMALL_CHURN, "many areas touched"),
+    ({"areas": 10, "cross_area": False, "sensitive_hits": []}, SMALL_CHURN, "small, contained change"),
+    ({"areas": 1, "cross_area": False, "sensitive_hits": []}, SMALL_CHURN, "small, contained change"),
+])
+def test_path_driver_names_the_strongest_signal(signal, churn, reason):
+    assert br.path_driver(signal, churn) == f"{reason} (heuristic estimate, no dependency graph)"
+
+
+def test_assess_path_heuristic_counts_many_areas_in_one_tree():
+    files = [_file(f"src/area{i}/mod.ts", "+a") for i in range(11)]
+    row = br.assess_change(files, path_heuristic=True)
+    assert row["band"] == "Moderate"
+    assert row["driver"] == "many areas touched (heuristic estimate, no dependency graph)"
+    assert {"label": "Reach (est.)", "value": "~11 areas, path-based"} in row["factors"]
+
+
+def test_assess_path_heuristic_ten_areas_in_one_tree_stays_low():
+    files = [_file(f"src/area{i}/mod.ts", "+a") for i in range(10)]
+    row = br.assess_change(files, path_heuristic=True)
+    assert row["band"] == "Low"
+    assert row["driver"] == "small, contained change (heuristic estimate, no dependency graph)"
+
+
+def test_assess_path_heuristic_rates_nameless_file_by_churn_alone():
+    row = br.assess_change([_file("", "+a")], path_heuristic=True)
+    assert row == {
+        "band": "Low",
+        "level": 0,
+        "heuristic": True,
+        "factors": [{"label": "Churn", "value": "1 file, +1/-0"}],
+        "driver": "small, contained change (heuristic estimate, no dependency graph)",
+    }
+
+
 def test_assess_with_structure():
     row = br.assess_change([_file("a.ts", "+a\n+b\n-c")], structure=STRUCTURE)
     assert row["band"] == "Moderate"
@@ -342,6 +459,15 @@ def test_parse_structure_rejects_malformed_input(raw):
     assert br.parse_structure(raw) is None
 
 
+def test_parse_structure_accepts_zero_reach():
+    assert br.parse_structure({"reach": 0}) == {"reach": 0}
+
+
+def test_parse_structure_accepts_name_of_exactly_the_limit():
+    name = "x" * br.MAX_NAME_CHARS
+    assert br.parse_structure({"domains": [name]}) == {"domains": [name]}
+
+
 def test_parse_structure_keeps_known_fields_and_drops_unknown():
     parsed = br.parse_structure({
         "version": 1,
@@ -377,6 +503,12 @@ def test_load_structure_fails_open_on_bad_file(blast_settings, tmp_path, payload
     assert br.load_structure(path.name) is None
 
 
+def test_load_structure_ignores_non_string_path(blast_settings, tmp_path):
+    name = _write_input(tmp_path, {"reach": 5})
+    assert br.load_structure(tmp_path / name) is None
+    assert br.load_structure(None) is None
+
+
 def test_load_structure_rejects_missing_and_outside_files(blast_settings, tmp_path):
     outside = tmp_path.parent / "outside-blast-radius.json"
     outside.write_text(json.dumps({"reach": 5}), encoding="utf-8")
@@ -392,6 +524,13 @@ def test_load_structure_rejects_oversized_file(blast_settings, tmp_path, monkeyp
     monkeypatch.setattr(br, "MAX_INPUT_BYTES", 10)
     name = _write_input(tmp_path, {"reach": 5, "domains": ["a-long-domain-name"]})
     assert br.load_structure(name) is None
+
+
+@pytest.mark.parametrize(("size_offset", "expected"), [(0, {"reach": 5}), (-1, None)])
+def test_load_structure_size_limit_is_inclusive(blast_settings, tmp_path, monkeypatch, size_offset, expected):
+    name = _write_input(tmp_path, {"reach": 5})
+    monkeypatch.setattr(br, "MAX_INPUT_BYTES", (tmp_path / name).stat().st_size + size_offset)
+    assert br.load_structure(name) == expected
 
 
 def test_build_is_off_by_default(blast_settings):
@@ -430,6 +569,16 @@ def test_build_accepts_comma_separated_terms(blast_settings):
     assert {"label": "Sensitivity (path match)", "value": "kyc"} in row["factors"]
 
 
+def test_build_is_off_when_enable_setting_is_missing(monkeypatch):
+    monkeypatch.setattr(br, "get_settings", lambda: SimpleNamespace(pr_reviewer={"blast_radius_path_heuristic": True}))
+    assert br.build_blast_radius(_multi_file_diff()) is None
+
+
+def test_build_path_heuristic_is_off_when_setting_is_missing(monkeypatch):
+    monkeypatch.setattr(br, "get_settings", lambda: SimpleNamespace(pr_reviewer={"enable_blast_radius": True}))
+    assert br.build_blast_radius(_multi_file_diff()) is None
+
+
 def test_build_fails_open_on_any_exception(blast_settings, monkeypatch):
     def boom(*_args, **_kwargs):
         raise RuntimeError("unexpected")
@@ -455,11 +604,63 @@ def test_render_markdown_row_labels_heuristic():
     assert "- Churn: 2 files, +3/-1\n" in rendered
 
 
+MARKDOWN_ROW = {
+    "band": "High",
+    "driver": "a_b*c",
+    "factors": [{"label": "L[1]", "value": "`v`|x <b>"}],
+}
+
+
+def test_render_markdown_escapes_special_characters():
+    assert br.render_blast_radius(MARKDOWN_ROW, gfm_supported=False) == (
+        "### 💣 Blast radius: **High**\n\n"
+        "- L\\[1\\]: \\`v\\`\\|x &lt;b&gt;\n"
+        "- Rating driven by a\\_b\\*c\n\n"
+    )
+
+
+def test_render_gfm_keeps_special_characters_unescaped():
+    assert br.render_blast_radius(MARKDOWN_ROW, gfm_supported=True) == (
+        "<tr><td>💣&nbsp;<strong>Blast radius</strong>: <strong>High</strong>"
+        "<br>L[1]: `v`|x &lt;b&gt;<br><em>Rating driven by a_b*c</em></td></tr>\n"
+    )
+
+
 def test_render_escapes_input_values():
     row = br.assess_change(None, structure={"reach": 1, "sensitive_domains": ["<img src=x>"]})
     rendered = br.render_blast_radius(row, gfm_supported=True)
     assert "<img" not in rendered
     assert "&lt;img src=x&gt;" in rendered
+
+
+@pytest.mark.parametrize("factors", [
+    ["Reach"],
+    [{"label": "Reach"}],
+    [{"value": "5"}],
+    [{"label": "Reach", "value": 5}],
+    [{"label": 1, "value": "5"}],
+    [{"label": "Reach", "value": "5"}, {"label": "Churn", "value": None}],
+])
+def test_render_skips_row_with_malformed_factor(factors):
+    row = {"band": "Low", "factors": factors, "driver": "x"}
+    assert br.render_blast_radius(row, gfm_supported=True) == ""
+    assert br.render_blast_radius(row, gfm_supported=False) == ""
+
+
+def test_render_skips_row_with_non_string_driver():
+    assert br.render_blast_radius({"band": "Low", "factors": [], "driver": 1}, gfm_supported=True) == ""
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("payout, kyc", ("payout", "kyc")),
+    (" a , ,b,", ("a", "b")),
+    (["a", " b ", "", "  ", 5, None], ("a", "b")),
+    (("a", "b"), ("a", "b")),
+    (5, ()),
+    (None, ()),
+])
+def test_as_terms_keeps_only_non_blank_strings(value, expected):
+    assert br._as_terms(value) == expected
 
 
 @pytest.mark.parametrize("row", ["Critical", {}, {"band": "Severe", "factors": [], "driver": "x"},
