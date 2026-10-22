@@ -214,6 +214,30 @@ for the authoritative default values.
     <td><b>require_priority_files</b></td>
     <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
   </tr>
+  <tr>
+    <td><b>enable_blast_radius</b></td>
+    <td>Off by default. If enabled, adds a deterministic change-risk row (Low, Moderate, High or Critical) computed
+    from churn, structural reach and sensitivity, with no model call. See <a href="#blast-radius">Blast radius</a>.</td>
+  </tr>
+  <tr>
+    <td><b>blast_radius_input_file</b></td>
+    <td>Path to a JSON file with structural reach facts, written by a build-graph tool earlier in CI. Relative to
+    <code>GITHUB_WORKSPACE</code> when that is set, otherwise to the working directory. Cannot be set from a comment.</td>
+  </tr>
+  <tr>
+    <td><b>blast_radius_path_heuristic</b></td>
+    <td>Off by default. If enabled and no input file is available, estimates reach and sensitivity from the changed
+    paths. The heuristic row is labelled as an estimate and never rates above Moderate.</td>
+  </tr>
+  <tr>
+    <td><b>blast_radius_sensitive_terms</b></td>
+    <td>Extra path terms the heuristic treats as sensitive, added to the built-in list.</td>
+  </tr>
+  <tr>
+    <td><b>blast_radius_churn_ignore_pattern</b></td>
+    <td>Extra regex over repo-relative paths whose changes do not count as churn, added to the built-in list.
+    An invalid pattern is logged and ignored. Cannot be set from a comment.</td>
+  </tr>
 </table>
 
 </details>
@@ -369,4 +393,94 @@ summaries. Prose without a file location is shown as text without a source link.
 
 The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
 cannot raise a score, clear a security concern, or soften a risk level set by another chunk.
+:::
+
+### Blast radius
+
+:::tip
+
+`enable_blast_radius` adds one row at the top of the review that rates how risky the change is to merge.
+The row is computed from the diff and an optional input file, not by the model, so the same PR always gets
+the same rating.
+
+```
+💣 Blast radius: Critical
+Reach: 69 projects, cross-domain
+Churn: 2 files, +33/-1
+Sensitivity: payouts
+Rating driven by sensitive domain (escalates regardless of size)
+```
+
+**Risk model.** Risk is impact multiplied by likelihood, as in ISO 31000. Three axes feed it:
+
+- **Reach** (impact) is the number of downstream projects a defect in the change can break: the blast radius in
+  the SRE sense. Only a build-graph tool knows it, so it comes from the input file.
+- **Sensitivity** (impact) flags changes to high-criticality areas such as authentication, payments or secrets.
+  A one-line auth change outranks a wide styling sweep.
+- **Churn** (likelihood) is the files changed and lines added and deleted. Relative churn predicts defect density,
+  and review effectiveness falls off past a few hundred lines. Lockfiles, snapshots, generated code, mocks,
+  minified bundles, sourcemaps, `dist/` output and vendored dependencies do not count, because their diffs are a
+  mechanical consequence of an authored change. `blast_radius_churn_ignore_pattern` adds more.
+
+Reach is narrow up to 3 projects, moderate up to 25 and wide above that. Churn is small below 50 lines and up to
+5 files, large above 400 lines or 30 files, and moderate in between. The band then follows these rules:
+
+| Condition | Band |
+| --- | --- |
+| Wide reach or large churn | At least Moderate |
+| Cross-domain change | At least Moderate |
+| Wide reach and large churn | At least High |
+| Any sensitive domain | At least High |
+| Sensitive domain with wide reach or large churn | Critical |
+| Anything else | Low |
+
+The row lists each factor and names the one that set the band.
+`estimated_effort_to_review_[1-5]` and `require_risk_assessment` are the model's judgement; this row adds the
+structural and sensitivity facts the model cannot see in the diff.
+
+**Input file.** Any build-graph tool (Nx, Bazel, Gradle, Turborepo, and so on) can write the reach facts in an
+earlier CI step. Point `blast_radius_input_file` at the file. Every field is optional:
+
+```json
+{
+  "version": 1,
+  "reach": 12,
+  "dependents": ["billing-api", "web-app"],
+  "domains": ["billing", "web"],
+  "cross_domain": true,
+  "sensitive_domains": ["billing"]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | integer | Schema version. Only `1` is accepted. |
+| `reach` | integer, 0 or more | Number of projects affected by the change, including transitive dependents. Defaults to the length of `dependents`. |
+| `dependents` | list of strings | Names of the affected projects. |
+| `domains` | list of strings | Distinct domains or areas the affected projects belong to. |
+| `cross_domain` | boolean | Whether the change spans more than one domain. |
+| `sensitive_domains` | list of strings | Affected domains the repository treats as sensitive. |
+
+Unknown fields are ignored. Strings are limited to 200 characters and the file to 1 MB.
+
+**Without an input file.** Set `blast_radius_path_heuristic=true` to get a row from the changed paths alone:
+distinct directories touched stand in for reach, and a word-bounded match on terms such as `auth`, `payment` or
+`token` stands in for sensitivity. `blast_radius_sensitive_terms` extends the list. These are weak signals, so the
+row is labelled `(heuristic)` and never rates above Moderate.
+
+**Failure handling.** The row never blocks a review. If the feature is off, the input file is missing or does not
+match the schema and the heuristic is off, or anything fails while computing the row, the review is published
+without it. A missing or malformed input file falls through to the heuristic when that is enabled.
+
+**Sources.**
+
+- Beyer, B. et al. *Site Reliability Engineering* (Google, 2016), and the AWS Well-Architected Framework: blast
+  radius as the scope of impact of a change or failure.
+- Nagappan, N. and Ball, T. "Use of Relative Code Churn Measures to Predict System Defect Density", ICSE 2005.
+- Cohen, J. et al. *Best Kept Secrets of Peer Code Review* (SmartBear, 2006): the Cisco study of review
+  effectiveness against change size.
+- Google Engineering Practices, [Small CLs](https://google.github.io/eng-practices/review/developer/small-cls.html).
+- ISO 31000 Risk management: risk as a function of impact and likelihood.
+- OWASP guidance on sensitive functionality: authentication, session management, cryptography and payments.
+
 :::

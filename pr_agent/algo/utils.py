@@ -28,6 +28,7 @@ from yaml.tokens import (
 )
 
 import pr_agent.algo.comment_identity as _ci
+from pr_agent.algo.blast_radius import render_blast_radius
 from pr_agent.algo.git_patch_processing import (
     NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
@@ -330,6 +331,8 @@ def convert_to_markdown_v2(output_data: dict,
                     value = _ci.emphasize_header(
                         value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}\n\n"
+        elif key.lower() == 'blast_radius':
+            markdown_text += render_blast_radius(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"

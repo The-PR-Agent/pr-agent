@@ -156,7 +156,11 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "ignore": frozenset({"regex"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     "pr_questions": frozenset({"resolve_threads"}),
-    "pr_reviewer": frozenset({"max_number_of_calls"}),
+    # A commenter must not choose which host file the blast-radius row reads, or supply a
+    # regex that runs over every changed path.
+    "pr_reviewer": frozenset({
+        "max_number_of_calls", "blast_radius_input_file", "blast_radius_churn_ignore_pattern",
+    }),
     "pr_similar_issue": frozenset({"force_update_dataset"}),
     "pr_update_changelog": frozenset({"push_changelog_changes"}),
 }

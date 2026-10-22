@@ -163,6 +163,11 @@ to-do list.
 | `require_merge_recommendation` | false | ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge) |
 | `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
+| `enable_blast_radius` | false | add a Low/Moderate/High/Critical change-risk row computed from churn, reach and sensitivity |
+| `blast_radius_input_file` | "" | JSON file with structural reach facts written by a build-graph tool (relative to GITHUB_WORKSPACE, or absolute) |
+| `blast_radius_path_heuristic` | false | without an input file, estimate reach and sensitivity from changed paths (capped at Moderate) |
+| `blast_radius_sensitive_terms` | [] | extra path terms the heuristic treats as sensitive, added to the built-in list |
+| `blast_radius_churn_ignore_pattern` | "" | extra regex over repo-relative paths whose changes do not count as churn |
 **general options**
 
 | Key | Default | Description |
