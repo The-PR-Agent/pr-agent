@@ -287,53 +287,55 @@ class TestLoadYaml:
         assert not utils._has_yaml_c_loader_risk('value: "' + "[" * depth + '"')
         assert not utils._has_yaml_c_loader_risk("code: |\n  " + "- " * depth + "text")
 
-    def test_load_invalid_yaml1(self):
-        yaml_str = (
-            "PR Analysis:\n"
-            "  Main theme: Enhancing the `/describe` command prompt by adding title and description\n"
-            "  Type of PR: Enhancement\n"
-            "  Relevant tests: No\n"
-            "  Focused PR: Yes, the PR is focused on enhancing the `/describe` command prompt.\n"
-            "\n"
-            "PR Feedback:\n"
-            "  General suggestions: The PR seems to be well-structured and focused on a specific "
-            "enhancement. However, it would be beneficial to add tests to ensure the new feature "
-            "works as expected.\n"
-            "  Code feedback:\n"
-            "    - relevant file: pr_agent/settings/pr_description_prompts.toml\n"
-            "      suggestion: Consider using a more descriptive variable name than 'user' for the "
-            "command prompt. A more descriptive name would make the code more readable and "
-            "maintainable. [medium]\n"
-            '      relevant line: user="""PR Info: aaa\n'
-            "  Security concerns: No"
-        )
-        with pytest.raises(ScannerError):
-            yaml.safe_load(yaml_str)
-
-        expected_output = {
-            "PR Analysis": {
-                "Main theme": "Enhancing the `/describe` command prompt by adding title and description",
-                "Type of PR": "Enhancement",
-                "Relevant tests": False,
-                "Focused PR": "Yes, the PR is focused on enhancing the `/describe` command prompt.",
-            },
-            "PR Feedback": {
-                "General suggestions": (
-                    "The PR seems to be well-structured and focused on a specific enhancement. "
-                    "However, it would be beneficial to add tests to ensure the new feature works as expected."
+    _INVALID_YAML1 = (
+        "PR Analysis:\n"
+        "  Main theme: Enhancing the `/describe` command prompt by adding title and description\n"
+        "  Type of PR: Enhancement\n"
+        "  Relevant tests: No\n"
+        "  Focused PR: Yes, the PR is focused on enhancing the `/describe` command prompt.\n"
+        "\n"
+        "PR Feedback:\n"
+        "  General suggestions: The PR seems to be well-structured and focused on a specific "
+        "enhancement. However, it would be beneficial to add tests to ensure the new feature "
+        "works as expected.\n"
+        "  Code feedback:\n"
+        "    - relevant file: pr_agent/settings/pr_description_prompts.toml\n"
+        "      suggestion: Consider using a more descriptive variable name than 'user' for the "
+        "command prompt. A more descriptive name would make the code more readable and "
+        "maintainable. [medium]\n"
+        '      relevant line: user="""PR Info: aaa\n'
+        "  Security concerns: No"
+    )
+    _INVALID_YAML1_EXPECTED = {
+        "PR Analysis": {
+            "Main theme": "Enhancing the `/describe` command prompt by adding title and description",
+            "Type of PR": "Enhancement",
+            "Relevant tests": False,
+            "Focused PR": "Yes, the PR is focused on enhancing the `/describe` command prompt.",
+        },
+        "PR Feedback": {
+            "General suggestions": (
+                "The PR seems to be well-structured and focused on a specific enhancement. "
+                "However, it would be beneficial to add tests to ensure the new feature works as expected."
+            ),
+            "Code feedback": [{
+                "relevant file": "pr_agent/settings/pr_description_prompts.toml\n",
+                "suggestion": (
+                    "Consider using a more descriptive variable name than 'user' for the command prompt. "
+                    "A more descriptive name would make the code more readable and maintainable. [medium]"
                 ),
-                "Code feedback": [{
-                    "relevant file": "pr_agent/settings/pr_description_prompts.toml\n",
-                    "suggestion": (
-                        "Consider using a more descriptive variable name than 'user' for the command prompt. "
-                        "A more descriptive name would make the code more readable and maintainable. [medium]"
-                    ),
-                    "relevant line": 'user="""PR Info: aaa\n',
-                }],
-                "Security concerns": False,
-            },
-        }
-        assert load_yaml(yaml_str) == expected_output
+                "relevant line": 'user="""PR Info: aaa\n',
+            }],
+            "Security concerns": False,
+        },
+    }
+
+    def test_invalid_yaml1_is_rejected_by_safe_load(self):
+        with pytest.raises(ScannerError):
+            yaml.safe_load(self._INVALID_YAML1)
+
+    def test_load_invalid_yaml1(self):
+        assert load_yaml(self._INVALID_YAML1) == self._INVALID_YAML1_EXPECTED
 
     def test_load_invalid_yaml2(self):
         yaml_str = '''\

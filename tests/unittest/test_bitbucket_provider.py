@@ -558,6 +558,25 @@ index 1111111..2222222 100644
             "+diff --git added literal\n"
         )
 
+    _CRLF_DIFF_WITH_PREAMBLE = (
+        "Bitbucket generated diff\r\n"
+        "\r\n"
+        "diff --git a/src/first.py b/src/first.py\r\n"
+        "index 1111111..2222222 100644\r\n"
+        "--- a/src/first.py\r\n"
+        "+++ b/src/first.py\r\n"
+        "@@ -1 +1 @@\r\n"
+        "-old first\r\n"
+        "+new first\r\n"
+        "diff --git a/src/second.py b/src/second.py\r\n"
+        "index 3333333..4444444 100644\r\n"
+        "--- a/src/second.py\r\n"
+        "+++ b/src/second.py\r\n"
+        "@@ -1 +1 @@\r\n"
+        "-old second\r\n"
+        "+new second\r\n"
+    )
+
     def test_get_diff_files_splits_crlf_headers_after_preamble_in_diffstat_order(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.diff_files = None
@@ -575,24 +594,7 @@ index 1111111..2222222 100644
 
         diffstats = [first, second]
         provider.pr.diffstat.return_value = diffstats
-        provider.pr.diff.return_value = (
-            "Bitbucket generated diff\r\n"
-            "\r\n"
-            "diff --git a/src/first.py b/src/first.py\r\n"
-            "index 1111111..2222222 100644\r\n"
-            "--- a/src/first.py\r\n"
-            "+++ b/src/first.py\r\n"
-            "@@ -1 +1 @@\r\n"
-            "-old first\r\n"
-            "+new first\r\n"
-            "diff --git a/src/second.py b/src/second.py\r\n"
-            "index 3333333..4444444 100644\r\n"
-            "--- a/src/second.py\r\n"
-            "+++ b/src/second.py\r\n"
-            "@@ -1 +1 @@\r\n"
-            "-old second\r\n"
-            "+new second\r\n"
-        )
+        provider.pr.diff.return_value = self._CRLF_DIFF_WITH_PREAMBLE
 
         settings = MagicMock()
         settings.get.return_value = True

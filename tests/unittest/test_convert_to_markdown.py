@@ -236,64 +236,64 @@ class TestConvertToMarkdown:
 
         assert convert_to_markdown_v2(input_data).strip() == expected_output.strip()
 
+    _CAN_BE_SPLIT_INPUT = {'review': {
+        'can_be_split': [
+            {
+                'relevant_files': [
+                    'src/file1.py',
+                    'src/file2.py'
+                ],
+                'title': 'Refactoring',
+            },
+            {
+                'relevant_files': [
+                    'src/file3.py'
+                ],
+                'title': 'Bug Fix',
+            }
+        ]
+    }
+    }
+
+    _CAN_BE_SPLIT_EXPECTED_OUTPUT = textwrap.dedent("""\
+        ## PR Reviewer Guide 🔍
+
+        Here are some key observations to aid the review process:
+
+        <table>
+        <tr><td>🔀 <strong>Multiple PR themes</strong><br><br>
+
+        <details><summary>
+        Sub-PR theme: <b>Refactoring</b></summary>
+
+        ___
+
+        Relevant files:
+
+        - src/file1.py
+        - src/file2.py
+        ___
+
+        </details>
+
+        <details><summary>
+        Sub-PR theme: <b>Bug Fix</b></summary>
+
+        ___
+
+        Relevant files:
+
+        - src/file3.py
+        ___
+
+        </details>
+
+        </td></tr>
+        </table>
+    """)
+
     def test_can_be_split(self):
-        input_data = {'review': {
-            'can_be_split': [
-                {
-                    'relevant_files': [
-                        'src/file1.py',
-                        'src/file2.py'
-                    ],
-                    'title': 'Refactoring',
-                },
-                {
-                    'relevant_files': [
-                        'src/file3.py'
-                    ],
-                    'title': 'Bug Fix',
-                }
-            ]
-        }
-        }
-
-        expected_output = textwrap.dedent("""\
-            ## PR Reviewer Guide 🔍
-
-            Here are some key observations to aid the review process:
-
-            <table>
-            <tr><td>🔀 <strong>Multiple PR themes</strong><br><br>
-
-            <details><summary>
-            Sub-PR theme: <b>Refactoring</b></summary>
-
-            ___
-
-            Relevant files:
-
-            - src/file1.py
-            - src/file2.py
-            ___
-
-            </details>
-
-            <details><summary>
-            Sub-PR theme: <b>Bug Fix</b></summary>
-
-            ___
-
-            Relevant files:
-
-            - src/file3.py
-            ___
-
-            </details>
-
-            </td></tr>
-            </table>
-        """)
-
-        assert convert_to_markdown_v2(input_data).strip() == expected_output.strip()
+        assert convert_to_markdown_v2(self._CAN_BE_SPLIT_INPUT).strip() == self._CAN_BE_SPLIT_EXPECTED_OUTPUT.strip()
 
     def test_contribution_time_cost_estimate(self):
         input_data = {

@@ -1315,17 +1315,19 @@ def restore_filter_settings():
     for key, value in original.items():
         settings.set(key, value)
 
-def test_shared_should_process_pr_logic_rules(restore_filter_settings):
-    from pr_agent.servers.utils import should_process_pr_logic
-
+@pytest.fixture
+def empty_filter_settings(restore_filter_settings):
     settings = restore_filter_settings
-    # Verify the default permits processing
     settings.set("CONFIG.IGNORE_REPOSITORIES", [])
     settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
     settings.set("CONFIG.IGNORE_PR_TITLE", [])
     settings.set("CONFIG.IGNORE_PR_LABELS", [])
     settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", [])
     settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", [])
+    return settings
+
+def test_shared_should_process_pr_logic_default_permits_processing(empty_filter_settings):
+    from pr_agent.servers.utils import should_process_pr_logic
 
     assert should_process_pr_logic(
         title="feat: add feature",
@@ -1336,35 +1338,51 @@ def test_shared_should_process_pr_logic_rules(restore_filter_settings):
         target_branch="main",
     ) is True
 
-    # Verify repository ignore rules
+
+def test_shared_should_process_pr_logic_repository_ignore_rules(empty_filter_settings):
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = empty_filter_settings
     settings.set("CONFIG.IGNORE_REPOSITORIES", ["^org/ignored-.*$"])
     assert should_process_pr_logic(repo_full_name="org/ignored-repo") is False
     assert should_process_pr_logic(repo_full_name="org/allowed-repo") is True
-    settings.set("CONFIG.IGNORE_REPOSITORIES", [])
 
-    # Verify author ignore rules
+
+def test_shared_should_process_pr_logic_author_ignore_rules(empty_filter_settings):
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = empty_filter_settings
     settings.set("CONFIG.IGNORE_PR_AUTHORS", ["^bot-.*$", "renovate"])
     assert should_process_pr_logic(sender="bot-service") is False
     assert should_process_pr_logic(sender="renovate") is False
     assert should_process_pr_logic(sender="alice") is True
-    settings.set("CONFIG.IGNORE_PR_AUTHORS", [])
 
-    # Verify title ignore rules for both string and list formats
+
+def test_shared_should_process_pr_logic_title_ignore_rules_for_string_and_list(empty_filter_settings):
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = empty_filter_settings
     settings.set("CONFIG.IGNORE_PR_TITLE", "^WIP:")  # as single string
     assert should_process_pr_logic(title="WIP: something") is False
     assert should_process_pr_logic(title="feat: done") is True
     settings.set("CONFIG.IGNORE_PR_TITLE", ["^WIP:", "^Draft:"])  # as list
     assert should_process_pr_logic(title="Draft: something") is False
     assert should_process_pr_logic(title="feat: done") is True
-    settings.set("CONFIG.IGNORE_PR_TITLE", [])
 
-    # Verify label ignore rules
+
+def test_shared_should_process_pr_logic_label_ignore_rules(empty_filter_settings):
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = empty_filter_settings
     settings.set("CONFIG.IGNORE_PR_LABELS", ["skip-review", "do-not-merge"])
     assert should_process_pr_logic(labels=["skip-review", "bug"]) is False
     assert should_process_pr_logic(labels=["bug"]) is True
-    settings.set("CONFIG.IGNORE_PR_LABELS", [])
 
-    # Verify source and target branch ignore rules
+
+def test_shared_should_process_pr_logic_branch_ignore_rules(empty_filter_settings):
+    from pr_agent.servers.utils import should_process_pr_logic
+
+    settings = empty_filter_settings
     settings.set("CONFIG.IGNORE_PR_SOURCE_BRANCHES", ["^release/.*$"])
     settings.set("CONFIG.IGNORE_PR_TARGET_BRANCHES", ["^production$"])
     assert should_process_pr_logic(source_branch="release/1.0", target_branch="main") is False

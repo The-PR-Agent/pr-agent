@@ -1458,11 +1458,13 @@ class TestCodeCommitProvider:
 
         assert CodeCommitProvider._get_edit_type("X") is None
 
-    def test_add_additional_newlines(self):
+    def test_add_additional_newlines_doubles_newlines_in_short_text(self):
         # a short string to test adding double newlines
         input = "abc\ndef\n\n___\nghi\njkl\nmno\n\npqr\n"
         expect = "abc\n\ndef\n\n___\n\nghi\n\njkl\n\nmno\n\npqr\n\n"
         assert CodeCommitProvider._add_additional_newlines(input) == expect
+
+    def test_add_additional_newlines_on_real_pr_description(self):
         # a test example from a real PR
         input = (
             "## PR Type:\nEnhancement\n\n___\n## PR Description:\n"
@@ -1480,6 +1482,7 @@ class TestCodeCommitProvider:
         )
         assert CodeCommitProvider._add_additional_newlines(input) == expect
 
+    def test_add_additional_newlines_preserves_backtick_fenced_code(self):
         # Fenced code block (e.g. suggestion) preserves internal newlines verbatim
         code_suggestion = (
             "**Suggestion:** Use helper\n"
@@ -1503,6 +1506,7 @@ class TestCodeCommitProvider:
         )
         assert CodeCommitProvider._add_additional_newlines(code_suggestion) == expected_suggestion
 
+    def test_add_additional_newlines_preserves_tilde_fenced_code(self):
         # Tilde-fenced code block also preserved verbatim
         tilde_fence = "Intro:\n~~~python\na = 1\nb = 2\n~~~\nOutro"
         expected_tilde = "Intro:\n\n~~~python\na = 1\nb = 2\n~~~\n\nOutro"
