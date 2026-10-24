@@ -6,7 +6,7 @@ import copy
 import json
 import os
 import re
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 import uvicorn
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -235,10 +235,59 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
             get_logger().error(f"Failed to perform command {command}: {e}")
 
 
+def _created_event_pr_url(resource):
+    """Select the legacy web link or derive the created event's documented PR identity."""
+    if not isinstance(resource, dict):
+        return None
+    links = resource.get("_links", {})
+    if not isinstance(links, dict):
+        return None
+    web = links.get("web", {})
+    if not isinstance(web, dict):
+        return None
+    href = web.get("href", "")
+    if not isinstance(href, str):
+        return None
+    if href:
+        return unquote(href.replace("_apis/git/repositories", "_git"))
+
+    repository = resource.get("repository")
+    pr_id = resource.get("pullRequestId")
+    if not isinstance(repository, dict) or type(pr_id) is not int or pr_id <= 0:
+        return None
+    remote = repository.get("remoteUrl")
+    if not isinstance(remote, str) or not remote:
+        return None
+    try:
+        parsed = urlsplit(remote)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment):
+            return None
+        # Access validates numeric/range constraints, including self-hosted ports.
+        port = parsed.port
+        if port is None and parsed.netloc.endswith(":"):
+            return None
+        path = parsed.path.removesuffix("/")
+        parts = path.split("/")
+        if len(parts) < 4 or not parts[-3] or parts[-2] != "_git" or not parts[-1]:
+            return None
+        pr_url = parsed._replace(path=f"{path}/pullrequest/{pr_id}").geturl()
+        expected = (unquote(parts[-3]), unquote(parts[-1]), pr_id)
+        if AzureDevopsProvider._parse_pr_url(pr_url) != expected:
+            return None
+        return pr_url
+    except ValueError:
+        return None
+
+
 async def handle_request_azure(data, log_context):
     if data["eventType"] == "git.pullrequest.created":
         # API V1 (latest)
-        pr_url = unquote(data["resource"]["_links"]["web"]["href"].replace("_apis/git/repositories", "_git"))
+        pr_url = _created_event_pr_url(data.get("resource"))
+        if pr_url is None:
+            get_logger().warning("Ignoring Azure created event with invalid pull request identity")
+            return
         log_context["event"] = data["eventType"]
         log_context["api_url"] = pr_url
         await _perform_commands_azure("pr_commands", PRAgent(), pr_url, log_context)
