@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -360,10 +360,32 @@ async def test_extract_tickets_azure_substitute_handles_item_error():
 
 
 @pytest.mark.asyncio
-async def test_extract_tickets_linked_work_item_failure_is_fail_soft():
+async def test_extract_tickets_linked_work_item_failure_preserves_other_context(monkeypatch):
     provider = _CustomAzureSubstitute(error=RuntimeError("provider detail"))
+    asana_ticket = {"ticket_id": "asana"}
+    jira_ticket = {"ticket_id": "jira"}
+    linear_ticket = {"ticket_id": "linear"}
+    logger = MagicMock()
 
-    assert await extract_tickets(provider) == []
+    def add_jira(provider_arg, tickets):
+        assert provider_arg is provider
+        assert tickets == [asana_ticket]
+        tickets.append(jira_ticket)
+        return tickets
+
+    jira = MagicMock(side_effect=add_jira)
+    module = "pr_agent.tools.ticket_pr_compliance_check"
+    monkeypatch.setattr(f"{module}._fetch_asana_ticket_contents", AsyncMock(return_value=[asana_ticket]))
+    monkeypatch.setattr(f"{module}._fetch_linear_ticket_contents", AsyncMock(return_value=[linear_ticket]))
+    monkeypatch.setattr(f"{module}.add_jira_tickets", jira)
+    monkeypatch.setattr(f"{module}.get_logger", lambda: logger)
+
+    assert await extract_tickets(provider) == [asana_ticket, jira_ticket, linear_ticket]
+
+    jira.assert_called_once()
+    logger.warning.assert_called_once_with("Failed to get linked work items; continuing without them")
+    logger.error.assert_not_called()
+    assert "provider detail" not in str(logger.mock_calls)
 
 
 @pytest.mark.asyncio

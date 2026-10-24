@@ -1361,7 +1361,11 @@ async def extract_tickets(git_provider):
             return tickets_content
 
         elif _provider_supports(git_provider, "supports_linked_work_item_tickets"):
-            tickets_info = git_provider.get_linked_work_items()
+            try:
+                tickets_info = git_provider.get_linked_work_items()
+            except Exception:
+                get_logger().warning("Failed to get linked work items; continuing without them")
+                tickets_info = []
             tickets_content = []
             for ticket in tickets_info:
                 try:
