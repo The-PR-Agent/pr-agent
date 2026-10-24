@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import string
 from collections.abc import Iterable
 from enum import StrEnum
@@ -51,6 +52,8 @@ _ALL_COMMENT_IDENTITIES = (
     PRDescriptionIdentity.PERSISTENT.value,
 )
 _REVIEW_IDENTITY_HEADER_LINES = 5
+# Preserve str.splitlines() boundaries without splitting the entire comment.
+_LINE_BREAK_PATTERN = re.compile(r"\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]")
 _MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(
     {character: f"\\{character}" for character in string.punctuation}
 )
@@ -123,10 +126,16 @@ def comment_matches_identity(body: str, identity: str) -> bool:
         return False
     forms = hidden_marker_forms(identity)
     if identity.startswith("<!--") or len(forms) > 1:
-        return any(
-            line.strip() in forms
-            for line in body.splitlines()[:_REVIEW_IDENTITY_HEADER_LINES]
-        )
+        start = 0
+        for _ in range(_REVIEW_IDENTITY_HEADER_LINES):
+            line_break = _LINE_BREAK_PATTERN.search(body, start)
+            end = line_break.start() if line_break else len(body)
+            if body[start:end].strip() in forms:
+                return True
+            if line_break is None:
+                break
+            start = line_break.end()
+        return False
     return body.startswith(identity)
 
 

@@ -36,6 +36,19 @@ def test_marker_forms_are_interchangeable_but_bounded(identity):
     assert add_comment_identity("## Review\n\nbody", html, provider) == f"## Review\n\n{reference}\n\nbody"
 
 
+@pytest.mark.parametrize(
+    "line_break", ["\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+@pytest.mark.parametrize("stored", hidden_marker_forms(PRReviewIdentity.REGULAR.value))
+def test_marker_line_limit_preserves_splitlines_boundaries(line_break, stored):
+    identity = PRReviewIdentity.REGULAR.value
+    header = line_break.join(("a", "b", "c", "d", f" \t{stored} \t"))
+
+    assert comment_matches_identity(header, identity)
+    assert comment_matches_identity(header + line_break + "body", identity)
+    assert not comment_matches_identity("extra" + line_break + header, identity)
+
+
 @pytest.mark.parametrize("stored", hidden_marker_forms(PRReviewIdentity.REGULAR.value))
 def test_bitbucket_rerun_updates_both_marker_forms_in_place(stored):
     provider = BitbucketProvider.__new__(BitbucketProvider)
