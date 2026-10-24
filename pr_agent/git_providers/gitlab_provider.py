@@ -2381,12 +2381,13 @@ class GitLabProvider(GitProvider):
             else:
                 ref = getattr(self.mr, "target_branch", None) or self._project_default_branch()
             paths = []
-            # Bound the listing at ten pages of 100 entries.
-            for page in range(1, 11):
+            page = 1
+            while True:
                 tree = project.repository_tree(path=dir_path, ref=ref, recursive=False, page=page, per_page=100)
                 paths.extend(entry["path"] for entry in tree if entry.get("type") == "blob")
                 if len(tree) < 100:
                     break
+                page += 1
             return paths
         except GitlabGetError as e:
             if getattr(e, "response_code", None) == 404:
