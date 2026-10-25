@@ -488,7 +488,7 @@ class TestInjectArtifactContext:
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):
             inject_artifact_context()
 
-        template = Environment().from_string(
+        template = Environment(autoescape=True).from_string(
             "{% if artifact_context %}{% for artifact in artifact_context.get('artifacts', [artifact_context]) %}"
             "Label: {{ artifact.label }}\n{{ artifact.content }}\n{% endfor %}{% endif %}"
         )
