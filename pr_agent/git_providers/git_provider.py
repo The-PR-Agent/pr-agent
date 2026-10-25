@@ -813,7 +813,7 @@ class GitProvider(ABC):
                 if fence_char:
                     if char == fence_char and length >= fence_length and not delimiter[length:].strip():
                         fence_char = ""
-                elif length >= 3:
+                elif length >= 3 and (char != "`" or "`" not in delimiter[length:]):
                     fence_char, fence_length = char, length
                 offset += len(line) + 1
                 continue
