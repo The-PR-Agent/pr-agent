@@ -2488,7 +2488,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Return whether a Claude model requires the adaptive thinking API."""
         normalized_model = model.lower().replace("_", "-").replace(".", "-")
         return re.search(
-            r"claude-(?:opus-4-(?:7|8)|(?:opus|sonnet|fable)-5)(?:[^0-9]|$)",
+            r"claude-(?:opus-4-(?:7|8)|(?:opus|sonnet|fable)-5|haiku-5-5)(?:[^0-9]|$)",
             normalized_model,
         ) is not None
 

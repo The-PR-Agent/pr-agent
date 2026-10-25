@@ -802,9 +802,44 @@ class TestGetMaxTokens:
             "bedrock/au.anthropic.claude-sonnet-5",
             "bedrock/eu.anthropic.claude-sonnet-5",
             "bedrock/jp.anthropic.claude-sonnet-5",
+            "anthropic/claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            "vertex_ai/claude-sonnet-5-5",
+            "bedrock/anthropic.claude-sonnet-5-5",
+            "bedrock/global.anthropic.claude-sonnet-5-5",
+            "bedrock/us.anthropic.claude-sonnet-5-5",
+            "bedrock/au.anthropic.claude-sonnet-5-5",
+            "bedrock/eu.anthropic.claude-sonnet-5-5",
+            "bedrock/jp.anthropic.claude-sonnet-5-5",
         ],
     )
-    def test_claude_sonnet_5_model_max_tokens(self, monkeypatch, model):
+    def test_claude_sonnet_5_family_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-haiku-5-5",
+            "claude-haiku-5-5",
+            "vertex_ai/claude-haiku-5-5",
+            "bedrock/anthropic.claude-haiku-5-5",
+            "bedrock/global.anthropic.claude-haiku-5-5",
+            "bedrock/us.anthropic.claude-haiku-5-5",
+            "bedrock/au.anthropic.claude-haiku-5-5",
+            "bedrock/eu.anthropic.claude-haiku-5-5",
+            "bedrock/jp.anthropic.claude-haiku-5-5",
+        ],
+    )
+    def test_claude_haiku_5_5_model_max_tokens(self, monkeypatch, model):
         fake_settings = type('', (), {
             'config': type('', (), {
                 'custom_model_max_tokens': 0,
