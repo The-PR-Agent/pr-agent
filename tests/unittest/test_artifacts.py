@@ -1,6 +1,7 @@
 import os
 from unittest.mock import patch
 
+from jinja2 import Environment
 import pytest
 
 from pr_agent.algo.artifacts import (
@@ -158,6 +159,23 @@ class TestLoadArtifactContext:
         assert sum(len(artifact["content"]) for artifact in context["artifacts"]) <= 100
         assert context["artifacts"][0]["target_tools"] == frozenset(SUPPORTED_ARTIFACT_TOOLS)
         assert context["artifacts"][1]["target_tools"] == frozenset({"pr_questions"})
+
+    def test_skips_artifact_with_non_string_path(self, tmp_path):
+        artifact = tmp_path / "valid.txt"
+        artifact.write_text("valid")
+        settings = {
+            "enable": True,
+            "artifact_path": [123, {"path": str(artifact)}],
+            "max_artifact_size": 50000,
+        }
+        with patch("pr_agent.algo.artifacts.get_settings") as mock_gs:
+            mock_gs.return_value.get.return_value = settings
+            with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):
+                context = load_artifact_context()
+
+        assert context is not None
+        assert context["label"] == "valid.txt"
+        assert context["content"] == "valid"
 
 
 class TestResolveArtifactPath:
@@ -450,6 +468,38 @@ class TestInjectArtifactContext:
         assert get_artifact_context("pr_reviewer")["content"] == "FAILED: test_login"
         assert get_artifact_context("pr_questions")["content"] == "GRAPH_CONTEXT"
         assert get_artifact_context("pr_description") is None
+
+    def test_two_artifact_blocks_render_for_review_only(self, settings, report, tmp_path):
+        second = tmp_path / "coverage.xml"
+        second.write_text("COVERAGE_CONTEXT")
+        settings.set("artifacts.enable", True)
+        settings.set("artifacts.artifact_path", [
+            {
+                "path": str(report),
+                "artifact_label": "Tests",
+                "target_tools": ["pr_reviewer"],
+            },
+            {
+                "path": str(second),
+                "artifact_label": "Coverage",
+                "target_tools": ["pr_reviewer"],
+            },
+        ])
+        with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):
+            inject_artifact_context()
+
+        template = Environment().from_string(
+            "{% if artifact_context %}{% for artifact in artifact_context.get('artifacts', [artifact_context]) %}"
+            "Label: {{ artifact.label }}\n{{ artifact.content }}\n{% endfor %}{% endif %}"
+        )
+        review = template.render(artifact_context=get_artifact_context("pr_reviewer"))
+        improve = template.render(artifact_context=get_artifact_context("pr_code_suggestions"))
+
+        assert "Label: Tests" in review
+        assert "Label: Coverage" in review
+        assert "FAILED: test_login" in review
+        assert "COVERAGE_CONTEXT" in review
+        assert improve == ""
 
     def test_running_twice_does_not_duplicate_the_artifact(self, settings, report):
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}):

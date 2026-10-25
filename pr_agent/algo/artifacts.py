@@ -205,6 +205,11 @@ def load_artifact_context() -> ArtifactPromptContext | None:
     remaining_size = max_size
     for entry in _artifact_entries(artifacts_settings):
         path_value = entry.get("path", entry.get("artifact_path", ""))
+        if path_value and not isinstance(path_value, str):
+            get_logger().warning(
+                f"Skipping artifact entry with a non-string path: {path_value!r}"
+            )
+            continue
         artifact_path = resolve_artifact_path(path_value) if path_value else None
         if not artifact_path:
             get_logger().warning(

@@ -447,12 +447,19 @@ The remaining knobs live in the `[artifacts]` section of your configuration:
 ```toml
 [artifacts]
 enable = false                                              # auto-enabled when artifact_path is set
-artifact_path = ""                                          # relative to GITHUB_WORKSPACE, or absolute
+artifact_path = [
+  { path = "reports/pytest.xml" },
+  { path = "reports/coverage.xml" },
+]
 artifact_instructions = ""                                  # empty = a generic "treat this as CI context" instruction
-artifact_label = ""                                         # empty = the file's name
+artifact_label = ""                                         # shared label; empty = each file's name
 target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
 max_artifact_size = 50000                                   # characters; longer files are truncated with a marker
 ```
+
+`artifact_path` may also be a single string. For multiple files, each entry can set
+`path`, `artifact_label`, `artifact_instructions`, `target_tools`, and `truncate_from` on
+its own line; an empty shared or per-file `artifact_label` falls back to that file's name.
 
 CI artifacts are checked for recognizable URL credentials, authorization headers, standard GitLab tokens, AWS access keys, and common credential assignments before model submission, with redaction matches logged only by type and count; this pattern-based check does not recognize every secret format, so use sanitized CI logs as input.
 
