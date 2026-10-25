@@ -104,6 +104,25 @@ def _mark_action_failed():
         status.failed = True
 
 
+def _settings_pr_url(event_payload, event_name):
+    """The PR url repo-level settings load from, whatever shape the event has.
+
+    PR events carry it top-level; comment events under "issue"; workflow_run only
+    resolves it for pull-request-originated runs, like its own branch below.
+    """
+    pull_request = (
+        event_payload.get("pull_request")
+        or event_payload.get("issue", {}).get("pull_request")
+        or {}
+    )
+    pr_url = pull_request.get("html_url")
+    if event_name == "workflow_run":
+        workflow_run = event_payload.get("workflow_run", {})
+        if workflow_run.get("event") in ("pull_request", "pull_request_target"):
+            pr_url = (workflow_run.get("pull_requests") or [{}])[0].get("url")
+    return pr_url
+
+
 def _fail_on_recorded_tool_error():
     # Fail the Action on a failure the tool recorded but swallowed (propagate_tool_errors=false),
     # so a PR that got no review is not reported green (#3705). The operator opts out with
@@ -244,7 +263,7 @@ async def run_action():
 
     try:
         get_logger().info("Applying repo settings")
-        pr_url = event_payload.get("pull_request", {}).get("html_url")
+        pr_url = _settings_pr_url(event_payload, GITHUB_EVENT_NAME)
         if pr_url:
             apply_repo_settings(pr_url)
             get_logger().info(f"enable_custom_labels: {get_settings().config.enable_custom_labels}")
@@ -480,10 +499,8 @@ async def run_action():
             get_logger().info("Skipping workflow_run: pull_requests[0] has no url")
             return
 
-        try:
-            apply_repo_settings(pr_url)
-        except Exception as e:
-            get_logger().warning(f"github action: failed to apply repo settings for workflow_run: {e}")
+        # Repo settings were already applied before the key gate, which judges the
+        # provider they select.
 
         # Inject artifact context after repo settings are applied for workflow_run
         _inject_artifact_context()
