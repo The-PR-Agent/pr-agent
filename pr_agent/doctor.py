@@ -74,7 +74,7 @@ def missing_provider_key_env_vars() -> tuple[str, tuple[str, ...]] | None:
     ok, _detail = _check_provider_key(LiteLLMAIHandler(), provider)
     # Ambient auth (Azure AD, the AWS credential chain) or a custom endpoint needs no static key: the run decides.
     settings = get_settings()
-    ambient = settings.get("AZURE_AD.CLIENT_ID", None) or provider.startswith("bedrock")
+    ambient = settings.get("AZURE_AD.CLIENT_ID", None) or provider.startswith(("bedrock", "azure"))
     if ok or ambient or settings.get(f"{provider}.api_base", None):
         return None
     return provider, PROVIDER_API_KEY_ENV_VARS.get(provider, ())

@@ -83,6 +83,12 @@ def test_azure_ad_ambient_auth_defers_to_the_run(monkeypatch, cli_mode_settings)
     assert doctor.missing_provider_key_env_vars() is None
 
 
+def test_azure_provider_defers_to_the_run_without_azure_ad_settings(monkeypatch, cli_mode_settings):
+    _install_handler(monkeypatch, key=None)
+    get_settings().set("config.model", "azure/gpt-4o")
+    assert doctor.missing_provider_key_env_vars() is None
+
+
 def test_bedrock_ambient_auth_defers_to_the_run(monkeypatch, cli_mode_settings):
     _install_handler(monkeypatch, key=None)
     get_settings().set("config.model", "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0")
