@@ -22,34 +22,34 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 
 1. In addition to editing your local configuration file, you can also change repository-configurable values by adding them to the command line:
 
-```
-python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructions="focus on the file: ..."
-```
+   ```
+   python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructions="focus on the file: ..."
+   ```
 
-Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See [Configuration Options](./configuration_options.md#local-configuration-file) for details.
+   Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See [Configuration Options](./configuration_options.md#local-configuration-file) for details.
 
 2. You can print results locally, without publishing them, by setting in `configuration.toml`:
 
-```
-[config]
-publish_output=false
-verbosity_level=2
-```
+   ```
+   [config]
+   publish_output=false
+   verbosity_level=2
+   ```
 
-This is useful for debugging or experimenting with different tools.
+   This is useful for debugging or experimenting with different tools.
 
 3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
-`github` **(default)**, `gitlab`, `bitbucket`, `azure`, `codecommit`, `local`, and `gitea`.
+   `github` **(default)**, `gitlab`, `bitbucket`, `azure`, `codecommit`, `local`, and `gitea`.
 
 4. For scripts that need a failed request to return a non-zero process status, enable tool error propagation:
 
-```bash
-python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
-```
+   ```bash
+   python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
+   ```
 
-With `config.propagate_tool_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated tool error makes the request fail or a tool records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
+   With `config.propagate_tool_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated tool error makes the request fail or a tool records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
 
-Tool error propagation is disabled by default, preserving the existing status 0 behavior for these tool failures. Argparse parse and usage errors continue to exit with status 2.
+   Tool error propagation is disabled by default, preserving the existing status 0 behavior for these tool failures. Argparse parse and usage errors continue to exit with status 2.
 
 ### CLI Health Check
 

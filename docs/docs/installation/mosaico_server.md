@@ -15,7 +15,7 @@ to find the latest PR URL or diff. Set `mosaico.context_history_max_tasks` (1 to
 this limit. Task history is kept in memory, so send the input again after a restart or
 when routing a follow-up to a different server replica.
 
-### What the mode is
+## What the mode is
 
 The A2A server exposes three endpoints:
 
@@ -49,7 +49,7 @@ hand-maintained), and the required
 advertised as disabled, which is load-bearing: the reference agent selects
 `message/send` vs `message/stream` from that capability.
 
-### Request limits and caller authentication
+## Request limits and caller authentication
 
 MOSAICO uses the shared `config.max_webhook_request_body_bytes` limit (5 MiB by default),
 including streamed bodies without a valid Content-Length. Oversized requests return HTTP 413
@@ -89,7 +89,7 @@ script's environment when the server map is configured. For the Compose overlay,
 `environment` mapping through your secret configuration. Configure the reference caller's
 credential separately. Both probes continue to work without a token in anonymous mode.
 
-### Run the standalone container
+## Run the standalone container
 
 The server boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:
 
@@ -108,7 +108,7 @@ Pin a version tag in production (see the "Immutable releases and version tags" n
 [installation page](./index.md)); the plain `mosaico_agent`
 rolling tag moves to the newest build on every release.
 
-### Environment variables
+## Environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -138,7 +138,7 @@ curl -s http://<host>:<port>/.well-known/agent-card.json \
 If that prints a `localhost` URL, the deployment is wrong.
 :::
 
-### Deploy into the mosaico-demonstrator
+## Deploy into the mosaico-demonstrator
 
 The [`docker/mosaico/`](https://github.com/the-pr-agent/pr-agent/tree/main/docker/mosaico)
 directory is a full deployment bundle (compose overlay, registration template, env template,
@@ -164,7 +164,7 @@ should not be "fixed": the repository entry is `pr-agent-solution-agent` (what
 `register-agent.py` looks the agent up by), while the card's own `name` is
 `"PR-Agent Solution Agent"` (a display string).
 
-### Verify
+## Verify
 
 ```bash
 ./smoke_test.sh
@@ -178,7 +178,7 @@ in the bundle directory gives one of two outcomes:
   copied from `pr-agent.env.example`); the script additionally exercised `GET /health` and an
   A2A `SendMessage` review over an inline diff.
 
-### Troubleshooting
+## Troubleshooting
 
 - **The container stays `unhealthy` and registration never runs.** `/health` is a live LLM
   probe and returns `503` on bad or missing credentials — this is intended. Check
@@ -190,7 +190,7 @@ in the bundle directory gives one of two outcomes:
   inside the registration container on the Docker network. Set `PR_AGENT_HOST` explicitly to an
   address reachable from inside Docker (for example the host's LAN IP, or `host.docker.internal`).
 
-### Keep reading
+## Keep reading
 
 The [bundle README](https://github.com/the-pr-agent/pr-agent/blob/main/docker/mosaico/README.md)
 is the canonical deep dive for this surface and the source of the summary above; it covers the

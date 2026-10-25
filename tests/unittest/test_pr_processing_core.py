@@ -322,6 +322,88 @@ def test_extended_diff_total_counts_the_rendered_join(add_line_numbers):
     assert total == handler.prompt_tokens + handler.count_tokens("\n".join(patches))
 
 
+@pytest.mark.parametrize("extra_capacity", [-1, 0, 1])
+def test_extended_diff_defers_file_counts_only_below_the_threshold(extra_capacity):
+    handler = CharacterTokenHandler(prompt_tokens=11)
+    files = _rendered_budget_files()[:2]
+    files.insert(1, FilePatchInfo("", "", "", "empty.py"))
+    files.append(FilePatchInfo("old", "", "", "unreadable.py", content_fetch_failed=True))
+    patches, total, per_patch = pr_processing.pr_generate_extended_diff([{"files": files}], handler, False)
+    for file in files:
+        file.tokens = -1
+    handler.count_calls = 0
+
+    result = pr_processing.pr_generate_extended_diff(
+        [{"files": files}], handler, False,
+        skip_file_tokens_below=total - handler.prompt_tokens + extra_capacity,
+    )
+
+    assert result[:2] == (patches, total)
+    if extra_capacity > 0:
+        assert result[2] == []
+        assert [file.tokens for file in files] == [-1] * len(files)
+        assert handler.count_calls == 2  # Keep both exact raw and stripped counts.
+    else:
+        assert result[2] == per_patch
+        assert [file.tokens for file in files] == [per_patch[0], -1, *per_patch[1:]]
+
+
+@pytest.mark.parametrize("packing_path", ["single", "multi"])
+def test_full_diff_paths_skip_unused_individual_counts(monkeypatch, packing_path):
+    handler = CharacterTokenHandler(prompt_tokens=11)
+    patches, _, _ = pr_processing.pr_generate_extended_diff(
+        [{"files": _rendered_budget_files()}], handler, False,
+    )
+    handler.count_calls = 0
+    provider = FakeProvider(_rendered_budget_files())
+    monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, **kwargs: 10_000)
+    monkeypatch.setattr(pr_processing, "extend_patch", lambda original, patch, *args, **kwargs: patch)
+
+    if packing_path == "single":
+        result = pr_processing.get_pr_diff(provider, handler, "model")
+        assert result == "\n".join(patches)
+    else:
+        result = pr_processing.get_pr_multi_diffs(provider, handler, "model", add_line_numbers=False)
+        assert result == ["\n".join(patches)]
+
+    assert handler.count_calls == 2
+    assert all(file.tokens == -1 for file in provider.files)
+
+
+@pytest.mark.parametrize("packing_path", ["single", "multi", "metadata"])
+def test_repacking_preserves_extended_patch_size_order(monkeypatch, packing_path):
+    context = "context " * 60 + "\n"
+    changed = "new " * 12 + "\n"
+    files = [
+        FilePatchInfo(context + "old\n", context + "x\n", "@@ -2 +2 @@\n-old\n+x\n", "a.py",
+                      edit_type=EDIT_TYPE.MODIFIED),
+        FilePatchInfo("old\n", changed, "@@ -1 +1 @@\n-old\n+" + changed, "b.py",
+                      edit_type=EDIT_TYPE.MODIFIED),
+    ]
+    # Pack the smaller raw patch first because it has more extended context.
+    assert len(files[0].patch) < len(files[1].patch)
+    filtered = ["x" * 1_000 + ".map"] if packing_path == "metadata" else []
+    provider = FakeProvider(list(reversed(files)), filtered_names=filtered)
+    handler = CharacterTokenHandler(prompt_tokens=0)
+    monkeypatch.setitem(get_settings().config, "patch_extra_lines_before", 1)
+    monkeypatch.setitem(get_settings().config, "patch_extra_lines_after", 0)
+    monkeypatch.setitem(get_settings().config, "allow_dynamic_context", False)
+    monkeypatch.setattr(
+        token_budget, "get_max_tokens", lambda model, **kwargs: 2_500 if filtered else 1_700,
+    )
+
+    if packing_path == "multi":
+        result = "\n".join(pr_processing.get_pr_multi_diffs(provider, handler, "model", add_line_numbers=False))
+    else:
+        result = pr_processing.get_pr_diff(provider, handler, "model")
+
+    assert "context" not in result  # Require repacking of the full extended diff.
+    assert result.index("a.py") < result.index("b.py")
+    assert files[0].tokens > files[1].tokens > 0
+    if filtered:
+        assert filtered[0] in result
+
+
 @pytest.mark.parametrize("add_line_numbers", [False, True])
 @pytest.mark.parametrize("whitespace", ["  ", "\t"])
 def test_extended_diff_preserves_changed_trailing_whitespace(add_line_numbers, whitespace):

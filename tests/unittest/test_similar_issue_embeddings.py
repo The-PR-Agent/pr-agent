@@ -235,12 +235,12 @@ def query_tool(monkeypatch, request):
                 return SimpleNamespace(to_dict=lambda: {})
             if backend == "lancedb":
                 return [{}]
-            return [SimpleNamespace(payload={}, score=0.9)]
+            return SimpleNamespace(points=[SimpleNamespace(payload={}, score=0.9)])
         if backend == "pinecone":
             return SimpleNamespace(to_dict=lambda: {"matches": [{"id": rid, "score": score} for rid, score in rows]})
         if backend == "lancedb":
             return [{"id": rid, "_distance": 1 - score} for rid, score in rows]
-        return [SimpleNamespace(payload={"id": rid}, score=score) for rid, score in rows]
+        return SimpleNamespace(points=[SimpleNamespace(payload={"id": rid}, score=score) for rid, score in rows])
 
     class Builder:
         def distance_type(self, value):
@@ -292,7 +292,7 @@ def query_tool(monkeypatch, request):
     tool.pinecone_namespace = psi._pinecone_namespace("example/repo")
     tool.qdrant_collection_name = "issues-v2"
     tool.pc = SimpleNamespace(Index=lambda name: SimpleNamespace(query=query))
-    tool.qdrant = SimpleNamespace(search=query)
+    tool.qdrant = SimpleNamespace(query_points=query)
     tool.table = SimpleNamespace(search=lambda vector: Builder())
     tool.git_provider = SimpleNamespace(
         _parse_issue_url=lambda url: ("example/repo", 1), repo_obj=SimpleNamespace(get_issue=get_issue),
@@ -309,7 +309,7 @@ def query_tool(monkeypatch, request):
                                 filter=("metadata.repo='example-repo'", True))
         else:
             assert call["collection_name"] == "issues-v2"
-            assert call["query_vector"] == [0.5]
+            assert call["query"] == [0.5]
             assert call["with_payload"] is True
             condition, = call["query_filter"].must
             assert (condition.key, condition.match.value) == ("metadata.repo", "example-repo")

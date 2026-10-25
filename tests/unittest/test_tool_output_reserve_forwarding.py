@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -28,7 +28,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
             {"pr_id": "repo#1"},
             {"return_remaining_files": True},
         ),
-        (questions_module.PRQuestions, questions_module, {}, {}),
+        (questions_module.PRQuestions, questions_module, {}, {"return_remaining_files": True}),
         (update_changelog_module.PRUpdateChangelog, update_changelog_module, {}, {"return_remaining_files": True}),
     ],
     ids=["add-docs", "generate-labels", "questions", "update-changelog"],
@@ -52,6 +52,8 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
     tool.ai_handler = SimpleNamespace(get_output_token_reserve=output_token_reserve)
     tool.vars = {"diff": "", "conversation_history": ""}
     prediction = "labels: []\n" if tool_class is generate_labels_module.PRGenerateLabels else "prediction"
+    if tool_class is add_docs_module.PRAddDocs:
+        prediction = "Code Documentation: []\n"
     tool._get_prediction = AsyncMock(return_value=prediction)
     for name, value in attributes.items():
         setattr(tool, name, value)
@@ -217,10 +219,10 @@ async def test_add_docs_removes_temporary_comment_after_terminal_failure(monkeyp
 
     await tool.run()
 
-    tool.git_provider.publish_comment.assert_called_once_with(
-        "Generating Documentation...",
-        is_temporary=True,
-    )
+    assert tool.git_provider.publish_comment.call_args_list == [
+        call("Generating Documentation...", is_temporary=True),
+        call("Failed to generate code documentation for this PR."),
+    ]
     tool.git_provider.remove_initial_comment.assert_called_once_with()
 
 

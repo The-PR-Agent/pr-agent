@@ -83,11 +83,20 @@ def _models_tried(git_provider, model_type=ModelType.REGULAR, fail=()):
 
 
 class TestCountHunks:
-    def test_counts_hunk_headers_across_files(self):
-        assert count_hunks([_file("a.py", 2), _file("b.py", 3)]) == 5
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    def test_counts_hunk_headers_across_files(self, newline):
+        files = [_file(name, 0, patch=_patch(hunks).replace("\n", newline))
+                 for name, hunks in (("a.py", 2), ("b.py", 3))]
+        assert count_hunks(files) == 5
 
-    def test_patch_without_headers_counts_as_one_hunk(self):
-        assert count_hunks([_file("a.py", 0, patch="+whole file\n"), _file("b.py", 0, patch="")]) == 1
+    @pytest.mark.parametrize("empty_patch", ["", " \t\r\n\u2028"])
+    def test_patch_without_headers_counts_as_one_hunk(self, empty_patch):
+        assert count_hunks([_file("a.py", 0, patch="+whole file\n"), _file("b.py", 0, patch=empty_patch)]) == 1
+
+    @pytest.mark.parametrize("separator", ["\r", "\f", "\x85", "\u2028", "\u2029"])
+    def test_source_separators_do_not_create_hunk_headers(self, separator):
+        patch = f"@@ -1 +1 @@\n-old\n+new{separator}@@ ordinary source text\n"
+        assert count_hunks([_file("a.py", 0, patch=patch)]) == 1
 
     def test_no_files(self):
         assert count_hunks([]) == 0
@@ -96,6 +105,13 @@ class TestCountHunks:
 class TestRouting:
     def test_small_pr_routes_to_the_first_matching_rule(self, settings):
         assert _models_tried(_pr(num_files=1, hunks_per_file=2)) == ["tiny-model"]
+
+    def test_unicode_source_separator_does_not_change_model_selection(self, settings):
+        settings.set("model_routing.rules", [{"max_hunks": 1, "model": "tiny-model"}])
+        patch = '@@ -1 +1 @@\n-value = "old"\n+value = "new\u2028@@ literal"\n'
+        provider = _Provider([_file("a.py", 0, patch=patch)])
+
+        assert _models_tried(provider) == ["tiny-model"]
 
     def test_medium_pr_skips_to_the_next_rule(self, settings):
         assert _models_tried(_pr(num_files=2, hunks_per_file=3)) == ["small-model"]

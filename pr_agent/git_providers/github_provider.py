@@ -11,6 +11,7 @@ from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
 from github.Commit import Commit
+from github.GithubObject import GithubObject
 from github.Issue import Issue
 from jwt.exceptions import PyJWTError
 from requests.exceptions import RequestException
@@ -94,6 +95,14 @@ def _is_github_rate_limit_error(error: GithubException) -> bool:
 def _is_permanent_github_error(error: GithubException) -> bool:
     # Keep potentially transient client errors eligible for the existing retry policy.
     return error.status in (400, 401, 403, 404, 410, 422) and not _is_github_rate_limit_error(error)
+
+
+def _review_comment_root_id(comment) -> int:
+    # Read the list response through the base getter: the completable raw_data getter
+    # fetches the comment again. Reading in_reply_to_id also fetches root comments,
+    # because GitHub omits that field on roots.
+    payload = GithubObject.raw_data.fget(comment)
+    return payload.get("in_reply_to_id") or comment.id
 
 
 class GithubProvider(GitProvider):
@@ -1051,7 +1060,7 @@ class GithubProvider(GitProvider):
             List of comments in the same thread
         """
         try:
-            # Fetch all comments with a single API call
+            # Fetch the review comments once, including all pages.
             all_comments = list(self.pr.get_comments())
 
             # Find the target comment by ID
@@ -1060,11 +1069,11 @@ class GithubProvider(GitProvider):
                 return []
 
             # Get root comment id
-            root_comment_id = target_comment.raw_data.get("in_reply_to_id", target_comment.id)
+            root_comment_id = _review_comment_root_id(target_comment)
             # Build the thread - include the root comment and all replies to it
             thread_comments = [
                 c for c in all_comments if
-                c.id == root_comment_id or c.raw_data.get("in_reply_to_id") == root_comment_id
+                _review_comment_root_id(c) == root_comment_id
             ]
 
 

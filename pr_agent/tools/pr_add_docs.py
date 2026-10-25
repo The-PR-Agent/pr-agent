@@ -65,10 +65,20 @@ class PRAddDocs:
                 temporary_comment_published = True
 
             get_logger().info('Preparing PR documentation...')
-            await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
+            try:
+                data = await retry_with_fallback_models(self._prepare_prediction, git_provider=self.git_provider)
+            except Exception as prediction_error:
+                if (
+                    get_settings().config.publish_output
+                    and not isinstance(prediction_error, IncompleteProviderPullRequestFilesError)
+                ):
+                    try:
+                        self.git_provider.publish_comment("Failed to generate code documentation for this PR.")
+                    except Exception as comment_error:
+                        get_logger().warning(f"Failed to publish the documentation failure comment: {comment_error}")
+                raise
             if self.prediction is None:
                 return
-            data = self._prepare_pr_code_docs()
             if (not data) or ("Code Documentation" not in data):
                 get_logger().info('No code documentation found for PR.')
                 return
@@ -103,6 +113,7 @@ class PRAddDocs:
                     )
 
     async def _prepare_prediction(self, model: str):
+        self.prediction = None
         get_logger().info('Getting PR diff...')
 
         variables = copy.deepcopy(self.vars)
@@ -151,6 +162,7 @@ class PRAddDocs:
 
         get_logger().info('Getting AI prediction...')
         self.prediction = await self._get_prediction(model)
+        return self._prepare_pr_code_docs()
 
     async def _get_prediction(self, model: str):
         system_prompt = self._attempt_system_prompt
@@ -164,14 +176,35 @@ class PRAddDocs:
         return response
 
     def _prepare_pr_code_docs(self) -> dict:
+        if not isinstance(self.prediction, str):
+            raise FallbackEligibleError("The model did not return a Code Documentation string")
         docs = self.prediction.strip()
         data = load_yaml(docs)
         if isinstance(data, list):
             data = {'Code Documentation': data}
+        if isinstance(data, dict) and 'Code Documentation' in data and data['Code Documentation'] is None:
+            data['Code Documentation'] = []
         if not isinstance(data, dict) or not isinstance(data.get('Code Documentation'), list):
             get_logger().warning("The model did not return a Code Documentation list",
                                  artifact={'prediction': docs})
-            return {'Code Documentation': []}
+            raise FallbackEligibleError("The model did not return a Code Documentation list")
+        required_fields = {'relevant file', 'relevant line', 'doc placement', 'documentation'}
+
+        def has_usable_fields(entry):
+            if not isinstance(entry, dict) or not required_fields.issubset(entry):
+                return False
+            if not all(isinstance(entry[field], str) for field in ('relevant file', 'doc placement', 'documentation')):
+                return False
+            if not entry['relevant file'].strip() or not entry['doc placement'].strip():
+                return False
+            try:
+                int(entry['relevant line'])
+            except (TypeError, ValueError, OverflowError):
+                return False
+            return True
+
+        if data['Code Documentation'] and not any(has_usable_fields(entry) for entry in data['Code Documentation']):
+            raise FallbackEligibleError("The model did not return any documentation entries")
         return data
 
     def push_inline_docs(self, data):

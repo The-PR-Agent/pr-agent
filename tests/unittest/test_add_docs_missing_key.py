@@ -1,6 +1,7 @@
 """Clear the progress comment when an /add_docs response carries no documentation."""
 import asyncio
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from opentelemetry.trace import StatusCode
@@ -14,6 +15,7 @@ from pr_agent.git_providers.git_provider import (
     IncompletePullRequestFilesError,
 )
 from pr_agent.tools.pr_add_docs import PRAddDocs, get_suggestion_fence
+from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 DOCUMENTED = """Code Documentation:
 - relevant file: |
@@ -90,7 +92,7 @@ def publish_output():
 
 def run(prediction, monkeypatch, provider=None):
     async def fake_retry(fn=None, model_type=None, **kwargs):
-        return prediction
+        return tool._prepare_pr_code_docs()
 
     monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fake_retry)
     tool = PRAddDocs.__new__(PRAddDocs)
@@ -120,7 +122,7 @@ async def test_routed_publication_outcome_with_empty_run_details(
     tool.prediction = DOCUMENTED_TWICE
 
     async def fake_retry(*_args, **_kwargs):
-        return DOCUMENTED_TWICE
+        return tool._prepare_pr_code_docs()
 
     monkeypatch.setattr("pr_agent.tools.pr_add_docs.retry_with_fallback_models", fake_retry)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
@@ -331,28 +333,108 @@ def test_no_documentation_comment_return_value_is_not_terminal_publication_failu
     assert command_failed() is False
 
 
-@pytest.mark.parametrize("prediction, reason", [
-    ("No documentation needed for this PR.\n", "the model answered in prose"),
-    ("documentation:\n- relevant file: src/app.py\n", "the model renamed the key"),
-    ("Code Documentation:\n", "the model emitted the key with no value"),
-    ("::: not : valid : yaml :::\n\t- [", "the response could not be parsed at all"),
-])
-def test_clear_the_progress_comment_when_nothing_was_produced(publish_output, monkeypatch,
-                                                              prediction, reason):
-    """The 'Generating Documentation...' placeholder must not be left behind."""
-    provider = run(prediction, monkeypatch)
-
-    assert provider.initial_comment_removed, reason
+@pytest.fixture
+def fallback_tool(publish_output, monkeypatch):
+    settings = {
+        "config.model": "primary-model",
+        "config.fallback_models": ["fallback-model"],
+        "config.propagate_tool_errors": False,
+        "model_routing.enable": False,
+        "openai.deployment_id": None,
+        "openai.fallback_deployments": [],
+    }
+    snapshot = snapshot_settings(settings)
+    for key, value in settings.items():
+        get_settings().set(key, value)
+    tool = PRAddDocs.__new__(PRAddDocs)
+    tool.git_provider = FakeGitProvider()
+    tool.ai_handler = Mock()
+    tool.vars = {"diff": ""}
+    tool.prediction = None
+    tool._get_prediction = AsyncMock(return_value=DOCUMENTED)
+    budget = Mock()
+    budget.fit_prompt_variable.return_value = SimpleNamespace(
+        optional_text="diff", system_prompt="system", user_prompt="user"
+    )
+    monkeypatch.setattr("pr_agent.tools.pr_add_docs.AttemptTokenBudget.for_prompt_attempt", lambda *_a, **_kw: budget)
+    monkeypatch.setattr("pr_agent.tools.pr_add_docs.get_pr_diff", lambda *_a, **_kw: "diff")
+    init_run_details()
+    yield tool
+    restore_settings(snapshot)
 
 
 @pytest.mark.parametrize("prediction", [
+    None,
+    pytest.param([{"type": "text", "text": DOCUMENTED}], id="non-text-model-response"),
+    "",
     "No documentation needed for this PR.\n",
     "documentation:\n- relevant file: src/app.py\n",
-    "Code Documentation:\n",
+    "Code Documentation: not a list\n",
+    "Code Documentation:\n- malformed entry\n- 123\n",
+    pytest.param("Code Documentation: [{}]\n", id="empty-documentation-object"),
+    pytest.param("Code Documentation:\n- documentation: missing location\n", id="missing-documentation-fields"),
+    pytest.param(DOCUMENTED.replace("relevant file: |\n    src/app.py", "relevant file: null"), id="null-file"),
+    pytest.param(DOCUMENTED.replace("relevant line: 1", "relevant line: not-an-integer"), id="invalid-line"),
+    pytest.param(DOCUMENTED.replace("doc placement: |\n    before", "doc placement: null"), id="null-placement"),
+    pytest.param(DOCUMENTED.replace('documentation: |\n    """Do the thing."""', 'documentation: null'),
+                 id="null-documentation"),
     "::: not : valid : yaml :::\n\t- [",
 ])
-def test_tell_the_user_that_nothing_was_produced(publish_output, monkeypatch, prediction):
-    """A command that ran must leave a result, never just a stale placeholder."""
-    provider = run(prediction, monkeypatch)
+def test_invalid_response_uses_fallback_before_publishing(fallback_tool, prediction):
+    fallback_tool._get_prediction.side_effect = [prediction, DOCUMENTED]
 
-    assert results(provider) == ["No code documentation found to improve this PR."]
+    asyncio.run(fallback_tool.run())
+
+    assert fallback_tool._get_prediction.await_args_list == [call("primary-model"), call("fallback-model")]
+    assert [len(batch) for batch in fallback_tool.git_provider.suggestions] == [1]
+    assert results(fallback_tool.git_provider) == []
+    assert fallback_tool.git_provider.initial_comment_removed
+    assert command_failed() is False
+
+
+@pytest.mark.parametrize("prediction", ["[]", "Code Documentation: []", "Code Documentation:\n"])
+def test_explicit_empty_response_does_not_use_fallback(fallback_tool, prediction):
+    fallback_tool._get_prediction.return_value = prediction
+
+    asyncio.run(fallback_tool.run())
+
+    fallback_tool._get_prediction.assert_awaited_once_with("primary-model")
+    assert fallback_tool.git_provider.suggestions == []
+    assert results(fallback_tool.git_provider) == ["No code documentation found to improve this PR."]
+    assert fallback_tool.git_provider.initial_comment_removed
+    assert command_failed() is False
+
+
+def test_mixed_documentation_entries_keep_valid_suggestions_without_fallback(fallback_tool):
+    fallback_tool._get_prediction.return_value = DOCUMENTED.replace("Code Documentation:\n", "- malformed entry\n")
+
+    asyncio.run(fallback_tool.run())
+
+    fallback_tool._get_prediction.assert_awaited_once_with("primary-model")
+    assert [len(batch) for batch in fallback_tool.git_provider.suggestions] == [1]
+    assert command_failed() is False
+
+
+def test_empty_documentation_value_does_not_use_fallback(fallback_tool):
+    fallback_tool._get_prediction.return_value = FILTERED_DOCUMENTATION
+
+    asyncio.run(fallback_tool.run())
+
+    fallback_tool._get_prediction.assert_awaited_once_with("primary-model")
+    assert fallback_tool.git_provider.suggestions == []
+    assert results(fallback_tool.git_provider) == []
+    assert command_failed() is False
+
+
+@pytest.mark.parametrize("comment_error", [None, "Failed to generate code documentation"])
+def test_exhausted_invalid_responses_report_failure_and_clear_progress(fallback_tool, comment_error):
+    fallback_tool._get_prediction.return_value = "not a documentation response"
+    fallback_tool.git_provider.comment_error = comment_error
+
+    asyncio.run(fallback_tool.run())
+
+    assert fallback_tool._get_prediction.await_args_list == [call("primary-model"), call("fallback-model")]
+    assert fallback_tool.git_provider.suggestions == []
+    assert results(fallback_tool.git_provider) == ["Failed to generate code documentation for this PR."]
+    assert fallback_tool.git_provider.initial_comment_removed
+    assert command_failed() is True

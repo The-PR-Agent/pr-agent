@@ -285,7 +285,7 @@ The description should be comprehensive and detailed, indicating when to add the
 ## Usage Tips
 
 :::tip[Automation]
-- When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app) for the describe tool is:
+When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app) for the describe tool is:
 ```
 pr_commands = ["/describe", ...]
 ```
@@ -299,8 +299,9 @@ meaning the `describe` tool will run automatically on every PR, with the default
    ```
 
    the tool will replace every marker of the form `pr_agent:marker_name` in the PR description with the relevant content, where `marker_name` is one of the following:
-         *`type`: the PR type.
-         * `summary`: the PR summary.
-         * `walkthrough`: the PR walkthrough.
+
+   - `type`: the PR type.
+   - `summary`: the PR summary.
+   - `walkthrough`: the PR walkthrough.
 
 - Note that when markers are enabled, if the original PR description does not contain any markers, the tool will not alter the description at all.

@@ -85,7 +85,10 @@ def _configure_langfuse() -> None:
         return
     try:
         from langfuse import Langfuse
-        Langfuse(blocked_instrumentation_scopes=["a2a-python-sdk"])
+        # Preserve pre-v4 export behavior while suppressing only A2A transport spans.
+        Langfuse(should_export_span=lambda span: (
+            span.instrumentation_scope is None or span.instrumentation_scope.name != "a2a-python-sdk"
+        ))
         get_logger().info("MOSAICO: Langfuse client initialised (a2a-python-sdk spans blocked).")
     except Exception as e:
         get_logger().warning(f"MOSAICO: Langfuse client init failed (continuing untraced): {e}")

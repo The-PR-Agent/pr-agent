@@ -3396,7 +3396,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 )
             content = response["choices"][0]['message']['content']
             finish_reason = response["choices"][0]["finish_reason"]
-            if not content:
+            if not content or (isinstance(content, str) and content.isspace()):
                 get_logger().warning(
                     f"Empty content in model response, finish_reason: {finish_reason}")
                 error_message = f"Empty content in model response (finish_reason: {finish_reason})"

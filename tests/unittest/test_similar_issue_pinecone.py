@@ -83,6 +83,7 @@ def _stub_embeddings(monkeypatch):
     embedding = [0.5, 0.5]
     monkeypatch.setattr(psi, "get_settings", lambda: SettingsStub)
     monkeypatch.setattr(psi, "get_max_tokens", lambda model: 8192)
+    monkeypatch.setattr(psi, "TokenHandler", lambda: SimpleNamespace(count_tokens=lambda text: 1))
     monkeypatch.setattr(psi, "_embed_with_fallback",
                         lambda texts: [embedding for _ in texts])
     monkeypatch.setattr(psi.time, "sleep", lambda seconds: None)
@@ -182,14 +183,28 @@ def test_pinecone_upsert_passes_batch_size_and_max_concurrency(monkeypatch):
     assert "batch_size" not in upsert_calls[1]
 
 
-def test_pinecone_existing_index_fetches_from_repo_namespace(monkeypatch):
+@pytest.mark.parametrize("scan_limit, fail_lookup", [(0, False), (100, False), (101, False), (500, False), (101, True)])
+def test_pinecone_existing_index_fetches_in_bounded_repo_batches(monkeypatch, scan_limit, fail_lookup):
     fetches = []
+    scanned = []
+
+    def issue_pages():
+        pull_request = _make_issue(1000)
+        pull_request.pull_request = True
+        yield pull_request
+        for number in range(1, scan_limit + 2):
+            scanned.append(number)
+            yield _make_issue(number)
 
     class FakeIndex:
         def fetch(self, **kwargs):
             fetches.append(kwargs)
+            if not kwargs["ids"][0].startswith("example_issue_"):
+                assert len(scanned) == sum(len(call["ids"]) for call in fetches[1:])
+                if fail_lookup:
+                    raise RuntimeError("lookup failed")
             return SimpleNamespace(to_dict=lambda: {"vectors": {
-                kwargs["ids"][0]: {"metadata": {"repo": "example-repo"}},
+                id: {"metadata": {"repo": "example-repo"}} for id in reversed(kwargs["ids"])
             }})
 
     class FakePineconeClient:
@@ -211,7 +226,7 @@ def test_pinecone_existing_index_fetches_from_repo_namespace(monkeypatch):
             self.github_client = SimpleNamespace(
                 get_repo=lambda repo_name: SimpleNamespace(
                     full_name="Example/Repo",
-                    get_issues=lambda state: [_make_issue(7)],
+                    get_issues=lambda state: issue_pages(),
                 )
             )
 
@@ -226,22 +241,30 @@ def test_pinecone_existing_index_fetches_from_repo_namespace(monkeypatch):
     monkeypatch.setitem(sys.modules, "pinecone", fake_pinecone_module)
     monkeypatch.setattr(psi, "get_settings", lambda: SettingsStub)
     monkeypatch.setattr(psi, "get_git_provider", lambda: FakeProvider)
+    monkeypatch.setattr(SettingsStub.pr_similar_issue, "max_issues_to_scan", scan_limit)
+    monkeypatch.setattr(psi, "TokenHandler", lambda: SimpleNamespace(count_tokens=lambda text: 1))
+    monkeypatch.setattr(psi.PRSimilarIssue, "_update_index_with_issues",
+                        lambda *args, **kwargs: pytest.fail("lookup must not trigger an index write"))
+
+    if fail_lookup:
+        with pytest.raises(RuntimeError, match="lookup failed"):
+            psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+        assert len(fetches) == 2
+        return
 
     tool = psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
     pinecone_namespace = psi._pinecone_namespace("Example/Repo")
 
     assert tool.repo_name_for_index == "example-repo"
     assert tool.pinecone_namespace == pinecone_namespace
-    assert fetches == [
-        {
-            "ids": ["example_issue_example-repo"],
-            "namespace": pinecone_namespace,
-        },
-        {
-            "ids": ["issue_7.issue"],
-            "namespace": pinecone_namespace,
-        }
+    assert fetches[0] == {"ids": ["example_issue_example-repo"], "namespace": pinecone_namespace}
+    assert len(fetches) - 1 == (scan_limit + 99) // 100
+    assert all(0 < len(call["ids"]) <= 100 for call in fetches[1:])
+    assert all(call["namespace"] == pinecone_namespace for call in fetches)
+    assert [id for call in fetches[1:] for id in call["ids"]] == [
+        f"issue_{number}.issue" for number in range(1, scan_limit + 1)
     ]
+    assert scanned == list(range(1, scan_limit + 1))
 
 
 def test_pinecone_upsert_path_skips_index_creation(monkeypatch):
@@ -628,16 +651,17 @@ def test_pinecone_incremental_backfills_an_older_index_gap(monkeypatch):
     """
     store = {
         "issue_5.issue": "example-repo",
+        "issue_3.issue": "other-repo",
+        "issue_2.issue": "example-repo",
         "example_issue_example-repo": "example-repo",
     }
     upserted = []
 
     class FakeIndex:
         def fetch(self, **kwargs):
-            id = kwargs["ids"][0]
             return SimpleNamespace(to_dict=lambda: {
-                "vectors": {"id": {"metadata": {"repo": "example-repo"}}}
-                if id in store else {}
+                "vectors": {id: {"metadata": {"repo": store[id]}}
+                            for id in reversed(kwargs["ids"]) if id in store}
             })
 
         def upsert(self, **kwargs):
@@ -668,7 +692,7 @@ def test_pinecone_incremental_backfills_an_older_index_gap(monkeypatch):
             self.github_client = SimpleNamespace(
                 get_repo=lambda repo_name: SimpleNamespace(
                     full_name="Example/Repo",
-                    get_issues=lambda state: [_make_issue(5), _make_issue(4)],
+                    get_issues=lambda state: [_make_issue(number) for number in (5, 4, 3, 2)],
                 )
             )
 
@@ -688,13 +712,13 @@ def test_pinecone_incremental_backfills_an_older_index_gap(monkeypatch):
 
     assert "issue_4.issue" in store
     assert store["example_issue_example-repo"] == "example-repo"
-    issue_ids = {
+    issue_ids = [
         vector[0]
         for call in upserted
         for vector in call
         if vector[0] != "example_issue_example-repo"
-    }
-    assert issue_ids == {"issue_4.issue"}
+    ]
+    assert issue_ids == ["issue_4.issue", "issue_3.issue"]
 
 
 def test_pinecone_failed_incremental_write_triggers_full_reingest(monkeypatch):
@@ -713,10 +737,9 @@ def test_pinecone_failed_incremental_write_triggers_full_reingest(monkeypatch):
 
     class FakeIndex:
         def fetch(self, **kwargs):
-            id = kwargs["ids"][0]
             return SimpleNamespace(to_dict=lambda: {
-                "vectors": {"id": {"metadata": {"repo": "example-repo"}}}
-                if id in store else {}
+                "vectors": {id: {"metadata": {"repo": store[id]}}
+                            for id in kwargs["ids"] if id in store}
             })
 
         def upsert(self, **kwargs):

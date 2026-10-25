@@ -1445,16 +1445,6 @@ def find_line_number_of_relevant_line_in_file(diff_files: list[FilePatchInfo],
                                      artifact={"relevant_file": relevant_file})
                 continue
             else:
-                # Skip fuzzy normalization when the raw patch line matches exactly.
-                fuzzy_match_candidates = [line for line in patch_lines if line != NO_NEWLINE_AT_EOF_MARKER]
-                if relevant_line_in_file not in fuzzy_match_candidates:
-                    matches_difflib: list[str | Any] = difflib.get_close_matches(
-                        relevant_line_in_file, fuzzy_match_candidates, n=3, cutoff=0.93
-                    )
-                    if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
-                        relevant_line_in_file = matches_difflib[0]
-
-
                 def scan_patch_lines(is_match, patch_lines=patch_lines, absolute_position=absolute_position):
                     scan_delta = 0
                     scan_start2 = 0
@@ -1482,8 +1472,19 @@ def find_line_number_of_relevant_line_in_file(diff_files: list[FilePatchInfo],
                             return i, scan_start2 + scan_delta - 1
                     return -1, absolute_position
 
+                # Locate the original source line before fuzzy matching can rewrite it.
                 position, absolute_position = scan_patch_lines(
                     lambda line, rl=relevant_line_in_file: line == rl or line[1:] == rl)
+                if position == -1:
+                    fuzzy_match_candidates = [line for line in patch_lines if line != NO_NEWLINE_AT_EOF_MARKER]
+                    if relevant_line_in_file not in fuzzy_match_candidates:
+                        matches_difflib: list[str | Any] = difflib.get_close_matches(
+                            relevant_line_in_file, fuzzy_match_candidates, n=3, cutoff=0.93
+                        )
+                        if len(matches_difflib) == 1 and matches_difflib[0].startswith('+'):
+                            relevant_line_in_file = matches_difflib[0]
+                            position, absolute_position = scan_patch_lines(
+                                lambda line, rl=relevant_line_in_file: line == rl or line[1:] == rl)
                 if position == -1:
                     position, absolute_position = scan_patch_lines(
                         lambda line, rl=relevant_line_in_file: rl in line)

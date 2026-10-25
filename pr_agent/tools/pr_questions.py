@@ -26,6 +26,11 @@ from pr_agent.git_providers.git_provider import get_main_pr_language
 from pr_agent.log import get_logger
 from pr_agent.servers.help import HelpMessage
 
+NO_ANALYZABLE_FILES_NOTE = (
+    "Every file changed in this PR is excluded from analysis (for example lockfiles, generated "
+    "files, or files matched by the ignore settings), so there is no diff to answer this question from."
+)
+
 
 def _sanitize_slash_commands(text: str) -> str:
     # make sure no line starts with "/", so the published comment cannot trigger quick actions
@@ -72,6 +77,7 @@ class PRQuestions:
                                           get_settings().pr_questions_prompt.user)
         self.patches_diff = None
         self.prediction = None
+        self.no_analyzable_files = False
 
     def parse_args(self, args):
         return decode_user_text_args(args)
@@ -95,6 +101,15 @@ class PRQuestions:
                 get_logger().debug("Image path identified", artifact=img_path)
 
             await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.WEAK)
+
+            if getattr(self, "no_analyzable_files", False):
+                # No model was called, so there are no run details to report.
+                note = self._prepare_no_analyzable_files_answer()
+                if get_settings().config.publish_output:
+                    self._publish_answer(note)
+                else:
+                    get_settings().set("data.answer", NO_ANALYZABLE_FILES_NOTE)
+                return ""
 
             pr_comment = self._prepare_pr_answer()
             get_logger().debug("PR output", artifact=pr_comment)
@@ -222,12 +237,20 @@ class PRQuestions:
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        patches_diff = get_pr_diff(
+        output = get_pr_diff(
             self.git_provider,
             budget.token_handler,
             model,
+            return_remaining_files=True,
             output_token_reserve=output_token_reserve,
         )
+        patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
+        if not patches_diff and not remaining_files_list:
+            # Every changed file was filtered out (lockfile, asset, ignore rule), so no model can
+            # answer from the diff. Reply with a note instead of failing every model in the chain.
+            get_logger().info(f"PR has no analyzable files: {self.pr_url}, answering /ask with a note")
+            self.no_analyzable_files = True
+            return
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /ask request for {model}")
 
@@ -271,9 +294,15 @@ class PRQuestions:
         if model_answer_sanitized != model_answer:
             get_logger().debug("Sanitized model answer",
                                artifact={"model_answer": model_answer, "sanitized_answer": model_answer_sanitized})
+        return self._format_answer(model_answer_sanitized)
+
+    def _prepare_no_analyzable_files_answer(self) -> str:
+        return self._format_answer(NO_ANALYZABLE_FILES_NOTE)
+
+    def _format_answer(self, answer: str) -> str:
         answer_header = format_pr_questions_header(
             escape_markdown=self.git_provider.is_supported("markdown_backslash_escapes")
         )
         answer_str = f"{answer_header}\n{_sanitize_slash_commands(self.question_str)}\n\n"
-        answer_str += f"### **Answer:**\n{model_answer_sanitized}\n\n"
+        answer_str += f"### **Answer:**\n{answer}\n\n"
         return answer_str

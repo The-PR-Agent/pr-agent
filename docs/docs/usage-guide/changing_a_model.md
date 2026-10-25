@@ -1036,18 +1036,18 @@ If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-a
 
 1. Set the model name in the configuration file:
 
-```toml
-[config]
-model="custom_model_name"
-fallback_models=[]
-```
+   ```toml
+   [config]
+   model="custom_model_name"
+   fallback_models=[]
+   ```
 
 2. Set the maximal tokens for the model:
 
-```toml
-[config]
-custom_model_max_tokens= ...
-```
+   ```toml
+   [config]
+   custom_model_max_tokens= ...
+   ```
 
 3. Go to [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms), find the model you want to use, and set the relevant environment variables.
 

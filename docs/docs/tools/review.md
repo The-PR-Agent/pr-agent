@@ -277,6 +277,8 @@ ticket-compliance labels or a "No ticket found" label. See
 [Fetching ticket context](../core-abilities/fetching_ticket_context.md) for linking and authentication details.
 
 
+:::
+
 ### Auto-blocking PRs from being merged based on the generated labels
 
 :::tip

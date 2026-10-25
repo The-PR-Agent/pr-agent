@@ -1,6 +1,8 @@
 import hashlib
 import time
+import uuid
 from enum import StrEnum
+from itertools import batched, islice
 
 import openai
 from pydantic import BaseModel, Field
@@ -17,6 +19,7 @@ PINECONE_UPSERT_READY_TIMEOUT_SECONDS = 30
 PINECONE_UPSERT_READY_POLL_SECONDS = 0.5
 # 32 inputs at 8,192 tokens each stay under the embedding API's 300,000-token request limit.
 EMBEDDING_BATCH_SIZE = 32
+ISSUE_LOOKUP_BATCH_SIZE = 100
 
 
 _EMBEDDING_CLIENTS = {}
@@ -268,16 +271,17 @@ class PRSimilarIssue:
                 self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
-                    if scanned >= self.max_issues_to_scan:
-                        break
-                    number = issue.number
-                    issue_key = f"issue_{number}"
-                    id = issue_key + "." + "issue"
-                    res = self.pinecone_index.fetch(ids=[id], namespace=self.pinecone_namespace).to_dict()
-                    if not any(vector['metadata']['repo'] == repo_name_for_index
-                               for vector in res["vectors"].values()):
-                        issues_to_update.append(issue)
+                issues = (issue for issue in issues_paginated_list if not issue.pull_request)
+                for batch in batched(islice(issues, max(0, self.max_issues_to_scan)), ISSUE_LOOKUP_BATCH_SIZE):
+                    issue_ids = [f"issue_{issue.number}.issue" for issue in batch]
+                    res = self.pinecone_index.fetch(ids=issue_ids, namespace=self.pinecone_namespace).to_dict()
+                    indexed_ids = {
+                        point_id for point_id, vector in res["vectors"].items()
+                        if vector['metadata']['repo'] == repo_name_for_index
+                    }
+                    issues_to_update.extend(
+                        issue for issue in batch if f"issue_{issue.number}.issue" not in indexed_ids
+                    )
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -408,21 +412,28 @@ class PRSimilarIssue:
             else:
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
-                    if scanned >= self.max_issues_to_scan:
-                        break
-                    number = issue.number
-                    issue_key = f"issue_{number}"
-                    point_id = issue_key + "." + "issue"
-                    response = self.qdrant.count(
+                issues = (issue for issue in issues_paginated_list if not issue.pull_request)
+                for batch in batched(islice(issues, max(0, self.max_issues_to_scan)), ISSUE_LOOKUP_BATCH_SIZE):
+                    point_ids = [
+                        uuid.uuid5(uuid.NAMESPACE_DNS, f"{repo_name_for_index}:issue_{issue.number}.issue").hex
+                        for issue in batch
+                    ]
+                    records = self.qdrant.retrieve(
                         collection_name=self.qdrant_collection_name,
-                        count_filter=Filter(must=[
-                            FieldCondition(key="id", match=MatchValue(value=point_id)),
-                            FieldCondition(key="metadata.repo", match=MatchValue(value=repo_name_for_index)),
-                        ]),
+                        ids=point_ids,
+                        with_payload=["id", "metadata.repo"],
+                        with_vectors=False,
                     )
-                    if response.count == 0:
-                        issues_to_update.append(issue)
+                    indexed_ids = {
+                        record.payload['id'] for record in records
+                        if isinstance(record.payload, dict)
+                        and isinstance(record.payload.get('id'), str)
+                        and isinstance(record.payload.get('metadata'), dict)
+                        and record.payload['metadata'].get('repo') == repo_name_for_index
+                    }
+                    issues_to_update.extend(
+                        issue for issue in batch if f"issue_{issue.number}.issue" not in indexed_ids
+                    )
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -520,15 +531,15 @@ class PRSimilarIssue:
             elif vectordb == "qdrant":
                 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-                res = self.qdrant.search(
+                res = self.qdrant.query_points(
                     collection_name=self.qdrant_collection_name,
-                    query_vector=embeds[0],
+                    query=embeds[0],
                     limit=limit,
                     query_filter=Filter(
                         must=[FieldCondition(key="metadata.repo", match=MatchValue(value=self.repo_name_for_index))]
                     ),
                     with_payload=True,
-                )
+                ).points
                 hits = ((r.payload["id"], r.score) for r in res)
             else:
                 break
@@ -803,8 +814,6 @@ class PRSimilarIssue:
 
     def _update_qdrant_with_issues(self, issues_list, repo_name_for_index, ingest=False):
         try:
-            import uuid
-
             import pandas as pd
             from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
         except Exception:

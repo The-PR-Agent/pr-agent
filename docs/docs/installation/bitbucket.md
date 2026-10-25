@@ -9,16 +9,16 @@ You can use the Bitbucket Pipeline system to run PR-Agent on every pull request 
 
 1. Add the following file in your repository bitbucket-pipelines.yml
 
-```yaml
-pipelines:
-    pull-requests:
-      '**':
-        - step:
-            name: PR Agent Review
-            image: pragent/pr-agent:latest
-            script:
-              - pr-agent --pr_url=https://bitbucket.org/$BITBUCKET_WORKSPACE/$BITBUCKET_REPO_SLUG/pull-requests/$BITBUCKET_PR_ID review
-```
+   ```yaml
+   pipelines:
+       pull-requests:
+         '**':
+           - step:
+               name: PR Agent Review
+               image: pragent/pr-agent:latest
+               script:
+                 - pr-agent --pr_url=https://bitbucket.org/$BITBUCKET_WORKSPACE/$BITBUCKET_REPO_SLUG/pull-requests/$BITBUCKET_PR_ID review
+   ```
 
 2. Add the following secure variables to your repository under Repository settings > Pipelines > Repository variables.
 
@@ -28,10 +28,12 @@ pipelines:
    - BITBUCKET__BEARER_TOKEN: `<your token>` (required when auth_type is bearer)
    - BITBUCKET__BASIC_TOKEN: `<your token>` (required when auth_type is basic)
 
-You can get a Bitbucket token for your repository by following Repository Settings -> Security -> Access Tokens.
-For basic auth, you can generate a base64 encoded token from your username:password combination.
+   You can get a Bitbucket token for your repository by following Repository Settings -> Security -> Access Tokens.
+   For basic auth, you can generate a base64 encoded token from your username:password combination.
 
 Note that comments on a PR are not supported in Bitbucket Pipeline.
+
+## Bitbucket Cloud behavior
 
 ### Persistent comments on Bitbucket Cloud
 

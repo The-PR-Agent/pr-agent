@@ -9,56 +9,56 @@ In this page we will cover how to install and run PR-Agent as a GitHub Action or
 
 You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub Action.
 
-1) Add the following file to your repository under `.github/workflows/pr_agent.yml`:
+1. Add the following file to your repository under `.github/workflows/pr_agent.yml`:
 
-```yaml
-on:
-  pull_request:
-    types: [opened, reopened, ready_for_review, synchronize]
-  issue_comment:
-jobs:
-  pr_agent_job:
-    if: ${{ github.event.sender.type != 'Bot' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-    name: Run pr agent on every pull request, respond to user comments
-    steps:
-      - name: PR Agent action step
-        id: pragent
-        uses: the-pr-agent/pr-agent@main
-        env:
-          OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
+   ```yaml
+   on:
+     pull_request:
+       types: [opened, reopened, ready_for_review, synchronize]
+     issue_comment:
+   jobs:
+     pr_agent_job:
+       if: ${{ github.event.sender.type != 'Bot' }}
+       runs-on: ubuntu-latest
+       permissions:
+         contents: read
+         issues: write
+         pull-requests: write
+       name: Run pr agent on every pull request, respond to user comments
+       steps:
+         - name: PR Agent action step
+           id: pragent
+           uses: the-pr-agent/pr-agent@main
+           env:
+             OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+   ```
 
-2) Add the following secret to your repository under `Settings > Secrets and variables > Actions > New repository secret > Add secret`:
+2. Add the following secret to your repository under `Settings > Secrets and variables > Actions > New repository secret > Add secret`:
 
-```
-Name = OPENAI_KEY
-Secret = <your key>
-```
+   ```
+   Name = OPENAI_KEY
+   Secret = <your key>
+   ```
 
-The GITHUB_TOKEN secret is automatically created by GitHub.
+   The GITHUB_TOKEN secret is automatically created by GitHub.
 
-3) Merge this change to your main branch.
-When you open your next PR, you should see a comment from `github-actions` bot with a review of your PR, and instructions on how to use the rest of the tools.
+3. Merge this change to your main branch.
+   When you open your next PR, you should see a comment from `github-actions` bot with a review of your PR, and instructions on how to use the rest of the tools.
 
-4) You may configure PR-Agent by adding environment variables under the env section corresponding to any configurable property in the [configuration](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) file. Some examples:
+4. You may configure PR-Agent by adding environment variables under the env section corresponding to any configurable property in the [configuration](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) file. Some examples:
 
-```yaml
-      env:
-        # ... previous environment values
-        OPENAI.ORG: "<Your organization name under your OpenAI account>"
-        PR_REVIEWER.REQUIRE_TESTS_REVIEW: "false" # Disable tests review
-        PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS_PER_CHUNK: 6 # Increase number of code suggestions
-```
+   ```yaml
+         env:
+           # ... previous environment values
+           OPENAI.ORG: "<Your organization name under your OpenAI account>"
+           PR_REVIEWER.REQUIRE_TESTS_REVIEW: "false" # Disable tests review
+           PR_CODE_SUGGESTIONS.NUM_CODE_SUGGESTIONS_PER_CHUNK: 6 # Increase number of code suggestions
+   ```
 
 See detailed usage instructions in the [USAGE GUIDE](../usage-guide/automations_and_usage.md#github-action)
 
-#### Using with pull_request_target (fork/contribution support)
+### Using with pull_request_target (fork/contribution support)
 
 By default, the `pull_request` event does not have access to repository or organization secrets when the PR originates from a forked repository, which means PR-Agent won't be able to access secrets such as `OPENAI_KEY`. The workflow still receives a `GITHUB_TOKEN`, but it has read-only permissions for fork pull requests by default. For private repositories, administrators can enable **Send secrets to workflows from pull requests** to make secrets available, but doing so exposes those secrets to workflows triggered by fork pull requests.
 
@@ -162,7 +162,7 @@ jobs:
           github_action_config.auto_improve: "true"
 ```
 
-#### Claude Setup
+##### Claude Setup
 
 Ready-to-use workflow for Claude models:
 
@@ -468,47 +468,47 @@ Instead of setting all options via environment variables, you can use a `.pr_age
 
 1. Create a `.pr_agent.toml` file in your repository root:
 
-```toml
-[config]
-model = "gemini/gemini-3.8-flash"
-fallback_models = ["anthropic/claude-opus-5"]
+   ```toml
+   [config]
+   model = "gemini/gemini-3.8-flash"
+   fallback_models = ["anthropic/claude-opus-5"]
 
-[pr_reviewer]
-extra_instructions = "Focus on security issues and code quality."
+   [pr_reviewer]
+   extra_instructions = "Focus on security issues and code quality."
 
-[pr_code_suggestions]
-num_code_suggestions_per_chunk = 6
-suggestions_score_threshold = 7
-```
+   [pr_code_suggestions]
+   num_code_suggestions_per_chunk = 6
+   suggestions_score_threshold = 7
+   ```
 
 2. Use a simpler workflow file:
 
-```yaml
-on:
-  pull_request:
-    types: [opened, reopened, ready_for_review]
-  issue_comment:
-jobs:
-  pr_agent_job:
-    if: ${{ github.event.sender.type != 'Bot' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-    name: Run pr agent on every pull request, respond to user comments
-    steps:
-      - name: PR Agent action step
-        id: pragent
-        uses: the-pr-agent/pr-agent@main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ANTHROPIC.KEY: ${{ secrets.ANTHROPIC_KEY }}
-          github_action_config.auto_review: "true"
-          github_action_config.auto_describe: "true"
-          github_action_config.auto_improve: "true"
-```
+   ```yaml
+   on:
+     pull_request:
+       types: [opened, reopened, ready_for_review]
+     issue_comment:
+   jobs:
+     pr_agent_job:
+       if: ${{ github.event.sender.type != 'Bot' }}
+       runs-on: ubuntu-latest
+       permissions:
+         contents: read
+         issues: write
+         pull-requests: write
+       name: Run pr agent on every pull request, respond to user comments
+       steps:
+         - name: PR Agent action step
+           id: pragent
+           uses: the-pr-agent/pr-agent@main
+           env:
+             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+             GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+             ANTHROPIC.KEY: ${{ secrets.ANTHROPIC_KEY }}
+             github_action_config.auto_review: "true"
+             github_action_config.auto_describe: "true"
+             github_action_config.auto_improve: "true"
+   ```
 
 #### Troubleshooting Common Issues
 
@@ -684,7 +684,7 @@ For example, if your GitHub server is at `https://github.mycompany.com`, add the
 
 Allowing you to automate the review process on your private or public repositories.
 
-1) Create a GitHub App from the [GitHub Developer Portal](https://docs.github.com/en/developers/apps/creating-a-github-app).
+1. Create a GitHub App from the [GitHub Developer Portal](https://docs.github.com/en/developers/apps/creating-a-github-app).
 
    - Set the following permissions:
      - Pull requests: Read & write
@@ -705,35 +705,35 @@ Allowing you to automate the review process on your private or public repositori
    > only when your team is comfortable with AI-driven thread resolution.
    > The feature is opt-in and defaults to off.
 
-2) Generate a random secret for your app, and save it for later. The webhook secret is required: if `GITHUB.WEBHOOK_SECRET` is not configured, the server rejects every incoming webhook with HTTP 403. For example, you can use:
+2. Generate a random secret for your app, and save it for later. The webhook secret is required: if `GITHUB.WEBHOOK_SECRET` is not configured, the server rejects every incoming webhook with HTTP 403. For example, you can use:
 
-```bash
-WEBHOOK_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
-```
+   ```bash
+   WEBHOOK_SECRET=$(python -c "import secrets; print(secrets.token_hex(10))")
+   ```
 
-3) Acquire the following pieces of information from your app's settings page:
+3. Acquire the following pieces of information from your app's settings page:
 
    - App private key (click "Generate a private key" and save the file)
    - App ID
 
-4) Clone this repository:
+4. Clone this repository:
 
-```bash
-git clone https://github.com/the-pr-agent/pr-agent.git
-```
+   ```bash
+   git clone https://github.com/the-pr-agent/pr-agent.git
+   ```
 
-5) Copy the secrets template file and fill in the following:
+5. Copy the secrets template file and fill in the following:
 
-```bash
-cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
-# Edit .secrets.toml file
-```
+   ```bash
+   cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
+   # Edit .secrets.toml file
+   ```
 
-- Your OpenAI key.
-- Copy your app's private key to the private_key field.
-- Copy your app's ID to the app_id field.
-- Copy your app's webhook secret to the webhook_secret field (required).
-- Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
+   - Your OpenAI key.
+   - Copy your app's private key to the private_key field.
+   - Copy your app's ID to the app_id field.
+   - Copy your app's webhook secret to the webhook_secret field (required).
+   - Set deployment_type to 'app' in [configuration.toml](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml)
 
     > The local `.secrets.toml` file is excluded from the Docker build context. Never bake secrets into a container image.
     > For container deployments, provide secrets at runtime through environment variables or a mounted secret volume.
@@ -758,7 +758,7 @@ cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
 
     > Another option is to set the secrets as environment variables in your deployment environment, for example `OPENAI.KEY` and `GITHUB.USER_TOKEN`.
 
-6) Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
+6. Build a Docker image for the app and optionally push it to a Docker repository. We'll use Dockerhub as an example:
 
     ```bash
     docker build . -t pr-agent:github_app --target github_app -f docker/Dockerfile
@@ -823,21 +823,21 @@ For production Lambda deployments, use AWS Secrets Manager instead of environmen
 
 1. Create a secret in AWS Secrets Manager with JSON format like this:
 
-```json
-{
-  "openai.key": "sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "github.webhook_secret": "your-webhook-secret-from-step-2",
-  "github.private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
-}
-```
+   ```json
+   {
+     "openai.key": "sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "github.webhook_secret": "your-webhook-secret-from-step-2",
+     "github.private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----"
+   }
+   ```
 
 2. Add IAM permission `secretsmanager:GetSecretValue` to your Lambda execution role
 3. Set these environment variables in your Lambda:
 
-```bash
-AWS_SECRETS_MANAGER__SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:pr-agent-secrets-AbCdEf
-CONFIG__SECRET_PROVIDER=aws_secrets_manager
-```
+   ```bash
+   AWS_SECRETS_MANAGER__SECRET_ARN=arn:aws:secretsmanager:us-east-1:123456789012:secret:pr-agent-secrets-AbCdEf
+   CONFIG__SECRET_PROVIDER=aws_secrets_manager
+   ```
 
 ---
 
@@ -858,7 +858,7 @@ Not all features have been added to CodeCommit yet.  As of right now, CodeCommit
 
 ---
 
-##### AWS CodeCommit IAM Role Example
+#### AWS CodeCommit IAM Role Example
 
 Example IAM permissions to that user to allow access to CodeCommit:
 
@@ -891,7 +891,7 @@ Example IAM permissions to that user to allow access to CodeCommit:
 }
 ```
 
-##### AWS CodeCommit Access Key and Secret
+#### AWS CodeCommit Access Key and Secret
 
 Example setting the Access Key and Secret using environment variables
 
@@ -901,7 +901,7 @@ export AWS_SECRET_ACCESS_KEY="XXXXXXXXXXXXXXXX"
 export AWS_DEFAULT_REGION="us-east-1"
 ```
 
-##### AWS CodeCommit CLI Example
+#### AWS CodeCommit CLI Example
 
 After you set up AWS CodeCommit using the instructions above, here is an example CLI run that tells pr-agent to **review** a given pull request.
 (Replace your specific PYTHONPATH and PR URL in the example)

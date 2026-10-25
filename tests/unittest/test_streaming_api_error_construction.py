@@ -35,18 +35,20 @@ def collect(chunks):
     return asyncio.run(_handle_streaming_response(Stream(chunks), model="some-model"))
 
 
-def test_collect_a_normal_streaming_response():
+@pytest.mark.parametrize("parts", [["hel", "lo"], [" \t", "hello", "\u3000\n"]])
+def test_collect_a_normal_streaming_response(parts):
     """Keep assembling a streamed answer exactly as before."""
-    content, finish_reason, _ = collect([Chunk("hel", None), Chunk("lo", None),
-                                         Chunk(None, "stop")])
+    content, finish_reason, _ = collect([*(Chunk(part, None) for part in parts), Chunk(None, "stop")])
 
-    assert content == "hello"
+    assert content == "".join(parts)
     assert finish_reason == "stop"
 
 
 @pytest.mark.parametrize("chunks, reason", [
     ([Chunk(None, "stop")], "completed with a finish reason but no content"),
     ([Chunk(None, None)], "ended without content or a finish reason"),
+    ([Chunk(" \t\r\n", None)], "ended with ASCII whitespace and no finish reason"),
+    ([Chunk("\u2003", None), Chunk("\u3000", None)], "ended with Unicode whitespace and no finish reason"),
 ])
 def test_raise_an_api_error_the_retry_can_catch(chunks, reason):
     """openai.APIError is what @retry(retry_if_exception_type(openai.APIError)) waits for."""

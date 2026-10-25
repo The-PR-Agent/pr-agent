@@ -58,9 +58,9 @@ class FakeSettings:
         return self._settings_values.get(key, default)
 
 
-def _mock_response(usage=None):
+def _mock_response(usage=None, content="ok"):
     mock = MagicMock()
-    response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    response = {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
     if usage is not None:
         response["usage"] = usage
         # run_details reads the litellm attribute, not the dict form
@@ -682,9 +682,9 @@ def _timeout_error():
     return openai.APITimeoutError(request=httpx.Request("POST", "http://model.invalid"))
 
 
-def _empty_response(finish_reason):
+def _empty_response(finish_reason, content=""):
     mock = MagicMock()
-    response = {"choices": [{"message": {"content": ""}, "finish_reason": finish_reason}]}
+    response = {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
     mock.usage = None
     mock.__getitem__.side_effect = response.__getitem__
     mock.dict.return_value = response
@@ -820,11 +820,12 @@ async def test_chat_completion_timeout_not_retried_same_model_when_disabled(monk
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_length_truncation_does_not_retry_same_model(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_does_not_retry_same_model(monkeypatch, content):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _empty_response("length")
+        mock_call.return_value = _empty_response("length", content)
         handler = litellm_handler.LiteLLMAIHandler()
 
         # Same request and cap reproduce the truncation, so the empty call is not replayed;
@@ -836,7 +837,8 @@ async def test_chat_completion_length_truncation_does_not_retry_same_model(monke
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_length_truncation_retries_same_model_when_enabled(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_retries_same_model_when_enabled(monkeypatch, content):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -844,7 +846,7 @@ async def test_chat_completion_length_truncation_retries_same_model_when_enabled
     )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _empty_response("length")
+        mock_call.return_value = _empty_response("length", content)
         handler = litellm_handler.LiteLLMAIHandler()
 
         with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
@@ -854,11 +856,12 @@ async def test_chat_completion_length_truncation_retries_same_model_when_enabled
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_empty_content_without_length_still_retries(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\r\n", "\u2003\u3000"])
+async def test_chat_completion_empty_content_without_length_still_retries(monkeypatch, content):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _empty_response("stop")
+        mock_call.return_value = _empty_response("stop", content)
         handler = litellm_handler.LiteLLMAIHandler()
 
         # Without the deterministic "length" signal, an empty response can be transient.
@@ -868,10 +871,10 @@ async def test_chat_completion_empty_content_without_length_still_retries(monkey
     assert mock_call.call_count == litellm_handler.MODEL_RETRIES
 
 
-def _empty_stream(finish_reason):
+def _empty_stream(finish_reason, content=""):
     async def _stream():
         yield SimpleNamespace(
-            choices=[SimpleNamespace(delta=SimpleNamespace(content=""), finish_reason=finish_reason)],
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=content), finish_reason=finish_reason)],
             usage=None,
             _hidden_params=None,
         )
@@ -880,11 +883,12 @@ def _empty_stream(finish_reason):
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_length_truncation_does_not_retry_same_model_streaming(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_does_not_retry_same_model_streaming(monkeypatch, content):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.side_effect = lambda **_: _empty_stream("length")
+        mock_call.side_effect = lambda **_: _empty_stream("length", content)
         handler = litellm_handler.LiteLLMAIHandler()
         handler.streaming_required_models = ["gpt-4o"]
 
@@ -897,11 +901,12 @@ async def test_chat_completion_length_truncation_does_not_retry_same_model_strea
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_streaming_empty_without_length_still_retries(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\r\n", "\u2003\u3000"])
+async def test_chat_completion_streaming_empty_without_length_still_retries(monkeypatch, content):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.side_effect = lambda **_: _empty_stream("stop")
+        mock_call.side_effect = lambda **_: _empty_stream("stop", content)
         handler = litellm_handler.LiteLLMAIHandler()
         handler.streaming_required_models = ["gpt-4o"]
 
@@ -1008,15 +1013,16 @@ async def test_get_completion_raises_on_empty_content_for_non_streaming_model():
 
 
 @pytest.mark.asyncio
-async def test_get_completion_returns_non_empty_content_for_non_streaming_model():
+@pytest.mark.parametrize("content", ["ok", " \tvalid answer\u3000\n"])
+async def test_get_completion_returns_non_empty_content_for_non_streaming_model(content):
     handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
     handler._sdk_header_defaults = {"organization": None, "project": None, "custom_headers": {}}
     handler.streaming_required_models = []
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
+        mock_call.return_value = _mock_response(content=content)
 
         resp, finish_reason, response_obj = await handler._get_completion(model="gpt-4o", messages=[])
 
-    assert resp == "ok"
+    assert resp == content
     assert finish_reason == "stop"

@@ -1920,47 +1920,71 @@ class AzureDevopsProvider(GitProvider):
         """
         Get linked work items from the PR.
         """
-        try:
-            work_items = self.azure_devops_client.get_pull_request_work_item_refs(
+        work_item_refs = list(
+            self.azure_devops_client.get_pull_request_work_item_refs(
                 project=self.workspace_slug,
                 repository_id=self.repo_slug,
                 pull_request_id=self.pr_num,
             )
-            ids = [work_item.id for work_item in work_items]
-            if not work_items:
-                return []
-            items = self.get_work_items(ids)
-            return items
-        except Exception as e:
-            get_logger().exception(f"Failed to get linked work items, error: {e}")
+        )
+        if not work_item_refs:
             return []
+
+        ids = []
+        seen_ids = set()
+        for work_item_ref in work_item_refs:
+            raw_id = work_item_ref.id
+            if not isinstance(raw_id, str):
+                raise TypeError("Azure linked work item ID must be a string")
+            if not raw_id.strip():
+                raise ValueError("Azure linked work item ID must not be blank")
+            work_item_id = int(raw_id, 10)
+            if work_item_id not in seen_ids:
+                seen_ids.add(work_item_id)
+                ids.append(work_item_id)
+
+        if len(ids) > 200:
+            raise ValueError("Azure linked work item acquisition exceeds the 200-ID request limit")
+        return self.get_work_items(ids)
 
     def get_work_items(self, work_item_ids: list) -> list:
         """
         Get work items by their IDs.
         """
-        try:
-            raw_work_items = self.azure_devops_board_client.get_work_items(
+        raw_work_items = list(
+            self.azure_devops_board_client.get_work_items(
                 project=self.workspace_slug,
                 ids=work_item_ids,
+                error_policy="Fail",
             )
-            work_items = []
-            for item in raw_work_items:
-                work_items.append(
-                    {
-                        "id": item.id,
-                        "title": item.fields.get("System.Title", ""),
-                        "url": item.url,
-                        "body": item.fields.get("System.Description", ""),
-                        "acceptance_criteria": item.fields.get(
-                            "Microsoft.VSTS.Common.AcceptanceCriteria", ""
-                        ),
-                        "tags": item.fields.get("System.Tags", "").split("; ")
-                        if item.fields.get("System.Tags")
-                        else [],
-                    }
-                )
-            return work_items
-        except Exception as e:
-            get_logger().exception(f"Failed to get work items, error: {e}")
-            return []
+        )
+        returned_ids = []
+        for item in raw_work_items:
+            if type(item.id) is not int:
+                raise TypeError("Azure work item response ID must be an integer")
+            returned_ids.append(item.id)
+
+        if (
+            len(returned_ids) != len(work_item_ids)
+            or len(set(returned_ids)) != len(returned_ids)
+            or set(returned_ids) != set(work_item_ids)
+        ):
+            raise ValueError("Azure work item response is incomplete")
+
+        work_items = []
+        for item in raw_work_items:
+            work_items.append(
+                {
+                    "id": item.id,
+                    "title": item.fields.get("System.Title", ""),
+                    "url": item.url,
+                    "body": item.fields.get("System.Description", ""),
+                    "acceptance_criteria": item.fields.get(
+                        "Microsoft.VSTS.Common.AcceptanceCriteria", ""
+                    ),
+                    "tags": item.fields.get("System.Tags", "").split("; ")
+                    if item.fields.get("System.Tags")
+                    else [],
+                }
+            )
+        return work_items

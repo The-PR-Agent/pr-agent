@@ -63,9 +63,7 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
 
 #### Configuration options
 
--
-
-    By default, the `review` tool will automatically validate if the PR complies with the referenced ticket.
+- By default, the `review` tool will automatically validate if the PR complies with the referenced ticket.
     If you want to disable this feedback, add the following line to your configuration file:
 
     ```toml
@@ -73,9 +71,7 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
     require_ticket_analysis_review=false
     ```
 
--
-
-    If you set:
+- If you set:
     ```toml
     [pr_reviewer]
     check_pr_additional_content=true
@@ -235,33 +231,33 @@ You can create an API token from your Atlassian account:
 
 4. Click Copy to clipboard.
 
-<img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
+   <img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
 
 5. In the PR-Agent host configuration (the secrets file or environment variables such as `JIRA__JIRA_SITE`) add the following lines. A repository's `.pr_agent.toml` cannot set them:
 
-```toml
-[jira]
-jira_site = "<JIRA_SITE>"   # the "<site>" in https://<site>.atlassian.net (e.g. "mycompany")
-cloud_id = "<CLOUD_ID>" # optional UUID for scoped or service-account tokens
-jira_api_email = "YOUR_EMAIL"
-jira_api_token = "YOUR_API_TOKEN"
-```
+   ```toml
+   [jira]
+   jira_site = "<JIRA_SITE>"   # the "<site>" in https://<site>.atlassian.net (e.g. "mycompany")
+   cloud_id = "<CLOUD_ID>" # optional UUID for scoped or service-account tokens
+   jira_api_email = "YOUR_EMAIL"
+   jira_api_token = "YOUR_API_TOKEN"
+   ```
 
-`jira_site` is your Jira Cloud site name — the part before `.atlassian.net` (for
-`https://mycompany.atlassian.net`, the site is `mycompany`). PR-Agent builds the base URL
-as `https://<jira_site>.atlassian.net`; it does not accept a full URL, so configuration
-cannot redirect the authenticated request to another host. Store `jira_api_email` and
-`jira_api_token` as secrets (environment variables or the secrets file), not in
-repository-committed configuration.
+   `jira_site` is your Jira Cloud site name — the part before `.atlassian.net` (for
+   `https://mycompany.atlassian.net`, the site is `mycompany`). PR-Agent builds the base URL
+   as `https://<jira_site>.atlassian.net`; it does not accept a full URL, so configuration
+   cannot redirect the authenticated request to another host. Store `jira_api_email` and
+   `jira_api_token` as secrets (environment variables or the secrets file), not in
+   repository-committed configuration.
 
-For scoped or service-account API tokens, set `cloud_id` to the UUID of the Jira Cloud site. Requests then use
-`https://api.atlassian.com/ex/jira/<cloud_id>` while ticket links continue to use `jira_site`. Leave `cloud_id`
-empty for classic API tokens and the site-specific URL. The value is host-only and invalid values disable Jira
-lookup without logging the value.
+   For scoped or service-account API tokens, set `cloud_id` to the UUID of the Jira Cloud site. Requests then use
+   `https://api.atlassian.com/ex/jira/<cloud_id>` while ticket links continue to use `jira_site`. Leave `cloud_id`
+   empty for classic API tokens and the site-specific URL. The value is host-only and invalid values disable Jira
+   lookup without logging the value.
 
-To find the cloud ID, open `https://<site>.atlassian.net/_edge/tenant_info` and read the `cloudId` value from the
-JSON response. It is also the value after `/s/` in the `admin.atlassian.com` URL. Use the cloud ID, not the Jira
-organization ID, because Atlassian's API gateway expects the site cloud ID.
+   To find the cloud ID, open `https://<site>.atlassian.net/_edge/tenant_info` and read the `cloudId` value from the
+   JSON response. It is also the value after `/s/` in the `admin.atlassian.com` URL. Use the cloud ID, not the Jira
+   organization ID, because Atlassian's API gateway expects the site cloud ID.
 
 #### Acceptance criteria / requirements (optional)
 

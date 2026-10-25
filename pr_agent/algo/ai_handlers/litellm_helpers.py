@@ -162,11 +162,12 @@ async def _handle_streaming_response(response, model=None, stream_cleanup=None):
         else:
             stream_cleanup.append(response)
 
-    if not full_response and finish_reason is None:
+    empty_content = not full_response or full_response.isspace()
+    if empty_content and finish_reason is None:
         get_logger().warning("Streaming response resulted in empty content with no finish reason")
         raise openai.APIError("Empty streaming response received without proper completion",
                               request=httpx.Request("POST", model or ""), body=None)
-    elif not full_response and finish_reason:
+    elif empty_content and finish_reason:
         get_logger().debug(
             f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}"
         )
