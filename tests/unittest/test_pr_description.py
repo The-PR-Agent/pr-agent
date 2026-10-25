@@ -104,6 +104,7 @@ async def test_normal_description_rejects_clipped_packed_diff():
 
     class ClippingBudget:
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            assert _kwargs["require_full_text"] is True
             return MagicMock(
                 optional_text=optional_text[:-1],
                 system_prompt="system",
@@ -159,6 +160,7 @@ async def test_large_pr_header_uses_shared_budget_and_allows_walkthrough_truncat
         "ai_handler": tool.ai_handler,
         "default_output_tokens": 1000,
         "preserve_minimum": True,
+        "require_full_text": False,
     }
     tool.ai_handler.chat_completion.assert_awaited_once_with(
         model="fallback-model",

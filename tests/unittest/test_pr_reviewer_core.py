@@ -230,6 +230,7 @@ async def test_final_review_fit_rejects_untracked_diff_clipping():
 
     class ClippingBudget:
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            assert _kwargs["require_full_text"] is True
             return SimpleNamespace(
                 optional_text=optional_text[:-1],
                 system_prompt="system",
