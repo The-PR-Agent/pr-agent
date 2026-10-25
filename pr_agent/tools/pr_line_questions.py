@@ -37,8 +37,8 @@ class PR_LineQuestions:
         except (TypeError, ValueError, AttributeError) as exc:
             get_logger().warning(f"Could not classify line question file for logging: {exc}")
             self.main_pr_language = ""
-        self.ai_handler = ai_handler()
-        self.ai_handler.main_pr_language = self.main_pr_language
+        self._ai_handler_factory = ai_handler
+        self.ai_handler = None
 
         # Request the marker only for providers that can resolve threads;
         # otherwise every resolved answer would log a failed resolve.
@@ -67,6 +67,12 @@ class PR_LineQuestions:
                                           get_settings().pr_line_questions_prompt.user)
         self.patches_diff = None
         self.prediction = None
+
+    def _ensure_ai_handler(self):
+        if self.ai_handler is None:
+            handler = self._ai_handler_factory()
+            handler.main_pr_language = self.main_pr_language
+            self.ai_handler = handler
 
     def parse_args(self, args):
         return decode_user_text_args(args)
@@ -119,6 +125,7 @@ class PR_LineQuestions:
         # requested line outside the shortened body with the hunk itself still present.
         hunk_found = any(line.startswith('@@') for line in self.patch_with_lines.splitlines())
         if hunk_found:
+            self._ensure_ai_handler()
             model_answer = await retry_with_fallback_models(self._get_prediction, model_type=ModelType.WEAK)
 
             should_resolve = False
