@@ -1030,6 +1030,34 @@ OPENAI__KEY=...
 
 Keep the `openai/` prefix on the model name, whichever DemonRoute model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`.
 
+### APIClaw
+
+[APIClaw](https://apiclaw.biz) is an OpenAI-compatible AI API gateway billed as a flat monthly plan sized by daily requests, rather than per token. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to APIClaw's base URL through litellm's OpenAI-compatible path, the same way [Heabsy](#heabsy) and [DemonRoute](#demonroute) are handled.
+
+To use a model served by APIClaw, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/apiclaw/claude-sonnet-5.5"
+fallback_models = []
+custom_model_max_tokens = 1000000 # the max_input_tokens APIClaw's /v1/models returns for the model
+
+[openai] # in .secrets.toml
+api_base = "https://apiclaw.biz/v1"
+key = "..." # your APIClaw api key
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://apiclaw.biz/v1
+OPENAI__KEY=...
+```
+
+(you can obtain an APIClaw API key, including a free 50-request trial, from [apiclaw.biz](https://apiclaw.biz); setup is in the [APIClaw docs](https://apiclaw.biz/docs/))
+
+Keep the `openai/` prefix on the model name, whichever APIClaw model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from the `max_input_tokens` field that `GET https://apiclaw.biz/v1/models` returns for your key.
+
 ### Custom models
 
 If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), you can still use it as a custom model:
