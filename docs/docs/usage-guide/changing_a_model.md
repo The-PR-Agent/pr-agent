@@ -1030,6 +1030,34 @@ OPENAI__KEY=...
 
 Keep the `openai/` prefix on the model name, whichever DemonRoute model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`.
 
+### Runcrate
+
+[Runcrate](https://www.runcrate.ai/?utm_source=pr-agent&utm_medium=directory&utm_campaign=gpu_pricing) is a GPU cloud that also serves open models (DeepSeek V4.1 Flash, GLM-5.3, Qwen3.8 Flash, gpt-oss 120B and others) on an OpenAI-compatible API. Open models are free with your GitHub account. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Runcrate's base URL through litellm's OpenAI-compatible path, the same way [Atlas Cloud](#atlas-cloud) and [DemonRoute](#demonroute) are handled.
+
+To use a model served by Runcrate, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/deepseek-ai/DeepSeek-V4.1-Flash"
+fallback_models = []
+custom_model_max_tokens = 1048576 # the context window Runcrate publishes for the model
+
+[openai] # in .secrets.toml
+api_base = "https://api.runcrate.ai/v1"
+key = "..." # your Runcrate api key
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://api.runcrate.ai/v1
+OPENAI__KEY=...
+```
+
+(you can create a Runcrate API key in the [Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys?utm_source=pr-agent&utm_medium=directory&utm_campaign=gpu_pricing))
+
+Keep the `openai/` prefix on the model name, whichever Runcrate model ID you use. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`; take the value from the `context_length` field of the public model list at `https://api.runcrate.ai/v1/models`.
+
 ### Custom models
 
 If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), you can still use it as a custom model:
