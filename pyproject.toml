@@ -171,14 +171,6 @@ lint.select = [
   "FURB", # refurb
 ]
 
-lint.fixable = [
-  "I001", # import sorting
-  "F401", # unused imports
-  "F541", # f-string without placeholders
-  "UP",
-  "FURB",
-]
-
 lint.exclude = ["api/code_completions"]
 
 
