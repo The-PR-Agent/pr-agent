@@ -203,7 +203,9 @@ def load_artifact_context() -> ArtifactPromptContext | None:
     )
     contexts = []
     remaining_size = max_size
-    for entry in _artifact_entries(artifacts_settings):
+    entries = _artifact_entries(artifacts_settings)
+    shared_label = artifacts_settings.get("artifact_label", "") if len(entries) == 1 else ""
+    for entry in entries:
         path_value = entry.get("path", entry.get("artifact_path", ""))
         if path_value and not isinstance(path_value, str):
             get_logger().warning(
@@ -229,7 +231,7 @@ def load_artifact_context() -> ArtifactPromptContext | None:
             continue
         label = (
             _single_line_artifact_label(
-                entry.get("artifact_label", entry.get("label", artifacts_settings.get("artifact_label", "")))
+                entry.get("artifact_label", entry.get("label", shared_label))
                 or ""
             )
             or _single_line_artifact_label(artifact_path.name)

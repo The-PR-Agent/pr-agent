@@ -155,7 +155,7 @@ class TestLoadArtifactContext:
                 context = load_artifact_context()
 
         assert context is not None
-        assert [artifact["label"] for artifact in context["artifacts"]] == ["CI log", "Code graph"]
+        assert [artifact["label"] for artifact in context["artifacts"]] == ["ci.log", "Code graph"]
         assert sum(len(artifact["content"]) for artifact in context["artifacts"]) <= 100
         assert context["artifacts"][0]["target_tools"] == frozenset(SUPPORTED_ARTIFACT_TOOLS)
         assert context["artifacts"][1]["target_tools"] == frozenset({"pr_questions"})
@@ -488,18 +488,17 @@ class TestInjectArtifactContext:
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(tmp_path)}):
             inject_artifact_context()
 
-        template = Environment(autoescape=True).from_string(
-            "{% if artifact_context %}{% for artifact in artifact_context.get('artifacts', [artifact_context]) %}"
-            "Label: {{ artifact.label }}\n{{ artifact.content }}\n{% endfor %}{% endif %}"
-        )
-        review = template.render(artifact_context=get_artifact_context("pr_reviewer"))
-        improve = template.render(artifact_context=get_artifact_context("pr_code_suggestions"))
+        env = Environment(autoescape=True)
+        review = env.from_string(get_settings().pr_review_prompt.user).render(
+            artifact_context=get_artifact_context("pr_reviewer"))
+        improve = env.from_string(get_settings().pr_code_suggestions_prompt.user).render(
+            artifact_context=get_artifact_context("pr_code_suggestions"))
 
         assert "Label: Tests" in review
         assert "Label: Coverage" in review
         assert "FAILED: test_login" in review
         assert "COVERAGE_CONTEXT" in review
-        assert improve == ""
+        assert "Label:" not in improve
 
     def test_running_twice_does_not_duplicate_the_artifact(self, settings, report):
         with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(report.parent), "ARTIFACT_PATH": str(report)}):

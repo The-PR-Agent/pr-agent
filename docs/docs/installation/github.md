@@ -459,7 +459,8 @@ max_artifact_size = 50000                                   # characters; longer
 
 `artifact_path` may also be a single string. For multiple files, each entry can set
 `path`, `artifact_label`, `artifact_instructions`, `target_tools`, and `truncate_from` on
-its own line; an empty shared or per-file `artifact_label` falls back to that file's name.
+its own line; a shared `artifact_label` applies only to a single file, otherwise each file falls
+back to its name.
 
 CI artifacts are checked for recognizable URL credentials, authorization headers, standard GitLab tokens, AWS access keys, and common credential assignments before model submission, with redaction matches logged only by type and count; this pattern-based check does not recognize every secret format, so use sanitized CI logs as input.
 
