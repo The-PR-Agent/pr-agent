@@ -1,4 +1,5 @@
 """Tests for bounded MOSAICO task retention."""
+from collections import deque
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +34,21 @@ async def test_store_eviction_removes_old_tasks_and_reports_index_data():
     assert await store.get("task-2", context) is not None
     assert await store.get("task-3", context) is not None
     assert evicted == [("alice", "task-1", "context-1")]
+
+
+@pytest.mark.asyncio
+async def test_store_eviction_prunes_the_executor_follow_up_index():
+    from pr_agent.mosaico.executor import PRAgentExecutor
+
+    executor = PRAgentExecutor()
+    store = MosaicoTaskStore(max_tasks_per_owner=1, on_task_evicted=executor.forget_task)
+    executor._recent_task_ids[("alice", "context-1")] = deque(["task-1"])
+    context = _context("alice")
+
+    await store.save(_task("task-1", "context-1"), context)
+    await store.save(_task("task-2", "context-2"), context)
+
+    assert ("alice", "context-1") not in executor._recent_task_ids
 
 
 @pytest.mark.asyncio

@@ -75,9 +75,10 @@ credential maps, including duplicate secrets, fail app construction.
 
 The default empty map preserves anonymous access and shared task ownership for a trusted,
 single-tenant network. Configure authentication before exposing the service to other callers.
-These limits do not provide a task retention policy, rate limit or concurrency quota: the
-in-memory store still retains tasks until restart, and each authorized health probe performs
-a live completion.
+The in-memory store retains up to `mosaico.task_store_max_tasks_per_owner` tasks per owner and
+evicts the oldest tasks beyond that limit; evicted tasks lose follow-up history. This is not a
+rate limit or concurrency quota, and retained tasks are still lost on restart. Each authorized
+health probe performs a live completion.
 
 Observability root/super task IDs must be canonical UUIDs. Invalid IDs are omitted independently;
 valid IDs are normalized to lowercase before producing Langfuse trace context. A metadata error

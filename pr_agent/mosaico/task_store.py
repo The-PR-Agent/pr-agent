@@ -2,17 +2,11 @@
 import asyncio
 from collections import OrderedDict
 from collections.abc import Callable
-from types import SimpleNamespace
 from typing import Any
 
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.server.tasks.inmemory_task_store import resolve_user_scope
 from a2a.types import Task
-
-
-class _OwnerContext:
-    def __init__(self, owner: str):
-        self.user = SimpleNamespace(user_name=owner)
 
 
 class MosaicoTaskStore(InMemoryTaskStore):
@@ -37,7 +31,7 @@ class MosaicoTaskStore(InMemoryTaskStore):
             owner_tasks[task.id] = task.context_id
             while len(owner_tasks) > self.max_tasks_per_owner:
                 task_id, context_id = owner_tasks.popitem(last=False)
-                await super().delete(task_id, _OwnerContext(owner))
+                await super().delete(task_id, context)
                 if self._on_task_evicted is not None:
                     self._on_task_evicted(owner, task_id, context_id)
 
