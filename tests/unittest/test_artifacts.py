@@ -1,8 +1,8 @@
 import os
 from unittest.mock import patch
 
-from jinja2 import Environment
 import pytest
+from jinja2 import Environment
 
 from pr_agent.algo.artifacts import (
     DEFAULT_ARTIFACT_INSTRUCTIONS,
