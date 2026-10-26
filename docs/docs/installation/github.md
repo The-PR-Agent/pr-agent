@@ -549,7 +549,10 @@ If you encounter rate limiting:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Add a fallback model for better reliability
         config.fallback_models: '["your-fallback-model"]'
-        # Increase timeout for slower models
+        # Retry transient rate limits (429). Each model in the fallback chain gets its own retries.
+        config.num_retries: "4"
+        # Increase timeout for slower models. Note that ai_timeout bounds a single request,
+        # so a larger value does not help with 429 responses, which are answered at once.
         config.ai_timeout: "300"
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
@@ -573,7 +576,7 @@ If you encounter rate limiting:
     - **Another provider's key is set, but the model is not.** Keys alone do not switch provider: set `config.model` (and `config.fallback_models`) as well, otherwise the default OpenAI model is used and only an OpenAI key counts. See [Changing a model in PR-Agent](../usage-guide/changing_a_model.md).
 
 **Error: "Rate limit exceeded"**
-- **Solution**: Add fallback models or increase the `config.ai_timeout` value
+- **Solution**: A 429 is answered immediately, so raising `config.ai_timeout` (which only bounds a single request) does not help. Set `config.num_retries` instead: the client retries transient rate limits honoring `retry-after`, and each model in the `config.fallback_models` chain gets its own retries. A quota error (such as exhausted credit) is retried too but never recovers — fix the quota instead. To see the underlying error of a failed manual `/review` run, set `pr_reviewer.publish_error_details: "true"` in the workflow `env`; `.pr_agent.toml` cannot enable it.
 
 **Error: "Permission denied"**
 - **Solution**: Ensure your workflow has the correct permissions set:
