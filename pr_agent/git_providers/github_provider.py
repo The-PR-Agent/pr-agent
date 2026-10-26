@@ -300,6 +300,12 @@ class GithubProvider(GitProvider):
             self._check_runs_in_progress = set()
             self._check_run_base_summaries = {}
             self._check_runs_progress_blocked = set()
+            try:
+                if hasattr(context, "exists") and context.exists():
+                    context.pop("diff_files", None)
+                    context.pop("git_files", None)
+            except Exception:
+                pass
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
 
