@@ -254,6 +254,12 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
 async def _run_commands_bitbucket(commands, agent: PRAgent, api_url: str, log_context: dict):
     for command in commands:
         try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):

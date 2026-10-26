@@ -108,7 +108,8 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
-            # Reset empty diff caches between auto commands that may use different ignore rules.
+            # Reset diff state between auto commands: a non-empty diff or an incremental
+            # scope left by the previous command must not leak into the next (#4372).
             if context.exists():
                 provider = context.get("git_provider", {}).get(api_url)
                 reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)

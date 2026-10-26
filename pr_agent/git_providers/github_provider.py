@@ -175,12 +175,6 @@ class GithubProvider(GitProvider):
                                    f"belonging to owner/repo: {repo_name}")
             return None
 
-    def reset_diff_cache_for_command(self) -> None:
-        self.diff_files = None
-        if context.exists():
-            context.pop("diff_files", None)
-        self.incremental = IncrementalPR(False)
-
     def get_incremental_commits(self, incremental: IncrementalPR | None = None):
         # Constructed per call: a default in the signature is one object shared by every provider that omits it.
         # Invalidate completed diffs when the file scope is being reconfigured.

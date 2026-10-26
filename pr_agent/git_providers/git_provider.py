@@ -12,6 +12,8 @@ from functools import wraps
 from typing import Any
 from urllib.parse import urlsplit
 
+from starlette_context import context
+
 from pr_agent.algo.comment_identity import (
     PRCommandNoticeIdentity,
     add_pr_review_identity,
@@ -364,9 +366,20 @@ class GitProvider(ABC):
         pass
 
     def reset_diff_cache_for_command(self) -> None:
-        """Reset diff state that should not survive an automatic command boundary."""
-        if getattr(self, "diff_files", None) == []:
-            self.diff_files = None
+        """Reset diff state that should not survive an automatic command boundary.
+
+        A completed diff belongs to the command that computed it: the next command in
+        the loop may run under a different scope (a full run after an incremental one,
+        different ignore rules), so reset unconditionally rather than only when the
+        cached diff is empty. Resets the incremental anchor too, and the request-scoped
+        diff cache some providers keep in the starlette context. #3724 introduced this
+        for GitHub; the semantics live here so every provider inherits them.
+        """
+        self.diff_files = None
+        if getattr(self, "incremental", None) is not None:
+            self.incremental = IncrementalPR(False)
+        if context.exists():
+            context.pop("diff_files", None)
 
     def supports_incremental_kind(self, kind: str) -> bool:
         """Whether `get_incremental_commits()` can scope an incremental run to `kind`

@@ -226,6 +226,12 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
