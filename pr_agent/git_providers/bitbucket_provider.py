@@ -400,6 +400,11 @@ class BitbucketProvider(GitProvider):
         self._languages = None
         self._published_inline_comment_bodies = []
         self.temp_comments = []
+        try:
+            if hasattr(context, "exists") and context.exists():
+                context.pop("git_files", None)
+        except Exception:
+            pass
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
