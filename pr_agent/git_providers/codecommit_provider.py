@@ -481,6 +481,7 @@ class CodeCommitProvider(GitProvider):
             if hasattr(self, "repo_name") and self.repo_name:
                 return self.repo_name
         except Exception:
+            # Best effort fallback
             pass
         return ""
 

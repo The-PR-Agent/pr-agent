@@ -344,6 +344,7 @@ class GerritProvider(GitProvider):
             if hasattr(self, "_repo_url") and self._repo_url:
                 return self._repo_url
         except Exception:
+            # Best effort fallback
             pass
         return ""
 

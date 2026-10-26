@@ -214,6 +214,7 @@ class LocalGitProvider(GitProvider):
             if repo.remotes:
                 return repo.remotes.origin.url
         except Exception:
+            # Not all local checkouts have git metadata accessible
             pass
         return ""
 

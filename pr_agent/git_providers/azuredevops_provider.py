@@ -759,8 +759,10 @@ class AzureDevopsProvider(GitProvider):
                     if repo_url:
                         return repo_url
                 except Exception:
+                    # Client may not expose repo url
                     pass
         except Exception:
+            # Avoid breaking callers if attributes missing
             pass
         return ""
 
