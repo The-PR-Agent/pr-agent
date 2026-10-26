@@ -261,7 +261,7 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `committable_code_suggestions` | false | If set to true, the tool will display the suggestions as committable code comments. |
+| `committable_code_suggestions` | false | Deprecated alias still accepted until 1.0: pr_code_suggestions.commitable_code_suggestions |
 | `dual_publishing_score_threshold` | -1 | -1 to disable, [0-10] to set the threshold (>=) for publishing a code suggestion both in a table and as committable |
 | `focus_only_on_problems` | true |  |
 | `extra_instructions` | "" |  |
