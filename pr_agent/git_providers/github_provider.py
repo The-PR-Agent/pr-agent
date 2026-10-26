@@ -307,7 +307,17 @@ class GithubProvider(GitProvider):
             # Get all files changed during the commit range
 
             for commit in self.incremental.commits_range:
-                if commit.commit.message.startswith(f"Merge branch '{self._get_repo().default_branch}'"):
+                raw_data = getattr(commit, "_rawData", None)
+                parents = (
+                    raw_data.get("parents")
+                    if isinstance(raw_data, dict)
+                    else getattr(commit, "parents", None)
+                )
+                is_merge_commit = parents is not None and len(parents) > 1
+                if not is_merge_commit:
+                    message = getattr(getattr(commit, "commit", None), "message", "")
+                    is_merge_commit = message.startswith(f"Merge branch '{self._get_repo().default_branch}'")
+                if is_merge_commit:
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
                 self.unreviewed_files_map.update({

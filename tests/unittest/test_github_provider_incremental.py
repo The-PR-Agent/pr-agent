@@ -109,6 +109,22 @@ def test_incremental_commit_files_keep_300_item_pages():
     assert requester.requestJsonAndCheck.call_count == 2
 
 
+def test_incremental_review_skips_merge_commits_regardless_of_message():
+    merge_commit = _commit("merge", author_date=datetime(2026, 1, 4))
+    merge_commit.parents = [SimpleNamespace(), SimpleNamespace()]
+    merge_commit.commit.message = "Sync target branch"
+    merge_commit.get_files = Mock(side_effect=AssertionError("merge files must not be reviewed"))
+    provider = _make_provider([merge_commit])
+    provider.incremental.last_seen_commit = SimpleNamespace(sha="reviewed")
+    provider.get_previous_review = lambda **kwargs: provider.previous_review
+    provider.get_commit_range = lambda: [merge_commit]
+    provider.unreviewed_files_map = {}
+
+    provider._get_incremental_commits()
+
+    assert provider.unreviewed_files_map == {}
+
+
 def test_previous_review_ignores_matching_comment_from_another_user():
     provider = GithubProvider.__new__(GithubProvider)
     provider.pr = Mock()
