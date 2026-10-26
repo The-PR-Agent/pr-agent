@@ -753,7 +753,9 @@ class AzureDevopsProvider(GitProvider):
                 return self.pr.repo_url
             if hasattr(self, "azure_devops_client") and self.azure_devops_client:
                 try:
-                    repo_url = getattr(self.azure_devops_client, "repo_path", None) or getattr(self.azure_devops_client, "repo_url", None)
+                    repo_url = getattr(self.azure_devops_client, "repo_path", None) or getattr(
+                        self.azure_devops_client, "repo_url", None
+                    )
                     if repo_url:
                         return repo_url
                 except Exception:
