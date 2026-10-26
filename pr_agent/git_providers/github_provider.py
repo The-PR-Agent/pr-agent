@@ -284,6 +284,22 @@ class GithubProvider(GitProvider):
             self._published_inline_comment_bodies = []
             self._inline_comment_store = None
             self._languages = None
+            self.diff_files = None
+            self.git_files = None
+            self.pr_commits = None
+            self.comments = None
+            self.previous_review = None
+            self.incremental = IncrementalPR(False)
+            self.unreviewed_files_map = {}
+            self.last_commit_id = None
+            self._revision_file_contents = {}
+            self._repo_settings_snapshot = None
+            self._repo_settings_acquired = False
+            self._repo_settings_tree_cache = None
+            self._check_run_ids = {}
+            self._check_runs_in_progress = set()
+            self._check_run_base_summaries = {}
+            self._check_runs_progress_blocked = set()
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
 

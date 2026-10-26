@@ -301,6 +301,49 @@ def test_github_set_pr_drops_language_cache_for_a_different_pull_request():
     assert provider._languages is None
 
 
+def test_github_set_pr_drops_all_pull_request_caches_for_a_different_pull_request():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo = "old/repo"
+    provider.pr_num = 1
+    provider._published_inline_comment_bodies = ["old comment"]
+    provider._inline_comment_store = object()
+    provider._languages = LANGUAGES
+    provider.diff_files = [object()]
+    provider.git_files = [object()]
+    provider.pr_commits = [object()]
+    provider.comments = [object()]
+    provider.previous_review = object()
+    provider.incremental = SimpleNamespace(is_incremental=True)
+    provider.unreviewed_files_map = {"old.py": object()}
+    provider.last_commit_id = object()
+    provider._revision_file_contents = {"old": "content"}
+    provider._repo_settings_snapshot = ("old", "old")
+    provider._repo_settings_acquired = True
+    provider._repo_settings_tree_cache = ("old",)
+    provider._check_run_ids = {"review": 1}
+    provider._check_runs_in_progress = {"review"}
+    provider._check_run_base_summaries = {"review": "old"}
+    provider._check_runs_progress_blocked = {"review"}
+    provider._parse_pr_url = MagicMock(return_value=("new/repo", 2))
+    provider._get_pr = MagicMock(return_value=MagicMock())
+
+    provider.set_pr("https://github.com/new/repo/pull/2")
+
+    assert provider.diff_files is None
+    assert provider.git_files is None
+    assert provider.pr_commits is None
+    assert provider.comments is None
+    assert provider.previous_review is None
+    assert provider.incremental.is_incremental is False
+    assert provider.unreviewed_files_map == {}
+    assert provider.last_commit_id is None
+    assert provider._revision_file_contents == {}
+    assert provider._repo_settings_snapshot is None
+    assert provider._repo_settings_acquired is False
+    assert provider._repo_settings_tree_cache is None
+    assert provider._check_run_ids == {}
+
+
 def test_github_set_pr_keeps_language_cache_for_the_same_pull_request():
     provider, _ = _github_provider()
     provider.repo = "same/repo"
