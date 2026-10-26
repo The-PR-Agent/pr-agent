@@ -309,7 +309,6 @@ async def handle_push_trigger_for_new_commits(body: dict[str, Any],
     if not get_settings().github_app.handle_push_trigger:
         return {}
 
-    # TODO: do we still want to get the list of commits to filter bot/merge commits?
     before_sha = body.get("before")
     after_sha = body.get("after")
     merge_commit_sha = pull_request.get("merge_commit_sha")
