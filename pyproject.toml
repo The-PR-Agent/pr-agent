@@ -38,7 +38,7 @@ dependencies = [
   "GitPython>=3.1.62,<4",
   "starlette>=1.6.0,<2",
   "Jinja2==3.1.6",
-  "litellm==1.105.1",
+  "litellm==1.106.2",
   "loguru==0.7.3",
   "openai>=1.55.3",
   "PyJWT>=2.15.1,<3",
@@ -59,7 +59,7 @@ dependencies = [
   # LiteLLM declares pydantic-settings as a base dependency and imports it unconditionally from
   # litellm/integrations/otel/model/config.py. Keep the exact pin to lock the resolved transitive version.
   # Recheck LiteLLM's declared constraint on upgrade; the observability guard covers callback imports.
-  "pydantic-settings==2.16.0",
+  "pydantic-settings==2.16.1",
   "html2text==2025.4.15",
   # pr_agent/telemetry imports these directly; already resolved transitively via
   # langfuse and litellm, pinned here to lock the version the code is tested against.
@@ -102,7 +102,7 @@ azure = [
 codecommit = ["boto3==1.43.118"]
 gitea = ["giteapy==1.0.8"]
 google = [
-  "google-cloud-aiplatform==2.5.0",
+  "google-cloud-aiplatform==2.6.0",
   # google-cloud-aiplatform==1.154.0 requires storage <4,>=1.32.0 on py<3.13 and <4,>=3.10.0 on py>=3.13.
   # Pin per-Python so existing installs are unchanged and py3.13 resolves. See #2480.
   "google-cloud-storage==2.10.0; python_version < '3.13'",
@@ -111,7 +111,7 @@ google = [
   # Revalidate compatibility when updating grpcio-status or related Google/gRPC dependencies.
   "protobuf==6.33.6",
 ]
-mosaico = ["a2a-sdk[http-server]==1.2.2"]
+mosaico = ["a2a-sdk[http-server]==1.2.3"]
 # Preserve the dependency set that the published Docker images shipped before provider SDKs became optional.
 all = ["pr-agent[github,gitlab,bitbucket,azure,codecommit,gitea,google,mosaico]"]
 # AWS Lambda deployment (docker/Dockerfile.lambda).
@@ -141,9 +141,9 @@ integration-dev = ["pr-agent[all]"]
 # database drivers stay out of the base install.
 similar-issue = [
   "pandas",  # imported directly by the qdrant indexing path
-  "pinecone==10.0.0",
+  "pinecone==10.2.0",
   "lancedb==0.40.0",
-  "qdrant-client==1.19.1",
+  "qdrant-client==1.20.0",
 ]
 dev = [
   { include-group = "integration-dev" },
