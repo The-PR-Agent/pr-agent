@@ -305,8 +305,8 @@ class GithubProvider(GitProvider):
                     context.pop("diff_files", None)
                     context.pop("git_files", None)
                     context.pop("filtered_diff_file_names", None)
-            except Exception:
-                pass
+            except ContextDoesNotExistError:
+                get_logger().debug("Skipping request cache cleanup outside a request context")
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
         self.pr_commits = list(self.pr.get_commits())
