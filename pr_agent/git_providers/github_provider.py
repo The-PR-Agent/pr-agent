@@ -308,11 +308,9 @@ class GithubProvider(GitProvider):
 
             for commit in self.incremental.commits_range:
                 raw_data = getattr(commit, "_rawData", None)
-                parents = (
-                    raw_data.get("parents")
-                    if isinstance(raw_data, dict)
-                    else getattr(commit, "parents", None)
-                )
+                parents = raw_data.get("parents") if isinstance(raw_data, dict) else None
+                if parents is None:
+                    parents = getattr(commit, "parents", None)
                 is_merge_commit = parents is not None and len(parents) > 1
                 if not is_merge_commit:
                     message = getattr(getattr(commit, "commit", None), "message", "")

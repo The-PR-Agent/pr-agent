@@ -95,6 +95,7 @@ def test_incremental_commit_files_keep_300_item_pages():
     requester.requestJsonAndCheck.side_effect = fetch_page
     commit = Commit(requester, {}, {
         "url": commit_url, "sha": "pushed", "commit": {"message": "Change files"},
+        "parents": [{"sha": "reviewed"}],
     }, completed=False)
     provider = _make_provider([commit])
     provider.incremental.last_seen_commit = SimpleNamespace(sha="reviewed")
@@ -110,10 +111,12 @@ def test_incremental_commit_files_keep_300_item_pages():
 
 
 def test_incremental_review_skips_merge_commits_regardless_of_message():
-    merge_commit = _commit("merge", author_date=datetime(2026, 1, 4))
-    merge_commit.parents = [SimpleNamespace(), SimpleNamespace()]
-    merge_commit.commit.message = "Sync target branch"
-    merge_commit.get_files = Mock(side_effect=AssertionError("merge files must not be reviewed"))
+    merge_commit = Commit(Mock(), {}, {
+        "url": "https://api.github.com/repos/example/project/commits/merge",
+        "sha": "merge",
+        "commit": {"message": "Sync target branch"},
+        "parents": [{"sha": "base"}, {"sha": "target"}],
+    }, completed=False)
     provider = _make_provider([merge_commit])
     provider.incremental.last_seen_commit = SimpleNamespace(sha="reviewed")
     provider.get_previous_review = lambda **kwargs: provider.previous_review
