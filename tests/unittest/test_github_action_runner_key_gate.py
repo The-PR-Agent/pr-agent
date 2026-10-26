@@ -115,3 +115,45 @@ async def test_repository_settings_are_applied_before_key_gate_on_comment_and_wo
     with pytest.raises(SystemExit):
         await github_action_runner.run_action()
     assert order == [("repo_settings", expected_url), "gate"]
+
+
+@pytest.mark.parametrize(
+    "event_name, event",
+    [
+        (
+            "issue_comment",
+            {
+                "action": "created",
+                "issue": {"number": 1},
+                "comment": {"body": "not a command"},
+            },
+        ),
+        (
+            "workflow_run",
+            {
+                "action": "workflow_run",
+                "workflow_run": {"event": "push", "conclusion": "success"},
+            },
+        ),
+    ],
+)
+async def test_events_without_a_pr_skip_the_gate(
+    monkeypatch, action_env_factory, event_name, event
+):
+    calls = []
+    monkeypatch.setattr(
+        github_action_runner, "apply_repo_settings",
+        lambda pr_url: calls.append(("repo_settings", pr_url)),
+    )
+    monkeypatch.setattr(
+        github_action_runner, "missing_provider_key_env_vars",
+        lambda: calls.append("gate") or ("openai", ("OPENAI_API_KEY",)),
+    )
+    monkeypatch.setattr(
+        github_action_runner, "get_setting_or_env", lambda key, default=None: default,
+    )
+    action_env_factory(event, event_name)
+
+    # No PR, no repo settings: the run decides, as on main.
+    await github_action_runner.run_action()
+    assert calls == []

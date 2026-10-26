@@ -261,9 +261,9 @@ async def run_action():
         print(f"Failed to parse JSON: {e}")
         return
 
+    pr_url = _settings_pr_url(event_payload, GITHUB_EVENT_NAME)
     try:
         get_logger().info("Applying repo settings")
-        pr_url = _settings_pr_url(event_payload, GITHUB_EVENT_NAME)
         if pr_url:
             apply_repo_settings(pr_url)
             get_logger().info(f"enable_custom_labels: {get_settings().config.enable_custom_labels}")
@@ -273,8 +273,9 @@ async def run_action():
     # Gate on the active provider's key after repo settings are applied (a repo-level
     # .pr_agent.toml can select a different provider) but before any tool runs: carrying
     # on with the placeholder only fails every call a full run later (#4195, #4324).
-    # Keyless providers defer to the run, as in `pr-agent doctor`.
-    missing_key = missing_provider_key_env_vars()
+    # Keyless providers defer to the run, as in `pr-agent doctor`; so do events with no
+    # PR, which have no repo settings to judge from.
+    missing_key = missing_provider_key_env_vars() if pr_url else None
     if missing_key is not None:
         _provider, env_var_names = missing_key
         # Raised, not printed, and rendered only from constant-table env var names and
