@@ -304,10 +304,18 @@ class GithubProvider(GitProvider):
                 if hasattr(context, "exists") and context.exists():
                     context.pop("diff_files", None)
                     context.pop("git_files", None)
+                    context.pop("filtered_diff_file_names", None)
             except Exception:
                 pass
         self.repo, self.pr_num = repo, pr_num
         self.pr = self._get_pr()
+        self.pr_commits = list(self.pr.get_commits())
+        if self.pr_commits:
+            self.last_commit_id = self.pr_commits[-1]
+        else:
+            self.last_commit_id = self._get_repo().get_commit(self.pr.head.sha)
+        # pr_url for GitHub Actions can use api.github.com, so use the PR's canonical URL.
+        self.pr_url = self.get_pr_url()
 
     def _get_incremental_commits(self):
         if not self.pr_commits:

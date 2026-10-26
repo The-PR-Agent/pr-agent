@@ -298,7 +298,9 @@ def test_github_recent_inline_bodies_do_not_cross_prs():
     provider.pr_num = 1
     provider._published_inline_comment_bodies = ["from first PR"]
     provider._inline_comment_store = object()
-    provider._get_pr = MagicMock(return_value=MagicMock())
+    new_pr = MagicMock()
+    new_pr.get_commits.return_value = [object()]
+    provider._get_pr = MagicMock(return_value=new_pr)
 
     provider.set_pr("https://github.com/owner/repo/pull/2")
 
