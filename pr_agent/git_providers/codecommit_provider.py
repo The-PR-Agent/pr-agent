@@ -474,6 +474,16 @@ class CodeCommitProvider(GitProvider):
     def get_comment_url(self, comment) -> str:
         return self.get_pr_url()
 
+    def get_git_repo_url(self, issues_or_pr_url: str = None) -> str:
+        try:
+            if self.repo_slug:
+                return self.repo_slug
+            if hasattr(self, "repo_name") and self.repo_name:
+                return self.repo_name
+        except Exception:
+            pass
+        return ""
+
     def get_repo_settings(self):
         # a local ".pr_agent.toml" settings file is optional
         settings_filename = ".pr_agent.toml"

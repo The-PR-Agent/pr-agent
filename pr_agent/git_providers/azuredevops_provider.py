@@ -747,6 +747,21 @@ class AzureDevopsProvider(GitProvider):
         latest.created_at = anchor_time(latest)
         return latest
 
+    def get_git_repo_url(self, issues_or_pr_url: str = None) -> str:
+        try:
+            if self.pr and getattr(self.pr, "repo_url", None):
+                return self.pr.repo_url
+            if hasattr(self, "azure_devops_client") and self.azure_devops_client:
+                try:
+                    repo_url = getattr(self.azure_devops_client, "repo_path", None) or getattr(self.azure_devops_client, "repo_url", None)
+                    if repo_url:
+                        return repo_url
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return ""
+
     def get_repo_settings(self):
         settings_files = []
         global_settings = self._get_global_repo_settings()

@@ -206,6 +206,17 @@ class LocalGitProvider(GitProvider):
     def get_commit_messages(self) -> str:
         return ""  # Not applicable to the local git provider, but required by the interface
 
+    def get_git_repo_url(self, issues_or_pr_url: str = None) -> str:
+        try:
+            import git
+
+            repo = git.Repo(self.repo_path)
+            if repo.remotes:
+                return repo.remotes.origin.url
+        except Exception:
+            pass
+        return ""
+
     def get_repo_settings(self):
         pass  # Not applicable to the local git provider, but required by the interface
 

@@ -337,6 +337,16 @@ class GerritProvider(GitProvider):
                 return entry
         return None
 
+    def get_git_repo_url(self, issues_or_pr_url: str = None) -> str:
+        try:
+            if hasattr(self, "repo_slug") and self.repo_slug:
+                return self.repo_slug
+            if hasattr(self, "_repo_url") and self._repo_url:
+                return self._repo_url
+        except Exception:
+            pass
+        return ""
+
     def get_repo_settings(self):
         try:
             settings_tree = self.repo.branches[0].commit.tree
