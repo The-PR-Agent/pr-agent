@@ -810,7 +810,6 @@ class TestGetMaxTokens:
             "bedrock/us.anthropic.claude-sonnet-5-5",
             "bedrock/au.anthropic.claude-sonnet-5-5",
             "bedrock/eu.anthropic.claude-sonnet-5-5",
-            "bedrock/jp.anthropic.claude-sonnet-5-5",
         ],
     )
     def test_claude_sonnet_5_family_model_max_tokens(self, monkeypatch, model):
@@ -1151,6 +1150,35 @@ class TestGetMaxTokens:
 
         # Negative checks to ensure no over-generation
         assert "bedrock/apac.anthropic.claude-opus-4-8" not in MAX_TOKENS
+
+    def test_claude_sonnet_5_5_family_expansion_and_capabilities(self):
+        """Independent verification of Sonnet 5.5 generated aliases and capabilities."""
+        expected_aliases = {
+            "claude-sonnet-5-5",
+            "anthropic/claude-sonnet-5-5",
+            "vertex_ai/claude-sonnet-5-5",
+            "bedrock/anthropic.claude-sonnet-5-5",
+            "bedrock/global.anthropic.claude-sonnet-5-5",
+            "bedrock/us.anthropic.claude-sonnet-5-5",
+            "bedrock/eu.anthropic.claude-sonnet-5-5",
+            "bedrock/au.anthropic.claude-sonnet-5-5",
+        }
+
+        # Exact set equality against filtered MAX_TOKENS
+        actual_aliases = {k for k in MAX_TOKENS if "claude-sonnet-5-5" in k}
+        assert actual_aliases == expected_aliases
+
+        # Context window tokens
+        for alias in expected_aliases:
+            assert MAX_TOKENS[alias] == 1000000
+
+        # Capability lists
+        for alias in expected_aliases:
+            assert alias not in CLAUDE_EXTENDED_THINKING_MODELS
+
+        # Negative checks to ensure no over-generation
+        assert "bedrock/jp.anthropic.claude-sonnet-5-5" not in MAX_TOKENS
+        assert "bedrock/apac.anthropic.claude-sonnet-5-5" not in MAX_TOKENS
 
     def test_claude_opus_4_6_family_expansion_and_capabilities(self):
         """Independent verification of Opus 4.6 generated aliases and capabilities."""

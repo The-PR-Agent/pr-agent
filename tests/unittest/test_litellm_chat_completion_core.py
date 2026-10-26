@@ -362,7 +362,6 @@ async def test_chat_completion_strips_temperature_for_claude_opus_5_family(monke
         "bedrock/us.anthropic.claude-sonnet-5-5",
         "bedrock/au.anthropic.claude-sonnet-5-5",
         "bedrock/eu.anthropic.claude-sonnet-5-5",
-        "bedrock/jp.anthropic.claude-sonnet-5-5",
     ],
 )
 async def test_chat_completion_strips_temperature_for_claude_sonnet_5_family(monkeypatch, model):

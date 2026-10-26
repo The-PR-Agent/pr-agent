@@ -40,7 +40,10 @@ _CLAUDE_MODEL_FAMILIES = [
     {
         "model_id": "claude-sonnet-5-5",
         "max_tokens": 1000000,
-        "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
+        # Sonnet 5.5 exposes the global, US, EU and AU geo inference IDs on
+        # Bedrock; a JP geo inference ID is not available.
+        # Ref: https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html
+        "bedrock_regions": ("global", "us", "eu", "au"),
     },
     {
         "model_id": "claude-haiku-5-5",
