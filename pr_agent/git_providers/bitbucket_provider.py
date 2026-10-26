@@ -395,6 +395,11 @@ class BitbucketProvider(GitProvider):
                 and source_name.casefold() == destination_name.casefold())
 
     def set_pr(self, pr_url: str):
+        self.diff_files = None
+        self.git_files = None
+        self._languages = None
+        self._published_inline_comment_bodies = []
+        self.temp_comments = []
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 

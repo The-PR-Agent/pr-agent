@@ -222,6 +222,10 @@ class BitbucketServerProvider(GitProvider):
         return True
 
     def set_pr(self, pr_url: str):
+        self.diff_files = None
+        self._pr_changes = None
+        self._languages = None
+        self.temp_comments = []
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 

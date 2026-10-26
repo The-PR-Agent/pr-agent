@@ -314,6 +314,42 @@ def test_github_set_pr_keeps_language_cache_for_the_same_pull_request():
     assert provider._languages is LANGUAGES
 
 
+def test_bitbucket_set_pr_drops_pull_request_caches():
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.diff_files = [object()]
+    provider.git_files = [object()]
+    provider._languages = LANGUAGES
+    provider._published_inline_comment_bodies = ["old comment"]
+    provider.temp_comments = ["old comment"]
+    provider._parse_pr_url = MagicMock(return_value=("new-workspace", "new-repo", 2))
+    provider._get_pr = MagicMock(return_value=MagicMock())
+
+    provider.set_pr("https://bitbucket.org/new-workspace/new-repo/pull-requests/2")
+
+    assert provider.diff_files is None
+    assert provider.git_files is None
+    assert provider._languages is None
+    assert provider._published_inline_comment_bodies == []
+    assert provider.temp_comments == []
+
+
+def test_bitbucket_server_set_pr_drops_pull_request_caches():
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider.diff_files = [object()]
+    provider._pr_changes = [object()]
+    provider._languages = LANGUAGES
+    provider.temp_comments = ["old comment"]
+    provider._parse_pr_url = MagicMock(return_value=("new-workspace", "new-repo", 2))
+    provider._get_pr = MagicMock(return_value=MagicMock())
+
+    provider.set_pr("https://bitbucket.example.com/projects/new-workspace/repos/new-repo/pull-requests/2")
+
+    assert provider.diff_files is None
+    assert provider._pr_changes is None
+    assert provider._languages is None
+    assert provider.temp_comments == []
+
+
 def test_bitbucket_server_get_diff_files_shares_the_cached_change_list():
     # get_diff_files() used to pull its own copy of the change list; assert it now reads
     # the same cached one instead of re-issuing the paginated request.
