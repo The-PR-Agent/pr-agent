@@ -37,7 +37,7 @@ from pr_agent.algo.git_patch_processing import (
     to_hunk_only_patch,
 )
 from pr_agent.algo.language_handler import build_language_file_matcher
-from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
+from pr_agent.algo.output_models import PRType, SubPR, finding_confidence, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -456,6 +456,9 @@ def convert_to_markdown_v2(output_data: dict,
                         if issue_header.lower() == 'possible bug':
                             issue_header = 'Possible Issue'  # Make the header less frightening
                         issue_content = issue.get('issue_content', '').strip()
+                        confidence = finding_confidence(issue)
+                        if confidence is not None:
+                            issue_header = f"{issue_header} (confidence: {confidence:g})"
                         start_line = _as_line(issue.get('start_line')) or 0
                         end_line = _as_line(issue.get('end_line')) or start_line
                         valid_lines = start_line > 0 and end_line >= start_line

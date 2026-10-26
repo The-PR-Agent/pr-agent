@@ -885,3 +885,56 @@ def test_review_coverage_caps_each_category_and_preserves_failed_chunk_note(enab
         assert f"{prefix}-50.py" not in rendered
     assert "... and 2 more" in rendered
     assert "... and 3 more" in rendered
+
+
+def _chunk_with_confidences(*confidences):
+    issues = "".join(
+        f"    - relevant_file: |\n        a.py\n      issue_header: |\n        Possible Issue\n"
+        f"      issue_content: |\n        problem {confidence}\n      start_line: 3\n      end_line: 4\n"
+        f"      confidence: {confidence}\n"
+        for confidence in confidences
+    )
+    return f"review:\n  score: 50\n  key_issues_to_review:\n{issues}  security_concerns: |\n    No\n"
+
+
+@pytest.mark.asyncio
+async def test_confidence_filter_runs_before_the_findings_cap_across_chunks(chunking_enabled, monkeypatch):
+    # three 30s in the first chunk would fill num_max_findings and push out the 95 of the second
+    get_settings().set("pr_reviewer.num_max_findings", 3)
+    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", 70, raising=False)
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(
+        side_effect=[_chunk_with_confidences(30, 30, 30), _chunk_with_confidences(95)])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+
+    issues = reviewer.prediction_data["review"]["key_issues_to_review"]
+    assert [issue["confidence"] for issue in issues] == [95]
+    assert reviewer.low_confidence_filtered_count == 3
+
+
+@pytest.mark.asyncio
+async def test_remerging_cached_chunks_keeps_the_low_confidence_count(chunking_enabled, monkeypatch):
+    # a fallback attempt reuses the cached chunks, so the count must not depend on the first merge
+    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", 70, raising=False)
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(
+        side_effect=[_chunk_with_confidences(30, 30), _chunk_with_confidences(95)])
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+              return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], [])),
+    ):
+        await reviewer._prepare_prediction("model")
+    reviewer.low_confidence_filtered_count = 0  # what the next attempt's reset does
+
+    assert reviewer._merge_cached_review_chunks()
+
+    assert reviewer.low_confidence_filtered_count == 2
+    assert [issue["confidence"] for issue in reviewer.prediction_data["review"]["key_issues_to_review"]] == [95]
