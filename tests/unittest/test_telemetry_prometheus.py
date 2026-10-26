@@ -7,9 +7,11 @@ use. Nothing else in the telemetry suite imports prometheus_client, so the
 env var above drives every process-global decision here.
 """
 
+import json
 import os
 import subprocess
 import sys
+from textwrap import dedent
 
 import pytest
 from opentelemetry.sdk.metrics import MeterProvider
@@ -146,3 +148,74 @@ def test_importing_prometheus_bridge_does_not_import_prometheus_client():
         "assert 'prometheus_client' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, env=env)
+
+
+@pytest.mark.parametrize("order", ["command-first", "scrape-first"])
+def test_direct_azure_start_ignores_retained_multiprocess_state(tmp_path, order):
+    state_dir = tmp_path / "retained-state"
+    state_dir.mkdir(mode=0o700)
+    env = {key: value for key, value in os.environ.items() if key in {
+        "PATH", "PYTHONPATH", "LANG", "LC_ALL", "TIKTOKEN_CACHE_DIR",
+    }}
+    env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    seed = dedent("""
+        import sys
+        from pr_agent.telemetry.prometheus_multiproc import ensure_prometheus_multiproc_dir
+        ensure_prometheus_multiproc_dir(sys.argv[1])
+        from prometheus_client import Counter
+        counter = Counter("pr_agent_commands", "PR-Agent commands executed",
+                          ["pr_agent_command", "provider_name"])
+        counter.labels("review", "azure").inc(5)
+    """)
+    subprocess.run([sys.executable, "-c", seed, str(state_dir)], env=env,
+                   check=True, capture_output=True, text=True, timeout=45)
+    retained_files = list(state_dir.glob("*.db"))
+    assert retained_files
+
+    code = dedent("""
+        import json
+        import os
+        import sys
+        from pr_agent.config_loader import get_settings
+        settings = get_settings()
+        settings.set("OTEL.IS_ENABLED", True)
+        settings.set("OTEL.EXPORTER_TYPE", "prometheus")
+        settings.set("OTEL.SERVICE_NAME", "direct-test")
+        settings.set("OTEL.ENVIRONMENT", "test")
+        settings.set("OTEL.PROMETHEUS_MULTIPROC_DIR", sys.argv[1])
+        assert "PROMETHEUS_MULTIPROC_DIR" not in os.environ
+        assert "prometheus_multiproc_dir" not in os.environ
+        from pr_agent.servers import azuredevops_server_webhook as azure
+        assert "prometheus_client" not in sys.modules
+        listeners = []
+        azure.uvicorn.run = lambda app, **kwargs: listeners.append(app)
+        azure.start()
+        assert len(listeners) == 1
+        from starlette.routing import Match
+        scope = {"type": "http", "path": "/metrics", "root_path": "", "method": "GET"}
+        assert any(route.matches(scope)[0] == Match.FULL for route in listeners[0].routes)
+        assert "prometheus_client" not in sys.modules
+        from pr_agent.telemetry.prometheus import prometheus_response
+        if sys.argv[2] == "scrape-first":
+            prometheus_response()
+        from pr_agent.telemetry.meter import get_commands_counter
+        from pr_agent.telemetry.registry import provider_registry
+        counter = get_commands_counter()
+        for _ in range(2):
+            counter.add(1, {"pr_agent.command": "review", "provider.name": "azure"})
+        assert len(provider_registry) == 1
+        provider_registry.flush_all()
+        body = prometheus_response().body.decode()
+        from prometheus_client.values import ValueClass
+        print(json.dumps({"multiprocess": ValueClass._multiprocess, "body": body}))
+        provider_registry.shutdown_all()
+    """)
+    result = subprocess.run([sys.executable, "-c", code, str(state_dir), order], env=env,
+                            capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stdout + result.stderr
+    observation = json.loads(result.stdout)
+    series = 'pr_agent_commands_total{pr_agent_command="review",provider_name="azure"}'
+    assert series + " 2.0" in observation["body"], observation
+    assert observation["multiprocess"] is False
+    assert series + " 5.0" not in observation["body"]
+    assert all(path.exists() for path in retained_files)
