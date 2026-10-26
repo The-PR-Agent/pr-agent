@@ -333,6 +333,31 @@ def test_bitbucket_set_pr_drops_pull_request_caches():
     assert provider.temp_comments == []
 
 
+def test_bitbucket_set_pr_retargets_repository_and_urls():
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider.repo = object()
+    provider.bitbucket_client = MagicMock()
+    new_repo = provider.bitbucket_client.workspaces.get.return_value.repositories.get.return_value
+    provider.pr = MagicMock()
+    provider.pr_url = "https://bitbucket.org/old-workspace/old-repo/pull-requests/1"
+    new_pr = MagicMock(**{
+        "_BitbucketBase__data": {
+            "links": {
+                "comments": {"href": "https://api.bitbucket.org/new-comments"},
+                "self": {"href": "https://api.bitbucket.org/new-pr"},
+            }
+        }
+    })
+    new_repo.pullrequests.get.return_value = new_pr
+
+    provider.set_pr("https://bitbucket.org/new-workspace/new-repo/pull-requests/2")
+
+    assert provider.repo is new_repo
+    assert provider.pr_url == "https://bitbucket.org/new-workspace/new-repo/pull-requests/2"
+    assert provider.bitbucket_comment_api_url == "https://api.bitbucket.org/new-comments"
+    assert provider.bitbucket_pull_request_api_url == "https://api.bitbucket.org/new-pr"
+
+
 def test_bitbucket_server_set_pr_drops_pull_request_caches():
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     provider.diff_files = [object()]
@@ -348,6 +373,21 @@ def test_bitbucket_server_set_pr_drops_pull_request_caches():
     assert provider._pr_changes is None
     assert provider._languages is None
     assert provider.temp_comments == []
+
+
+def test_bitbucket_server_set_pr_retargets_repository_and_urls():
+    provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
+    provider.repo = object()
+    provider.bitbucket_client = MagicMock()
+    provider.pr_url = "https://bitbucket.example.com/projects/old-workspace/repos/old-repo/pull-requests/1"
+    provider.bitbucket_client.get_pull_request.return_value = {"id": 2}
+
+    provider.set_pr("https://bitbucket.example.com/projects/new-workspace/repos/new-repo/pull-requests/2")
+
+    assert provider.repo is None
+    assert provider.pr_url == "https://bitbucket.example.com/projects/new-workspace/repos/new-repo/pull-requests/2"
+    assert provider.bitbucket_pull_request_api_url == provider.pr_url
+    assert provider._get_pr_web_url() == provider.pr_url
 
 
 def test_bitbucket_server_get_diff_files_shares_the_cached_change_list():

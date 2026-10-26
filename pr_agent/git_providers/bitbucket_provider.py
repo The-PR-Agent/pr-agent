@@ -400,8 +400,12 @@ class BitbucketProvider(GitProvider):
         self._languages = None
         self._published_inline_comment_bodies = []
         self.temp_comments = []
+        self.repo = None
+        self.pr_url = pr_url
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
+        self.bitbucket_comment_api_url = self.pr._BitbucketBase__data["links"]["comments"]["href"]
+        self.bitbucket_pull_request_api_url = self.pr._BitbucketBase__data["links"]["self"]["href"]
 
     def get_files(self):
         try:
