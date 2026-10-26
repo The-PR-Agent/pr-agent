@@ -1217,6 +1217,7 @@ enable = true
 
 [[model_routing.rules]]
 max_hunks = 3
+max_patch_chars = 10000
 model = "gpt-6-luna"
 
 [[model_routing.rules]]
@@ -1229,6 +1230,18 @@ Rules are checked in order, and the first one whose limits the pull request fits
 the call. A pull request that fits no rule uses `config.model`. Size is measured by the number of diff hunks
 (`max_hunks`) and changed files (`max_files`) left after the `[ignore]` rules. Every git provider reports both,
 and neither depends on a model's tokenizer, so a threshold means the same thing whichever model it selects.
+
+A rule can also set `max_patch_chars`, an inclusive ceiling on the sum of Python character counts in the supplied
+patch strings. All limits named by a rule must match. This can distinguish a long single-line change from a
+short change with the same file and hunk counts. Headers and line endings count too: LF is one character,
+CRLF is two, and a combining character counts separately from its base character.
+
+If any file has a missing or non-string patch, or its content could not be fetched, the character count is
+unknown. Rules with `max_patch_chars` are then skipped; later rules without it can still match. An explicit
+empty patch counts as zero. An incomplete head file alone does not invalidate its supplied patch string.
+The limit measures the text the provider supplies, including any normalization or undetectable clipping;
+it does not measure tokens, complete files, or a guaranteed complete diff. Rules without this field keep
+using their existing file and hunk limits.
 
 The retry chain starts as `[config.model] + config.fallback_models`, with a deployment paired to each model.
 A matched rule replaces the first pair. If the routed `(model, deployment)` pair also appears among the
