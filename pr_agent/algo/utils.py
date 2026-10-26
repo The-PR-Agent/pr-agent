@@ -641,7 +641,10 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
                 compliance_emoji = '✅'
             elif any(level == 'Not compliant' for level in all_compliance_levels):
                 # If there's a mix of compliant and non-compliant tickets
-                if any(level in ['Fully compliant', 'PR Code Verified'] for level in all_compliance_levels):
+                if any(
+                    level in ['Fully compliant', 'PR Code Verified', 'Partially compliant']
+                    for level in all_compliance_levels
+                ):
                     compliance_level = 'Partially compliant'
                     compliance_emoji = '🔶'
                 else:
@@ -987,7 +990,9 @@ def _load_yaml_initial(response_text: str) -> Any:
         return yaml.safe_load(response_text)
 
 
-def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_key="", last_key="") -> dict:
+def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_key="", last_key="",
+              *, preserve_null: bool = False) -> Any:
+    """Parse model output, normalizing YAML null to {} unless preservation is requested."""
     if keys_fix_yaml is None:
         keys_fix_yaml = []
     response_text_original = copy.deepcopy(response_text)
@@ -1027,7 +1032,7 @@ def load_yaml(response_text: str, keys_fix_yaml: list[str] | None = None, first_
         else:
             get_logger().info("Successfully parsed AI prediction after fallbacks",
                               artifact={'response_text': response_text})
-    if data is None:
+    if data is None and not preserve_null:
         return {}
     return data
 

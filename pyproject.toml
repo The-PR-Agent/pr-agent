@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pr-agent"
-version = "0.48.0"
+version = "0.49.0"
 
 authors = [
   { name = "QodoAI", email = "ofir.f@qodo.ai" },
@@ -99,7 +99,7 @@ azure = [
   "azure-identity==1.26.0",
   "msrest==0.7.1",
 ]
-codecommit = ["boto3==1.43.114"]
+codecommit = ["boto3==1.43.118"]
 gitea = ["giteapy==1.0.8"]
 google = [
   "google-cloud-aiplatform==2.5.0",
@@ -169,14 +169,6 @@ lint.select = [
   "I",    # isort
   "UP",   # pyupgrade
   "FURB", # refurb
-]
-
-lint.fixable = [
-  "I001", # import sorting
-  "F401", # unused imports
-  "F541", # f-string without placeholders
-  "UP",
-  "FURB",
 ]
 
 lint.exclude = ["api/code_completions"]

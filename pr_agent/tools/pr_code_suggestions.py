@@ -2485,6 +2485,7 @@ class PRCodeSuggestions:
                 ai_handler=self.ai_handler,
                 default_output_tokens=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
                 keep="prefix",
+                require_full_text=True,
             )
             if fitted.optional_text != raw_diff:
                 raise ValueError(

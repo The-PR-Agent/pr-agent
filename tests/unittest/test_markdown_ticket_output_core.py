@@ -352,17 +352,25 @@ class TestTicketMarkdownLogic:
         assert "Compliant requirements:" in out
         assert "Non-compliant requirements:" in out
 
-    def test_mixed_full_and_not_compliant_renders_partial(self):
+    @pytest.mark.parametrize("partial", [False, True])
+    @pytest.mark.parametrize("reverse_order", [False, True])
+    @pytest.mark.parametrize("gfm_supported", [True, False])
+    def test_mixed_compliance_renders_partial(self, partial, reverse_order, gfm_supported):
         tickets = [
-            self._ticket(fully_compliant_requirements="- ok\n"),
+            self._ticket(
+                fully_compliant_requirements="- ok\n",
+                not_compliant_requirements="- missing\n" if partial else "",
+            ),
             self._ticket(
                 ticket_url="https://example.com/ticket/43",
                 not_compliant_requirements="- broken\n",
             ),
         ]
-        out = ticket_markdown_logic("🎫", "", tickets, True)
-        # Mix of Fully compliant + Not compliant ⇒ overall Partially compliant 🔶.
+        if reverse_order:
+            tickets.reverse()
+        out = ticket_markdown_logic("🎫", "", tickets, gfm_supported)
         assert "Ticket compliance analysis 🔶" in out
+        assert get_settings().get("config.extra_statistics.compliance_level") == "Partially compliant"
         # Both ticket id slugs are rendered.
         assert "[42](https://example.com/ticket/42)" in out
         assert "[43](https://example.com/ticket/43)" in out

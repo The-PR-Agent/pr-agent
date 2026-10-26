@@ -447,12 +447,20 @@ The remaining knobs live in the `[artifacts]` section of your configuration:
 ```toml
 [artifacts]
 enable = false                                              # auto-enabled when artifact_path is set
-artifact_path = ""                                          # relative to GITHUB_WORKSPACE, or absolute
+artifact_path = [
+  { path = "reports/pytest.xml" },
+  { path = "reports/coverage.xml" },
+]
 artifact_instructions = ""                                  # empty = a generic "treat this as CI context" instruction
-artifact_label = ""                                         # empty = the file's name
+artifact_label = ""                                         # shared label; empty = each file's name
 target_tools = ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"]
 max_artifact_size = 50000                                   # characters; longer files are truncated with a marker
 ```
+
+`artifact_path` may also be a single string. For multiple files, each entry can set
+`path`, `artifact_label`, `artifact_instructions`, `target_tools`, and `truncate_from` on
+its own line; a shared `artifact_label` applies only to a single file, otherwise each file falls
+back to its name.
 
 CI artifacts are checked for recognizable URL credentials, authorization headers, standard GitLab tokens, AWS access keys, and common credential assignments before model submission, with redaction matches logged only by type and count; this pattern-based check does not recognize every secret format, so use sanitized CI logs as input.
 
@@ -558,7 +566,7 @@ If you encounter rate limiting:
 - **Note**: For non-OpenAI models (Gemini, Claude, etc.), you only need the model-specific API key, not `OPENAI_KEY`
 
 **Error: "Incorrect API key provided: dummy_key"**
-- **Cause**: No OpenAI key reached the run, while the model is still an OpenAI one. The step log shows `OPENAI_KEY not set` near the top: the run continues without a key, and the request goes out with PR-Agent's placeholder key instead.
+- **Cause**: No usable key for the active model's provider reached the run. The step log now shows `Stopping before any tool runs` with the missing variable named, and the job fails at once; older versions logged `OPENAI_KEY not set` near the top and carried on, so the request went out with PR-Agent's placeholder key instead and failed a full run later.
 - **Solution**: Check which of the three causes applies:
     - **The run gets no secrets.** On the `pull_request` event, runs triggered from a fork receive no repository secrets, so `${{ secrets.OPENAI_KEY }}` is empty. Use the [`pull_request_target` setup](#using-with-pull_request_target-forkcontribution-support) instead. Dependabot pull requests are the same case: their secrets live under Dependabot secrets, not Actions secrets, and the `github.event.sender.type != 'Bot'` condition in the examples above keeps those runs from starting at all.
     - **The secret is missing or misnamed.** A reference to a secret that does not exist expands to an empty string rather than failing the workflow, so compare the name in the repository secrets with the one used in `env`.

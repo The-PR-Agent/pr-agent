@@ -700,6 +700,153 @@ index 1111111..2222222 100644
         )
         return provider, diffstats
 
+    def test_cold_filename_and_diff_pair_share_one_diffstat_acquisition(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        provider.pr.diffstat.side_effect = lambda: iter(diffstats)
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {}):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            files = provider.get_diff_files()
+            assert provider.get_diff_files() is files
+
+        assert [(file.filename, file.edit_type, file.num_plus_lines, file.num_minus_lines) for file in files] == [
+            ("src/first.py", EDIT_TYPE.MODIFIED, 1, 1),
+            ("src/second.py", EDIT_TYPE.MODIFIED, 1, 1),
+        ]
+        assert all(file.patch == "@@ -1 +1 @@\n-old\n+new\n" for file in files)
+        provider.pr.diffstat.assert_called_once_with()
+        provider.pr.diff.assert_called_once_with()
+
+    def test_warm_context_filenames_do_not_supply_a_raw_diffstat(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        shared_names = ["shared.py"]
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {"git_files": shared_names}):
+            assert provider.get_files() is shared_names
+            provider.pr.diffstat.assert_not_called()
+            files = provider.get_diff_files()
+
+        assert [file.filename for file in files] == ["src/first.py", "src/second.py"]
+        provider.pr.diffstat.assert_called_once_with()
+
+    def test_successful_empty_filenames_discard_an_older_raw_handoff(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        provider.pr.diffstat.side_effect = [iter(diffstats), iter([]), iter([diffstats[1]])]
+        provider.pr.diff.return_value = (
+            "diff --git a/src/second.py b/src/second.py\n"
+            "--- a/src/second.py\n+++ b/src/second.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        request_context = {}
+        with patch("pr_agent.git_providers.bitbucket_provider.context", request_context):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            request_context["git_files"] = []
+            assert provider.get_files() == []
+            assert [file.filename for file in provider.get_diff_files()] == ["src/second.py"]
+
+        assert provider.pr.diffstat.call_count == 3
+
+    def test_filtered_empty_diff_reacquires_after_the_initial_pair(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.context", {}),
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=[]),
+        ):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            assert provider.get_diff_files() == []
+            calls_after_first_diff = provider.pr.diffstat.call_count
+            assert calls_after_first_diff == 1
+            assert provider.get_diff_files() == []
+
+        assert provider.pr.diffstat.call_count == calls_after_first_diff + 1
+
+    def test_partial_filename_pagination_falls_back_without_partial_publication(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+
+        def partial_page():
+            yield diffstats[0]
+            assert provider.git_files is None
+            assert getattr(provider, "_pending_diffstat", None) is None
+            raise RuntimeError("next page failed")
+
+        provider.pr.diffstat.side_effect = [partial_page(), iter(diffstats), iter(diffstats)]
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {}):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            assert provider.pr.diffstat.call_count == 2
+            assert [file.filename for file in provider.get_diff_files()] == ["src/first.py", "src/second.py"]
+            assert provider.pr.diffstat.call_count == 2
+
+    @pytest.mark.parametrize("recover", [False, True])
+    def test_filename_conversion_stops_iteration_and_reacquires_in_fallback(self, recover):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        events = []
+        malformed = SimpleNamespace(new=SimpleNamespace())
+
+        def bad_page():
+            events.append("start")
+            yield malformed
+            events.append("advanced past malformed filename")
+            raise AssertionError("conversion must precede the next page")
+
+        provider.pr.diffstat.side_effect = [bad_page(), iter(diffstats) if recover else bad_page()]
+        request_context = {}
+        with patch("pr_agent.git_providers.bitbucket_provider.context", request_context):
+            if recover:
+                assert provider.get_files() == ["src/first.py", "src/second.py"]
+            else:
+                with pytest.raises(AttributeError, match="path"):
+                    provider.get_files()
+                assert provider.git_files is None
+                assert getattr(provider, "_pending_diffstat", None) is None
+            assert request_context == {}
+
+        assert provider.pr.diffstat.call_count == 2
+        assert events == (["start"] if recover else ["start", "start"])
+
+    def test_context_write_failure_keeps_the_complete_filename_result(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        request_context = MagicMock()
+        request_context.get.return_value = None
+        request_context.__setitem__.side_effect = RuntimeError("context write failed")
+        with patch("pr_agent.git_providers.bitbucket_provider.context", request_context):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            provider.pr.diffstat.assert_called_once_with()
+            assert [file.filename for file in provider.get_diff_files()] == ["src/first.py", "src/second.py"]
+            provider.pr.diffstat.assert_called_once_with()
+
+    def test_downstream_diff_failure_reacquires_after_a_filename_handoff(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        complete_patch = provider.pr.diff.return_value
+        provider.pr.diff.side_effect = ["", complete_patch]
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {}):
+            provider.get_files()
+            with pytest.raises(IncompleteBitbucketPullRequestFilesError, match="changed-file inventory"):
+                provider.get_diff_files()
+            assert provider.diff_files is None
+            calls_after_failure = provider.pr.diffstat.call_count
+            assert calls_after_failure == 1
+            assert [file.filename for file in provider.get_diff_files()] == ["src/first.py", "src/second.py"]
+
+        assert provider.pr.diffstat.call_count == calls_after_failure + 1
+
+    def test_warm_normalized_diff_discards_an_unused_raw_handoff(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        cached = [_added_file()]
+        provider.diff_files = cached
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {}):
+            provider.get_files()
+            assert provider.get_diff_files() is cached
+
+        provider.pr.diffstat.assert_called_once_with()
+        provider.pr.diff.assert_not_called()
+        assert getattr(provider, "_pending_diffstat", None) is None
+
     @pytest.mark.parametrize("patch_paths", [[], ["src/first.py"],
                                              ["src/first.py", "src/second.py", "src/third.py"]])
     def test_get_diff_files_rejects_inconsistent_aggregate_without_recovery_or_cache(self, patch_paths):

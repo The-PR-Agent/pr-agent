@@ -1030,6 +1030,34 @@ OPENAI__KEY=...
 
 Keep the `openai/` prefix on the model name, whichever DemonRoute model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`.
 
+### Runcrate
+
+[Runcrate](https://www.runcrate.ai/?utm_source=pr-agent&utm_medium=directory&utm_campaign=gpu_pricing) is a GPU cloud that also serves open models (DeepSeek V4.1 Flash, GLM-5.3, Qwen3.8 Flash, gpt-oss 120B and others) on an OpenAI-compatible API. Open models are free with your GitHub account. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Runcrate's base URL through litellm's OpenAI-compatible path, the same way [Atlas Cloud](#atlas-cloud) and [DemonRoute](#demonroute) are handled.
+
+To use a model served by Runcrate, set:
+
+```toml
+[config] # in configuration.toml
+model = "openai/deepseek-ai/DeepSeek-V4.1-Flash"
+fallback_models = []
+custom_model_max_tokens = 1048576 # the context window Runcrate publishes for the model
+
+[openai] # in .secrets.toml
+api_base = "https://api.runcrate.ai/v1"
+key = "..." # your Runcrate api key
+```
+
+or use the environment variables (make sure to use double underscores `__`):
+
+```bash
+OPENAI__API_BASE=https://api.runcrate.ai/v1
+OPENAI__KEY=...
+```
+
+(you can create a Runcrate API key in the [Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys?utm_source=pr-agent&utm_medium=directory&utm_campaign=gpu_pricing))
+
+Keep the `openai/` prefix on the model name, whichever Runcrate model ID you use. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`; take the value from the `context_length` field of the public model list at `https://api.runcrate.ai/v1/models`.
+
 ### APIClaw
 
 [APIClaw](https://apiclaw.biz) is an OpenAI-compatible AI API gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to APIClaw's base URL through litellm's OpenAI-compatible path, the same way [Heabsy](#heabsy) and [DemonRoute](#demonroute) are handled.
@@ -1196,7 +1224,7 @@ built-in defaults.
 :::note[Only models that accept a thinking budget are supported]
 PR-Agent enables extended thinking through the manual
 `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
 intentionally excluded from the built-in defaults. If you add one to
 `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
 for it and logs a warning rather than sending a request the provider would reject — use
@@ -1245,6 +1273,7 @@ enable = true
 
 [[model_routing.rules]]
 max_hunks = 3
+max_patch_chars = 10000
 model = "gpt-6-luna"
 
 [[model_routing.rules]]
@@ -1257,6 +1286,18 @@ Rules are checked in order, and the first one whose limits the pull request fits
 the call. A pull request that fits no rule uses `config.model`. Size is measured by the number of diff hunks
 (`max_hunks`) and changed files (`max_files`) left after the `[ignore]` rules. Every git provider reports both,
 and neither depends on a model's tokenizer, so a threshold means the same thing whichever model it selects.
+
+A rule can also set `max_patch_chars`, an inclusive ceiling on the sum of Python character counts in the supplied
+patch strings. All limits named by a rule must match. This can distinguish a long single-line change from a
+short change with the same file and hunk counts. Headers and line endings count too: LF is one character,
+CRLF is two, and a combining character counts separately from its base character.
+
+If any file has a missing or non-string patch, or its content could not be fetched, the character count is
+unknown. Rules with `max_patch_chars` are then skipped; later rules without it can still match. An explicit
+empty patch counts as zero. An incomplete head file alone does not invalidate its supplied patch string.
+The limit measures the text the provider supplies, including any normalization or undetectable clipping;
+it does not measure tokens, complete files, or a guaranteed complete diff. Rules without this field keep
+using their existing file and hunk limits.
 
 The retry chain starts as `[config.model] + config.fallback_models`, with a deployment paired to each model.
 A matched rule replaces the first pair. If the routed `(model, deployment)` pair also appears among the

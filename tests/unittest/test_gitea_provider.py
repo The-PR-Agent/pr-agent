@@ -2224,17 +2224,28 @@ class TestGiteaAddedFileBaseFetch:
     def test_raw_diff_is_fetched_only_when_diff_files_are_needed(
         self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
     ):
-        files = [{"filename": "src/app.py", "additions": 1, "deletions": 1, "status": "modified"}]
+        files = [
+            {"filename": "uv.lock", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "assets/app.min.js", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "src/app.py", "additions": 1, "deletions": 1, "status": "modified"},
+        ]
         provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
 
         repo_api.get_pull_request_diff.assert_not_called()
         repo_api.get_pr_commits.assert_not_called()
-        assert provider.get_files() == ["src/app.py"]
+        assert provider.get_files() == [file["filename"] for file in files]
         repo_api.get_pull_request_diff.assert_not_called()
         repo_api.get_pr_commits.assert_not_called()
 
-        assert [file.filename for file in provider.get_diff_files()] == ["src/app.py"]
-        provider.get_diff_files()
+        diff_files = provider.get_diff_files()
+        assert [file.filename for file in diff_files] == ["src/app.py"]
+        assert provider.filtered_diff_file_names == ["uv.lock", "assets/app.min.js"]
+        assert diff_files[0].patch.splitlines() == ["@@ -1 +1 @@", "-old", "+new"]
+        assert diff_files[0].head_file == diff_files[0].base_file == "file content"
+        assert diff_files[0].num_plus_lines == diff_files[0].num_minus_lines == 1
+        assert diff_files[0].edit_type == EDIT_TYPE.MODIFIED
+        assert provider.get_diff_files() is diff_files
+        repo_api.get_change_file_pull_request.assert_called_once()
         repo_api.get_pull_request_diff.assert_called_once_with(owner="owner", repo="repo", pr_number=1)
         repo_api.get_pr_commits.assert_not_called()
 
@@ -2270,6 +2281,54 @@ class TestGiteaAddedFileBaseFetch:
         assert [f.filename for f in diff_files] == ["added.py", "changed.py"]
         assert diff_files[0].base_file == ""
         assert diff_files[1].base_file == "file content"
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_all_nonreviewable_files_skip_raw_diff_and_cache_empty_result(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [
+            {"filename": "uv.lock", "additions": 1, "deletions": 1, "status": "modified"},
+            {"filename": "assets/app.min.js", "additions": 1, "deletions": 1, "status": "modified"},
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+
+        diff_files = provider.get_diff_files()
+
+        assert diff_files == []
+        assert provider.filtered_diff_file_names == ["uv.lock", "assets/app.min.js"]
+        repo_api.get_pull_request_diff.assert_not_called()
+        repo_api.get_file_content.assert_not_called()
+        assert provider.get_diff_files() is diff_files
+        repo_api.get_change_file_pull_request.assert_called_once()
+        repo_api.get_pull_request_diff.assert_not_called()
+        repo_api.get_file_content.assert_not_called()
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_raw_diff_failure_is_attempted_once_for_multiple_valid_files(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [
+            {"filename": name, "additions": 1, "deletions": 1, "status": "modified"}
+            for name in ["src/first.py", "src/second.py"]
+        ]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        provider.file_diffs = None
+        repo_api.get_pull_request_diff.side_effect = RuntimeError("diff unavailable")
+
+        diff_files = provider.get_diff_files()
+
+        assert [file.filename for file in diff_files] == [file["filename"] for file in files]
+        assert all(file.patch == "" and file.head_file == file.base_file == "file content"
+                   and file.num_plus_lines == file.num_minus_lines == 1
+                   and file.edit_type == EDIT_TYPE.MODIFIED for file in diff_files)
+        assert provider.filtered_diff_file_names == []
+        assert provider.get_diff_files() is diff_files
+        repo_api.get_change_file_pull_request.assert_called_once()
+        repo_api.get_pull_request_diff.assert_called_once_with(owner="owner", repo="repo", pr_number=1)
 
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     @patch("pr_agent.git_providers.gitea_provider.RepoApi")

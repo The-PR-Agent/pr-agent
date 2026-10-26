@@ -30,7 +30,7 @@ class _FakeHandler:
 
 @pytest.fixture
 def cli_mode_settings():
-    snapshot = snapshot_settings(("config.model", "openai.api_base", "config.cli_mode"))
+    snapshot = snapshot_settings(("config.model", "openai.api_base", "config.cli_mode", "azure_ad.client_id"))
     get_settings().set("config.model", "openai/gpt-4o")
     try:
         yield get_settings()
@@ -63,6 +63,42 @@ def test_missing_key_names_the_env_variable_and_fails(monkeypatch, cli_mode_sett
     assert cli.run(inargs=["doctor"]) == 1
     out = capsys.readouterr().out
     assert "✗ no API key for 'openai'; set OPENAI_API_KEY" in out
+
+
+def test_missing_provider_key_env_vars_shared_with_the_runner(monkeypatch, cli_mode_settings):
+    _install_handler(monkeypatch, key="synthetic-key")
+    assert doctor.missing_provider_key_env_vars() is None
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_handler(monkeypatch, key=None)
+    result = doctor.missing_provider_key_env_vars()
+    assert result is not None
+    assert "OPENAI_API_KEY" in result[1]
+
+
+def test_azure_ad_ambient_auth_defers_to_the_run(monkeypatch, cli_mode_settings):
+    _install_handler(monkeypatch, key=None)
+    get_settings().set("config.model", "azure/gpt-4o")
+    get_settings().set("azure_ad.client_id", "synthetic-client-id")
+    assert doctor.missing_provider_key_env_vars() is None
+
+
+def test_azure_provider_defers_to_the_run_without_azure_ad_settings(monkeypatch, cli_mode_settings):
+    _install_handler(monkeypatch, key=None)
+    get_settings().set("config.model", "azure/gpt-4o")
+    assert doctor.missing_provider_key_env_vars() is None
+
+
+def test_bedrock_ambient_auth_defers_to_the_run(monkeypatch, cli_mode_settings):
+    _install_handler(monkeypatch, key=None)
+    get_settings().set("config.model", "bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0")
+    assert doctor.missing_provider_key_env_vars() is None
+
+
+def test_custom_endpoint_defers_to_the_run(monkeypatch, cli_mode_settings):
+    _install_handler(monkeypatch, key=None)
+    get_settings().set("openai.api_base", "https://gateway.example/v1")
+    assert doctor.missing_provider_key_env_vars() is None
 
 
 def test_placeholder_key_fails(monkeypatch, cli_mode_settings, capsys):

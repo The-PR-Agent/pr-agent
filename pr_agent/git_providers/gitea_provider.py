@@ -623,11 +623,6 @@ class GiteaProvider(GitProvider):
         # lazily inside their diff fetch. See #2620.
         diff_git_files = filter_ignored(list(self._get_changed_files()), platform="gitea")
 
-        # Metadata-only commands do not need the full raw diff. Fetch it once on
-        # the first diff read that contains an eligible file.
-        if diff_git_files and getattr(self, "file_diffs", None) is None:
-            self.__add_file_diff()
-
         invalid_files_names = []
         counter_valid = 0
         diff_files = []
@@ -641,6 +636,9 @@ class GiteaProvider(GitProvider):
                 continue
 
             counter_valid += 1
+            # Fetch once, only after a reviewable file can consume the raw diff.
+            if counter_valid == 1 and getattr(self, "file_diffs", None) is None:
+                self.__add_file_diff()
             avoid_load = False
             patch = (self.file_diffs or {}).get(filename, "")
             head_file = ""

@@ -32,20 +32,22 @@ def test_markdown_fence_scan_follows_configured_minimum(monkeypatch):
 
 
 @pytest.mark.parametrize("max_lines", [None, 10])
-def test_instruction_renderer_preserves_fences_when_truncating(max_lines):
+def test_instruction_renderer_selects_fences_for_retained_content(max_lines):
     content = "Before\n`````````\nAfter\n`````"
     files = {"AGENTS.md": content}
     if max_lines is None:
         rendered = render_instruction_files(files)
         expected_content = content
+        expected_fence = "`" * 10
     else:
         rendered = render_instruction_files_with_line_budget(files, max_lines)
         expected_content = f"Before\n{TRUNCATION_MARKER}"
+        expected_fence = "`" * 5
         assert len(rendered.splitlines()) == max_lines
 
     assert rendered == (
         f"{INSTRUCTION_FILES_INTRO}\n<instruction_files>\n"
         '<file path="AGENTS.md" scope="repo-root">\n'
-        f"``````````markdown\n{expected_content}\n``````````\n"
+        f"{expected_fence}markdown\n{expected_content}\n{expected_fence}\n"
         "</file>\n\n</instruction_files>"
     )

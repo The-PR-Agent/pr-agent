@@ -25,7 +25,11 @@ SETTINGS_DIR = Path(pr_agent.__file__).parent / "settings"
 
 
 @pytest.fixture(autouse=True)
-def _reset_telemetry():
+def _reset_telemetry(monkeypatch):
+    # Track both keys so config's direct environment writes are restored too.
+    for key in ("PROMETHEUS_MULTIPROC_DIR", "prometheus_multiproc_dir"):
+        monkeypatch.setenv(key, "")
+        monkeypatch.delenv(key)
     clear_telemetry_caches()
     yield
     clear_telemetry_caches()
@@ -144,8 +148,15 @@ def test_otlp_timeout_defaults_and_reads_setting(monkeypatch):
     assert get_otel_config().otlp_timeout == 10
 
 
-def test_prometheus_settings_provision_state_dir(monkeypatch, tmp_path):
+@pytest.mark.parametrize("signal_name,signal_value", [
+    (None, None),
+    ("PROMETHEUS_MULTIPROC_DIR", "other-path"), ("prometheus_multiproc_dir", "other-path"),
+    ("PROMETHEUS_MULTIPROC_DIR", ""), ("prometheus_multiproc_dir", ""),
+])
+def test_prometheus_settings_only_provision_signaled_state(monkeypatch, tmp_path, signal_name, signal_value):
     state_dir = tmp_path / "prometheus-state"
+    if signal_name is not None:
+        monkeypatch.setenv(signal_name, signal_value)
     _use_settings(monkeypatch, {
         **VALID_ENABLED_SETTINGS,
         "OTEL.EXPORTER_TYPE": "prometheus",
@@ -156,9 +167,37 @@ def test_prometheus_settings_provision_state_dir(monkeypatch, tmp_path):
 
     assert config.is_enabled is True
     assert config.exporter_type == ExporterType.PROMETHEUS
-    assert config.prometheus_multiproc_dir == str(state_dir)
-    assert os.environ["PROMETHEUS_MULTIPROC_DIR"] == str(state_dir)
-    assert state_dir.is_dir(), "the multiprocess state dir must be created eagerly"
+    if signal_name is None:
+        assert config.prometheus_multiproc_dir is None
+        assert not state_dir.exists()
+        assert "PROMETHEUS_MULTIPROC_DIR" not in os.environ
+        assert "prometheus_multiproc_dir" not in os.environ
+    else:
+        assert config.prometheus_multiproc_dir == str(state_dir)
+        assert os.environ["PROMETHEUS_MULTIPROC_DIR"] == str(state_dir)
+        assert state_dir.is_dir(), "explicit multiprocess mode must provision the configured path"
+
+
+def test_prometheus_tracer_does_not_activate_multiprocess_mode(monkeypatch, tmp_path):
+    from pr_agent.telemetry.registry import provider_registry
+    from pr_agent.telemetry.tracer import get_tracer
+
+    state_dir = tmp_path / "tracer-state"
+    _use_settings(monkeypatch, {
+        **VALID_ENABLED_SETTINGS,
+        "OTEL.EXPORTER_TYPE": "prometheus",
+        "OTEL.PROMETHEUS_MULTIPROC_DIR": str(state_dir),
+    })
+    try:
+        with capture_loguru(level="WARNING") as captured:
+            get_tracer()
+        assert len(provider_registry) == 1
+        assert any("metrics only" in message for message in captured)
+        assert not state_dir.exists()
+        assert "PROMETHEUS_MULTIPROC_DIR" not in os.environ
+        assert "prometheus_multiproc_dir" not in os.environ
+    finally:
+        provider_registry.shutdown_all()
 
 
 def test_prometheus_without_endpoint_is_not_fail_closed(monkeypatch):

@@ -13,6 +13,13 @@ from pr_agent.git_providers import utils as git_utils
 from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
 
 
+@pytest.fixture(autouse=True)
+def _provider_key_gate_passes(monkeypatch):
+    """These flows test tools, not credentials; the key gate has its own test file.
+    Tests that need the gate can override the attribute again."""
+    monkeypatch.setattr(github_action_runner, "missing_provider_key_env_vars", lambda: None)
+
+
 def test_is_true_accepts_bool_and_case_insensitive_true_string():
     assert github_action_runner.is_true(True) is True
     assert github_action_runner.is_true(False) is False

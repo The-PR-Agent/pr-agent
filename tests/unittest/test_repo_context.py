@@ -362,7 +362,7 @@ def test_provider_supports_repo_context_warns_once_for_unsupported_provider(repo
 
 def test_load_repo_context_files_normalizes_fetch_results():
     provider = FakeProvider({
-        "AGENTS.md": b"Repo purpose",
+        "AGENTS.md": b"Repo purpose \n",
         "EMPTY.md": "",
         "MISSING.md": None,
     })
@@ -1576,6 +1576,78 @@ def test_render_instruction_files_with_line_budget_uses_longer_fence_for_conflic
     )
 
 
+@pytest.mark.parametrize("separator", ["\n", "\u2028"])
+def test_build_repo_context_bounds_content_processing_and_ignores_omitted_fences(repo_context_settings, separator):
+    class GuardedContent(str):
+        def __str__(self):
+            return self
+
+        def rstrip(self, *args):
+            raise AssertionError("The full document must not be stripped when only a prefix is retained")
+
+        def splitlines(self, *args):
+            raise AssertionError("The full document must not be split when only a prefix is retained")
+
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 11)
+    provider = FakeProvider({
+        "AGENTS.md": GuardedContent("one\n`````\nthree\n" + ("````````" + separator) * 10_000),
+    })
+
+    context = build_repo_context(provider)
+
+    lines = context.splitlines()
+    assert lines[3] == "``````markdown"
+    assert lines[4:-4] == ["one", "`````", TRUNCATION_MARKER]
+    assert lines[-4] == "``````"
+
+
+@pytest.mark.parametrize("separator", ["\n", "\u2028"])
+@pytest.mark.parametrize("truncated", [False, True])
+def test_render_instruction_files_handles_large_sparse_line_breaks(separator, truncated):
+    first_line = "A" * (64 * 1024)
+    content = first_line + separator + "B"
+    if truncated:
+        content += (separator + "C") * 4096
+
+    rendered = render_instruction_files_with_line_budget({"AGENTS.md": content}, max_lines=10)
+
+    assert rendered.splitlines()[4:-4] == [first_line, TRUNCATION_MARKER if truncated else "B"]
+
+
+@pytest.mark.parametrize("tail", ["\nB\u2028C\u2028D", "\nB\nC"])
+def test_render_instruction_files_bounds_large_line_breaks_at_limit(tail):
+    class GuardedContent(str):
+        def rstrip(self, *args):
+            raise AssertionError("The discarded content must not be stripped")
+
+        def splitlines(self, *args):
+            raise AssertionError("The discarded content must not be split")
+
+    first_line = "A" * (64 * 1024)
+    content = GuardedContent(first_line + tail)
+
+    rendered = render_instruction_files_with_line_budget({"AGENTS.md": content}, max_lines=10)
+
+    assert rendered.splitlines()[4:-4] == [first_line, TRUNCATION_MARKER]
+
+
+@pytest.mark.parametrize(
+    "separator", ["\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_render_instruction_files_bounded_prefix_preserves_line_breaks_and_trailing_whitespace(separator):
+    content = separator.join(["", "first", "", "last \t", "\u00a0", "", ""])
+
+    exact = render_instruction_files_with_line_budget({"AGENTS.md": content}, max_lines=12)
+    truncated = render_instruction_files_with_line_budget({"AGENTS.md": content}, max_lines=11)
+
+    assert exact.splitlines()[4:-4] == ["", "first", "", "last"]
+    assert truncated.splitlines()[4:-4] == ["", "first", TRUNCATION_MARKER]
+    padded = content + " " * (64 * 1024)
+    assert render_instruction_files_with_line_budget({"AGENTS.md": padded}, max_lines=12) == exact
+    assert render_instruction_files_with_line_budget({"AGENTS.md": padded}, max_lines=11) == truncated
+
+
 def test_build_repo_context_skips_invalid_missing_and_empty_files(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["", 7, "MISSING.md", "EMPTY.md", "AGENTS.md"])
     provider = FakeProvider({"EMPTY.md": "", "AGENTS.md": "Loaded context"})
@@ -1630,9 +1702,10 @@ def test_render_instruction_files_with_line_budget_returns_empty_when_wrapper_ex
     assert context == ""
 
 
-def test_render_instruction_files_with_line_budget_preserves_empty_entry_at_wrapper_limit():
+@pytest.mark.parametrize("empty_content", ["", " \t\r\n\u00a0"])
+def test_render_instruction_files_with_line_budget_preserves_empty_entry_at_wrapper_limit(empty_content):
     context = render_instruction_files_with_line_budget(
-        {"AGENTS.md": "first line\nsecond line", "EMPTY.md": ""}, max_lines=15
+        {"AGENTS.md": "first line\nsecond line", "EMPTY.md": empty_content}, max_lines=15
     )
 
     assert context.count("<file path=") == 2

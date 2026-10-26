@@ -184,6 +184,7 @@ class PRGenerateLabels:
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(

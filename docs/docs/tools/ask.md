@@ -28,6 +28,8 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 
 <img src="/img/Ask_line.png" alt="Ask Line" width="512" />
 
+If no matching diff hunk is found for the selected lines, the tool explains this without calling a model.
+
 Note that the tool does not have "memory" of previous questions, and answers each question independently.
 
 ## Ask on images

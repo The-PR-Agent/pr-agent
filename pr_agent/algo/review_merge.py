@@ -271,6 +271,8 @@ def _key_issue_identity(issue: Any) -> Hashable:
 
 
 def _todo_identity(todo: Any) -> Hashable:
+    if isinstance(todo, str):
+        return ("", "0", _normalize_text(todo))
     if not isinstance(todo, dict):
         return _normalize_text(todo)
     return (_normalize_path(todo.get("relevant_file")),
@@ -288,7 +290,14 @@ def _sub_pr_identity(sub_pr: Any) -> Hashable:
 
 
 def _merge_todo_sections(values: list[Any]) -> Any:
-    return _union_of_lists(_todo_identity)(values) or _first_non_empty(values)
+    sections = []
+    for value in values:
+        if isinstance(value, list):
+            sections.append(value)
+        elif isinstance(value, str) and value.strip() and not is_value_no(value):
+            # Preserve prose alongside located TODOs without inventing a file or line.
+            sections.append([{"relevant_file": "", "line_number": 0, "content": value}])
+    return _union_of_lists(_todo_identity)(sections) or _first_non_empty(values)
 
 
 def _merge_can_be_split(values: list[Any]) -> list:

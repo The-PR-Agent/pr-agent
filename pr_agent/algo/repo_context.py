@@ -3,6 +3,7 @@ import re
 import time
 from collections import OrderedDict
 from html import escape
+from itertools import islice
 
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
@@ -31,6 +32,8 @@ _DEFAULT_MAX_GLOB_MATCHES = 20
 _HARD_MAX_GLOB_MATCHES = 100
 _REPO_CONTEXT_CACHE_MISS = object()
 _COMMIT_SHA_PATTERN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+_LINE_BREAK_PATTERN = re.compile(r"\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]")
+_NON_WHITESPACE_PATTERN = re.compile(r"\S")
 _unsupported_repo_context_provider_classes = set()
 
 
@@ -444,7 +447,7 @@ def _iter_repo_context_files(
             content = content.decode("utf-8", errors="replace")
 
         state.had_content = True
-        yield label, str(content).rstrip()
+        yield label, str(content)
 
 
 def _load_repo_context_files(
@@ -452,11 +455,12 @@ def _load_repo_context_files(
 ) -> tuple[list[tuple[str, str]], bool]:
     """Load every configured file for compatibility callers."""
     state = _RepoContextLoadState()
-    files = list(
-        _iter_repo_context_files(
+    files = [
+        (label, content.rstrip())
+        for label, content in _iter_repo_context_files(
             git_provider, context_files, from_default_branch, state=state
         )
-    )
+    ]
     return files, state.had_fetch_error
 
 
@@ -488,6 +492,25 @@ def render_instruction_files(files: dict[str, str] | list[tuple[str, str]]) -> s
     return "\n".join(parts)
 
 
+def _split_instruction_lines(content: str, max_lines: int) -> tuple[list[str], bool]:
+    """Keep a bounded prefix with the same line and whitespace rules as rstrip().splitlines()."""
+    if max_lines <= 0:
+        return [], _NON_WHITESPACE_PATTERN.search(content) is not None
+
+    # Keep native splitting for typical small instruction files.
+    if len(content) <= 64 * 1024:
+        lines = content.rstrip().splitlines()
+        return lines[:max_lines], len(lines) > max_lines
+
+    boundary = next(islice(_LINE_BREAK_PATTERN.finditer(content), max_lines - 1, None), None)
+    if boundary is None:
+        return content.rstrip().splitlines(), False
+
+    truncated = _NON_WHITESPACE_PATTERN.search(content, boundary.end()) is not None
+    prefix = content[:boundary.end()]
+    return (prefix if truncated else prefix.rstrip()).splitlines(), truncated
+
+
 def render_instruction_files_with_line_budget(
     files: dict[str, str] | list[tuple[str, str]], max_lines: int, *, require_next_content_line: bool = False
 ) -> str:
@@ -500,8 +523,18 @@ def render_instruction_files_with_line_budget(
         return ""
 
     for path, content in _repo_context_render_entries(files):
+        # Reserve two header lines, three footer lines, and the closing instruction tag.
+        available_content_lines = max_lines - len(parts) - 6
+        if available_content_lines < 0:
+            break
+        content_lines, truncated = _split_instruction_lines(content, available_content_lines)
+        if truncated:
+            if not content_lines:
+                break
+            content_lines[-1] = TRUNCATION_MARKER
+
         scope = path.rsplit("/", 1)[0] if "/" in path else "repo-root"
-        fence = _get_markdown_fence(content)
+        fence = _get_markdown_fence("\n".join(content_lines))
         file_header = [
             f'<file path="{escape(path, quote=True)}" scope="{escape(scope, quote=True)}">',
             f"{fence}markdown",
@@ -511,23 +544,11 @@ def render_instruction_files_with_line_budget(
             "</file>",
             "",
         ]
-        content_lines = content.rstrip().splitlines()
-        reserved_file_and_closing_lines = len(file_header) + len(file_footer) + 1
-        available_content_lines = max_lines - len(parts) - reserved_file_and_closing_lines
-        if available_content_lines < 0 or (content_lines and available_content_lines < 1):
-            break
-
         parts.extend(file_header)
-        if available_content_lines >= len(content_lines):
-            parts.extend(content_lines)
-        else:
-            if available_content_lines > 1:
-                parts.extend(content_lines[: available_content_lines - 1])
-            parts.append(TRUNCATION_MARKER)
-            parts.extend(file_footer)
-            break
-
+        parts.extend(content_lines)
         parts.extend(file_footer)
+        if truncated:
+            break
 
         # The lazy file iterator should not fetch entries that cannot contribute content.
         minimum_next_file_lines = len(file_header) + len(file_footer) + 1

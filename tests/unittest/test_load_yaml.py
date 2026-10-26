@@ -404,6 +404,17 @@ class TestLoadYaml:
         finally:
             get_logger().remove(sink_id)
 
+    @pytest.mark.parametrize("yaml_text, expected", [
+        ("null", None),
+        ("~", None),
+        ("```yaml\nnull\n```", None),
+        ("", None),
+        ("{}", {}),
+    ])
+    def test_optional_null_preservation(self, yaml_text, expected):
+        assert load_yaml(yaml_text) == ({} if expected is None else expected)
+        assert load_yaml(yaml_text, preserve_null=True) == expected
+
     # Tests that a fenced block whose info string is separated by a space
     # (CommonMark allows whitespace after the opening fence) parses the same
     # as the flush form.

@@ -600,6 +600,14 @@ class AzureDevopsProvider(GitProvider):
             self._get_incremental_commits()
 
     def _get_incremental_commits(self):
+        kind = getattr(self, "_incremental_kind", "review")
+        prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
+        self.previous_review = self._find_incremental_anchor(prefixes)
+        if not self.previous_review:
+            get_logger().info(f"No previous {kind} comment found, will review the entire PR")
+            self.incremental.is_incremental = False
+            return
+
         if not self.pr_commits:
             raw = list(self.azure_devops_client.get_pull_request_commits(
                 project=self.workspace_slug,
@@ -609,14 +617,6 @@ class AzureDevopsProvider(GitProvider):
             # Azure returns newest-first; oldest-first matches GitHub iteration order.
             raw.reverse()
             self.pr_commits = [_AzureCommitAdapter(c) for c in raw]
-
-        kind = getattr(self, "_incremental_kind", "review")
-        prefixes = self._INCREMENTAL_ANCHOR_PREFIXES.get(kind, ())
-        self.previous_review = self._find_incremental_anchor(prefixes)
-        if not self.previous_review:
-            get_logger().info(f"No previous {kind} comment found, will review the entire PR")
-            self.incremental.is_incremental = False
-            return
 
         self.incremental.commits_range = self._get_commit_range()
         if self.incremental.commits_range is None:

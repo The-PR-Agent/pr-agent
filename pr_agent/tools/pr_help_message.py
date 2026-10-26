@@ -178,17 +178,40 @@ class PRHelpMessage:
                 "snippets": "",
             }
 
-    async def _prepare_prediction(self, model: str):
+    async def _prepare_prediction(self, model: str) -> dict | str:
         variables = copy.deepcopy(self.vars)
         system_prompt, user_prompt, fitted_snippets = self._fit_prompts(variables, model)
         response, finish_reason = await self.ai_handler.chat_completion(
             model=model, temperature=get_settings().config.temperature, system=system_prompt, user=user_prompt)
+        parsed_response = self._load_help_response(response)
         self._model_visible_docs_files = self._get_fitted_docs_files(
             variables.get("snippets", ""),
             fitted_snippets,
             getattr(self, "_available_docs_files", set()),
         )
-        return response
+        return parsed_response
+
+    @staticmethod
+    def _load_help_response(response: str) -> dict | str:
+        """Parse one model attempt and reject answers that cannot be published."""
+        if not isinstance(response, str):
+            raise FallbackEligibleError("The /help response must be text")
+        data = load_yaml(response, preserve_null=True)
+        if isinstance(data, str):
+            if not data.strip():
+                raise FallbackEligibleError("The /help response has no usable answer")
+            return data
+        if not isinstance(data, dict):
+            raise FallbackEligibleError("The /help response must be text or a mapping")
+        if data and "response" not in data and "relevant_sections" not in data:
+            raise FallbackEligibleError("The /help response has no answer or source fields")
+        # Keep the no-information response for absent/empty sources and let
+        # source formatting ignore malformed rows without discarding an answer.
+        if "response" in data or data.get("relevant_sections"):
+            answer = data.get("response")
+            if not isinstance(answer, str) or not answer.strip():
+                raise FallbackEligibleError("The /help response has no usable answer")
+        return data
 
     @staticmethod
     def _render_prompts(variables):
@@ -488,8 +511,7 @@ class PRHelpMessage:
                 get_logger().info(f'Answering a PR question about the PR {self.git_provider.pr_url} ')
 
                 # run the AI model
-                response = await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
-                response_yaml = load_yaml(response)
+                response_yaml = await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR)
                 if isinstance(response_yaml, str):
                     get_logger().warning(f"failing to parse response: {response_yaml}, publishing the response as is")
                     if get_settings().config.publish_output:

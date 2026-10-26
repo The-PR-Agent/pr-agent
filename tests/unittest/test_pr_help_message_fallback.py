@@ -29,6 +29,7 @@ def help_tool(tmp_path, monkeypatch):
         "config.model": PRIMARY,
         "config.fallback_models": [BACKUP],
         "config.publish_output": True,
+        "config.propagate_tool_errors": False,
         "config.max_output_tokens": 0,
         "config.model_token_count_estimate_factor": 0,
         "model_routing.enable": False,
@@ -176,7 +177,7 @@ async def test_model_prompt_preserves_question_and_documentation_markup(help_too
     tool.vars.update(question=question, snippets=snippets)
     tool.ai_handler.chat_completion.return_value = ANSWER, "stop"
 
-    assert await tool._prepare_prediction(PRIMARY) == ANSWER
+    assert await tool._prepare_prediction(PRIMARY) == pr_help_message.load_yaml(ANSWER)
 
     tool.ai_handler.chat_completion.assert_awaited_once()
     user_prompt = tool.ai_handler.chat_completion.await_args.kwargs["user"]
@@ -200,6 +201,72 @@ async def test_primary_failure_uses_backup_answer(help_tool):
     assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
     assert details.model_used == BACKUP
     assert details.fallback_used is True
+    assert get_settings().get("openai.deployment_id") == "primary-deployment"
+
+
+@pytest.mark.parametrize("response", [
+    pytest.param(None, id="non-text-content"),
+    pytest.param("[]", id="top-level-list"),
+    pytest.param("true", id="top-level-boolean"),
+    pytest.param("42", id="top-level-number"),
+    pytest.param("null", id="top-level-null"),
+    pytest.param("```yaml\nnull\n```", id="fenced-null"),
+    pytest.param("", id="empty-document"),
+    pytest.param('""', id="empty-text"),
+    pytest.param('"   "', id="whitespace-text"),
+    pytest.param("answer: Enable automatic review", id="wrong-answer-key"),
+    pytest.param("user_question: How do I configure automatic reviews?", id="question-only"),
+    pytest.param("relevant_sections: [{file_name: /tools/review.md}]", id="missing-answer"),
+    pytest.param('response: ""', id="blank-answer-no-sources"),
+    pytest.param('response: ""\nrelevant_sections: []', id="blank-answer-empty-sources"),
+    pytest.param('response: "   "\nrelevant_sections: []', id="whitespace-answer-empty-sources"),
+    pytest.param("response: null\nrelevant_sections: []", id="null-answer-empty-sources"),
+    pytest.param("response: []\nrelevant_sections: []", id="non-text-answer-empty-sources"),
+    pytest.param("response: false", id="non-text-answer-no-sources"),
+    *[
+        pytest.param(
+            f"response: {answer}\nrelevant_sections: [{{file_name: /tools/review.md}}]",
+            id=f"answer-{name}",
+        )
+        for name, answer in (
+            ("list", "[]"), ("mapping", "{}"), ("boolean", "true"),
+            ("null", "null"), ("empty", '""'), ("whitespace", '"   "'),
+        )
+    ],
+])
+async def test_invalid_response_shape_uses_backup_answer(help_tool, response):
+    tool, details, _ = help_tool
+    tool.ai_handler.chat_completion.side_effect = [(response, "stop"), (ANSWER, "stop")]
+
+    await tool.run()
+
+    assert attempted_models(tool) == [PRIMARY, BACKUP]
+    tool.git_provider.publish_comment.assert_called_once()
+    published_comment = tool.git_provider.publish_comment.call_args.args[0]
+    assert "### Answer:\nEnable automatic review" in published_comment
+    assert "> - https://docs.pr-agent.ai/tools/review/#automatic-review" in published_comment
+    assert details.model_used == BACKUP
+    assert details.fallback_used is True
+    assert details.command_failed is False
+
+
+@pytest.mark.parametrize("propagate_tool_errors", [False, True])
+async def test_all_invalid_response_shapes_record_failure(help_tool, propagate_tool_errors):
+    tool, details, logger = help_tool
+    get_settings().set("config.propagate_tool_errors", propagate_tool_errors)
+    tool.ai_handler.chat_completion.side_effect = [("[]", "stop"), ("true", "stop")]
+
+    if propagate_tool_errors:
+        with pytest.raises(Exception, match="Failed to generate prediction with any model"):
+            await tool.run()
+    else:
+        assert await tool.run() == ""
+
+    assert attempted_models(tool) == [PRIMARY, BACKUP]
+    tool.git_provider.publish_comment.assert_not_called()
+    logger.exception.assert_called_once()
+    assert details.command_failed is True
+    assert details.model_used is None
     assert get_settings().get("openai.deployment_id") == "primary-deployment"
 
 
@@ -651,6 +718,10 @@ async def test_all_models_fail_without_publishing_no_information(help_tool):
 @pytest.mark.parametrize(
     "response, expected",
     [(ANSWER, "### Answer:\nEnable automatic review"),
+     ("A direct answer.", "### Answer:\n\nA direct answer."),
+     ("{}", "Could not find relevant information"),
+     ("response: No matching information", "Could not find relevant information"),
+     ("relevant_sections: []", "Could not find relevant information"),
      ("response: No matching information\nrelevant_sections: []", "Could not find relevant information")],
 )
 async def test_successful_primary_response_does_not_use_backup(help_tool, response, expected):

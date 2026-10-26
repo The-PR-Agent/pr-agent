@@ -513,6 +513,38 @@ class TestPrepareAnswer:
 
         assert "AI summary" in body
 
+    @pytest.mark.parametrize(
+        ("description_fields", "expected_description"),
+        [
+            ({}, None),
+            ({"description": None}, ""),
+            ({"description": ""}, ""),
+            ({"description": "Intro\n- one\n- two"}, "Intro\n\n- one\n\n- two"),
+        ],
+        ids=["missing", "null", "empty", "bullets"],
+    )
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_optional_description_preserves_other_sections(
+        self, mock_get_settings, description_fields, expected_description,
+    ):
+        mock_get_settings.return_value = _settings(add_original_user_description=True)
+        obj = self._obj({})
+        obj.prediction = yaml.safe_dump({"title": "AI title", "type": ["Bug fix"], **description_fields})
+        obj.user_description = "User notes\n- preserve original spacing"
+
+        obj._prepare_data()
+        assert obj._validate_description_schema(obj.data)
+        title, body, walkthrough = obj._prepare_pr_answer()
+
+        assert title == "AI title"
+        assert f"### **User description**\n{obj.user_description}\n" in body
+        assert "### **PR Type**\nBug fix\n" in body
+        assert walkthrough == ""
+        if expected_description is None:
+            assert "### **Description**" not in body
+        else:
+            assert body.endswith(f"### **Description**\n{expected_description}\n")
+
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_description_list_value_is_joined_and_bullets_spaced(self, mock_get_settings):
         mock_get_settings.return_value = _settings()

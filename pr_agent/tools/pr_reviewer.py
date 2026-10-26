@@ -1255,6 +1255,7 @@ class PRReviewer:
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(
@@ -1738,6 +1739,7 @@ class PRReviewer:
                 self.git_provider.is_supported("get_labels")):
             try:
                 review_labels = []
+                has_valid_effort_estimate = False
                 has_valid_security_verdict = False
                 if get_settings().pr_reviewer.enable_review_labels_effort:
                     estimated_effort = data['review'].get('estimated_effort_to_review_[1-5]')
@@ -1756,6 +1758,7 @@ class PRReviewer:
                     if estimated_effort_number is not None:
                         estimated_effort_number = max(1, min(5, int(estimated_effort_number)))
                         review_labels.append(f'Review effort {estimated_effort_number}/5')
+                        has_valid_effort_estimate = True
                 if (
                         get_settings().pr_reviewer.enable_review_labels_security
                         and get_settings().pr_reviewer.require_security_review
@@ -1781,7 +1784,8 @@ class PRReviewer:
                 get_logger().debug(f"Current labels:\n{current_labels}")
                 if current_labels:
                     current_labels_filtered = [label for label in current_labels if
-                                               (not label.lower().startswith('review effort') and
+                                               (not (label.lower().startswith('review effort')
+                                                     and has_valid_effort_estimate) and
                                                 not (label.lower().startswith(
                                                     'possible security concern') and has_valid_security_verdict))]
                 else:

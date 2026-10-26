@@ -23,6 +23,7 @@ concurrency:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
@@ -81,6 +82,7 @@ jobs:
   publish-pypi:
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -110,6 +112,7 @@ jobs:
   publish-docker:
     needs: prepare
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: release
     permissions:
       contents: read
@@ -235,6 +238,7 @@ jobs:
       && needs.prepare.result == 'success'
       && needs.publish-docker.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: release
     permissions:
       contents: write

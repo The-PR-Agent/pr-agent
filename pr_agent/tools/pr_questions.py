@@ -262,6 +262,7 @@ class PRQuestions:
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
             image_path=image_path,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(

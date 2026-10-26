@@ -1204,6 +1204,14 @@ async def extract_tickets(git_provider):
             repo_obj_cache = {}
 
             if tickets:
+                issue_cache = {}
+
+                def get_issue_once(ticket_url, repo_name, repo_obj, issue_number):
+                    # Reuse successful reads shared by direct references and sub-issues.
+                    key = (_normalize_github_host(ticket_url), repo_name.lower(), issue_number)
+                    if key not in issue_cache:
+                        issue_cache[key] = git_provider.get_issue_content(repo_obj, issue_number)
+                    return issue_cache[key]
 
                 for ticket in tickets:
                     if len(tickets_content) >= MAX_GITHUB_TICKETS:
@@ -1214,7 +1222,7 @@ async def extract_tickets(git_provider):
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
                         if repo_obj is None:
                             continue
-                        issue_main = git_provider.get_issue_content(repo_obj, original_issue_number)
+                        issue_main = get_issue_once(ticket, repo_name, repo_obj, original_issue_number)
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
@@ -1242,7 +1250,7 @@ async def extract_tickets(git_provider):
                                                                         repo_obj_cache)
                                 if sub_repo_obj is None:
                                     continue
-                                sub_issue = git_provider.get_issue_content(sub_repo_obj, sub_issue_number)
+                                sub_issue = get_issue_once(sub_issue_url, sub_repo, sub_repo_obj, sub_issue_number)
 
                                 sub_body = sub_issue.body or ""
                                 if len(sub_body) > MAX_TICKET_CHARACTERS:

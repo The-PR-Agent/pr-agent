@@ -370,6 +370,15 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                 if not should_process_pr_logic(data):
                     return "OK"
 
+            event = data["event"]
+            if event not in ("pullrequest:created", "pullrequest:updated", "pullrequest:comment_created"):
+                return
+            if event == "pullrequest:comment_created":
+                comment_body = data["data"]["comment"]["content"]["raw"]
+                if not is_command_comment(comment_body):
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
+
             # Get the username of the sender
             log_context["sender"] = _get_username(data)
 
@@ -378,7 +387,6 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
             bearer_token = await get_bearer_token(shared_secret, client_key)
             context['bitbucket_bearer_token'] = bearer_token
             context["settings"] = copy.deepcopy(global_settings)
-            event = data["event"]
             agent = PRAgent()
             if event == "pullrequest:created":
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
@@ -402,10 +410,6 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
                 log_context["api_url"] = pr_url
                 log_context["event"] = "comment"
-                comment_body = data["data"]["comment"]["content"]["raw"]
-                if not is_command_comment(comment_body):
-                    get_logger().info("Ignoring comment not starting with /")
-                    return
                 with get_logger().contextualize(**log_context):
                     if get_identity_provider().verify_eligibility("bitbucket",
                                                                      sender_id, pr_url) is not Eligibility.NOT_ELIGIBLE:

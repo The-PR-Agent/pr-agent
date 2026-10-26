@@ -230,6 +230,7 @@ async def test_final_review_fit_rejects_untracked_diff_clipping():
 
     class ClippingBudget:
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            assert _kwargs["require_full_text"] is True
             return SimpleNamespace(
                 optional_text=optional_text[:-1],
                 system_prompt="system",
@@ -1672,6 +1673,35 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(re
 
 
 @pytest.mark.parametrize(
+    "disabled_setting, effort",
+    [
+        ("enable_review_labels_effort", "2"),
+        ("require_estimate_effort_to_review", "2"),
+        (None, None),
+        (None, "unknown"),
+        (None, "4"),
+    ],
+    ids=["labels-disabled", "estimate-disabled", "missing", "invalid", "unchanged"],
+)
+def test_set_review_labels_keeps_effort_label_without_replacement(
+    review_label_settings, disabled_setting, effort
+):
+    if disabled_setting:
+        setattr(get_settings().pr_reviewer, disabled_setting, False)
+    git_provider = MagicMock()
+    git_provider.get_pr_labels.return_value = ["Review effort 4/5", "keep-me"]
+    reviewer = _make_reviewer(git_provider)
+    data = {"review": {"security_concerns": "No"}}
+    if effort is not None:
+        data["review"]["estimated_effort_to_review_[1-5]"] = effort
+
+    reviewer.set_review_labels(data)
+
+    git_provider.get_pr_labels.assert_called_once_with(update=True)
+    git_provider.publish_labels.assert_not_called()
+
+
+@pytest.mark.parametrize(
     "security_concerns, expect_label",
     [
         ("SQL injection: the order id is concatenated into the query\n", True),
@@ -1725,20 +1755,20 @@ def test_set_review_labels_keeps_existing_security_label_when_verdict_is_missing
     assert "keep-me" in published
 
 
-def test_set_review_labels_still_publishes_when_effort_field_is_missing(review_label_settings):
+@pytest.mark.parametrize("current_labels", [[], ["Review effort 4/5", "keep-me"]])
+def test_set_review_labels_still_publishes_when_effort_field_is_missing(review_label_settings, current_labels):
     # estimated_effort_to_review_[1-5] is optional in the review schema, and a
     # chunked review only carries the keys its chunks emitted, so it can be
     # absent. A missing effort must not abort the whole label update and
     # silently drop the security label along with it.
     git_provider = MagicMock()
-    git_provider.get_pr_labels.return_value = []
+    git_provider.get_pr_labels.return_value = current_labels
     reviewer = _make_reviewer(git_provider)
     data = {"review": {"security_concerns": "SQL injection: the order id is concatenated into the query\n"}}
 
     reviewer.set_review_labels(data)
 
-    published = git_provider.publish_labels.call_args[0][0]
-    assert "Possible security concern" in published
+    git_provider.publish_labels.assert_called_once_with(["Possible security concern", *current_labels])
 
 
 def test_set_review_labels_does_not_label_security_free_localized_review(review_label_settings):

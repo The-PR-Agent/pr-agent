@@ -133,13 +133,30 @@ def map_documentation_files_to_contents(base_path: str, doc_files: list[str],
         for file in doc_files:
             try:
                 with open(file, encoding='utf-8') as f:
-                    content = f.read()
+                    if max_allowed_file_len < 0:
+                        content = f.read()
+                        content_length = len(content)
+                        has_text = any(map(str.isalpha, content))
+                    else:
+                        content_parts = []
+                        remaining = max_allowed_file_len
+                        content_length = 0
+                        has_text = False
+                        while chunk := f.read(64 * 1024):
+                            content_length += len(chunk)
+                            if remaining > 0:
+                                prefix = chunk[:remaining]
+                                content_parts.append(prefix)
+                                remaining -= len(prefix)
+                            if not has_text:
+                                has_text = any(map(str.isalpha, chunk))
+                        content = ''.join(content_parts)
                     # Skip files with no text content
-                    if not any(char.isalpha() for char in content):
+                    if not has_text:
                         continue
-                    if len(content) > max_allowed_file_len:
+                    if content_length > max_allowed_file_len:
                         get_logger().warning(
-                            f"File {file} length: {len(content)} exceeds limit: "
+                            f"File {file} length: {content_length} exceeds limit: "
                             f"{max_allowed_file_len}, so it will be trimmed."
                         )
                         content = content[:max_allowed_file_len]

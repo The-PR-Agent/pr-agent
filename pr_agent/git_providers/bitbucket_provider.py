@@ -225,6 +225,7 @@ class BitbucketProvider(GitProvider):
         self.incremental = incremental
         self.diff_files = None
         self.git_files = None
+        self._pending_diffstat = None
         if pr_url:
             self.set_pr(pr_url)
         self.bitbucket_comment_api_url = self.pr._BitbucketBase__data["links"]["comments"]["href"]
@@ -398,24 +399,40 @@ class BitbucketProvider(GitProvider):
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
+    def _collect_diffstat(self):
+        diffs = []
+        git_files = []
+        for diff in self.pr.diffstat():
+            diffs.append(diff)
+            git_files.append(_gef_filename(diff))
+        return diffs, git_files
+
     def get_files(self):
         try:
             git_files = context.get("git_files", None)
             if git_files:
                 return git_files
-            self.git_files = [_gef_filename(diff) for diff in self.pr.diffstat()]
+            diffs, git_files = self._collect_diffstat()
+            self.git_files = git_files
+            self._pending_diffstat = diffs or None
             context["git_files"] = self.git_files
             return self.git_files
         except Exception:
             if not self.git_files:
-                self.git_files = [_gef_filename(diff) for diff in self.pr.diffstat()]
+                diffs, git_files = self._collect_diffstat()
+                self.git_files = git_files
+                self._pending_diffstat = diffs or None
             return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         if self.diff_files:
+            self._pending_diffstat = None
             return self.diff_files
 
-        diffs_original = list(self.pr.diffstat())
+        diffs_original = getattr(self, "_pending_diffstat", None)
+        self._pending_diffstat = None
+        if diffs_original is None:
+            diffs_original = list(self.pr.diffstat())
         diffs = filter_ignored(diffs_original, 'bitbucket')
         if diffs != diffs_original:
             try:

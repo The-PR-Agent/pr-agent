@@ -393,7 +393,7 @@ This is the recommended topology for fleets: point every PR-Agent instance at th
 
 ### Exposing native Prometheus metrics
 
-Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the gunicorn-served apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
+Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the server apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
 
 ```toml
 [otel]
@@ -425,7 +425,7 @@ Notes:
 - PR-Agent keeps its own OpenTelemetry providers and never registers the process-global one, so embedding PR-Agent in an application that already uses OpenTelemetry will not interfere with the host's telemetry. Pending spans and metrics are flushed automatically on process exit.
 - Each OTLP export call is bounded by `otlp_timeout` (default 3 seconds, retries included), so an unreachable collector cannot hang CLI exit or request completion. Raise it for slow collectors at the cost of longer worst-case stalls.
 - If `exporter_type = "otlp"` is set but no endpoint is configured, telemetry is disabled entirely (fail closed) — it never falls back to another exporter, so a missing secret cannot redirect telemetry into process logs.
-- With `exporter_type = "prometheus"`, `prometheus_multiproc_dir` must be a shared directory writable by every worker; it defaults to `/tmp/pr-agent-prometheus`. In non-gunicorn (single-process) deployments the exporter works without it and simply serves the process's own registry.
+- With `exporter_type = "prometheus"`, Gunicorn provisions `prometheus_multiproc_dir` before workers fork. It must be shared and writable by every worker and defaults to `/tmp/pr-agent-prometheus`. Direct single-process Uvicorn deployments use their own registry when no multiprocess environment signal is present; configuring the directory path alone does not activate shared state. Custom multiprocess launchers can set `PROMETHEUS_MULTIPROC_DIR` before `prometheus-client` is imported. When explicitly signaled, PR-Agent validates and uses the configured `prometheus_multiproc_dir` (or its default), which takes precedence over the environment's path.
 - **Serverless deployments** (e.g. the AWS Lambda webhooks) are supported: buffered spans and metrics are force-flushed at the end of every handled request, because frozen execution environments stop background export threads and are reaped without running exit handlers. No extra configuration is needed.
 
 ## Bringing per-repo context files to PR-Agent

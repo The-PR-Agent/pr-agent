@@ -552,7 +552,12 @@ max_tokens = 0 # hard cap on completion tokens for the request; 0 = unset
 # are routed (/review, /improve, /generate_labels, /add_docs); tools that use model_weak are left alone.
 # With Azure (openai.deployment_id set) a rule also needs its own deployment_id, or it is skipped.
 enable = false
-# Example: [{ max_hunks = 3, model = "gpt-6-luna" },
+# Each rule may also set max_patch_chars: an inclusive ceiling on the sum of Python character counts in
+# the supplied patch strings, including headers and line endings. All limits named by a rule must match.
+# Missing, non-string, or failed-content patches make this count unknown, so character-limited rules are skipped.
+# An explicit empty patch counts as zero; an incomplete head file alone does not invalidate a supplied patch.
+# This measures supplied text, not tokens or full file/diff size; provider normalization or clipping is not recovered.
+# Example: [{ max_hunks = 3, max_patch_chars = 10000, model = "gpt-6-luna" },
 # { max_hunks = 15, max_files = 6, model = "gpt-6.1-sol" }]
 # A matched rule replaces the primary (model, deployment) pair. If it matches a configured fallback pair,
 # deduplicate the effective chain and append the displaced primary unless already present.
@@ -611,7 +616,7 @@ max_skills_tokens = 8000 # token budget for the combined skills_context block
 [artifacts]
 # Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set)
 enable = false
-# File path to the artifact (relative to GITHUB_WORKSPACE, or absolute)
+# File path or list of paths to artifacts (relative to GITHUB_WORKSPACE, or absolute)
 artifact_path = ""
 # Analysis guidance rendered separately before the untrusted artifact label and content (leave empty for a sensible default)
 artifact_instructions = ""

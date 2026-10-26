@@ -802,9 +802,43 @@ class TestGetMaxTokens:
             "bedrock/au.anthropic.claude-sonnet-5",
             "bedrock/eu.anthropic.claude-sonnet-5",
             "bedrock/jp.anthropic.claude-sonnet-5",
+            "anthropic/claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            "vertex_ai/claude-sonnet-5-5",
+            "bedrock/anthropic.claude-sonnet-5-5",
+            "bedrock/global.anthropic.claude-sonnet-5-5",
+            "bedrock/us.anthropic.claude-sonnet-5-5",
+            "bedrock/au.anthropic.claude-sonnet-5-5",
+            "bedrock/eu.anthropic.claude-sonnet-5-5",
         ],
     )
-    def test_claude_sonnet_5_model_max_tokens(self, monkeypatch, model):
+    def test_claude_sonnet_5_family_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-haiku-5-5",
+            "claude-haiku-5-5",
+            "vertex_ai/claude-haiku-5-5",
+            "bedrock/anthropic.claude-haiku-5-5",
+            "bedrock/global.anthropic.claude-haiku-5-5",
+            "bedrock/us.anthropic.claude-haiku-5-5",
+            "bedrock/au.anthropic.claude-haiku-5-5",
+            "bedrock/eu.anthropic.claude-haiku-5-5",
+            "bedrock/jp.anthropic.claude-haiku-5-5",
+        ],
+    )
+    def test_claude_haiku_5_5_model_max_tokens(self, monkeypatch, model):
         fake_settings = type('', (), {
             'config': type('', (), {
                 'custom_model_max_tokens': 0,
@@ -1116,6 +1150,35 @@ class TestGetMaxTokens:
 
         # Negative checks to ensure no over-generation
         assert "bedrock/apac.anthropic.claude-opus-4-8" not in MAX_TOKENS
+
+    def test_claude_sonnet_5_5_family_expansion_and_capabilities(self):
+        """Independent verification of Sonnet 5.5 generated aliases and capabilities."""
+        expected_aliases = {
+            "claude-sonnet-5-5",
+            "anthropic/claude-sonnet-5-5",
+            "vertex_ai/claude-sonnet-5-5",
+            "bedrock/anthropic.claude-sonnet-5-5",
+            "bedrock/global.anthropic.claude-sonnet-5-5",
+            "bedrock/us.anthropic.claude-sonnet-5-5",
+            "bedrock/eu.anthropic.claude-sonnet-5-5",
+            "bedrock/au.anthropic.claude-sonnet-5-5",
+        }
+
+        # Exact set equality against filtered MAX_TOKENS
+        actual_aliases = {k for k in MAX_TOKENS if "claude-sonnet-5-5" in k}
+        assert actual_aliases == expected_aliases
+
+        # Context window tokens
+        for alias in expected_aliases:
+            assert MAX_TOKENS[alias] == 1000000
+
+        # Capability lists
+        for alias in expected_aliases:
+            assert alias not in CLAUDE_EXTENDED_THINKING_MODELS
+
+        # Negative checks to ensure no over-generation
+        assert "bedrock/jp.anthropic.claude-sonnet-5-5" not in MAX_TOKENS
+        assert "bedrock/apac.anthropic.claude-sonnet-5-5" not in MAX_TOKENS
 
     def test_claude_opus_4_6_family_expansion_and_capabilities(self):
         """Independent verification of Opus 4.6 generated aliases and capabilities."""

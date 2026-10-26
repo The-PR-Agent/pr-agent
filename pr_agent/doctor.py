@@ -59,6 +59,27 @@ def _check_provider_key(handler: LiteLLMAIHandler, provider: str) -> tuple[bool,
     return True, f"no static key for '{provider}' (keyless auth or custom provider); ping decides"
 
 
+def missing_provider_key_env_vars() -> tuple[str, tuple[str, ...]] | None:
+    """(provider, env var names) to name when the active provider's key is missing.
+
+    Returns None when the run can proceed: a usable key, ambient auth, or a custom
+    endpoint. Shared by `doctor` and the GitHub Action runner, so a deployment is
+    judged the same way by hand and in CI. Callers that surface CI output render only
+    the env var names — they come from the constant PROVIDER_API_KEY_ENV_VARS table,
+    so nothing settings- or key-derived can flow into a message; the provider is for
+    lookup keys only.
+    """
+    model = str(get_settings().config.get("model", "") or "")
+    provider = _active_provider(model)
+    ok, _detail = _check_provider_key(LiteLLMAIHandler(), provider)
+    # Ambient auth (Azure AD, the AWS credential chain) or a custom endpoint needs no static key: the run decides.
+    settings = get_settings()
+    ambient = settings.get("AZURE_AD.CLIENT_ID", None) or provider.startswith(("bedrock", "azure"))
+    if ok or ambient or settings.get(f"{provider}.api_base", None):
+        return None
+    return provider, PROVIDER_API_KEY_ENV_VARS.get(provider, ())
+
+
 async def _check_model_ping(handler: LiteLLMAIHandler, model: str) -> tuple[bool, str]:
     try:
         await handler.chat_completion(model, _PING_SYSTEM, _PING_USER)

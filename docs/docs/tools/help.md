@@ -18,6 +18,10 @@ Calling `/help` without a question displays the tool list without initializing a
 so errors during that initialization do not block the list.
 `/help <question>` still uses the configured AI model.
 
+When answering a question, the tool tries the configured fallback models if a model returns an invalid response format
+or an empty answer. If all attempts fail, no answer is published and the command records a failure.
+A response that reports no relevant information is still shown normally.
+
 ## Example usage
 
 Invoke the `help` tool by commenting on a PR with:

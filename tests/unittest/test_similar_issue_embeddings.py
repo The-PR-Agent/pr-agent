@@ -255,8 +255,12 @@ def query_tool(monkeypatch, request):
             self.filter = (expression, prefilter)
             return self
 
+        def select(self, columns):
+            self.columns = columns
+            return self
+
         def to_list(self):
-            return query(vector=[0.5], metric=self.metric, limit=self.count, filter=self.filter)
+            return query(vector=[0.5], metric=self.metric, limit=self.count, filter=self.filter, columns=self.columns)
 
     def embed(texts):
         state.embedded.append(texts)
@@ -303,14 +307,14 @@ def query_tool(monkeypatch, request):
     for call in state.attempts:
         if backend == "pinecone":
             assert call == dict(vector=[0.5], top_k=call["top_k"], filter={"repo": "example-repo"},
-                                namespace=tool.pinecone_namespace, include_metadata=True)
+                                namespace=tool.pinecone_namespace, include_metadata=False)
         elif backend == "lancedb":
             assert call == dict(vector=[0.5], metric="cosine", limit=call["limit"],
-                                filter=("metadata.repo='example-repo'", True))
+                                filter=("metadata.repo='example-repo'", True), columns=["id", "_distance"])
         else:
             assert call["collection_name"] == "issues-v2"
             assert call["query"] == [0.5]
-            assert call["with_payload"] is True
+            assert call["with_payload"] == ["id"]
             condition, = call["query_filter"].must
             assert (condition.key, condition.match.value) == ("metadata.repo", "example-repo")
 

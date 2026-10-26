@@ -103,6 +103,7 @@ def _lancedb_similar_search(table, query_vector, repo_name_for_index, limit=5):
         .distance_type("cosine")
         .limit(limit)
         .where(f"metadata.repo='{repo_name_for_index}'", prefilter=True)
+        .select(["id", "_distance"])
         .to_list()
     )
 
@@ -522,7 +523,7 @@ class PRSimilarIssue:
                     top_k=limit,
                     filter={"repo": self.repo_name_for_index},
                     namespace=self.pinecone_namespace,
-                    include_metadata=True,
+                    include_metadata=False,
                 ).to_dict()["matches"]
                 hits = ((r["id"], r["score"]) for r in res)
             elif vectordb == "lancedb":
@@ -538,7 +539,7 @@ class PRSimilarIssue:
                     query_filter=Filter(
                         must=[FieldCondition(key="metadata.repo", match=MatchValue(value=self.repo_name_for_index))]
                     ),
-                    with_payload=True,
+                    with_payload=["id"],
                 ).points
                 hits = ((r.payload["id"], r.score) for r in res)
             else:

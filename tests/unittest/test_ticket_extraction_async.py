@@ -1032,6 +1032,72 @@ class TestGetIssueFailureIsolated:
 # ---------------------------------------------------------------------------
 
 class TestSubIssues:
+    @pytest.mark.parametrize("sub_url", [
+        "https://github.com/ORG/REPO/issues/002",
+        "https://api.github.com/repos/ORG/REPO/issues/002",
+    ], ids=["web", "api"])
+    @pytest.mark.parametrize("order", [(1, 2), (2, 1)])
+    def test_direct_and_sub_issue_share_reads_within_each_extraction(self, settings_snapshot, order, sub_url):
+        child = _FakeIssue(2, title="Child", labels=[_FakeLabel("bug")])
+        repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="Parent"), 2: child})
+        provider = _make_github_provider(
+            user_description="Fixes " + " and ".join(f"#{number}" for number in order),
+            repo_obj=repo_obj,
+            sub_issues_map={"https://github.com/org/repo/issues/1": [sub_url]},
+        )
+
+        for body in ("Original body", "Updated body"):
+            child.body = body
+            result = asyncio.run(extract_tickets(provider))
+            assert [ticket["ticket_id"] for ticket in result] == list(order)
+            parent_ticket = next(ticket for ticket in result if ticket["ticket_id"] == 1)
+            child_ticket = next(ticket for ticket in result if ticket["ticket_id"] == 2)
+            assert parent_ticket["sub_issues"] == [{
+                "ticket_url": sub_url,
+                "title": "Child",
+                "body": body,
+                "labels": "bug",
+            }]
+            assert child_ticket["body"] == body
+            assert child_ticket["labels"] == "bug"
+
+        assert repo_obj.get_issue_calls == list(order) * 2
+
+    def test_failed_sub_issue_read_can_succeed_as_direct_reference(self, settings_snapshot):
+        parent = _FakeIssue(1, title="Parent")
+        child = _FakeIssue(2, title="Child")
+        repo_obj = _FakeRepoObj()
+        repo_obj.get_issue = MagicMock(side_effect=[parent, RuntimeError("temporary failure"), child])
+        provider = _make_github_provider(
+            user_description="Fixes #1 and #2",
+            repo_obj=repo_obj,
+            sub_issues_map={"https://github.com/org/repo/issues/1": ["https://github.com/org/repo/issues/2"]},
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == [1, 2, 2]
+        assert [ticket["title"] for ticket in result] == ["Parent", "Child"]
+        assert result[0]["sub_issues"] == []
+
+    def test_same_issue_number_in_different_repositories_is_not_reused(self, settings_snapshot):
+        settings_snapshot.set("config.repo_context_sibling_repos", ["org/other"])
+        repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="Parent"), 2: _FakeIssue(2, title="Local")})
+        other = _FakeRepoObj({2: _FakeIssue(2, title="Other")})
+        provider = _make_github_provider(
+            user_description="Fixes #1 and #2",
+            repo_obj=repo_obj,
+            github_client=_FakeGithubClient({"org/other": other}),
+            sub_issues_map={"https://github.com/org/repo/issues/1": ["https://github.com/org/other/issues/2"]},
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["title"] for ticket in result] == ["Parent", "Local"]
+        assert result[0]["sub_issues"][0]["title"] == "Other"
+        assert repo_obj.get_issue_calls == [1, 2]
+        assert other.get_issue_calls == [2]
+
     def test_sub_issue_success_populates_and_truncates(self, settings_snapshot):
         long_sub_body = "y" * 10500
         repo_obj = _FakeRepoObj({

@@ -354,9 +354,44 @@ async def test_chat_completion_strips_temperature_for_claude_opus_5_family(monke
         "bedrock/au.anthropic.claude-sonnet-5",
         "bedrock/eu.anthropic.claude-sonnet-5",
         "bedrock/jp.anthropic.claude-sonnet-5",
+        "anthropic/claude-sonnet-5-5",
+        "claude-sonnet-5-5",
+        "vertex_ai/claude-sonnet-5-5",
+        "bedrock/anthropic.claude-sonnet-5-5",
+        "bedrock/global.anthropic.claude-sonnet-5-5",
+        "bedrock/us.anthropic.claude-sonnet-5-5",
+        "bedrock/au.anthropic.claude-sonnet-5-5",
+        "bedrock/eu.anthropic.claude-sonnet-5-5",
     ],
 )
-async def test_chat_completion_strips_temperature_for_claude_sonnet_5(monkeypatch, model):
+async def test_chat_completion_strips_temperature_for_claude_sonnet_5_family(monkeypatch, model):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-haiku-5-5",
+        "claude-haiku-5-5",
+        "vertex_ai/claude-haiku-5-5",
+        "bedrock/anthropic.claude-haiku-5-5",
+        "bedrock/global.anthropic.claude-haiku-5-5",
+        "bedrock/us.anthropic.claude-haiku-5-5",
+        "bedrock/au.anthropic.claude-haiku-5-5",
+        "bedrock/eu.anthropic.claude-haiku-5-5",
+        "bedrock/jp.anthropic.claude-haiku-5-5",
+    ],
+)
+async def test_chat_completion_strips_temperature_for_claude_haiku_5_5(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
@@ -454,7 +489,23 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5_
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_5(monkeypatch):
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-sonnet-5",
+        "anthropic/claude-sonnet-5-5",
+        "claude-sonnet-5-5",
+        "vertex_ai/claude-sonnet-5-5",
+        "bedrock/global.anthropic.claude-sonnet-5-5",
+        "bedrock/eu.anthropic.claude-sonnet-5-5",
+        "anthropic/claude-haiku-5-5",
+        "claude-haiku-5-5",
+        "vertex_ai/claude-haiku-5-5",
+        "bedrock/global.anthropic.claude-haiku-5-5",
+        "bedrock/eu.anthropic.claude-haiku-5-5",
+    ],
+)
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_5_and_haiku_5_5(monkeypatch, model):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -465,7 +516,7 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_
         mock_call.return_value = _mock_response()
         handler = litellm_handler.LiteLLMAIHandler()
 
-        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr", temperature=0.2)
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
     assert "thinking" not in mock_call.call_args.kwargs
     assert "max_tokens" not in mock_call.call_args.kwargs

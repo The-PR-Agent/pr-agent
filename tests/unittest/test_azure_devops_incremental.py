@@ -81,16 +81,69 @@ class TestGetIncrementalCommits:
         provider.is_comment_authored_by_pr_agent = MagicMock(return_value=True)
         return provider
 
-    def test_no_previous_review_disables_incremental(self):
+    @pytest.mark.parametrize("kind", ["review", "suggestions"])
+    def test_no_previous_review_disables_incremental(self, kind):
         provider = self._make_provider()
         provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[])
         provider.get_issue_comments = MagicMock(return_value=[])
 
         inc = IncrementalPR(True)
-        provider.get_incremental_commits(inc)
+        provider.get_incremental_commits(inc, kind=kind)
 
         assert provider.incremental.is_incremental is False
         assert provider.previous_review is None
+        provider.azure_devops_client.get_pull_request_commits.assert_not_called()
+        assert provider.pr_commits is None
+
+    def test_no_anchor_preserves_cached_history(self):
+        provider = self._make_provider()
+        cached = [_AzureCommitAdapter(_raw_commit("old", "seen", _dt.datetime(2024, 5, 1)))]
+        provider.pr_commits = cached
+        provider.get_issue_comments = MagicMock(return_value=[])
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is False
+        assert provider.pr_commits is cached
+        provider.azure_devops_client.get_pull_request_commits.assert_not_called()
+
+    def test_history_failure_can_retry_after_anchor_lookup(self):
+        provider = self._make_provider()
+        old = _raw_commit("old", "seen", _dt.datetime(2024, 5, 1), parents=["base"])
+        new = _raw_commit("new", "added", _dt.datetime(2024, 6, 2), parents=["old"])
+        provider.get_issue_comments = MagicMock(return_value=[
+            _comment("## PR Reviewer Guide", _dt.datetime(2024, 6, 1)),
+        ])
+        history = provider.azure_devops_client.get_pull_request_commits
+        history.side_effect = [RuntimeError("history unavailable"), [new, old]]
+        provider.azure_devops_client.get_changes.return_value.changes = [
+            {"item": {"path": "/new.py", "gitObjectType": "blob"}},
+        ]
+
+        with pytest.raises(RuntimeError, match="history unavailable"):
+            provider.get_incremental_commits(IncrementalPR(True))
+        assert provider.pr_commits is None
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert history.call_count == 2
+        assert [commit.sha for commit in provider.pr_commits] == ["old", "new"]
+        assert [commit.sha for commit in provider.incremental.commits_range] == ["new"]
+        assert provider.incremental.last_seen_commit_sha == "old"
+        assert provider.unreviewed_files_map == {"/new.py": "/new.py"}
+
+    def test_thread_failure_precedes_history_acquisition(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_threads.side_effect = RuntimeError("threads unavailable")
+        provider.azure_devops_client.get_pull_request_commits.side_effect = RuntimeError("history unavailable")
+
+        with pytest.raises(RuntimeError, match="threads unavailable"):
+            provider.get_incremental_commits(IncrementalPR(True))
+
+        provider.azure_devops_client.get_threads.assert_called_once()
+        provider.azure_devops_client.get_pull_request_commits.assert_not_called()
+        assert provider._threads_cache is None
+        assert provider.pr_commits is None
 
     def test_previous_review_accepts_custom_heading_with_stable_identity(self):
         provider = self._make_provider()

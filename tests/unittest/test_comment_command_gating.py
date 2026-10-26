@@ -247,36 +247,59 @@ async def test_github_line_comment_prefixing_ask_is_not_rewritten_to_ask_line(mo
     )]
 
 
-async def _run_bitbucket_comment_webhook(monkeypatch, comment_body):
+async def _run_bitbucket_comment_webhook(
+    monkeypatch, comment_body, *, event="pullrequest:comment_created", bot=False, process_pr=True, token_error=None
+):
     dispatched = []
+    work = {"tokens": 0, "settings_clones": 0, "agents": 0}
     payload = {
-        "event": "pullrequest:comment_created",
+        "event": event,
         "data": {
             "actor": {"type": "user", "account_id": "account"},
             "pullrequest": {"links": {"html": {"href": "https://example.test/pr/1"}}},
             "comment": {"content": {"raw": comment_body}},
         },
     }
+    if event not in ("pullrequest:created", "pullrequest:updated", "pullrequest:comment_created"):
+        payload["data"] = {"actor": payload["data"]["actor"]}
     secret_provider = type(
         "SecretProvider",
         (),
         {"get_secret": lambda self, _key: json.dumps({"shared_secret": "secret"})},
     )()
 
-    async def get_bearer_token(_shared_secret, _client_key):
+    async def get_bearer_token(shared_secret, client_key):
+        assert (shared_secret, client_key) == ("secret", "client")
+        work["tokens"] += 1
+        if token_error:
+            raise token_error
         return "bearer"
 
+    def clone_settings(settings):
+        work["settings_clones"] += 1
+        return copy.deepcopy(settings)
+
     class FakeAgent:
+        def __init__(self):
+            work["agents"] += 1
+
         async def handle_request(self, pr_url, command, notify=None):
             dispatched.append((pr_url, command))
+
+    async def perform_commands(category, agent, pr_url, _log_context, _data):
+        assert isinstance(agent, FakeAgent)
+        dispatched.append((pr_url, category))
 
     class EligibleIdentityProvider:
         def verify_eligibility(self, *_args):
             return Eligibility.ELIGIBLE
 
-    monkeypatch.setattr(bitbucket_app, "is_bot_user", lambda _data: False)
+    monkeypatch.setattr(bitbucket_app, "is_bot_user", lambda _data: bot)
+    monkeypatch.setattr(bitbucket_app, "should_process_pr_logic", lambda _data: process_pr)
     monkeypatch.setattr(bitbucket_app, "get_fork_safe_secret_provider", lambda: secret_provider)
     monkeypatch.setattr(bitbucket_app, "get_bearer_token", get_bearer_token)
+    monkeypatch.setattr(bitbucket_app, "copy", mock.Mock(deepcopy=clone_settings))
+    monkeypatch.setattr(bitbucket_app, "_perform_commands_bitbucket", perform_commands)
     monkeypatch.setattr(
         bitbucket_app.jwt,
         "decode",
@@ -295,21 +318,66 @@ async def _run_bitbucket_comment_webhook(monkeypatch, comment_body):
             await background_tasks()
     finally:
         global_settings.set("BITBUCKET", original_bitbucket)
-    return result, dispatched
+    return result, dispatched, work
 
 
-async def test_bitbucket_app_plain_comment_does_not_dispatch(monkeypatch):
-    result, dispatched = await _run_bitbucket_comment_webhook(monkeypatch, "review looks good to me")
+@pytest.mark.parametrize("comment_body", ["review looks good to me", "   "])
+async def test_bitbucket_app_plain_comment_does_not_dispatch(monkeypatch, comment_body):
+    result, dispatched, work = await _run_bitbucket_comment_webhook(monkeypatch, comment_body)
 
     assert result == "OK"
     assert dispatched == []
+    assert work == {"tokens": 0, "settings_clones": 0, "agents": 0}
 
 
-async def test_bitbucket_app_slash_command_dispatches(monkeypatch):
-    result, dispatched = await _run_bitbucket_comment_webhook(monkeypatch, "/review focus on tests")
+@pytest.mark.parametrize("command", ["/review focus on tests", "  /improve  ", "/unknown-command"])
+async def test_bitbucket_app_slash_command_dispatches(monkeypatch, command):
+    result, dispatched, work = await _run_bitbucket_comment_webhook(monkeypatch, command)
 
     assert result == "OK"
-    assert dispatched == [("https://example.test/pr/1", "/review focus on tests")]
+    assert dispatched == [("https://example.test/pr/1", command)]
+    assert work == {"tokens": 1, "settings_clones": 1, "agents": 1}
+
+
+async def test_bitbucket_app_unsupported_event_skips_oauth_and_setup(monkeypatch):
+    result, dispatched, work = await _run_bitbucket_comment_webhook(monkeypatch, None, event="repo:push")
+
+    assert result == "OK"
+    assert dispatched == []
+    assert work == {"tokens": 0, "settings_clones": 0, "agents": 0}
+
+
+@pytest.mark.parametrize(("event", "category"), [
+    ("pullrequest:created", "pr_commands"),
+    ("pullrequest:updated", "push_commands"),
+])
+async def test_bitbucket_app_actionable_event_keeps_oauth_and_dispatch(monkeypatch, event, category):
+    result, dispatched, work = await _run_bitbucket_comment_webhook(monkeypatch, None, event=event)
+
+    assert result == "OK"
+    assert dispatched == [("https://example.test/pr/1", category)]
+    assert work == {"tokens": 1, "settings_clones": 1, "agents": 1}
+
+
+@pytest.mark.parametrize("gate", ["bot", "created-policy"])
+async def test_bitbucket_app_existing_gate_still_skips_oauth(monkeypatch, gate):
+    result, dispatched, work = await _run_bitbucket_comment_webhook(
+        monkeypatch, None, event="pullrequest:created", bot=gate == "bot", process_pr=gate != "created-policy"
+    )
+
+    assert result == "OK"
+    assert dispatched == []
+    assert work == {"tokens": 0, "settings_clones": 0, "agents": 0}
+
+
+async def test_bitbucket_app_actionable_token_failure_does_not_dispatch(monkeypatch):
+    result, dispatched, work = await _run_bitbucket_comment_webhook(
+        monkeypatch, "/review", token_error=RuntimeError("token unavailable")
+    )
+
+    assert result == "OK"
+    assert dispatched == []
+    assert work == {"tokens": 1, "settings_clones": 0, "agents": 0}
 
 
 async def _run_bitbucket_server_comment_webhook(monkeypatch, comment_text):
