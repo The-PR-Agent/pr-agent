@@ -404,6 +404,7 @@ class BitbucketProvider(GitProvider):
             if hasattr(context, "exists") and context.exists():
                 context.pop("git_files", None)
         except Exception:
+            # Context may not be available
             pass
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
