@@ -48,6 +48,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # agent_login decides which comments PR-Agent treats as its own and may edit, so the
     # reviewed repository must not choose it.
     "github": frozenset({"agent_login", "deployment_type", "polling_repositories"}),
+    # agent_identity decides which Azure DevOps comments PR-Agent treats as its own and may edit,
+    # so the reviewed repository must not choose it.
+    "azure_devops_server": frozenset({"agent_identity"}),
     "gitlab": frozenset({"auth_type", "ssl_verify"}),
     "huggingface": frozenset({"api_base"}),
     # Jira lookups use the host's Atlassian credentials, so the reviewed repository must not
