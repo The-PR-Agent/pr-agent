@@ -53,7 +53,7 @@ dependencies = [
   "urllib3>=2.8.0,<3",
   "uvicorn>=0.31.1,<1",
   "tenacity==8.2.3",
-  "langfuse==4.18.0",
+  "langfuse==5.0.4",
   "gunicorn==26.2.0",
   "pydantic==2.14.1",
   # LiteLLM declares pydantic-settings as a base dependency and imports it unconditionally from
