@@ -141,6 +141,17 @@ def test_pr_review_prompt_asks_for_a_confidence_only_when_filtering(monkeypatch,
     assert "Below 50" not in rendered
 
 
+@pytest.mark.parametrize("enable_suggested_fixes", [True, False])
+def test_pr_review_prompt_gates_the_fix_field(monkeypatch, enable_suggested_fixes):
+    reviewer = _build_reviewer(monkeypatch)
+    variables = dict(reviewer.vars, enable_suggested_fixes=enable_suggested_fixes)
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+
+    rendered = environment.from_string(get_settings().pr_review_prompt.system).render(variables)
+
+    assert ("suggested_fix" in rendered) is enable_suggested_fixes
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_failure_modes_prompt_follows_captured_setting(monkeypatch, enabled):
     settings = get_settings()

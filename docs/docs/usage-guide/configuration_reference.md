@@ -180,6 +180,7 @@ See [Review](../tools/review.md#configuration-options).
 | `persistent_finding_state` | true | Persist review finding state across complete review runs. |
 | `max_previous_findings_chars` | 8000 | Character budget for the findings stored by earlier reviews, given to /review as context so it keeps their wording instead of re-raising them reworded, and skips findings whose GitHub or GitLab inline thread someone other than PR-Agent resolved (needs persistent_finding_state); 0 disables it. |
 | `inline_key_issues` | false | Publish each review finding as an inline comment where the provider can verify inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). |
+| `enable_suggested_fixes` | false | Let the model attach a replacement for a finding's lines. Inline findings publish it as a committable suggestion when it applies cleanly; otherwise it is shown as a code block. The review summary shows it as a collapsible code block. |
 | `min_finding_confidence` | 0 | Drop findings whose model-reported confidence (integer 0-10) is below this value. 0 (default) keeps every finding and does not ask the model for a confidence. Above 0, each finding shows its confidence. Findings without a usable confidence value are kept. |
 | `extra_instructions` | "" |  |
 | `num_max_findings` | 3 |  |

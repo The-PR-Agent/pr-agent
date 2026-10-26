@@ -538,3 +538,11 @@ def test_finding_confidence_normalises_one_value_for_filtering_and_rendering(val
 def test_finding_confidence_of_a_non_finding_is_none():
     assert finding_confidence("not a dict") is None
     assert finding_confidence({}) is None
+
+
+def test_key_issue_accepts_suggested_fix():
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=85, suggested_fix="x = 1")
+
+    parsed = KeyIssuesComponentLink.model_validate(issue)
+
+    assert (parsed.confidence, parsed.suggested_fix) == (85, "x = 1")

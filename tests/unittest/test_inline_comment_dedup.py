@@ -935,3 +935,15 @@ def test_release_leaves_every_other_thread_suppressive():
         store.release({"a1b2c3d4e5f6"})
         assert not store.seen("a1b2c3d4e5f6")
         assert store.seen("d1b2c3d4e5f6")
+
+
+def test_extract_markers_returns_every_marker_kind_in_body_order():
+    body = d.key_issue_body_with_markers("finding", "aaaaaaaaaaaa", "bbbbbbbbbbbb")
+    body = d.body_with_markers(body, "cccccccccccc", "dddddddddddd", git_provider=None)
+    assert d.extract_markers(body) == [
+        "<!-- pr-agent-dedup: aaaaaaaaaaaa -->",
+        "<!-- pr-agent-key-issue-location: bbbbbbbbbbbb -->",
+        "<!-- pr-agent-dedup: cccccccccccc -->",
+        "<!-- pr-agent-dedup-code: dddddddddddd -->",
+    ]
+    assert d.extract_markers("no markers") == []

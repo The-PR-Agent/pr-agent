@@ -467,6 +467,8 @@ def convert_to_markdown_v2(output_data: dict,
                         confidence = finding_confidence(issue) if get_min_finding_confidence() > 0 else None
                         if confidence is not None:
                             issue_header = f"{issue_header} (confidence: {confidence:g})"
+                        suggested_fix = issue.get('suggested_fix')
+                        suggested_fix = suggested_fix.rstrip() if isinstance(suggested_fix, str) else ""
                         start_line = _as_line(issue.get('start_line')) or 0
                         end_line = _as_line(issue.get('end_line')) or start_line
                         valid_lines = start_line > 0 and end_line >= start_line
@@ -498,6 +500,16 @@ def convert_to_markdown_v2(output_data: dict,
                                 issue_str = f"[**{issue_header}**]({reference_link})\n\n{issue_content}\n\n"
                             else:
                                 issue_str = f"**{issue_header}**\n\n{issue_content}\n\n"
+                        if suggested_fix.strip():
+                            language = next((file.language for file in set_file_languages(files)
+                                             if file.filename.strip() == relevant_file), "") if files else ""
+                            fence = _get_fence(suggested_fix)
+                            fix_block = f"{fence}{language}\n{suggested_fix}\n{fence}"
+                            if gfm_supported:
+                                issue_str += (f"\n\n<details><summary>Suggested fix</summary>\n\n"
+                                              f"{fix_block}\n\n</details>")
+                            else:
+                                issue_str += f"Suggested fix:\n\n{fix_block}\n\n"
                         markdown_text += f"{issue_str}\n\n"
                     except Exception as e:
                         get_logger().exception(f"Failed to process 'Recommended focus areas for review': {e}")

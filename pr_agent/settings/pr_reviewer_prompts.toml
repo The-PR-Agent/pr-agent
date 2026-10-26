@@ -75,6 +75,9 @@ class KeyIssuesComponentLink(BaseModel):
 {%- if min_finding_confidence %}
     confidence: int = Field(description="An integer from 0 to 10: how certain you are that this is a real issue introduced by this PR that will matter in practice. 9-10: verified from the visible code, and the trigger scenario is concrete. 7-8: very likely, and depends only on reasonable assumptions about code outside the diff. 5-6: plausible but unverified from the diff.")
 {%- endif %}
+{%- if enable_suggested_fixes %}
+    suggested_fix: str = Field(default="", description="Optional. The complete corrected code that replaces lines start_line..end_line of the new file version, exactly, keeping the original indentation. Provide it only when the fix is small, local to those lines, and you are certain it is correct; otherwise leave it empty. Do not include line numbers or diff markers ('+'/'-').")
+{%- endif %}
 
 {%- if require_todo_scan %}
 class TodoSection(BaseModel):
@@ -216,6 +219,10 @@ review:
       end_line: 14
 {%- if min_finding_confidence %}
       confidence: 8
+{%- endif %}
+{%- if enable_suggested_fixes %}
+      suggested_fix: |
+        ...
 {%- endif %}
     - ...
   security_concerns: |
@@ -420,6 +427,10 @@ review:
       end_line: ...
 {%- if min_finding_confidence %}
       confidence: ...
+{%- endif %}
+{%- if enable_suggested_fixes %}
+      suggested_fix: |
+        ...
 {%- endif %}
     - ...
   security_concerns: |

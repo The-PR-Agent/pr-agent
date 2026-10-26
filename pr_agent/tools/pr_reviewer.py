@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context, prompt_boundary_markers, resolve_artifact_path
+from pr_agent.algo.code_replacement import python_replacement_compiles, reindent_to_line
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
@@ -65,6 +66,7 @@ from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.utils import (
     ModelType,
     _as_line,
+    _get_fence,
     convert_to_markdown_v2,
     get_min_finding_confidence,
     is_value_no,
@@ -253,6 +255,7 @@ class PRReviewer:
             "diff": "",  # empty diff for initial calculation
             "num_pr_files": self.git_provider.get_num_of_files(),
             "num_max_findings": get_settings().pr_reviewer.num_max_findings,
+            "enable_suggested_fixes": self._suggested_fixes_enabled(),
             "require_score": get_settings().pr_reviewer.require_score_review,
             "require_tests": get_settings().pr_reviewer.require_tests_review,
             "require_estimate_effort_to_review": get_settings().pr_reviewer.require_estimate_effort_to_review,
@@ -1099,6 +1102,7 @@ class PRReviewer:
                                      artifact={"error": error})
                 continue
             self._validate_review_schema(data)
+            self._drop_disabled_suggested_fixes(data)
             chunk_results[chunk_index] = (prediction, data, model)
         self._chunked_results = chunk_results
         if self._chunk_progress is not None:
@@ -1280,7 +1284,7 @@ class PRReviewer:
         return load_yaml(prediction.strip(),
                          keys_fix_yaml=["ticket_compliance_check", "estimated_effort_to_review_[1-5]:", "risk_level:",
                                         "merge_recommendation:", "security_concerns:", "key_issues_to_review:",
-                                        "relevant_file:", "relevant_line:", "suggestion:"],
+                                        "relevant_file:", "relevant_line:", "suggestion:", "suggested_fix:"],
                         first_key='review', last_key='security_concerns')
 
     def _validate_review_schema(self, data: object) -> bool:
@@ -1350,6 +1354,7 @@ class PRReviewer:
         if self.prediction_data is None:
             self._validate_review_schema(data)
             self._filter_low_confidence_findings(data)
+            self._drop_disabled_suggested_fixes(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
             data["review"]["failure_modes"] = parse_failure_modes(data["review"]["failure_modes"])
         github_action_output(data, 'review')
@@ -1538,6 +1543,51 @@ class PRReviewer:
             review["key_issues_to_review"] = kept
             self.low_confidence_filtered_count += dropped
 
+    @staticmethod
+    def _suggested_fixes_enabled() -> bool:
+        return _as_bool(get_settings().pr_reviewer.get("enable_suggested_fixes", False))
+
+    def _drop_disabled_suggested_fixes(self, data) -> None:
+        """Remove `suggested_fix` from findings when disabled, so no output path can publish one."""
+        if self._suggested_fixes_enabled():
+            return
+        review = data.get("review") if isinstance(data, dict) else None
+        issues = review.get("key_issues_to_review") if isinstance(review, dict) else None
+        for issue in issues if isinstance(issues, list) else []:
+            if isinstance(issue, dict):
+                issue.pop("suggested_fix", None)
+
+    def _suggested_fix_markdown(self, issue: dict, file, start_line: int, end_line: int) -> tuple[str, dict | None]:
+        """Render a finding's suggested fix, and the provider payload when it is committable."""
+        suggested_fix = issue.get("suggested_fix")
+        if not isinstance(suggested_fix, str) or not suggested_fix.strip():
+            return "", None
+        suggested_fix = suggested_fix.rstrip()
+        head_lines = file.head_file.splitlines()
+        existing_code = "\n".join(head_lines[start_line - 1:end_line])
+        if 0 < start_line <= len(head_lines):
+            suggested_fix = reindent_to_line(suggested_fix, head_lines[start_line - 1])
+        if suggested_fix == existing_code.rstrip():
+            return "", None
+        fence = _get_fence(suggested_fix)
+        reason = None
+        if fence != "```":
+            # providers rewrite suggestion blocks with a ```suggestion.*?``` regex that a nested fence breaks
+            reason = "the code contains a Markdown code fence"
+        elif not file.head_file_is_complete:
+            reason = "the file content could not be verified"
+        elif python_replacement_compiles(file.filename, file.head_file, start_line, end_line,
+                                         suggested_fix) is False:
+            reason = "the proposed Python code has invalid syntax"
+        if reason:
+            return (f"\n\nProposed fix (not offered as a committable change because {reason}):\n"
+                    f"{fence}\n{suggested_fix}\n{fence}"), None
+        payload = {"relevant_lines_start": start_line, "relevant_lines_end": end_line,
+                   "existing_code": existing_code, "improved_code": suggested_fix,
+                   "suggestion_content": (issue.get("issue_content") or "").strip(),
+                   "label": (issue.get("issue_header") or "").strip()}
+        return f"\n\n{fence}suggestion\n{suggested_fix}\n{fence}", payload
+
     def _build_key_issue_comment(self, issue, diff_files: dict) -> dict | None:
         if not isinstance(issue, dict):
             return None
@@ -1568,11 +1618,15 @@ class PRReviewer:
 
         relevant_file = file.filename.strip()
         body = f"**{issue_header}**\n\n{issue_content}" if issue_header else issue_content
-        return {"body": body,
-                "relevant_file": relevant_file,
-                "relevant_lines_start": start_line,
-                "relevant_lines_end": end_line,
-                "fallback_to_pr_comment": False}
+        fix_markdown, original_suggestion = self._suggested_fix_markdown(issue, file, start_line, end_line)
+        comment = {"body": body + fix_markdown,
+                   "relevant_file": relevant_file,
+                   "relevant_lines_start": start_line,
+                   "relevant_lines_end": end_line,
+                   "fallback_to_pr_comment": False}
+        if original_suggestion is not None:
+            comment["original_suggestion"] = original_suggestion
+        return comment
 
     def _can_verify_inline_key_issue_publication(self) -> bool:
         return can_verify_inline_comment_publication(self.git_provider)
