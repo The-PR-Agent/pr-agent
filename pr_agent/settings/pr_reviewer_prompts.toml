@@ -72,6 +72,7 @@ class KeyIssuesComponentLink(BaseModel):
     issue_content: str = Field(description="A short and concise description of the issue, why it matters, and the specific scenario or input that triggers it. Do not mention line numbers in this field.")
     start_line: int = Field(description="The start line that corresponds to this issue in the relevant file")
     end_line: int = Field(description="The end line that corresponds to this issue in the relevant file")
+    confidence: float = Field(description="A number from 0 to 100: how certain you are that this is a real issue introduced by this PR that will matter in practice. 90-100: verified from the visible code, and the trigger scenario is concrete. 70-89: very likely, and depends only on reasonable assumptions about code outside the diff. 50-69: plausible but unverified from the diff. Below 50: do not report.")
 
 {%- if require_todo_scan %}
 class TodoSection(BaseModel):
@@ -211,6 +212,7 @@ review:
         ...
       start_line: 12
       end_line: 14
+      confidence: 85
     - ...
   security_concerns: |
     No
@@ -412,6 +414,7 @@ review:
         ...
       start_line: ...
       end_line: ...
+      confidence: ...
     - ...
   security_concerns: |
     No
