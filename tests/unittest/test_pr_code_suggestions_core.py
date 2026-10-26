@@ -1976,7 +1976,7 @@ async def test_python_validation_failure_remains_best_effort(compile_side_effect
     tool = _make_tool(git_provider)
 
     with patch(
-        "pr_agent.tools.pr_code_suggestions.compile",
+        "pr_agent.algo.code_replacement.compile",
         side_effect=compile_side_effect,
         create=True,
     ):
