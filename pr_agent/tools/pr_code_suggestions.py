@@ -74,8 +74,6 @@ from pr_agent.tools.progress_comment import (
 )
 
 
-
-
 def _as_threshold(setting_name: str, default: int, minimum: int) -> int:
     """Read a score threshold as an int, so a quoted or unusable value cannot fail the run."""
     value = get_settings().get(setting_name, default)
