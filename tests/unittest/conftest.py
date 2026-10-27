@@ -2,7 +2,6 @@ import os
 import sys
 
 import pytest
-from tenacity import wait_none
 
 # Match CI (#3475): use the LiteLLM cost map bundled with the version pinned in uv.lock rather than the copy
 # LiteLLM fetches at import time, so local runs do not fail on third-party map changes (#3473, #3583).
@@ -32,4 +31,8 @@ def skip_llm_retry_waits(monkeypatch):
     """
     handler_module = sys.modules.get("pr_agent.algo.ai_handlers.litellm_ai_handler")
     if handler_module is not None:
-        monkeypatch.setattr(handler_module.LiteLLMAIHandler._chat_completion_with_retry.retry, "wait", wait_none())
+
+        async def no_sleep(seconds):
+            pass
+
+        monkeypatch.setattr(handler_module.LiteLLMAIHandler._chat_completion_with_retry.retry, "sleep", no_sleep)

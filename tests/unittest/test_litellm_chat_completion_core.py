@@ -875,6 +875,28 @@ async def test_chat_completion_num_retries_sets_rate_limit_attempts(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_chat_completion_waits_retry_after_between_rate_limit_retries(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    sleeps = []
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(litellm_handler.LiteLLMAIHandler._chat_completion_with_retry.retry, "sleep", record_sleep)
+    error = _answered(litellm.RateLimitError("throttled", llm_provider="bedrock", model="m"))
+    error.litellm_response_headers = httpx.Headers({"retry-after": "7"})
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = error
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        with pytest.raises(litellm.RateLimitError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert sleeps == [7.0] * litellm_handler.DEFAULT_NUM_RETRIES
+
+
+@pytest.mark.asyncio
 async def test_chat_completion_timeout_retries_same_model_by_default(monkeypatch):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
