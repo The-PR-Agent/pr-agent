@@ -732,3 +732,8 @@ def test_input_file_and_pattern_are_host_only_for_comment_arguments():
     assert {"blast_radius_input_file", "blast_radius_churn_ignore_pattern"} <= (
         CLI_HOST_ONLY_KEYS_BY_SECTION["pr_reviewer"]
     )
+
+
+def test_count_patch_lines_counts_repeated_sign_content_inside_hunks():
+    patch = "--- a/x.cpp\n+++ b/x.cpp\n@@ -1,1 +1,1 @@\n+++counter;\n---counter;\n context"
+    assert br.count_patch_lines(patch) == (1, 1)

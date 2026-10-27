@@ -295,10 +295,16 @@ def changed_paths(files, churn_ignore=None):
 
 def count_patch_lines(patch: str):
     added = deleted = 0
+    in_hunk = False
     for line in patch.splitlines():
-        if line.startswith("+") and not line.startswith("+++"):
+        if line.startswith("@@"):
+            in_hunk = True
+            continue
+        if not in_hunk and line.startswith(("+++", "---")):
+            continue
+        if line.startswith("+"):
             added += 1
-        elif line.startswith("-") and not line.startswith("---"):
+        elif line.startswith("-"):
             deleted += 1
     return added, deleted
 
