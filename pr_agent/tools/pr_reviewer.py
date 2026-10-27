@@ -331,8 +331,6 @@ class PRReviewer:
             #     return None
 
             get_logger().info(f'Reviewing PR: {self.pr_url} ...')
-            # PyGithub fetches diff files synchronously; keep large fetches off the webhook event loop.
-            await asyncio.to_thread(self.git_provider.get_diff_files)
             relevant_configs = {'pr_reviewer': dict(get_settings().pr_reviewer),
                                 'config': dict(get_settings().config)}
             get_logger().debug("Relevant configs", artifacts=relevant_configs)
@@ -363,6 +361,8 @@ class PRReviewer:
                 # run keeps is the handle.
                 self._progress_response = progress_response
 
+            # PyGithub fetches diff files synchronously; keep large fetches off the webhook event loop.
+            await asyncio.to_thread(self.git_provider.get_diff_files)
             try:
                 await retry_with_fallback_models(self._prepare_prediction, model_type=ModelType.REGULAR,
                                                  git_provider=self.git_provider)

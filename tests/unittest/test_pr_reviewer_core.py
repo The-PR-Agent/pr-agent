@@ -995,9 +995,11 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
         extract.assert_awaited_once_with(git_provider, reviewer.vars)
         retry.assert_awaited_once()
         assert reviewer.incremental.is_incremental is valid_anchor
+        git_provider.get_diff_files.assert_called_once_with()
     else:
         extract.assert_not_called()
         retry.assert_not_called()
+        git_provider.get_diff_files.assert_not_called()
         git_provider.publish_comment.assert_called_once_with(
             "Incremental Review Skipped\n"
             f"No files were changed since the [previous PR Review]({previous_review_url})"
