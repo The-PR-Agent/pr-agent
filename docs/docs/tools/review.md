@@ -222,7 +222,8 @@ for the authoritative default values.
   <tr>
     <td><b>blast_radius_input_file</b></td>
     <td>Path to a JSON file with structural reach facts, written by a build-graph tool earlier in CI. Relative to
-    <code>GITHUB_WORKSPACE</code> when that is set, otherwise to the working directory. Cannot be set from a comment.</td>
+    <code>GITHUB_WORKSPACE</code> when that is set, otherwise to the working directory. Host configuration only: a
+    repository settings file or a comment cannot set it, because the file is read from the host.</td>
   </tr>
   <tr>
     <td><b>blast_radius_path_heuristic</b></td>
@@ -440,7 +441,8 @@ The row lists each factor and names the one that set the band.
 structural and sensitivity facts the model cannot see in the diff.
 
 **Input file.** Any build-graph tool (Nx, Bazel, Gradle, Turborepo, and so on) can write the reach facts in an
-earlier CI step. Point `blast_radius_input_file` at the file. Every field is optional:
+earlier CI step. Point `blast_radius_input_file` at the file in host configuration, for example the
+`PR_REVIEWER__BLAST_RADIUS_INPUT_FILE` environment variable. Every field is optional:
 
 ```json
 {
