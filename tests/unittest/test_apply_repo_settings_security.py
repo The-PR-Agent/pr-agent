@@ -63,6 +63,7 @@ SNAPSHOT_SECTIONS = (
     "CUSTOM_SECTION_FOR_TEST",
     "OPENAI",
     "AZURE_AD",
+    "AZURE_DEVOPS_SERVER",
     "HUGGINGFACE",
     "OLLAMA",
     "MOONSHOT",
@@ -495,6 +496,7 @@ def test_polling_repositories_is_host_only_for_repo_and_cli():
     ("section", "key"),
     [
         ("github", "deployment_type"),
+        ("azure_devops_server", "agent_identity"),
         ("bitbucket", "auth_type"),
         ("gitlab", "auth_type"),
         ("gitlab", "ssl_verify"),
