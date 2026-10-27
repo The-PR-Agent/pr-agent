@@ -788,15 +788,14 @@ def test_resolve_warns_when_windows_path_missing(monkeypatch):
     )
     assert "Unsupported scheme" not in combined
 
-
-def test_resolve_rejects_non_string_source():
+@pytest.mark.parametrize("bad", [42, ["https://x.example/y"], {"url": "x"}, True])
+def test_resolve_rejects_non_string_source(bad):
     """CONFIG.EXTRA_CONFIG_URL set to a non-string must be rejected at the
     boundary, not bubble up an exception from urlparse()."""
-    for bad in [42, ["https://x.example/y"], {"url": "x"}, True]:
-        path, is_temp = _resolve_extra_config_to_file(bad)
-        assert path is None and is_temp is False, (
-            f"non-string source {bad!r} must be rejected"
-        )
+    path, is_temp = _resolve_extra_config_to_file(bad)
+    assert path is None and is_temp is False, (
+        f"non-string source {bad!r} must be rejected"
+    )
 
 
 def test_safe_url_for_log_strips_credentials():

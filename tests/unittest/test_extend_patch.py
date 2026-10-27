@@ -53,15 +53,16 @@ class TestExtendPatch:
         assert extend_patch(original_file_str, patch_str, num_lines) == expected_output
 
     # Tests that the function extends a patch with a single hunk correctly
-    def test_single_hunk(self):
+    @pytest.mark.parametrize("num_lines", [1, 2, 3])
+    def test_single_hunk(self, num_lines):
         original_file_str = 'line1\nline2\nline3\nline4\nline5'
         patch_str = '@@ -2,3 +2,3 @@ init()\n-line2\n+new_line2\n line3\n line4'
 
-        for num_lines in [1, 2, 3]:  # still works if extra lines exceed the file
-            expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5'
-            actual_output = extend_patch(original_file_str, patch_str,
+        # still works if extra lines exceed the file
+        expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5'
+        actual_output = extend_patch(original_file_str, patch_str,
                                          patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
-            assert actual_output == expected_output
+        assert actual_output == expected_output
 
     # Tests the functionality of extending a patch with multiple hunks.
     def test_multiple_hunks(self):
@@ -270,15 +271,15 @@ class TestOmittedHunkCount:
             RE_HUNK_HEADER.match("@@ -10,7 +12 @@"))
         assert (start1, size1, start2, size2) == (10, 7, 12, 1)
 
-    def test_single_line_hunk_does_not_resurrect_the_deleted_line(self):
+    @pytest.mark.parametrize("expected", ["l2", "l3", "l4"])
+    def test_single_line_hunk_does_not_resurrect_the_deleted_line(self, expected):
         original = "".join(f"l{i}\n" for i in range(1, 9))
         new = "CHANGED\n" + "".join(f"l{i}\n" for i in range(2, 9))
         extended = extend_patch(original, "@@ -1 +1 @@\n-l1\n+CHANGED",
                                 patch_extra_lines_before=0, patch_extra_lines_after=3,
                                 filename="m.py", new_file_str=new)
         assert "\n l1" not in extended
-        for expected in (" l2", " l3", " l4"):
-            assert expected in extended
+        assert expected in extended
 
     def test_hunk_line_range_excludes_the_line_after_the_hunk(self):
         patch = ("@@ -10,1 +12 @@\n-old\n+only_line\n"
