@@ -42,14 +42,14 @@ SENSITIVE_TERMS = (
 )
 
 
-def build_blast_radius(files) -> dict | None:
+def build_blast_radius(files, resolve_path) -> dict | None:
     """Return the row for this review, or None. Never raises."""
     try:
         if not _is_on(get_settings().pr_reviewer.get("enable_blast_radius", False)):
             return None
         return assess_change(
             files,
-            structure=load_structure(get_settings().pr_reviewer.get("blast_radius_input_file", "")),
+            structure=load_structure(get_settings().pr_reviewer.get("blast_radius_input_file", ""), resolve_path),
             path_heuristic=_is_on(get_settings().pr_reviewer.get("blast_radius_path_heuristic", False)),
             sensitive_terms=_as_terms(get_settings().pr_reviewer.get("blast_radius_sensitive_terms", [])),
             churn_ignore=compile_churn_ignore(get_settings().pr_reviewer.get("blast_radius_churn_ignore_pattern", "")),
@@ -323,12 +323,10 @@ def compile_churn_ignore(pattern):
 # Structural input file. See the schema in docs/docs/tools/review.md.
 
 
-def load_structure(path):
+def load_structure(path, resolve_path):
     if not path or not isinstance(path, str):
         return None
-    from pr_agent.algo.artifacts import resolve_artifact_path
-
-    resolved = resolve_artifact_path(path)
+    resolved = resolve_path(path)
     if resolved is None:
         get_logger().info(f"Blast radius: no input file at '{path}'")
         return None

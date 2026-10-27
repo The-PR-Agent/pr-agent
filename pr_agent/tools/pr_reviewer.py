@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import get_artifact_context
+from pr_agent.algo.artifacts import get_artifact_context, resolve_artifact_path
 from pr_agent.algo.blast_radius import build_blast_radius
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
@@ -1357,7 +1357,7 @@ class PRReviewer:
             return ""
 
         diff_files = self.git_provider.get_diff_files()
-        blast_radius = build_blast_radius(diff_files)
+        blast_radius = build_blast_radius(diff_files, resolve_artifact_path)
         if blast_radius:
             data["review"] = {"blast_radius": blast_radius, **data["review"]}
 

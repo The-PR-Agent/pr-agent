@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pr_agent.algo import blast_radius as br
+from pr_agent.algo.artifacts import resolve_artifact_path
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
@@ -493,29 +494,29 @@ def test_parse_structure_derives_reach_from_dependents():
 
 def test_load_structure_reads_file_under_workspace(blast_settings, tmp_path):
     name = _write_input(tmp_path, {"reach": 5, "domains": ["draw"]})
-    assert br.load_structure(name) == {"reach": 5, "domains": ["draw"]}
+    assert br.load_structure(name, resolve_artifact_path) == {"reach": 5, "domains": ["draw"]}
 
 
 @pytest.mark.parametrize("payload", ["{not json", json.dumps({"reach": "five"}), "\udcff"])
 def test_load_structure_fails_open_on_bad_file(blast_settings, tmp_path, payload):
     path = tmp_path / "blast-radius.json"
     path.write_bytes(payload.encode("utf-8", "surrogateescape"))
-    assert br.load_structure(path.name) is None
+    assert br.load_structure(path.name, resolve_artifact_path) is None
 
 
 def test_load_structure_ignores_non_string_path(blast_settings, tmp_path):
     name = _write_input(tmp_path, {"reach": 5})
-    assert br.load_structure(tmp_path / name) is None
-    assert br.load_structure(None) is None
+    assert br.load_structure(tmp_path / name, resolve_artifact_path) is None
+    assert br.load_structure(None, resolve_artifact_path) is None
 
 
 def test_load_structure_rejects_missing_and_outside_files(blast_settings, tmp_path):
     outside = tmp_path.parent / "outside-blast-radius.json"
     outside.write_text(json.dumps({"reach": 5}), encoding="utf-8")
     try:
-        assert br.load_structure("missing.json") is None
-        assert br.load_structure(str(outside)) is None
-        assert br.load_structure("") is None
+        assert br.load_structure("missing.json", resolve_artifact_path) is None
+        assert br.load_structure(str(outside), resolve_artifact_path) is None
+        assert br.load_structure("", resolve_artifact_path) is None
     finally:
         outside.unlink()
 
@@ -523,41 +524,42 @@ def test_load_structure_rejects_missing_and_outside_files(blast_settings, tmp_pa
 def test_load_structure_rejects_oversized_file(blast_settings, tmp_path, monkeypatch):
     monkeypatch.setattr(br, "MAX_INPUT_BYTES", 10)
     name = _write_input(tmp_path, {"reach": 5, "domains": ["a-long-domain-name"]})
-    assert br.load_structure(name) is None
+    assert br.load_structure(name, resolve_artifact_path) is None
 
 
 @pytest.mark.parametrize(("size_offset", "expected"), [(0, {"reach": 5}), (-1, None)])
 def test_load_structure_size_limit_is_inclusive(blast_settings, tmp_path, monkeypatch, size_offset, expected):
     name = _write_input(tmp_path, {"reach": 5})
     monkeypatch.setattr(br, "MAX_INPUT_BYTES", (tmp_path / name).stat().st_size + size_offset)
-    assert br.load_structure(name) == expected
+    assert br.load_structure(name, resolve_artifact_path) == expected
 
 
 def test_build_is_off_by_default(blast_settings):
     blast_settings.set("pr_reviewer.enable_blast_radius", False)
     blast_settings.set("pr_reviewer.blast_radius_path_heuristic", True)
-    assert br.build_blast_radius(_multi_file_diff()) is None
+    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
 
 
 def test_build_reads_input_file(blast_settings, tmp_path):
     blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, STRUCTURE))
-    row = br.build_blast_radius([_file("a.ts", "+a")])
+    row = br.build_blast_radius([_file("a.ts", "+a")], resolve_artifact_path)
     assert row["band"] == "Moderate"
     assert row["heuristic"] is False
 
 
 def test_build_falls_back_to_path_heuristic_on_malformed_input(blast_settings, tmp_path):
     blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, "{broken"))
-    assert br.build_blast_radius(_multi_file_diff()) is None
+    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
     blast_settings.set("pr_reviewer.blast_radius_path_heuristic", True)
-    assert br.build_blast_radius(_multi_file_diff())["heuristic"] is True
+    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path)["heuristic"] is True
 
 
 def test_build_applies_configured_terms_and_pattern(blast_settings):
     blast_settings.set("pr_reviewer.blast_radius_path_heuristic", "true")
     blast_settings.set("pr_reviewer.blast_radius_sensitive_terms", ["payout"])
     blast_settings.set("pr_reviewer.blast_radius_churn_ignore_pattern", r"(^|/)docs/")
-    row = br.build_blast_radius([_file("libs/payout/run.ts", "+a"), _file("docs/page.md", "+b\n+c")])
+    files = [_file("libs/payout/run.ts", "+a"), _file("docs/page.md", "+b\n+c")]
+    row = br.build_blast_radius(files, resolve_artifact_path)
     assert {"label": "Sensitivity (path match)", "value": "payout"} in row["factors"]
     assert {"label": "Churn", "value": "1 file, +1/-0"} in row["factors"]
 
@@ -565,18 +567,18 @@ def test_build_applies_configured_terms_and_pattern(blast_settings):
 def test_build_accepts_comma_separated_terms(blast_settings):
     blast_settings.set("pr_reviewer.blast_radius_path_heuristic", True)
     blast_settings.set("pr_reviewer.blast_radius_sensitive_terms", "payout, kyc")
-    row = br.build_blast_radius([_file("libs/kyc/run.ts", "+a")])
+    row = br.build_blast_radius([_file("libs/kyc/run.ts", "+a")], resolve_artifact_path)
     assert {"label": "Sensitivity (path match)", "value": "kyc"} in row["factors"]
 
 
 def test_build_is_off_when_enable_setting_is_missing(monkeypatch):
     monkeypatch.setattr(br, "get_settings", lambda: SimpleNamespace(pr_reviewer={"blast_radius_path_heuristic": True}))
-    assert br.build_blast_radius(_multi_file_diff()) is None
+    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
 
 
 def test_build_path_heuristic_is_off_when_setting_is_missing(monkeypatch):
     monkeypatch.setattr(br, "get_settings", lambda: SimpleNamespace(pr_reviewer={"enable_blast_radius": True}))
-    assert br.build_blast_radius(_multi_file_diff()) is None
+    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
 
 
 def test_build_fails_open_on_any_exception(blast_settings, monkeypatch):
@@ -584,7 +586,7 @@ def test_build_fails_open_on_any_exception(blast_settings, monkeypatch):
         raise RuntimeError("unexpected")
 
     monkeypatch.setattr(br, "assess_change", boom)
-    assert br.build_blast_radius(_multi_file_diff()) is None
+    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
 
 
 def test_render_gfm_row():
@@ -677,7 +679,7 @@ def test_render_skips_malformed_row(row):
 def test_toggle_values(blast_settings, value, expected):
     blast_settings.set("pr_reviewer.enable_blast_radius", value)
     blast_settings.set("pr_reviewer.blast_radius_path_heuristic", True)
-    assert (br.build_blast_radius(_multi_file_diff()) is not None) is expected
+    assert (br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is not None) is expected
 
 
 def test_convert_to_markdown_renders_row_first():
@@ -739,10 +741,16 @@ def test_count_patch_lines_counts_repeated_sign_content_inside_hunks():
     assert br.count_patch_lines(patch) == (1, 1)
 
 
-@pytest.mark.parametrize("gfm_supported", [True, False])
-def test_render_keeps_multiline_values_on_one_line(gfm_supported):
+@pytest.mark.parametrize(
+    "gfm_supported, expected",
+    [
+        (True, "Sensitivity: auth  ![x](https://example.com/x.png)"),
+        (False, "- Sensitivity: auth  \\!\\[x\\]\\(https://example.com/x.png\\)"),
+    ],
+)
+def test_render_keeps_multiline_values_on_one_line(gfm_supported, expected):
     row = br.assess_change(None, structure={"reach": 1, "sensitive_domains": ["auth\n\n![x](https://example.com/x.png)"]})
     rendered = br.render_blast_radius(row, gfm_supported=gfm_supported)
     sensitivity = next(line for line in rendered.split("<br>" if gfm_supported else "\n") if "Sensitivity" in line)
-    assert "auth" in sensitivity and "example.com" in sensitivity
+    assert sensitivity == expected
     assert "\n\n" not in rendered.split("Sensitivity", 1)[1].split("Rating driven", 1)[0]
