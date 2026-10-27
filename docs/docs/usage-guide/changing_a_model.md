@@ -1088,15 +1088,15 @@ Keep the `openai/` prefix on the model name, whichever APIClaw model ID you use:
 
 ### CloudGPU
 
-[CloudGPU](https://cloudgpu.app/api?utm_source=github&utm_medium=referral&utm_campaign=202611_seg04_codingagent&utm_content=github_pr_agent_docs) is a GPU cloud that also serves open models (DeepSeek V4.1 Flash, Kimi K2.7 Code, GLM-5.3 Flash, Qwen3.8 Flash, MiniMax M3 and others) on an OpenAI-compatible API at `https://cloudgpu.app/v1`. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to CloudGPU's base URL through litellm's OpenAI-compatible path, the same way [Runcrate](#runcrate) and [DemonRoute](#demonroute) are handled.
+[CloudGPU](https://cloudgpu.app/api) is a GPU cloud that also serves open models on an OpenAI-compatible API at `https://cloudgpu.app/v1`. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to CloudGPU's base URL through litellm's OpenAI-compatible path, the same way [Runcrate](#runcrate) and [DemonRoute](#demonroute) are handled.
 
 To use a model served by CloudGPU, set:
 
 ```toml
 [config] # in configuration.toml
-model = "openai/deepseek-v4.1-flash"
+model = "openai/<model-id>" # a model ID from GET https://cloudgpu.app/v1/models
 fallback_models = []
-custom_model_max_tokens = 128000 # pick a value no larger than the chosen model's context window
+custom_model_max_tokens = ... # no larger than the chosen model's context window
 
 [openai] # in .secrets.toml
 api_base = "https://cloudgpu.app/v1"
@@ -1106,11 +1106,14 @@ key = "..." # your CloudGPU api key (cgw-sk-...)
 or use the environment variables (make sure to use double underscores `__`):
 
 ```bash
+CONFIG__MODEL="openai/<model-id>"
+CONFIG__FALLBACK_MODELS='[]'
+CONFIG__CUSTOM_MODEL_MAX_TOKENS=...
 OPENAI__API_BASE=https://cloudgpu.app/v1
 OPENAI__KEY=...
 ```
 
-(you can create a CloudGPU API key in the [API Console](https://cloudgpu.app/api/console?utm_source=github&utm_medium=referral&utm_campaign=202611_seg04_codingagent&utm_content=github_pr_agent_docs); setup is in the [CloudGPU API docs](https://cloudgpu.app/api/docs?utm_source=github&utm_medium=referral&utm_campaign=202611_seg04_codingagent&utm_content=github_pr_agent_docs))
+(you can create a CloudGPU API key in the [API Console](https://cloudgpu.app/api/console); setup is in the [CloudGPU API docs](https://cloudgpu.app/api/docs))
 
 Keep the `openai/` prefix on the model name, whichever CloudGPU model ID you use (`GET https://cloudgpu.app/v1/models` lists them for your key). A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`; CloudGPU's model list doesn't return a context length, so take it from the model developer's published context window.
 
