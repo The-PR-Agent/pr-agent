@@ -75,6 +75,27 @@ class TestExtendPatch:
                                          patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
             assert actual_output == expected_output
 
+    def test_head_context_does_not_split_unneeded_file_tail(self, monkeypatch):
+        import pr_agent.algo.git_patch_processing as patch_processing
+
+        base = "\n".join(["first", "second", "old", *(f"tail {i}" for i in range(500))])
+        head = base.replace("\nold\n", "\nnew\n")
+        patch = "@@ -3 +3 @@\n-old\n+new"
+        split = patch_processing.split_diff_lines
+        split_inputs = []
+
+        def track_split(text):
+            split_inputs.append(text)
+            return split(text)
+
+        monkeypatch.setattr(patch_processing, "split_diff_lines", track_split)
+        result = extend_patch(base, patch, patch_extra_lines_before=2,
+                              patch_extra_lines_after=1, new_file_str=head)
+
+        assert " first\n second\n-old\n+new\n tail 0" in result
+        assert split_inputs.count("first\nsecond\n") == 1
+        assert all("tail 499" not in text for text in split_inputs if text != base)
+
     # Tests the functionality of extending a patch with multiple hunks.
     def test_multiple_hunks(self):
         original_file_str = 'line1\nline2\nline3\nline4\nline5\nline6'

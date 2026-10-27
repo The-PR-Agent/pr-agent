@@ -95,9 +95,24 @@ def process_patch_lines(patch_str, original_file_str, patch_extra_lines_before, 
     patch_extra_lines_before_dynamic = get_settings().config.max_extra_lines_before_dynamic_context
 
     file_original_lines = split_diff_lines(original_file_str)
-    file_new_lines = split_diff_lines(new_file_str) if new_file_str else []
     len_original_lines = len(file_original_lines)
     patch_lines = split_diff_lines(patch_str)
+    # Head lines are only consulted before each hunk, never after it.
+    # Zero-length head hunks point to the line preceding an insertion/deletion.
+    head_prefix_lines = max((
+        max(0, int(match.group(3)) - 1 + (match.group(4) == "0"))
+        for line in patch_lines if (match := RE_HUNK_HEADER.match(line))
+    ), default=0)
+    file_new_lines = []
+    if new_file_str and head_prefix_lines:
+        end = 0
+        for _ in range(head_prefix_lines):
+            next_end = new_file_str.find('\n', end)
+            if next_end < 0:
+                end = len(new_file_str)
+                break
+            end = next_end + 1
+        file_new_lines = split_diff_lines(new_file_str[:end])
     extended_patch_lines = []
     hunk_starts = [(i, int(match.group(1))) for i, line in enumerate(patch_lines)
                    if (match := RE_HUNK_HEADER.match(line))]
