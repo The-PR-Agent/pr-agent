@@ -499,6 +499,7 @@ async def test_run_can_suppress_failure_comment_without_changing_failure_status(
         )
         _configure_published_run()
         settings = get_settings()
+        settings.config.publish_output_progress = False
         settings.config.propagate_tool_errors = True
         settings.pr_code_suggestions.publish_failure_comment = False
 
