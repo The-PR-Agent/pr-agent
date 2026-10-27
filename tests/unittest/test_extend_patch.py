@@ -271,7 +271,7 @@ class TestOmittedHunkCount:
             RE_HUNK_HEADER.match("@@ -10,7 +12 @@"))
         assert (start1, size1, start2, size2) == (10, 7, 12, 1)
 
-    @pytest.mark.parametrize("expected", ["l2", "l3", "l4"])
+    @pytest.mark.parametrize("expected", [" l2", " l3", " l4"])
     def test_single_line_hunk_does_not_resurrect_the_deleted_line(self, expected):
         original = "".join(f"l{i}\n" for i in range(1, 9))
         new = "CHANGED\n" + "".join(f"l{i}\n" for i in range(2, 9))

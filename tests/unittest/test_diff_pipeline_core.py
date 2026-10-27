@@ -704,7 +704,7 @@ class TestTrailingDeletionOnlyHunk:
         assert "__old hunk__" in out
         assert line in out
 
-    @pytest.mark.parametrize("line", ["-a", "-b", "-c"])
+    @pytest.mark.parametrize("line", ["-a", "-b", "-c", "+added"])
     def test_deletion_only_hunk_is_rendered_when_another_hunk_follows(self, line):
         out = decouple_and_convert_to_hunks_with_lines_numbers(
             "@@ -1,3 +0,0 @@\n-a\n-b\n-c\n@@ -10,2 +7,3 @@\n ctx\n+added", self._file())
