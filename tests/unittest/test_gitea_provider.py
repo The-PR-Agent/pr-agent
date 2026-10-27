@@ -2343,6 +2343,114 @@ class TestGiteaAddedFileBaseFetch:
 
         assert diff_files[0].edit_type == EDIT_TYPE.ADDED
 
+    @pytest.mark.parametrize("status", ["removed", "deleted"])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_cold_deleted_files_skip_head_content(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, status
+    ):
+        files = [{"filename": "gone.py", "additions": 0, "deletions": 2, "status": status}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        patch_text = "@@ -1,2 +0,0 @@\n-old\n-content\n"
+        repo_api.get_pull_request_diff.return_value = "diff --git a/gone.py b/gone.py\n" + patch_text
+        repo_api.get_file_content.side_effect = lambda **kwargs: (
+            "old\ncontent\n" if kwargs["commit_sha"] == "base-sha" else ""
+        )
+
+        diff_files = provider.get_diff_files()
+
+        assert [(call.kwargs["filepath"], call.kwargs["commit_sha"])
+                for call in repo_api.get_file_content.call_args_list] == [("gone.py", "base-sha")]
+        assert len(diff_files) == 1
+        file = diff_files[0]
+        assert file.filename == "gone.py"
+        assert file.old_filename is None
+        assert file.base_file == "old\ncontent\n"
+        assert file.head_file == ""
+        assert file.patch == patch_text
+        assert file.num_plus_lines == 0
+        assert file.num_minus_lines == 2
+        assert file.edit_type == EDIT_TYPE.DELETED
+        assert provider.file_contents == {"gone.py": ""}
+        assert provider.get_diff_files() is diff_files
+        assert repo_api.get_file_content.call_count == 1
+
+    @pytest.mark.parametrize("cached_content", ["", "cached head content"])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_deleted_files_preserve_warm_head_content(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, cached_content
+    ):
+        files = [{"filename": "gone.py", "additions": 0, "deletions": 1, "status": "deleted"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        patch_text = "@@ -1 +0,0 @@\n-old\n"
+        repo_api.get_pull_request_diff.return_value = "diff --git a/gone.py b/gone.py\n" + patch_text
+        provider.file_contents["gone.py"] = cached_content
+        repo_api.get_file_content.return_value = "old\n"
+
+        file = provider.get_diff_files()[0]
+
+        repo_api.get_file_content.assert_called_once_with(
+            owner="owner", repo="repo", commit_sha="base-sha", filepath="gone.py"
+        )
+        assert file.head_file == cached_content
+        assert provider.file_contents == {"gone.py": cached_content}
+        assert file.base_file == "old\n"
+        assert file.patch == patch_text
+        assert file.num_plus_lines == 0
+        assert file.num_minus_lines == 1
+        assert file.edit_type == EDIT_TYPE.DELETED
+
+    @pytest.mark.parametrize("active_incremental", [False, True])
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_deleted_head_reads_follow_effective_incremental_scope(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls, active_incremental
+    ):
+        files = [{"filename": "gone.py", "additions": 0, "deletions": 1, "status": "removed"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        provider.incremental.is_incremental = True
+        provider.unreviewed_files_map = {"gone.py": "previous patch"} if active_incremental else {}
+        provider.last_commit = SimpleNamespace(sha="latest-sha")
+        patch_text = "@@ -1 +0,0 @@\n-old\n"
+        repo_api.get_pull_request_diff.return_value = "diff --git a/gone.py b/gone.py\n" + patch_text
+        repo_api.get_file_content.side_effect = lambda **kwargs: kwargs["commit_sha"]
+
+        file = provider.get_diff_files()[0]
+
+        expected_refs = ["head-sha", "latest-sha"] if active_incremental else ["base-sha"]
+        assert [(call.kwargs["filepath"], call.kwargs["commit_sha"])
+                for call in repo_api.get_file_content.call_args_list] == [
+                    ("gone.py", ref) for ref in expected_refs
+                ]
+        expected_head = "head-sha" if active_incremental else ""
+        assert file.head_file == expected_head
+        assert provider.file_contents == {"gone.py": expected_head}
+        assert file.base_file == ("latest-sha" if active_incremental else "base-sha")
+        assert file.patch == patch_text
+        assert provider.unreviewed_files_map == ({"gone.py": patch_text} if active_incremental else {})
+
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.RepoApi")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_deleted_file_without_head_sha_leaves_cache_empty(
+        self, mock_get_settings, mock_repo_api_cls, mock_api_client_cls
+    ):
+        files = [{"filename": "gone.py", "additions": 0, "deletions": 1, "status": "deleted"}]
+        provider, repo_api = self._provider(files, mock_get_settings, mock_repo_api_cls)
+        provider.sha = ""
+
+        file = provider.get_diff_files()[0]
+
+        repo_api.get_file_content.assert_called_once_with(
+            owner="owner", repo="repo", commit_sha="base-sha", filepath="gone.py"
+        )
+        assert file.head_file == ""
+        assert provider.file_contents == {}
+
     @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
     @patch("pr_agent.git_providers.gitea_provider.RepoApi")
     @patch("pr_agent.git_providers.gitea_provider.get_settings")

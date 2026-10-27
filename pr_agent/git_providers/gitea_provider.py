@@ -654,6 +654,10 @@ class GiteaProvider(GitProvider):
 
             if avoid_load:
                 head_file = ""
+            elif (status in ('removed', 'deleted') and self.sha
+                  and not (self.incremental.is_incremental and self.unreviewed_files_map)):
+                # A full deletion has no head content; retain any existing cached value.
+                head_file = self.file_contents.setdefault(filename, "")
             else:
                 # Get file content from this pr only when the full content is needed.
                 self.__add_file_content(filename)
