@@ -16,11 +16,13 @@ class TestValidateSecretProviderSetting:
     @pytest.mark.parametrize("provider_id", SUPPORTED_SECRET_PROVIDERS)
     def test_accepts_supported_providers(self, provider_id):
         with patch('pr_agent.secret_providers.get_settings', return_value=self._settings(provider_id)):
-            validate_secret_provider_setting()
+            result = validate_secret_provider_setting()
+            assert result is None
 
     def test_accepts_unset_provider(self):
         with patch('pr_agent.secret_providers.get_settings', return_value=self._settings("")):
-            validate_secret_provider_setting()
+            result = validate_secret_provider_setting()
+            assert result is None
 
     def test_rejects_unknown_provider(self):
         with patch('pr_agent.secret_providers.get_settings', return_value=self._settings("gcs")):
