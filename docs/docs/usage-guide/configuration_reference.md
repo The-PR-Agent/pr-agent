@@ -473,7 +473,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `guardrail_identifier` | "" | guardrail ID or ARN; empty = disabled |
+| `guardrail_identifier` | "" | guardrail ID or ARN; empty = disabled. When set, Bedrock models must use "bedrock/converse/..."; other Bedrock routes fail instead of running unguarded |
 | `guardrail_version` | "" | e.g. "1" or "DRAFT"; required when guardrail_identifier is set |
 | `guardrail_trace` | "disabled" | "enabled", "enabled_full" or "disabled" |
 

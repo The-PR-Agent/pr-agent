@@ -2675,7 +2675,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Fail closed for Bedrock routes that would silently drop the guardrail."""
         if not guardrail_config:
             return
-        if request_provider == "bedrock_mantle" or "bedrock/invoke/" in model:
+        # Unprefixed Bedrock models fall back to LiteLLM's version-dependent route inference (e.g. InvokeModel).
+        if request_provider == "bedrock_mantle" or (
+            request_provider == "bedrock" and not model.removeprefix("bedrock/").startswith("converse/")
+        ):
             raise ValueError("Bedrock guardrails require the Converse route; use a 'bedrock/converse/' model")
 
     def _split_system_prompt_for_skills_cache(self, messages: list[dict], model: str, injection_points) -> None:

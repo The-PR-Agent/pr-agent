@@ -134,7 +134,15 @@ async def test_invalid_config_raises_value_error_without_calling_model(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["bedrock/invoke/anthropic.claude-v2", "bedrock_mantle/openai.gpt-oss-120b"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "bedrock/invoke/anthropic.claude-v2",
+        "bedrock/anthropic.claude-v2",
+        "bedrock/arn:aws:bedrock:eu-central-1:123456789012:application-inference-profile/abc123",
+        "bedrock_mantle/openai.gpt-oss-120b",
+    ],
+)
 async def test_routes_without_guardrail_support_fail_closed(monkeypatch, model):
     with pytest.raises(ValueError, match="Converse route"):
         await _call(_handler(monkeypatch, "gr-123", "1"), model=model)

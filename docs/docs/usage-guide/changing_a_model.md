@@ -526,7 +526,7 @@ guardrail_version = "1"
 guardrail_trace = "disabled" # or "enabled" / "enabled_full"
 ```
 
-or the equivalent environment variables `BEDROCK__GUARDRAIL_IDENTIFIER` and `BEDROCK__GUARDRAIL_VERSION`. The `[bedrock]` section is host-only and cannot be overridden from a repository's `.pr_agent.toml`. Requests to `bedrock/invoke/` models fail when a guardrail is configured.
+or the equivalent environment variables `BEDROCK__GUARDRAIL_IDENTIFIER` and `BEDROCK__GUARDRAIL_VERSION`. The `[bedrock]` section is host-only and cannot be overridden from a repository's `.pr_agent.toml`. When a guardrail is configured, every Bedrock model (including fallback models) must use the explicit `bedrock/converse/` prefix; other Bedrock routes (`bedrock/invoke/`, unprefixed `bedrock/<model>`, `bedrock_mantle/`) fail instead of running without the guardrail.
 
 To reach Bedrock through a VPC interface endpoint, set the `AWS_BEDROCK_RUNTIME_ENDPOINT` environment variable to the endpoint URL.
 
