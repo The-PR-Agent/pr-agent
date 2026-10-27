@@ -737,3 +737,12 @@ def test_input_file_and_pattern_are_host_only_for_comment_arguments():
 def test_count_patch_lines_counts_repeated_sign_content_inside_hunks():
     patch = "--- a/x.cpp\n+++ b/x.cpp\n@@ -1,1 +1,1 @@\n+++counter;\n---counter;\n context"
     assert br.count_patch_lines(patch) == (1, 1)
+
+
+@pytest.mark.parametrize("gfm_supported", [True, False])
+def test_render_keeps_multiline_values_on_one_line(gfm_supported):
+    row = br.assess_change(None, structure={"reach": 1, "sensitive_domains": ["auth\n\n![x](https://example.com/x.png)"]})
+    rendered = br.render_blast_radius(row, gfm_supported=gfm_supported)
+    sensitivity = next(line for line in rendered.split("<br>" if gfm_supported else "\n") if "Sensitivity" in line)
+    assert "auth" in sensitivity and "example.com" in sensitivity
+    assert "\n\n" not in rendered.split("Sensitivity", 1)[1].split("Rating driven", 1)[0]

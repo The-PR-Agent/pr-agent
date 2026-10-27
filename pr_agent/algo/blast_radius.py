@@ -421,7 +421,7 @@ def _churn_text(churn):
 
 
 def _escape(text, gfm_supported):
-    text = str(text)
+    text = " ".join(str(text).splitlines())
     if not gfm_supported:
         text = re.sub(r"([\\`*_\[\]()!#|])", r"\\\1", text)
     return html.escape(text)
