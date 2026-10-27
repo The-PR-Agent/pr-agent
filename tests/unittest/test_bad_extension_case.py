@@ -1,4 +1,6 @@
 """Match bad extensions case-insensitively, so 'logo.SVG' is dropped like 'logo.svg'."""
+from types import SimpleNamespace
+
 import pytest
 
 from pr_agent.algo.language_handler import filter_bad_extensions, is_valid_file
@@ -38,3 +40,26 @@ def test_filter_bad_extensions_drops_uppercase_assets():
     files = [_File("logo.SVG"), _File("main.py")]
 
     assert [f.filename for f in filter_bad_extensions(files)] == ["main.py"]
+
+
+def test_filter_normalizes_once_without_mutating_configured_extensions(monkeypatch):
+    class CountingExtension:
+        calls = 0
+
+        def __str__(self):
+            self.calls += 1
+            return "ZIP"
+
+    extension = CountingExtension()
+    defaults = [extension]
+    settings = SimpleNamespace(
+        bad_extensions=SimpleNamespace(default=defaults, extra=["md"]),
+        config=SimpleNamespace(use_extra_bad_extensions=True),
+    )
+    monkeypatch.setattr("pr_agent.algo.language_handler.get_settings", lambda: settings)
+
+    files = [_File(name) for name in ["file.ZIP", "notes.md", "main.py"] * 20]
+
+    assert [file.filename for file in filter_bad_extensions(files)] == ["main.py"] * 20
+    assert extension.calls == 1
+    assert defaults == [extension]

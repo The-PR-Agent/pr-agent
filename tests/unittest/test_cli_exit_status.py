@@ -219,6 +219,7 @@ def test_real_request_failure_uses_effective_propagation_setting(
         get_settings().set("CONFIG.PROPAGATE_TOOL_ERRORS", repo_value)
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", FailingReview)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", fake_apply_repo_settings)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: events.append("telemetry"))
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
@@ -289,6 +290,7 @@ def test_run_restores_propagation_setting_between_invocations(
         apply_calls += 1
 
     monkeypatch.setitem(pr_agent_module.command2class, "review", ControlledReview)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", fake_apply_repo_settings)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setattr(cli, "inject_artifact_context", lambda: None)
@@ -335,7 +337,7 @@ def test_run_restores_propagation_setting_when_callback_drain_raises(monkeypatch
 
 
 def test_run_scopes_settings_and_target_caches_between_invocations(monkeypatch):
-    expected_target_caches = ("git_provider", "repo_settings", "git_files", "diff_files")
+    expected_target_caches = ("git_provider", "repo_settings", "git_files", "diff_files", "extra_config_payloads")
     outer_settings = copy.deepcopy(global_settings)
     outer_settings.set("CONFIG.GIT_PROVIDER", "github")
     outer_context = {
@@ -346,6 +348,7 @@ def test_run_scopes_settings_and_target_caches_between_invocations(monkeypatch):
         "repo_settings": "outer-settings",
         "git_files": ["outer.py"],
         "diff_files": ["outer.diff"],
+        "extra_config_payloads": {"https://config.example.test/shared.toml": b"outer-payload"},
     }
     seen = []
 

@@ -68,7 +68,22 @@ You can pass configuration options directly in the command:
 2. It uses AI to generate appropriate documentation based on the code context and language
 3. Documentation suggestions are published as inline code suggestions that can be applied with a single click
 
+### Model response failures
+
+Each model response is validated before it is accepted. Missing content or an
+invalid documentation structure triggers the next model in `CONFIG.FALLBACK_MODELS`,
+if configured. An explicit empty list or `Code Documentation: null` is a valid
+empty result and does not trigger another model call.
+
+If all model attempts fail, PR-Agent records the command as failed and removes
+the temporary progress comment. With `CONFIG.PUBLISH_OUTPUT` enabled, it also
+attempts to post **Failed to generate code documentation for this PR.**
+
 ### Publication failures
+
+Suggestions are skipped if their original source line cannot be reliably retained,
+including when file content is unavailable or incomplete. Valid suggestions in the
+same response can still be published.
 
 With `CONFIG.PUBLISH_OUTPUT` enabled, PR-Agent retries unsuccessful batch
 publication one suggestion at a time. If the batch and every individual retry

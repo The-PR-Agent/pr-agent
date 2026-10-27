@@ -5,7 +5,7 @@ import pytest
 
 from pr_agent.algo import run_details
 from pr_agent.algo.run_details import get_run_details, init_run_details, record_ai_call, record_model_used
-from pr_agent.algo.run_output import show_run_details
+from pr_agent.algo.run_output import append_run_details, show_run_details
 from pr_agent.config_loader import get_settings
 
 
@@ -217,3 +217,67 @@ def test_tiny_positive_cost_is_not_rounded_to_false_zero():
 
     assert "Estimated API cost: <$0.01 USD" in output
     assert "Estimated API cost: $0.00" not in output
+
+
+class _GfmProvider:
+    def __init__(self, gfm: bool):
+        self.gfm = gfm
+
+    def is_supported(self, capability):
+        return self.gfm and capability == "gfm_markdown"
+
+
+@pytest.fixture
+def run_details_flag():
+    settings = get_settings()
+    previous = settings.config.get("output_run_details", False)
+    yield settings
+    settings.set("config.output_run_details", previous)
+
+
+def test_append_run_details_leaves_body_unchanged_when_disabled(run_details_flag):
+    run_details_flag.set("config.output_run_details", False)
+    init_run_details()
+    record_model_used("openai/gpt-5.4", is_fallback=False)
+
+    assert append_run_details("body", _GfmProvider(gfm=True)) == "body"
+
+
+def test_append_run_details_appends_collapsible_section_with_gfm(run_details_flag):
+    run_details_flag.set("config.output_run_details", True)
+    init_run_details()
+    record_model_used("openai/gpt-5.4", is_fallback=False)
+
+    output = append_run_details("body", _GfmProvider(gfm=True))
+
+    assert output.startswith("body\n<hr>\n<details> <summary><strong>⚙️ Agent run details</strong></summary>")
+    assert "Model: openai/gpt-5.4" in output
+
+
+def test_append_run_details_appends_plain_section_without_gfm(run_details_flag):
+    run_details_flag.set("config.output_run_details", True)
+    init_run_details()
+    record_model_used("openai/gpt-5.4", is_fallback=False)
+
+    output = append_run_details("body", _GfmProvider(gfm=False))
+
+    assert output.startswith("body\n___\n\n**⚙️ Agent run details**")
+    assert "<details>" not in output
+
+
+def test_append_run_details_leaves_body_unchanged_without_a_recorded_model(run_details_flag):
+    run_details_flag.set("config.output_run_details", True)
+    init_run_details()
+
+    assert append_run_details("body", _GfmProvider(gfm=True)) == "body"
+
+
+def test_append_run_details_falls_back_to_plain_text_without_capability_checks(run_details_flag):
+    run_details_flag.set("config.output_run_details", True)
+    init_run_details()
+    record_model_used("openai/gpt-5.4", is_fallback=False)
+
+    output = append_run_details("body", object())
+
+    assert output.startswith("body\n___\n\n**⚙️ Agent run details**")
+    assert "Model: openai/gpt-5.4" in output

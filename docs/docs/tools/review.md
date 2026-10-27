@@ -35,6 +35,16 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 /review --pr_reviewer.some_config1=... --pr_reviewer.some_config2=...
 ```
 
+From the CLI, save the parsed review and token usage as JSON for a later CI step:
+
+```bash
+pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output review.json review
+```
+
+The JSON file is written after the review completes. Place `--json-output` before `review` or `review_pr`.
+Its `coverage` object lists the files the token budget kept out of the review (`files_not_reviewed`) and those whose
+patches were clipped to fit it (`files_partially_reviewed`), the same files the review coverage footer names.
+
 ### Automatic triggering
 
 To run the `review` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
@@ -69,6 +79,13 @@ for the authoritative default values.
     <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
   </tr>
   <tr>
+    <td><b>publish_review_failure_comment</b></td>
+    <td>
+      Set to false to suppress the "Failed to review PR" comment, including when a persistent review comment
+      cannot be updated. Successful review output and the command's failure status are unchanged. Default is true.
+    </td>
+  </tr>
+  <tr>
     <td><b>publish_error_details</b></td>
     <td>
       If set to true, a failed manual review comment includes a deterministic, sanitized failure reason for known
@@ -94,7 +111,13 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>max_previous_findings_chars</b></td>
-    <td>Character budget for the findings stored by earlier reviews (requires <code>persistent_finding_state</code>). They are given to the model so it repeats a still-valid finding with its earlier wording instead of re-raising it reworded, and does not re-raise a resolved one unless the code reintroduces it. On GitLab, an inline key-issue thread that someone other than PR-Agent resolved is given as dismissed, with its last reply, so the model does not re-raise it unless the code makes it worse. Set to 0 to disable. Default is 8000.</td>
+        <td>Character budget for the findings stored by earlier reviews (requires <code>persistent_finding_state</code>). They are given to the model so it repeats a still-valid finding with its earlier wording instead of re-raising it reworded, and does not re-raise a resolved one unless the code reintroduces it. On GitHub and GitLab, an inline key-issue thread that someone other than PR-Agent resolved is given as dismissed, with its last reply, so the model does not re-raise it unless the code makes it worse. Set to 0 to disable. Default is 8000.
+      On Azure DevOps, verified PR-Agent inline key issues with <code>wontFix</code> or <code>byDesign</code>
+      are also passed as dismissed when the status differs from <code>azure_devops.default_comment_status</code>.
+      A matching default stays an ordinary prior finding. This infers a human decision; Azure does not identify
+      the status-changing actor here, and the current default may differ from the default used at creation.
+      Stable <code>azure_devops_server.agent_identity</code> configuration is required.
+    </td>
   </tr>
   <tr>
   <td><b>final_update_message</b></td>
@@ -126,7 +149,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>inline_key_issues</b></td>
-    <td>If set to true, each key issue is published as an inline comment where the provider supports verified inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab). A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary.</td>
+    <td>If set to true, each key issue is published as an inline comment where the provider supports verified inline-comment publication (GitHub, Bitbucket Cloud, Azure DevOps, GitLab, Gitea). A finding leaves the review summary when a matching comment exists or the provider accepts the new comment. Findings that cannot be anchored or published stay in the summary.</td>
   </tr>
 </table>
 
@@ -179,7 +202,13 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>require_merge_recommendation</b></td>
-    <td>If set to true, the tool will add a section with a merge recommendation of safe_to_merge, merge_with_caution or changes_required.</td>
+    <td>If set to true, the tool will add a section describing what the review found: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge). The value reports the model's findings, not a guarantee about the code.</td>
+  </tr>
+  <tr>
+    <td><b>require_failure_modes</b></td>
+    <td>Off by default. If enabled, adds up to three concrete failure scenarios, each with what could break,
+    where, its trigger, how it could be detected, and whether a test or check in this PR covers it.
+    These scenarios guide human review; they do not gate merging or prove that the PR is safe.</td>
   </tr>
   <tr>
     <td><b>require_priority_files</b></td>
@@ -201,7 +230,7 @@ You can enable\disable the `review` tool to add specific labels to the PR:
   </tr>
   <tr>
     <td><b>enable_review_labels_effort</b></td>
-    <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale).</td>
+    <td>If set to true, the tool will publish a 'Review effort x/5' label (1–5 scale). Existing effort labels are kept when this option or effort estimation is disabled, or when the review has no valid replacement estimate. Security labels follow their own settings.</td>
   </tr>
 </table>
 
@@ -239,14 +268,16 @@ Edit this field to enable/disable the tool, or to change the configurations used
 
 The `review` tool can automatically add labels to your Pull Requests:
 
-- **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L134) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
-- **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L118) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
+- **`possible security issue`**: This label is applied if the tool detects a potential [security vulnerability](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L147) in the PR's code. This feedback is controlled by the 'enable_review_labels_security' flag (default is true).
+- **`review effort [x/5]`**: This label estimates the [effort](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/pr_reviewer_prompts.toml#L119) required to review the PR on a relative scale of 1 to 5, where 'x' represents the assessed effort. This feedback is controlled by the 'enable_review_labels_effort' flag (default is true).
 
 Ticket compliance is reported in the review comment, not as a PR label. It is controlled by
 `pr_reviewer.require_ticket_analysis_review` and requires available ticket context. The tool does not add
 ticket-compliance labels or a "No ticket found" label. See
 [Fetching ticket context](../core-abilities/fetching_ticket_context.md) for linking and authentication details.
 
+
+:::
 
 ### Auto-blocking PRs from being merged based on the generated labels
 
@@ -328,9 +359,13 @@ merged field by field:
 | `relevant_tests` | Yes if any chunk found tests |
 | `score` | The lowest score any chunk gave |
 | `risk_level`, `merge_recommendation` | The most conservative value any chunk gave |
+| `failure_modes` | Concatenate valid cases in chunk order, keeping at most three |
 | `estimated_effort_to_review_[1-5]` | The highest value any chunk gave |
 | `contribution_time_cost_estimate` | The sum over the chunks, per case |
 | `ticket_compliance_check` | One entry per ticket, with its bullet lists unioned across chunks |
+
+When `require_todo_scan` is enabled, the TODO union includes both located findings and prose
+summaries. Prose without a file location is shown as text without a source link.
 
 The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
 cannot raise a score, clear a security concern, or soften a risk level set by another chunk.

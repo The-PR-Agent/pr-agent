@@ -134,6 +134,7 @@ async def test_pr_description_appends_run_details_only_when_enabled(monkeypatch)
         description.vars = {}
         description.prediction = "prediction"
         description.file_label_dict = {}
+        description.data = {}  # run() hands the parsed dict to the JSON writer after _prepare_data
         description.git_provider = MagicMock()
         description.git_provider.is_supported.side_effect = lambda cap: cap == "gfm_markdown"
 

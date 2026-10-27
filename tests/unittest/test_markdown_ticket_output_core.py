@@ -7,7 +7,6 @@ TODO sections, and PR description ticket extraction. The goal is to
 lock in branches that are not already covered by:
 
 - tests/unittest/test_convert_to_markdown.py
-- tests/unittest/test_parse_code_suggestion.py
 - tests/unittest/test_extract_issue_from_branch.py
 - tests/unittest/test_pr_description.py
 
@@ -26,7 +25,6 @@ from pr_agent.algo.utils import (
     format_todo_item,
     format_todo_items,
     is_value_no,
-    parse_code_suggestion,
     process_can_be_split,
     ticket_markdown_logic,
 )
@@ -354,17 +352,25 @@ class TestTicketMarkdownLogic:
         assert "Compliant requirements:" in out
         assert "Non-compliant requirements:" in out
 
-    def test_mixed_full_and_not_compliant_renders_partial(self):
+    @pytest.mark.parametrize("partial", [False, True])
+    @pytest.mark.parametrize("reverse_order", [False, True])
+    @pytest.mark.parametrize("gfm_supported", [True, False])
+    def test_mixed_compliance_renders_partial(self, partial, reverse_order, gfm_supported):
         tickets = [
-            self._ticket(fully_compliant_requirements="- ok\n"),
+            self._ticket(
+                fully_compliant_requirements="- ok\n",
+                not_compliant_requirements="- missing\n" if partial else "",
+            ),
             self._ticket(
                 ticket_url="https://example.com/ticket/43",
                 not_compliant_requirements="- broken\n",
             ),
         ]
-        out = ticket_markdown_logic("🎫", "", tickets, True)
-        # Mix of Fully compliant + Not compliant ⇒ overall Partially compliant 🔶.
+        if reverse_order:
+            tickets.reverse()
+        out = ticket_markdown_logic("🎫", "", tickets, gfm_supported)
         assert "Ticket compliance analysis 🔶" in out
+        assert get_settings().get("config.extra_statistics.compliance_level") == "Partially compliant"
         # Both ticket id slugs are rendered.
         assert "[42](https://example.com/ticket/42)" in out
         assert "[43](https://example.com/ticket/43)" in out
@@ -437,6 +443,18 @@ class TestProcessCanBeSplit:
             "🔀", [{"title": "only one", "relevant_files": ["a.py"]}]
         )
         assert "No multiple PR themes" in out
+
+    def test_string_returns_no_themes(self):
+        out = process_can_be_split("🔀", "No")
+        assert "No multiple PR themes" in out
+
+    def test_dict_returns_no_themes(self):
+        out = process_can_be_split("🔀", {"title": "single mapping"})
+        assert "No multiple PR themes" in out
+
+    def test_affirmative_value_does_not_claim_no_themes(self):
+        out = process_can_be_split("🔀", True)
+        assert "No multiple PR themes" not in out
 
     def test_multiple_themes_render_details(self):
         out = process_can_be_split(
@@ -546,66 +564,6 @@ class TestFormatTodoItems:
         out = format_todo_items(items, self._provider(), gfm_supported=False)
         # Counts bullet rows.
         assert out.count("\n- ") + (1 if out.startswith("- ") else 0) == 5
-
-
-# ---------------------------------------------------------------------------
-# parse_code_suggestion — gfm branch with relevant_line is not exercised
-# by tests/unittest/test_parse_code_suggestion.py.
-# ---------------------------------------------------------------------------
-
-
-class TestParseCodeSuggestionGfm:
-    def test_relevant_line_with_markdown_link(self):
-        suggestion = {
-            "relevant_file": "src/app.py",
-            "suggestion": "Use a constant",
-            "relevant_line": "[`foo = 1`](https://example.com/diff#L10)",
-        }
-        out = parse_code_suggestion(suggestion, gfm_supported=True)
-        assert out.startswith("<table>")
-        assert "<tr><td>relevant file</td><td>src/app.py</td></tr>" in out
-        assert "<strong>" in out and "Use a constant" in out
-        assert "<a href='https://example.com/diff#L10'>" in out
-        assert out.rstrip().endswith("<hr>")
-
-    def test_relevant_line_without_link(self):
-        suggestion = {
-            "relevant_file": "src/app.py",
-            "suggestion": "Use a constant",
-            "relevant_line": "`foo = 1`",
-        }
-        out = parse_code_suggestion(suggestion, gfm_supported=True)
-        # No "](" link delimiter → no anchor, just the (leading-backtick
-        # stripped) literal line.
-        assert "<a href=" not in out
-        assert "<tr><td>relevant line</td>" in out
-        assert "foo = 1" in out
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "parse_code_suggestion only left-strips a leading backtick from "
-            "relevant_line; the trailing backtick is not stripped. This xfail "
-            "encodes the desired symmetric stripping behavior."
-        ),
-    )
-    def test_relevant_line_strips_both_backticks(self):
-        suggestion = {
-            "relevant_file": "src/app.py",
-            "suggestion": "Use a constant",
-            "relevant_line": "`foo = 1`",
-        }
-        out = parse_code_suggestion(suggestion, gfm_supported=True)
-        assert "<td>foo = 1</td>" in out
-
-    def test_falls_back_to_non_gfm_when_no_relevant_line(self):
-        # Without 'relevant_line', the function takes the non-gfm code path
-        # even when gfm_supported=True.
-        suggestion = {"suggestion": "S", "description": "D"}
-        out = parse_code_suggestion(suggestion, gfm_supported=True)
-        assert "<table>" not in out
-        assert "**suggestion:**" in out
-        assert "**description:**" in out
 
 
 # ---------------------------------------------------------------------------

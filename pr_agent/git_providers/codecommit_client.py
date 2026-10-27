@@ -26,6 +26,7 @@ class CodeCommitPullRequestResponse:
     """
 
     def __init__(self, json: dict):
+        self.author_arn = json.get("authorArn")
         self.title = json.get("title", "")
         self.description = json.get("description", "")
 
@@ -59,7 +60,7 @@ class CodeCommitClient:
         self.region_name = region_name
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ["gfm_markdown"]:
+        if capability == "gfm_markdown":
             return False
         return True
 

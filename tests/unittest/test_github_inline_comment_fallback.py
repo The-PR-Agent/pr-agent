@@ -25,6 +25,7 @@ def _make_provider(create_review_side_effect):
     provider = GithubProvider.__new__(GithubProvider)
     provider.pr = MagicMock()
     provider.last_commit_id = MagicMock()
+    provider.max_comment_chars = 65000
     provider.pr.create_review.side_effect = create_review_side_effect
     return provider
 

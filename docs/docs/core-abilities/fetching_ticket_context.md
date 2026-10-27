@@ -20,6 +20,7 @@ This integration enriches the review process by automatically surfacing relevant
 - [GitHub/GitLab Issues](#githubgitlab-issues-integration)
 - [Jira](#jira-integration)
 - [Asana](#asana-integration)
+- [Linear](#linear-integration)
 
 **Ticket data fetched:**
 
@@ -34,7 +35,7 @@ This integration enriches the review process by automatically surfacing relevant
 
 Ticket Recognition Requirements:
 
-- The PR description should contain a link to the ticket or if the branch name starts with the ticket id / number.
+- GitHub/GitLab issue references can appear in the PR/MR title or description. GitHub also recognizes numeric issue references in the branch name.
 - For Jira tickets, you should follow the instructions in [Jira Integration](#jira-integration) in order to authenticate with Jira.
 - For Asana tickets, see [Asana Integration](#asana-integration).
 
@@ -47,7 +48,7 @@ By understanding the reasoning and intent behind modifications, the LLM can offe
 
 Similarly to the `describe` tool, the `review` tool will use the ticket content to provide additional context for the code changes.
 
-In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue mentioned in the PR description.
+In addition, this feature will evaluate how well a Pull Request (PR) adheres to its original purpose/intent as defined by the associated ticket or issue.
 Each ticket will be assigned a label (Compliance/Alignment level), Indicates the degree to which the PR fulfills its original purpose:
 
 - Fully Compliant
@@ -62,9 +63,7 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
 
 #### Configuration options
 
--
-
-    By default, the `review` tool will automatically validate if the PR complies with the referenced ticket.
+- By default, the `review` tool will automatically validate if the PR complies with the referenced ticket.
     If you want to disable this feedback, add the following line to your configuration file:
 
     ```toml
@@ -72,9 +71,7 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
     require_ticket_analysis_review=false
     ```
 
--
-
-    If you set:
+- If you set:
     ```toml
     [pr_reviewer]
     check_pr_additional_content=true
@@ -85,7 +82,7 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
 
 ## GitHub/GitLab Issues Integration
 
-PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR description and fetch the issue content.
+PR-Agent will automatically recognize GitHub/GitLab issues mentioned in the PR/MR title or description and fetch the issue content.
 Examples of valid GitHub/GitLab issue references:
 
 - `https://github.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>` or `https://gitlab.com/<ORG_NAME>/<REPO_NAME>/-/issues/<ISSUE_NUMBER>`
@@ -95,26 +92,69 @@ Examples of valid GitHub/GitLab issue references:
 Full GitHub issue URLs are recognized on the configured instance's HTTPS web origin, including GitHub Enterprise URLs such as `https://github.example.com/<ORG_NAME>/<REPO_NAME>/issues/<ISSUE_NUMBER>`.
 Full GitHub issue URLs on other origins are ignored.
 
+GitHub processes references from the description first, then the branch name, then the title. GitLab processes
+description references before title references. Repeated identical references do not add lookups, and title references use
+the existing ticket lookup and result limits without displacing earlier sources.
+
+The optional `config.description_issue_regex` setting applies only to the GitHub PR description. GitHub titles use
+the built-in reference formats above, including local `#<ISSUE_NUMBER>` references of up to six digits.
+
 Branch names can also be used to link issues, for example:
 - `123-fix-bug` (where `123` is the issue number)
 
 This branch-name detection applies **only when the git provider is GitHub**. Support for other platforms is planned for later.
 
-By default, GitHub ticket context is limited to the PR's own repository. Issues and sub-issues in another
-repository require explicit host approval through `config.repo_context_sibling_repos`:
+By default, GitHub and GitLab ticket context is limited to the PR's or MR's own repository. Issues and
+sub-issues in another repository require explicit host approval through `config.repo_context_sibling_repos`:
 
 ```toml
 [config]
 repo_context_sibling_repos = ["myorg/shared-tickets"]
 ```
 
-Only canonical repositories under the PR repository's resolved owner are accepted. For private or internal
-repositories, the command requester must also have read access; CLI runs use the PR author when no command actor
-is available. Repository settings and comment arguments cannot change this allowlist. An empty list disables
-cross-repository ticket reads, including public repositories. Approve only content that may be included in the
-consuming PR's review or description. Ticket lookup limits are separate from the sibling-file limit.
-PyGithub may follow an issue transfer, but results from a different repository are discarded before prompt use.
-Reference a transferred issue by its current repository and number.
+Only canonical repositories under the PR repository's resolved owner are accepted on GitHub; on GitLab the
+project must share the MR project's top-level namespace. For private or internal repositories, the command
+requester must also have read access; CLI runs use the PR author when no command actor is available. Repository
+settings and comment arguments cannot change this allowlist. An empty list disables cross-repository ticket
+reads, including public repositories. Approve only content that may be included in the consuming PR's review or
+description. Ticket lookup limits are separate from the sibling-file limit. PyGithub may follow an issue transfer,
+but results from a different repository are discarded before prompt use. Reference a transferred issue by its
+current repository and number.
+
+## Linear Integration
+
+PR-Agent reads Linear issue links from the user-written PR description and includes their titles, descriptions,
+and labels in the existing ticket context. This works across git providers, including providers without native
+issue support. Enable `pr_reviewer.require_ticket_analysis_review` to use ticket analysis.
+
+Link an issue as `https://linear.app/your-workspace/issue/TEAM-123` or include its optional title slug.
+Query strings and fragments do not change issue identity. Repeated links to the same workspace and issue are
+deduplicated in description order. Bare identifiers, PR titles and branch names are not scanned for Linear issues.
+
+Create a [Linear personal API key](https://linear.app/developers/graphql) with read access to the intended issues.
+Set `LINEAR__API_TOKEN` in the deployment environment, or add it to your private `.secrets.toml`:
+
+```toml
+[linear]
+api_token = "your-personal-api-key"
+```
+
+Do not put the token in repository `.pr_agent.toml` files. Existing credential protections prevent repositories
+and review-command arguments from overriding it. Fetched ticket content enters the review model's context;
+choose credential access appropriate for the repositories using the integration.
+
+The key is sent directly in the `Authorization` header to `https://api.linear.app/graphql`, without a `Bearer`
+prefix. Requests do not follow redirects. No OAuth application or additional service is required.
+
+PR-Agent attempts the first three unique issue references, concurrently and in description order, with no
+replacement attempts for failed issues. Results are appended after existing native, Asana and Jira tickets,
+without reducing their limits. Descriptions are truncated to 10,000 characters and at most 20 labels are fetched.
+The shared prompt-token budget may further reduce ticket context.
+
+Missing credentials, inaccessible issues, HTTP errors and GraphQL errors cause the affected issues to be skipped
+with a warning; successful tickets and the code review continue. No placeholder ticket or separate failure verdict
+is published. An API response for a different workspace or issue is rejected. Configure `linear.request_timeout`
+to change the default 10-second per-request timeout (maximum 60 seconds). Existing review-local ticket caching applies.
 
 ## Asana Integration
 
@@ -191,23 +231,33 @@ You can create an API token from your Atlassian account:
 
 4. Click Copy to clipboard.
 
-<img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
+   <img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
 
-5. In your [configuration file](../usage-guide/configuration_options.md) add the following lines:
+5. In the PR-Agent host configuration (the secrets file or environment variables such as `JIRA__JIRA_SITE`) add the following lines. A repository's `.pr_agent.toml` cannot set them:
 
-```toml
-[jira]
-jira_site = "<JIRA_SITE>"   # the "<site>" in https://<site>.atlassian.net (e.g. "mycompany")
-jira_api_email = "YOUR_EMAIL"
-jira_api_token = "YOUR_API_TOKEN"
-```
+   ```toml
+   [jira]
+   jira_site = "<JIRA_SITE>"   # the "<site>" in https://<site>.atlassian.net (e.g. "mycompany")
+   cloud_id = "<CLOUD_ID>" # optional UUID for scoped or service-account tokens
+   jira_api_email = "YOUR_EMAIL"
+   jira_api_token = "YOUR_API_TOKEN"
+   ```
 
-`jira_site` is your Jira Cloud site name — the part before `.atlassian.net` (for
-`https://mycompany.atlassian.net`, the site is `mycompany`). PR-Agent builds the base URL
-as `https://<jira_site>.atlassian.net`; it does not accept a full URL, so configuration
-cannot redirect the authenticated request to another host. Store `jira_api_email` and
-`jira_api_token` as secrets (environment variables or the secrets file), not in
-repository-committed configuration.
+   `jira_site` is your Jira Cloud site name — the part before `.atlassian.net` (for
+   `https://mycompany.atlassian.net`, the site is `mycompany`). PR-Agent builds the base URL
+   as `https://<jira_site>.atlassian.net`; it does not accept a full URL, so configuration
+   cannot redirect the authenticated request to another host. Store `jira_api_email` and
+   `jira_api_token` as secrets (environment variables or the secrets file), not in
+   repository-committed configuration.
+
+   For scoped or service-account API tokens, set `cloud_id` to the UUID of the Jira Cloud site. Requests then use
+   `https://api.atlassian.com/ex/jira/<cloud_id>` while ticket links continue to use `jira_site`. Leave `cloud_id`
+   empty for classic API tokens and the site-specific URL. The value is host-only and invalid values disable Jira
+   lookup without logging the value.
+
+   To find the cloud ID, open `https://<site>.atlassian.net/_edge/tenant_info` and read the `cloudId` value from the
+   JSON response. It is also the value after `/s/` in the `admin.atlassian.com` URL. Use the cloud ID, not the Jira
+   organization ID, because Atlassian's API gateway expects the site cloud ID.
 
 #### Acceptance criteria / requirements (optional)
 
@@ -224,21 +274,22 @@ jira_requirements_field = "customfield_10127"
 
 Ticket detection matches any `PROJECT-123` shaped text, so strings like `SHA-256`,
 `UTF-8` or `ISO-8601` in a title or description each cost an authenticated lookup that
-returns 404. If your repository works with a known set of Jira projects, list their keys
-in `project_keys`; keys with any other prefix are then dropped before any lookup (they are
-named once at debug level in the log). Leave the list empty to look up every key found.
+returns 404. If your deployment works with a known set of Jira projects, list their keys
+in the host's `project_keys`; keys with any other prefix are then dropped before any lookup (they are
+named once at debug level in the log). By default, `project_keys = ["*"]` looks up every key found.
+Set `project_keys = []` to disable Jira ticket lookups.
+`cloud_id`, `project_keys`, `jira_site` and `jira_api_email` are host-only: a repository's `.pr_agent.toml`
+or a comment command cannot change them.
 
 ```toml
 [jira]
 project_keys = ["PROJ", "OPS"]
 ```
 
-Entries are plain upper-case project keys (letters only, as Jira writes them); anything
-else (a lower-case label, a full ticket key, a URL, a blank entry) is ignored with a
+Entries are plain upper-case project keys (letters only, as Jira writes them) or `"*"` to allow all keys.
+Anything else (a lower-case label, a full ticket key, a URL, a blank entry) is ignored with a
 warning. If the list is set but none of its entries is valid, no Jira lookup is made at all
-until it is fixed, so a typo cannot silently widen the lookup again. Only a missing option,
-the empty list, and an environment override set to the empty string mean "look up every
-key".
+until it is fixed, so a typo cannot silently widen the lookup again.
 
 ### How to link a PR to a Jira ticket
 

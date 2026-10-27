@@ -58,9 +58,9 @@ class FakeSettings:
         return self._settings_values.get(key, default)
 
 
-def _mock_response(usage=None):
+def _mock_response(usage=None, content="ok"):
     mock = MagicMock()
-    response = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    response = {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
     if usage is not None:
         response["usage"] = usage
         # run_details reads the litellm attribute, not the dict form
@@ -98,8 +98,8 @@ def _install_fake_image_probe(monkeypatch, status):
         async def __aexit__(self, *a):
             return False
 
-        def request(self, method, url, allow_redirects=True):
-            observed.update(method=method, url=url, allow_redirects=allow_redirects)
+        def request(self, method, url, allow_redirects=True, **kwargs):
+            observed.update(method=method, url=url, allow_redirects=allow_redirects, **kwargs)
             return response
 
     def _factory(*args, **kwargs):
@@ -162,8 +162,10 @@ async def test_chat_completion_probes_images_with_bounded_head(monkeypatch):
 
     # The probe is a bounded, non-redirecting HEAD with the configured timeout.
     assert observed["method"] == "HEAD"
-    assert observed["url"] == "https://example.test/image.png"
+    assert str(observed["url"]) == "https://140.82.121.4/image.png"
     assert observed["allow_redirects"] is False
+    assert observed["headers"] == {"Host": "example.test"}
+    assert observed["server_hostname"] == "example.test"
     assert observed["timeout"].total == 5
     assert mock_call.call_args.kwargs["messages"][1]["content"][1] == {
         "type": "image_url",
@@ -352,9 +354,44 @@ async def test_chat_completion_strips_temperature_for_claude_opus_5_family(monke
         "bedrock/au.anthropic.claude-sonnet-5",
         "bedrock/eu.anthropic.claude-sonnet-5",
         "bedrock/jp.anthropic.claude-sonnet-5",
+        "anthropic/claude-sonnet-5-5",
+        "claude-sonnet-5-5",
+        "vertex_ai/claude-sonnet-5-5",
+        "bedrock/anthropic.claude-sonnet-5-5",
+        "bedrock/global.anthropic.claude-sonnet-5-5",
+        "bedrock/us.anthropic.claude-sonnet-5-5",
+        "bedrock/au.anthropic.claude-sonnet-5-5",
+        "bedrock/eu.anthropic.claude-sonnet-5-5",
     ],
 )
-async def test_chat_completion_strips_temperature_for_claude_sonnet_5(monkeypatch, model):
+async def test_chat_completion_strips_temperature_for_claude_sonnet_5_family(monkeypatch, model):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert "temperature" not in mock_call.call_args.kwargs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-haiku-5-5",
+        "claude-haiku-5-5",
+        "vertex_ai/claude-haiku-5-5",
+        "bedrock/anthropic.claude-haiku-5-5",
+        "bedrock/global.anthropic.claude-haiku-5-5",
+        "bedrock/us.anthropic.claude-haiku-5-5",
+        "bedrock/au.anthropic.claude-haiku-5-5",
+        "bedrock/eu.anthropic.claude-haiku-5-5",
+        "bedrock/jp.anthropic.claude-haiku-5-5",
+    ],
+)
+async def test_chat_completion_strips_temperature_for_claude_haiku_5_5(monkeypatch, model):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
@@ -452,7 +489,23 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_opus_5_
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_5(monkeypatch):
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-sonnet-5",
+        "anthropic/claude-sonnet-5-5",
+        "claude-sonnet-5-5",
+        "vertex_ai/claude-sonnet-5-5",
+        "bedrock/global.anthropic.claude-sonnet-5-5",
+        "bedrock/eu.anthropic.claude-sonnet-5-5",
+        "anthropic/claude-haiku-5-5",
+        "claude-haiku-5-5",
+        "vertex_ai/claude-haiku-5-5",
+        "bedrock/global.anthropic.claude-haiku-5-5",
+        "bedrock/eu.anthropic.claude-haiku-5-5",
+    ],
+)
+async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_5_and_haiku_5_5(monkeypatch, model):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -463,7 +516,7 @@ async def test_chat_completion_does_not_use_extended_thinking_for_claude_sonnet_
         mock_call.return_value = _mock_response()
         handler = litellm_handler.LiteLLMAIHandler()
 
-        await handler.chat_completion(model="claude-sonnet-5", system="sys", user="usr", temperature=0.2)
+        await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
 
     assert "thinking" not in mock_call.call_args.kwargs
     assert "max_tokens" not in mock_call.call_args.kwargs
@@ -536,6 +589,38 @@ async def test_chat_completion_strips_temperature_for_config_no_temperature_mode
     assert "temperature" in mock_call.call_args_list[1].kwargs
     assert "temperature" not in mock_call.call_args_list[2].kwargs
     assert "temperature" not in mock_call.call_args_list[3].kwargs
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_strips_temperature_for_bedrock_kimi_k3_and_glm_5_by_default(monkeypatch):
+    """Verify the shipped defaults drop temperature for every Bedrock Kimi K3 spelling
+    (bare, us., global.) on both routes, since Bedrock rejects temperature for it."""
+    import tomllib
+    from pathlib import Path
+
+    import pr_agent
+
+    with open(Path(pr_agent.__file__).parent / "settings" / "configuration.toml", "rb") as config_file:
+        defaults = tomllib.load(config_file)["config"]["no_temperature_models"]
+    monkeypatch.setattr(
+        litellm_handler, "get_settings", lambda: FakeSettings(config_values={"no_temperature_models": defaults})
+    )
+    monkeypatch.setattr(
+        litellm_handler.LiteLLMAIHandler,
+        "_litellm_supports_temperature",
+        staticmethod(lambda model, custom_llm_provider=None: True),
+    )
+    models = [f"bedrock/{route}{model}" for route in ("", "converse/")
+              for model in ("moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3",
+                            "zai.glm-5")]
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        for model in models:
+            await handler.chat_completion(model=model, system="sys", user="usr", temperature=0.2)
+
+    assert all("temperature" not in call.kwargs for call in mock_call.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -648,9 +733,9 @@ def _timeout_error():
     return openai.APITimeoutError(request=httpx.Request("POST", "http://model.invalid"))
 
 
-def _empty_response(finish_reason):
+def _empty_response(finish_reason, content=""):
     mock = MagicMock()
-    response = {"choices": [{"message": {"content": ""}, "finish_reason": finish_reason}]}
+    response = {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
     mock.usage = None
     mock.__getitem__.side_effect = response.__getitem__
     mock.dict.return_value = response
@@ -678,6 +763,24 @@ def _empty_response(finish_reason):
             ),
             1,
             id="unprocessable-entity",
+        ),
+        pytest.param(
+            openai.AuthenticationError(
+                "invalid credentials",
+                response=httpx.Response(401, request=httpx.Request("POST", "http://model.invalid")),
+                body=None,
+            ),
+            1,
+            id="authentication-error",
+        ),
+        pytest.param(
+            openai.PermissionDeniedError(
+                "access denied",
+                response=httpx.Response(403, request=httpx.Request("POST", "http://model.invalid")),
+                body=None,
+            ),
+            1,
+            id="permission-denied",
         ),
         pytest.param(
             litellm.ContextWindowExceededError("context too long", model="gpt-4o", llm_provider="openai"),
@@ -768,11 +871,12 @@ async def test_chat_completion_timeout_not_retried_same_model_when_disabled(monk
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_length_truncation_does_not_retry_same_model(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_does_not_retry_same_model(monkeypatch, content):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _empty_response("length")
+        mock_call.return_value = _empty_response("length", content)
         handler = litellm_handler.LiteLLMAIHandler()
 
         # Same request and cap reproduce the truncation, so the empty call is not replayed;
@@ -784,7 +888,8 @@ async def test_chat_completion_length_truncation_does_not_retry_same_model(monke
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_length_truncation_retries_same_model_when_enabled(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_retries_same_model_when_enabled(monkeypatch, content):
     monkeypatch.setattr(
         litellm_handler,
         "get_settings",
@@ -792,7 +897,7 @@ async def test_chat_completion_length_truncation_retries_same_model_when_enabled
     )
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _empty_response("length")
+        mock_call.return_value = _empty_response("length", content)
         handler = litellm_handler.LiteLLMAIHandler()
 
         with pytest.raises(litellm_handler.EmptyTruncatedResponseError):
@@ -802,11 +907,12 @@ async def test_chat_completion_length_truncation_retries_same_model_when_enabled
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_empty_content_without_length_still_retries(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\r\n", "\u2003\u3000"])
+async def test_chat_completion_empty_content_without_length_still_retries(monkeypatch, content):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _empty_response("stop")
+        mock_call.return_value = _empty_response("stop", content)
         handler = litellm_handler.LiteLLMAIHandler()
 
         # Without the deterministic "length" signal, an empty response can be transient.
@@ -816,10 +922,10 @@ async def test_chat_completion_empty_content_without_length_still_retries(monkey
     assert mock_call.call_count == litellm_handler.MODEL_RETRIES
 
 
-def _empty_stream(finish_reason):
+def _empty_stream(finish_reason, content=""):
     async def _stream():
         yield SimpleNamespace(
-            choices=[SimpleNamespace(delta=SimpleNamespace(content=""), finish_reason=finish_reason)],
+            choices=[SimpleNamespace(delta=SimpleNamespace(content=content), finish_reason=finish_reason)],
             usage=None,
             _hidden_params=None,
         )
@@ -828,11 +934,12 @@ def _empty_stream(finish_reason):
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_length_truncation_does_not_retry_same_model_streaming(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\n\u2003"])
+async def test_chat_completion_length_truncation_does_not_retry_same_model_streaming(monkeypatch, content):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.side_effect = lambda **_: _empty_stream("length")
+        mock_call.side_effect = lambda **_: _empty_stream("length", content)
         handler = litellm_handler.LiteLLMAIHandler()
         handler.streaming_required_models = ["gpt-4o"]
 
@@ -845,11 +952,12 @@ async def test_chat_completion_length_truncation_does_not_retry_same_model_strea
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_streaming_empty_without_length_still_retries(monkeypatch):
+@pytest.mark.parametrize("content", ["", " \t\r\n", "\u2003\u3000"])
+async def test_chat_completion_streaming_empty_without_length_still_retries(monkeypatch, content):
     monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.side_effect = lambda **_: _empty_stream("stop")
+        mock_call.side_effect = lambda **_: _empty_stream("stop", content)
         handler = litellm_handler.LiteLLMAIHandler()
         handler.streaming_required_models = ["gpt-4o"]
 
@@ -956,15 +1064,16 @@ async def test_get_completion_raises_on_empty_content_for_non_streaming_model():
 
 
 @pytest.mark.asyncio
-async def test_get_completion_returns_non_empty_content_for_non_streaming_model():
+@pytest.mark.parametrize("content", ["ok", " \tvalid answer\u3000\n"])
+async def test_get_completion_returns_non_empty_content_for_non_streaming_model(content):
     handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
     handler._sdk_header_defaults = {"organization": None, "project": None, "custom_headers": {}}
     handler.streaming_required_models = []
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
+        mock_call.return_value = _mock_response(content=content)
 
         resp, finish_reason, response_obj = await handler._get_completion(model="gpt-4o", messages=[])
 
-    assert resp == "ok"
+    assert resp == content
     assert finish_reason == "stop"

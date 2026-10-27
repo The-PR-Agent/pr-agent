@@ -359,6 +359,76 @@ class TestIgnoreFilter:
         assert configured_regex == ['^docs/']
 
 
+class TestStringGlobSetting:
+    """A string `ignore.glob` value holds the same patterns a list holds.
+
+    The value arrives as a string from a host or repo config file and from a CLI
+    argument. Splitting it must not touch the brackets of a pattern, because a
+    bracket expression is part of the glob.
+    """
+
+    @staticmethod
+    def _files(*names):
+        return [type('', (object,), {'filename': name})() for name in names]
+
+    @pytest.mark.parametrize(
+        ('value', 'expected'),
+        [
+            ('*.py', ['*.py']),
+            ('*.py,*.md', ['*.py', '*.md']),
+            ('[*.py]', ['*.py']),
+            ('[*.py,*.md]', ['*.py', '*.md']),
+            ('*.py[0-9]', ['*.py[0-9]']),
+            ('[*.py[0-9]]', ['*.py[0-9]']),
+            ('file[1,2].txt', ['file[1,2].txt']),
+            ('*.py[0-9],*.md', ['*.py[0-9]', '*.md']),
+            ('[a,[b]]', ['a', '[b]']),
+            ('', []),
+            ('[]', []),
+            ('[[]*.txt,*.env', ['[[]*.txt', '*.env']),
+            ('a[b,*.md', ['a[b', '*.md']),
+        ],
+    )
+    def test_string_value_splits_into_patterns(self, value, expected):
+        assert file_filter.split_glob_patterns(value) == expected
+
+    @pytest.mark.parametrize(
+        ('glob', 'ignored'),
+        [
+            ('*.py[0-9]', ['gen.py1', 'gen.py2']),
+            ('[*.py[0-9]]', ['gen.py1', 'gen.py2']),
+            ('file[1,2].txt', ['file1.txt', 'file2.txt']),
+            ('*.py[0-9],*.md', ['gen.py1', 'doc.md']),
+            ('[*.py,*.md]', ['a.py', 'a.md']),
+        ],
+    )
+    def test_string_value_ignores_the_matching_files(self, monkeypatch, glob, ignored):
+        monkeypatch.setattr(global_settings.ignore, 'glob', glob)
+        monkeypatch.setattr(global_settings.ignore, 'regex', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+
+        names = ignored + ['keep.txt']
+        files = self._files(*names)
+
+        kept = [file.filename for file in filter_ignored(files)]
+
+        assert kept == [name for name in names if name not in ignored]
+
+    def test_a_string_value_and_a_list_value_ignore_the_same_files(self, monkeypatch):
+        """The two forms of the setting have to behave the same."""
+        names = ['gen.py1', 'gen.py2', 'keep.py']
+
+        monkeypatch.setattr(global_settings.ignore, 'glob', '*.py[0-9]')
+        monkeypatch.setattr(global_settings.ignore, 'regex', [])
+        monkeypatch.setattr(global_settings.config, 'ignore_language_framework', [])
+        from_string = [file.filename for file in filter_ignored(self._files(*names))]
+
+        monkeypatch.setattr(global_settings.ignore, 'glob', ['*.py[0-9]'])
+        from_list = [file.filename for file in filter_ignored(self._files(*names))]
+
+        assert from_string == from_list == ['keep.py']
+
+
 class TestRenameFiltering:
     """A rename names one file by a destination and a source path.
 
@@ -845,6 +915,14 @@ class TestGlobstarLimits:
         assert (regexes == configured) == over_limit
         logs = _capture_logs(lambda: translate_globs_to_regexes([pattern]))
         assert ("Skipped" in logs) == over_limit
+
+    def test_overlong_glob_is_skipped_before_translation(self):
+        long_pattern = "x" * 20_000
+        regexes = translate_globs_to_regexes([long_pattern, "*.py"])
+
+        assert regexes == [fnmatch.translate("*.py")]
+        logs = _capture_logs(lambda: translate_globs_to_regexes([long_pattern]))
+        assert "Skipped 1 ignore glob(s) longer than" in logs
 
     def test_generated_code_list_has_its_own_allowance(self, monkeypatch):
         monkeypatch.setattr(global_settings.ignore, "glob", list(self.HEAVY))

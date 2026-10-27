@@ -57,7 +57,7 @@ def test_completed_diff_is_reused(filenames, in_request):
     assert [file.filename for file in first] == filenames
     assert second is first
     provider.get_files.assert_called_once_with()
-    provider.repo_obj.compare.assert_called_once_with("base", "head")
+    provider.repo_obj.compare.assert_not_called()
 
 
 def test_empty_request_cache_is_not_reused_by_another_provider(monkeypatch):
@@ -73,7 +73,7 @@ def test_empty_request_cache_is_not_reused_by_another_provider(monkeypatch):
 
     assert [file.filename for file in result] == ["file.py"]
     second.get_files.assert_called_once_with()
-    second.repo_obj.compare.assert_called_once_with("base", "head")
+    second.repo_obj.compare.assert_not_called()
 
 
 def _select_incremental_file(provider, file):
@@ -111,7 +111,9 @@ async def test_auto_commands_rebuild_diff_without_check_runs(monkeypatch, comman
     caches_before_command = []
 
     class Agent:
-        async def handle_request(self, api_url, command):
+        async def handle_request(self, api_url, command, notify=None):
+            if notify:
+                notify()
             assert get_git_provider_with_context(api_url) is provider
             caches_before_command.append((provider.diff_files, context.get("diff_files")))
             if "-i" in command:
@@ -140,7 +142,7 @@ async def test_auto_commands_rebuild_diff_without_check_runs(monkeypatch, comman
     assert caches_before_command == [(None, None), (None, None)]
     assert results[0] is not results[1]
     assert provider.get_files.call_count == 2
-    assert provider.repo_obj.compare.call_count == 2
+    provider.repo_obj.compare.assert_not_called()
     provider.pr.get_files.assert_called_once_with()
 
 
@@ -212,10 +214,12 @@ async def test_auto_commands_use_provider_scope_reset_hook(monkeypatch):
     ("cached", "expected"),
     [
         ([], None),
-        (["cached"], ["cached"]),
+        (["cached"], None),
     ],
 )
-def test_default_command_reset_preserves_empty_only_behavior(cached, expected):
+def test_default_command_reset_drops_the_whole_cache(cached, expected):
+    # Since #4372 the base reset matches GitHub's: a non-empty diff belongs to the
+    # command that computed it and must not leak into the next auto command either.
     provider = SimpleNamespace(diff_files=list(cached))
 
     GitProvider.reset_diff_cache_for_command(provider)
@@ -266,7 +270,7 @@ def test_nonempty_diff_is_rebuilt_for_full_and_incremental_scopes(monkeypatch, i
 
     assert restored is not full
     assert provider.get_files.call_count == 3
-    assert provider.repo_obj.compare.call_count == 3
+    provider.repo_obj.compare.assert_not_called()
     provider.pr.get_files.assert_called_once_with()
 
 
@@ -277,14 +281,8 @@ def test_partial_failure_is_not_cached(monkeypatch, error_type):
     provider = _provider([_file("first.py"), _file("second.py")])
     error = error_type("collection failed")
     provider._get_pr_file_content.side_effect = ["new\n", error]
-    expected = (
-        gp.IncompletePullRequestFilesError
-        if error_type is gp.IncompletePullRequestFilesError
-        else gp.RateLimitExceeded
-    )
-
     with request_cycle_context({}):
-        with pytest.raises(expected):
+        with pytest.raises(error_type):
             provider._get_diff_files()
 
         assert provider.diff_files is None
@@ -295,4 +293,4 @@ def test_partial_failure_is_not_cached(monkeypatch, error_type):
 
     assert [file.filename for file in result] == ["first.py", "second.py"]
     assert provider.get_files.call_count == 2
-    assert provider.repo_obj.compare.call_count == 2
+    provider.repo_obj.compare.assert_not_called()

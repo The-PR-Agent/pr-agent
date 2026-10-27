@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,7 +8,11 @@ import pytest
 from fastapi import HTTPException, Request
 
 from pr_agent.servers import github_app
-from pr_agent.servers.request_body_limit import RequestBodyLimitMiddleware, create_server_app
+from pr_agent.servers.request_body_limit import (
+    RequestBodyLimitMiddleware,
+    create_server_app,
+    get_max_request_body_size,
+)
 
 
 async def _send_request(app, headers, body_chunks):
@@ -50,6 +55,12 @@ async def _send_request(app, headers, body_chunks):
     await app(scope, receive, send)
     status = next(message["status"] for message in sent if message["type"] == "http.response.start")
     return status, receive_count
+
+
+@pytest.mark.parametrize("value", [1.5, math.inf, -math.inf, math.nan])
+def test_rejects_non_integer_body_size_values(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        get_max_request_body_size(value)
 
 
 def test_rejects_content_length_over_limit_before_calling_handler():
@@ -118,6 +129,12 @@ def test_rejects_chunked_body_over_limit_before_calling_handler():
     assert status == 413
     assert receive_count == 2
     assert not handler_called
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_rejects_boolean_body_size_configuration(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        get_max_request_body_size(value)
 
 
 def test_allows_body_at_limit_and_replays_it_to_handler():

@@ -1,6 +1,7 @@
 import json
 
 import boto3
+from botocore.exceptions import ClientError
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
@@ -70,6 +71,25 @@ class AWSSecretsManagerProvider(SecretProvider):
                 SecretId=secret_name,
                 SecretString=secret_value
             )
+        except ClientError as e:
+            if _error_kind(e) == "ResourceNotFoundException":
+                try:
+                    self.client.create_secret(
+                        Name=secret_name,
+                        SecretString=secret_value
+                    )
+                except ClientError as create_err:
+                    # A concurrent first install created it; accept only an identical duplicate.
+                    if (_error_kind(create_err) != "ResourceExistsException"
+                            or self.get_secret(secret_name) != secret_value):
+                        get_logger().error(
+                            f"Failed to create secret in AWS Secrets Manager: {_error_kind(create_err)}"
+                        )
+                        raise
+                return
+
+            get_logger().error(f"Failed to store secret in AWS Secrets Manager: {_error_kind(e)}")
+            raise e
         except Exception as e:
             get_logger().error(f"Failed to store secret in AWS Secrets Manager: {_error_kind(e)}")
             raise e

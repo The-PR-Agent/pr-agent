@@ -23,6 +23,7 @@ from pr_agent.tools.ticket_pr_compliance_check import (
 # every test so values (e.g. JIRA_REQUIREMENTS_FIELD) don't leak between tests.
 _JIRA_KEYS = (
     "JIRA.JIRA_SITE",
+    "JIRA.CLOUD_ID",
     "JIRA.JIRA_API_EMAIL",
     "JIRA.JIRA_API_TOKEN",
     "JIRA.JIRA_REQUIREMENTS_FIELD",
@@ -452,12 +453,35 @@ class TestExtractJiraTickets:
         warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
         assert any("project_keys" in c for c in warning_calls)
 
-    @pytest.mark.parametrize("value", [[], (), "", "   "])
+    @pytest.mark.parametrize("value", [["*"], ("*",), "*", " * ", ["PROJ", "*"]])
+    def test_wildcard_project_keys_look_up_every_key(self, value):
+        """The wildcard ["*"] (default) looks up every key found, preserving shipped behavior."""
+        self._configure_jira()
+        get_settings().set("JIRA.PROJECT_KEYS", value)
+        client = self._fake_client()
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert [call.args[0] for call in client.issue.call_args_list] == ["PROJ-1", "SHA-256"]
+        assert len(result) == 2
+
+    @pytest.mark.parametrize("value", [[], ()])
+    def test_empty_project_keys_disables_lookups(self, value):
+        """An empty list or tuple explicitly disables Jira ticket lookups without logging a warning."""
+        self._configure_jira()
+        get_settings().set("JIRA.PROJECT_KEYS", value)
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_logger:
+            result = extract_jira_tickets("PROJ-1 SHA-256")
+        assert result == []
+        jira_cls.assert_not_called()
+        warning_calls = [str(c) for c in get_logger.return_value.warning.call_args_list]
+        assert not any("no valid entry" in c for c in warning_calls)
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
     def test_unsupplied_project_keys_keep_looking_up_every_key(self, value):
-        """The three ways of supplying nothing: the option missing (covered by the tests
-        above), the shipped empty list, and a blank top-level string, since
-        `jira__project_keys=""` is how a shell spells an unset environment variable. All
-        keep today's behaviour."""
+        """When jira.project_keys is unconfigured (None) or set to a blank top-level string
+        (since `jira__project_keys=""` is how a shell spells an unset environment variable),
+        it defaults to the wildcard behavior and looks up every key."""
         self._configure_jira()
         get_settings().set("JIRA.PROJECT_KEYS", value)
         client = self._fake_client()
@@ -485,8 +509,9 @@ class TestExtractJiraTickets:
 class TestGetJiraClient:
     """Cloud client construction: site-name -> base URL, email+token auth, v2 pin."""
 
-    def _set(self, site=None, email=None, token=None):
+    def _set(self, site=None, email=None, token=None, cloud_id=None):
         get_settings().set("JIRA.JIRA_SITE", site if site is not None else "")
+        get_settings().set("JIRA.CLOUD_ID", cloud_id if cloud_id is not None else "")
         get_settings().set("JIRA.JIRA_API_EMAIL", email if email is not None else "")
         get_settings().set("JIRA.JIRA_API_TOKEN", token if token is not None else "")
 
@@ -499,6 +524,64 @@ class TestGetJiraClient:
             url="https://acme.atlassian.net", username="me@acme.com",
             password="token123", api_version="2",
         )
+
+    def test_scoped_token_builds_gateway_url(self):
+        self._set(
+            site="acme",
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        with patch("atlassian.Jira") as jira_cls:
+            _get_jira_client()
+        jira_cls.assert_called_once_with(
+            url="https://api.atlassian.com/ex/jira/35273b54-3f06-40d2-880f-dd28cf8daafa",
+            username="me@acme.com",
+            password="token123",
+            api_version="2",
+        )
+
+    def test_scoped_token_keeps_site_ticket_url(self):
+        self._set(
+            site="acme",
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        client = MagicMock()
+        client.issue.return_value = {"fields": {"summary": "Title", "description": "Body", "labels": []}}
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("ABC-123")
+        assert result[0]["ticket_url"] == "https://acme.atlassian.net/browse/ABC-123"
+
+    def test_numeric_site_keeps_ticket_url(self):
+        self._set(site=123, email="me@acme.com", token="token123")
+        client = MagicMock()
+        client.issue.return_value = {"fields": {"summary": "Title", "description": "Body", "labels": []}}
+        with patch("atlassian.Jira", return_value=client):
+            result = extract_jira_tickets("ABC-123")
+        assert result[0]["ticket_url"] == "https://123.atlassian.net/browse/ABC-123"
+
+    @pytest.mark.parametrize("cloud_id", ["not-a-uuid", 123, True])
+    def test_invalid_cloud_id_skips_lookup(self, cloud_id):
+        self._set(site="acme", cloud_id=cloud_id, email="me@acme.com", token="token123")
+        with patch("atlassian.Jira") as jira_cls, \
+                patch("pr_agent.tools.ticket_pr_compliance_check.get_logger") as get_log:
+            assert _get_jira_client() is None
+        jira_cls.assert_not_called()
+        assert "Invalid jira.cloud_id" in get_log.return_value.warning.call_args.args[0]
+
+    @pytest.mark.parametrize("site", ["", "bad.site"])
+    def test_cloud_id_still_requires_a_valid_site(self, site):
+        self._set(
+            site=site,
+            cloud_id="35273b54-3f06-40d2-880f-dd28cf8daafa",
+            email="me@acme.com",
+            token="token123",
+        )
+        with patch("atlassian.Jira") as jira_cls:
+            assert _get_jira_client() is None
+        jira_cls.assert_not_called()
 
     def test_missing_atlassian_dependency_returns_none_with_install_hint(self):
         self._set(site="acme", email="me@acme.com", token="token123")

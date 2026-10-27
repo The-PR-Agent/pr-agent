@@ -2,6 +2,7 @@ import asyncio
 import copy
 import math
 import re
+import sys
 import traceback
 from urllib.parse import urlparse
 
@@ -13,6 +14,50 @@ from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
+
+# A `#N` that is the whole text of a link (HTML anchor or Markdown), e.g. Dependabot's changelog links.
+_HASH_LINK_TEXT_PATTERN = re.compile(
+    r"""<a\b(?:[^"'<>]|"[^"]*"|'[^']*')*>\s*(#\d+)\s*</a\s*>"""
+    r"|\[\s*(#\d+)\s*\](?:\(|\[[^\]]*\])",
+    re.IGNORECASE,
+)
+
+
+def _html_comment_spans(text):
+    """Spans of closed HTML comments, found in one left-to-right pass."""
+    spans, pos = [], 0
+    while (start := text.find("<!--", pos)) != -1:
+        end = text.find("-->", start + 4)
+        if end == -1:
+            break
+        end += 3
+        spans.append((start, end))
+        pos = end
+    return spans
+
+
+def _non_reference_hash_starts(text, comment_spans):
+    """Offsets of hashes inside comments or forming the whole text of a link."""
+    starts = {i for start, end in comment_spans for i in range(start, end) if text[i] == "#"}
+    for m in _HASH_LINK_TEXT_PATTERN.finditer(text):
+        starts.add(m.start(1) if m.group(1) else m.start(2))
+    return starts
+
+
+def _is_non_reference_hash(text, start, end, non_reference_starts):
+    """True when a bare `#N` at [start, end) is markup, a colour, or glued to a word, not an issue reference."""
+    if start in non_reference_starts:
+        return True
+    # Glued to a word on either side: `issue#12`, `#0a0a0a`. A `owner/repo#N` tail is still a reference.
+    if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+        if not re.search(r"/[A-Za-z0-9._-]+$", text[max(0, start - 200):start]):
+            return True
+    if end < len(text) and (text[end].isalnum() or text[end] == "_"):
+        return True
+    # Tailwind arbitrary value: `bg-[#121212]`, `dark:bg-[#0a0a0a]`.
+    if start >= 2 and text[start - 1] == "[" and (text[start - 2].isalnum() or text[start - 2] in "_-"):
+        return True
+    return False
 
 
 def _github_ticket_pattern(base_url_html):
@@ -75,6 +120,10 @@ JIRA_API_VERSION = "2"
 # arbitrary host. The name must be a single DNS label (letters, digits, hyphens) so it
 # cannot contain '.', '/', ':', '@' etc. that would let it escape *.atlassian.net.
 JIRA_SITE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+JIRA_CLOUD_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 # A Jira project key as configured in jira.project_keys: the "<PROJECT>" in PROJECT-123.
 # Bounded like the prefix in find_jira_tickets (2-10 letters) so an entry can only ever be
@@ -88,41 +137,54 @@ JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z]{2,10}$")
 
 def _jira_cloud_base_url():
     """
-    Return the Jira Cloud base URL built from the configured site name, or None if the
-    site is missing or invalid. Building the URL from a validated site name (rather than
-    accepting a free-form base URL from settings) ensures the authenticated request can
-    only ever go to https://<site>.atlassian.net, even if settings were overridden by
-    untrusted repo configuration.
+    Return the Jira Cloud gateway URL for a valid cloud ID, or the site URL for classic
+    tokens. A validated site name is used rather than a free-form base URL, ensuring
+    authenticated requests stay on Atlassian-controlled hosts even if settings were
+    overridden by untrusted repository configuration.
     """
     site = get_settings().get("JIRA.JIRA_SITE", None)
+    cloud_id = get_settings().get("JIRA.CLOUD_ID", None)
+    if cloud_id:
+        if not isinstance(cloud_id, str) or not JIRA_CLOUD_ID_PATTERN.fullmatch(cloud_id.strip()):
+            get_logger().warning(
+                "Invalid jira.cloud_id; expected a UUID. Skipping Jira ticket lookup.")
+            return None
+    if cloud_id is not None and not isinstance(cloud_id, str):
+        get_logger().warning(
+            "Invalid jira.cloud_id; expected a UUID. Skipping Jira ticket lookup.")
+        return None
+    site = str(site or "").strip()
     if not site:
         return None
-    site = str(site).strip()
-    if not JIRA_SITE_PATTERN.match(site):
+    if not JIRA_SITE_PATTERN.fullmatch(site):
         get_logger().warning(
             f"Invalid jira_site '{site}'; expected a Jira Cloud site name like 'mycompany' "
             f"(the '<site>' in https://<site>.atlassian.net). Skipping Jira ticket lookup.")
         return None
+    if cloud_id:
+        return f"https://api.atlassian.com/ex/jira/{cloud_id.strip()}"
     return f"https://{site}.atlassian.net"
 
 
 def _jira_project_keys():
     """
     Return the configured jira.project_keys allowlist as a set of project keys, or None
-    when nothing was supplied (look up every key found).
+    when a wildcard was supplied (look up every key found).
 
-    Only three values count as "nothing was supplied": the option missing entirely, the
-    shipped empty list, and a top-level string that is blank, the last because
-    `jira__project_keys=""` is how a shell spells an unset environment variable.
+    An unconfigured setting (None) or a top-level string that is blank (the shell spelling
+    of an unset environment variable, `jira__project_keys=""`) defaults to the wildcard
+    behaviour, returning None.
+    A wildcard ("*") in the list or string means look up every key found, returning None.
+    An empty list or container disables Jira ticket lookups, returning an empty set.
 
     Everything else is a supplied value and is judged on its entries. Entries that are not
-    plain upper-case project keys, including a blank one (so `[""]` is a malformed
-    override rather than a second spelling of the default), are ignored with a warning,
-    and a supplied value left with no valid entry yields an empty set, which drops every
-    key. So does a value that is not a list at all (a boolean or number from a YAML or CLI
-    override). A typo fails closed instead of silently widening the lookup to every
-    key-shaped string. Accepts a list or a comma-separated string, the latter for
-    environment-variable overrides (jira__project_keys="PROJ,OPS").
+    plain upper-case project keys (or "*"), including a blank one (so `[""]` is a malformed
+    override), are ignored with a warning, and a supplied value left with no valid entry
+    yields an empty set, which drops every key. So does a value that is not a list at all
+    (a boolean or number from a YAML or CLI override). A typo fails closed instead of
+    silently widening the lookup to every key-shaped string. Accepts a list or a
+    comma-separated string, the latter for environment-variable overrides
+    (jira__project_keys="PROJ,OPS").
     """
     configured = get_settings().get("JIRA.PROJECT_KEYS", None)
     if configured is None:
@@ -139,13 +201,15 @@ def _jira_project_keys():
             "skipping Jira ticket lookup until it is fixed")
         return set()
     if not configured:
-        # The shipped default. An empty container carries no entry to be wrong about.
-        return None
+        # An empty container disables Jira ticket lookups.
+        return set()
     allowed = set()
     for index, item in enumerate(configured):
         # Only strings are candidates: a TOML/YAML boolean or null in the list must not
         # be stringified into a key-shaped label ("TRUE", "NONE") that then filters.
         key = item.strip() if isinstance(item, str) else item
+        if key == "*":
+            return None
         if not isinstance(key, str) or not JIRA_PROJECT_KEY_PATTERN.match(key):
             # The entry is named by position and type, never quoted back. Its content is
             # configuration this tool does not control: it can be long, hold a secret
@@ -196,11 +260,11 @@ def find_jira_tickets(text):
 def _get_jira_client():
     """
     Build a Jira Cloud client from the [jira] settings. Returns None if Jira is not
-    configured. Only Jira Cloud is supported: the base URL is derived from a validated
-    site name (jira_site) so untrusted repo configuration cannot redirect the
-    authenticated request to an arbitrary host. Cloud authenticates with the account
-    email + API token. The REST API version is pinned via JIRA_API_VERSION (see its
-    definition for why).
+    configured. With a valid cloud ID, scoped or service-account tokens use the Atlassian
+    API gateway; otherwise the base URL is derived from the validated site name so
+    untrusted repository configuration cannot redirect the authenticated request to an
+    arbitrary host. Cloud authenticates with the account email and API token. The REST
+    API version is pinned via JIRA_API_VERSION (see its definition for why).
     """
     site = get_settings().get("JIRA.JIRA_SITE", None)
     api_email = get_settings().get("JIRA.JIRA_API_EMAIL", None)
@@ -263,8 +327,9 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
 
     # Optional allowlist: key-shaped false positives like "SHA-256" or "UTF-8" match the
     # regex but aren't real Jira keys. Filtering by known project prefixes here means they
-    # never consume one of the MAX_JIRA_FETCH_ATTEMPTS lookups below. Empty keeps today's
-    # behaviour; a supplied but invalid allowlist drops every key (see _jira_project_keys).
+    # never consume one of the MAX_JIRA_FETCH_ATTEMPTS lookups below. Wildcard ["*"] keeps
+    # unfiltered behaviour; an empty list disables lookup; a supplied but invalid allowlist
+    # drops every key (see _jira_project_keys).
     allowed_projects = _jira_project_keys()
     if allowed_projects is not None:
         # Partitioned in one pass: the candidate list is not capped until lookups begin,
@@ -285,7 +350,12 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     if jira_client is None:
         return []
 
-    base_url = _jira_cloud_base_url() or ""
+    site = str(get_settings().get("JIRA.JIRA_SITE", "") or "").strip()
+    ticket_base_url = (
+        f"https://{site}.atlassian.net"
+        if JIRA_SITE_PATTERN.fullmatch(site)
+        else ""
+    )
     # Custom field that holds acceptance criteria / requirements. The field id is
     # instance-specific (e.g. "customfield_10127"), so it must be configured; empty
     # means no requirements are extracted.
@@ -328,7 +398,7 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
         labels = fields.get("labels", []) or []
         tickets_content.append({
             "ticket_id": key,
-            "ticket_url": f"{base_url}/browse/{key}" if base_url else "",
+            "ticket_url": f"{ticket_base_url}/browse/{key}" if ticket_base_url else "",
             "title": fields.get("summary", ""),
             "body": body,
             "requirements": requirements,
@@ -389,6 +459,22 @@ ASANA_TASK_OPT_FIELDS = "gid,name,notes,permalink_url,tags.name"
 DEFAULT_ASANA_REQUEST_TIMEOUT = 10
 MAX_ASANA_REQUEST_TIMEOUT = 60
 MAX_ASANA_TICKETS = 3
+LINEAR_API_URL = "https://api.linear.app/graphql"
+LINEAR_ISSUE_QUERY = """
+query PrAgentLinearIssue($id: String!) {
+  issue(id: $id) {
+    id identifier url title description
+    labels(first: 20) { nodes { name } }
+  }
+}
+"""
+DEFAULT_LINEAR_REQUEST_TIMEOUT = 10
+MAX_LINEAR_REQUEST_TIMEOUT = 60
+MAX_LINEAR_TICKETS = 3
+_LINEAR_ISSUE_PATH_PATTERN = re.compile(
+    r"/([A-Za-z0-9_-]+)/issue/([A-Za-z][A-Za-z0-9]*-[0-9]+)(?:/[^/]+)?/?"
+)
+_LINEAR_URL_PATTERN = re.compile(r"(?<![\w@/])https://linear\.app/[^\s<>\[\]()`\"']+")
 MAX_GITHUB_TICKETS = 3
 MAX_GITHUB_TICKET_LOOKUPS = 30
 MAX_SUB_ISSUES_PER_TICKET = 10
@@ -630,6 +716,113 @@ async def _fetch_asana_ticket_contents(
     return tickets_content
 
 
+def _get_linear_issue_identity(ticket_url: str) -> tuple[str, str]:
+    parsed = urlparse(ticket_url)
+    match = _LINEAR_ISSUE_PATH_PATTERN.fullmatch(parsed.path)
+    if parsed.scheme != "https" or parsed.netloc != "linear.app" or not match or parsed.params:
+        raise ValueError("Invalid Linear issue URL")
+    return match.group(1).lower(), match.group(2).upper()
+
+
+def _get_linear_issue_identifier(ticket_url: str) -> str:
+    return _get_linear_issue_identity(ticket_url)[1]
+
+
+def find_linear_tickets(text: str | None) -> list:
+    """Extract canonical Linear issue links, preserving first-seen workspace/issue order."""
+    if not isinstance(text, str):
+        return []
+    tickets = []
+    seen = set()
+    for match in _LINEAR_URL_PATTERN.finditer(text):
+        ticket_url = match.group(0).rstrip(".,;:!?")
+        try:
+            identity = _get_linear_issue_identity(ticket_url)
+        except ValueError:
+            continue
+        if identity not in seen:
+            seen.add(identity)
+            tickets.append(ticket_url)
+    return tickets
+
+
+def _get_linear_request_timeout() -> float:
+    timeout = get_settings().get("linear.request_timeout", DEFAULT_LINEAR_REQUEST_TIMEOUT)
+    try:
+        timeout = float(timeout)
+    except (OverflowError, TypeError, ValueError):
+        return DEFAULT_LINEAR_REQUEST_TIMEOUT
+    if not math.isfinite(timeout) or timeout <= 0:
+        return DEFAULT_LINEAR_REQUEST_TIMEOUT
+    return min(timeout, MAX_LINEAR_REQUEST_TIMEOUT)
+
+
+async def _fetch_linear_ticket_content(session, ticket_url: str, max_body_characters: int) -> dict:
+    identity = _get_linear_issue_identity(ticket_url)
+    async with session.post(
+        LINEAR_API_URL,
+        json={"query": LINEAR_ISSUE_QUERY, "variables": {"id": identity[1]}},
+        allow_redirects=False,
+    ) as response:
+        if response.status != 200:
+            raise RuntimeError(f"Linear API returned HTTP {response.status}")
+        payload = await response.json()
+    if not isinstance(payload, dict) or payload.get("errors"):
+        raise ValueError("Linear API returned an invalid or failed GraphQL response")
+    data = payload.get("data")
+    issue = data.get("issue") if isinstance(data, dict) else None
+    if not isinstance(issue, dict) or not isinstance(issue.get("id"), str) or not issue["id"]:
+        raise ValueError("Linear API response did not contain issue data")
+    canonical_url = issue.get("url")
+    if (not isinstance(canonical_url, str) or not isinstance(issue.get("identifier"), str)
+            or issue["identifier"].upper() != identity[1]
+            or _get_linear_issue_identity(canonical_url) != identity):
+        raise ValueError("Linear API returned a different issue identity")
+    body = issue.get("description") if isinstance(issue.get("description"), str) else ""
+    if len(body) > max_body_characters:
+        body = body[:max_body_characters] + "..."
+    labels = issue.get("labels")
+    nodes = labels.get("nodes") if isinstance(labels, dict) else None
+    names = [node["name"] for node in nodes[:20]
+             if isinstance(node, dict) and isinstance(node.get("name"), str)] if isinstance(nodes, list) else []
+    title = issue.get("title")
+    return {
+        "ticket_id": identity[1],
+        "ticket_url": canonical_url,
+        "title": title if isinstance(title, str) and title else f"Linear issue {identity[1]}",
+        "body": body,
+        "labels": ", ".join(names),
+    }
+
+
+async def _fetch_linear_ticket_contents(ticket_urls: list, max_tickets: int, max_body_characters: int) -> list:
+    if not ticket_urls or max_tickets <= 0:
+        return []
+    api_token = get_settings().get("linear.api_token", "")
+    if not isinstance(api_token, str) or not api_token.strip():
+        get_logger().warning("Linear issue references found, but linear.api_token is not configured")
+        return []
+    timeout = aiohttp.ClientTimeout(total=_get_linear_request_timeout())
+    async with aiohttp.ClientSession(headers={"Authorization": api_token.strip()}, timeout=timeout) as session:
+        async def fetch_ticket(ticket_url):
+            try:
+                return await _fetch_linear_ticket_content(session, ticket_url, max_body_characters)
+            except Exception:
+                # HTTP exceptions can contain credentials or response bodies; keep warnings payload-free.
+                get_logger().warning("Failed to fetch Linear issue; skipping ticket context")
+                return None
+
+        tasks = [asyncio.create_task(fetch_ticket(url)) for url in ticket_urls[:min(max_tickets, MAX_LINEAR_TICKETS)]]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+    return [ticket for ticket in results if ticket is not None]
+
+
 def _get_user_description_for_asana(git_provider) -> str:
     get_user_description = getattr(git_provider, "get_user_description", None)
     if not callable(get_user_description):
@@ -642,17 +835,31 @@ def _get_user_description_for_asana(git_provider) -> str:
     return description if isinstance(description, str) else ""
 
 
-def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_tickets=MAX_GITLAB_TICKETS):
-    """Extract ``(project_path, issue_iid)`` references from a GitLab MR description."""
+def _gitlab_web_origin(parsed_url):
+    """Return the HTTP(S) origin, or None for an unusable authority."""
+    try:
+        scheme = parsed_url.scheme.lower()
+        hostname = parsed_url.hostname
+        port = parsed_url.port
+        if scheme not in ("http", "https") or not hostname:
+            return None
+        return scheme, hostname.lower(), port if port is not None else (443 if scheme == "https" else 80)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_tickets=MAX_GITLAB_TICKETS,
+                                     *, source="description"):
+    """Extract ``(project_path, issue_iid)`` references from GitLab MR metadata."""
     if not isinstance(pr_description, str) or not pr_description:
         return []
 
     try:
         provider_url = urlparse(gitlab_url or "")
-        provider_host = provider_url.hostname or ""
+        provider_origin = _gitlab_web_origin(provider_url)
         provider_base_path = provider_url.path.rstrip("/")
     except (AttributeError, TypeError, ValueError):
-        provider_host = ""
+        provider_origin = None
         provider_base_path = ""
 
     references = []
@@ -663,7 +870,7 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
                 parsed_ticket_url = urlparse(match.group("url").rstrip(".:!?'\\\"]}`*"))
             except ValueError:
                 continue
-            if not provider_host or parsed_ticket_url.hostname != provider_host:
+            if provider_origin is None or _gitlab_web_origin(parsed_ticket_url) != provider_origin:
                 continue
 
             ticket_path = parsed_ticket_url.path
@@ -693,14 +900,42 @@ def extract_gitlab_ticket_references(pr_description, repo_path, gitlab_url, max_
             references.append(reference)
 
     if len(references) > max_tickets:
-        get_logger().info(f"Too many GitLab tickets found in MR description: {len(references)}")
+        get_logger().info(f"Too many GitLab tickets found in MR {source}: {len(references)}")
     return references[:max_tickets]
 
 
+def _github_issue_lookup_url(url):
+    """Avoid passing oversized zero-padded numbers to the provider's int() parser."""
+    parts = url.rsplit("/issues/", 1)
+    if len(parts) != 2:
+        return url
+    number = parts[1]
+    max_digits = sys.get_int_max_str_digits()
+    if max_digits and len(number) > max_digits:
+        normalized = number.lstrip("0") or "0"
+        if len(normalized) <= max_digits:
+            return f"{parts[0]}/issues/{normalized}"
+    return url
+
+
+def _github_issue_identity(url):
+    """Identify an issue across equivalent URL spellings without changing its original URL."""
+    try:
+        parsed = urlparse(url)
+        repo_path, number = parsed.path.rsplit("/issues/", 1)
+        port = parsed.port
+        if parsed.scheme == "https" and port in (None, 443):
+            port = 443
+        return parsed.scheme, parsed.hostname, port, repo_path.lower(), number.lstrip("0") or "0"
+    except (AttributeError, TypeError, ValueError):
+        return url
+
+
 def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url_html='https://github.com',
-                                             max_tickets=MAX_GITHUB_TICKETS):
+                                             max_tickets=MAX_GITHUB_TICKETS, *, use_description_regex=True,
+                                             source="description"):
     """
-    Extract all ticket links from PR description
+    Extract ticket links, optionally using the description-only custom regex.
     """
     # Preserve first-seen order while de-duplicating, so the cap below selects a
     # deterministic subset (a plain set would slice an arbitrary, run-varying one).
@@ -708,14 +943,16 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
     github_tickets = []
 
     def _add(url):
-        if url not in seen:
-            seen.add(url)
+        url = _github_issue_lookup_url(url)
+        identity = _github_issue_identity(url)
+        if identity not in seen:
+            seen.add(identity)
             github_tickets.append(url)
 
     try:
         custom_pattern = None
         custom_matches = []
-        custom_regex = get_settings().get("config.description_issue_regex", "")
+        custom_regex = get_settings().get("config.description_issue_regex", "") if use_description_regex else ""
         if custom_regex:
             try:
                 custom_pattern = re.compile(custom_regex)
@@ -727,7 +964,9 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                 custom_pattern = None
 
         candidates = []
-        explicit_spans = []
+        comment_spans = _html_comment_spans(pr_description)
+        explicit_spans = list(comment_spans)
+        non_reference_starts = _non_reference_hash_starts(pr_description, comment_spans)
         for match in _github_ticket_pattern(base_url_html).finditer(pr_description):
             if match[1]:  # Full URL match
                 candidates.append((match.start(), match[1]))
@@ -739,6 +978,8 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                 explicit_spans.append(match.span())
             elif custom_pattern is None:  # Default #123 format
                 issue_number = match[6][1:]
+                if _is_non_reference_hash(pr_description, match.start(), match.end(), non_reference_starts):
+                    continue
                 if (issue_number.isdigit() and repo_path
                         and len(issue_number) <= MAX_SHORTHAND_ISSUE_DIGITS):
                     candidates.append((match.start(),
@@ -779,10 +1020,10 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
             _add(url)
 
         if len(github_tickets) > max_tickets:
-            get_logger().info(f"Too many tickets found in PR description: {len(github_tickets)}")
+            get_logger().info(f"Too many tickets found in PR {source}: {len(github_tickets)}")
             github_tickets = github_tickets[:max_tickets]
     except Exception as e:
-        get_logger().error(f"Error extracting tickets error= {e}",
+        get_logger().error(f"Error extracting tickets from PR {source}: {e}",
                            artifact={"traceback": traceback.format_exc()})
 
     return github_tickets
@@ -843,7 +1084,7 @@ def _normalize_github_host(url):
         host = urlparse(url or "").hostname or ""
     except (AttributeError, TypeError, ValueError):
         return ""
-    return host[len("api."):] if host.startswith("api.") else host
+    return host.removeprefix("api.")
 
 
 def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache):
@@ -913,6 +1154,14 @@ def _provider_supports(git_provider, capability: str) -> bool:
 async def extract_tickets(git_provider):
     try:
         user_description = _get_user_description_for_asana(git_provider)
+        linear_ticket_urls = find_linear_tickets(user_description)
+        try:
+            linear_tickets_content = await _fetch_linear_ticket_contents(
+                linear_ticket_urls, MAX_LINEAR_TICKETS, MAX_TICKET_CHARACTERS,
+            )
+        except Exception:
+            get_logger().warning("Failed to initialize Linear issue fetching; skipping ticket context")
+            linear_tickets_content = []
         asana_ticket_urls = find_asana_tickets(user_description)
         try:
             asana_tickets_content = await _fetch_asana_ticket_contents(
@@ -933,21 +1182,36 @@ async def extract_tickets(git_provider):
             branch_tickets = extract_ticket_links_from_branch_name(
                 branch_name, git_provider.repo, git_provider.base_url_html
             )
+            title = _get_pr_title(git_provider)
+            title_tickets = extract_ticket_links_from_pr_description(
+                title if isinstance(title, str) else "", git_provider.repo, git_provider.base_url_html,
+                max_tickets=MAX_GITHUB_TICKET_LOOKUPS, use_description_regex=False, source="title",
+            )
             seen = set()
             merged = []
-            for link in description_tickets + branch_tickets:
-                if link not in seen:
-                    seen.add(link)
+            for link in description_tickets + branch_tickets + title_tickets:
+                link = _github_issue_lookup_url(link)
+                identity = _github_issue_identity(link)
+                if identity not in seen:
+                    seen.add(identity)
                     merged.append(link)
 
             if len(merged) > MAX_GITHUB_TICKETS:
-                get_logger().info(f"Too many GitHub tickets (description + branch): {len(merged)}")
+                get_logger().info(f"Too many GitHub tickets (description + branch + title): {len(merged)}")
             # Bound lookups separately so skipped PRs do not consume the issue budget.
             tickets = merged[:MAX_GITHUB_TICKET_LOOKUPS]
             tickets_content = []
             repo_obj_cache = {}
 
             if tickets:
+                issue_cache = {}
+
+                def get_issue_once(ticket_url, repo_name, repo_obj, issue_number):
+                    # Reuse successful reads shared by direct references and sub-issues.
+                    key = (_normalize_github_host(ticket_url), repo_name.lower(), issue_number)
+                    if key not in issue_cache:
+                        issue_cache[key] = git_provider.get_issue_content(repo_obj, issue_number)
+                    return issue_cache[key]
 
                 for ticket in tickets:
                     if len(tickets_content) >= MAX_GITHUB_TICKETS:
@@ -958,7 +1222,7 @@ async def extract_tickets(git_provider):
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
                         if repo_obj is None:
                             continue
-                        issue_main = git_provider.get_issue_content(repo_obj, original_issue_number)
+                        issue_main = get_issue_once(ticket, repo_name, repo_obj, original_issue_number)
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
@@ -986,7 +1250,7 @@ async def extract_tickets(git_provider):
                                                                         repo_obj_cache)
                                 if sub_repo_obj is None:
                                     continue
-                                sub_issue = git_provider.get_issue_content(sub_repo_obj, sub_issue_number)
+                                sub_issue = get_issue_once(sub_issue_url, sub_repo, sub_repo_obj, sub_issue_number)
 
                                 sub_body = sub_issue.body or ""
                                 if len(sub_body) > MAX_TICKET_CHARACTERS:
@@ -1034,21 +1298,46 @@ async def extract_tickets(git_provider):
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
             add_jira_tickets(git_provider, tickets_content)
+            tickets_content.extend(linear_tickets_content)
             return tickets_content
 
         elif _provider_supports(git_provider, "supports_issue_reference_tickets"):
-            references = extract_gitlab_ticket_references(
+            description_references = extract_gitlab_ticket_references(
                 user_description,
                 git_provider.id_project,
                 git_provider.gitlab_url,
                 max_tickets=MAX_GITLAB_TICKET_LOOKUPS,
             )
+            title = _get_pr_title(git_provider)
+            title_references = extract_gitlab_ticket_references(
+                title if isinstance(title, str) else "", git_provider.id_project, git_provider.gitlab_url,
+                max_tickets=MAX_GITLAB_TICKET_LOOKUPS, source="title",
+            )
+            references = []
+            seen = set()
+            for project_path, issue_iid in description_references + title_references:
+                key = (project_path.casefold(), issue_iid)
+                if key not in seen:
+                    seen.add(key)
+                    references.append((project_path, issue_iid))
             tickets_content = []
-            for project_path, issue_iid in references:
+            own_project = str(getattr(git_provider, "id_project", "") or "")
+            for project_path, issue_iid in references[:MAX_GITLAB_TICKET_LOOKUPS]:
                 try:
-                    # Only the issue manager is needed; avoid fetching unused project metadata.
-                    project = git_provider.gl.projects.get(project_path, lazy=True)
+                    is_own_project = project_path.casefold() == own_project.casefold()
+                    if is_own_project:
+                        # Only the issue manager is needed; avoid fetching unused project metadata.
+                        project = git_provider.gl.projects.get(project_path, lazy=True)
+                    else:
+                        project = git_provider.get_sibling_repo(project_path)
+                        if project is None:
+                            continue
                     issue = project.issues.get(issue_iid)
+                    if not is_own_project and getattr(issue, "confidential", False):
+                        get_logger().warning(
+                            f"Ignoring confidential cross-project GitLab issue: {project_path}#{issue_iid}"
+                        )
+                        continue
 
                     issue_body = issue.description or ""
                     if len(issue_body) > MAX_TICKET_CHARACTERS:
@@ -1076,10 +1365,15 @@ async def extract_tickets(git_provider):
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
             add_jira_tickets(git_provider, tickets_content)
+            tickets_content.extend(linear_tickets_content)
             return tickets_content
 
         elif _provider_supports(git_provider, "supports_linked_work_item_tickets"):
-            tickets_info = git_provider.get_linked_work_items()
+            try:
+                tickets_info = git_provider.get_linked_work_items()
+            except Exception:
+                get_logger().warning("Failed to get linked work items; continuing without them")
+                tickets_info = []
             tickets_content = []
             for ticket in tickets_info:
                 try:
@@ -1115,6 +1409,7 @@ async def extract_tickets(git_provider):
             tickets_content.extend(asana_tickets_content)
             # Provider-agnostic Jira lookup (see add_jira_tickets); no-op when Jira is unconfigured.
             add_jira_tickets(git_provider, tickets_content)
+            tickets_content.extend(linear_tickets_content)
             return tickets_content
 
         # Providers with no ticket integration of their own still reach Jira: keys are
@@ -1123,7 +1418,8 @@ async def extract_tickets(git_provider):
         # MAX_TICKETS, as on the provider-specific paths. Returning None when nothing at
         # all was found keeps the "provider unsupported" contract intact.
         tickets_content = add_jira_tickets(git_provider, list(asana_tickets_content))
-        if asana_ticket_urls or tickets_content:
+        tickets_content.extend(linear_tickets_content)
+        if asana_ticket_urls or linear_ticket_urls or tickets_content:
             return tickets_content
 
     except Exception as e:
@@ -1144,12 +1440,18 @@ async def extract_and_cache_pr_tickets(git_provider, vars):
         tickets_content = await extract_tickets(git_provider)
 
         if tickets_content:
-            # Store main tickets along with their sub-issues (main ticket first so prompt clipping preserves the parent)
+            # Preserve directly linked tickets before expanded sub-issues when prompt clipping keeps a prefix.
+            related_tickets.extend(tickets_content)
             for ticket in tickets_content:
-                related_tickets.append(ticket)
                 if "sub_issues" in ticket and ticket["sub_issues"]:
+                    parent_url = ticket.get("ticket_url")
                     for sub_issue in ticket["sub_issues"]:
-                        related_tickets.append(sub_issue)  # Add sub-issues content
+                        child = sub_issue.copy()
+                        if isinstance(parent_url, str) and parent_url.strip():
+                            child["parent_ticket_url"] = parent_url
+                            if ticket.get("title"):
+                                child["parent_ticket_title"] = ticket["title"]
+                        related_tickets.append(child)
 
             get_logger().info("Extracted tickets and sub-issues from PR description",
                               artifact={"tickets": related_tickets})

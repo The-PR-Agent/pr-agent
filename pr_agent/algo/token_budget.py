@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal
 
 from jinja2 import StrictUndefined
 from jinja2.sandbox import SandboxedEnvironment
@@ -584,6 +585,7 @@ class AttemptTokenBudget:
         image_path: str | None = None,
         keep: Literal["prefix", "suffix"] = "prefix",
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
+        require_full_text: bool = False,
     ) -> FittedPrompt:
         """Fit one optional prompt field and verify the exact normalized request."""
         if keep not in {"prefix", "suffix"}:
@@ -608,6 +610,9 @@ class AttemptTokenBudget:
         full_prompt = prepare(optional_text)
         if full_prompt.input_tokens <= input_limit:
             return full_prompt
+
+        if require_full_text:
+            raise FallbackEligibleError(f"The required prompt exceeds the token limit for {self.model}")
 
         empty_prompt = prepare("")
         if empty_prompt.input_tokens > input_limit:
@@ -680,6 +685,7 @@ class AttemptTokenBudget:
         image_path: str | None = None,
         keep: Literal["prefix", "suffix"] = "prefix",
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
+        require_full_text: bool = False,
     ) -> FittedPrompt:
         """Fit one prompt variable without mutating retry-shared state."""
         environment = SandboxedEnvironment(undefined=StrictUndefined)
@@ -701,6 +707,7 @@ class AttemptTokenBudget:
             image_path=image_path,
             keep=keep,
             truncation_marker=truncation_marker,
+            require_full_text=require_full_text,
         )
 
     def matches(self, model: str, source_token_handler: object) -> bool:

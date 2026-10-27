@@ -617,6 +617,20 @@ class TestGetMaxTokens:
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         assert get_max_tokens(model) == 1048576
 
+    @pytest.mark.parametrize("model", [
+        "gemini/gemini-4-argon",
+        "vertex_ai/gemini-4-argon",
+    ])
+    def test_gemini_4_x_models_max_tokens(self, monkeypatch, model):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        assert get_max_tokens(model) == 1048576
+
     def test_bedrock_mantle_grok_4_3_model_max_tokens(self, monkeypatch):
         fake_settings = type("", (), {
             "config": type("", (), {
@@ -774,7 +788,7 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -788,9 +802,43 @@ class TestGetMaxTokens:
             "bedrock/au.anthropic.claude-sonnet-5",
             "bedrock/eu.anthropic.claude-sonnet-5",
             "bedrock/jp.anthropic.claude-sonnet-5",
+            "anthropic/claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            "vertex_ai/claude-sonnet-5-5",
+            "bedrock/anthropic.claude-sonnet-5-5",
+            "bedrock/global.anthropic.claude-sonnet-5-5",
+            "bedrock/us.anthropic.claude-sonnet-5-5",
+            "bedrock/au.anthropic.claude-sonnet-5-5",
+            "bedrock/eu.anthropic.claude-sonnet-5-5",
         ],
     )
-    def test_claude_sonnet_5_model_max_tokens(self, monkeypatch, model):
+    def test_claude_sonnet_5_family_model_max_tokens(self, monkeypatch, model):
+        fake_settings = type('', (), {
+            'config': type('', (), {
+                'custom_model_max_tokens': 0,
+                'max_model_tokens': 0
+            })()
+        })()
+
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == 1000000
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "anthropic/claude-haiku-5-5",
+            "claude-haiku-5-5",
+            "vertex_ai/claude-haiku-5-5",
+            "bedrock/anthropic.claude-haiku-5-5",
+            "bedrock/global.anthropic.claude-haiku-5-5",
+            "bedrock/us.anthropic.claude-haiku-5-5",
+            "bedrock/au.anthropic.claude-haiku-5-5",
+            "bedrock/eu.anthropic.claude-haiku-5-5",
+            "bedrock/jp.anthropic.claude-haiku-5-5",
+        ],
+    )
+    def test_claude_haiku_5_5_model_max_tokens(self, monkeypatch, model):
         fake_settings = type('', (), {
             'config': type('', (), {
                 'custom_model_max_tokens': 0,
@@ -849,7 +897,7 @@ class TestGetMaxTokens:
 
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == 200000
+        assert get_max_tokens(model) == 1000000
 
     @pytest.mark.parametrize(
         "model",
@@ -1103,6 +1151,35 @@ class TestGetMaxTokens:
         # Negative checks to ensure no over-generation
         assert "bedrock/apac.anthropic.claude-opus-4-8" not in MAX_TOKENS
 
+    def test_claude_sonnet_5_5_family_expansion_and_capabilities(self):
+        """Independent verification of Sonnet 5.5 generated aliases and capabilities."""
+        expected_aliases = {
+            "claude-sonnet-5-5",
+            "anthropic/claude-sonnet-5-5",
+            "vertex_ai/claude-sonnet-5-5",
+            "bedrock/anthropic.claude-sonnet-5-5",
+            "bedrock/global.anthropic.claude-sonnet-5-5",
+            "bedrock/us.anthropic.claude-sonnet-5-5",
+            "bedrock/eu.anthropic.claude-sonnet-5-5",
+            "bedrock/au.anthropic.claude-sonnet-5-5",
+        }
+
+        # Exact set equality against filtered MAX_TOKENS
+        actual_aliases = {k for k in MAX_TOKENS if "claude-sonnet-5-5" in k}
+        assert actual_aliases == expected_aliases
+
+        # Context window tokens
+        for alias in expected_aliases:
+            assert MAX_TOKENS[alias] == 1000000
+
+        # Capability lists
+        for alias in expected_aliases:
+            assert alias not in CLAUDE_EXTENDED_THINKING_MODELS
+
+        # Negative checks to ensure no over-generation
+        assert "bedrock/jp.anthropic.claude-sonnet-5-5" not in MAX_TOKENS
+        assert "bedrock/apac.anthropic.claude-sonnet-5-5" not in MAX_TOKENS
+
     _OPUS_4_6_MAX_TOKENS_ALIASES = {
         "claude-opus-4-6",
         "anthropic/claude-opus-4-6",
@@ -1139,10 +1216,10 @@ class TestGetMaxTokens:
         actual_aliases = {k for k in MAX_TOKENS if "claude-opus-4-6" in k}
         assert actual_aliases == self._OPUS_4_6_MAX_TOKENS_ALIASES
 
-    def test_claude_opus_4_6_aliases_use_200k_context_window(self):
+    def test_claude_opus_4_6_aliases_use_1m_context_window(self):
         # Context window tokens
         for alias in self._OPUS_4_6_MAX_TOKENS_ALIASES:
-            assert MAX_TOKENS[alias] == 200000
+            assert MAX_TOKENS[alias] == 1000000
 
     def test_claude_opus_4_6_extended_thinking_aliases(self):
         actual_thinking_aliases = {k for k in CLAUDE_EXTENDED_THINKING_MODELS if "claude-opus-4-6" in k}
@@ -1288,13 +1365,34 @@ class TestGetMaxTokens:
         assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
 
 
+class TestCorrectedClaudeWindows:
+
+    @pytest.mark.parametrize("model, window", [
+        ("anthropic/claude-sonnet-4-6", 1000000),
+        ("bedrock/global.anthropic.claude-sonnet-4-6", 1000000),
+        ("vertex_ai/claude-opus-4-6", 1000000),
+        ("claude-opus-4-6-20260120", 1000000),
+    ])
+    @pytest.mark.parametrize("cap", [0, 150000, 1100000])
+    def test_static_window_precedence_and_cap(self, monkeypatch, model, window, cap):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 12345,
+                "max_model_tokens": cap,
+            })(),
+        })()
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+        assert MAX_TOKENS[model] == window
+        assert get_max_tokens(model) == (min(window, cap) if cap else window)
+        assert get_max_tokens(model, ignore_max_model_tokens=True) == window
+
+
 class TestNoLiteLLMDuplicates:
 
     # Keep existing static limits until model registry cleanup is handled separately.
     # LiteLLM now has matching metadata; removing these pins would change custom-limit precedence.
     PRESERVED_MODEL_LIMITS = {
         "vertex_ai/claude-sonnet-4@20250514",
-        "anthropic/claude-sonnet-4-20250514",
         "bedrock/moonshotai.kimi-k3",
         "bedrock/us.moonshotai.kimi-k3",
         "bedrock/global.moonshotai.kimi-k3",
@@ -1310,6 +1408,8 @@ class TestNoLiteLLMDuplicates:
     LITELLM_BUNDLED_MAP_UNKNOWN = {
         "gemini/gemini-3.8-flash",
         "vertex_ai/gemini-3.8-flash",
+        "gemini/gemini-4-argon",
+        "vertex_ai/gemini-4-argon",
         "openrouter/x-ai/grok-4.5",
         "openrouter/x-ai/grok-4.6",
         "xai/grok-build-latest",

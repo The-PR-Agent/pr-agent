@@ -68,6 +68,17 @@ If any individual retry succeeds, the existing partial-recovery behavior is pres
 
 <img src="/img/improve.png" alt="improve" width="512" />
 
+From the CLI, save the suggestions and token usage as JSON for a later CI step:
+
+```bash
+pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output improve.json improve
+```
+
+The JSON file is written once the suggestions are ready, after any publishing, and also when
+`config.publish_output=false`, so a caller can post the suggestions itself. It holds a `code_suggestions`
+list, empty when there are none, and a `usage` object. Place `--json-output` before `improve` or
+`improve_code`; with `--stdin` or `--diff-file`, `--json-output` is supported for `review` only.
+
 ### Automatic triggering
 
 To run the `improve` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
@@ -81,11 +92,13 @@ pr_commands = [
 
 [pr_code_suggestions]
 num_code_suggestions_per_chunk = ...
+publish_failure_comment = true
 ...
 ```
 
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
 - The `[pr_code_suggestions]` section contains the configurations for the `improve` tool you want to edit (if any)
+- Set `publish_failure_comment = false` to suppress failure comments while preserving the command failure status.
 
 ### Incremental suggestions
 
@@ -110,6 +123,11 @@ The table format offers several key advantages:
 - **IDE integration**: Allows applying suggestions directly in your IDE via the CLI tool
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
+
+When `pr_code_suggestions.new_score_mechanism` is enabled, the Impact column uses
+integer `new_score_mechanism_th_high` and `new_score_mechanism_th_medium` thresholds.
+Quoted integers such as `"9"` and `"7"` are accepted; invalid values fall back to
+the defaults of 9 and 7. Other numeric values follow the existing integer coercion rules.
 
 <img src="/img/code_suggestions_as_comment_closed.png" alt="code_suggestions_as_comment_closed.png" width="512" />
 
@@ -493,8 +511,11 @@ it. Exhausted failures remain in the coverage notice. Cancellation propagates in
 another retry.
 
 This is recovery within one invocation, not persisted resume across commands. Entirely failed initial
-batches still use the existing whole-batch fallback. Valid empty suggestions are successful results;
-responses rejected by the existing YAML parser retain its existing parse-failure behavior.
+batches still use the existing whole-batch fallback. Malformed or invalid top-level
+suggestion responses are treated as failed chunks and can use the remaining fallback models.
+A valid empty suggestion list (including `code_suggestions: []`) is a successful result
+and is not retried. Invalid individual suggestions in an otherwise valid list continue to
+be filtered without retrying that entire chunk.
 An ambiguous repeated model/deployment pair skips partial recovery rather than restarting the chain.
 
 ## Understanding AI Code Suggestions

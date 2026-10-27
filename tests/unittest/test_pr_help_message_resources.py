@@ -47,6 +47,7 @@ def test_packaged_help_docs_are_filtered_and_priority_sorted(tmp_path, monkeypat
     assert "compression_strategy" not in prompt
     assert "finetuning_benchmark" not in prompt
     assert available_docs_files == {"index.md", "tools/review.md", "reference/other.md"}
+    assert isinstance(prompt, str)
 
 
 def test_source_checkout_is_used_when_packaged_docs_are_absent(tmp_path, monkeypatch):

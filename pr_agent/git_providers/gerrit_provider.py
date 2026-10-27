@@ -1,4 +1,5 @@
 import json
+import math
 import pathlib
 import posixpath
 import re
@@ -10,12 +11,12 @@ import uuid
 from collections import Counter, namedtuple
 from pathlib import Path
 from tempfile import mkdtemp
-from typing import Optional
 
 import requests
 import urllib3.util
 from git import Repo
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -25,21 +26,43 @@ from pr_agent.git_providers.local_git_provider import PullRequestMimic
 from pr_agent.git_providers.request_timeout import get_http_request_timeout
 from pr_agent.log import get_logger
 
+DEFAULT_GERRIT_COMMAND_TIMEOUT = 120.0
 
-def _call(*command, **kwargs) -> (int, str, str):
-    res = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=True,
-        **kwargs,
-    )
+
+class GerritCommandTimeoutError(TimeoutError):
+    """A direct Gerrit child exceeded its configured deadline."""
+
+
+def _get_command_timeout() -> float:
+    value = get_settings().get("gerrit.command_timeout_seconds", DEFAULT_GERRIT_COMMAND_TIMEOUT)
+    try:
+        timeout = 0.0 if isinstance(value, bool) else float(value)
+    except (TypeError, ValueError, OverflowError):
+        timeout = 0.0
+    if not math.isfinite(timeout) or timeout <= 0:
+        get_logger().warning("Ignoring invalid gerrit.command_timeout_seconds; using the default")
+        return DEFAULT_GERRIT_COMMAND_TIMEOUT
+    return timeout
+
+
+def _call(*command, operation: str, **kwargs) -> str:
+    timeout = _get_command_timeout()
+    try:
+        res = subprocess.run(
+            command,
+            capture_output=True,
+            check=True,
+            timeout=timeout,
+            **kwargs,
+        )
+    except subprocess.TimeoutExpired:
+        raise GerritCommandTimeoutError(f"Gerrit {operation} timed out after {timeout:g} seconds") from None
     return res.stdout.decode()
 
 
 def clone(url, directory):
     get_logger().info("Cloning {} to {}", redact_credentials(url), directory)
-    stdout = _call('git', 'clone', "--depth", "1", url, directory)
+    stdout = _call('git', 'clone', "--depth", "1", url, directory, operation="clone")
     get_logger().info(stdout)
 
 
@@ -47,25 +70,25 @@ def fetch(url, refspec, cwd):
     get_logger().info("Fetching {} {}", redact_credentials(url), refspec)
     stdout = _call(
         'git', 'fetch', '--depth', '2', url, refspec,
-        cwd=cwd
+        cwd=cwd, operation="fetch"
     )
     get_logger().info(stdout)
 
 
 def checkout(cwd):
     get_logger().info("Checking out")
-    stdout = _call('git', 'checkout', "FETCH_HEAD", cwd=cwd)
+    stdout = _call('git', 'checkout', "FETCH_HEAD", cwd=cwd, operation="checkout")
     get_logger().info(stdout)
 
 
 def show(*args, cwd=None):
     get_logger().info("Show")
-    return _call('git', 'show', *args, cwd=cwd)
+    return _call('git', 'show', *args, cwd=cwd, operation="show")
 
 
 def diff(*args, cwd=None):
     get_logger().info("Diff")
-    patch = _call('git', 'diff', *args, cwd=cwd)
+    patch = _call('git', 'diff', *args, cwd=cwd, operation="diff")
     if not patch:
         get_logger().warning("No changes found")
         return
@@ -74,7 +97,7 @@ def diff(*args, cwd=None):
 
 def reset_local_changes(cwd):
     get_logger().info("Reset local changes")
-    _call('git', 'checkout', "--force", cwd=cwd)
+    _call('git', 'checkout', "--force", cwd=cwd, operation="reset")
 
 
 def add_comment(url: urllib3.util.Url, refspec, message):
@@ -87,7 +110,7 @@ def add_comment(url: urllib3.util.Url, refspec, message):
         "gerrit", "review",
         "--message", message,
         # "--code-review", score,
-        f"{patchset},{changenum}",
+        f"{patchset},{changenum}", operation="review",
     )
 
 
@@ -100,7 +123,7 @@ def list_comments(url: urllib3.util.Url, refspec):
         "gerrit", "query",
         "--comments",
         "--current-patch-set", patchset,
-        "--format", "JSON",
+        "--format", "JSON", operation="query",
     )
     change_set, *_ = stdout.splitlines()
     return json.loads(change_set)["currentPatchSet"]["comments"]
@@ -180,7 +203,7 @@ def adopt_to_gerrit_message(message):
 def add_suggestion(src_filename, context: str, start, end: int):
     # Rewrite the file in place with its own line endings, so the patch built from
     # `git diff` holds only the suggestion: no CRLF-to-LF rewrite and no mode change.
-    with open(src_filename, "r", encoding="utf-8", newline="") as src:
+    with open(src_filename, encoding="utf-8", newline="") as src:
         lines = src.readlines()
     # Match the ending of the first replaced line, falling back to the first line.
     anchor = lines[start - 1] if 0 < start <= len(lines) else (lines[0] if lines else "")
@@ -218,6 +241,11 @@ def upload_patch(patch, path):
 
 class GerritProvider(GitProvider):
 
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # The checkout provides no reliable source/target branch names or review labels.
+        return policy_metadata(title=self.pr.title, sender=self.repo.head.commit.author.email,
+                               repo_full_name=self.project, source_branch=None, target_branch=None)
+
     def __init__(self, key: str, incremental=False):
         self.repo_path = None
         self.project, self.refspec = key.split(':')
@@ -244,6 +272,7 @@ class GerritProvider(GitProvider):
         self.repo = Repo(self.repo_path)
         assert self.repo
         self.pr_url = base_url
+        self._commit_diffs = None
         self.pr = PullRequestMimic(self.get_pr_title(), self.get_diff_files())
 
     def get_pr_title(self):
@@ -260,7 +289,7 @@ class GerritProvider(GitProvider):
         raise NotImplementedError(
             'Getting labels is not implemented for the gerrit provider')
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         raise NotImplementedError(
             'Adding reactions is not implemented for the gerrit provider')
 
@@ -318,15 +347,28 @@ class GerritProvider(GitProvider):
         except (IndexError, KeyError, OSError, UnicodeDecodeError, ValueError):
             return b""
 
-    def get_diff_files(self) -> list[FilePatchInfo]:
-        diffs = list(
-            self.repo.head.commit.diff(
-                self.repo.head.commit.parents[0],  # previous commit
-                create_patch=True,
-                R=True
+    def _get_commit_diffs(self) -> list:
+        """Return the cached, unfiltered commit diff, including rename detection and patches.
+
+        Keep filtering in callers so repository settings loaded after construction
+        take effect on every read.
+        """
+        diffs = getattr(self, '_commit_diffs', None)
+        if diffs is None:
+            diffs = list(
+                self.repo.head.commit.diff(
+                    self.repo.head.commit.parents[0],  # previous commit
+                    create_patch=True,
+                    R=True
+                )
             )
-        )
-        diffs = filter_ignored(diffs, "gerrit")
+            self._commit_diffs = diffs
+        return diffs
+
+    def get_diff_files(self) -> list[FilePatchInfo]:
+        # Apply ignore rules at call time: __init__ reads the diff before repository
+        # settings are loaded.
+        diffs = filter_ignored(self._get_commit_diffs(), 'gerrit')
 
         diff_files = []
         for diff_item in diffs:
@@ -367,13 +409,13 @@ class GerritProvider(GitProvider):
         return diff_files
 
     def get_files(self):
-        diff_index = self.repo.head.commit.diff(
-            self.repo.head.commit.parents[0],  # previous commit
-            R=True
-        )
-        # Get the list of changed files
-        diff_files = [item.a_path for item in diff_index]
-        return diff_files
+        # Read names from the filtered raw diff to avoid another walk or blob decoding.
+        # Use the destination path for renames and the original path for deletions.
+        return [
+            path
+            for path in (diff.b_path or diff.a_path for diff in filter_ignored(self._get_commit_diffs(), 'gerrit'))
+            if path
+        ]
 
     @cache_languages
     def get_languages(self):
@@ -415,17 +457,20 @@ class GerritProvider(GitProvider):
         return True
 
     def split_suggestion(self, msg) -> tuple[str, str]:
-        is_code_context = False
+        # The fence that opened the suggestion block; it can be longer than three
+        # backticks when the suggested code itself contains a ``` line.
+        fence = None
         description = []
         context = []
         for line in msg.splitlines():
-            if line.startswith('```suggestion'):
-                is_code_context = True
+            opener = re.match(r'(`{3,})suggestion', line)
+            if opener and not fence:
+                fence = opener.group(1)
                 continue
-            if line.startswith('```'):
-                is_code_context = False
+            if line.startswith(fence or '```'):
+                fence = None
                 continue
-            if is_code_context:
+            if fence:
                 context.append(line)
             else:
                 description.append(
@@ -447,10 +492,15 @@ class GerritProvider(GitProvider):
             if not isinstance(suggestion, dict) or not isinstance(suggestion.get("relevant_file"), str):
                 get_logger().warning("Skipping malformed suggestion: missing or invalid 'relevant_file'")
                 continue
-            # Sanitize file path to prevent directory traversal
+            # Sanitize file path to prevent directory traversal.
+            # resolve() follows symlinks, so a tracked symlink into .git/
+            # would pass relative_to() and then be written by add_suggestion.
             try:
-                target_path = (repo_root / suggestion["relevant_file"]).resolve()
-                target_path.relative_to(repo_root)
+                unresolved = repo_root / suggestion["relevant_file"]
+                target_path = unresolved.resolve()
+                inside = [part.casefold() for part in target_path.relative_to(repo_root).parts]
+                if unresolved.is_symlink() or ".git" in inside:
+                    raise ValueError("refuses to write through a symlink or into git metadata")
             except ValueError:
                 get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")
                 continue
@@ -466,8 +516,20 @@ class GerritProvider(GitProvider):
             patch = diff(cwd=self.repo_path)
             patch_id = uuid.uuid4().hex[0:4]
             path = "/".join(["codium-ai", self.refspec, patch_id])
-            full_path = upload_patch(patch, path)
-            reset_local_changes(self.repo_path)
+            uploaded = False
+            try:
+                full_path = upload_patch(patch, path)
+                uploaded = True
+            finally:
+                try:
+                    reset_local_changes(self.repo_path)
+                except Exception as cleanup_error:
+                    if uploaded:
+                        raise
+                    get_logger().warning(
+                        "Failed to reset Gerrit edits after upload failed in {}: {}; stderr: {!r}",
+                        self.repo_path, cleanup_error, getattr(cleanup_error, "stderr", None),
+                    )
             msg.append(f'* {description}\n{full_path}')
 
         if msg:
@@ -545,4 +607,4 @@ class GerritProvider(GitProvider):
         pass
 
     def get_pr_branch(self):
-        return self.repo.head
+        return ""

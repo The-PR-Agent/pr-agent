@@ -3,6 +3,7 @@ import json
 import pytest
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
+from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 
@@ -69,17 +70,23 @@ def test_provider_end_to_end_files_and_output(cfg, capsys):
 
 def test_provider_writes_structured_review(cfg, tmp_path):
     output = tmp_path / "review.json"
+    other_output = tmp_path / "pr-review.json"
     cfg("plain_diff.content", DIFF)
     cfg("plain_diff.output_path", None)
     cfg("plain_diff.json_output_path", str(output))
     provider = PlainDiffGitProvider(None)
 
-    provider.publish_structured_review({"review": {"key_issues_to_review": []}, "usage": {}})
+    token = review_json_output_path.set(str(other_output))
+    try:
+        provider.publish_structured_review({"review": {"key_issues_to_review": []}, "usage": {}})
+    finally:
+        review_json_output_path.reset(token)
 
     assert json.loads(output.read_text()) == {
         "review": {"key_issues_to_review": []},
         "usage": {},
     }
+    assert not other_output.exists()
 
 
 def test_base_file_reconstructed_from_working_tree(cfg, tmp_path, monkeypatch):
@@ -112,6 +119,31 @@ def test_base_file_reconstructed_from_working_tree(cfg, tmp_path, monkeypatch):
     # The original (pre-change) content must contain the old line, not the new one
     assert "line2" in files[0].base_file
     assert "line2-changed" not in files[0].base_file
+
+
+def test_drifted_working_tree_uses_patch_only_context(cfg, tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "foo.py").write_text("unrelated working-tree content\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg("plain_diff.content", DIFF)
+
+    file = PlainDiffGitProvider(None).get_diff_files()[0]
+
+    assert file.head_file == ""
+    assert file.base_file == ""
+    assert "+line2-changed" in file.patch
+
+
+def test_added_file_with_empty_base_keeps_matching_head(cfg, tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "new.py").write_text("hello\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cfg("plain_diff.content", "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+hello\n")
+
+    file = PlainDiffGitProvider(None).get_diff_files()[0]
+
+    assert file.head_file == "hello\n"
+    assert file.base_file == ""
 
 
 def test_base_file_reconstructed_when_run_from_subdirectory(cfg, tmp_path, monkeypatch):

@@ -11,33 +11,37 @@ it is merged into `main` and ships in every release wheel and image starting at 
 This is not a fork and it never becomes one:
 
 - The MOSAICO A2A server is PR-Agent code, released in tags `v0.36.0` onwards. This bundle
-  holds zero Python — only a compose overlay, a registration template, an env template, a
-  smoke test, and this README.
-- **Staying current is one line**: bump the pinned tag in `docker-compose.pr-agent.yml`, then
-  re-run `./smoke_test.sh` to confirm the new image still boots and serves a valid card. That
-  is the entire upgrade procedure:
-  ```diff
-  -    image: pragent/pr-agent:0.41.0-mosaico_agent
-  +    image: pragent/pr-agent:0.42.0-mosaico_agent
-  ```
+  holds zero Python — a compose overlay, registration and env templates, a smoke test,
+  and this README.
 - The release workflow publishes `pragent/pr-agent:<version>-mosaico_agent` for every release,
   from the same CI matrix that builds its other images — the MOSAICO target cannot silently
   stop being built without the whole release failing.
-- Canonical source of every file in this bundle is `docker/mosaico/` in
-  `github.com/The-PR-Agent/pr-agent` — this directory. The GitLab deployment mirror holds
-  verbatim copies; edit here, and re-copy there. Never edit the mirror directly.
+- [Eclipse CI](https://gitlab.eclipse.org/eclipse-research-labs/mosaico-project/qodo-pr-agent)
+  republishes the existing `0.41.0-mosaico_agent` image, pinned by its upstream index digest,
+  as `registry.eclipse.org/eclipse-research-labs/mosaico-project/qodo-pr-agent:0.41.0-mosaico_agent`.
+  Same-project merge requests publish `mr-<iid>-<full-commit-sha>` previews. Only a push to
+  the default branch publishes the stable version tag, after the preceding CI checks.
+  The initial stable tag becomes available after the Eclipse CI change is merged and its
+  publication succeeds; validate its preview with `IMAGE=<preview-image> ./smoke_test.sh` meanwhile.
+- Shared deployment files are maintained here, under `docker/mosaico/` in
+  `github.com/The-PR-Agent/pr-agent`. Apply matching focused edits to the Eclipse deployment
+  mirror. Its root `Dockerfile` and `.gitlab-ci.yml` belong to Eclipse and are maintained there.
+- To upgrade, change the upstream version and index digest in Eclipse's `Dockerfile` and
+  the stable `IMAGE_TAG` in its `.gitlab-ci.yml`. Update the matching image references in
+  the compose overlay, smoke default, and README here and in Eclipse, then validate the
+  published preview with the existing smoke script before merging the release change.
 
 ## Quick start (standalone, no demonstrator)
 
 Boots from a bare `docker pull` in a couple of seconds — no repo clone, no build:
 
 ```bash
-docker pull pragent/pr-agent:0.41.0-mosaico_agent
+docker pull registry.eclipse.org/eclipse-research-labs/mosaico-project/qodo-pr-agent:0.41.0-mosaico_agent
 docker run -d --name pr-agent-mosaico -p 9000:9000 \
   -e API_BASE=https://your-openai-compatible-endpoint/v1 \
   -e API_KEY=sk-... \
   -e MODEL_NAME=openai/your-model-slug \
-  pragent/pr-agent:0.41.0-mosaico_agent
+  registry.eclipse.org/eclipse-research-labs/mosaico-project/qodo-pr-agent:0.41.0-mosaico_agent
 
 curl -s http://localhost:9000/.well-known/agent-card.json | python3 -m json.tool
 ```

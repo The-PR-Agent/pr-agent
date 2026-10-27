@@ -18,6 +18,41 @@ def _make_file(filename: str, head_file: str, language: str = "python", patch: s
     )
 
 
+@pytest.mark.parametrize(("gfm_supported", "reference_link", "show_snippet"), [
+    (False, "", False),
+    (False, "https://example.com/app.py#L1", False),
+    (True, None, False),
+    (True, "", False),
+    (True, "https://example.com/app.py#L1", True),
+])
+def test_review_only_extracts_displayed_snippets(monkeypatch, gfm_supported, reference_link, show_snippet):
+    files = [_make_file("app.py", "result = compute()\n")]
+    provider = Mock()
+    provider.get_line_link.return_value = reference_link
+    extract = Mock(wraps=extract_relevant_lines_str)
+    monkeypatch.setattr("pr_agent.algo.utils.extract_relevant_lines_str", extract)
+    data = {"review": {"key_issues_to_review": [{
+        "relevant_file": "app.py",
+        "issue_header": "Check result",
+        "issue_content": "Handle a missing result.",
+        "start_line": 1,
+        "end_line": 1,
+    }]}}
+
+    result = convert_to_markdown_v2(data, gfm_supported=gfm_supported, git_provider=provider, files=files)
+
+    assert "Check result" in result
+    assert "Handle a missing result." in result
+    if reference_link:
+        assert reference_link in result
+    if show_snippet:
+        extract.assert_called_once_with(1, files, "app.py", 1, dedent=True)
+        assert "```python\nresult = compute()\n```" in result
+    else:
+        extract.assert_not_called()
+        assert "result = compute()" not in result
+
+
 @pytest.mark.parametrize("dedent", [False, True])
 @pytest.mark.parametrize("inner_fence, outer_fence", [("```", "~~~"), ("```\n~~~", "````")])
 def test_patch_fallback_preserves_nested_fences(inner_fence, outer_fence, dedent):
@@ -32,6 +67,17 @@ def test_patch_fallback_preserves_nested_fences(inner_fence, outer_fence, dedent
     if dedent:
         content = textwrap.dedent(content)
     assert result == f"{outer_fence}markdown\n{content}\n{outer_fence}"
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\f"])
+def test_patch_fallback_preserves_embedded_line_separators(separator):
+    line = f'const text = "before{separator}after";'
+    patch = f"@@ -1,2 +1,2 @@\n const kept = true;\n-old\n+{line}\n"
+    file = _make_file("src/main.js", None, language="javascript", patch=patch)
+
+    result = extract_relevant_lines_str(2, [file], "src/main.js", 1, dedent=True)
+
+    assert result == f"```javascript\nconst kept = true;\n{line}\n\n```"
 
 
 class TestExtractRelevantLinesStr:

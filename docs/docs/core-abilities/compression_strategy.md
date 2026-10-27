@@ -15,7 +15,7 @@ There are two scenarios:
 
 For both scenarios, we first use the following strategy
 
-#### Repo language prioritization strategy
+### Repo language prioritization strategy
 
 We prioritize the languages of the repo based on the following criteria:
 

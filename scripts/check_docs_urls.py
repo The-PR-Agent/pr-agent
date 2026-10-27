@@ -65,7 +65,7 @@ def resolve(url: str, build_dir: Path) -> tuple[Path | None, str]:
     return (page if page.is_file() else None), anchor
 
 
-ASSET_HREF_RE = re.compile(r'href="(/[^"#?]+\.[a-z0-9]{2,5}/?)"', re.I)
+ASSET_HREF_RE = re.compile(r'href="(/[^"#?]+\.[a-z0-9]{2,5}/?)"', re.IGNORECASE)
 # Routes are directories; these are file extensions that must resolve to a real file.
 ASSET_SUFFIXES = {
     ".png", ".webp", ".jpg", ".jpeg", ".gif", ".svg", ".ico",

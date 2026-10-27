@@ -8,16 +8,19 @@ from contextlib import contextmanager
 from starlette_context import context, request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent, commands, parse_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
 from pr_agent.algo.artifacts import inject_artifact_context
+from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
+from pr_agent.doctor import DOCTOR_COMMANDS, run_doctor_checks
 from pr_agent.log import get_logger, setup_logger
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -30,9 +33,14 @@ _PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset({
     "ask", "ask_question",
     "config", "settings", "help",
 })
-_PLAIN_DIFF_JSON_COMMANDS = frozenset({"review", "review_pr"})
+_JSON_REVIEW_COMMANDS = frozenset({"review", "review_pr"})
+_JSON_IMPROVE_COMMANDS = frozenset({"improve", "improve_code"})
+_JSON_DESCRIBE_COMMANDS = frozenset({"describe", "describe_pr"})
 _OUTPUT_OPTIONS = ("--output", "--json-output")
-_CLI_CONTEXT_CACHES = ("git_provider", "repo_settings", "git_files", "diff_files")
+_CLI_CONTEXT_CACHES = (
+    "git_provider", "repo_settings", "git_files", "diff_files", "authenticated_provider_settings",
+    "extra_config_payloads",
+)
 
 
 @contextmanager
@@ -94,10 +102,15 @@ def _validate_output_options(parser, args, diff_mode):
             parser.error(f"--output is not supported for plain-diff command '{command}'")
 
     if json_output is not None:
-        if not diff_mode:
-            parser.error("--json-output is only supported in plain-diff mode (--stdin or --diff-file)")
-        if command not in _PLAIN_DIFF_JSON_COMMANDS:
-            parser.error("--json-output is only supported for plain-diff review commands (review or review_pr)")
+        pr_tool_commands = _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
+        if command not in _JSON_REVIEW_COMMANDS | pr_tool_commands:
+            parser.error("--json-output is only supported for review commands (review or review_pr), "
+                         "and for improve or describe commands with --pr_url")
+        if diff_mode and command in pr_tool_commands:
+            parser.error("--json-output is only supported for review commands in plain-diff mode; "
+                         "use --pr_url to write improve suggestions or the description as JSON")
+        if not diff_mode and (not args.pr_url or args.issue_url):
+            parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
 
 
 def set_parser():
@@ -113,6 +126,8 @@ def set_parser():
 
     Supported commands:
     - review / review_pr - {COMMAND_DESCRIPTIONS["review"]}
+
+    - doctor - Check the deployment (model configured, provider key, model endpoint) without a PR.
 
     - ask / ask_question [question] - Ask a question about the PR.
 
@@ -155,9 +170,9 @@ def set_parser():
                         help=("Write Plain Diff Markdown output to this file "
                               "(place before the command)"))
     parser.add_argument("--json-output", dest="json_output", type=str, default=None,
-                        help=("Write a Plain Diff review and token usage to this JSON file "
+                        help=("Write a parsed review and token usage to this JSON file "
                               "(place before the review command)"))
-    parser.add_argument('command', type=str, help='The', choices=commands, default='review')
+    parser.add_argument('command', type=str, help='The', choices=[*commands, *DOCTOR_COMMANDS], default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
 
@@ -179,11 +194,17 @@ def run(inargs=None, args=None):
     if diff_mode and args.stdin and args.diff_file:
         parser.error("--stdin and --diff-file are mutually exclusive")
     _validate_output_options(parser, args, diff_mode)
+    if args.command.lower() in DOCTOR_COMMANDS:
+        # Preflight checks need neither a PR nor a diff; run them in the CLI settings
+        # scope so environment overrides and config files apply as in a real run.
+        with _cli_settings_scope():
+            get_settings().set("CONFIG.CLI_MODE", True)
+            return asyncio.run(run_doctor_checks())
     diff_content = None
     if diff_mode:
         if args.diff_file:
             try:
-                with open(args.diff_file, "r", encoding="utf-8") as fh:
+                with open(args.diff_file, encoding="utf-8") as fh:
                     diff_content = fh.read()
             except OSError as e:
                 parser.error(f"Could not read --diff-file '{args.diff_file}': {e}")
@@ -217,6 +238,13 @@ def run(inargs=None, args=None):
         get_settings().set("CONFIG.CONFIG_BRANCH", cli_branch or env_branch or None)
         get_settings().set("CONFIG.EXTRA_CONFIG_URL", getattr(args, "extra_config_url", None))
         async def inner():
+            output_token = review_json_output_path.set(getattr(args, "json_output", None) if not diff_mode else None)
+            try:
+                return await run_inner()
+            finally:
+                review_json_output_path.reset(output_token)
+
+        async def run_inner():
             # A CI artifact (see [artifacts]) reaches prompts from the environment or settings files,
             # the same way it does under the GitHub Action. Each asyncio.run gets a fresh task context.
             inject_artifact_context()
@@ -225,8 +253,11 @@ def run(inargs=None, args=None):
             if args.issue_url:
                 result = await PRAgent().handle_request(args.issue_url, [command] + args.rest)
             else:
-                target = args.pr_url if args.pr_url else "local_diff"
+                target = args.pr_url or "local_diff"
                 result = await PRAgent().handle_request(target, [command] + args.rest)
+            if result is RequestOutcome.SKIPPED:
+                # No tool ran, so there are no command callbacks or failures to drain.
+                return True, False
 
             # litellm defers its success/failure callbacks onto the event loop, which
             # asyncio.run() below tears down the moment this coroutine returns. Give

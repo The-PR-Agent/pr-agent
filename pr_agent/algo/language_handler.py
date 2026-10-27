@@ -1,7 +1,7 @@
 # Language Selection, source: https://github.com/bigcode-project/bigcode-dataset/blob/main/language_selection/programming-languages-to-file-extensions.json  # noqa E501
 from collections.abc import Callable
-from typing import Dict
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings
 
 AUTO_GENERATED_FILES_EXACT = frozenset({
@@ -13,39 +13,46 @@ AUTO_GENERATED_FILES_EXACT = frozenset({
 
 def filter_bad_extensions(files):
     # Bad Extensions, source: https://github.com/EleutherAI/github-downloader/blob/345e7c4cbb9e0dc8a0615fd995a08bf9d73b3fe6/download_repo_text.py  # noqa: E501
-    bad_extensions = get_settings().bad_extensions.default
-    if get_settings().config.use_extra_bad_extensions:
-        bad_extensions += get_settings().bad_extensions.extra
-    return [f for f in files if f.filename is not None and is_valid_file(f.filename, bad_extensions)]
+    settings = get_settings()
+    bad_extensions = normalize_setting_list(settings.bad_extensions.default)
+    if settings.config.use_extra_bad_extensions:
+        bad_extensions.extend(normalize_setting_list(settings.bad_extensions.extra))
+    excluded_extensions = {str(extension).lower() for extension in bad_extensions}
+    return [f for f in files if f.filename is not None and _is_valid_file(f.filename, excluded_extensions)]
 
 
-def is_valid_file(filename:str, bad_extensions=None) -> bool:
+def is_valid_file(filename: str, bad_extensions=None) -> bool:
     if not filename:
         return False
     if not bad_extensions:
-        bad_extensions = get_settings().bad_extensions.default
-        if get_settings().config.use_extra_bad_extensions:
-            bad_extensions += get_settings().bad_extensions.extra
+        settings = get_settings()
+        bad_extensions = normalize_setting_list(settings.bad_extensions.default)
+        if settings.config.use_extra_bad_extensions:
+            bad_extensions.extend(normalize_setting_list(settings.bad_extensions.extra))
 
+    excluded_extensions = {str(extension).lower() for extension in bad_extensions}
+    return _is_valid_file(filename, excluded_extensions)
+
+
+def _is_valid_file(filename: str, excluded_extensions: set[str]) -> bool:
+    if not filename:
+        return False
     auto_generated_suffixes = ('.min.js', '.min.css', '.js.map', '.ts.map', '.css.map')
     if filename.replace('\\', '/').split('/')[-1] in AUTO_GENERATED_FILES_EXACT:
         return False
     if filename.endswith(auto_generated_suffixes):
         return False
 
-    # Compare case-insensitively: bad_extensions lists binary and asset types (png, zip, svg),
-    # and 'logo.SVG' is the same kind of file as 'logo.svg'. The list is spelled in lower case,
-    # so a file named with an uppercase extension would otherwise slip into the diff.
-    bad_extensions_lower = {str(extension).lower() for extension in bad_extensions}
-    return filename.split('.')[-1].lower() not in bad_extensions_lower
+    # Compare case-insensitively: excluded_extensions already contains lowercase extensions.
+    return filename.split('.')[-1].lower() not in excluded_extensions
 
 
-def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str], str | None]:
+def build_language_file_matcher(language_extension_map: dict) -> Callable[[str], str | None]:
     """Build a filename classifier from the configured language extensions."""
     exact_to_language = {}
     folded_to_languages = {}
     for language, extensions in language_extension_map.items():
-        for extension in extensions:
+        for extension in normalize_setting_list(extensions):
             token = extension.lstrip("*")
             exact_to_language.setdefault(token, language)
             folded_to_languages.setdefault(token.casefold(), set()).add(language)
@@ -78,7 +85,7 @@ def build_language_file_matcher(language_extension_map: Dict) -> Callable[[str],
     return get_language
 
 
-def numeric_languages(languages: Dict) -> Dict:
+def numeric_languages(languages: dict) -> dict:
     """
     Keep only the {language: size} entries of a provider's get_languages() result. PyGithub 2.x
     adds a "url" string to every GET dict it returns, and a str cannot be ranked against sizes.
@@ -86,7 +93,7 @@ def numeric_languages(languages: Dict) -> Dict:
     return {k: v for k, v in (languages or {}).items() if isinstance(v, (int, float))}
 
 
-def sort_files_by_main_languages(languages: Dict, files: list):
+def sort_files_by_main_languages(languages: dict, files: list):
     """
     Sort files by their main language, put the files that are in the main language first and the rest files after
     """

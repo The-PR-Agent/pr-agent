@@ -10,7 +10,7 @@ import os
 import litellm
 import pytest
 
-from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+import pr_agent.algo.ai_handlers.litellm_ai_handler as litellm_ai_handler
 
 REQUEST_SPAN_ENV = "USE_OTEL_LITELLM_REQUEST_SPAN"
 
@@ -36,15 +36,18 @@ def _settings(**values):
         "litellm": type("LiteLLM", (), {
             "get": lambda self, key, default=None: default,
             "success_callback": values.get("LITELLM.SUCCESS_CALLBACK", []),
+            "failure_callback": values.get("LITELLM.FAILURE_CALLBACK", []),
+            "service_callback": values.get("LITELLM.SERVICE_CALLBACK", []),
         })(),
     })()
 
 
 def _build(monkeypatch, **values):
+    monkeypatch.setattr("pr_agent.algo.ai_handlers.litellm_ai_handler.global_settings", _settings(**values))
     monkeypatch.setattr(
         "pr_agent.algo.ai_handlers.litellm_ai_handler.get_settings", lambda: _settings(**values)
     )
-    return LiteLLMAIHandler()
+    return litellm_ai_handler.LiteLLMAIHandler()
 
 
 def test_turn_off_message_logging_reaches_litellm(monkeypatch):
@@ -92,3 +95,24 @@ def test_explicit_request_span_override_is_preserved(monkeypatch):
     })
 
     assert os.environ[REQUEST_SPAN_ENV] == "false"
+
+
+@pytest.mark.parametrize(
+    ("config_key", "callback_name"),
+    [
+        ("LITELLM.SUCCESS_CALLBACK", "success_callback"),
+        ("LITELLM.FAILURE_CALLBACK", "failure_callback"),
+        ("LITELLM.SERVICE_CALLBACK", "service_callback"),
+    ],
+)
+def test_repo_settings_cannot_install_litellm_callbacks(monkeypatch, config_key, callback_name):
+    """Repository settings cannot install callbacks shared with later requests."""
+    monkeypatch.setattr("pr_agent.algo.ai_handlers.litellm_ai_handler.global_settings", _settings())
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.get_settings",
+        lambda: _settings(**{config_key: ["otel"]}),
+    )
+
+    litellm_ai_handler.LiteLLMAIHandler()
+
+    assert getattr(litellm, callback_name) == []

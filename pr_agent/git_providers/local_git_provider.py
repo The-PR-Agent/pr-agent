@@ -1,10 +1,11 @@
 from collections import Counter
 from pathlib import Path
-from typing import List, Optional
 
 from git import Repo
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
+from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
@@ -18,7 +19,7 @@ class PullRequestMimic:
     This class mimics the PullRequest class from the PyGithub library for the LocalGitProvider.
     """
 
-    def __init__(self, title: str, diff_files: List[FilePatchInfo]):
+    def __init__(self, title: str, diff_files: list[FilePatchInfo]):
         self.title = title
         self.diff_files = diff_files
 
@@ -32,6 +33,11 @@ class LocalGitProvider(GitProvider):
     It supports the /review, /describe and /improve capabilities; each writes its output to a
     file (review.md, description.md, improve.md) since there is no hosted PR to comment on.
     """
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # A local comparison has branches, but no hosted PR author or labels.
+        return policy_metadata(title=self.pr.title, sender="", repo_full_name="",
+                               source_branch=self.head_branch_name, target_branch=self.target_branch_name)
 
     def __init__(self, target_branch_name, incremental=False):
         self.repo_path = _find_repository_root()
@@ -116,21 +122,14 @@ class LocalGitProvider(GitProvider):
                               old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path
                               )
             )
-        self.diff_files = diff_files
-        return diff_files
+        self.diff_files = filter_ignored(diff_files, platform="local")
+        return self.diff_files
 
-    def get_files(self) -> List[str]:
+    def get_files(self) -> list[str]:
         """
         Returns a list of files with changes in the diff.
         """
-        diff_index = self.repo.head.commit.diff(
-            self.repo.merge_base(self.repo.head, self.repo.branches[self.target_branch_name]),
-            R=True
-        )
-        # Use the current path for renames and modifications; deleted files
-        # have no new-side path and therefore fall back to their old path.
-        diff_files = [item.b_path or item.a_path for item in diff_index]
-        return diff_files
+        return [file.filename for file in self.get_diff_files()]
 
     def publish_description(self, pr_title: str, pr_body: str):
         with open(self.description_path, "w", encoding="utf-8") as file:
@@ -201,7 +200,7 @@ class LocalGitProvider(GitProvider):
     def remove_comment(self, comment):
         pass  # Not applicable to the local git provider, but required by the interface
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None  # Not applicable to the local git provider, but required by the interface
 
     def get_commit_messages(self) -> str:
@@ -258,7 +257,7 @@ class LocalGitProvider(GitProvider):
             return ""
         return blob.data_stream.read().decode("utf-8", errors="replace")
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         return self.repo.commit(self.target_branch_name).hexsha
 
     def get_user_id(self):
@@ -268,8 +267,7 @@ class LocalGitProvider(GitProvider):
         commits_diff = list(self.repo.iter_commits(self.target_branch_name + '..HEAD'))
         # Get the commit messages and concatenate
         commit_messages = " ".join([commit.message for commit in commits_diff])
-        # TODO Handle the description better - maybe use gpt-3.5 summarisation here?
-        return commit_messages[:200]  # Use max 200 characters
+        return commit_messages
 
     def get_pr_title(self):
         """

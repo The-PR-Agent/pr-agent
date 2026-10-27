@@ -169,9 +169,9 @@ def test_multi_packing_preserves_negative_capacity_and_remaining_files(monkeypat
     capacities = []
     original = pr_processing._pack_pr_multi_diffs
 
-    def pack(*args):
+    def pack(*args, **kwargs):
         capacities.append(args[-1])
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(pr_processing, "_pack_pr_multi_diffs", pack)
     chunks, remaining = pr_processing.get_pr_multi_diffs(

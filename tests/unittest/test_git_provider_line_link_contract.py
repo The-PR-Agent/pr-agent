@@ -93,6 +93,7 @@ def _bitbucket_provider() -> BitbucketProvider:
 def _bitbucket_server_provider() -> BitbucketServerProvider:
     provider = BitbucketServerProvider.__new__(BitbucketServerProvider)
     provider.pr_url = "https://bitbucket.example/projects/OWNER/repos/repo/pull-requests/7"
+    provider.pr_num = 7
     return provider
 
 

@@ -57,12 +57,21 @@ def _error(error_type):
         return error_type(request=request)
     if error_type is openai.APIError:
         return error_type("temporary failure", request=request, body=None)
-    status = {openai.BadRequestError: 400, openai.UnprocessableEntityError: 422, openai.RateLimitError: 429}[error_type]
+    status = {
+        openai.BadRequestError: 400,
+        openai.UnprocessableEntityError: 422,
+        openai.RateLimitError: 429,
+        openai.AuthenticationError: 401,
+        openai.PermissionDeniedError: 403,
+    }[error_type]
     return error_type("rejected request", response=httpx.Response(status, request=request), body=None)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error_type", [openai.BadRequestError, openai.UnprocessableEntityError, openai.RateLimitError])
+@pytest.mark.parametrize("error_type", [
+    openai.BadRequestError, openai.UnprocessableEntityError, openai.RateLimitError,
+    openai.AuthenticationError, openai.PermissionDeniedError,
+])
 async def test_rejected_requests_surface_without_same_handler_replay(handler_and_completion, error_type):
     handler, completion, _ = handler_and_completion
     error = _error(error_type)

@@ -20,6 +20,8 @@ from gitlab import GitlabGetError
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
 
 DEFAULT_BRANCH = "main"
+DEFAULT_COMMIT = "a" * 40
+STALE_COMMIT = "b" * 40
 
 
 class _Response:
@@ -47,10 +49,13 @@ def _provider(blobs=None, mr_target_branch="main", project_body=None, missing_re
     """A provider on a client that records requests instead of sending them."""
     calls = []
     blobs = blobs or {}
-    missing_refs = set(missing_refs)
+    missing_refs = {DEFAULT_COMMIT if ref == DEFAULT_BRANCH else STALE_COMMIT for ref in missing_refs}
 
     def http_request(method, path, **kwargs):
         calls.append((method.upper(), path))
+        if method == "get" and "/repository/commits/" in path:
+            ref = path.rsplit("/", 1)[-1]
+            return _Response(200, {"id": DEFAULT_COMMIT if ref == DEFAULT_BRANCH else STALE_COMMIT})
         if method == "get" and "/repository/tree" in path:
             # python-gitlab hands the branch over as query data, not in the path
             ref = (kwargs.get("query_data") or {}).get("ref", "")
@@ -62,7 +67,7 @@ def _provider(blobs=None, mr_target_branch="main", project_body=None, missing_re
             if name in blobs:
                 encoded = base64.b64encode(blobs[name]).decode()
                 return _Response(200, {"file_name": name, "encoding": "base64",
-                                       "content": encoded, "ref": DEFAULT_BRANCH})
+                                       "content": encoded, "ref": DEFAULT_BRANCH, "commit_id": DEFAULT_COMMIT})
             # python-gitlab turns this status into GitlabGetError inside `http_request`, which is
             # the function this fake replaces, so raise it here instead of returning a 404 body.
             raise GitlabGetError("404 File Not Found", response_code=404)
@@ -114,12 +119,13 @@ class TestRepoSettingsReadsAreLazy:
         assert provider.get_repo_settings()
         assert len(_project_gets(calls)) == 1, calls
         assert [c for c in calls if "repository/files" in c[1]], "the config file itself was read"
+        assert not any("/repository/commits/" in c[1] for c in calls), "root already supplied its commit"
 
     def test_listing_the_config_tree_reads_the_project_once_for_the_branch_name(self):
         provider, calls = _provider()
 
-        assert provider.get_repo_settings_tree("")[1] == DEFAULT_BRANCH
-        assert provider.get_repo_settings_tree("")[1] == DEFAULT_BRANCH
+        assert provider.get_repo_settings_tree("")[1] == DEFAULT_COMMIT
+        assert provider.get_repo_settings_tree("")[1] == DEFAULT_COMMIT
         assert len(_project_gets(calls)) == 1, calls
         assert any("repository/tree" in c[1] for c in calls), "the tree itself was read"
 
@@ -129,7 +135,7 @@ class TestRepoSettingsReadsAreLazy:
 
         paths, ref = provider.get_repo_settings_tree("stale-branch")
 
-        assert ref == DEFAULT_BRANCH
+        assert ref == DEFAULT_COMMIT
         assert paths == ["a/.pr_agent.toml"]
         assert len(_project_gets(calls)) == 1, calls
 

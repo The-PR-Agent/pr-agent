@@ -44,7 +44,6 @@ def _tokenize(request):
     span = MagicMock()
     with (
         patch("pr_agent.agent.pr_agent.apply_repo_settings"),
-        patch("pr_agent.agent.pr_agent.reapply_artifact_context"),
         patch.dict(
             "pr_agent.agent.pr_agent.command2class",
             {"ask": _FakeAsk},
@@ -98,8 +97,7 @@ class TestExistingTokenizationIsUnchanged:
         span = MagicMock()
         with (
             patch("pr_agent.agent.pr_agent.apply_repo_settings"),
-            patch("pr_agent.agent.pr_agent.reapply_artifact_context"),
-            pytest.raises(ValueError),
+                pytest.raises(ValueError),
         ):
             agent = PRAgent.__new__(PRAgent)
             agent.ai_handler = None

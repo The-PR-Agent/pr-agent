@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from importlib.metadata import PackageNotFoundError, version
 
@@ -11,16 +11,16 @@ import yaml
 
 from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, create_output_sink
 from pr_agent.algo.run_details import get_run_details
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
+from pr_agent.config_security import should_skip_config_key
 from pr_agent.log import get_logger
 
 
 def github_action_output(output_data: dict, key_name: str):
     try:
         enable_output = get_settings().get("github_action_config.enable_output", False)
-        if isinstance(enable_output, str):
-            enable_output = enable_output.lower().strip() not in ("false", "0", "no", "")
-        if not enable_output:
+        if not _as_bool_setting(enable_output):
             return
 
         key_data = output_data.get(key_name, {})
@@ -51,7 +51,7 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
         channels = cfg.get("channels", []) or []
         record = {
             "type": message_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "payload": payload or {},
         }
         if markdown is not None:
@@ -67,6 +67,16 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
     except Exception as e:
         # Log only the exception type: requests errors embed the (secret-bearing) URL in their text.
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
+
+
+async def push_outputs_async(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
+    """Emit a tool's output to external sinks without blocking the event loop.
+
+    The sinks do blocking HTTP and file I/O, so the delivery runs in a worker thread.
+    Awaiting it keeps the event loop free for other work and still delivers the output
+    before the command returns.
+    """
+    await asyncio.to_thread(push_outputs, message_type, payload=payload, markdown=markdown)
 
 
 def _render_setting_value(value) -> str:
@@ -94,11 +104,7 @@ def show_relevant_configurations(relevant_section: str) -> str:
         "skip_keys", "app_id", "redirect", "trial_prefix_message", "no_eligible_message",
         "identity_provider", "ALLOWED_REPOS", "APP_NAME",
     ]
-    extra_skip_keys = get_settings().config.get("skip_keys", [])
-    if extra_skip_keys:
-        skip_keys.extend(extra_skip_keys)
-    skip_keys_lower = [str(key).lower() for key in skip_keys]
-
+    skip_keys.extend(normalize_setting_list(get_settings().config.get("skip_keys", [])))
     markdown_text = ""
     markdown_text += "\n<hr>\n<details> <summary><strong>🛠️ Relevant configurations:</strong></summary> \n\n"
     markdown_text += (
@@ -108,13 +114,13 @@ def show_relevant_configurations(relevant_section: str) -> str:
     )
     markdown_text += "**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():
-        if key.lower() in skip_keys_lower:
+        if should_skip_config_key("config", key, skip_keys):
             continue
         markdown_text += f"{key}: {_render_setting_value(value)}\n"
     markdown_text += "\n```\n"
     markdown_text += f"\n**[{relevant_section}]**\n```yaml\n\n"
     for key, value in get_settings().get(relevant_section, {}).items():
-        if key.lower() in skip_keys_lower:
+        if should_skip_config_key(relevant_section, key, skip_keys):
             continue
         markdown_text += f"{key}: {_render_setting_value(value)}\n"
     markdown_text += "\n```"
@@ -181,26 +187,37 @@ def show_run_details(gfm_supported: bool) -> str:
     return f"\n___\n\n**{title}**\n\n{body}\n"
 
 
+def append_run_details(body: str, git_provider) -> str:
+    """Append the opt-in run-details section to a comment body.
+
+    Returns ``body`` unchanged when ``config.output_run_details`` is off, or when the
+    current run recorded no model (so a message that needed no AI call stays clean).
+    A provider without capability checks gets the plain-text section.
+    """
+    if not get_settings().get("config.output_run_details", False):
+        return body
+    is_supported = getattr(git_provider, "is_supported", None)
+    gfm_supported = bool(callable(is_supported) and is_supported("gfm_markdown"))
+    return body + show_run_details(gfm_supported)
+
+
 def get_version() -> str:
     # First check pyproject.toml if running directly out of the pr-agent repository
     if os.path.exists("pyproject.toml"):
-        if sys.version_info >= (3, 11):
-            import tomllib
-            try:
-                with open("pyproject.toml", "rb") as f:
-                    data = tomllib.load(f)
-            except (OSError, ValueError) as e:  # tomllib raises TOMLDecodeError, or UnicodeDecodeError on non-UTF-8
-                get_logger().warning(f"Unable to read pyproject.toml, falling back to package metadata: {e}")
-            else:
-                # only trust this file when it is pr-agent's own pyproject.toml, otherwise an
-                # unrelated project in the current working directory would dictate our version
-                project = data.get("project", {})
-                if project.get("name") == "pr-agent":
-                    if "version" in project:
-                        return project["version"]
-                    get_logger().warning("Version not found in pyproject.toml")
+        import tomllib
+        try:
+            with open("pyproject.toml", "rb") as f:
+                data = tomllib.load(f)
+        except (OSError, ValueError) as e:  # tomllib raises TOMLDecodeError, or UnicodeDecodeError on non-UTF-8
+            get_logger().warning(f"Unable to read pyproject.toml, falling back to package metadata: {e}")
         else:
-            get_logger().warning("Unable to determine local version from pyproject.toml")
+            # only trust this file when it is pr-agent's own pyproject.toml, otherwise an
+            # unrelated project in the current working directory would dictate our version
+            project = data.get("project", {})
+            if project.get("name") == "pr-agent":
+                if "version" in project:
+                    return project["version"]
+                get_logger().warning("Version not found in pyproject.toml")
 
     # Otherwise get the installed pip package version
     try:

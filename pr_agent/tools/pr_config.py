@@ -1,7 +1,9 @@
 from dynaconf import Dynaconf
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider
+from pr_agent.config_security import should_skip_config_key
+from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.log import get_logger
 
 
@@ -18,7 +20,11 @@ class PRConfig:
             args (list, optional): Unused compatibility parameter for the common tool interface. Defaults to None.
             ai_handler: Unused compatibility parameter for the common tool interface. Defaults to None.
         """
-        self.git_provider = get_git_provider()(pr_url)
+        provider_class = get_git_provider()
+        self.git_provider = get_git_provider_with_context(pr_url)
+        # Repository settings can change the provider selected during request setup.
+        if type(self.git_provider) is not provider_class:
+            self.git_provider = provider_class(pr_url)
 
     async def run(self):
         get_logger().info('Getting configuration settings...')
@@ -67,11 +73,7 @@ class PRConfig:
             'private_key', 'private_key_id', 'client_id', 'client_secret', 'token',
             'bearer_token', 'jira_api_token', 'webhook_secret'
         ]
-        partial_skip_keys = ['key', 'secret', 'token', 'private']
-        extra_skip_keys = get_settings().config.get("skip_keys", [])
-        if extra_skip_keys:
-            skip_keys.extend(extra_skip_keys)
-        skip_keys_lower = [key.lower() for key in skip_keys]
+        skip_keys.extend(normalize_setting_list(get_settings().config.get("skip_keys", [])))
 
 
         markdown_text = "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
@@ -81,9 +83,7 @@ class PRConfig:
                 markdown_text += "\n\n"
                 markdown_text += f"==================== {header} ===================="
             for key, value in configs.items():
-                if key.lower() in skip_keys_lower:
-                    continue
-                if any(skip_key in key.lower() for skip_key in partial_skip_keys):
+                if should_skip_config_key(header, key, skip_keys):
                     continue
                 markdown_text += (
                     f"\n{header.lower()}.{key.lower()} = {repr(value) if isinstance(value, str) else value}"

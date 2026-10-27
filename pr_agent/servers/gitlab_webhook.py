@@ -10,17 +10,20 @@ import uvicorn
 from fastapi import APIRouter, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from gitlab.exceptions import GitlabGetError
 from starlette.background import BackgroundTasks
 from starlette.middleware import Middleware
 from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
-from pr_agent.git_providers.utils import apply_repo_settings
+from pr_agent.git_providers.utils import apply_host_settings, apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
 from pr_agent.servers.request_body_limit import create_server_app
@@ -36,6 +39,9 @@ from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_me
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 router = APIRouter()
+
+# A new MR can be unreadable for a moment after its webhook fires, so the first lookup answers 404.
+NEW_MR_LOOKUP_RETRY_DELAYS = (1, 2, 4)
 
 
 # Validated at import so a typo in CONFIG.SECRET_PROVIDER still fails at startup. The
@@ -60,7 +66,9 @@ def get_fork_safe_secret_provider():
     return _secret_provider_state["provider"]
 
 
-async def handle_request(api_url: str, body: str, log_context: dict, sender_id: str, notify=None) -> bool:
+async def handle_request(
+    api_url: str, body: str, log_context: dict, sender_id: str, notify=None
+) -> bool | RequestOutcome:
     log_context["action"] = body
     log_context["event"] = "pull_request" if body == "/review" else "comment"
     log_context["api_url"] = api_url
@@ -70,6 +78,7 @@ async def handle_request(api_url: str, body: str, log_context: dict, sender_id: 
     # against the commenter (the command actor) instead of the MR author. Fail closed when no
     # trustworthy account can be recorded (e.g. the "unknown" fallback for missing sender data).
     if isinstance(sender_id, int) and sender_id:
+        await asyncio.to_thread(apply_host_settings)
         provider = get_git_provider_with_context(pr_url=api_url)
         if hasattr(provider, "set_command_actor"):
             provider.set_command_actor(sender_id)
@@ -94,15 +103,23 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
     commands = (
         get_pr_commands("gitlab")
         if commands_conf == "pr_commands"
-        else get_settings().get(f"gitlab.{commands_conf}", {})
+        else normalize_setting_list(get_settings().get(f"gitlab.{commands_conf}", {}))
     )
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
+            # Reset diff state between auto commands: a non-empty diff or an incremental
+            # scope left by the previous command must not leak into the next (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                await agent.handle_request(api_url, new_command)
+                if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                    return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
 
@@ -258,7 +275,28 @@ def should_process_pr_logic(data) -> bool:
     return shared_should_process_pr_logic(data, provider="gitlab")
 
 
-def authenticate_gitlab_webhook(request: Request, log_context: dict):
+def _is_merge_request_not_found(error: Exception) -> bool:
+    cause = error.__cause__
+    return isinstance(cause, GitlabGetError) and cause.response_code == 404
+
+
+async def apply_new_mr_repo_settings(url: str):
+    """Apply repo settings for a just-opened MR, retrying a 404 while the MR becomes visible to the API.
+
+    Any other failure, and a 404 that outlasts the retries, is raised as before.
+    """
+    for attempt, delay in enumerate((*NEW_MR_LOOKUP_RETRY_DELAYS, None), start=1):
+        try:
+            return apply_repo_settings(url)
+        except ValueError as e:
+            if delay is None or not _is_merge_request_not_found(e):
+                raise
+            get_logger().warning(
+                f"Merge request not found yet (attempt {attempt}), retrying in {delay}s: {url}")
+            await asyncio.sleep(delay)
+
+
+async def authenticate_gitlab_webhook(request: Request, log_context: dict):
     request_token = request.headers.get("X-Gitlab-Token", "")
     shared_secret = get_settings().get("GITLAB.SHARED_SECRET")
     # Check the shared credential first to avoid cloud lookups, even during provider outages.
@@ -292,12 +330,15 @@ def authenticate_gitlab_webhook(request: Request, log_context: dict):
                     or not hmac.compare_digest(webhook_token.encode(), stored_token.encode())):
                 raise ValueError("Invalid webhook secret")
             context["settings"].set("GITLAB.PERSONAL_ACCESS_TOKEN", gitlab_token)
+            context["authenticated_provider_settings"] = {"gitlab.personal_access_token": gitlab_token}
             log_context["token_id"] = secret_dict.get("token_name", secret_dict.get("id", "unknown"))
         except Exception as e:
             get_logger().error(
                 f"Failed to validate the secret for the provided webhook token: {type(e).__name__}")
             return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
                                 content=jsonable_encoder({"message": "unauthorized"}))
+    if not get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None):
+        await asyncio.to_thread(apply_host_settings)
     gitlab_token = get_settings().get("GITLAB.PERSONAL_ACCESS_TOKEN", None)
     if not gitlab_token:
         get_logger().error("No gitlab token found")
@@ -313,7 +354,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
     log_context = {"server_type": "gitlab_app"}
     get_logger().debug("Received a GitLab webhook")
-    unauthorized_response = authenticate_gitlab_webhook(request, log_context)
+    unauthorized_response = await authenticate_gitlab_webhook(request, log_context)
     if unauthorized_response is not None:
         return unauthorized_response
     request_json = await request.json()
@@ -336,7 +377,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
             if object_attributes.get('action') in ['open', 'reopen']:
                 url = object_attributes.get('url')
                 get_logger().info(f"New merge request: {url}")
-                apply_repo_settings(url)
+                await apply_new_mr_repo_settings(url)
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
 
             # for draft to ready triggered merge requests, before the push case: one update can be both
@@ -348,7 +389,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 if get_settings().get("gitlab.feedback_on_draft_pr", False):
                     # the draft was already getting feedback, so only the push half of this update is new
                     if (object_attributes.get('oldrev')
-                            and get_settings().get("gitlab.push_commands", {})
+                            and normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
                             and get_settings().get("gitlab.handle_push_trigger", False)):
                         get_logger().debug(f'A push event has been received: {url}')
                         async with push_trigger_slot(url, allow_backlog=True, ttl=300) as proceed:
@@ -366,7 +407,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 # Apply repo settings before checking push commands or handle_push_trigger
                 apply_repo_settings(url)
 
-                commands_on_push = get_settings().get("gitlab.push_commands", {})
+                commands_on_push = normalize_setting_list(get_settings().get("gitlab.push_commands", {}))
                 handle_push_trigger = get_settings().get("gitlab.handle_push_trigger", False)
                 if not commands_on_push or not handle_push_trigger:
                     get_logger().info("Push event, but no push commands found or push trigger is disabled")
@@ -392,8 +433,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 apply_repo_settings(url)
                 handle_assignment = get_settings().get("gitlab.handle_reviewer_assignment", False)
-                if isinstance(handle_assignment, str):
-                    handle_assignment = handle_assignment.lower() in ("true", "1", "yes")
+                handle_assignment = _as_bool_setting(handle_assignment)
                 if not handle_assignment:
                     return JSONResponse(status_code=status.HTTP_200_OK,
                                         content=jsonable_encoder({"message": "success"}))
@@ -408,7 +448,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                     return JSONResponse(status_code=status.HTTP_200_OK,
                                         content=jsonable_encoder({"message": "success"}))
                 if await is_bot_assigned_as_reviewer(data):
-                    reviewer_commands = get_settings().get("gitlab.reviewer_commands", [])
+                    reviewer_commands = normalize_setting_list(get_settings().get("gitlab.reviewer_commands", []))
                     if (not isinstance(reviewer_commands, list)
                             or not all(isinstance(c, str) for c in reviewer_commands)):
                         get_logger().warning("gitlab.reviewer_commands is not a list of strings, skipping")
@@ -422,8 +462,6 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                 mr = data['merge_request']
                 url = mr.get('url')
                 comment_id = data.get('object_attributes', {}).get('id')
-                provider = get_git_provider_with_context(pr_url=url)
-
                 get_logger().info(f"A comment has been added to a merge request: {url}")
                 body = data.get('object_attributes', {}).get('note')
                 if not is_command_comment(body):
@@ -431,6 +469,8 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
                     # dispatch a tool: the dispatcher strips an optional leading slash.
                     get_logger().info("Ignoring comment not starting with /")
                     return
+                await asyncio.to_thread(apply_host_settings)
+                provider = get_git_provider_with_context(pr_url=url)
                 discussion_id = data.get('object_attributes', {}).get('discussion_id')
                 command = body.split(maxsplit=1)[0].lower() if isinstance(body, str) and body.strip() else ""
                 if (discussion_id and not data.get('object_attributes', {}).get('type')
@@ -456,7 +496,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 result = await handle_request(
                     url, body, log_context, sender_id, notify=notify_start_reaction)
-                if not dispatched:
+                if result is RequestOutcome.SKIPPED or not dispatched:
                     return
                 # `propagate_tool_errors` is off, so a tool that failed internally still returns
                 # normally. Reading that as success would tick a comment whose command never ran.

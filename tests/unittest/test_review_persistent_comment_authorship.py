@@ -21,7 +21,12 @@ from github import Auth, GithubException
 from jwt.exceptions import InvalidKeyError
 from requests.exceptions import RequestException
 
-from pr_agent.algo.comment_identity import PRReviewHeader, PRReviewIdentity, add_pr_review_identity
+from pr_agent.algo.comment_identity import (
+    PRDescriptionIdentity,
+    PRReviewHeader,
+    PRReviewIdentity,
+    add_pr_review_identity,
+)
 from pr_agent.algo.review_finding_state import append_review_state, reconcile_review_findings
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -448,3 +453,85 @@ def test_an_unusable_app_key_leaves_the_login_unresolved(monkeypatch, private_ke
 
     assert provider._resolve_app_login() == ""
     assert getattr(provider, "_app_login", None) is None
+
+
+APP_BOT_LOGIN = "pr-agent-sponsored[bot]"
+
+
+def _actions_app_token_provider(monkeypatch, comments):
+    """Actions run with a GitHub App installation token: `GET /user` fails, comments are the app's."""
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    return _github_provider(monkeypatch, "user", comments=comments, bot_login=APP_BOT_LOGIN, user_login=None)
+
+
+async def test_actions_app_token_rerun_edits_the_previous_review(monkeypatch, review_settings):
+    """With the app's login configured, an automatic review updates its earlier comment in place."""
+    monkeypatch.setattr(review_settings.github, "agent_login", APP_BOT_LOGIN, raising=False)
+    review_settings.set("CONFIG.IS_AUTO_COMMAND", True)
+    previous = FakeComment(_previous_persistent_review(), APP_BOT_LOGIN)
+    provider = _actions_app_token_provider(monkeypatch, [previous])
+    _wire_reviewer(monkeypatch, provider)
+
+    await PRReviewer(PR_URL, ai_handler=FakeAIHandler).run()
+
+    assert [c for c in provider.pr.created if not c.deleted] == []
+    assert len(previous.edits) == 1
+
+
+async def test_actions_app_token_without_agent_login_posts_a_second_review(monkeypatch, review_settings):
+    """Control: without the setting the fallback assumes `github-actions[bot]` and misses the app's comment."""
+    monkeypatch.setattr(review_settings.github, "agent_login", "", raising=False)
+    review_settings.set("CONFIG.IS_AUTO_COMMAND", True)
+    previous = FakeComment(_previous_persistent_review(), APP_BOT_LOGIN)
+    provider = _actions_app_token_provider(monkeypatch, [previous])
+    _wire_reviewer(monkeypatch, provider)
+
+    await PRReviewer(PR_URL, ai_handler=FakeAIHandler).run()
+
+    assert previous.edits == []
+    assert len([c for c in provider.pr.created if not c.deleted]) == 1
+
+
+@pytest.mark.parametrize("agent_login, found", [(APP_BOT_LOGIN, True), (f"  {APP_BOT_LOGIN}  ", True), ("", False)])
+def test_actions_app_token_previous_review_lookup(monkeypatch, review_settings, agent_login, found):
+    """`/review -i` looks up its anchor before posting anything, so it relies on the configured login."""
+    monkeypatch.setattr(review_settings.github, "agent_login", agent_login, raising=False)
+    previous = FakeComment(_previous_persistent_review(), APP_BOT_LOGIN)
+    provider = _actions_app_token_provider(monkeypatch, [previous])
+
+    assert (provider.get_previous_review(full=True, incremental=False) is previous) is found
+
+
+def test_actions_app_token_describe_updates_its_persistent_comment(monkeypatch, review_settings):
+    monkeypatch.setattr(review_settings.github, "agent_login", APP_BOT_LOGIN, raising=False)
+    previous = FakeComment(f"## Title\n\n{PRDescriptionIdentity.PERSISTENT.value}\n\nold description", APP_BOT_LOGIN)
+    provider = _actions_app_token_provider(monkeypatch, [previous])
+
+    provider.publish_persistent_comment(
+        "## Title\n\nnew description",
+        initial_header="## Title",
+        update_header=True,
+        name="describe",
+        final_update_message=False,
+        identity_marker=PRDescriptionIdentity.PERSISTENT.value,
+        legacy_initial_header="## Title",
+        require_agent_authorship=True,
+    )
+
+    assert provider.pr.created == []
+    assert len(previous.edits) == 1
+    assert "new description" in previous.body
+
+
+def test_a_resolvable_token_ignores_agent_login(monkeypatch, review_settings):
+    """The setting only replaces the fallback; a token that can call `GET /user` keeps its own login."""
+    monkeypatch.setattr(review_settings.github, "agent_login", APP_BOT_LOGIN, raising=False)
+    provider = _github_provider(monkeypatch, "user", comments=[], bot_login="octo-bot", user_login="octo-bot")
+
+    assert provider._resolve_user_login() == "octo-bot"
+
+
+def test_agent_login_is_host_only():
+    from pr_agent.config_security import is_repo_host_only_key
+
+    assert is_repo_host_only_key("github", "agent_login")

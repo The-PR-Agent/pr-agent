@@ -214,7 +214,7 @@ async def test_reject_incomplete_provider_credentials_without_lookup(monkeypatch
     '{"gitlab_token": 123, "webhook_token": "provider-token"}',
     '{"webhook_token": "provider-token"}',
 ])
-def test_reject_invalid_provider_credentials_without_installing_pat(monkeypatch, gitlab_webhook_settings, secret):
+async def test_reject_invalid_provider_credentials_without_installing_pat(monkeypatch, gitlab_webhook_settings, secret):
     import copy
 
     from starlette.requests import Request
@@ -225,13 +225,13 @@ def test_reject_invalid_provider_credentials_without_installing_pat(monkeypatch,
     request = Request({"type": "http", "headers": [(b"x-gitlab-token", b"project-secret:provider-token")]})
     log_context = {}
     with request_cycle_context({"settings": copy.deepcopy(gitlab_webhook_settings)}):
-        response = gitlab_webhook.authenticate_gitlab_webhook(request, log_context)
+        response = await gitlab_webhook.authenticate_gitlab_webhook(request, log_context)
         assert response.status_code == 401
         assert context["settings"].get("GITLAB.PERSONAL_ACCESS_TOKEN") == "glpat-dummy"
     assert log_context == {}
 
 
-def test_compare_provider_token_before_installing_request_credentials(monkeypatch, gitlab_webhook_settings):
+async def test_compare_provider_token_before_installing_request_credentials(monkeypatch, gitlab_webhook_settings):
     import copy
 
     from starlette.requests import Request
@@ -263,7 +263,7 @@ def test_compare_provider_token_before_installing_request_credentials(monkeypatc
     ]:
         request = Request({"type": "http", "headers": [(b"x-gitlab-token", f"{name}:{token}".encode())]})
         with request_cycle_context({"settings": copy.deepcopy(gitlab_webhook_settings)}):
-            assert gitlab_webhook.authenticate_gitlab_webhook(request, {}) is None
+            assert await gitlab_webhook.authenticate_gitlab_webhook(request, {}) is None
             assert context["settings"].get("GITLAB.PERSONAL_ACCESS_TOKEN") == expected_pat
 
     assert lookups == list(secrets)

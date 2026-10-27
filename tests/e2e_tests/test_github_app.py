@@ -95,7 +95,7 @@ def test_e2e_run_github_app():
         # delete the branch
         logger.info(f"Deleting the branch {new_branch}")
         repo.get_git_ref(f"heads/{new_branch}").delete()
-        raise AssertionError()
+        raise AssertionError() from e
 
 
 if __name__ == '__main__':

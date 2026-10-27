@@ -38,7 +38,7 @@ API-cost collection is a separate, default-off option controlled by `config.outp
 
 `config.output_run_details` remains the public-output gate: setting only `config.output_run_cost=true` collects run-level cost data but never adds it to a PR comment.
 
-On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere `/review` and `/describe` append the same information as plain text:
+On providers that support GitHub-Flavored Markdown this appends a collapsible section to the generated comment; elsewhere the same information is appended as plain text (except for `/improve`, see the notes below):
 
 ```
 ⚙️ Agent run details
@@ -59,6 +59,7 @@ The amount is an estimate based on LiteLLM's pricing data, not provider-invoice-
 
 Notes:
 
+- `/ask`, `/ask_line`, and `/help <question>` append the section to the published answer. `/update_changelog` appends it to its comment only; the content committed to `CHANGELOG.md` and the review comment that points at it never include it, so a push whose review succeeds shows no section. Messages that need no AI call, such as the static `/help` walkthrough or an `/ask_line` question that matches no diff lines, carry no section.
 - `/improve` appends the section only when it publishes a summary comment. If the provider lacks GFM support or `pr_code_suggestions.committable_code_suggestions` is enabled, `/improve` posts inline comments instead, so no run details section appears.
 - With `pr_description.use_description_markers=true`, repeated `/describe` runs accumulate one run details block per run because the existing PR description is preserved and only the markers are replaced.
 
@@ -284,7 +285,7 @@ success_callback = ["langfuse_otel"]
 failure_callback = ["langfuse_otel"]
 ```
 
-> Note: use `langfuse_otel` (the OpenTelemetry-based integration), not the legacy `langfuse` callback — the legacy callback is incompatible with the Langfuse 3.x SDK this project pins.
+> Note: use `langfuse_otel`, the OpenTelemetry-based integration also used by MOSAICO.
 
 Then set the following environment variables:
 
@@ -392,7 +393,7 @@ This is the recommended topology for fleets: point every PR-Agent instance at th
 
 ### Exposing native Prometheus metrics
 
-Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the gunicorn-served apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
+Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the server apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
 
 ```toml
 [otel]
@@ -424,7 +425,7 @@ Notes:
 - PR-Agent keeps its own OpenTelemetry providers and never registers the process-global one, so embedding PR-Agent in an application that already uses OpenTelemetry will not interfere with the host's telemetry. Pending spans and metrics are flushed automatically on process exit.
 - Each OTLP export call is bounded by `otlp_timeout` (default 3 seconds, retries included), so an unreachable collector cannot hang CLI exit or request completion. Raise it for slow collectors at the cost of longer worst-case stalls.
 - If `exporter_type = "otlp"` is set but no endpoint is configured, telemetry is disabled entirely (fail closed) — it never falls back to another exporter, so a missing secret cannot redirect telemetry into process logs.
-- With `exporter_type = "prometheus"`, `prometheus_multiproc_dir` must be a shared directory writable by every worker; it defaults to `/tmp/pr-agent-prometheus`. In non-gunicorn (single-process) deployments the exporter works without it and simply serves the process's own registry.
+- With `exporter_type = "prometheus"`, Gunicorn provisions `prometheus_multiproc_dir` before workers fork. It must be shared and writable by every worker and defaults to `/tmp/pr-agent-prometheus`. Direct single-process Uvicorn deployments use their own registry when no multiprocess environment signal is present; configuring the directory path alone does not activate shared state. Custom multiprocess launchers can set `PROMETHEUS_MULTIPROC_DIR` before `prometheus-client` is imported. When explicitly signaled, PR-Agent validates and uses the configured `prometheus_multiproc_dir` (or its default), which takes precedence over the environment's path.
 - **Serverless deployments** (e.g. the AWS Lambda webhooks) are supported: buffered spans and metrics are force-flushed at the end of every handled request, because frozen execution environments stop background export threads and are reaped without running exit handlers. No extra configuration is needed.
 
 ## Bringing per-repo context files to PR-Agent
@@ -433,18 +434,34 @@ Notes:
 
 To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
 
-By default, PR-Agent looks for an `AGENTS.md` file at the repository root:
+By default, PR-Agent includes the `AGENTS.md` file at the repository root:
 
 ```toml
 [config]
 repo_context_files = ["AGENTS.md"]
 ```
 
+A nested list is a group of alternatives: only the first one that yields content is used. This is opt-in, for repositories that keep the same instructions under several conventions (or symlink them) and want them sent once:
+
+```toml
+[config]
+repo_context_files = [["AGENTS.md", "CLAUDE.md", ".kiro/steering/*.md"]]
+```
+
+A nested list is a group of alternatives: only the first one that yields content is used, so a repository that keeps the same instructions under several conventions (or symlinks one file to another) sends them once. Alternatives must be repository-relative paths.
+
 You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. Set the option to an empty list to disable the feature entirely:
 
 ```toml
 [config]
 repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
+```
+
+To include architecture decision records (ADRs) or other rule files without listing each one, an entry may use a glob in its file name. On GitHub and GitLab the directory is listed and up to `repo_context_max_glob_matches` matches (default 20, at most 100) are included in name order; other providers skip glob entries with a warning. Wildcards are only allowed in the last path segment, so `docs/**/*.md` is not supported.
+
+```toml
+[config]
+repo_context_files = ["AGENTS.md", "docs/adr/*.md"]
 ```
 
 :::note[Which branch the files are read from]
@@ -513,6 +530,12 @@ PR-Agent allows you to automatically ignore certain PRs based on various criteri
 - PRs containing specific labels
 - PRs opened by specific users
 
+The title, author, label, repository, source-branch, and target-branch `ignore_*` rules also apply to
+comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In these paths,
+`ignore_pr_authors` matches the **PR author**, not the person posting the command. An ignored CLI
+request exits successfully without running the tool. Plain-diff CLI inputs (`--diff-file` and
+`--stdin`) have no PR metadata and are not excluded by these rules.
+
 ### Ignoring PRs with specific titles
 
 To ignore PRs with a specific title such as "[Bump]: ...", you can add the following to your `configuration.toml` file:
@@ -523,6 +546,12 @@ ignore_pr_title = ["\\[Bump\\]"]
 ```
 
 Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]", "^Auto"]`.
+
+The default `^Auto` pattern also matches ordinary titles such as "Autoscaling fix". Because title
+rules now apply to manual commands too, `/review`, `/ask`, and CLI `--pr_url` commands on such PRs
+are skipped. Set a narrower `ignore_pr_title` pattern or use `ignore_pr_title = []` in your
+configuration if that is not intended. A skipped request is logged without running the tool or
+posting command reactions.
 
 ### Ignoring PRs between specific branches
 
@@ -596,7 +625,7 @@ Where the `ignore_pr_authors` is a regex list of usernames that you want to igno
 There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_.
 :::
 
-### Ignoring Generated Files by Language/Framework
+## Ignoring Generated Files by Language/Framework
 
 To automatically exclude files generated by specific languages or frameworks, you can add the following to your `configuration.toml` file:
 
@@ -608,7 +637,7 @@ ignore_language_framework = ['protobuf', ...]
 You can view the list of auto-generated file patterns in [`generated_code_ignore.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/generated_code_ignore.toml).
 Files matching these glob patterns will be automatically excluded from PR Agent analysis.
 
-### Restricted Mode
+## Restricted Mode
 
 When running PR-Agent with limited GitHub/GitLab permissions, set `restricted_mode` to `true` to gracefully skip operations that require elevated access (e.g., pushing changelog changes):
 

@@ -983,15 +983,18 @@ def _get_bedrock_model_region(model: str, model_id=None) -> str | None:
     from litellm.llms.bedrock.common_utils import BedrockModelInfo
 
     # LiteLLM consumes model_id before Invoke resolves its region.
-    # Only Converse uses that separate ID or region/model path for routing.
-    is_converse = BedrockModelInfo.get_bedrock_route(model) == "converse"
+    # Only Converse uses that separate ID; Converse and Chat Completions use region/model paths for routing.
+    route = BedrockModelInfo.get_bedrock_route(model, {"model_id": model_id})
+    is_converse = route == "converse"
     if not is_converse:
         model_id = None
     candidate = model_id or model
     if not isinstance(candidate, str):
         return None
     if not model_id:
-        for prefix in ("bedrock/converse/", "bedrock/", "converse/"):
+        for prefix in (
+            "bedrock/chat_completions/", "bedrock/converse/", "bedrock/", "chat_completions/", "converse/",
+        ):
             if candidate.startswith(prefix):
                 candidate = candidate[len(prefix):]
                 break
@@ -1007,8 +1010,8 @@ def _get_bedrock_model_region(model: str, model_id=None) -> str | None:
     arn = re.match(r"\Aarn:aws(?:-[a-z0-9-]+)?:bedrock:([a-z0-9-]+):", arn_candidate)
     if arn:
         return arn.group(1)
-    # Native Converse only recognizes region/model paths when model_id is absent.
-    if is_converse and not model_id:
+    # Native Converse/Chat Completions only recognize region/model paths when model_id is absent.
+    if route in ("converse", "chat_completions") and not model_id:
         region, separator, _ = candidate.partition("/")
         if separator and region in litellm.AmazonBedrockGlobalConfig().get_all_regions():
             return region
@@ -1341,6 +1344,15 @@ def _install_databricks_keyless_bridge():
 
     setattr(validate_environment, marker, original)
     DatabricksBase.databricks_validate_environment = validate_environment
+
+
+def _google_cloud_sdk():
+    """Return Google Auth's Cloud SDK module, or None when the optional `google` extra is not installed."""
+    try:
+        from google.auth import _cloud_sdk
+    except ModuleNotFoundError:
+        return None
+    return _cloud_sdk
 
 
 def _snapshot_cloud_sdk_project(directory):
@@ -1824,11 +1836,11 @@ def _sign_bedrock_mantle_request(self, *args, **kwargs):
                     for index, parameter in enumerate(parameters)
                     if parameter.name == "api_key"
                 )
-            except (StopIteration, TypeError, ValueError):
+            except (StopIteration, TypeError, ValueError) as error:
                 raise RuntimeError(
                     "LiteLLM's Bedrock Mantle signer did not expose api_key; "
                     "request-local bearer isolation cannot be applied"
-                )
+                ) from error
             api_key_index, api_key_parameter = api_key_parameter
             if api_key_parameter.kind == api_key_parameter.KEYWORD_ONLY:
                 kwargs["api_key"] = ""

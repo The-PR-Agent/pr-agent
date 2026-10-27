@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Iterator, Optional
+from collections.abc import Iterator
+
+from pr_agent.algo.utils import iter_suggestion_blocks
 
 _MARKER_URL = r"https://github.com/The-PR-Agent/pr-agent"
 BODY_MARKER_RE = re.compile(
@@ -54,7 +56,6 @@ _MARKER_RES = (BODY_MARKER_RE, CODE_MARKER_RE, KEY_ISSUE_LOCATION_MARKER_RE)
 _LEAD_RE = re.compile(r"^\*\*Suggestion:\*\*\s*", re.IGNORECASE)
 _TAG_RE = re.compile(r"\[[^\]]+?,\s*importance:\s*\d+\]", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
-_CODE_BLOCK_RE = re.compile(r"```suggestion[^\n]*\n(.*?)```", re.DOTALL)
 _DIFF_BLOCK_RE = re.compile(r"```diff[^\n]*\n(.*?)```", re.DOTALL)
 
 
@@ -92,7 +93,7 @@ def strip_markers(body: str) -> str:
     return _strip_markers(body)
 
 
-def _body_fingerprint(relevant_file: str, target_line_no, body: str, max_chars: Optional[int]) -> str:
+def _body_fingerprint(relevant_file: str, target_line_no, body: str, max_chars: int | None) -> str:
     normalised = _LEAD_RE.sub("", _strip_markers(body))
     normalised = _TAG_RE.sub("", normalised)
     normalised = _WS_RE.sub(" ", normalised).strip().lower()
@@ -120,7 +121,7 @@ def key_issue_location_fingerprint(fingerprint: str, start_line: int, end_line: 
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
-def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[str]:
+def code_fingerprint(relevant_file: str, target_line_no, body: str) -> str | None:
     code = extract_suggestion_code(body)
     if not code:
         return None
@@ -133,18 +134,18 @@ def code_fingerprint(relevant_file: str, target_line_no, body: str) -> Optional[
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
-def extract_suggestion_code(body: str) -> Optional[str]:
+def extract_suggestion_code(body: str) -> str | None:
     body = _strip_markers(body)
-    match = _CODE_BLOCK_RE.search(body)
-    if match:
-        return match.group(1).strip("\n")
+    block = next(iter_suggestion_blocks(body), None)
+    if block is not None and block[2] is not None:
+        return block[2].strip("\n")
     diff_match = _DIFF_BLOCK_RE.search(body)
     if diff_match:
         return _reconstruct_improved_code(diff_match.group(1))
     return None
 
 
-def _reconstruct_improved_code(diff_text: str) -> Optional[str]:
+def _reconstruct_improved_code(diff_text: str) -> str | None:
     """Rebuild the post-change code from a unified diff inside a ```diff fence.
 
     Context and added lines drop their leading space or ``+`` prefix and removed
@@ -168,22 +169,22 @@ def _render_marker(prefix: str, fingerprint: str, git_provider=None) -> str:
     return f"<!-- {prefix}: {fingerprint} -->"
 
 
-def build_markers(body_fp: str, code_fp: Optional[str], git_provider=None) -> str:
+def build_markers(body_fp: str, code_fp: str | None, git_provider=None) -> str:
     markers = [_render_marker("pr-agent-dedup", body_fp, git_provider)]
     if code_fp is not None:
         markers.append(_render_marker("pr-agent-dedup-code", code_fp, git_provider))
     return "\n".join(markers)
 
 
-def _append_markers(body: str, markers: str, max_chars: Optional[int]) -> str:
+def _append_markers(body: str, markers: str, max_chars: int | None) -> str:
     suffix = f"\n\n{markers}"
     if max_chars and len(body) + len(suffix) > max_chars:
         body = body[: max(0, max_chars - len(suffix))]
     return f"{body}{suffix}"
 
 
-def body_with_markers(body: str, body_fp: str, code_fp: "Optional[str]",
-                      max_chars: "Optional[int]" = None, git_provider=None) -> str:
+def body_with_markers(body: str, body_fp: str, code_fp: str | None,
+                      max_chars: int | None = None, git_provider=None) -> str:
     """Append the dedup marker(s) to a comment body. If max_chars is given and
     body + markers would exceed it, the body is clipped (never the markers) so
     the fingerprint marker always survives for the next run's scan."""
@@ -191,7 +192,7 @@ def body_with_markers(body: str, body_fp: str, code_fp: "Optional[str]",
 
 
 def key_issue_body_with_markers(body: str, body_fp: str, location_fp: str,
-                                max_chars: Optional[int] = None, git_provider=None) -> str:
+                                max_chars: int | None = None, git_provider=None) -> str:
     markers = (f"{build_markers(body_fp, None, git_provider)}\n"
                f"{_render_marker('pr-agent-key-issue-location', location_fp, git_provider)}")
     return _append_markers(body, markers, max_chars)
@@ -288,12 +289,12 @@ class InlineCommentStore:
     def load_failed(self) -> bool:
         return self._load_failed
 
-    def seen(self, fingerprint: Optional[str]) -> bool:
+    def seen(self, fingerprint: str | None) -> bool:
         if fingerprint is None:
             return False
         return fingerprint in self.load()
 
-    def add(self, fingerprint: Optional[str]) -> None:
+    def add(self, fingerprint: str | None) -> None:
         if fingerprint is not None:
             self._keys.add(fingerprint)
 

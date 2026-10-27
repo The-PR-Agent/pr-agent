@@ -36,6 +36,10 @@ _ALLOWLIST = {
         "artifacts",
         "artifact_label",
     ): "artifacts_settings.get('artifact_label', '') in pr_agent/algo/artifacts.py",
+    (
+        "artifacts",
+        "truncate_from",
+    ): "artifacts_settings.get('truncate_from', 'start') in pr_agent/algo/artifacts.py",
     # [config] helpers that re-index the section from a variable or expression
     (
         "config",
@@ -170,7 +174,7 @@ def _key_is_read(section: str, key: str, sources: str) -> bool:
         return True
     # 2. quoted dotted paths: "SECTION.KEY" or "section.key"
     for dotted in (f"{section.upper()}.{key.upper()}", f"{section}.{key}"):
-        if re.search(re.escape(f"\"{dotted}\"") + r"|" + re.escape(f"'{dotted}'"), sources):
+        if f'"{dotted}"' in sources or f"'{dotted}'" in sources:
             return True
     # 3. settings.<section>.get("KEY")
     if re.search(

@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -20,11 +20,16 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
             add_docs_module.PRAddDocs,
             add_docs_module,
             {},
-            {"add_line_numbers_to_hunks": True, "disable_extra_lines": False},
+            {"add_line_numbers_to_hunks": True, "disable_extra_lines": False, "return_remaining_files": True},
         ),
-        (generate_labels_module.PRGenerateLabels, generate_labels_module, {"pr_id": "repo#1"}, {}),
-        (questions_module.PRQuestions, questions_module, {}, {}),
-        (update_changelog_module.PRUpdateChangelog, update_changelog_module, {}, {}),
+        (
+            generate_labels_module.PRGenerateLabels,
+            generate_labels_module,
+            {"pr_id": "repo#1"},
+            {"return_remaining_files": True},
+        ),
+        (questions_module.PRQuestions, questions_module, {}, {"return_remaining_files": True}),
+        (update_changelog_module.PRUpdateChangelog, update_changelog_module, {}, {"return_remaining_files": True}),
     ],
     ids=["add-docs", "generate-labels", "questions", "update-changelog"],
 )
@@ -47,11 +52,16 @@ async def test_prepare_prediction_forwards_attempt_output_reserve(
     tool.ai_handler = SimpleNamespace(get_output_token_reserve=output_token_reserve)
     tool.vars = {"diff": "", "conversation_history": ""}
     prediction = "labels: []\n" if tool_class is generate_labels_module.PRGenerateLabels else "prediction"
+    if tool_class is add_docs_module.PRAddDocs:
+        prediction = "Code Documentation: []\n"
     tool._get_prediction = AsyncMock(return_value=prediction)
     for name, value in attributes.items():
         setattr(tool, name, value)
 
-    get_pr_diff = MagicMock(return_value="diff")
+    # A pruned diff comes back with the files it left out.
+    get_pr_diff = MagicMock(
+        side_effect=lambda *_args, **kwargs: ("diff", ["more.py"]) if kwargs.get("return_remaining_files") else "diff"
+    )
     monkeypatch.setattr(tool_module, "get_pr_diff", get_pr_diff)
     if tool_class is generate_labels_module.PRGenerateLabels:
         monkeypatch.setattr(tool_module, "set_custom_labels", lambda *_args: None)
@@ -175,7 +185,8 @@ async def test_add_docs_does_not_call_model_when_no_diff_fits(monkeypatch):
         "for_prompt_attempt",
         lambda *_args, **_kwargs: budget,
     )
-    monkeypatch.setattr(add_docs_module, "get_pr_diff", lambda *_args, **_kwargs: "")
+    # Unprocessed files keep an empty diff a fallback case; a fully filtered PR skips instead.
+    monkeypatch.setattr(add_docs_module, "get_pr_diff", lambda *_args, **_kwargs: ("", ["a.py"]))
 
     with pytest.raises(ValueError, match="No PR diff fits"):
         await tool._prepare_prediction("fallback-model")
@@ -208,10 +219,10 @@ async def test_add_docs_removes_temporary_comment_after_terminal_failure(monkeyp
 
     await tool.run()
 
-    tool.git_provider.publish_comment.assert_called_once_with(
-        "Generating Documentation...",
-        is_temporary=True,
-    )
+    assert tool.git_provider.publish_comment.call_args_list == [
+        call("Generating Documentation...", is_temporary=True),
+        call("Failed to generate code documentation for this PR."),
+    ]
     tool.git_provider.remove_initial_comment.assert_called_once_with()
 
 
@@ -320,7 +331,12 @@ async def test_empty_attempt_diff_retries_instead_of_succeeding(
         "for_prompt_attempt",
         lambda *_args, **_kwargs: FakeBudget(),
     )
-    monkeypatch.setattr(tool_module, "get_pr_diff", lambda *_args, **_kwargs: "")
+    # Unprocessed files keep an empty diff a fallback case; a fully filtered PR skips instead.
+    monkeypatch.setattr(
+        tool_module,
+        "get_pr_diff",
+        lambda *_args, **kwargs: ("", ["a.py"]) if kwargs.get("return_remaining_files") else "",
+    )
 
     with pytest.raises(ValueError, match=f"No PR diff fits the {command} request"):
         await tool._prepare_prediction("small-model")
@@ -383,9 +399,12 @@ async def test_model_specific_diff_failure_advances_to_fallback_model(
                 user_prompt="user",
             )
 
-    def get_diff(_provider, _handler, model, **_kwargs):
+    def get_diff(_provider, _handler, model, **kwargs):
         diff_models.append(model)
-        return "" if fit_mode == "empty" and model == "small-model" else "diff"
+        if fit_mode == "empty" and model == "small-model":
+            # Unprocessed files keep an empty diff a fallback case; a fully filtered PR skips instead.
+            return ("", ["a.py"]) if kwargs.get("return_remaining_files") else ""
+        return "diff"
 
     monkeypatch.setattr(
         tool_module.AttemptTokenBudget,
@@ -440,13 +459,64 @@ async def test_generate_labels_counts_custom_schema_before_rejecting_empty_diff(
         "for_prompt_attempt",
         make_budget,
     )
-    monkeypatch.setattr(generate_labels_module, "get_pr_diff", lambda *_args, **_kwargs: "")
+    # Unprocessed files keep an empty diff a fallback case; a fully filtered PR skips instead.
+    monkeypatch.setattr(generate_labels_module, "get_pr_diff", lambda *_args, **_kwargs: ("", ["a.py"]))
 
     with pytest.raises(ValueError, match="No PR diff fits the /generate_labels request"):
         await tool._prepare_prediction("fallback-model")
 
     assert captured_variables == [{"diff": "", "custom_labels_class": "Bug | Feature"}]
     tool._get_prediction.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "tool_class, tool_module, attributes",
+    [
+        (add_docs_module.PRAddDocs, add_docs_module, {}),
+        (generate_labels_module.PRGenerateLabels, generate_labels_module, {"pr_id": "repo#1"}),
+        (update_changelog_module.PRUpdateChangelog, update_changelog_module, {}),
+    ],
+    ids=["add-docs", "generate-labels", "update-changelog"],
+)
+@pytest.mark.asyncio
+async def test_prepare_prediction_skips_when_all_changed_files_are_filtered(
+    monkeypatch,
+    tool_class,
+    tool_module,
+    attributes,
+):
+    tool = tool_class.__new__(tool_class)
+    tool.git_provider = SimpleNamespace(
+        pr=None,
+        get_pr_url=MagicMock(return_value="https://example.test/pr/1"),
+    )
+    tool.ai_handler = SimpleNamespace()
+    tool.vars = {"diff": "", "pr_link": ""}
+    tool.prediction = None
+    tool._get_prediction = AsyncMock()
+    for name, value in attributes.items():
+        setattr(tool, name, value)
+
+    class FakeBudget:
+        token_handler = object()
+
+        def require_input_capacity(self, *_args, **_kwargs):
+            return 1
+
+    monkeypatch.setattr(
+        tool_module.AttemptTokenBudget,
+        "for_prompt_attempt",
+        lambda *_args, **_kwargs: FakeBudget(),
+    )
+    # A lockfile-only or asset-only PR has no diff left after file-type filtering.
+    monkeypatch.setattr(tool_module, "get_pr_diff", lambda *_args, **_kwargs: "")
+    if tool_class is generate_labels_module.PRGenerateLabels:
+        monkeypatch.setattr(tool_module, "set_custom_labels", lambda *_args: None)
+
+    await tool._prepare_prediction("fallback-model")
+
+    tool._get_prediction.assert_not_awaited()
+    assert tool.prediction is None
 
 
 @pytest.mark.asyncio

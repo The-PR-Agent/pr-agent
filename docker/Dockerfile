@@ -1,5 +1,5 @@
-FROM python:3.14.7-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS base
-COPY --from=ghcr.io/astral-sh/uv:0.12.10@sha256:2bb3ebca0a796a155094a27773d290c4b074572e6107f171d88d086682fd2500 /uv /uvx /bin/
+FROM python:3.14.9-slim@sha256:b347e2dcbc7f0b6f9fb7182e9da6a187fb10ae715e0692518c1aed0eec94a700 AS base
+COPY --from=ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff /uv /uvx /bin/
 
 # litellm fetches its model cost map over the network at import time, so a
 # third-party change to that map can change runtime behavior with no image
@@ -87,6 +87,7 @@ COPY docker/mosaico docker/mosaico
 # and the packaging inputs that must ship every /help page suffix. Kept last so a
 # README edit only rebuilds these final layers.
 COPY scripts/check_docs_urls.py scripts/check_docs_urls.py
+COPY scripts/generate_config_reference.py scripts/generate_config_reference.py
 COPY README.md CONTRIBUTING.md SECURITY.md .dockerignore ./
 COPY MANIFEST.in setup.py ./
 

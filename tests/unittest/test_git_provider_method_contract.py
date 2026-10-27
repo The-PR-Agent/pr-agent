@@ -8,7 +8,7 @@ differ: a backend either supports the operation, has nothing to do, or declares 
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from types import SimpleNamespace
 from typing import get_type_hints
@@ -80,6 +80,7 @@ def _github(monkeypatch) -> GithubProvider:
     provider = GithubProvider.__new__(GithubProvider)
     provider.base_url = "https://api.github.example"
     provider.repo = "owner/repo"
+    provider.max_comment_chars = 65000
     provider.pr = MagicMock()
     provider.pr.get_issue_comments.return_value = [SimpleNamespace(body=COMMENT_BODY)]
     provider.pr.get_commits.return_value = [SimpleNamespace(commit=SimpleNamespace(message=COMMIT_MESSAGE))]
@@ -108,6 +109,7 @@ def _gitea(monkeypatch) -> GiteaProvider:
     provider.owner = "owner"
     provider.repo = "repo"
     provider.pr_number = 7
+    provider.sha = "head-sha"
     provider.enabled_pr = True
     provider.enabled_issue = False
     provider.issue_number = None
@@ -116,6 +118,7 @@ def _gitea(monkeypatch) -> GiteaProvider:
     provider.repo_api.add_reaction_comment.return_value = SimpleNamespace(id=REACTION_ID)
     provider.repo_api.remove_reaction_comment.return_value = SimpleNamespace(status=200)
     provider.repo_api.get_pr_commits.return_value = [{"commit": {"message": COMMIT_MESSAGE}}]
+    provider._set_pr_commits()
     return provider
 
 
@@ -185,7 +188,7 @@ def _codecommit(monkeypatch) -> CodeCommitProvider:
             "comments": [{
                 "commentId": "comment-1",
                 "content": COMMENT_BODY,
-                "creationDate": datetime(2024, 1, 1, tzinfo=timezone.utc),
+                "creationDate": datetime(2024, 1, 1, tzinfo=UTC),
             }],
         }
     ]

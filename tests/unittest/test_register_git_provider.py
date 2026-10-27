@@ -1,7 +1,6 @@
 """register_git_provider makes an out-of-tree GitProvider selectable through config.git_provider."""
 
 from types import SimpleNamespace
-from typing import Optional
 
 import pytest
 
@@ -22,7 +21,7 @@ PR_URL = "https://forge.example/owner/repo/pulls/1"
 class _ForgeProvider(GitProvider):
     """The smallest provider a package can register: concrete, so the registry can build it for a PR."""
 
-    def __init__(self, pr_url: Optional[str] = None):
+    def __init__(self, pr_url: str | None = None):
         self.pr_url = pr_url
 
     def is_supported(self, capability: str) -> bool:
@@ -81,7 +80,7 @@ class _ForgeProvider(GitProvider):
     def get_pr_labels(self, update=False):
         return []
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:

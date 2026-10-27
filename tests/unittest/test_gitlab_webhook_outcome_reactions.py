@@ -119,7 +119,7 @@ def run_comment(monkeypatch):
             return outcome
 
         monkeypatch.setattr(gitlab_webhook, "handle_request", handle_request)
-        response = client.post("/webhook", json=payload if payload else _note_event(body),
+        response = client.post("/webhook", json=payload or _note_event(body),
                                headers={"X-Gitlab-Token": "secret"})
         assert response.status_code == 200, response.text
         return provider
@@ -186,7 +186,7 @@ async def test_outcome_reaction_preserves_settings_without_blocking_the_event_lo
     monkeypatch.setattr(provider, "react_to_outcome", blocking_reaction)
     monkeypatch.setattr(gitlab_webhook, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(gitlab_webhook, "is_bot_user", lambda data: False)
-    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args: None)
+    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", AsyncMock(return_value=None))
     monkeypatch.setattr(gitlab_webhook, "handle_request", handle_request)
     background = BackgroundTasks()
     request = SimpleNamespace(json=AsyncMock(return_value=_note_event()))
@@ -286,6 +286,7 @@ def test_the_dispatcher_acknowledges_every_command_it_runs(monkeypatch, command)
 
     acknowledged = []
     monkeypatch.setattr(pr_agent_module, "PRReviewer", _Tool)  # `answer` builds one directly
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context",
                         lambda pr_url: _RecordingProvider())
@@ -315,6 +316,7 @@ def test_auto_review_never_acknowledges_on_the_real_dispatcher(monkeypatch):
 
     acknowledged = []
     monkeypatch.setattr(pr_agent_module, "PRReviewer", _Tool)
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda pr_url: None)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context",
                         lambda pr_url: _RecordingProvider())

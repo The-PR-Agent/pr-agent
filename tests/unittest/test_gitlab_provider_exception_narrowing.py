@@ -6,14 +6,14 @@ API failure and the run continued with a wrong result. Keep the API or transport
 swallowed the way callers rely on, and let a programming error propagate.
 
 Read the last group as the fallback chain the issue calls the model case: `_project_by_path`
-tries three routes, so its terminal warning has to say why all three came up empty.
+tries two routes, so its terminal warning has to say why both came up empty.
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
-from gitlab import GitlabError
+from gitlab import Gitlab, GitlabError
 from requests.exceptions import RequestException
 
 from pr_agent.git_providers.gitlab_provider import GitLabProvider
@@ -92,7 +92,7 @@ def test_resolve_comment_thread_propagates_unexpected_errors(error):
 
 
 # ---------------------------------------------------------------------------
-# _project_by_path: three routes, one reason
+# _project_by_path: two routes, one reason
 # ---------------------------------------------------------------------------
 
 def _capture_warnings(monkeypatch):
@@ -114,8 +114,7 @@ def test_project_by_path_reports_why_every_route_failed(monkeypatch):
     assert len(warnings) == 1
     message = warnings[0]
     assert "group/sub" in message
-    # All three routes are named, so the reader can tell a missing project from a dead network.
-    assert "encoded path: 404 Project Not Found" in message
+    # Both routes are named, so the reader can tell a missing project from a dead network.
     assert "raw path: 404 Project Not Found" in message
     assert "search: connection reset" in message
 
@@ -130,12 +129,30 @@ def test_project_by_path_reports_a_search_that_matched_the_wrong_project(monkeyp
     assert "search matched 1 project(s), none with this exact path" in warnings[0]
 
 
-def test_project_by_path_returns_the_project_when_a_route_works():
+@pytest.mark.parametrize(("project_path", "encoded_path"), [
+    ("group/repo", "group%2Frepo"),
+    ("group/sub/repo", "group%2Fsub%2Frepo"),
+])
+def test_project_by_path_encodes_namespaced_paths_once(monkeypatch, project_path, encoded_path):
     provider = _make_provider()
-    project = SimpleNamespace(path_with_namespace="group/sub")
-    provider.gl.projects.get.return_value = project
+    provider.gl = Gitlab("https://gitlab.example.com")
+    http_get = MagicMock(return_value={"id": 3, "path_with_namespace": project_path})
+    monkeypatch.setattr(provider.gl, "http_get", http_get)
+
+    project = provider._project_by_path(project_path)
+
+    assert project.path_with_namespace == project_path
+    http_get.assert_called_once_with(f"/projects/{encoded_path}")
+
+
+def test_project_by_path_returns_the_project_from_an_exact_search_match():
+    provider = _make_provider()
+    project = SimpleNamespace(path_with_namespace="GROUP/SUB", id=3)
+    provider.gl.projects.get.side_effect = [GitlabError("404 Project Not Found"), project]
+    provider.gl.projects.list.return_value = [project]
 
     assert provider._project_by_path("group/sub") is project
+    assert provider.gl.projects.get.call_args_list == [call("group/sub"), call(3)]
 
 
 def test_project_by_path_propagates_unexpected_errors():

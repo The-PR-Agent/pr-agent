@@ -3,7 +3,6 @@ import copy
 import re
 from datetime import date
 from functools import partial
-from typing import Tuple
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
@@ -14,7 +13,8 @@ from pr_agent.algo.pr_processing import (
     get_pr_diff,
     retry_with_fallback_models,
 )
-from pr_agent.algo.run_output import show_relevant_configurations
+from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.run_output import append_run_details, show_relevant_configurations
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
@@ -68,7 +68,10 @@ class PRUpdateChangelog:
             elif not hasattr(self.git_provider, "get_pr_file_content_snapshot"):
                 self.push_skipped_reason = "guarded file writes are not supported for this git provider"
             elif not self.git_provider.is_supported("push_code"):
-                self.push_skipped_reason = "restricted by configuration (restricted_mode)"
+                self.push_skipped_reason = (
+                    "restricted by configuration (restricted_mode)"
+                    if get_settings().config.restricted_mode else "not supported for this pull request"
+                )
         # Push only when it was requested AND is possible; otherwise fall back to a comment.
         self.commit_changelog = self.push_changelog_changes and self.push_skipped_reason is None
 
@@ -110,9 +113,11 @@ class PRUpdateChangelog:
                 f"Failed to initialize changelog generation after a read error: {setup_error}"
             )
             self._publish_changelog_read_error_fallback()
-            raise changelog_read_error
+            raise changelog_read_error  # noqa: B904
 
     async def run(self):
+        # A fresh collector so the run-details section reports only this command's model.
+        init_run_details()
         get_logger().info('Updating the changelog...')
         changelog_read_error = getattr(self, "changelog_read_error", None)
 
@@ -147,7 +152,13 @@ class PRUpdateChangelog:
                     f"Failed to generate changelog fallback after a read error: {generation_error}"
                 )
                 self._publish_changelog_read_error_fallback()
-                raise changelog_read_error
+                raise changelog_read_error  # noqa: B904
+
+            if self.prediction is None:
+                if changelog_read_error is not None:
+                    self._publish_changelog_read_error_fallback()
+                    raise changelog_read_error
+                return
 
             new_file_content, answer = self._prepare_changelog_update()
 
@@ -171,7 +182,7 @@ class PRUpdateChangelog:
                             f"\n\n> ℹ️ These changes were not pushed to the repository "
                             f"({self.push_skipped_reason})."
                         )
-                    self.git_provider.publish_comment(changelog_comment)
+                    self.git_provider.publish_comment(append_run_details(changelog_comment, self.git_provider))
         finally:
             if temporary_comment_published:
                 try:
@@ -190,6 +201,10 @@ class PRUpdateChangelog:
             "\n\n> ⚠️ These changes were not pushed because the existing "
             "CHANGELOG.md could not be read safely."
         )
+        if answer:
+            # Without an answer no model call succeeded, and this can run from __init__,
+            # before run() installs a fresh collector, so never report a model here.
+            changelog_comment = append_run_details(changelog_comment, self.git_provider)
         try:
             self.git_provider.publish_comment(changelog_comment)
         except Exception as fallback_error:
@@ -203,6 +218,7 @@ class PRUpdateChangelog:
             "\n\n> ⚠️ The repository update could not be confirmed. "
             "The generated changelog is preserved here for recovery."
         )
+        changelog_comment = append_run_details(changelog_comment, self.git_provider)
         try:
             self.git_provider.publish_comment(changelog_comment)
         except Exception as fallback_error:
@@ -228,12 +244,19 @@ class PRUpdateChangelog:
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        patches_diff = get_pr_diff(
+        output = get_pr_diff(
             self.git_provider,
             budget.token_handler,
             model,
+            return_remaining_files=True,
             output_token_reserve=output_token_reserve,
         )
+        patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
+        if not patches_diff and not remaining_files_list:
+            # Every changed file was filtered out (lockfile, asset, ignore rule), so there is
+            # nothing to add to the changelog. Skip the model chain instead of failing the command.
+            get_logger().info("PR has no analyzable files, skipping update_changelog")
+            return
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /update_changelog request for {model}")
 
@@ -244,6 +267,7 @@ class PRUpdateChangelog:
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(
@@ -263,11 +287,17 @@ class PRUpdateChangelog:
 
         # post-process the response
         response = response.strip()
-        if not response:
-            return ""
-        return strip_wrapping_code_fence(response)
+        # Check before stripping, which can turn four backticks into a stray single backtick.
+        fence_pattern = r"(?m)^[^\S\n]*(?:`{3,}[^`\n]*|~{3,}[^~\n]*)$"
+        content = re.sub(fence_pattern, "", response)
+        if content.strip():
+            response = strip_wrapping_code_fence(response)
+            content = re.sub(fence_pattern, "", response)
+        if not content.strip():
+            raise FallbackEligibleError(f"Empty changelog response from {model}")
+        return response
 
-    def _prepare_changelog_update(self) -> Tuple[str, str]:
+    def _prepare_changelog_update(self) -> tuple[str, str]:
         answer = strip_wrapping_code_fence(self.prediction.strip()).strip()
         if hasattr(self, "changelog_file"):
             existing_content = self.changelog_file
@@ -311,6 +341,9 @@ class PRUpdateChangelog:
             self._publish_changelog_write_error_fallback(answer)
             raise
 
+        if not self.git_provider.supports_changelog_update_review():
+            return
+
         try:
             await asyncio.sleep(5)  # wait for the file to be updated
         except asyncio.CancelledError:
@@ -318,7 +351,9 @@ class PRUpdateChangelog:
             # cancellation authoritative.
             try:
                 if self.git_provider.supports_changelog_update_review():
-                    self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")
+                    self.git_provider.publish_comment(
+                        append_run_details(f"**Changelog updates: 🔄**\n\n{answer}", self.git_provider)
+                    )
             except Exception as feedback_error:
                 get_logger().exception(
                     f"Failed to publish changelog fallback during cancellation: {feedback_error}"
@@ -338,7 +373,9 @@ class PRUpdateChangelog:
         except Exception:
             # we can't create a review for some reason, let's just publish a comment
             try:
-                fallback = self.git_provider.publish_comment(f"**Changelog updates: 🔄**\n\n{answer}")
+                fallback = self.git_provider.publish_comment(
+                    append_run_details(f"**Changelog updates: 🔄**\n\n{answer}", self.git_provider)
+                )
                 if self.git_provider.supports_comment_publish_confirmation() and fallback is None:
                     raise RuntimeError("The changelog fallback comment was not confirmed")
             except Exception as feedback_error:

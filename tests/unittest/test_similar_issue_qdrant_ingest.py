@@ -1,6 +1,7 @@
 """The qdrant ingest path keeps the repo sentinel consistent with every completed write."""
 import sys
 import types
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -94,6 +95,9 @@ class _StatefulQdrantClient:
 
     def __init__(self, ids=()):
         self.ids = set(ids)
+        self.payload_overrides = {}
+        self.counts = []
+        self.retrieves = []
         self.upserts = []
         self.deletes = []
 
@@ -101,11 +105,22 @@ class _StatefulQdrantClient:
         return True
 
     def count(self, collection_name=None, count_filter=None):
+        self.counts.append(count_filter)
         sentinel_id = None
         for condition in getattr(count_filter, "must", ()):
             if condition["key"] == "id":
                 sentinel_id = condition["match"].value
         return SimpleNamespace(count=1 if sentinel_id in self.ids else 0)
+
+    def retrieve(self, **kwargs):
+        self.retrieves.append(kwargs)
+        records = []
+        for id in sorted(self.ids, reverse=True):
+            point_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"example-repo:{id}").hex
+            if point_id in kwargs["ids"]:
+                payload = self.payload_overrides.get(id, {"id": id, "metadata": {"repo": "example-repo"}})
+                records.append(SimpleNamespace(id=point_id, payload=payload))
+        return records
 
     def upsert(self, collection_name=None, points=None, **kwargs):
         self.upserts.append([point.payload["id"] for point in points])
@@ -154,7 +169,6 @@ def _make_tool(monkeypatch, client):
     tool.qdrant = client
     tool.qdrant_collection_name = "codium-ai-pr-agent-issues-v2"
     tool.max_issues_to_scan = 100
-    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 0)
     tool._process_issue = lambda issue: (
         f"title: {issue.title}\nbody: {issue.body}",
         [],
@@ -184,7 +198,7 @@ class FakeProvider:
         return True
 
     def __init__(self, issues=None):
-        self._issues = list(issues) if issues is not None else [_make_issue(1)]
+        self._issues = issues if issues is not None else [_make_issue(1)]
         self.github_client = SimpleNamespace(
             get_repo=lambda repo_name: SimpleNamespace(
                 full_name="Example/Repo",
@@ -205,11 +219,6 @@ def _stub_constructor_dependencies(monkeypatch, client, issues):
 
     monkeypatch.setattr(psi, "get_git_provider", lambda: provider_factory)
     monkeypatch.setattr(psi, "_provider_supports_issue_indexing", lambda: True)
-    monkeypatch.setattr(
-        psi,
-        "TokenHandler",
-        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
-    )
 
 
 def test_qdrant_sentinel_is_the_final_point_of_a_full_ingest(monkeypatch):
@@ -232,13 +241,11 @@ def test_qdrant_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
     client = FakeQdrantClient()
     tool = _make_tool(monkeypatch, client)
     tool.max_issues_to_scan = 2
-    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 10 ** 6)
-    monkeypatch.setattr(psi, "get_max_tokens", lambda model: 8192)
 
     oversized = SimpleNamespace(
         pull_request=False,
         title="Oversized",
-        body="x" * 9000,
+        body="🧪" * 4000,
         number=1,
         user=SimpleNamespace(login="user"),
         created_at="2020-01-01",
@@ -275,23 +282,103 @@ def test_qdrant_collection_without_sentinel_reingests_full(monkeypatch):
     assert "example_issue_example-repo" in client.ids
 
 
+def test_qdrant_full_ingest_stops_fetching_after_the_scan_limit(monkeypatch):
+    """Do not consume every GitHub issues page just to index a bounded prefix."""
+    scanned = []
+
+    def issue_pages():
+        for number in range(1, 8):
+            scanned.append(number)
+            if number > 3:
+                pytest.fail("issue iterator was exhausted past the scan limit")
+            issue = _make_issue(number)
+            if number == 1:
+                issue.pull_request = True
+            yield issue
+
+    client = _StatefulQdrantClient()
+    _stub_constructor_dependencies(monkeypatch, client, issues=issue_pages())
+    monkeypatch.setattr(SettingsStub.pr_similar_issue, "max_issues_to_scan", 2)
+
+    psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+
+    assert scanned == [1, 2, 3]
+    assert client.upserts[0] == ["issue_2.issue", "issue_3.issue"]
+    assert client.upserts[1] == ["example_issue_example-repo"]
+
+
 def test_qdrant_incremental_backfills_an_older_index_gap(monkeypatch):
     """Keep scanning past indexed issues and backfill an older missing issue.
 
     With the sentinel and the newest issue already indexed, a deleted older issue must be
     re-added by a normal incremental run, without a forced refresh.
     """
-    client = _StatefulQdrantClient(ids={"example_issue_example-repo", "issue_5.issue"})
+    client = _StatefulQdrantClient(ids={
+        "example_issue_example-repo", "issue_5.issue", "issue_3.issue", "issue_2.issue",
+    })
+    client.payload_overrides = {
+        "issue_3.issue": {"id": "issue_3.issue", "metadata": {"repo": "other-repo"}},
+        "issue_6.issue": None,
+        "issue_7.issue": {},
+        "issue_8.issue": {"id": "issue_8.issue"},
+        "issue_9.issue": {"id": "issue_9.issue", "metadata": []},
+        "issue_10.issue": {"metadata": {"repo": "example-repo"}},
+    }
+    client.ids.update(client.payload_overrides)
     _stub_constructor_dependencies(
-        monkeypatch, client, issues=[_make_issue(5), _make_issue(4)]
+        monkeypatch, client, issues=[_make_issue(number) for number in (5, 4, 3, 2, 6, 7, 8, 9, 10)]
     )
 
     psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
 
     assert len(client.upserts) == 2
-    assert client.upserts[0] == ["issue_4.issue"]
+    assert client.upserts[0] == [f"issue_{number}.issue" for number in (4, 3, 6, 7, 8, 9, 10)]
     assert client.upserts[1] == ["example_issue_example-repo"]
     assert "issue_4.issue" in client.ids
+    assert "example_issue_example-repo" in client.ids
+
+
+@pytest.mark.parametrize("scan_limit, fail_lookup", [(0, False), (100, False), (101, False), (500, False), (101, True)])
+def test_qdrant_incremental_lookups_are_bounded(monkeypatch, scan_limit, fail_lookup):
+    scanned = []
+
+    def issue_pages():
+        pull_request = _make_issue(1000)
+        pull_request.pull_request = True
+        yield pull_request
+        for number in range(1, scan_limit + 2):
+            scanned.append(number)
+            yield _make_issue(number)
+
+    client = _StatefulQdrantClient(ids={
+        "example_issue_example-repo", *(f"issue_{number}.issue" for number in range(1, scan_limit + 1)),
+    })
+    original_retrieve = client.retrieve
+
+    def retrieve(**kwargs):
+        assert len(scanned) == sum(len(call["ids"]) for call in client.retrieves) + len(kwargs["ids"])
+        if fail_lookup:
+            raise RuntimeError("lookup failed")
+        return original_retrieve(**kwargs)
+
+    client.retrieve = retrieve
+    _stub_constructor_dependencies(monkeypatch, client, issues=issue_pages())
+    monkeypatch.setattr(SettingsStub.pr_similar_issue, "max_issues_to_scan", scan_limit)
+
+    if fail_lookup:
+        with pytest.raises(RuntimeError, match="lookup failed"):
+            psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+    else:
+        psi.PRSimilarIssue("https://github.com/Example/Repo/issues/1", ai_handler=None)
+        assert len(client.retrieves) == (scan_limit + 99) // 100
+        assert all(0 < len(call["ids"]) <= 100 for call in client.retrieves)
+        assert all(call["collection_name"] == "codium-ai-pr-agent-issues-v2" for call in client.retrieves)
+        assert all(call["with_payload"] == ["id", "metadata.repo"] for call in client.retrieves)
+        assert all(call["with_vectors"] is False for call in client.retrieves)
+        assert scanned == list(range(1, scan_limit + 1))
+    assert len(client.counts) == 1
+    assert client.upserts == []
+    assert client.deletes == []
     assert "example_issue_example-repo" in client.ids
 
 

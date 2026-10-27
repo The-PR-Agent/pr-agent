@@ -499,3 +499,15 @@ code_suggestions:
             assert any("Failed to parse AI prediction after fallbacks" in m for m in captured)
         finally:
             get_logger().remove(sink_id)
+
+    def test_failed_unchanged_yaml_is_parsed_only_once(self, monkeypatch):
+        from unittest.mock import Mock
+
+        from pr_agent.algo import utils
+
+        original_safe_load = utils.yaml.safe_load
+        parse = Mock(wraps=original_safe_load)
+        monkeypatch.setattr(utils.yaml, "safe_load", parse)
+        response = "valid: value\ntruncated: ["
+        assert try_fix_yaml(response) is None
+        assert sum(call.args[0] == response for call in parse.call_args_list) == 1

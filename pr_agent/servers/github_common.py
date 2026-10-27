@@ -6,20 +6,15 @@ no longer pulls in pr_agent.servers.github_app, whose import switches logs to
 JSON and overrides GITHUB.DEPLOYMENT_TYPE to "app".
 """
 
-from typing import Any, Dict, Optional
+from typing import Any
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.servers.utils import is_ask_command_comment
 
 
 def _normalise_setting_list(value):
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, (list, tuple, set)):
-        return list(value)
-    return [value]
+    return normalize_setting_list(value)
 
 
 def matches_review_state(review_state: Any, configured_states: Any) -> bool:
@@ -36,7 +31,7 @@ def matches_review_state(review_state: Any, configured_states: Any) -> bool:
     )
 
 
-def _reformat_quote_ask_command(comment_body: str) -> Optional[str]:
+def _reformat_quote_ask_command(comment_body: str) -> str | None:
     """Move a /ask command buried in a quoted Golf/mobile reply to the front so it
     is dispatched, preserving the whole question text. Returns None when the
     comment is not an image-quote reply carrying a /ask."""
@@ -46,7 +41,7 @@ def _reformat_quote_ask_command(comment_body: str) -> Optional[str]:
     return '/ask' + after + ' \n' + before.strip().lstrip('>')
 
 
-def handle_line_comments(body: Dict, comment_body: [str, Any]):
+def handle_line_comments(body: dict, comment_body: [str, Any]):
     if not comment_body:
         return ""
     start_line = body["comment"]["start_line"] or body["comment"].get("original_start_line")

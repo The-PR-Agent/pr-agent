@@ -155,7 +155,7 @@ class TokenHandler:
 
     def _azure_mode(self) -> bool:
         """Return whether the configured OpenAI endpoint is Azure OpenAI."""
-        return get_settings(use_context=False).get("OPENAI.API_TYPE", None) == "azure"
+        return get_settings().get("OPENAI.API_TYPE", None) == "azure"
 
     def _provider_from_model(self) -> str | None:
         """Return the litellm provider key for the configured model, when inferable.
@@ -191,7 +191,7 @@ class TokenHandler:
         provider = self._provider_from_model()
         if provider is None:
             return None, None
-        settings = get_settings(use_context=False)
+        settings = get_settings()
         setting_paths = PROVIDER_SETTING_PATHS.get(provider)
         api_key = settings.get(setting_paths.get("api_key"), None) if setting_paths else None
         api_base = settings.get(setting_paths.get("api_base"), None) if setting_paths else None
@@ -228,7 +228,7 @@ class TokenHandler:
         provider = self.model.split("/", 1)[0].lower() if "/" in self.model else None
         if provider not in (None, "openai", "azure"):
             return self.model
-        deployment_id = get_settings(use_context=False).get("openai.deployment_id", None)
+        deployment_id = get_settings().get("openai.deployment_id", None)
         model_name = self.model.split("/", 1)[1] if "/" in self.model else self.model
         if deployment_id:
             return f"azure/{deployment_id}"
@@ -313,7 +313,7 @@ class TokenHandler:
         accurate_count = _await_coroutine(self._acount_tokens(patch))
         if accurate_count > 0:
             return accurate_count
-        if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get("OPENAI.KEY"):
+        if ModelTypeValidator.is_openai_model(model_name) and get_settings().get("OPENAI.KEY"):
             return default_estimate
 
         return self._apply_estimation_factor(model_name, default_estimate)

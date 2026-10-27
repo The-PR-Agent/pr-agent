@@ -2,9 +2,9 @@ import re
 from collections import Counter
 from datetime import datetime
 from types import SimpleNamespace
-from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
+from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
 from pr_agent.algo.language_handler import build_language_file_matcher, is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
@@ -27,7 +27,7 @@ class PullRequestCCMimic:
     This class mimics the PullRequest class from the PyGithub library for the CodeCommitProvider.
     """
 
-    def __init__(self, title: str, diff_files: List[FilePatchInfo], targets=None):
+    def __init__(self, title: str, diff_files: list[FilePatchInfo], targets=None):
         self.title = title
         self.diff_files = diff_files
         self.targets = targets or []
@@ -50,17 +50,17 @@ class CodeCommitFile:
         b_path: str,
         b_blob_id: str,
         edit_type: EDIT_TYPE,
-        repository_name: Optional[str] = None,
-        source_commit: Optional[str] = None,
-        destination_commit: Optional[str] = None,
-        comparison_base_commit: Optional[str] = None,
+        repository_name: str | None = None,
+        source_commit: str | None = None,
+        destination_commit: str | None = None,
+        comparison_base_commit: str | None = None,
     ):
         self.a_path = a_path
         self.a_blob_id = a_blob_id
         self.b_path = b_path
         self.b_blob_id = b_blob_id
         self.edit_type: EDIT_TYPE = edit_type
-        self.filename = b_path if b_path else a_path
+        self.filename = b_path or a_path
         self.repository_name = repository_name
         self.source_commit = source_commit
         self.destination_commit = destination_commit
@@ -79,9 +79,14 @@ class CodeCommitProvider(GitProvider):
     # cap is measured on what CodeCommit actually receives. Class-level, like
     # the other providers' max_comment_length, minus the truncation marker
     # limit_output_characters appends.
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        return policy_metadata(title=self.pr.title, sender=policy_value(self.pr, "author_arn"),
+                               repo_full_name=self.repo_name, source_branch=self.pr.source_branch,
+                               target_branch=self.pr.destination_branch)
+
     max_comment_length = 10240 - len("...")
 
-    def __init__(self, pr_url: Optional[str] = None, incremental: Optional[bool] = False):
+    def __init__(self, pr_url: str | None = None, incremental: bool | None = False):
         self.codecommit_client = CodeCommitClient()
         self.aws_client = None
         self.repo_name = None
@@ -124,16 +129,16 @@ class CodeCommitProvider(GitProvider):
 
     def get_files(self) -> list[CodeCommitFile]:
         # bring files from CodeCommit only once
-        if self.git_files:
+        if self.git_files is not None:
             return self.git_files
 
-        self.git_files = []
+        git_files = []
         for target in self._get_target_contexts():
             differences = self.codecommit_client.get_differences(
                 target["repository_name"], target["comparison_base_commit"], target["source_commit"]
             )
             for item in differences:
-                self.git_files.append(
+                git_files.append(
                     CodeCommitFile(
                         item.before_blob_path,
                         item.before_blob_id,
@@ -146,6 +151,7 @@ class CodeCommitProvider(GitProvider):
                         comparison_base_commit=target["comparison_base_commit"],
                     )
                 )
+        self.git_files = git_files
         return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
@@ -202,7 +208,16 @@ class CodeCommitProvider(GitProvider):
                 else:
                     new_file_content_str = ""
             except UnicodeDecodeError as e:
-                get_logger().warning(f"Skipping non-UTF-8 file in CodeCommit diff: {diff_item.filename!r} ({e})")
+                get_logger().warning(f"Could not decode CodeCommit file: {diff_item.filename!r} ({e})")
+                diff_files.append(FilePatchInfo(
+                    base_file="",
+                    head_file="",
+                    patch="",
+                    filename=diff_item.filename,
+                    edit_type=diff_item.edit_type,
+                    old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path,
+                    content_fetch_failed=True,
+                ))
                 continue
 
             patch = load_large_diff(patch_filename, new_file_content_str, original_file_content_str)
@@ -257,11 +272,12 @@ class CodeCommitProvider(GitProvider):
                                    final_update_message=True,
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
+                                   legacy_initial_header: str | None = None,
+                                   require_agent_authorship: bool = False):
         if as_thread:
             get_logger().debug("CodeCommit does not support threaded persistent comments; publishing as a PR comment")
 
-        if not identity_marker:
+        if not identity_marker or require_agent_authorship:
             get_logger().debug(
                 "CodeCommit persistent comment updates require a stable identity marker; publishing a new comment"
             )
@@ -415,7 +431,7 @@ class CodeCommitProvider(GitProvider):
         try:
             pr_id = f"{self.repo_name}/{self.pr_num}"
             return pr_id
-        except:
+        except AttributeError:
             return ""
 
     @cache_languages
@@ -466,7 +482,7 @@ class CodeCommitProvider(GitProvider):
             target["repository_name"], settings_filename, target["destination_commit"], optional=True
         )
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         get_logger().info("CodeCommit provider does not support eyes reaction yet")
         return None
 
@@ -475,7 +491,7 @@ class CodeCommitProvider(GitProvider):
         return True
 
     @staticmethod
-    def _parse_pr_url(pr_url: str) -> Tuple[str, int]:
+    def _parse_pr_url(pr_url: str) -> tuple[str, int]:
         """
         Parse the CodeCommit PR URL and return the repository name and PR number.
 
@@ -545,6 +561,7 @@ class CodeCommitProvider(GitProvider):
         # Return our object that mimics PullRequest class from the PyGithub library
         # (This strategy was copied from the LocalGitProvider)
         mimic = PullRequestCCMimic(response.title, diff_files, targets=response.targets)
+        mimic.author_arn = getattr(response, "author_arn", None)
         mimic.description = response.description
         mimic.source_commit = response.targets[0].source_commit
         mimic.source_branch = response.targets[0].source_branch
@@ -649,7 +666,7 @@ class CodeCommitProvider(GitProvider):
                 identifiers,
                 identity_marker,
                 used_comment_ids,
-                lambda candidate: matcher(candidate, target),
+                lambda candidate, matcher=matcher: matcher(candidate, target),
             )
             if comment is not None:
                 return comment

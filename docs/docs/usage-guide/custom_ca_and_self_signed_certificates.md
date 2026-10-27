@@ -5,7 +5,7 @@ sidebar_position: 11
 
 When PR-Agent runs behind a corporate TLS-inspecting proxy or against servers using self-signed certificates, HTTPS calls to the LLM provider and git operations can fail with `certificate verify failed` errors. The fix requires two pieces: telling the HTTP clients which CA bundle to trust, and making LiteLLM use a transport that honours that bundle.
 
-### Environment variables for CA trust
+## Environment variables for CA trust
 
 PR-Agent reads three environment variables when building the git clone environment, in the order below. The first one that is **set** wins, and if it points to a file that does not exist PR-Agent logs a warning and configures no bundle for git rather than falling through to the next variable:
 
@@ -25,7 +25,7 @@ export SSL_CERT_FILE=/etc/ssl/certs/corporate-ca-bundle.crt
 
 These variables are read from the process environment, so they must be exported in the runner or shell profile; a `.secrets.toml` `[env]` section does **not** reach `os.environ` and cannot set them.
 
-### LiteLLM transport fallback
+## LiteLLM transport fallback
 
 By default LiteLLM uses aiohttp for HTTP calls, and aiohttp does not honour the standard CA environment variables. Setting `litellm.disable_aiohttp` makes LiteLLM fall back to httpx, which reads `SSL_CERT_FILE` (and `SSL_CERT_DIR`). httpx does not read `REQUESTS_CA_BUNDLE`, so the LLM call needs `SSL_CERT_FILE` specifically.
 
@@ -36,11 +36,11 @@ disable_aiohttp = true
 
 This setting is read once when the LiteLLM handler initialises, so it must be present before the process starts (runner environment or `.secrets.toml`, not a runtime override).
 
-### Scope of `gitlab.ssl_verify`
+## Scope of `gitlab.ssl_verify`
 
 The `gitlab.ssl_verify` setting (or `gitlab__SSL_VERIFY` environment variable) is passed only to the python-gitlab client that talks to the GitLab API. It does **not** affect the LLM call, git clone operations, or any other HTTPS client in the process. If you are seeing certificate errors from LiteLLM or git clone, use the environment variables above instead.
 
-### Putting it all together
+## Putting it all together
 
 For a runner behind a corporate proxy with a custom CA:
 

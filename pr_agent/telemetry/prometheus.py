@@ -23,7 +23,7 @@ requirement this module exists for, and it ships as a 0.x pre-release.
 """
 
 import re
-from typing import Any, Dict, Tuple
+from typing import Any
 
 from opentelemetry.sdk.metrics import Counter
 from opentelemetry.sdk.metrics.export import (
@@ -129,8 +129,8 @@ class PrometheusMetricExporter(MetricExporter):
     def __init__(self):
         super().__init__(preferred_temporality={Counter: AggregationTemporality.DELTA})
         # metric name -> (label_names, prometheus_client metric object)
-        self._counters: Dict[str, Tuple] = {}
-        self._gauges: Dict[str, Tuple] = {}
+        self._counters: dict[str, tuple] = {}
+        self._gauges: dict[str, tuple] = {}
 
     def export(self, metrics_data, timeout_millis=10_000, **kwargs) -> MetricExportResult:
         try:

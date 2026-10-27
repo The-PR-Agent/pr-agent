@@ -8,6 +8,7 @@ from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.git_providers.gitea_provider as gitea_module
+import pr_agent.git_providers.gitlab_provider as gitlab_module
 from pr_agent.algo import artifacts
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as provider_utils
@@ -28,6 +29,9 @@ def test_incomplete_file_errors_share_only_provider_neutral_base():
     assert not issubclass(IncompleteBitbucketPullRequestFilesError, IncompletePullRequestFilesError)
     assert issubclass(gitea_module.IncompleteGiteaPullRequestFilesError, IncompleteProviderPullRequestFilesError)
     assert not issubclass(gitea_module.IncompleteGiteaPullRequestFilesError, IncompletePullRequestFilesError)
+    assert issubclass(gitlab_module.IncompleteGitLabDiffError, IncompleteProviderPullRequestFilesError)
+    assert issubclass(gitlab_module.IncompleteGitLabDiffError, gitlab_module.DiffNotFoundError)
+    assert not issubclass(gitlab_module.IncompleteGitLabDiffError, IncompletePullRequestFilesError)
 
 
 @pytest.mark.asyncio
@@ -113,6 +117,7 @@ def reset_response_language():
 
 
 def _patch_request_dependencies(monkeypatch, validate_result=(True, None), update_settings_fn=None):
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     if update_settings_fn is None:
         update_settings_fn = _identity_args
 
@@ -213,8 +218,8 @@ async def test_prepared_override_wins_after_repo_settings_and_next_command_reloa
         async def run(self):
             observed.append(get_settings().get("PR_REVIEWER.EXTRA_INSTRUCTIONS"))
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
 
@@ -258,8 +263,8 @@ async def test_prepared_overrides_control_repository_loading(monkeypatch, settin
                              settings.pr_reviewer.require_tests_review,
                              settings.pr_reviewer.extra_instructions))
 
+    monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(provider_utils, "get_git_provider_with_context", lambda _url: provider)
-    monkeypatch.setattr(pr_agent_module, "reapply_artifact_context", lambda: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setitem(pr_agent_module.command2class, "review", FakeReview)
 
@@ -416,6 +421,48 @@ async def test_incomplete_github_files_constructor_error_publishes_sanitized_not
     assert "command was not run" in published
     assert secret not in published
     assert pr_agent_module.IncompletePullRequestFilesError.notice_marker in published.splitlines()[:5]
+
+
+@pytest.mark.asyncio
+async def test_incomplete_gitlab_diff_constructor_error_publishes_sanitized_notice(monkeypatch):
+    secret = "private/repository diff mismatch with request details"
+    provider = _incomplete_files_provider()
+
+    class IncompleteTool:
+        def __init__(self, pr_url, ai_handler, args):
+            raise gitlab_module.IncompleteGitLabDiffError(secret)
+
+    _patch_request_dependencies(monkeypatch)
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+    monkeypatch.setitem(pr_agent_module.command2class, "custom", IncompleteTool)
+
+    handled = await pr_agent_module.PRAgent()._handle_request(
+        "https://example/pr/1", "/custom"
+    )
+
+    assert handled is False
+    provider.publish_comment.assert_called_once()
+    published = provider.publish_comment.call_args.args[0]
+    assert "GitLab returned an incomplete or inconsistent merge-request diff" in published
+    assert "command was not run" in published
+    assert gitlab_module.IncompleteGitLabDiffError.notice_marker in published.splitlines()[:5]
+    assert secret not in published
+
+
+def test_incomplete_gitlab_diff_notice_deduplicates_trusted_agent_comment(monkeypatch):
+    marker = gitlab_module.IncompleteGitLabDiffError.notice_marker
+    existing = {"body": f"## Existing notice\n\n{marker}\n\nDetails"}
+    provider = _incomplete_files_provider([existing])
+    provider.is_comment_authored_by_pr_agent.return_value = True
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", gitlab_module.IncompleteGitLabDiffError("incomplete")
+    )
+
+    provider.publish_comment.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -630,6 +677,24 @@ def test_incomplete_files_notice_fails_open_when_comment_lookup_fails(monkeypatc
     provider.publish_comment.assert_called_once()
 
 
+def test_incomplete_files_notice_publishes_when_lazy_comment_page_fails(monkeypatch):
+    provider = _incomplete_files_provider()
+
+    def incomplete_comments():
+        yield {"body": "Unrelated comment"}
+        raise RuntimeError("comment page unavailable")
+
+    provider.get_issue_comments_newest_first.return_value = incomplete_comments()
+    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _pr_url: provider)
+
+    pr_agent_module.publish_incomplete_files_comment(
+        "https://example/pr/1", pr_agent_module.IncompletePullRequestFilesError("incomplete")
+    )
+
+    provider.publish_comment.assert_called_once()
+
+
 def test_incomplete_files_notice_fails_open_when_comment_body_cannot_be_read(monkeypatch):
     provider = _incomplete_files_provider([object()])
     provider._get_comment_body.side_effect = RuntimeError("comment decoding failed")
@@ -800,18 +865,25 @@ async def test_handle_request_auto_review_uses_reviewer_auto_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeypatch, tmp_path):
+async def test_auto_review_keeps_prepared_artifact_context_without_notifying(monkeypatch, tmp_path):
     artifact = tmp_path / "artifact.txt"
     artifact.write_text("AUTO_REVIEW_ARTIFACT", encoding="utf-8")
     settings = get_settings()
     original_artifacts = settings.get("ARTIFACTS")
     original_instructions = settings.pr_reviewer.extra_instructions
+    artifact_token = artifacts._artifact_context.set(None)
     observed = []
     notify = Mock()
 
     class FakeReviewer:
         def __init__(self, _pr_url, is_answer=False, is_auto=False, args=None, ai_handler=None):
-            observed.append((is_answer, is_auto, args, str(settings.pr_reviewer.extra_instructions)))
+            observed.append((
+                is_answer,
+                is_auto,
+                args,
+                str(settings.pr_reviewer.extra_instructions),
+                artifacts.get_artifact_context("pr_reviewer"),
+            ))
 
         async def run(self):
             return None
@@ -841,15 +913,17 @@ async def test_auto_review_reapplies_prepared_artifact_without_notifying(monkeyp
         )
 
         assert handled is True
-        assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text in observed] == [
+        assert [(is_answer, is_auto, args) for is_answer, is_auto, args, _text, _context in observed] == [
             (False, True, ["--kept"])
         ]
         assert observed[0][3].startswith("Repository instructions")
-        assert observed[0][3].count("AUTO_REVIEW_ARTIFACT") == 1
+        assert observed[0][3].count("AUTO_REVIEW_ARTIFACT") == 0
+        assert observed[0][4]["content"] == "AUTO_REVIEW_ARTIFACT"
         notify.assert_not_called()
     finally:
         settings.set("ARTIFACTS", original_artifacts, merge=False)
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
+        artifacts._artifact_context.reset(artifact_token)
 
 
 @pytest.mark.asyncio
@@ -872,13 +946,15 @@ async def test_unscoped_dispatcher_does_not_load_artifact_or_change_instructions
     try:
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", "Unscoped instructions")
         _patch_request_dependencies(monkeypatch)
-        monkeypatch.setattr(artifacts, "load_artifact", fail_if_loaded)
+        monkeypatch.setattr(artifacts, "load_artifact_context", fail_if_loaded)
+        monkeypatch.setattr(artifacts, "_read_and_truncate", fail_if_loaded)
         monkeypatch.setitem(pr_agent_module.command2class, "review", FakeTool)
 
         handled = await pr_agent_module.PRAgent()._handle_request("https://example/pr/1", "/review")
 
         assert handled is True
         assert observed == ["Unscoped instructions"]
+        assert artifacts.get_artifact_context("pr_reviewer") is None
     finally:
         settings.set("PR_REVIEWER.EXTRA_INSTRUCTIONS", original_instructions)
         artifacts._artifact_context.reset(token)

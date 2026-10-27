@@ -3,11 +3,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 import pr_agent.algo.pr_processing as pr_processing
 import pr_agent.algo.token_budget as token_budget_module
 import pr_agent.tools.pr_code_suggestions as pr_code_suggestions_module
 from pr_agent.algo.comment_identity import PRCodeSuggestionsHeader, PRCodeSuggestionsIdentity
+from pr_agent.algo.pr_processing import PackedPRDiffs
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
@@ -52,23 +54,28 @@ def _valid_suggestion(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_get_prediction_rejects_a_clipped_suggestion_chunk():
+async def test_get_prediction_rejects_over_budget_chunk_without_truncating():
     tool = _make_tool()
     tool.ai_handler.chat_completion = AsyncMock()
-    tool._suggestion_attempt_budget = SimpleNamespace(
+    budget = SimpleNamespace(
         model="attempt-model",
-        fit_optional_text=MagicMock(
-            return_value=SimpleNamespace(
-                optional_text="clipped diff",
-                system_prompt="system",
-                user_prompt="user",
-            )
-        ),
+        render_prompt_templates=MagicMock(return_value=("system", "user")),
+        prepare_request=MagicMock(return_value=SimpleNamespace(input_tokens=101)),
+        input_token_limit=MagicMock(return_value=100),
     )
+    tool._suggestion_attempt_budget = budget
 
     with pytest.raises(ValueError, match="complete suggestion chunk"):
         await tool._get_prediction("attempt-model", "numbered diff", "complete diff")
 
+    budget.render_prompt_templates.assert_called_once_with({
+        "diff": "numbered diff",
+        "diff_no_line_numbers": "complete diff",
+    })
+    budget.prepare_request.assert_called_once_with(tool.ai_handler, "system", "user")
+    budget.input_token_limit.assert_called_once_with(
+        pr_processing.OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True
+    )
     tool.ai_handler.chat_completion.assert_not_awaited()
 
 
@@ -84,7 +91,13 @@ code_suggestions:
     improved_code: new()
   - one_sentence_summary: Avoid duplicated work
     label: maintainability
-    relevant_file: app.py
+    relevant_file: worker.py
+    suggestion_content: Use the shared helper in the other file.
+    existing_code: old_worker()
+    improved_code: new_worker()
+  - one_sentence_summary: Avoid duplicated work
+    label: maintainability
+    relevant_file: " app.py "
     suggestion_content: Duplicate summary.
     existing_code: old()
     improved_code: newer()
@@ -97,9 +110,48 @@ code_suggestions:
 
     data = tool._prepare_pr_code_suggestions(prediction)
 
-    assert len(data["code_suggestions"]) == 1
-    assert data["code_suggestions"][0]["one_sentence_summary"] == "Avoid duplicated work"
-    assert data["code_suggestions"][0]["improved_code"] == "new()"
+    assert [s["relevant_file"] for s in data["code_suggestions"]] == ["app.py", "worker.py"]
+    assert [s["one_sentence_summary"] for s in data["code_suggestions"]] == ["Avoid duplicated work"] * 2
+    assert [s["improved_code"] for s in data["code_suggestions"]] == ["new()", "new_worker()"]
+
+
+def test_prepare_pr_code_suggestions_incomplete_entry_does_not_reserve_summary():
+    tool = _make_tool()
+    incomplete = _valid_suggestion()
+    del incomplete["improved_code"]
+    complete = _valid_suggestion(improved_code="complete()")
+
+    data = tool._prepare_pr_code_suggestions(yaml.safe_dump({"code_suggestions": [incomplete, complete]}))
+
+    assert data["code_suggestions"] == [complete]
+
+
+def test_prepare_pr_code_suggestions_compares_list_summaries_without_hashing():
+    tool = _make_tool()
+    suggestions = [
+        _valid_suggestion(one_sentence_summary=["Reuse", "helper"]),
+        _valid_suggestion(one_sentence_summary=["Reuse", "helper"], improved_code="duplicate()"),
+        _valid_suggestion(one_sentence_summary=["Reuse", "helper"], relevant_file="worker.py"),
+    ]
+
+    data = tool._prepare_pr_code_suggestions(yaml.safe_dump({"code_suggestions": suggestions}))
+
+    assert data["code_suggestions"] == [suggestions[0], suggestions[2]]
+
+
+@pytest.mark.parametrize("files", [("app.py", ""), ("", "app.py"), ("app.py", 123), (123, "app.py")])
+def test_prepare_pr_code_suggestions_preserves_global_dedup_for_invalid_files(files):
+    tool = _make_tool()
+    suggestions = [
+        _valid_suggestion(relevant_file=files[0], improved_code="first()"),
+        _valid_suggestion(relevant_file=files[1], improved_code="second()"),
+    ]
+    prediction = yaml.safe_dump({"code_suggestions": suggestions})
+    assert [s["relevant_file"] for s in yaml.safe_load(prediction)["code_suggestions"]] == list(files)
+
+    data = tool._prepare_pr_code_suggestions(prediction)
+
+    assert data["code_suggestions"] == [suggestions[0]]
 
 
 @pytest.mark.asyncio
@@ -352,7 +404,8 @@ async def test_prepare_prediction_main_caps_suggestions_per_file_after_chunk_mer
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
@@ -377,7 +430,8 @@ async def test_prepare_prediction_main_retains_files_omitted_by_chunk_limit(deco
 
     def packed_diffs(*args, **kwargs):
         chunks = ["chunk-a"]
-        return (chunks, ["unreviewed.py"]) if kwargs.get("return_remaining_files") else chunks
+        assert kwargs["return_coverage"] is True
+        return PackedPRDiffs(chunks, ["unreviewed.py"], [])
 
     try:
         with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=packed_diffs):
@@ -433,6 +487,83 @@ async def test_improve_reports_the_real_packer_omission_at_default_call_limit(mo
     assert tool._get_prediction.await_count == 3
     assert tool.remaining_files_list == ["fourth.py"]
     assert "fourth.py" in tool._get_suggestions_coverage_footer(suggestions_present=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decouple_hunks", [True, False])
+async def test_improve_reports_clipped_patch_missing_from_dispatched_prompt(monkeypatch, decouple_hunks):
+    snapshot = snapshot_settings((
+        "pr_code_suggestions.decouple_hunks",
+        "pr_code_suggestions.enable_suggestions_coverage_footer",
+        "config.large_patch_policy",
+    ))
+    settings = get_settings()
+    settings.pr_code_suggestions.decouple_hunks = decouple_hunks
+    settings.set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+    settings.config.large_patch_policy = "clip"
+    sentinel = "TAIL_SENTINEL_NEVER_SENT"
+    patch_text = "## File: 'clipped.py'\n@@ -1 +1 @@\n-old\n+new\n" + sentinel * 8
+
+    class CharacterTokenHandler:
+        @staticmethod
+        def count_tokens(text):
+            return len(text)
+
+    monkeypatch.setattr(pr_processing, "clip_tokens", lambda *args, **kwargs: patch_text.split(sentinel)[0])
+    packed = pr_processing._pack_pr_multi_diffs(
+        {"clipped.py": {"patch": patch_text, "tokens": len(patch_text)}},
+        CharacterTokenHandler(), max_calls=1, return_remaining_files=False,
+        token_budget=80, return_coverage=True,
+    )
+    assert sentinel not in packed.chunks[0]
+    assert packed.partial_files_list == ["clipped.py"]
+    assert packed.remaining_files_list == []
+
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    tool._get_prediction = AsyncMock(return_value={"code_suggestions": []})
+    if not decouple_hunks:
+        tool.convert_to_decoupled_with_line_numbers = AsyncMock(return_value=packed.chunks)
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=packed) as get_diffs:
+            await tool.prepare_prediction_main("primary-model")
+    finally:
+        restore_settings(snapshot)
+
+    assert get_diffs.call_args.kwargs["return_coverage"] is True
+    assert tool._get_prediction.await_count == 1
+    assert all(sentinel not in prompt for prompt in tool._get_prediction.await_args.args[1:])
+    assert tool.partial_files_list == ["clipped.py"]
+    assert "had patches clipped before analysis" in tool._get_suggestions_coverage_footer()
+    assert "`clipped.py`" in tool._get_suggestions_coverage_footer(suggestions_present=False)
+
+
+@pytest.mark.asyncio
+async def test_improve_larger_model_attempt_clears_prior_partial_coverage():
+    snapshot = snapshot_settings(("pr_code_suggestions.decouple_hunks",))
+    get_settings().pr_code_suggestions.decouple_hunks = True
+    tool = _make_tool()
+    tool.token_handler = MagicMock()
+    tool._get_prediction = AsyncMock(return_value={"code_suggestions": []})
+    packed_by_model = {
+        "small-model": PackedPRDiffs(["clipped prompt"], [], ["clipped.py"]),
+        "large-model": PackedPRDiffs(["complete prompt with tail"], [], []),
+    }
+
+    def packed_diffs(provider, handler, model, **kwargs):
+        return packed_by_model[model]
+
+    try:
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=packed_diffs):
+            await tool.prepare_prediction_main("small-model")
+            assert tool.partial_files_list == ["clipped.py"]
+            await tool.prepare_prediction_main("large-model")
+    finally:
+        restore_settings(snapshot)
+
+    assert tool._get_prediction.await_args.args[1] == "complete prompt with tail"
+    assert tool.partial_files_list == []
+    assert tool._get_suggestions_coverage_footer() == ""
 
 
 def test_limit_suggestions_per_file_keeps_highest_scores_stable_ties_and_other_files():
@@ -605,7 +736,8 @@ async def test_prepare_prediction_main_keeps_successful_chunks_when_one_parallel
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ):
             tool._get_prediction = fake_get_prediction
 
@@ -641,7 +773,8 @@ async def test_prepare_prediction_main_propagates_chunk_cancellation_after_waiti
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ):
             tool._get_prediction = fake_get_prediction
 
@@ -672,8 +805,8 @@ async def test_prepare_prediction_main_keeps_processing_after_one_sequential_chu
         return {"code_suggestions": [_valid_suggestion(relevant_file=f"{patches_diff}.py")]}
 
     try:
-        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(
-            ["chunk-a", "chunk-b", "chunk-c"], []
+        with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", return_value=PackedPRDiffs(
+            ["chunk-a", "chunk-b", "chunk-c"], [], [],
         )):
             tool._get_prediction = fake_get_prediction
 
@@ -717,7 +850,8 @@ async def test_prepare_prediction_main_keeps_outer_fallback_when_all_chunks_fail
 
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["chunk-a", "chunk-b"], [])
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
         ):
             tool._get_prediction = fake_get_prediction
 
@@ -758,10 +892,10 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
         with patch.object(
             pr_code_suggestions_module,
             "get_pr_multi_diffs",
-            side_effect=[(["stale unnumbered chunk"], ["stale.py"]),
-                         (["## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n1 +first",
+            side_effect=[PackedPRDiffs(["stale unnumbered chunk"], ["stale.py"], ["stale-clipped.py"]),
+                         PackedPRDiffs(["## File: 'first.py'\n@@ -0,0 +1 @@\n__new hunk__\n1 +first",
                            "## File: 'second.py'\n@@ -0,0 +8 @@\n__new hunk__\n8 +second"],
-                          ["fallback-left-out.py"])],
+                          ["fallback-left-out.py"], ["fallback-clipped.py"])],
         ) as get_pr_multi_diffs:
             tool._get_prediction = fake_get_prediction
 
@@ -779,6 +913,7 @@ async def test_prepare_prediction_main_rebuilds_unnumbered_chunks_after_conversi
     assert tool.total_chunk_count == 2
     assert len(data["code_suggestions"]) == 2
     assert tool.remaining_files_list == ["fallback-left-out.py"]
+    assert tool.partial_files_list == ["fallback-clipped.py"]
     assert len(get_pr_multi_diffs.call_args_list) == 2
     tool.convert_to_decoupled_with_line_numbers.assert_awaited_once_with(
         ["stale unnumbered chunk"],
@@ -808,7 +943,8 @@ async def test_suggestions_append_filtered_names_after_hunk_conversion():
     tool._get_prediction = predict
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["raw source hunk"], []),
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["raw source hunk"], [], []),
         ) as get_pr_multi_diffs:
             await tool.prepare_prediction_main("model")
     finally:
@@ -836,7 +972,8 @@ async def test_suggestions_preserve_digit_prefixed_filtered_names_in_unnumbered_
     tool._get_prediction = predict
     try:
         with patch.object(
-            pr_code_suggestions_module, "get_pr_multi_diffs", return_value=(["1 +source change"], []),
+            pr_code_suggestions_module, "get_pr_multi_diffs",
+            return_value=PackedPRDiffs(["1 +source change"], [], []),
         ) as get_pr_multi_diffs:
             await tool.prepare_prediction_main("model")
     finally:
@@ -893,7 +1030,7 @@ async def test_suggestions_skip_the_model_when_the_pr_only_deletes_files():
 
     def multi_diffs(*args, deleted_files, **kwargs):
         deleted_files.append("gone.py")
-        return [], []
+        return PackedPRDiffs([], [], [])
 
     with patch.object(pr_code_suggestions_module, "get_pr_multi_diffs", side_effect=multi_diffs):
         data = await tool.prepare_prediction_main("model")
@@ -947,6 +1084,32 @@ def test_suggestions_coverage_footer_reports_unanalyzed_files_without_failed_chu
     assert "not analyzed" in footer
 
 
+def test_suggestions_coverage_footer_keeps_failure_omission_and_clip_categories_bounded():
+    snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
+    tool = _make_tool()
+    tool.failed_chunk_count = 1
+    tool.total_chunk_count = 3
+    tool.remaining_files_list = [f"omitted-{index}.py" for index in range(52)]
+    tool.partial_files_list = [f"clipped-{index}.py" for index in range(53)]
+
+    try:
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
+        footer = tool._get_suggestions_coverage_footer(suggestions_present=False)
+        get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", False)
+        disabled_footer = tool._get_suggestions_coverage_footer()
+    finally:
+        restore_settings(snapshot)
+
+    assert footer.index("analysis chunks failed") < footer.index("were not analyzed")
+    assert footer.index("were not analyzed") < footer.index("had patches clipped before analysis")
+    assert "partially analyzed" not in footer
+    assert "failed chunks could not be analyzed" in footer
+    assert "omitted-49.py" in footer and "omitted-50.py" not in footer
+    assert "clipped-49.py" in footer and "clipped-50.py" not in footer
+    assert ", and 2 more" in footer and ", and 3 more" in footer
+    assert disabled_footer == ""
+
+
 @pytest.mark.asyncio
 async def test_run_appends_partial_suggestions_coverage_to_the_summary():
     snapshot = snapshot_settings([
@@ -960,6 +1123,7 @@ async def test_run_appends_partial_suggestions_coverage_to_the_summary():
     tool.generate_summarized_suggestions = MagicMock(return_value="Base suggestions body")
     tool.failed_chunk_count = 1
     tool.total_chunk_count = 2
+    tool.partial_files_list = ["clipped.py"]
 
     try:
         get_settings().set("config.publish_output", False)
@@ -972,6 +1136,7 @@ async def test_run_appends_partial_suggestions_coverage_to_the_summary():
         artifact = get_settings().data["artifact"]
         assert artifact.startswith("Base suggestions body")
         assert "1 of 2 analysis chunks failed" in artifact
+        assert "had patches clipped before analysis" in artifact and "`clipped.py`" in artifact
     finally:
         restore_settings(snapshot)
 
@@ -2046,18 +2211,22 @@ async def test_publish_no_suggestions_qualifies_omitted_files(publish_output_no_
 @pytest.mark.parametrize(("filename", "rendered_name"), [
     ("app`[@org/team](https://example.invalid).py", "``app`[@org/team](https://example.invalid).py``"),
     ("line\n@org/team.py", "`line\\n@org/team.py`"),
+    ("carriage\r# heading.py", "`carriage\\r# heading.py`"),
+    ("a``b.py", "```a``b.py```"),
     ("`edge`.py", "`` `edge`.py ``"),
+    (" space.py ", "`  space.py  `"),
 ])
+@pytest.mark.parametrize("coverage_kind", ["remaining_files_list", "partial_files_list"])
 @pytest.mark.asyncio
-async def test_publish_no_suggestions_escapes_omitted_filenames(
-    publish_output_no_suggestions, filename, rendered_name,
+async def test_publish_no_suggestions_escapes_coverage_filenames(
+    publish_output_no_suggestions, filename, rendered_name, coverage_kind,
 ):
     publish_output_no_suggestions(True)
     snapshot = snapshot_settings(["pr_code_suggestions.enable_suggestions_coverage_footer"])
     git_provider = MagicMock()
     git_provider.supports_code_suggestions_artifact.return_value = False
     tool = _make_tool(git_provider)
-    tool.remaining_files_list = [filename]
+    setattr(tool, coverage_kind, [filename])
 
     try:
         get_settings().set("pr_code_suggestions.enable_suggestions_coverage_footer", True)
@@ -2068,6 +2237,13 @@ async def test_publish_no_suggestions_escapes_omitted_filenames(
     body = git_provider.publish_comment.call_args.args[0]
     assert rendered_name in body
     assert "\n@org/team.py" not in body
+    assert "\r" not in body
+    assert "\n# heading.py" not in body
+    assert "\n- @org/team.py" not in body
+    if coverage_kind == "partial_files_list":
+        assert "had patches clipped before analysis" in body
+    else:
+        assert "not analyzed" in body
 
 
 @pytest.mark.asyncio
@@ -2181,6 +2357,7 @@ def _render_suggestions_user_prompt(prompt_key: str, discussion_context: str) ->
         "diff_no_line_numbers": "+value",
         "duplicate_prompt_examples": False,
         "suggestion_discussion_context": discussion_context,
+        "artifact_context": None,
     }
     environment = Environment(undefined=StrictUndefined, autoescape=True)
     return environment.from_string(get_settings().get(prompt_key)).render(variables)
@@ -2644,7 +2821,7 @@ def test_marked_persistent_suggestions_take_precedence_over_legacy_comment():
         f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
         "<!-- bbb2222 -->\n\n<table>marked</table>"
     )
-    provider = _persistent_provider([legacy, marked])
+    provider = _persistent_provider([marked, legacy])
     custom_header = "## Latest Custom Heading ✨"
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(
@@ -3057,3 +3234,26 @@ def test_stateful_unconfirmed_edit_does_not_claim_previous_summary_is_unchanged(
     assert "remain unchanged" not in warning
     assert PRCodeSuggestionsIdentity.SUMMARY.value not in warning
     assert details.command_failed is True
+
+
+@pytest.mark.asyncio
+async def test_suggestion_containing_a_code_fence_gets_a_longer_fence():
+    """A ``` line inside the improved code would close a ```suggestion block early,
+    so committing the suggestion would apply only the lines before it."""
+    git_provider = _provider_with_file("# Usage\nRun it.\n", filename="README.md")
+    tool = _make_tool(git_provider)
+
+    improved = "Run it:\n\n```bash\nmake run\n```"
+    await tool.push_inline_code_suggestions({"code_suggestions": [
+        _valid_suggestion(
+            relevant_file="README.md",
+            relevant_lines_start=2,
+            relevant_lines_end=2,
+            existing_code="Run it.",
+            improved_code=improved,
+            score=8,
+        )
+    ]})
+
+    body = _published_suggestion(git_provider)["body"]
+    assert f"\n````suggestion\n{improved}\n````" in body

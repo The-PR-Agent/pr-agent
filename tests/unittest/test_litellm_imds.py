@@ -2,6 +2,7 @@
 
 import asyncio
 import atexit
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -813,6 +814,13 @@ async def test_native_aws_environment_without_region_fails_closed(monkeypatch):
 @pytest.mark.parametrize(("model", "model_id", "expected"), (
     ("bedrock/converse/eu-west-1/model", None, "eu-west-1"),
     ("converse/eu-west-1/model", None, "eu-west-1"),
+    ("bedrock/chat_completions/eu-west-1/openai.gpt-oss-120b-1:0", None, "eu-west-1"),
+    ("chat_completions/eu-west-1/openai.gpt-oss-120b-1:0", None, "eu-west-1"),
+    ("bedrock/chat_completions/openai.gpt-oss-120b-1:0",
+     "arn:aws:bedrock:eu-west-1:123:inference-profile/model", "eu-west-1"),
+    ("bedrock/eu-west-1/us.openai.gpt-5.6-sol", None, "eu-west-1"),
+    ("bedrock/us.openai.gpt-5.6-sol",
+     "arn:aws:bedrock:eu-west-1:123:inference-profile/model", "eu-west-1"),
     ("bedrock/arn:aws-cn:bedrock:cn-north-1:123:inference-profile/model", None, "cn-north-1"),
     ("converse/eu-west-1/model", "arn:aws-us-gov:bedrock:us-gov-west-1:123:inference-profile/model", "us-gov-west-1"),
     ("bedrock/eu-west-1/model", "eu-west-2/model", None),
@@ -847,18 +855,26 @@ async def test_bedrock_model_region_does_not_mutate_handler_credentials(monkeypa
 @pytest.mark.parametrize("model_source", ("model_id", "model_arn", "region_path"))
 @pytest.mark.parametrize("explicit_region", (None, "us-east-1"))
 @pytest.mark.parametrize("entrypoint", ("chat", "probe"))
+@pytest.mark.parametrize("route", ("converse", "chat_completions", "chat_completions_default"))
 @pytest.mark.asyncio
-async def test_bedrock_request_region_from_captured_model(monkeypatch, model_source, explicit_region, entrypoint):
+async def test_bedrock_request_region_from_captured_model(
+    monkeypatch, model_source, explicit_region, entrypoint, route,
+):
     from litellm.litellm_core_utils import logging_worker
 
-    native_model = "anthropic.claude-3-haiku-20240307-v1:0"
+    native_model = {
+        "converse": "anthropic.claude-3-haiku-20240307-v1:0",
+        "chat_completions": "openai.gpt-oss-120b-1:0",
+        "chat_completions_default": "us.openai.gpt-5.6-sol",
+    }[route]
+    route_prefix = "chat_completions/" if route == "chat_completions" else ""
     arn = f"arn:aws:bedrock:eu-west-1:123456789012:inference-profile/{native_model}"
-    model = f"bedrock/{native_model}"
+    model = f"bedrock/{route_prefix}{native_model}"
     settings = {"litellm.model_id": arn, "config.model": model} if model_source == "model_id" else {}
     if model_source == "model_arn":
         model = f"bedrock/{arn}"
     elif model_source == "region_path":
-        model = f"bedrock/eu-west-1/{native_model}"
+        model = f"bedrock/{route_prefix}eu-west-1/{native_model}"
     monkeypatch.setattr(litellm_handler, "get_settings", lambda: _base_settings(settings))
     monkeypatch.setattr(litellm, "api_key", None)
     monkeypatch.setenv("LITELLM_RUST", "false")
@@ -867,6 +883,9 @@ async def test_bedrock_request_region_from_captured_model(monkeypatch, model_sou
     if explicit_region:
         monkeypatch.setenv("AWS_REGION_NAME", explicit_region)
     handler = LiteLLMAIHandler()
+    if route == "chat_completions_default":
+        # Isolate region routing from this model's existing sampling restrictions.
+        handler.no_temperature_models = [model]
     settings["litellm.model_id"] = arn.replace("eu-west-1", "ap-south-1")
     monkeypatch.setenv("AWS_REGION_NAME", "ap-south-1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "later-request-key")
@@ -890,6 +909,12 @@ async def test_bedrock_request_region_from_captured_model(monkeypatch, model_sou
 
     async def send(client, request, **kwargs):
         requests_seen.append(request)
+        if request.url.path == "/openai/v1/chat/completions":
+            return httpx.Response(200, request=request, json={
+                "id": "chatcmpl-test", "object": "chat.completion", "created": 0, "model": native_model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            })
         return httpx.Response(200, request=request, json={
             "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
             "stopReason": "end_turn",
@@ -914,7 +939,11 @@ async def test_bedrock_request_region_from_captured_model(monkeypatch, model_sou
     assert request.url.host == f"bedrock-runtime.{expected_region}.amazonaws.com"
     assert f"/{expected_region}/bedrock/aws4_request" in request.headers["Authorization"]
     assert "Credential=request-key/" in request.headers["Authorization"]
-    assert unquote(request.url.path) == f"/model/{native_model if model_source == 'region_path' else arn}/converse"
+    if route != "converse" and model_source == "region_path":
+        assert request.url.path == "/openai/v1/chat/completions"
+        assert json.loads(request.content)["model"] == native_model
+    else:
+        assert unquote(request.url.path) == f"/model/{native_model if model_source == 'region_path' else arn}/converse"
 
 
 @pytest.mark.parametrize(
@@ -1790,7 +1819,7 @@ async def test_imds_stream_cleanup_does_not_hold_call_lock(monkeypatch, aws_sess
 
 
 @pytest.mark.asyncio
-async def test_imds_stream_fallback_closes_first_stream_before_retry(monkeypatch, aws_session):
+async def test_imds_stream_retry_closes_first_stream_without_switching_credentials(monkeypatch, aws_session):
     monkeypatch.setenv("AWS_USE_IMDS", "true")
     monkeypatch.setattr(litellm_handler, "get_settings", _static_aws_settings)
     handler = LiteLLMAIHandler()
@@ -1838,7 +1867,8 @@ async def test_imds_stream_fallback_closes_first_stream_before_retry(monkeypatch
     assert (result, finish_reason) == ("ok", "stop")
     assert len(calls) == 2
     assert calls[0]["aws_access_key_id"] == "IMDS-KEY"
-    assert calls[1]["aws_access_key_id"] == "STATIC-KEY"
+    assert calls[1]["aws_access_key_id"] == "IMDS-KEY"
+    assert handler._aws_imds_fell_back is False
     assert first.closed and second.closed
     assert not handler._aws_bedrock_lock.locked()
 
@@ -1997,11 +2027,16 @@ async def test_bedrock_api_error_retries_with_static_request_credentials(monkeyp
     ("bedrock/eu-west-1/anthropic.claude-3-haiku-20240307-v1:0", None),
     ("bedrock/anthropic.claude-3-haiku-20240307-v1:0",
      "arn:aws:bedrock:eu-west-1:123:inference-profile/model"),
+    ("bedrock/chat_completions/eu-west-1/openai.gpt-oss-120b-1:0", None),
+    ("bedrock/chat_completions/openai.gpt-oss-120b-1:0",
+     "arn:aws:bedrock:eu-west-1:123:inference-profile/model"),
+    ("bedrock/eu-west-1/us.openai.gpt-5.6-sol", None),
+    ("bedrock/us.openai.gpt-5.6-sol", "arn:aws:bedrock:eu-west-1:123:inference-profile/model"),
 ))
 @pytest.mark.asyncio
 async def test_bedrock_static_fallback_preserves_request_region(monkeypatch, model, model_id):
     monkeypatch.setenv("AWS_USE_IMDS", "true")
-    monkeypatch.setenv("AWS_REGION_NAME", "eu-west-1")
+    monkeypatch.setenv("AWS_REGION_NAME", "ap-south-1")
     monkeypatch.setenv("BEDROCK_MANTLE_API_BASE", "https://bedrock-mantle.eu-west-1.api.aws/v1")
     monkeypatch.setattr(
         litellm_handler,
@@ -2094,19 +2129,13 @@ async def test_health_probe_does_not_retry_api_errors(monkeypatch, error):
     assert not handler._aws_bedrock_lock.locked()
 
 
-@pytest.mark.parametrize(
-    "error",
-    (
-        openai.APITimeoutError(request=httpx.Request("POST", "https://bedrock.example")),
-        openai.PermissionDeniedError(
-            "Bedrock - AccessDeniedException: User is not authorized to perform this action",
-            response=httpx.Response(403, request=httpx.Request("POST", "https://bedrock.example")),
-            body=None,
-        ),
-    ),
-)
 @pytest.mark.asyncio
-async def test_chat_completion_preserves_static_fallback_for_api_errors(monkeypatch, error):
+async def test_chat_completion_preserves_static_fallback_for_permission_error(monkeypatch):
+    error = openai.PermissionDeniedError(
+        "Bedrock - AccessDeniedException: User is not authorized to perform this action",
+        response=httpx.Response(403, request=httpx.Request("POST", "https://bedrock.example")),
+        body=None,
+    )
     monkeypatch.setenv("AWS_USE_IMDS", "true")
     monkeypatch.setattr(litellm_handler, "get_settings", _static_aws_settings)
     credentials = MagicMock()
@@ -2129,6 +2158,42 @@ async def test_chat_completion_preserves_static_fallback_for_api_errors(monkeypa
     assert completion.await_args_list[0].kwargs["aws_access_key_id"] == "IMDS-KEY"
     assert completion.await_args_list[1].kwargs["aws_access_key_id"] == "STATIC-KEY"
     assert handler._aws_imds_fell_back is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        openai.InternalServerError(
+            "Bedrock service unavailable",
+            response=httpx.Response(503, request=httpx.Request("POST", "https://bedrock.example")),
+            body=None,
+        ),
+        openai.APITimeoutError(request=httpx.Request("POST", "https://bedrock.example")),
+    ),
+)
+@pytest.mark.asyncio
+async def test_chat_completion_retries_transient_api_errors_without_static_fallback(monkeypatch, error):
+    monkeypatch.setenv("AWS_USE_IMDS", "true")
+    monkeypatch.setattr(litellm_handler, "get_settings", _static_aws_settings)
+    credentials = MagicMock()
+    credentials.get_frozen_credentials.return_value = _frozen_creds()
+    session = MagicMock()
+    session.get_credentials.return_value = credentials
+    session.region_name = "us-east-1"
+    completion = AsyncMock(side_effect=(error, _mock_response()))
+
+    with patch("boto3.Session", return_value=session):
+        handler = LiteLLMAIHandler()
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", completion):
+            await handler.chat_completion(
+                model="bedrock/anthropic.claude-sonnet-4-5",
+                system="sys",
+                user="usr",
+            )
+
+    assert completion.await_count == 2
+    assert [call.kwargs["aws_access_key_id"] for call in completion.await_args_list] == ["IMDS-KEY", "IMDS-KEY"]
+    assert handler._aws_imds_fell_back is False
 
 
 @pytest.mark.asyncio

@@ -32,7 +32,7 @@ def _comment(body, published_date, last_updated_date=None):
 
 class TestNaiveUtc:
     def test_strips_tz_from_aware(self):
-        aware = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.timezone.utc)
+        aware = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.UTC)
         naive = _to_naive_utc(aware)
         assert naive.tzinfo is None
         assert naive == _dt.datetime(2024, 1, 1, 12, 0)
@@ -47,7 +47,7 @@ class TestNaiveUtc:
 
 class TestAzureCommitAdapter:
     def test_exposes_github_shape(self):
-        date = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.timezone.utc)
+        date = _dt.datetime(2024, 1, 1, 12, 0, tzinfo=_dt.UTC)
         raw = _raw_commit("abc123", "fix bug", date, parents=["p1"])
         adapter = _AzureCommitAdapter(raw)
         assert adapter.sha == "abc123"
@@ -78,22 +78,76 @@ class TestGetIncrementalCommits:
         provider.repo_slug = "repo"
         provider.pr_num = 1
         provider.pr_url = "https://dev.azure.com/o/ws/_git/repo/pullrequest/1"
+        provider.is_comment_authored_by_pr_agent = MagicMock(return_value=True)
         return provider
 
-    def test_no_previous_review_disables_incremental(self):
+    @pytest.mark.parametrize("kind", ["review", "suggestions"])
+    def test_no_previous_review_disables_incremental(self, kind):
         provider = self._make_provider()
         provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[])
         provider.get_issue_comments = MagicMock(return_value=[])
 
         inc = IncrementalPR(True)
-        provider.get_incremental_commits(inc)
+        provider.get_incremental_commits(inc, kind=kind)
 
         assert provider.incremental.is_incremental is False
         assert provider.previous_review is None
+        provider.azure_devops_client.get_pull_request_commits.assert_not_called()
+        assert provider.pr_commits is None
+
+    def test_no_anchor_preserves_cached_history(self):
+        provider = self._make_provider()
+        cached = [_AzureCommitAdapter(_raw_commit("old", "seen", _dt.datetime(2024, 5, 1)))]
+        provider.pr_commits = cached
+        provider.get_issue_comments = MagicMock(return_value=[])
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is False
+        assert provider.pr_commits is cached
+        provider.azure_devops_client.get_pull_request_commits.assert_not_called()
+
+    def test_history_failure_can_retry_after_anchor_lookup(self):
+        provider = self._make_provider()
+        old = _raw_commit("old", "seen", _dt.datetime(2024, 5, 1), parents=["base"])
+        new = _raw_commit("new", "added", _dt.datetime(2024, 6, 2), parents=["old"])
+        provider.get_issue_comments = MagicMock(return_value=[
+            _comment("## PR Reviewer Guide", _dt.datetime(2024, 6, 1)),
+        ])
+        history = provider.azure_devops_client.get_pull_request_commits
+        history.side_effect = [RuntimeError("history unavailable"), [new, old]]
+        provider.azure_devops_client.get_changes.return_value.changes = [
+            {"item": {"path": "/new.py", "gitObjectType": "blob"}},
+        ]
+
+        with pytest.raises(RuntimeError, match="history unavailable"):
+            provider.get_incremental_commits(IncrementalPR(True))
+        assert provider.pr_commits is None
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert history.call_count == 2
+        assert [commit.sha for commit in provider.pr_commits] == ["old", "new"]
+        assert [commit.sha for commit in provider.incremental.commits_range] == ["new"]
+        assert provider.incremental.last_seen_commit_sha == "old"
+        assert provider.unreviewed_files_map == {"/new.py": "/new.py"}
+
+    def test_thread_failure_precedes_history_acquisition(self):
+        provider = self._make_provider()
+        provider.azure_devops_client.get_threads.side_effect = RuntimeError("threads unavailable")
+        provider.azure_devops_client.get_pull_request_commits.side_effect = RuntimeError("history unavailable")
+
+        with pytest.raises(RuntimeError, match="threads unavailable"):
+            provider.get_incremental_commits(IncrementalPR(True))
+
+        provider.azure_devops_client.get_threads.assert_called_once()
+        provider.azure_devops_client.get_pull_request_commits.assert_not_called()
+        assert provider._threads_cache is None
+        assert provider.pr_commits is None
 
     def test_previous_review_accepts_custom_heading_with_stable_identity(self):
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.UTC)
         marked = _comment(
             (
                 "## Guideline Compliance Check 🔍\n\n"
@@ -106,6 +160,15 @@ class TestGetIncrementalCommits:
         result = provider.get_previous_review(full=True, incremental=False)
 
         assert result is marked
+
+    def test_previous_review_skips_matching_comment_from_another_user(self):
+        provider = self._make_provider()
+        agent = _comment("## PR Reviewer Guide", _dt.datetime(2024, 6, 1))
+        foreign = _comment("## PR Reviewer Guide", _dt.datetime(2024, 6, 2))
+        provider.get_issue_comments = MagicMock(return_value=[agent, foreign])
+        provider.is_comment_authored_by_pr_agent = MagicMock(side_effect=lambda comment: comment is agent)
+
+        assert provider.get_previous_review(full=True, incremental=False) is agent
 
     def test_supports_review_and_suggestions_kinds(self):
         provider = self._make_provider()
@@ -152,15 +215,15 @@ class TestGetIncrementalCommits:
     def test_populates_commits_range_and_files(self):
         provider = self._make_provider()
 
-        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.UTC)
         old = _raw_commit(
-            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"],
+            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC), parents=["p0"],
         )
         new1 = _raw_commit(
-            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["old1"],
+            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["old1"],
         )
         new2 = _raw_commit(
-            "new2", "third", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc), parents=["new1"],
+            "new2", "third", _dt.datetime(2024, 6, 3, tzinfo=_dt.UTC), parents=["new1"],
         )
         # Azure returns newest-first.
         provider.azure_devops_client.get_pull_request_commits = MagicMock(
@@ -194,12 +257,12 @@ class TestGetIncrementalCommits:
     def test_populates_files_from_sdk_change_objects(self):
         provider = self._make_provider()
 
-        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, 10, 0, tzinfo=_dt.UTC)
         old = _raw_commit(
-            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"],
+            "old1", "first", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC), parents=["p0"],
         )
         new = _raw_commit(
-            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["old1"],
+            "new1", "second", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["old1"],
         )
         provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[new, old])
         provider.get_issue_comments = MagicMock(
@@ -216,14 +279,38 @@ class TestGetIncrementalCommits:
 
         assert "/src/sdk.py" in provider.unreviewed_files_map
 
+    @pytest.mark.parametrize("failed_commit", ["new1", "new2"])
+    def test_partial_commit_changes_fall_back_to_full_review(self, failed_commit):
+        provider = self._make_provider()
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
+        old = _raw_commit("old", "seen", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC))
+        new1 = _raw_commit("new1", "first", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["old"])
+        new2 = _raw_commit("new2", "second", _dt.datetime(2024, 6, 3, tzinfo=_dt.UTC), parents=["new1"])
+        provider.azure_devops_client.get_pull_request_commits.return_value = [new2, new1, old]
+        provider.get_issue_comments = MagicMock(return_value=[_comment("## PR Reviewer Guide", review_time)])
+
+        changes = SimpleNamespace(changes=[{"item": {"path": "/visible.py", "gitObjectType": "blob"}}])
+
+        def get_changes(**kwargs):
+            if kwargs["commit_id"] == failed_commit:
+                raise RuntimeError("Azure changes unavailable")
+            return changes
+
+        provider.azure_devops_client.get_changes = MagicMock(side_effect=get_changes)
+
+        provider.get_incremental_commits(IncrementalPR(True))
+
+        assert provider.incremental.is_incremental is False
+        assert provider.unreviewed_files_map == {}
+
     def test_skips_merge_commits(self):
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
         merge = _raw_commit(
-            "m1", "merge", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc),
+            "m1", "merge", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC),
             parents=["a", "b"],
         )
-        old = _raw_commit("o", "old", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc))
+        old = _raw_commit("o", "old", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC))
         provider.azure_devops_client.get_pull_request_commits = MagicMock(
             return_value=[merge, old]
         )
@@ -237,13 +324,13 @@ class TestGetIncrementalCommits:
 
     def test_all_merge_commits_falls_back_to_full(self):
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
         merge1 = _raw_commit(
-            "m1", "merge1", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc),
+            "m1", "merge1", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC),
             parents=["a", "b"],
         )
         merge2 = _raw_commit(
-            "m2", "merge2", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc),
+            "m2", "merge2", _dt.datetime(2024, 6, 3, tzinfo=_dt.UTC),
             parents=["c", "d"],
         )
         provider.azure_devops_client.get_pull_request_commits = MagicMock(
@@ -265,9 +352,9 @@ class TestGetIncrementalCommits:
         # silently running with full diffs (which happens if commits_range is non-empty but
         # last_seen_commit_sha is None).
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
-        new1 = _raw_commit("n1", "c1", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["p"])
-        new2 = _raw_commit("n2", "c2", _dt.datetime(2024, 6, 3, tzinfo=_dt.timezone.utc), parents=["n1"])
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
+        new1 = _raw_commit("n1", "c1", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["p"])
+        new2 = _raw_commit("n2", "c2", _dt.datetime(2024, 6, 3, tzinfo=_dt.UTC), parents=["n1"])
         provider.azure_devops_client.get_pull_request_commits = MagicMock(return_value=[new2, new1])
         provider.get_issue_comments = MagicMock(
             return_value=[_comment("## PR Reviewer Guide", review_time)]
@@ -286,12 +373,12 @@ class TestGetIncrementalCommits:
         # None must still be included in commits_range when it is positioned after the last-seen
         # baseline, instead of being dropped by a per-commit date comparison.
         provider = self._make_provider()
-        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.timezone.utc)
-        old = _raw_commit("old1", "seen", _dt.datetime(2024, 5, 1, tzinfo=_dt.timezone.utc), parents=["p0"])
+        review_time = _dt.datetime(2024, 6, 1, tzinfo=_dt.UTC)
+        old = _raw_commit("old1", "seen", _dt.datetime(2024, 5, 1, tzinfo=_dt.UTC), parents=["p0"])
         # A missing-date commit positioned BETWEEN the baseline and a later dated commit is the
         # case the old date-comparison logic dropped (it kept only the dated-new commit's index).
         mid_nodate = _raw_commit("mid", "no date", None, parents=["old1"])
-        newest_dated = _raw_commit("new", "dated", _dt.datetime(2024, 6, 2, tzinfo=_dt.timezone.utc), parents=["mid"])
+        newest_dated = _raw_commit("new", "dated", _dt.datetime(2024, 6, 2, tzinfo=_dt.UTC), parents=["mid"])
         # Azure returns newest-first.
         provider.azure_devops_client.get_pull_request_commits = MagicMock(
             return_value=[newest_dated, mid_nodate, old]

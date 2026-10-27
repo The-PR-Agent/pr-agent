@@ -1,6 +1,8 @@
 import json
 import os
 
+import pytest
+
 from pr_agent.algo.run_output import github_action_output
 from pr_agent.algo.utils import get_settings
 
@@ -14,7 +16,7 @@ class TestGitHubOutput:
 
         github_action_output(output_data, key_name)
 
-        with open(str(tmp_path / 'output'), 'r') as f:
+        with open(str(tmp_path / 'output')) as f:
             env_value = f.read()
 
         actual_key = env_value.split('=')[0]
@@ -43,9 +45,10 @@ class TestGitHubOutput:
 
         assert not os.path.exists(str(tmp_path / 'output'))
 
-    def test_github_action_output_disabled_string_false(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize('value', ['false', 'off', ' OFF ', ''])
+    def test_github_action_output_disabled_string_false(self, monkeypatch, tmp_path, value):
         """String 'false' from env vars should be treated as falsy, not truthy."""
-        get_settings().set('GITHUB_ACTION_CONFIG.ENABLE_OUTPUT', "false")
+        get_settings().set('GITHUB_ACTION_CONFIG.ENABLE_OUTPUT', value)
         monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'output'))
         output_data = {'key1': {'value1': 1, 'value2': 2}}
         key_name = 'key1'
@@ -63,7 +66,7 @@ class TestGitHubOutput:
 
         github_action_output(output_data, key_name)
 
-        with open(str(tmp_path / 'output'), 'r') as f:
+        with open(str(tmp_path / 'output')) as f:
             env_value = f.read()
 
         actual_key = env_value.split('=')[0]

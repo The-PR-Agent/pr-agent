@@ -6,6 +6,7 @@ These tests are deterministic and fake-provider based — no live API or
 network access is performed.
 """
 import asyncio
+import copy
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -195,6 +196,28 @@ def settings_snapshot():
 # ---------------------------------------------------------------------------
 
 class TestGithubExtractionMerging:
+    def test_equivalent_references_across_sources_leave_room_for_distinct_issues(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({n: _FakeIssue(n) for n in (7, 8, 9)})
+        provider = _make_github_provider(
+            user_description="https://github.com/ORG/REPO/issues/007 #8",
+            branch="feature/7-duplicate",
+            repo_obj=repo_obj,
+        )
+        provider.pr = SimpleNamespace(title="Fixes #9")
+        result = asyncio.run(extract_tickets(provider))
+        assert [ticket["ticket_id"] for ticket in result] == [7, 8, 9]
+        assert repo_obj.get_issue_calls == [7, 8, 9]
+
+    def test_oversized_zero_padded_reference_does_not_hide_valid_issue(self, settings_snapshot):
+        repo_obj = _FakeRepoObj({7: _FakeIssue(7), 8: _FakeIssue(8)})
+        long_url = f"https://github.com/org/repo/issues/{'0' * 4301}7"
+        provider = _make_github_provider(
+            user_description=f"{long_url} #7 #8", repo_obj=repo_obj,
+        )
+        result = asyncio.run(extract_tickets(provider))
+        assert [ticket["ticket_id"] for ticket in result] == [7, 8]
+        assert repo_obj.get_issue_calls == [7, 8]
+
     def test_skipped_pr_does_not_displace_later_issue(self, settings_snapshot):
         repo_obj = _FakeRepoObj({
             1: _FakeIssue(1, raw_data={"pull_request": {"url": "pr"}}),
@@ -347,8 +370,192 @@ class TestGithubExtractionMerging:
 
 
 # ---------------------------------------------------------------------------
-# Scenario 1b: tickets are fetched from the repository that owns them
+# Scenario 1b: native title references follow existing parsing and fetch gates
 # ---------------------------------------------------------------------------
+
+class TestNativeTitleExtraction:
+    @pytest.mark.parametrize("reference", ["#7", "org/repo#7", "https://github.com/org/repo/issues/7"])
+    def test_github_title_reference_matches_description_context(self, settings_snapshot, reference):
+        repo = _FakeRepoObj({7: _FakeIssue(7, title="Requirements", body="Issue context")})
+        provider = _make_github_provider(repo_obj=repo)
+        provider.pr = SimpleNamespace(title=f"Implement {reference}")
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert repo.get_issue_calls == [7]
+        provider.get_user_description = lambda: reference
+        provider.pr.title = "No reference"
+        assert result == asyncio.run(extract_tickets(provider))
+        assert result[0]["body"] == "Issue context"
+
+    @pytest.mark.parametrize("reference", ["#7", "group/repo#7", "https://gitlab.com/group/repo/-/issues/7"])
+    def test_gitlab_title_reference_matches_description_context(self, settings_snapshot, reference):
+        provider, project = _make_gitlab_provider("")
+        provider.mr = SimpleNamespace(title=f"Implement {reference}", source_branch="main")
+
+        result = asyncio.run(extract_tickets(provider))
+
+        provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+        project.issues.get.assert_called_once_with(7)
+        provider.get_user_description = lambda: reference
+        provider.mr.title = "No reference"
+        assert result == asyncio.run(extract_tickets(provider))
+        assert result[0]["body"] == "Issue body"
+
+    def test_github_description_branch_title_priority_and_dedupe(self, settings_snapshot):
+        repo = _FakeRepoObj({iid: _FakeIssue(iid) for iid in range(1, 5)})
+        provider = _make_github_provider(user_description="#1", branch="feature/2-work", repo_obj=repo)
+        provider.pr = SimpleNamespace(title="#1 org/repo#2 #3 #4")
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["ticket_id"] for ticket in result] == [1, 2, 3]
+        assert repo.get_issue_calls == [1, 2, 3]
+
+    def test_github_title_does_not_extend_lookup_budget(self, settings_snapshot):
+        limit = tpc.MAX_GITHUB_TICKET_LOOKUPS
+        repo = _FakeRepoObj({iid: _FakeIssue(iid, raw_data={"pull_request": {}}) for iid in range(1, limit + 1)})
+        provider = _make_github_provider(user_description=" ".join(f"#{iid}" for iid in range(1, limit + 1)),
+                                         repo_obj=repo)
+        provider.pr = SimpleNamespace(title=f"#{limit + 1}")
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        assert repo.get_issue_calls == list(range(1, limit + 1))
+
+    def test_github_title_refills_after_skipped_pr(self, settings_snapshot):
+        repo = _FakeRepoObj({1: _FakeIssue(1, raw_data={"pull_request": {}}), 2: _FakeIssue(2)})
+        provider = _make_github_provider(user_description="#1", repo_obj=repo)
+        provider.pr = SimpleNamespace(title="#2")
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [2]
+        assert repo.get_issue_calls == [1, 2]
+
+    def test_github_custom_regex_is_description_only(self, settings_snapshot):
+        snapshot = snapshot_settings(["config.description_issue_regex"])
+        settings_snapshot.set("config.description_issue_regex", r"ticket-(\d+)")
+        repo = _FakeRepoObj({iid: _FakeIssue(iid) for iid in (1, 2, 3, 1234567)})
+        provider = _make_github_provider(user_description="ticket-1", repo_obj=repo)
+        provider.pr = SimpleNamespace(title="Follow #2 ticket-3 #1234567")
+        try:
+            result = asyncio.run(extract_tickets(provider))
+        finally:
+            restore_settings(snapshot)
+
+        assert [ticket["ticket_id"] for ticket in result] == [1, 2]
+        assert repo.get_issue_calls == [1, 2]
+
+    @pytest.mark.parametrize("provider_kind", ["github", "gitlab"])
+    @pytest.mark.parametrize("title", [None, "", False, 0, 42, {"text": "#7"}])
+    def test_invalid_title_preserves_description_context(self, settings_snapshot, provider_kind, title):
+        if provider_kind == "github":
+            repo = _FakeRepoObj({7: _FakeIssue(7)})
+            provider = _make_github_provider(user_description="#7", repo_obj=repo)
+            provider.pr = SimpleNamespace(title=title)
+        else:
+            provider, project = _make_gitlab_provider("#7")
+            provider.mr = SimpleNamespace(title=title, source_branch="main")
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [7]
+        if provider_kind == "github":
+            assert repo.get_issue_calls == [7]
+        else:
+            project.issues.get.assert_called_once_with(7)
+
+    @pytest.mark.parametrize("origin", ["https://github.com", "https://ghe.example.test"])
+    def test_github_title_rejects_foreign_origin(self, settings_snapshot, origin):
+        provider = _make_github_provider(base_url_html=origin, repo_obj=_FakeRepoObj({7: _FakeIssue(7)}))
+        provider.pr = SimpleNamespace(title="https://foreign.example.test/org/repo/issues/7")
+        provider.get_issue_content = MagicMock()
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        provider.get_issue_content.assert_not_called()
+
+    @pytest.mark.parametrize("approved", [False, True])
+    def test_github_title_uses_existing_sibling_authorization(self, settings_snapshot, approved):
+        settings_snapshot.set("config.repo_context_sibling_repos", ["org/other"] if approved else [])
+        sibling = _FakeRepoObj({7: _FakeIssue(7)}, private=True, visibility="private")
+        sibling.has_in_collaborators.return_value = True
+        provider = _make_github_provider(repo_obj=_FakeRepoObj({}),
+                                         github_client=_FakeGithubClient({"org/other": sibling}))
+        provider.pr = SimpleNamespace(title="org/other#7")
+        provider.set_command_actor("requester")
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["ticket_id"] for ticket in result] == ([7] if approved else [])
+        assert sibling.get_issue_calls == ([7] if approved else [])
+        assert provider.github_client.get_repo_calls == (["org/other"] if approved else [])
+        if approved:
+            sibling.has_in_collaborators.assert_called_once_with("requester")
+        else:
+            sibling.has_in_collaborators.assert_not_called()
+
+    def test_github_title_transferred_issue_is_fetched_then_rejected(self, settings_snapshot):
+        issue = _FakeIssue(7)
+        issue.repository_url = "https://api.github.com/repos/org/other"
+        repo = _FakeRepoObj({7: issue})
+        repo.url = "https://api.github.com/repos/org/repo"
+        provider = _make_github_provider(repo_obj=repo)
+        provider.pr = SimpleNamespace(title="#7")
+        provider.get_issue_content = GithubProvider.get_issue_content.__get__(provider)
+        provider.fetch_sub_issues = MagicMock(return_value=[])
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        assert repo.get_issue_calls == [7]
+        provider.fetch_sub_issues.assert_not_called()
+
+    def test_gitlab_description_title_priority_and_casefold_dedupe(self, settings_snapshot):
+        provider, project = _make_gitlab_provider("#1")
+        provider.mr = SimpleNamespace(title="GROUP/REPO#1 #2 #3 #4", source_branch="main")
+        project.issues.get.side_effect = lambda iid: SimpleNamespace(
+            iid=iid, web_url=f"https://gitlab.com/group/repo/-/issues/{iid}",
+            title=f"Issue {iid}", description="Context", labels=[],
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["ticket_id"] for ticket in result] == [1, 2, 3]
+        assert [call.args[0] for call in project.issues.get.call_args_list] == [1, 2, 3]
+        assert [call.args[0] for call in provider.gl.projects.get.call_args_list] == ["group/repo"] * 3
+
+    def test_gitlab_title_does_not_extend_lookup_budget(self, settings_snapshot):
+        limit = tpc.MAX_GITLAB_TICKET_LOOKUPS
+        provider, project = _make_gitlab_provider(" ".join(f"#{iid}" for iid in range(1, limit + 1)))
+        provider.mr = SimpleNamespace(title=f"#{limit + 1}", source_branch="main")
+        project.issues.get.side_effect = RuntimeError("No access")
+
+        assert asyncio.run(extract_tickets(provider)) == []
+        assert [call.args[0] for call in project.issues.get.call_args_list] == list(range(1, limit + 1))
+
+    def test_gitlab_title_refills_after_description_lookup_failure(self, settings_snapshot):
+        provider, project = _make_gitlab_provider("#1")
+        provider.mr = SimpleNamespace(title="#7", source_branch="main")
+        issue = project.issues.get.return_value
+        project.issues.get.side_effect = [RuntimeError("No access"), issue]
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == [7]
+        assert [call.args[0] for call in project.issues.get.call_args_list] == [1, 7]
+
+    @pytest.mark.parametrize("path,expected", [("/gitlab", [7]), ("", []), ("/other", [])])
+    def test_gitlab_title_uses_configured_base_path(self, settings_snapshot, path, expected):
+        provider, project = _make_gitlab_provider("")
+        provider.gitlab_url = "https://gitlab.example.test:8443/gitlab"
+        provider.mr = SimpleNamespace(
+            title=f"https://gitlab.example.test:8443{path}/group/repo/-/issues/7", source_branch="main",
+        )
+
+        assert [ticket["ticket_id"] for ticket in asyncio.run(extract_tickets(provider))] == expected
+        assert [call.args[0] for call in project.issues.get.call_args_list] == expected
+        if expected:
+            provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+        else:
+            provider.gl.projects.get.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Scenario 1c: tickets are fetched from the repository that owns them
+# ---------------------------------------------------------------------------
+
 
 class TestCrossRepoTicketResolution:
     def test_enterprise_full_url_fetches_same_instance_cross_repo_in_order(self, settings_snapshot):
@@ -825,6 +1032,72 @@ class TestGetIssueFailureIsolated:
 # ---------------------------------------------------------------------------
 
 class TestSubIssues:
+    @pytest.mark.parametrize("sub_url", [
+        "https://github.com/ORG/REPO/issues/002",
+        "https://api.github.com/repos/ORG/REPO/issues/002",
+    ], ids=["web", "api"])
+    @pytest.mark.parametrize("order", [(1, 2), (2, 1)])
+    def test_direct_and_sub_issue_share_reads_within_each_extraction(self, settings_snapshot, order, sub_url):
+        child = _FakeIssue(2, title="Child", labels=[_FakeLabel("bug")])
+        repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="Parent"), 2: child})
+        provider = _make_github_provider(
+            user_description="Fixes " + " and ".join(f"#{number}" for number in order),
+            repo_obj=repo_obj,
+            sub_issues_map={"https://github.com/org/repo/issues/1": [sub_url]},
+        )
+
+        for body in ("Original body", "Updated body"):
+            child.body = body
+            result = asyncio.run(extract_tickets(provider))
+            assert [ticket["ticket_id"] for ticket in result] == list(order)
+            parent_ticket = next(ticket for ticket in result if ticket["ticket_id"] == 1)
+            child_ticket = next(ticket for ticket in result if ticket["ticket_id"] == 2)
+            assert parent_ticket["sub_issues"] == [{
+                "ticket_url": sub_url,
+                "title": "Child",
+                "body": body,
+                "labels": "bug",
+            }]
+            assert child_ticket["body"] == body
+            assert child_ticket["labels"] == "bug"
+
+        assert repo_obj.get_issue_calls == list(order) * 2
+
+    def test_failed_sub_issue_read_can_succeed_as_direct_reference(self, settings_snapshot):
+        parent = _FakeIssue(1, title="Parent")
+        child = _FakeIssue(2, title="Child")
+        repo_obj = _FakeRepoObj()
+        repo_obj.get_issue = MagicMock(side_effect=[parent, RuntimeError("temporary failure"), child])
+        provider = _make_github_provider(
+            user_description="Fixes #1 and #2",
+            repo_obj=repo_obj,
+            sub_issues_map={"https://github.com/org/repo/issues/1": ["https://github.com/org/repo/issues/2"]},
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [call.args[0] for call in repo_obj.get_issue.call_args_list] == [1, 2, 2]
+        assert [ticket["title"] for ticket in result] == ["Parent", "Child"]
+        assert result[0]["sub_issues"] == []
+
+    def test_same_issue_number_in_different_repositories_is_not_reused(self, settings_snapshot):
+        settings_snapshot.set("config.repo_context_sibling_repos", ["org/other"])
+        repo_obj = _FakeRepoObj({1: _FakeIssue(1, title="Parent"), 2: _FakeIssue(2, title="Local")})
+        other = _FakeRepoObj({2: _FakeIssue(2, title="Other")})
+        provider = _make_github_provider(
+            user_description="Fixes #1 and #2",
+            repo_obj=repo_obj,
+            github_client=_FakeGithubClient({"org/other": other}),
+            sub_issues_map={"https://github.com/org/repo/issues/1": ["https://github.com/org/other/issues/2"]},
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        assert [ticket["title"] for ticket in result] == ["Parent", "Local"]
+        assert result[0]["sub_issues"][0]["title"] == "Other"
+        assert repo_obj.get_issue_calls == [1, 2]
+        assert other.get_issue_calls == [2]
+
     def test_sub_issue_success_populates_and_truncates(self, settings_snapshot):
         long_sub_body = "y" * 10500
         repo_obj = _FakeRepoObj({
@@ -1052,6 +1325,102 @@ class TestGitLabExtraction:
                 "https://gitlab.com",
                 [("group/repo", 7)],
             ),
+            (
+                'https://gitlab.com:443/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [("group/repo", 7)],
+            ),
+            (
+                'https://gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com:443',
+                [("group/repo", 7)],
+            ),
+            (
+                'http://gitlab.com:80/group/repo/-/issues/7',
+                "group/repo",
+                'http://gitlab.com',
+                [("group/repo", 7)],
+            ),
+            (
+                'http://gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'http://gitlab.com:80',
+                [("group/repo", 7)],
+            ),
+            (
+                'https://GITLAB.com/group/repo/-/issues/7',
+                "group/repo",
+                'HTTPS://GitLab.COM',
+                [("group/repo", 7)],
+            ),
+            (
+                'https://user:password@gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [("group/repo", 7)],
+            ),
+            (
+                'https://gitlab.com@other.example/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [],
+            ),
+            (
+                'http://gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [],
+            ),
+            (
+                'https://gitlab.com:8443/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com',
+                [],
+            ),
+            (
+                'https://gitlab.com/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com:8443',
+                [],
+            ),
+            (
+                'https://gitlab.com:8444/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com:8443',
+                [],
+            ),
+            (
+                'https://gitlab.com:bad/group/repo/-/issues/7 #8',
+                "group/repo",
+                'https://gitlab.com',
+                [("group/repo", 8)],
+            ),
+            (
+                'https://gitlab.com:65536/group/repo/-/issues/7 #8',
+                "group/repo",
+                'https://gitlab.com',
+                [("group/repo", 8)],
+            ),
+            (
+                'https://gitlab.com/group/repo/-/issues/7 #8',
+                "group/repo",
+                'https://gitlab.com:bad',
+                [("group/repo", 8)],
+            ),
+            (
+                'https://gitlab.com/group/repo/-/issues/7 #8',
+                "group/repo",
+                'ftp://gitlab.com',
+                [("group/repo", 8)],
+            ),
+            (
+                'https://gitlab.com/gitlab-other/group/repo/-/issues/7',
+                "group/repo",
+                'https://gitlab.com/gitlab',
+                [],
+            ),
         ],
     )
     def test_url_reference_boundaries(self, description, repo_path, gitlab_url, expected):
@@ -1093,6 +1462,37 @@ class TestGitLabExtraction:
         ]
         provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
         project.issues.get.assert_called_once_with(7)
+
+    @pytest.mark.parametrize("source", ["description", "title"])
+    @pytest.mark.parametrize(
+        ("linked_origin", "accepted"),
+        [("http://gitlab.com", False), ("https://gitlab.com:8443", False), ("https://gitlab.com:443", True)],
+    )
+    def test_full_url_origin_controls_sdk_lookup(self, source, linked_origin, accepted, settings_snapshot):
+        reference = f"{linked_origin}/group/repo/-/issues/7"
+        provider, project = _make_gitlab_provider(reference if source == "description" else "")
+        provider.mr = SimpleNamespace(title=reference if source == "title" else "No ticket", source_branch="main")
+        # Derive the configured project from an MR URL accepted by the provider.
+        provider.id_project, _ = provider._parse_merge_request_url(
+            "https://gitlab.com/group/repo/-/merge_requests/4"
+        )
+
+        result = asyncio.run(extract_tickets(provider))
+
+        if not accepted:
+            assert result == []
+            provider.gl.projects.get.assert_not_called()
+            project.issues.get.assert_not_called()
+        else:
+            assert result == [{
+                "ticket_id": 7,
+                "ticket_url": "https://gitlab.com/group/repo/-/issues/7",
+                "title": "GitLab issue",
+                "body": "Issue body",
+                "labels": "bug, backend",
+            }]
+            provider.gl.projects.get.assert_called_once_with("group/repo", lazy=True)
+            project.issues.get.assert_called_once_with(7)
 
 
 # ---------------------------------------------------------------------------
@@ -1150,8 +1550,9 @@ class TestExtractAndCachePrTickets:
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
         assert vars_["related_tickets"] == cached
 
+    @pytest.mark.parametrize("parent_url", ["u/main", " ", None])
     def test_stores_main_issue_before_sub_issues_in_related_tickets(
-        self, settings_snapshot, monkeypatch
+        self, settings_snapshot, monkeypatch, parent_url
     ):
         settings_snapshot.set("pr_reviewer.require_ticket_analysis_review", True)
         settings_snapshot.set("related_tickets", [])
@@ -1160,25 +1561,50 @@ class TestExtractAndCachePrTickets:
         sub_b = {"ticket_url": "u/sub_b", "title": "sub_b", "body": "s2"}
         main_ticket = {
             "ticket_id": 1,
-            "ticket_url": "u/main",
+            "ticket_url": parent_url,
             "title": "main",
             "body": "m",
             "labels": "",
             "sub_issues": [sub_a, sub_b],
         }
 
+        second_ticket = {"ticket_url": "u/second", "title": "second", "sub_issues": [sub_a]}
+        main_ticket["sub_issues"].insert(0, second_ticket)
+        bare_ticket = {"ticket_url": "u/bare", "title": "bare"}
+        extracted = [main_ticket, second_ticket, bare_ticket]
+        original = copy.deepcopy(extracted)
+
         async def _fake_extract(_):
-            return [main_ticket]
+            return extracted
 
         monkeypatch.setattr(tpc, "extract_tickets", _fake_extract)
 
         vars_ = {}
         asyncio.run(extract_and_cache_pr_tickets(object(), vars_))
 
-        # Main ticket is appended first, followed by its sub-issues,
-        # so prompt clipping preserving a prefix keeps the primary ticket.
+        # Keep direct tickets before expansion; preserve child order and repeated records.
         stored = vars_["related_tickets"]
-        assert stored == [main_ticket, sub_a, sub_b]
+        assert stored[:3] == [main_ticket, second_ticket, bare_ticket]
+        assert len(stored) == 7
+        assert [ticket["ticket_url"] for ticket in stored[3:]] == [
+            "u/second", "u/sub_a", "u/sub_b", "u/sub_a"
+        ]
+        for child, source in zip(stored[3:], [second_ticket, sub_a, sub_b, sub_a], strict=True):
+            assert child is not source
+            assert {key: value for key, value in child.items() if not key.startswith("parent_ticket_")} == source
+        if parent_url == "u/main":
+            assert [ticket["parent_ticket_url"] for ticket in stored[3:]] == [
+                "u/main", "u/main", "u/main", "u/second"
+            ]
+            assert [ticket["parent_ticket_title"] for ticket in stored[3:]] == [
+                "main", "main", "main", "second"
+            ]
+        else:
+            assert all("parent_ticket_url" not in ticket for ticket in stored[3:6])
+        assert stored[-1]["parent_ticket_url"] == "u/second"
+        assert stored[4] is not stored[-1]
+        assert "parent_ticket_url" not in stored[1]
+        assert extracted == original
         # Settings cache is also populated
         assert get_settings().get("related_tickets") == stored
 
@@ -1204,6 +1630,8 @@ class TestExtractAndCachePrTickets:
 
 class _FakeRequester:
     """Mimic PyGithub's private requester: ``requestJson`` -> (status, headers, body)."""
+
+    graphql_url = "https://api.github.com/graphql"
 
     def __init__(self, responses):
         self._responses = list(responses)
@@ -1283,7 +1711,6 @@ class TestFetchSubIssuesNullGraphQLFields:
             "not raise into the broad except"
         )
         assert "Issue ID not found" in logs
-        # The second (sub-issues) query must not be attempted.
         assert len(provider.github_client._Github__requester.queries) == 1
 
     def test_null_repository_is_handled_without_traceback(self):
@@ -1296,11 +1723,10 @@ class TestFetchSubIssuesNullGraphQLFields:
         assert "Failed to fetch sub-issues" not in logs
         assert "Issue ID not found" in logs
 
-    def test_null_node_in_sub_issues_response_is_handled_without_traceback(self):
-        """The second query resolves the issue id; ``node`` may still be null."""
+    def test_null_sub_issues_response_is_handled_without_traceback(self):
+        """The issue can resolve even when its sub-issues data is null."""
         responses = [
-            {"data": {"repository": {"issue": {"id": "I_kwDO_fake"}}}},
-            {"data": {"node": None}},
+            {"data": {"repository": {"issue": {"id": "I_kwDO_fake", "subIssues": None}}}},
         ]
         provider = _provider_with_graphql(responses)
 
@@ -1317,10 +1743,10 @@ class TestFetchSubIssuesNullGraphQLFields:
             for number in range(1, 12)
         }
         responses = [
-            {"data": {"repository": {"issue": {"id": "I_kwDO_fake"}}}},
-            {"data": {"node": {"subIssues": {"nodes": [
-                {"url": url} for url in sub_issue_urls
-            ]}}}},
+            {"data": {"repository": {"issue": {
+                "id": "I_kwDO_fake",
+                "subIssues": {"nodes": [{"url": url} for url in sub_issue_urls]},
+            }}}},
         ]
         provider = _provider_with_graphql(responses)
 
@@ -1329,5 +1755,6 @@ class TestFetchSubIssuesNullGraphQLFields:
         assert result == sub_issue_urls
         assert "Failed to fetch sub-issues" not in logs
         queries = provider.github_client._Github__requester.queries
-        assert len(queries) == 2
-        assert "subIssues(first: 100)" in queries[1]
+        assert len(queries) == 1
+        assert "issue(number: 89)" in queries[0]
+        assert "subIssues(first: 100)" in queries[0]

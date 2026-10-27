@@ -21,6 +21,8 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.identity_providers import get_identity_provider
@@ -59,7 +61,11 @@ def _is_valid_client_key(client_key: str) -> bool:
 def _compute_qsh(method: str, path: str) -> str:
     """Compute the Atlassian Connect qsh for a request that carries no query string."""
     canonical_path = path.rstrip("/") or "/"
-    return hashlib.sha256(f"{method.upper()}&{canonical_path}&".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{method.upper()}&{canonical_path}&".encode()).hexdigest()
+
+
+def _bitbucket_client_secret_name(client_key: str) -> str:
+    return f"bitbucket-app-{hashlib.sha256(client_key.encode('utf-8')).hexdigest()}"
 
 
 def _get_request_timeout():
@@ -123,11 +129,12 @@ async def get_bearer_token(shared_secret: str, client_key: str):
 @router.get("/")
 async def handle_manifest(request: Request, response: Response):
     cur_dir = os.path.dirname(os.path.abspath(__file__))
-    manifest = open(os.path.join(cur_dir, "atlassian-connect.json"), "rt").read()
+    with open(os.path.join(cur_dir, "atlassian-connect.json")) as f:
+        manifest = f.read()
     try:
         manifest = manifest.replace("app_key", get_settings().bitbucket.app_key)
         manifest = manifest.replace("base_url", get_settings().bitbucket.base_url)
-    except:
+    except (AttributeError, TypeError):
         get_logger().error("Failed to replace api_key in Bitbucket manifest, trying to continue")
     manifest_obj = json.loads(manifest)
     return JSONResponse(manifest_obj)
@@ -224,7 +231,7 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
     commands = (
         get_pr_commands("bitbucket_app")
         if commands_conf == "pr_commands"
-        else get_settings().get(f"bitbucket_app.{commands_conf}", {})
+        else normalize_setting_list(get_settings().get(f"bitbucket_app.{commands_conf}", {}))
     )
     if not commands:
         get_logger().info(f"No {commands_conf} configured, skipping auto commands")
@@ -247,10 +254,17 @@ async def _perform_commands_bitbucket(commands_conf: str, agent: PRAgent, api_ur
 async def _run_commands_bitbucket(commands, agent: PRAgent, api_url: str, log_context: dict):
     for command in commands:
         try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                await agent.handle_request(api_url, new_command)
+                if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                    return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
 
@@ -272,6 +286,66 @@ def should_process_pr_logic(data) -> bool:
     return shared_should_process_pr_logic(data, provider="bitbucket_app")
 
 
+def _verify_webhook_jwt(input_jwt: str, request: Request) -> tuple[str, str] | None:
+    """Verify a Bitbucket webhook JWT and return its client key and shared secret."""
+    # Decode the claims first so we can look up the shared secret, but
+    # treat the JWT as untrusted until jwt.decode() validates its
+    # signature against that secret. Using the unverified iss claim as
+    # the audience parameter (the previous behavior) meant the audience
+    # check was effectively tautological: an attacker could forge a JWT
+    # with iss == aud and skip signature verification by supplying their
+    # own secret via secret_provider. Look up the secret by the
+    # unverified iss, then validate the JWT with a fixed audience so
+    # the signature check actually rejects forged tokens.
+    jwt_parts = input_jwt.split(".")
+    if len(jwt_parts) < 2:
+        get_logger().error("Bitbucket webhook JWT is malformed (missing segments)")
+        return None
+    try:
+        claim_part = jwt_parts[1]
+        claim_part += "=" * (-len(claim_part) % 4)
+        decoded_claims = json.loads(base64.urlsafe_b64decode(claim_part))
+    except (binascii.Error, ValueError, json.JSONDecodeError, UnicodeDecodeError, RecursionError) as e:
+        get_logger().error(f"Bitbucket webhook JWT claims could not be decoded: {e}")
+        return None
+    if not isinstance(decoded_claims, dict):
+        get_logger().error("Bitbucket webhook JWT claims are not a JSON object")
+        return None
+    client_key = decoded_claims.get("iss", "")
+    if not client_key or not isinstance(client_key, str):
+        get_logger().error("Bitbucket webhook JWT is missing 'iss' claim")
+        return None
+    try:
+        secret_provider = get_fork_safe_secret_provider()
+        raw_secret = secret_provider.get_secret(_bitbucket_client_secret_name(client_key))
+        if not raw_secret:
+            raw_secret = secret_provider.get_secret(client_key)
+        secrets = json.loads(raw_secret)
+        shared_secret = secrets["shared_secret"]
+    except Exception as e:
+        get_logger().error(f"Failed to look up Bitbucket shared secret: {e}")
+        return None
+    try:
+        decoded = jwt.decode(
+            input_jwt,
+            shared_secret,
+            algorithms=["HS256"],
+            options={"verify_aud": False},
+        )
+    except (jwt.PyJWTError, TypeError) as e:
+        get_logger().error(f"Bitbucket webhook JWT validation failed: {e}")
+        return None
+    token_qsh = decoded.get("qsh")
+    if not token_qsh or not isinstance(token_qsh, str):
+        get_logger().error("Bitbucket webhook JWT is missing 'qsh' claim")
+        return None
+    expected_qsh = _compute_qsh(method=request.method, path=request.url.path)
+    if not token_qsh.isascii() or not hmac.compare_digest(token_qsh, expected_qsh):
+        get_logger().error("Bitbucket webhook JWT validation failed: qsh mismatch")
+        return None
+    return client_key, shared_secret
+
+
 @router.post("/webhook")
 async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Request):
     app_name = get_settings().get("CONFIG.APP_NAME", "Unknown")
@@ -281,7 +355,13 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
     if len(jwt_parts) != 2 or jwt_parts[0].casefold() != "jwt":
         get_logger().error("Bitbucket webhook authorization header is malformed")
         return "OK"
-    input_jwt = jwt_parts[1]
+    # Verify the JWT before parsing the body so an unauthenticated payload is
+    # never decoded. The signature and qsh only need the header, method and path.
+    verified = _verify_webhook_jwt(jwt_parts[1], request)
+    if verified is None:
+        return "OK"
+    client_key, shared_secret = verified
+
     data = await request.json()
     get_logger().debug(payload_log_summary(data, ("clientKey", "event")))
 
@@ -296,66 +376,23 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                 if not should_process_pr_logic(data):
                     return "OK"
 
+            event = data["event"]
+            if event not in ("pullrequest:created", "pullrequest:updated", "pullrequest:comment_created"):
+                return
+            if event == "pullrequest:comment_created":
+                comment_body = data["data"]["comment"]["content"]["raw"]
+                if not is_command_comment(comment_body):
+                    get_logger().info("Ignoring comment not starting with /")
+                    return
+
             # Get the username of the sender
             log_context["sender"] = _get_username(data)
 
             sender_id = data.get("data", {}).get("actor", {}).get("account_id", "")
             log_context["sender_id"] = sender_id
-            # Decode the claims first so we can look up the shared secret, but
-            # treat the JWT as untrusted until jwt.decode() validates its
-            # signature against that secret. Using the unverified iss claim as
-            # the audience parameter (the previous behavior) meant the audience
-            # check was effectively tautological: an attacker could forge a JWT
-            # with iss == aud and skip signature verification by supplying their
-            # own secret via secret_provider. Look up the secret by the
-            # unverified iss, then validate the JWT with a fixed audience so
-            # the signature check actually rejects forged tokens.
-            jwt_parts = input_jwt.split(".")
-            if len(jwt_parts) < 2:
-                get_logger().error("Bitbucket webhook JWT is malformed (missing segments)")
-                return
-            try:
-                claim_part = jwt_parts[1]
-                claim_part += "=" * (-len(claim_part) % 4)
-                decoded_claims = json.loads(base64.urlsafe_b64decode(claim_part))
-            except (binascii.Error, ValueError, json.JSONDecodeError, UnicodeDecodeError) as e:
-                get_logger().error(f"Bitbucket webhook JWT claims could not be decoded: {e}")
-                return
-            if not isinstance(decoded_claims, dict):
-                get_logger().error("Bitbucket webhook JWT claims are not a JSON object")
-                return
-            client_key = decoded_claims.get("iss", "")
-            if not client_key or not isinstance(client_key, str):
-                get_logger().error("Bitbucket webhook JWT is missing 'iss' claim")
-                return
-            try:
-                secrets = json.loads(get_fork_safe_secret_provider().get_secret(client_key))
-                shared_secret = secrets["shared_secret"]
-            except Exception as e:
-                get_logger().error(f"Failed to look up Bitbucket shared secret: {e}")
-                return
-            try:
-                decoded = jwt.decode(
-                    input_jwt,
-                    shared_secret,
-                    algorithms=["HS256"],
-                    options={"verify_aud": False},
-                )
-            except jwt.InvalidTokenError as e:
-                get_logger().error(f"Bitbucket webhook JWT validation failed: {e}")
-                return
-            token_qsh = decoded.get("qsh")
-            if not token_qsh or not isinstance(token_qsh, str):
-                get_logger().error("Bitbucket webhook JWT is missing 'qsh' claim")
-                return
-            expected_qsh = _compute_qsh(method=request.method, path=request.url.path)
-            if not hmac.compare_digest(token_qsh, expected_qsh):
-                get_logger().error("Bitbucket webhook JWT validation failed: qsh mismatch")
-                return
             bearer_token = await get_bearer_token(shared_secret, client_key)
             context['bitbucket_bearer_token'] = bearer_token
             context["settings"] = copy.deepcopy(global_settings)
-            event = data["event"]
             agent = PRAgent()
             if event == "pullrequest:created":
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
@@ -379,10 +416,6 @@ async def handle_github_webhooks(background_tasks: BackgroundTasks, request: Req
                 pr_url = data["data"]["pullrequest"]["links"]["html"]["href"]
                 log_context["api_url"] = pr_url
                 log_context["event"] = "comment"
-                comment_body = data["data"]["comment"]["content"]["raw"]
-                if not is_command_comment(comment_body):
-                    get_logger().info("Ignoring comment not starting with /")
-                    return
                 with get_logger().contextualize(**log_context):
                     if get_identity_provider().verify_eligibility("bitbucket",
                                                                      sender_id, pr_url) is not Eligibility.NOT_ELIGIBLE:
@@ -432,11 +465,15 @@ async def handle_installed_webhooks(request: Request, response: Response):
         get_logger().error("Failed to register user: secret provider not configured")
         return JSONResponse({"error": "Unable to register user"}, status_code=500)
 
+    secret_name = _bitbucket_client_secret_name(client_key)
+
     # For a clientKey that already has an entry (re-installation), require a JWT
     # signed with the currently stored secret (Atlassian's documented reinstall pattern).
     if hasattr(secret_provider, "get_secret"):
         try:
-            raw_secret = secret_provider.get_secret(client_key)
+            raw_secret = secret_provider.get_secret(secret_name)
+            if not raw_secret:
+                raw_secret = secret_provider.get_secret(client_key)
         except Exception as e:
             get_logger().error(f"Failed to check existing secret for clientKey: {type(e).__name__}")
             return JSONResponse({"error": "Unable to verify existing installation"}, status_code=500)
@@ -474,7 +511,7 @@ async def handle_installed_webhooks(request: Request, response: Response):
         "username": username
     }
     try:
-        secret_provider.store_secret(client_key, json.dumps(secrets))
+        secret_provider.store_secret(secret_name, json.dumps(secrets))
     except Exception as e:
         get_logger().error(f"Failed to register user: secret provider failure ({type(e).__name__})")
         return JSONResponse({"error": "Unable to register user"}, status_code=500)

@@ -1,6 +1,5 @@
 import copy
 from functools import partial
-from typing import List
 
 from pydantic import ValidationError
 
@@ -99,7 +98,7 @@ class PRGenerateLabels:
                 get_logger().info(f"Pushing labels {self.pr_id}")
 
                 if self.git_provider.is_supported("get_labels"):
-                    current_labels = self.git_provider.get_pr_labels()
+                    current_labels = self.git_provider.get_pr_labels(update=True)
                     if current_labels is None:
                         # The read failed and there is no earlier snapshot to preserve user
                         # labels from. publish_labels replaces the whole set, so publishing
@@ -110,7 +109,8 @@ class PRGenerateLabels:
                     else:
                         user_labels = get_user_labels(current_labels)
                         pr_labels = pr_labels + user_labels
-                        self.git_provider.publish_labels(pr_labels)
+                        if set(pr_labels) != set(current_labels):
+                            self.git_provider.publish_labels(pr_labels)
                 elif pr_labels:
                     value = ', '.join(v for v in pr_labels)
                     pr_labels_text = f"## PR Labels:\n{value}\n"
@@ -163,12 +163,19 @@ class PRGenerateLabels:
             ai_handler=self.ai_handler,
             output_token_reserve=output_token_reserve,
         )
-        patches_diff = get_pr_diff(
+        output = get_pr_diff(
             self.git_provider,
             budget.token_handler,
             model,
+            return_remaining_files=True,
             output_token_reserve=output_token_reserve,
         )
+        patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
+        if not patches_diff and not remaining_files_list:
+            # Every changed file was filtered out (lockfile, asset, ignore rule), so there is
+            # nothing to label. Skip the model chain instead of failing the command.
+            get_logger().info(f"PR has no analyzable files: {self.pr_id}, skipping generate_labels")
+            return
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /generate_labels request for {model}")
         fitted = budget.fit_prompt_variable(
@@ -178,6 +185,7 @@ class PRGenerateLabels:
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(
@@ -228,7 +236,7 @@ class PRGenerateLabels:
             field = ".".join(str(part) for part in first_error["loc"]) or "$"
             raise FallbackEligibleError(f"Invalid labels model output at {field}: {first_error['msg']}") from error
 
-    def _prepare_labels(self) -> List[str]:
+    def _prepare_labels(self) -> list[str]:
         pr_types = self.data["labels"].copy()
 
         # convert lowercase labels to original case

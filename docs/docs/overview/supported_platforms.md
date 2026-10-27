@@ -56,3 +56,5 @@ Gerrit and CodeCommit are registered providers but are kept out of the main tabl
 |       | [Repo context files (`AGENTS.md`)](../usage-guide/additional_configurations.md#bringing-per-repo-context-files-to-pr-agent) |        |            |
 
 Gerrit and CodeCommit do not support `gfm_markdown`, so `/describe` omits semantic file types and a few other sections. CodeCommit setup notes currently live in the [GitHub installation page](../installation/github.md); Gerrit has no dedicated installation page yet.
+
+For Gerrit, the changed-file list and reviewed diff both respect `ignore.glob` and `ignore.regex`. Renamed files use their destination path, while deleted files retain their original path. Files with non-UTF-8 content remain in filename-based language detection but are omitted from the model diff.

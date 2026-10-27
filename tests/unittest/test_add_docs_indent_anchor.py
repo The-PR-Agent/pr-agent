@@ -94,11 +94,38 @@ def test_a_leading_blank_line_in_the_snippet_does_not_skew_indentation():
     assert '\n    """Adds docs."""' in result
 
 
-def test_a_file_of_only_blank_lines_leaves_the_snippet_unchanged():
-    """With no code line to anchor on, return the snippet rather than guess."""
-    result = _tool("\n\n\n").dedent_code("a.py", 2, SNIPPET, doc_placement="after", add_original_line=True)
+@pytest.mark.parametrize("add_original_line", [False, True])
+def test_a_file_of_only_blank_lines_cannot_supply_a_replacement_anchor(add_original_line):
+    result = _tool("\n\n\n").dedent_code("a.py", 2, SNIPPET, add_original_line=add_original_line)
 
-    assert result == SNIPPET
+    assert result == (None if add_original_line else SNIPPET)
+
+
+@pytest.mark.parametrize("head, filename, line", [
+    ("", "a.py", 1),
+    ("def f():\n    return 1", "missing.py", 1),
+    ("def f():\n    return 1", "a.py", 0),
+    ("def f():\n    return 1", "a.py", 3),
+])
+def test_unavailable_original_line_does_not_become_a_documentation_only_replacement(head, filename, line):
+    assert _tool(head).dedent_code(filename, line, SNIPPET, add_original_line=True) is None
+
+
+def test_partial_head_content_cannot_supply_an_original_line():
+    # Model a hunk starting at line 2, where source line 2 is at index 0.
+    tool = _tool("def f():\n    return 1")
+    tool.git_provider.diff_files[0].head_file_is_complete = False
+
+    assert tool.dedent_code("a.py", 2, SNIPPET) == "    " + SNIPPET
+    assert tool.dedent_code("a.py", 2, SNIPPET, add_original_line=True) is None
+
+
+def test_source_read_error_does_not_become_a_documentation_only_replacement():
+    class UnreadableSource(str):
+        def split(self, *args, **kwargs):
+            raise ValueError("source unavailable")
+
+    assert _tool(UnreadableSource("def f():")).dedent_code("a.py", 1, SNIPPET, add_original_line=True) is None
 
 
 def test_blank_lines_are_skipped_when_anchoring_on_a_comment_line():
@@ -109,3 +136,112 @@ def test_blank_lines_are_skipped_when_anchoring_on_a_comment_line():
 
     assert '    """Adds docs."""' in result
     compile(_apply(head, 2, result), "a.py", "exec")
+
+
+@pytest.mark.parametrize("prefix, model_prefix, placement", [
+    ("\t", "", "before"),
+    ("\t", "    ", "after"),
+    (" \t", "        ", "before"),
+    (" \t", "", "after"),
+    ("    ", "        ", "before"),
+    ("    ", "        ", "after"),
+])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_documentation_uses_the_literal_anchor_prefix(prefix, model_prefix, placement, newline):
+    head = f"def f():{newline}{prefix}return 1"
+    compile(head, "a.py", "exec")
+    line = 1 if placement == "after" else 2
+    target = head.splitlines()[line - 1]
+
+    result = _tool(head).dedent_code(
+        "a.py", line, model_prefix + SNIPPET, doc_placement=placement, add_original_line=True
+    )
+
+    aligned = prefix + SNIPPET
+    assert result == (target + "\n" + aligned if placement == "after" else aligned + "\n" + target)
+    compile(_apply(head, line, result), "a.py", "exec")
+
+
+@pytest.mark.parametrize("placement", ["before", "after"])
+def test_multiline_alignment_preserves_relative_indentation_and_blank_positions(placement):
+    head = "def f():\n\treturn 1"
+    snippet = '\n    """Summary.\n      Detail.\n   \n    End.\n    """\n\n'
+    aligned = '\n\t"""Summary.\n\t  Detail.\n\n\tEnd.\n\t"""\n\n'
+    line = 1 if placement == "after" else 2
+    target = head.splitlines()[line - 1]
+
+    tool = _tool(head)
+    assert tool.dedent_code("a.py", line, snippet, doc_placement=placement) == aligned
+    result = tool.dedent_code("a.py", line, snippet, doc_placement=placement, add_original_line=True)
+
+    assert result == (target + "\n" + aligned if placement == "after" else aligned.rstrip() + "\n" + target)
+    compile(_apply(head, line, result), "a.py", "exec")
+
+
+@pytest.mark.parametrize("snippet", [
+    '    """Summary.\n  Outdented.\n    """',
+    '\t"""Summary.\n    Incompatible.\n\t"""',
+    " \t\n\n ",
+])
+def test_unalignable_documentation_is_rejected(snippet):
+    assert _tool("def f():\n    return 1").dedent_code("a.py", 1, snippet, add_original_line=True) is None
+
+
+def test_post_anchor_alignment_error_does_not_return_raw_documentation():
+    class UnreadableDocumentation(str):
+        def replace(self, *args, **kwargs):
+            raise ValueError("unreadable documentation")
+
+        def split(self, *args, **kwargs):
+            raise ValueError("unreadable documentation")
+
+        def splitlines(self, *args, **kwargs):
+            raise ValueError("unreadable documentation")
+
+    snippet = UnreadableDocumentation(SNIPPET)
+    assert _tool("def f():\n    return 1").dedent_code("a.py", 1, snippet, add_original_line=True) is None
+
+
+@pytest.mark.parametrize("newline", ["\r", "\r\n", "\n"])
+@pytest.mark.parametrize("placement", ["before", "after"])
+def test_each_python_logical_line_is_aligned(newline, placement):
+    head = "def f():\n    return 1"
+    snippet = newline.join(['    """First."""', '    """Second."""'])
+    line = 1 if placement == "after" else 2
+    target = head.splitlines()[line - 1]
+    aligned = '    """First."""\n    """Second."""'
+
+    result = _tool(head).dedent_code(
+        "a.py", line, snippet, doc_placement=placement, add_original_line=True
+    )
+
+    assert result == (target + "\n" + aligned if placement == "after" else aligned + "\n" + target)
+    compile(_apply(head, line, result), "a.py", "exec")
+
+
+@pytest.mark.parametrize("newline", ["\r", "\r\n"])
+def test_cr_newlines_keep_blank_positions_and_relative_indentation(newline):
+    snippet = newline.join(['', '    """Summary.', '      Detail.', ' ', '    """', ''])
+    expected = '\n\t"""Summary.\n\t  Detail.\n\n\t"""\n'
+
+    assert _tool("def f():\n\treturn 1").dedent_code("a.py", 1, snippet) == expected
+
+
+@pytest.mark.parametrize("newline", ["\r", "\r\n"])
+def test_cr_newlines_do_not_hide_incompatible_prefixes(newline):
+    snippet = newline.join(['    """Summary.', '  Outdented.', '    """'])
+
+    assert _tool("def f():\n    return 1").dedent_code("a.py", 1, snippet) is None
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x85", "\x0b", "\x0c"])
+def test_literal_separators_inside_a_docstring_are_preserved(separator):
+    snippet = f'    """Résumé.{separator}Body."""'
+    expected = f'\t"""Résumé.{separator}Body."""'
+
+    result = _tool("def f():\n\treturn 1").dedent_code("a.py", 1, snippet)
+
+    assert result == expected
+    namespace = {}
+    exec(compile("def f():\n" + result + "\n\treturn 1", "a.py", "exec"), namespace)
+    assert namespace["f"].__doc__ == f"Résumé.{separator}Body."

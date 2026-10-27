@@ -5,19 +5,20 @@ import multiprocessing
 import traceback
 from collections import deque
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import aiohttp
 from starlette_context import request_cycle_context
 
 from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
     litellm_callbacks_registered,
 )
 from pr_agent.config_loader import get_settings, global_settings
-from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -43,6 +44,12 @@ class _CommentPaginationDrift(_InvalidPaginationMetadata):
 _RETRY_POLLING_NOTIFICATION = object()
 
 
+def _pr_comments_url(pr_url: str) -> str:
+    """Map an API pull request URL to its issue comments URL."""
+    base, sep, number = pr_url.rpartition("/pulls/")
+    return f"{base}/issues/{number}/comments" if sep else f"{pr_url}/comments"
+
+
 def _get_polling_request_timeout() -> float:
     """Bound the timeout for notification fallback requests."""
     value = global_settings.get("github.polling_request_timeout", DEFAULT_POLLING_REQUEST_TIMEOUT)
@@ -60,10 +67,45 @@ def _get_polling_request_timeout() -> float:
     return min(timeout, float(MAX_POLLING_REQUEST_TIMEOUT))
 
 
+def _normalize_repository_name(full_name) -> str | None:
+    """Return a canonical owner/repo name, or None when it is not usable."""
+    if not isinstance(full_name, str):
+        return None
+    parts = full_name.strip().strip("/").split("/")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return "/".join(parts).casefold()
+
+
+def _get_polling_repositories() -> frozenset[str]:
+    """Return the host allowlist of repositories whose mentions polling may handle."""
+    value = global_settings.get("github.polling_repositories", [])
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        get_logger().warning(
+            "Invalid github.polling_repositories; expected a list of owner/repo entries"
+        )
+        return frozenset()
+    return frozenset(
+        repository
+        for entry in value
+        if (repository := _normalize_repository_name(entry))
+    )
+
+
+def _is_polling_repository_allowed(notification) -> bool:
+    """Fail closed unless the notification names an allowlisted repository."""
+    repository = notification.get("repository")
+    if not isinstance(repository, dict):
+        return False
+    return _normalize_repository_name(repository.get("full_name")) in _get_polling_repositories()
+
+
 def _remaining_polling_timeout(deadline: float) -> float:
     remaining = deadline - asyncio.get_running_loop().time()
     if remaining <= 0:
-        raise asyncio.TimeoutError("Comment history request timed out")
+        raise TimeoutError("Comment history request timed out")
     return remaining
 
 
@@ -135,7 +177,7 @@ async def _fetch_comment_history(session, url, headers) -> list:
     for attempt in range(2):
         try:
             comments = await _fetch_comment_history_scan(session, url, headers, deadline)
-        except asyncio.TimeoutError as error:
+        except TimeoutError as error:
             if attempt:
                 raise _CommentPaginationDrift("Comment history changed during polling") from error
             raise
@@ -160,20 +202,19 @@ def now() -> str:
     Returns:
         str: The current UTC time in ISO 8601 format.
     """
-    now_utc = datetime.now(timezone.utc).isoformat()
+    now_utc = datetime.now(UTC).isoformat()
     now_utc = now_utc.replace("+00:00", "Z")
     return now_utc
 
-async def async_handle_request(pr_url, rest_of_comment, comment_id, git_provider):
+async def async_handle_request(pr_url, rest_of_comment, comment_id):
     agent = PRAgent()
-    success = await agent.handle_request(
+    return await agent.handle_request(
         pr_url,
         rest_of_comment,
-        notify=lambda: git_provider.add_eyes_reaction(comment_id)
+        notify=lambda: get_git_provider_with_context(pr_url).add_eyes_reaction(comment_id)
     )
-    return success
 
-async def _handle_request_and_drain(pr_url, rest_of_comment, comment_id, git_provider):
+async def _handle_request_and_drain(pr_url, rest_of_comment, comment_id):
     """
     Run the request, then flush litellm's deferred callbacks before the loop closes.
 
@@ -182,7 +223,7 @@ async def _handle_request_and_drain(pr_url, rest_of_comment, comment_id, git_pro
     completion's callback is dropped.
     """
     try:
-        return await async_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
+        return await async_handle_request(pr_url, rest_of_comment, comment_id)
     finally:
         if litellm_callbacks_registered():
             await drain_litellm_callbacks(
@@ -190,8 +231,8 @@ async def _handle_request_and_drain(pr_url, rest_of_comment, comment_id, git_pro
             )
 
 
-def run_handle_request(pr_url, rest_of_comment, comment_id, git_provider):
-    return asyncio.run(_handle_request_and_drain(pr_url, rest_of_comment, comment_id, git_provider))
+def run_handle_request(pr_url, rest_of_comment, comment_id):
+    return asyncio.run(_handle_request_and_drain(pr_url, rest_of_comment, comment_id))
 
 
 def _polling_request_settings():
@@ -226,9 +267,7 @@ def _polling_settings_scope():
 def process_comment_sync(pr_url, rest_of_comment, comment_id):
     try:
         with _polling_settings_scope():
-            # Run the async handle_request in a separate function
-            git_provider = get_git_provider()(pr_url=pr_url)
-            run_handle_request(pr_url, rest_of_comment, comment_id, git_provider)
+            run_handle_request(pr_url, rest_of_comment, comment_id)
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
 
@@ -236,14 +275,9 @@ def process_comment_sync(pr_url, rest_of_comment, comment_id):
 async def process_comment(pr_url, rest_of_comment, comment_id):
     try:
         with _polling_settings_scope():
-            git_provider = get_git_provider()(pr_url=pr_url)
-            git_provider.set_pr(pr_url)
-            agent = PRAgent()
-            await agent.handle_request(
-                pr_url,
-                rest_of_comment,
-                notify=lambda: git_provider.add_eyes_reaction(comment_id)
-            )
+            result = await async_handle_request(pr_url, rest_of_comment, comment_id)
+            if result is RequestOutcome.SKIPPED:
+                return
         get_logger().info(f"Finished processing comment for PR: {pr_url}")
     except Exception as e:
         get_logger().error(f"Error processing comment: {e}", artifact={"traceback": traceback.format_exc()})
@@ -254,6 +288,14 @@ async def is_valid_notification(
     try:
         if 'reason' in notification and notification['reason'] == 'mention':
             if 'subject' in notification and notification['subject']['type'] == 'PullRequest':
+                if not _is_polling_repository_allowed(notification):
+                    repository = notification.get('repository')
+                    repository_name = repository.get('full_name') if isinstance(repository, dict) else None
+                    get_logger().debug(
+                        "Ignoring polling notification from a repository not in "
+                        f"github.polling_repositories: {repository_name}"
+                    )
+                    return False, handled_ids
                 pr_url = notification['subject']['url']
                 latest_comment = notification['subject']['latest_comment_url']
                 if not latest_comment or not isinstance(latest_comment, str):
@@ -264,6 +306,7 @@ async def is_valid_notification(
                     user_tag = "@" + user_id
                     if comment_response.status == 200:
                         comment = await comment_response.json()
+                        latest_comment_id = comment.get('id')
                         if 'id' in comment:
                             if comment['id'] in handled_ids:
                                 get_logger().debug("comment['id'] in handled_ids")
@@ -292,7 +335,7 @@ async def is_valid_notification(
                             return True, handled_ids, comment, comment_body, pr_url, user_tag
                         else: # we could not find the user tag in the latest comment. Check previous comments
                             # get all comments in the PR
-                            requests_url = f"{pr_url}/comments".replace("pulls", "issues")
+                            requests_url = _pr_comments_url(pr_url)
                             try:
                                 comments = (await _fetch_comment_history(session, requests_url, headers))[::-1]
                             except _CommentPaginationDrift:
@@ -318,6 +361,13 @@ async def is_valid_notification(
                                 if not comment_body:
                                     continue
                                 if user_tag in comment_body:
+                                    if 'id' in comment:
+                                        # Allow mentions added to the latest comment between the two API reads.
+                                        if comment['id'] in handled_ids and comment['id'] != latest_comment_id:
+                                            return False, handled_ids
+                                        handled_ids.add(comment['id'])
+                                        if added_handled_ids is not None:
+                                            added_handled_ids.add(comment['id'])
                                     get_logger().info("found user tag in previous comments")
                                     get_logger().info(f"Polling, pr_url: {pr_url}",
                                                       artifact={"comment": comment_body})
@@ -408,6 +458,10 @@ async def polling_loop():
         raise ValueError("Deployment mode must be set to 'user' to get notifications")
     if not token:
         raise ValueError("User token must be set to get notifications")
+    if not _get_polling_repositories():
+        get_logger().warning(
+            "github.polling_repositories is empty or invalid; all polling notifications will be ignored"
+        )
 
     active_processes = []
     async with aiohttp.ClientSession() as session:

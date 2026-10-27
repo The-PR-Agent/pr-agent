@@ -33,6 +33,14 @@ If you want to edit [configurations](#configuration-options), add the relevant o
 /describe --pr_description.some_config1=... --pr_description.some_config2=...
 ```
 
+From the CLI, save the generated description and token usage as JSON for a later CI step:
+
+```bash
+pr-agent --pr_url https://github.com/org/repo/pull/123 --json-output describe.json describe
+```
+
+The JSON file is written after the description is assembled. Place `--json-output` before `describe` or `describe_pr`; it needs `--pr_url` and is not available in plain-diff mode.
+
 ### Automatic triggering
 
 To run the `describe` automatically when a PR is opened, define in a [configuration file](../usage-guide/configuration_options.md#local-configuration-file):
@@ -277,7 +285,7 @@ The description should be comprehensive and detailed, indicating when to add the
 ## Usage Tips
 
 :::tip[Automation]
-- When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app) for the describe tool is:
+When you first install PR-Agent app, the [default mode](../usage-guide/automations_and_usage.md#github-app) for the describe tool is:
 ```
 pr_commands = ["/describe", ...]
 ```
@@ -291,8 +299,9 @@ meaning the `describe` tool will run automatically on every PR, with the default
    ```
 
    the tool will replace every marker of the form `pr_agent:marker_name` in the PR description with the relevant content, where `marker_name` is one of the following:
-         *`type`: the PR type.
-         * `summary`: the PR summary.
-         * `walkthrough`: the PR walkthrough.
+
+   - `type`: the PR type.
+   - `summary`: the PR summary.
+   - `walkthrough`: the PR walkthrough.
 
 - Note that when markers are enabled, if the original PR description does not contain any markers, the tool will not alter the description at all.

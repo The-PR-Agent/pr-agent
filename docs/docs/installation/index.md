@@ -29,6 +29,13 @@ This does not change the other polling requests or the sequential notification
 scan. The fallback now follows the existing aiohttp session's proxy and TLS
 behavior, not Requests-specific environment settings.
 
+GitHub polling only processes mention notifications from repositories listed in
+`github.polling_repositories` (for example `["org/repo"]`). The list is
+host-only; repository settings and comment arguments cannot widen it. The empty
+default ignores every polling notification and still marks it as read, so
+configure it in the host configuration or through `GITHUB__POLLING_REPOSITORIES`
+before enabling polling or upgrading.
+
 ## Sizing a self-hosted webhook server
 
 The GitHub, GitLab, Gitea and Bitbucket Server webhook servers (the `github_app`, `gitlab_webhook`, `gitea_app` and `bitbucket_server_webhook` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket Cloud, Azure DevOps, GitHub polling, and the Lambda variants — do not use this gunicorn worker configuration.
@@ -66,6 +73,8 @@ dispatch with an untracked child; inspect the failure before restarting.
 Completed children are joined without waiting and closed each iteration;
 live children are not terminated on cancellation. This is not a durable queue,
 a model-call deadline, or a host-wide memory limit.
+
+## Docker image names and version tags
 
 :::note[Docker Hub namespace migration]
 Releases **`0.34.2` and later** are published under [`pragent/pr-agent`](https://hub.docker.com/r/pragent/pr-agent). Older releases (up to and including `v0.31`) remain at the legacy [`codiumai/pr-agent`](https://hub.docker.com/r/codiumai/pr-agent) namespace as a frozen archive — no new images are pushed there. The examples on this site reference the new namespace; if you are pinning to a release before `0.34.2`, swap `pragent/pr-agent` for `codiumai/pr-agent` in your `image:` / `docker pull` / `uses: docker://` references.

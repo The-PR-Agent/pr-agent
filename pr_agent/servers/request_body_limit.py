@@ -1,4 +1,4 @@
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 from fastapi import FastAPI
 from starlette.middleware import Middleware
@@ -49,6 +49,8 @@ class RequestBodyLimitMiddleware:
                 break
 
         body = b"".join(body_chunks)
+        # Release the original chunks while the application processes the request.
+        del body_chunks, message, chunk
         replayed = False
 
         async def replay_body():
@@ -65,13 +67,17 @@ class RequestBodyLimitMiddleware:
         await response(scope, receive, send)
 
 
-def get_max_request_body_size(max_body_size: Optional[int] = None) -> int:
+def get_max_request_body_size(max_body_size: int | None = None) -> int:
     """Resolve the shared positive body limit for FastAPI and Starlette servers."""
     if max_body_size is None:
         max_body_size = get_settings().config.max_webhook_request_body_bytes
+    if isinstance(max_body_size, bool) or (
+        isinstance(max_body_size, float) and not max_body_size.is_integer()
+    ):
+        raise ValueError("max_webhook_request_body_bytes must be a positive integer")
     try:
         max_body_size = int(max_body_size)
-    except (TypeError, ValueError) as exc:
+    except (OverflowError, TypeError, ValueError) as exc:
         raise ValueError("max_webhook_request_body_bytes must be a positive integer") from exc
     if max_body_size <= 0:
         raise ValueError("max_webhook_request_body_bytes must be a positive integer")
@@ -80,8 +86,8 @@ def get_max_request_body_size(max_body_size: Optional[int] = None) -> int:
 
 
 def create_server_app(
-    middleware: Optional[Iterable[Middleware]] = None,
-    max_body_size: Optional[int] = None,
+    middleware: Iterable[Middleware] | None = None,
+    max_body_size: int | None = None,
 ) -> FastAPI:
     """Build a FastAPI server with the shared request-body limit enabled."""
     max_body_size = get_max_request_body_size(max_body_size)

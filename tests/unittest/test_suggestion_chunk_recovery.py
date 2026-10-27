@@ -11,7 +11,7 @@ from starlette_context import request_cycle_context
 
 import pr_agent.tools.pr_code_suggestions as module
 from pr_agent.algo import token_budget as token_budget_module
-from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.pr_processing import PackedPRDiffs, retry_with_fallback_models
 from pr_agent.algo.run_details import get_run_details, init_run_details
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -75,7 +75,7 @@ def make_tool(monkeypatch, failures):
 
     tool.ai_handler = SimpleNamespace(chat_completion=completion)
     tool._self_reflect_with_fallback = reflect
-    monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: (["a", "b", "c"], []))
+    monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: PackedPRDiffs(["a", "b", "c"], [], []))
     return tool, calls
 
 
@@ -149,7 +149,7 @@ async def test_larger_fallback_recovers_when_earlier_one_is_over_budget(configur
 
 
 @pytest.mark.asyncio
-async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured, monkeypatch):
+async def test_recovery_skips_over_budget_fallback_without_truncation(configured, monkeypatch):
     tool, _calls = make_tool(monkeypatch, {})
     tool._recovery_chain = MagicMock(
         return_value=(
@@ -164,16 +164,21 @@ async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured
     recovered = {"code_suggestions": []}
     tool._predict_chunks = AsyncMock(return_value=[recovered])
 
+    prepared_inputs = []
+
     class FakeBudget:
         def __init__(self, model):
             self.model = model
 
-        def render_prompt_templates(self, _variables):
+        def render_prompt_templates(self, variables):
+            prepared_inputs.append((self.model, variables["diff"], variables["diff_no_line_numbers"]))
             return "system", "user"
 
-        def fit_optional_text(self, optional_text, *_args, **_kwargs):
-            fitted_text = "clipped" if self.model == "gpt-4o-mini" else optional_text
-            return SimpleNamespace(optional_text=fitted_text)
+        def prepare_request(self, *_args):
+            return SimpleNamespace(input_tokens=101 if self.model == "gpt-4o-mini" else 100)
+
+        def input_token_limit(self, *_args, **_kwargs):
+            return 100
 
     monkeypatch.setattr(
         module.AttemptTokenBudget,
@@ -190,6 +195,10 @@ async def test_recovery_skips_fallback_that_fits_only_a_clipped_chunk(configured
         [("numbered-b", "complete-b")],
     )
     assert results[1] is recovered
+    assert prepared_inputs == [
+        ("gpt-4o-mini", "numbered-b", "complete-b"),
+        ("gpt-4.1", "numbered-b", "complete-b"),
+    ]
 
 
 async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monkeypatch):
@@ -200,14 +209,18 @@ async def test_all_failed_primary_keeps_existing_outer_fallback(configured, monk
     assert tool.failed_chunk_count == 0
 
 
-async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeypatch):
+@pytest.mark.parametrize("unprocessed_kind", ["remaining", "partial"])
+async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeypatch, unprocessed_kind):
     get_settings().set("config.fallback_models", ["gpt-4.1"])
     tool, calls = make_tool(monkeypatch, {})
     packed_models = []
 
     def pack_for_model(_provider, _token_handler, model, **_kwargs):
         packed_models.append(model)
-        return ([], ["primary-only.py"]) if model == "gpt-4o" else (["a"], [])
+        if model == "gpt-4o":
+            return (PackedPRDiffs([], ["primary-only.py"], []) if unprocessed_kind == "remaining"
+                    else PackedPRDiffs([], [], ["primary-only.py"]))
+        return PackedPRDiffs(["a"], [], [])
 
     monkeypatch.setattr(module, "get_pr_multi_diffs", pack_for_model)
 
@@ -217,6 +230,27 @@ async def test_empty_primary_chunk_list_keeps_outer_fallback(configured, monkeyp
     assert [(model, chunk) for model, chunk, _, _ in calls] == [("gpt-4.1", "a")]
     assert [suggestion["relevant_file"] for suggestion in result["code_suggestions"]] == ["a.py"]
     assert tool.remaining_files_list == []
+    assert tool.partial_files_list == []
+
+
+@pytest.mark.parametrize("decouple_hunks", [True, False])
+async def test_no_analyzable_diff_skips_outer_fallback(configured, monkeypatch, decouple_hunks):
+    get_settings().set("pr_code_suggestions.decouple_hunks", decouple_hunks)
+    tool, calls = make_tool(monkeypatch, {})
+    packed_models = []
+
+    def pack_for_model(_provider, _token_handler, model, **_kwargs):
+        packed_models.append(model)
+        return PackedPRDiffs([], [], [])
+
+    monkeypatch.setattr(module, "get_pr_multi_diffs", pack_for_model)
+
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
+
+    assert result == {"code_suggestions": []}
+    assert packed_models == ["gpt-4o"] * (1 if decouple_hunks else 2)
+    assert calls == []
+    assert tool.total_chunk_count == 0
 
 
 async def test_partial_success_on_outer_fallback_only_tries_later_models(configured, monkeypatch):
@@ -254,7 +288,8 @@ async def test_oversized_fallback_is_skipped_without_truncating_context(configur
 async def test_marker_text_in_diff_is_counted_literally_for_recovery(configured, monkeypatch):
     tool, calls = make_tool(monkeypatch, {("gpt-4o", "<|endoftext|>"): RuntimeError("failure")})
     # Patch after make_tool so the fixture's default chunk list does not win.
-    monkeypatch.setattr(module, "get_pr_multi_diffs", lambda *a, **k: (["a", "<|endoftext|>", "c"], []))
+    monkeypatch.setattr(
+        module, "get_pr_multi_diffs", lambda *a, **k: PackedPRDiffs(["a", "<|endoftext|>", "c"], [], []))
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert ("gpt-4o-mini", "<|endoftext|>", "secondary") in [(m, c, d) for m, c, d, _ in calls]
     assert len(result["code_suggestions"]) == 3
@@ -322,16 +357,70 @@ async def test_empty_prediction_is_a_success_not_a_retry_trigger(configured, mon
     assert len(calls) == 4
 
 
-async def test_invalid_yaml_recovery_preserves_parse_failure_notice(configured, monkeypatch):
+@pytest.mark.parametrize("parallel", [True, False])
+async def test_invalid_suggestion_response_recovers_only_failed_chunk(configured, monkeypatch, parallel):
+    get_settings().set("pr_code_suggestions.parallel_calls", parallel)
     tool, calls = make_tool(monkeypatch, {
-        ("gpt-4o", "b"): TimeoutError("failure"),
+        ("gpt-4o", "b"): "code_suggestions: 5",
         ("gpt-4o-mini", "b"): "not a suggestions mapping",
     })
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert tool.failed_chunk_count == 0
+    assert not tool._get_suggestions_coverage_footer()
+    assert [(m, c) for m, c, _, _ in calls] == [
+        ("gpt-4o", "a"), ("gpt-4o", "b"), ("gpt-4o", "c"),
+        ("gpt-4o-mini", "b"), ("gpt-4.1", "b"),
+    ]
+
+
+async def test_invalid_suggestion_response_without_fallback_reports_partial_coverage(configured, monkeypatch):
+    get_settings().set("config.fallback_models", [])
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): "code_suggestions: null"})
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "c.py"]
     assert tool.failed_chunk_count == 1
-    assert tool.parse_failure_count == 1
-    assert len(calls) == 4
+    assert "1 of 3 analysis chunks failed" in tool._get_suggestions_coverage_footer()
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("recover_on_fallback", [True, False])
+async def test_all_invalid_suggestions_use_outer_fallback(configured, monkeypatch, recover_on_fallback):
+    invalid_models = ["gpt-4o"] if recover_on_fallback else ["gpt-4o", "gpt-4o-mini", "gpt-4.1"]
+    tool, calls = make_tool(monkeypatch, {
+        (model, chunk): "code_suggestions: null"
+        for model in invalid_models for chunk in "abc"
+    })
+    if recover_on_fallback:
+        result = await retry_with_fallback_models(tool.prepare_prediction_main)
+        assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+        assert tool.failed_chunk_count == 0
+        assert len(calls) == 6
+    else:
+        with pytest.raises(Exception, match="Failed to generate prediction with any model"):
+            await retry_with_fallback_models(tool.prepare_prediction_main)
+        assert len(calls) == 9
+
+
+async def test_all_invalid_suggestions_mark_the_command_as_failed(configured, monkeypatch):
+    invalid = {
+        (model, chunk): "code_suggestions: null"
+        for model in ["gpt-4o", "gpt-4o-mini", "gpt-4.1"] for chunk in "abc"
+    }
+    tool, calls = make_tool(monkeypatch, invalid)
+    tool.git_provider.get_files.return_value = [object()]
+    tool.git_provider.is_supported.return_value = False
+    tool.pr_url = "https://example.invalid/pull/1"
+    tool.progress_response = None
+    snapshot = snapshot_settings(("config.publish_output_progress", "config.propagate_tool_errors"))
+    try:
+        get_settings().set("config.publish_output_progress", False)
+        get_settings().set("config.propagate_tool_errors", False)
+        await tool.run()
+        assert get_run_details().command_failed is True
+        assert len(calls) == 9
+    finally:
+        restore_settings(snapshot)
 
 
 @pytest.mark.parametrize("parent_cancel", [True, False])
@@ -477,6 +566,16 @@ async def test_recovered_run_details_report_primary_model_and_sticky_fallback(co
     assert details.num_ai_calls == 0
 
 
+@pytest.mark.parametrize("fallback_deployment", ["primary", "secondary"])
+def test_recovery_chain_distinguishes_deployments_for_the_same_model(configured, monkeypatch, fallback_deployment):
+    chain = [("gpt-4o", "primary"), ("gpt-4o", fallback_deployment)]
+    monkeypatch.setattr(module, "get_effective_fallback_chain", lambda: chain)
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+
+    expected = None if fallback_deployment == "primary" else (chain, 1)
+    assert tool._recovery_chain("gpt-4o", get_settings()) == expected
+
+
 async def test_ambiguous_model_deployment_chain_keeps_partial_result(configured, monkeypatch):
     get_settings().set("config.fallback_models", ["gpt-4o", "gpt-4.1"])
     get_settings().set("openai.fallback_deployments", ["primary", "last"])
@@ -545,6 +644,32 @@ async def test_routed_primary_recovers_failed_slots_with_configured_fallback(con
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
     assert [m for m, _, _, _ in calls] == ["gpt-4o-mini"] * 3 + ["gpt-4.1"]
     assert get_settings().get("openai.deployment_id") == "primary"
+    tool.git_provider.get_diff_files.assert_called_once_with()
+
+
+@pytest.mark.parametrize("parallel", [True, False])
+@pytest.mark.parametrize("deployment, fallback_deployments", [(None, []), ("", []), (None, [""]), ("", [None])])
+async def test_routed_collision_recovers_failed_chunks_with_displaced_primary(configured, monkeypatch, parallel,
+                                                                            deployment, fallback_deployments):
+    get_settings().set("pr_code_suggestions.parallel_calls", parallel)
+    get_settings().set("config.model", "gpt-5.6")
+    get_settings().set("config.fallback_models", ["gpt-5.6-terra"])
+    get_settings().set("openai.deployment_id", deployment)
+    get_settings().set("openai.fallback_deployments", fallback_deployments)
+    get_settings().set("model_routing.enable", True)
+    get_settings().set("model_routing.rules", [{"model": "gpt-5.6-terra", "max_files": 10}])
+    tool, calls = make_tool(monkeypatch, {("gpt-5.6-terra", "b"): RuntimeError("failure")})
+    tool.git_provider.get_diff_files.return_value = [FilePatchInfo("old()\n", "old()\n", "", c + ".py") for c in "abc"]
+
+    result = await retry_with_fallback_models(tool.prepare_prediction_main, git_provider=tool.git_provider)
+
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert [(model, chunk, dep) for model, chunk, dep, _ in calls] == [
+        ("gpt-5.6-terra", "a", None), ("gpt-5.6-terra", "b", None), ("gpt-5.6-terra", "c", None),
+        ("gpt-5.6", "b", None),
+    ]
+    assert tool.failed_chunk_count == 0
+    assert get_settings().get("openai.deployment_id") == deployment
     tool.git_provider.get_diff_files.assert_called_once_with()
 
 

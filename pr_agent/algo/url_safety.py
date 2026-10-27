@@ -13,6 +13,8 @@ import ipaddress
 import socket
 from urllib.parse import urljoin, urlparse
 
+from yarl import URL
+
 MAX_SAFE_REDIRECTS = 5
 # Status codes the callers treat as a redirect; 300/304/305/306 are deliberately excluded
 # because they do not carry a followable Location in the same way.
@@ -20,10 +22,10 @@ REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
 def ip_is_blocked(addr) -> bool:
-    """Reject non-public IP ranges (SSRF guard): private/loopback/link-local (incl. cloud
-    metadata 169.254.0.0/16), reserved, multicast, unspecified."""
+    """Reject non-public IP ranges, including shared/CGNAT and site-local addresses."""
     return (addr.is_private or addr.is_loopback or addr.is_link_local
-            or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
+            or addr.is_reserved or addr.is_multicast or addr.is_unspecified
+            or not addr.is_global or getattr(addr, "is_site_local", False))
 
 
 async def host_resolves_public(host: str) -> bool:
@@ -32,20 +34,27 @@ async def host_resolves_public(host: str) -> bool:
     if not host:
         return False
     try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
-    except Exception:
+        infos = await _resolve_public_addresses(host)
+    except (OSError, ValueError):
         return False
-    saw = False
+
+    return bool(infos)
+
+
+async def _resolve_public_addresses(host: str, port: int | None = None) -> list:
+    """Resolve a host once and return only after every address is confirmed public."""
+    infos = await asyncio.to_thread(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM)
+    if not infos:
+        return []
     for info in infos:
-        ip = info[4][0].split("%")[0]  # strip IPv6 zone id
+        ip = info[4][0].split("%")[0]
         try:
             addr = ipaddress.ip_address(ip)
-        except ValueError:
-            return False
-        saw = True
+        except (IndexError, ValueError) as error:
+            raise ValueError("DNS returned an invalid address") from error
         if ip_is_blocked(addr):
-            return False
-    return saw
+            raise ValueError("DNS returned a non-public address")
+    return infos
 
 
 async def url_is_safe(url: str) -> bool:
@@ -71,15 +80,33 @@ async def with_safe_redirects(
     """Run ``await consumer(response, url)`` on the first non-redirect hop for ``url``.
 
     Every hop, including the first URL, is validated with ``validator`` before it is
-    requested, and each request uses ``allow_redirects=False``, so a validated URL is the
-    only one contacted. Returns the consumer's result, or None when a hop is unsafe, a
-    redirect carries no Location, or ``max_redirects`` is exceeded.
+    requested. Built-in validation pins the request to a validated public address while
+    preserving the original Host header and TLS hostname. Each request uses
+    ``allow_redirects=False``, so redirects are validated one hop at a time. Returns the
+    consumer's result, or None when a hop is unsafe, a redirect carries no Location, or
+    ``max_redirects`` is exceeded.
     """
     current = url
     for _ in range(max_redirects + 1):
-        if not await validator(current):
+        request_url = current
+        request_options = {"allow_redirects": False}
+        if validator is url_is_safe:
+            parsed = URL(current)
+            if parsed.scheme != "https" or not parsed.raw_host:
+                return None
+            try:
+                addresses = await _resolve_public_addresses(parsed.raw_host, parsed.port)
+            except (OSError, ValueError):
+                return None
+            if not addresses:
+                return None
+            request_url = parsed.with_host(addresses[0][4][0])
+            request_options["headers"] = {"Host": parsed.raw_authority.rsplit("@", 1)[-1]}
+            if parsed.scheme == "https":
+                request_options["server_hostname"] = parsed.raw_host
+        elif not await validator(current):
             return None
-        async with session.request(method, current, allow_redirects=False) as response:
+        async with session.request(method, request_url, **request_options) as response:
             if response.status in REDIRECT_STATUSES:
                 location = response.headers.get("Location")
                 if not location:

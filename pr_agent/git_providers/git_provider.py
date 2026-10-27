@@ -9,8 +9,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, Optional, Tuple
+from typing import Any
 from urllib.parse import urlsplit
+
+from starlette_context import context
 
 from pr_agent.algo.comment_identity import (
     PRCommandNoticeIdentity,
@@ -67,12 +69,12 @@ class CodeSuggestionThread:
     """
     thread_id: Any
     status: Any
-    file: Optional[str]
-    start_line: Optional[int]
-    end_line: Optional[int]
+    file: str | None
+    start_line: int | None
+    end_line: int | None
     suggestion: str
     replies: list[tuple[str, str]] = field(default_factory=list)
-    authored_by_agent: Optional[bool] = None
+    authored_by_agent: bool | None = None
 
     def text_replies(self) -> list[tuple[str, str]]:
         """Return the replies that have a non-blank text message, stripped."""
@@ -137,7 +139,34 @@ class ConcurrentFileUpdateError(RuntimeError):
 
 
 _URL_USERINFO_RE = re.compile(r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]{0,30}://)[^/@\s]+@")
-_AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic|token)\s+)\S+")
+_AUTH_HEADER_RE = re.compile(
+    r"(?i)(authorization[ \t]*:[ \t]*[A-Za-z][A-Za-z0-9_-]*[ \t]++)"
+    r"(?!<redacted>[ \t]*(?:[\r\n]|$))[^\r\n]+"
+)
+_CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r"(?i)((?<![a-z0-9])(?:aws_secret_access_key|aws_session_token|aws_access_key_id|"
+    r"secretaccesskey|sessiontoken|accesskeyid|github_token|gitlab_token|ci_job_token|openai_key|openai_api_key|"
+    r"user_token|personal_access_token|bearer_token|basic_token|api_token|api_key|pat|client_secret|"
+    r"webhook_secret|shared_secret|webhook_password)\b[\"']?[ \t]*[:=][ \t]*)"
+    r"(\"(?:\\[^\r\n]|[^\"\\\r\n])*(?:\"|\\?(?=[\r\n]|\Z))|"
+    r"'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|\\?(?=[\r\n]|\Z))|[^\s\"']+)"
+)
+_GITLAB_TOKEN_RE = re.compile(r"\bglpat-[A-Za-z0-9_-]+")
+_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}\b")
+# Bare tokens carry no context (no URL, header, or keyword assignment), so they are matched by
+# their documented provider formats. Minimum lengths keep ordinary words and short identifiers
+# from matching; the shapes follow the providers' published token formats.
+_GITHUB_TOKEN_RE = re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,255}\b")
+_GITHUB_FINE_GRAINED_PAT_RE = re.compile(r"\bgithub_pat_[A-Za-z0-9_]{36,255}\b")
+_ANTHROPIC_KEY_RE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{32,255}\b")
+_OPENAI_KEY_RE = re.compile(r"\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{32,255}\b|\bsk-[A-Za-z0-9]{40,255}\b")
+_GOOGLE_API_KEY_RE = re.compile(r"\bAIza[A-Za-z0-9_-]{32,42}(?![A-Za-z0-9_-])")
+_SLACK_TOKEN_RE = re.compile(r"\bxox[a-z]-[0-9A-Za-z-]{10,255}\b|\bxapp-[0-9A-Za-z-]{10,255}\b")
+# Consume the full Stripe payload without backtracking when key lengths vary.
+_STRIPE_KEY_RE = re.compile(r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{24,}+(?![A-Za-z0-9_])")
+# Twilio SK values are API key SIDs, not their unprefixed secrets.
+_TWILIO_API_KEY_SID_RE = re.compile(r"\bSK[0-9a-fA-F]{32}(?![A-Za-z0-9_])")
+_SENDGRID_API_KEY_RE = re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
 
 
 # The reaction PR-Agent has always added when it picks a comment command up. Used as the
@@ -156,11 +185,50 @@ def get_reaction_setting(name: str, default: str = "") -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def redact_credentials(text) -> str:
+def _redact_credential_assignment(match: re.Match) -> str:
+    value = match.group(2)
+    quote = value[0] if value[0] in "\"'" else ""
+    closed = bool(quote and len(value) > 1 and value.endswith(quote))
+    credential = value[1:-1] if closed else value[1:] if quote else value
+    if not credential.strip() or credential.strip().lower() == "<redacted>":
+        return match.group(0)
+    return match.group(1) + quote + "<redacted>" + (quote if closed else "")
+
+
+def redact_credentials(text, *, redaction_counts: dict[str, int] | None = None) -> str:
     if not text:
         return ""
-    redacted = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), str(text))
-    return _AUTH_HEADER_RE.sub(lambda m: m.group(1) + "<redacted>", redacted)
+    redacted = str(text)
+    for kind, pattern, replacement in (
+        ("url_userinfo", _URL_USERINFO_RE, lambda m: m.group("scheme")),
+        ("authorization_header", _AUTH_HEADER_RE, lambda m: m.group(1) + "<redacted>"),
+        ("credential_assignment", _CREDENTIAL_ASSIGNMENT_RE, _redact_credential_assignment),
+        # Match the whole SendGrid key before bare-token patterns can match inside it.
+        ("sendgrid_api_key", _SENDGRID_API_KEY_RE, "<redacted>"),
+        ("gitlab_token", _GITLAB_TOKEN_RE, "<redacted>"),
+        ("aws_access_key", _AWS_ACCESS_KEY_RE, "<redacted>"),
+        ("github_token", _GITHUB_TOKEN_RE, "<redacted>"),
+        ("github_fine_grained_pat", _GITHUB_FINE_GRAINED_PAT_RE, "<redacted>"),
+        ("anthropic_key", _ANTHROPIC_KEY_RE, "<redacted>"),
+        ("openai_key", _OPENAI_KEY_RE, "<redacted>"),
+        ("google_api_key", _GOOGLE_API_KEY_RE, "<redacted>"),
+        ("slack_token", _SLACK_TOKEN_RE, "<redacted>"),
+        ("stripe_key", _STRIPE_KEY_RE, "<redacted>"),
+        ("twilio_api_key_sid", _TWILIO_API_KEY_SID_RE, "<redacted>"),
+    ):
+        count = 0
+
+        def counted_replacement(match, replacement=replacement):
+            nonlocal count
+            result = replacement(match) if callable(replacement) else replacement
+            if result != match.group(0):
+                count += 1
+            return result
+
+        redacted = pattern.sub(counted_replacement, redacted)
+        if count and redaction_counts is not None:
+            redaction_counts[kind] = redaction_counts.get(kind, 0) + count
+    return redacted
 
 
 def _clone_authorization_header(repo_url: str) -> str | None:
@@ -284,14 +352,34 @@ def get_git_ssl_env() -> dict[str, str]:
 
 
 class GitProvider(ABC):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        """Return policy fields; None means unknown, empty values mean not applicable.
+
+        Omit unavailable fields or return None; only their rules are skipped.
+        Read expensive fields (such as labels) only when requested. Lookup errors
+        are handled by the policy layer, which allows the request to continue.
+        """
+        return {}
+
     @abstractmethod
     def is_supported(self, capability: str) -> bool:
         pass
 
     def reset_diff_cache_for_command(self) -> None:
-        """Reset diff state that should not survive an automatic command boundary."""
-        if getattr(self, "diff_files", None) == []:
-            self.diff_files = None
+        """Reset diff state that should not survive an automatic command boundary.
+
+        A completed diff belongs to the command that computed it: the next command in
+        the loop may run under a different scope (a full run after an incremental one,
+        different ignore rules), so reset unconditionally rather than only when the
+        cached diff is empty. Resets the incremental anchor too, and the request-scoped
+        diff cache some providers keep in the starlette context. #3724 introduced this
+        for GitHub; the semantics live here so every provider inherits them.
+        """
+        self.diff_files = None
+        if getattr(self, "incremental", None) is not None:
+            self.incremental = IncrementalPR(False)
+        if context.exists():
+            context.pop("diff_files", None)
 
     def supports_incremental_kind(self, kind: str) -> bool:
         """Whether `get_incremental_commits()` can scope an incremental run to `kind`
@@ -337,7 +425,9 @@ class GitProvider(ABC):
         budget = _discussion_context_budget()
         if budget <= 0:
             return ""
-        discussions, context = [], ""
+        discussions = []
+        # Reserve two characters for the outer JSON array brackets.
+        context_chars = 2
         for thread in self._iter_code_suggestion_threads():
             if thread.authored_by_agent is False:
                 continue
@@ -352,14 +442,14 @@ class GitProvider(ABC):
                 "replies": [{"author": author or "Unknown", "message": message[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS]}
                             for author, message in replies[-DISCUSSION_CONTEXT_MAX_REPLIES:]],
             }
-            candidate = json.dumps(discussions + [discussion], ensure_ascii=False, indent=2)
-            if len(candidate) > budget:
+            discussion_chars = len(json.dumps([discussion], ensure_ascii=False, indent=2)) - 2
+            if context_chars + discussion_chars > budget:
                 break
             discussions.append(discussion)
-            context = candidate
+            context_chars += discussion_chars
             if len(discussions) >= DISCUSSION_CONTEXT_MAX_THREADS:
                 break
-        return context
+        return json.dumps(discussions, ensure_ascii=False, indent=2) if discussions else ""
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this.
@@ -367,6 +457,14 @@ class GitProvider(ABC):
         Inline /review key-issue threads carry the same dedup marker, so a provider may yield them too;
         /review reads them to learn which findings a human resolved."""
         return iter(())
+
+    def _iter_review_threads(self) -> Iterator[CodeSuggestionThread]:
+        """Yield review threads with eligible dismissals reported as `resolved`.
+
+        Default to the existing iterator so GitLab and unsupported providers keep their behavior.
+        Providers may override this without expanding the /improve discussion context.
+        """
+        return self._iter_code_suggestion_threads()
 
     def supports_threaded_pr_questions(self) -> bool:
         return False
@@ -448,7 +546,7 @@ class GitProvider(ABC):
     # ('https://git_provider.com/projects/MY_PROJECT/repos/MY_REPO/.../<MY_BRANCH>', '?=<SOME HEADER>')
     # so that to properly view the file: docs/readme.md -> <PREFIX>/docs/readme.md<SUFFIX> ->
     # https://git_provider.com/projects/MY_PROJECT/repos/MY_REPO/<MY_BRANCH>/docs/readme.md?=<SOME HEADER>)
-    def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> Tuple[str, str]:
+    def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> tuple[str, str]:
         get_logger().warning("Not implemented! Returning empty prefix and suffix")
         return ("", "")
 
@@ -461,7 +559,7 @@ class GitProvider(ABC):
     #                self.repo_url, tmp_dir, remove_dest_folder=False)
     #            print(returned_obj.path) #Use returned_obj.path.
     #    #From this point, returned_obj.path may be deleted at any point and therefore must not be used.
-    class ScopedClonedRepo(object):
+    class ScopedClonedRepo:
         def __init__(self, dest_folder):
             self.path = dest_folder
 
@@ -487,11 +585,11 @@ class GitProvider(ABC):
             )
             ssl_env = os.environ.copy()
 
-        # Keep the credential out of every git argv: clone the redacted URL and resend the
+        # Keep the credential out of every git argv: remove URL userinfo and resend the
         # token as an http.extraHeader through the GIT_CONFIG_* environment. Git applies
         # that config to the subprocesses it spawns (including git-remote-http) without
         # putting the credential on any command line.
-        clean_repo_url = redact_credentials(repo_url)
+        clean_repo_url = _URL_USERINFO_RE.sub(lambda match: match.group("scheme"), repo_url)
         authorization_header = _clone_authorization_header(repo_url)
         if clean_repo_url != repo_url and authorization_header is not None:
             inherited_count = int(ssl_env.get("GIT_CONFIG_COUNT", "0"))
@@ -683,34 +781,22 @@ class GitProvider(ABC):
             self.user_description = description
             return description
 
-        # if the existing description was generated by the pr-agent, but it doesn't contain a user description,
-        # return nothing (empty string) because it means there is no user description
         user_description_header = "### **user description**"
-        if user_description_header not in description_lowercase:
+        headers = iter(self._iter_description_headers(description))
+        start_position = next((end for header, _, end in headers if header == user_description_header), None)
+        if start_position is None:
             get_logger().info("Existing description was generated by the pr-agent, "
                               "but it doesn't contain a user description")
             return ""
 
-        # otherwise, extract the original user description from the existing pr-agent description and return it
-        # user_description_start_position = description_lowercase.find(user_description_header)
-        #     + len(user_description_header)
-        # return description[user_description_start_position:].split("\n", 1)[-1].strip()
-
-        # the 'user description' is in the beginning. extract and return it
-        possible_headers = self._possible_headers()
-        start_position = description_lowercase.find(user_description_header) + len(user_description_header)
-        end_position = len(description)
-        for header in possible_headers: # try to clip at the next header
-            if header != user_description_header and header in description_lowercase:
-                end_position = min(end_position, description_lowercase.find(header))
-        if end_position != len(description) and end_position > start_position:
+        # Ignore quoted headers and sections preceding the selected user description.
+        end_position = next((start for header, start, _ in headers if header != user_description_header), None)
+        if end_position is not None:
             original_user_description = description[start_position:end_position].strip()
             if original_user_description.endswith("___"):
                 original_user_description = original_user_description[:-3].strip()
         else:
-            original_user_description = description.split("___")[0].strip()
-            if original_user_description.lower().startswith(user_description_header):
-                original_user_description = original_user_description[len(user_description_header):].strip()
+            original_user_description = description[start_position:].split("___")[0].strip()
 
         get_logger().info("Extracted user description from existing description",
                           description=original_user_description)
@@ -727,8 +813,34 @@ class GitProvider(ABC):
                 "### **labels**",
                 "### 🤖 generated by pr agent")
 
-    # Headers that are unique to pr-agent output; humans never write these
-    # naturally, so they can safely be matched anywhere in the body.
+    def _iter_description_headers(self, description: str) -> Iterator[tuple[str, int, int]]:
+        """Yield structural headers and original offsets outside bounded Markdown fences."""
+        fence_char = ""
+        fence_length = 0
+        offset = 0
+        for line in description.split("\n"):
+            # Only LF starts a new physical line; preserve CRLF and Unicode offsets.
+            delimiter = line.lstrip(" ")
+            indent = len(line) - len(delimiter)
+            if indent <= 3 and delimiter[:1] in ("`", "~"):
+                char = delimiter[0]
+                length = len(delimiter) - len(delimiter.lstrip(char))
+                if fence_char:
+                    if char == fence_char and length >= fence_length and not delimiter[length:].strip():
+                        fence_char = ""
+                elif length >= 3 and (char != "`" or "`" not in delimiter[length:]):
+                    fence_char, fence_length = char, length
+                offset += len(line) + 1
+                continue
+            if not fence_char:
+                comparison = line.lower()
+                for header in self._possible_headers():
+                    if comparison.startswith(header):
+                        yield header, offset, offset + len(header)
+                        break
+            offset += len(line) + 1
+
+    # Unique headers tolerate leading content in old generated descriptions (#2633).
     _UNIQUE_PR_AGENT_HEADERS = frozenset((
         "### **user description**",
         "### **pr type**",
@@ -738,25 +850,11 @@ class GitProvider(ABC):
     ))
 
     def _is_generated_by_pr_agent(self, description_lowercase: str) -> bool:
-        # Fast path: hidden HTML comment injected at write time.
+        # Keep the hidden marker as an unconditional anywhere fast path.
         if '<!-- pr-agent-generated -->' in description_lowercase:
             return True
-        possible_headers = self._possible_headers()
-        # For headers unique to pr-agent, tolerate leading content (the ratchet
-        # case from #2633: a description like "Fixes #42\n### **PR Type**" should
-        # still be recognized as pr-agent output).
-        for header in possible_headers:
-            # the header must start its own line: a quoted copy, e.g. inside a
-            # blockquote or backticks, is somebody else's text, not ours
-            if header in self._UNIQUE_PR_AGENT_HEADERS and (
-                    description_lowercase.startswith(header)
-                    or ("\n" + header) in description_lowercase):
-                return True
-        # For generic headers (type, description, labels), require startswith
-        # to avoid misclassifying human descriptions that happen to contain
-        # one of these common markdown headings.
-        return any(description_lowercase.startswith(header) for header in possible_headers
-                   if header not in self._UNIQUE_PR_AGENT_HEADERS)
+        return any(header in self._UNIQUE_PR_AGENT_HEADERS or start == 0
+                   for header, start, _ in self._iter_description_headers(description_lowercase))
 
     @abstractmethod
     def get_repo_settings(self):
@@ -777,7 +875,7 @@ class GitProvider(ABC):
         Defaults to no per-directory support."""
         return {}
 
-    def get_owning_namespace(self) -> Optional[str]:
+    def get_owning_namespace(self) -> str | None:
         """Return the org/group/workspace that owns this repository, or None when
         the provider has no organisation-level home for global settings.
 
@@ -825,6 +923,15 @@ class GitProvider(ABC):
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
 
+    def list_repo_directory(self, dir_path: str, from_default_branch: bool = False) -> list[str] | None:
+        """Return the repository-relative paths of files directly inside ``dir_path``.
+
+        Repo context uses this to expand single-directory glob entries such as ``docs/adr/*.md``.
+        Returns None when the provider cannot list directories, and an empty list for a missing
+        directory. Transient errors propagate so a failed listing is not cached.
+        """
+        return None
+
     def get_issue_content(self, repo_obj, issue_number: int):
         """Fetch issue content within this provider's authorized repository boundary."""
         raise NotImplementedError("This provider cannot fetch GitHub issue content")
@@ -867,7 +974,7 @@ class GitProvider(ABC):
         """
         self._command_actor = actor
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         """Return the ref (commit SHA or branch name) that repo-context files are read from.
 
         The repo-context cache key (pr_agent/algo/repo_context.py) includes this ref so a
@@ -957,7 +1064,8 @@ class GitProvider(ABC):
                                    final_update_message=True,
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
+                                   legacy_initial_header: str | None = None,
+                                   require_agent_authorship: bool = False):
         if not self.supports_comment_editing():
             return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
         return self.publish_persistent_comment_full(
@@ -969,6 +1077,7 @@ class GitProvider(ABC):
             as_thread=as_thread,
             identity_marker=identity_marker,
             legacy_initial_header=legacy_initial_header,
+            require_agent_authorship=require_agent_authorship,
         )
 
     @staticmethod
@@ -980,7 +1089,9 @@ class GitProvider(ABC):
 
     def get_issue_comments_newest_first(self):
         """Return issue comments newest first; providers override known API ordering."""
-        return list(reversed(list(self.get_issue_comments())))
+        comments = self.get_issue_comments()
+        lazy_reversed = getattr(comments, "reversed", None)
+        return lazy_reversed if lazy_reversed is not None else list(reversed(list(comments)))
 
     def _iter_persistent_comments(
         self,
@@ -1112,7 +1223,7 @@ class GitProvider(ABC):
     def get_pr_labels(self, update=False):
         pass
 
-    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> int | None:
         """Add a named reaction to a comment, returning its id.
 
         Returns None when the provider has no reaction API, when the name is empty, or when
@@ -1121,7 +1232,7 @@ class GitProvider(ABC):
         """
         return None
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         """Acknowledge a comment command with the configured start reaction."""
         if disable_eyes:
             return None
@@ -1135,7 +1246,7 @@ class GitProvider(ABC):
             self._start_reaction = (issue_comment_id, reaction_id)
         return reaction_id
 
-    def react_to_outcome(self, issue_comment_id: int, succeeded: bool) -> Optional[int]:
+    def react_to_outcome(self, issue_comment_id: int, succeeded: bool) -> int | None:
         """Replace the start reaction with the configured outcome reaction.
 
         Both outcome reactions are unset by default, so nothing changes unless an operator asks

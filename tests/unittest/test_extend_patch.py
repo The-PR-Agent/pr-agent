@@ -1,10 +1,14 @@
+from codecs import BOM_UTF16_BE
+
 import pytest
 
 from pr_agent.algo.git_patch_processing import (
     RE_HUNK_HEADER,
+    decode_if_bytes,
     extend_patch,
     extract_hunk_headers,
     extract_hunk_lines_from_patch,
+    split_diff_lines,
 )
 from pr_agent.algo.pr_processing import get_pr_multi_diffs, pr_generate_extended_diff
 from pr_agent.algo.token_handler import TokenHandler
@@ -14,6 +18,15 @@ from pr_agent.config_loader import get_settings
 
 get_settings(use_context=False).set("CONFIG.CLI_MODE", True)
 get_settings(use_context=False).config.allow_dynamic_context = False
+
+
+def test_decode_utf16_big_endian_with_bom():
+    content = BOM_UTF16_BE + "hello world".encode("utf-16-be")
+    assert decode_if_bytes(content) == "hello world"
+
+
+def test_decode_latin1_without_bom():
+    assert decode_if_bytes(b"caf\xe9") == "caf\xe9"
 
 
 class TestExtendPatch:
@@ -64,21 +77,39 @@ class TestExtendPatch:
                                          patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
         assert actual_output == expected_output
 
+    def test_head_context_does_not_split_unneeded_file_tail(self, monkeypatch):
+        base = "\n".join(["first", "second", "old", *(f"tail {i}" for i in range(500))])
+        head = base.replace("\nold\n", "\nnew\n")
+        patch = "@@ -3 +3 @@\n-old\n+new"
+        split = split_diff_lines
+        split_inputs = []
+
+        def track_split(text):
+            split_inputs.append(text)
+            return split(text)
+
+        monkeypatch.setattr("pr_agent.algo.git_patch_processing.split_diff_lines", track_split)
+        result = extend_patch(base, patch, patch_extra_lines_before=2,
+                              patch_extra_lines_after=1, new_file_str=head)
+
+        assert " first\n second\n-old\n+new\n tail 0" in result
+        assert split_inputs.count("first\nsecond\n") == 1
+        assert all("tail 499" not in text for text in split_inputs if text != base)
+
     # Tests the functionality of extending a patch with multiple hunks.
     def test_multiple_hunks(self):
         original_file_str = 'line1\nline2\nline3\nline4\nline5\nline6'
-        patch_str = '@@ -2,3 +2,3 @@ init()\n-line2\n+new_line2\n line3\n line4\n@@ -4,1 +4,1 @@ init2()\n-line4\n+new_line4'  # noqa: E501
+        patch_str = '@@ -2,3 +2,3 @@ init()\n-line2\n+new_line2\n line3\n line4\n@@ -5,1 +5,1 @@ init2()\n-line5\n+new_line5'  # noqa: E501
         num_lines = 1
         original_allow_dynamic_context = get_settings(use_context=False).config.allow_dynamic_context
 
         get_settings(use_context=False).config.allow_dynamic_context = False
-        expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5\n\n@@ -3,3 +3,3 @@ init2()\n line3\n-line4\n+new_line4\n line5' # noqa: E501
+        expected_output = '\n@@ -1,4 +1,4 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n\n@@ -5,2 +5,2 @@ init2()\n-line5\n+new_line5\n line6' # noqa: E501
         actual_output = extend_patch(original_file_str, patch_str,
                                      patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
         assert actual_output == expected_output
 
         get_settings(use_context=False).config.allow_dynamic_context = True
-        expected_output = '\n@@ -1,5 +1,5 @@ init()\n line1\n-line2\n+new_line2\n line3\n line4\n line5\n\n@@ -3,3 +3,3 @@ init2()\n line3\n-line4\n+new_line4\n line5' # noqa: E501
         actual_output = extend_patch(original_file_str, patch_str,
                                      patch_extra_lines_before=num_lines, patch_extra_lines_after=num_lines)
         assert actual_output == expected_output
@@ -125,6 +156,54 @@ class TestExtendPatch:
             "-    line(8)\n+    new_line(8)"
         )
         assert actual_output3 == expected_output_no_dynamic_context
+
+    @pytest.mark.parametrize("section_header", ["", "   "])
+    def test_headerless_hunk_uses_fixed_context_with_new_file(self, monkeypatch, section_header):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        preceding = [f"    line{i}" for i in range(1, 11)]
+        original = "\n".join([*preceding, "old"])
+        new = "\n".join([*preceding, "new"])
+        patch = f"@@ -11 +11 @@{section_header}\n-old\n+new"
+
+        extended = extend_patch(original, patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str=new)
+
+        assert extended.splitlines()[1].startswith("@@ -6,6 +6,6 @@")
+        assert extended.splitlines()[2:] == [*(f"     line{i}" for i in range(6, 11)), "-old", "+new"]
+
+    @pytest.mark.parametrize("new_header_line", ["anchor", "changed anchor"])
+    def test_dynamic_header_missing_or_mismatched_uses_fixed_context(self, monkeypatch, new_header_line):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        original_lines = ["anchor", *(f"line{i}" for i in range(2, 11)), "old"]
+        new_lines = [new_header_line, *original_lines[1:-1], "new"]
+        header = "missing" if new_header_line == "anchor" else "anchor"
+        patch = f"@@ -11 +11 @@ {header}\n-old\n+new"
+
+        extended = extend_patch("\n".join(original_lines), patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str="\n".join(new_lines))
+
+        assert extended.splitlines()[1].startswith("@@ -6,6 +6,6 @@")
+        assert extended.splitlines()[2:7] == [*(f" line{i}" for i in range(6, 11))]
+
+    def test_dynamic_context_resets_for_headerless_second_hunk(self, monkeypatch):
+        settings = get_settings(use_context=False)
+        monkeypatch.setattr(settings.config, "allow_dynamic_context", True)
+        monkeypatch.setattr(settings.config, "max_extra_lines_before_dynamic_context", 10)
+        original_lines = ["def first():", *(f"line{i}" for i in range(2, 11)), "old1",
+                          *(f"line{i}" for i in range(12, 22)), "old2"]
+        new_lines = ["new1" if line == "old1" else "new2" if line == "old2" else line
+                     for line in original_lines]
+        patch = "@@ -11 +11 @@ def first():\n-old1\n+new1\n@@ -22 +22 @@\n-old2\n+new2"
+
+        extended = extend_patch("\n".join(original_lines), patch, patch_extra_lines_before=5,
+                                patch_extra_lines_after=0, new_file_str="\n".join(new_lines))
+
+        hunk_headers = [line for line in extended.splitlines() if line.startswith("@@")]
+        assert hunk_headers == ["@@ -1,11 +1,11 @@ ", "@@ -17,6 +17,6 @@ "]
 
 
 
@@ -255,6 +334,19 @@ class TestLoadLargeDiff:
             f"@@ -1,2 +1 @@\n value{ending}-{ending}"
         )
 
+    @pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\x0c", "\x0b", "\x85", "\r"])
+    def test_non_lf_characters_are_not_line_breaks(self, separator):
+        original = f"first{separator}second\nkeep\nold\n"
+        new = f"first{separator}second\nkeep\nnew\n"
+        assert load_large_diff("test.py", new, original) == (
+            f"@@ -1,3 +1,3 @@\n first{separator}second\n keep\n-old\n+new\n"
+        )
+
+    def test_non_lf_character_does_not_shift_later_hunk_lines(self):
+        original = "first\u2028second\n" + "".join(f"line {n}\n" for n in range(2, 12)) + "old\n"
+        new = original.replace("old\n", "new\n")
+        assert load_large_diff("test.py", new, original).startswith("@@ -9,4 +9,4 @@\n")
+
     @pytest.mark.parametrize("content", ["value  \n", "value\t\r\n", "value\n\n", "  "])
     def test_unchanged_whitespace_has_no_diff(self, content):
         assert load_large_diff("test.py", content, content) == ""
@@ -286,6 +378,16 @@ class TestOmittedHunkCount:
                  "@@ -20,3 +20,3 @@\n ctx20\n-old21\n+new21\n ctx22")
         full, _ = extract_hunk_lines_from_patch(patch, "f.py", 13, 13, "right")
         assert "@@ -10,1 +12 @@" not in full
+
+
+def test_extended_context_stops_at_adjacent_hunks():
+    original = "".join(f"l{i}\n" for i in range(1, 11))
+    patch = "@@ -3 +3 @@\n-l3\n+L3\n@@ -6 +6 @@\n-l6\n+L6"
+
+    extended = extend_patch(original, patch, patch_extra_lines_before=5, patch_extra_lines_after=3)
+
+    assert extended == ("\n@@ -1,5 +1,5 @@ \n l1\n l2\n-l3\n+L3\n l4\n l5\n"
+                        "\n@@ -6,4 +6,4 @@ \n-l6\n+L6\n l7\n l8\n l9")
 
 
 class TestExtendedDiffDeletionHandling:
@@ -331,3 +433,36 @@ class TestExtendedDiffDeletionHandling:
         assert len(chunks) > 1
         assert deleted == ["gone.py"]
         assert "-one" not in "\n".join(chunks)
+
+
+class TestExtendPatchZeroLengthHunks:
+    """`git diff -U0` numbers the line *before* a pure insertion or deletion."""
+
+    ORIGINAL = 'a\nb\nc\nd\ne\nf\n'
+
+    def test_pure_insertion_extended_both_sides(self):
+        # Use the `git diff -U0` output after inserting X between c and d
+        new_file = 'a\nb\nc\nX\nd\ne\nf\n'
+        actual = extend_patch(self.ORIGINAL, '@@ -3,0 +4 @@\n+X', patch_extra_lines_before=1,
+                              patch_extra_lines_after=1, filename='f.py', new_file_str=new_file)
+        assert actual == '\n@@ -3,2 +3,3 @@ \n c\n+X\n d'
+
+    def test_pure_deletion_extended_both_sides(self):
+        # Use the `git diff -U0` output after deleting c and d
+        new_file = 'a\nb\ne\nf\n'
+        actual = extend_patch(self.ORIGINAL, '@@ -3,2 +2,0 @@\n-c\n-d', patch_extra_lines_before=1,
+                              patch_extra_lines_after=1, filename='f.py', new_file_str=new_file)
+        assert actual == '\n@@ -2,4 +2,2 @@ \n b\n-c\n-d\n e'
+
+    def test_pure_insertion_extended_after_only(self):
+        new_file = 'a\nb\nc\nX\nd\ne\nf\n'
+        actual = extend_patch(self.ORIGINAL, '@@ -3,0 +4 @@\n+X', patch_extra_lines_before=0,
+                              patch_extra_lines_after=2, filename='f.py', new_file_str=new_file)
+        assert actual == '\n@@ -4,2 +4,3 @@ \n+X\n d\n e'
+
+    def test_pure_insertion_at_end_of_file_keeps_header(self):
+        # Keep the header as it was: nothing can be added after the last line
+        new_file = 'a\nb\nc\nd\ne\nf\nX\n'
+        actual = extend_patch(self.ORIGINAL, '@@ -6,0 +7 @@\n+X', patch_extra_lines_before=0,
+                              patch_extra_lines_after=2, filename='f.py', new_file_str=new_file)
+        assert actual == '\n@@ -6,0 +7,1 @@ \n+X'

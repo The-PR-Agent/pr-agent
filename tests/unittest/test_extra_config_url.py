@@ -3,6 +3,7 @@ import tempfile
 from urllib.error import HTTPError
 
 import pytest
+from starlette_context import request_cycle_context
 
 from pr_agent.cli import set_parser
 from pr_agent.config_loader import get_settings
@@ -185,6 +186,28 @@ def test_resolve_fetches_http_url_into_tempfile(urlopen_stub):
             os.remove(path)
 
 
+def test_resolve_reuses_http_payload_only_within_request(urlopen_stub, monkeypatch):
+    url = "https://config.example.test/shared.toml"
+    from unittest.mock import Mock
+
+    logger = Mock()
+    monkeypatch.setattr(git_utils, "get_logger", lambda: logger)
+    for expected in (SAMPLE_TOML, b'[config]\nmodel = "next-request"\n'):
+        urlopen_stub.body = expected
+        with request_cycle_context({}):
+            for _ in range(2):
+                path, is_temp = _resolve_extra_config_to_file(url)
+                try:
+                    assert is_temp
+                    with open(path, "rb") as stream:
+                        assert stream.read() == expected
+                finally:
+                    os.remove(path)
+                urlopen_stub.body = b'[config]\nmodel = "changed-mid-request"\n'
+    assert len(urlopen_stub.calls) == 2
+    assert logger.info.call_count == 2
+
+
 def test_resolve_injects_auth_header_from_env(urlopen_stub, monkeypatch):
     fake_token = "TEST-AUTH-TOKEN-NOT-REAL"
     urlopen_stub.required_header = ("Private-Token", fake_token)
@@ -248,6 +271,23 @@ def test_resolve_rejects_oversized_response(urlopen_stub):
     assert urlopen_stub.response.read_sizes
     assert all(size >= 0 for size in urlopen_stub.response.read_sizes)
     assert sum(urlopen_stub.response.read_sizes) <= git_utils._MAX_EXTRA_CONFIG_BYTES + 1
+
+
+def test_resolve_retries_oversized_response_within_request(urlopen_stub):
+    url = "https://config.example.test/shared.toml"
+    with request_cycle_context({}):
+        urlopen_stub.body = b"x" * (git_utils._MAX_EXTRA_CONFIG_BYTES + 1)
+        assert _resolve_extra_config_to_file(url) == (None, False)
+        urlopen_stub.body = SAMPLE_TOML
+        path, is_temp = _resolve_extra_config_to_file(url)
+        try:
+            assert is_temp
+            with open(path, "rb") as stream:
+                assert stream.read() == SAMPLE_TOML
+        finally:
+            if path:
+                os.remove(path)
+    assert len(urlopen_stub.calls) == 2
 
 
 def test_resolve_malformed_auth_header_warns_and_drops(urlopen_stub, monkeypatch):
@@ -463,6 +503,28 @@ alpha = "overwritten"
     assert get_settings().get(f"{_TEST_SECTION}.alpha") == "overwritten"
     # Other keys in the same section are preserved by the section-level merge
     assert get_settings().get(f"{_TEST_SECTION}.untouched") == "keep-me"
+
+
+def test_apply_settings_file_merges_keys_case_insensitively(tmp_path, settings_sandbox):
+    """A key from the extra file must replace an existing key with different
+    casing instead of sitting beside it. Dynaconf looks keys up
+    case-insensitively, so keeping both makes the effective value depend on
+    dict ordering — e.g. a file's 'extra_instructions' can be shadowed by a
+    default 'Extra_Instructions'."""
+    settings = get_settings()
+    settings.set(_TEST_SECTION, {"Extra_Instructions": "from-default"}, merge=False)
+
+    path = _write_toml(tmp_path, "extra.toml", f"""
+[{_TEST_SECTION}]
+extra_instructions = "from-file"
+""")
+    _apply_settings_from_file(path, label="extra")
+
+    assert settings.get(f"{_TEST_SECTION}.extra_instructions") == "from-file"
+    stored = settings.as_dict().get(_TEST_SECTION.upper(), {})
+    assert sum(key.lower() == "extra_instructions" for key in stored) == 1, (
+        "case-variant duplicates must be collapsed to a single key"
+    )
 
 
 def test_apply_settings_file_silently_skips_missing_path(settings_sandbox):

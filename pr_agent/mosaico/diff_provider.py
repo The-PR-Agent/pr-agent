@@ -8,8 +8,9 @@ The diff is parsed by parse_unified_diff(); per-request the parsed files/languag
 are read from MOSAICO.INPUT on the (context) settings.
 """
 import re
-from typing import List, Optional
+from urllib.parse import unquote, urlsplit
 
+from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.git_patch_processing import to_hunk_only_patch
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
@@ -19,7 +20,7 @@ from pr_agent.git_providers.git_provider import GitProvider
 class _PullRequestMimic:
     """Mimics the PullRequest object the tools touch (.title, .diff_files)."""
 
-    def __init__(self, title: str, diff_files: List[FilePatchInfo]):
+    def __init__(self, title: str, diff_files: list[FilePatchInfo]):
         self.title = title
         self.diff_files = diff_files
 
@@ -52,7 +53,7 @@ def _normalize_file_header_path(path: str) -> str:
     return path
 
 
-def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
+def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
     """Parse a supplied unified diff (git format) into a list of FilePatchInfo.
 
     Splits on ``diff --git a/<f> b/<f>`` headers; per file: filename = the b/ path,
@@ -71,7 +72,7 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
         return []
     starts.append(len(lines))
 
-    files: List[FilePatchInfo] = []
+    files: list[FilePatchInfo] = []
     for idx in range(len(starts) - 1):
         section = lines[starts[idx]:starts[idx + 1]]
         header = section[0].rstrip("\r\n")
@@ -107,8 +108,8 @@ def parse_unified_diff(diff_text: str) -> List[FilePatchInfo]:
             old_filename = a_path
 
         # Best-effort reconstruct head/base file content from hunk lines.
-        base_lines: List[str] = []
-        head_lines: List[str] = []
+        base_lines: list[str] = []
+        head_lines: list[str] = []
         in_hunk = False
         for ln in section:
             if ln.startswith("@@"):
@@ -146,20 +147,32 @@ class DiffInputProvider(GitProvider):
     with a single positional ``pr_url`` arg (unused here); reads the parsed diff,
     languages and title from MOSAICO.INPUT on the (context) settings."""
 
-    def __init__(self, pr_url: Optional[str] = None):
+    def __init__(self, pr_url: str | None = None):
         self.pr_url = pr_url
         mosaico_input = get_settings().get("MOSAICO.INPUT", {}) or {}
-        self.diff_files: List[FilePatchInfo] = list(mosaico_input.get("files", []) or [])
+        self.diff_files: list[FilePatchInfo] = list(mosaico_input.get("files", []) or [])
         self._languages = dict(mosaico_input.get("languages", {}) or {})
         self._title = mosaico_input.get("title", "") or ""
+        self._source_url = mosaico_input.get("source_url")
         self.pr = _PullRequestMimic(self._title, self.diff_files)
+
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        # Preserve repository identity when the router fetched a public PR diff.
+        # A pasted patch has no repository, author, labels or branch metadata.
+        repo = ""
+        if self._source_url:
+            path = unquote(urlsplit(self._source_url).path).strip("/")
+            repo = re.split(r"/(?:-/)?(?:pull|pulls|merge_requests|pullrequest|pull-requests)/", path)[0]
+        # The display title is a URL or "Supplied diff", not the hosted PR title.
+        return policy_metadata(title=None, sender="", repo_full_name=repo,
+                               source_branch="", target_branch="")
 
     # ---- INPUT methods (real) ----
     def is_supported(self, capability: str) -> bool:
         # Steer tools to the simplest render branches (no gfm table, no inline comments, no labels).
         return False
 
-    def get_diff_files(self) -> List[FilePatchInfo]:
+    def get_diff_files(self) -> list[FilePatchInfo]:
         return self.diff_files
 
     def get_files(self) -> list:
@@ -215,7 +228,7 @@ class DiffInputProvider(GitProvider):
     def get_pr_labels(self, update=False):
         return []
 
-    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> Optional[int]:
+    def add_eyes_reaction(self, issue_comment_id: int, disable_eyes: bool = False) -> int | None:
         return None
 
     def remove_reaction(self, issue_comment_id: int, reaction_id: int) -> bool:

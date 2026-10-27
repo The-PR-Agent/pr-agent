@@ -56,12 +56,12 @@ class TestShouldRetrySameModel:
         # Preserves pre-knob behavior: an unset flag keeps same-model retries on timeout.
         assert _should_retry_same_model(_timeout_error()) is True
 
-    @pytest.mark.parametrize("value", [False, "false", "False", "0", "no", "off"])
+    @pytest.mark.parametrize("value", [False, 0, "false", "False", "0", "no", "off", "", "invalid"])
     def test_disabled_hands_timeout_to_fallback(self, value):
         get_settings().set("config.retry_same_model_on_timeout", value)
         assert _should_retry_same_model(_timeout_error()) is False
 
-    @pytest.mark.parametrize("value", [True, "true", "TRUE", "1", "yes", "on"])
+    @pytest.mark.parametrize("value", [True, 1, "true", "TRUE", "1", "yes", "on"])
     def test_enabled_keeps_retrying(self, value):
         get_settings().set("config.retry_same_model_on_timeout", value)
         assert _should_retry_same_model(_timeout_error()) is True
@@ -79,12 +79,12 @@ class TestShouldRetrySameModel:
         # An empty, length-capped response is deterministic for the same request and cap.
         assert _should_retry_same_model(_empty_truncated_error()) is False
 
-    @pytest.mark.parametrize("value", [True, "true", "TRUE", "1", "yes", "on"])
+    @pytest.mark.parametrize("value", [True, 1, "true", "TRUE", "1", "yes", "on"])
     def test_length_truncation_retries_when_enabled(self, value):
         get_settings().set("config.retry_same_model_on_length", value)
         assert _should_retry_same_model(_empty_truncated_error()) is True
 
-    @pytest.mark.parametrize("value", [False, "false", "False", "0", "no", "off"])
+    @pytest.mark.parametrize("value", [False, 0, "false", "False", "0", "no", "off"])
     def test_length_truncation_hands_to_fallback_when_disabled(self, value):
         get_settings().set("config.retry_same_model_on_length", value)
         assert _should_retry_same_model(_empty_truncated_error()) is False

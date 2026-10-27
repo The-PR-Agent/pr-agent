@@ -108,6 +108,81 @@ async def _run(monkeypatch, model, openrouter, reasoning_effort="medium", custom
     return mock_call.call_args[1]
 
 
+class TestOpenRouterAttribution:
+    @pytest.fixture(autouse=True)
+    def _isolate_litellm(self, monkeypatch):
+        monkeypatch.setattr(litellm, "api_base", None)
+        monkeypatch.setattr(litellm, "headers", None)
+        monkeypatch.setattr(litellm, "get_secret", lambda name: None)
+
+    @staticmethod
+    def _headers(configured=None, params=None, provider="openrouter"):
+        handler = litellm_handler.LiteLLMAIHandler.__new__(litellm_handler.LiteLLMAIHandler)
+        handler._request_headers = configured if configured is not None else {}
+        return handler._finalize_provider_request_params(provider, params or {}).get("headers", {})
+
+    @pytest.mark.parametrize(
+        ("configured", "secrets", "site_url", "title"),
+        [
+            ({}, {}, "https://github.com/the-pr-agent/pr-agent", "PR-Agent"),
+            ({}, {"OR_SITE_URL": "https://site.example", "OR_APP_NAME": "Custom"},
+             "https://site.example", "Custom"),
+            ({"http-referer": "https://explicit.example", "x-title": "Legacy"},
+             {"OR_SITE_URL": "https://ignored.example", "OR_APP_NAME": "Ignored"},
+             "https://explicit.example", "Legacy"),
+            ({"X-Title": "Legacy", "x-OPENROUTER-title": "Modern"}, {},
+             "https://github.com/the-pr-agent/pr-agent", "Modern"),
+        ],
+    )
+    def test_defaults_and_overrides(self, monkeypatch, configured, secrets, site_url, title):
+        monkeypatch.setattr(litellm, "get_secret", lambda name: secrets.get(name))
+        original = configured.copy()
+        headers = self._headers(configured)
+        assert headers["HTTP-Referer"] == site_url
+        assert headers["X-OpenRouter-Title"] == headers["X-Title"] == title
+        assert set(headers) == {"HTTP-Referer", "X-OpenRouter-Title", "X-Title"}
+        assert configured == original
+
+    def test_request_headers_take_precedence_case_insensitively(self):
+        configured = {"HTTP-Referer": "https://config.example", "X-Title": "Configured", "X-Trace": "keep"}
+        params = {"headers": {"http-referer": "https://request.example", "x-openrouter-title": "Requested"}}
+        headers = self._headers(configured, params)
+        assert headers == {
+            "HTTP-Referer": "https://request.example",
+            "X-OpenRouter-Title": "Requested",
+            "X-Title": "Requested",
+            "X-Trace": "keep",
+        }
+
+    def test_other_providers_and_global_header_guard(self, monkeypatch):
+        assert self._headers({"X-Trace": "keep"}, provider="anthropic") == {"X-Trace": "keep"}
+        monkeypatch.setattr(litellm, "headers", {"X-Global": "blocked"})
+        with pytest.raises(ValueError, match="process-wide LiteLLM headers fallback"):
+            self._headers()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "custom_llm_provider"),
+        [("openrouter/z-ai/glm-5.2", ""), ("z-ai/glm-5.2", "openrouter")],
+    )
+    async def test_chat_and_probe(self, monkeypatch, model, custom_llm_provider):
+        monkeypatch.setattr(
+            litellm_handler, "get_settings",
+            lambda: _make_settings(custom_llm_provider=custom_llm_provider),
+        )
+        with patch.object(litellm_handler, "acompletion", new_callable=AsyncMock) as call:
+            call.return_value = _mock_response()
+            handler = litellm_handler.LiteLLMAIHandler()
+            await handler.chat_completion(model=model, system="sys", user="usr")
+            await handler.probe_completion(model, max_tokens=8, _completion=call)
+
+        assert call.call_count == 2
+        for request in call.call_args_list:
+            headers = request.kwargs["headers"]
+            assert headers["HTTP-Referer"] == "https://github.com/the-pr-agent/pr-agent"
+            assert headers["X-OpenRouter-Title"] == headers["X-Title"] == "PR-Agent"
+
+
 class TestOpenRouterControls:
 
     @pytest.mark.asyncio
@@ -900,7 +975,7 @@ class TestOpenRouterControls:
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
+    @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6-astra"])
     @pytest.mark.parametrize(("prefix", "custom_provider", "route"), [
         ("openrouter/openai/", "", ""),
         ("openrouter/openai/", "", ":nitro"),
@@ -964,6 +1039,39 @@ class TestOpenRouterControls:
             reasoning_effort="high",
         )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("model", "no_budget", "with_budget"), [
+        # The pages of GPT6_MODELS_WITHOUT_NONE_EFFORT members omit "none", so PR-Agent
+        # corrects an explicit OpenRouter "none" to "low". With a budget that then applies.
+        # Expectations are spelled out rather than derived from the registry, so a wrong
+        # registry entry fails here instead of moving the expectation with it.
+        ("openrouter/openai/gpt-6-astra", {"effort": "low"}, {"max_tokens": 2048}),
+        ("openrouter/openai/gpt-6-astra:nitro", {"effort": "low"}, {"max_tokens": 2048}),
+        ("openrouter/openai/gpt-6.1-sol", {"effort": "low"}, {"max_tokens": 2048}),
+        # Control: GPT-6 Sol and GPT-6 Luna do list "none", which wins over the budget.
+        ("openrouter/openai/gpt-6-sol", {"enabled": False}, {"enabled": False}),
+        ("openrouter/openai/gpt-6-luna", {"enabled": False}, {"enabled": False}),
+    ])
+    @pytest.mark.parametrize("reasoning_max_tokens", [0, 2048])
+    async def test_gpt6_explicit_none_effort_respects_model_support(
+        self, monkeypatch, model, no_budget, with_budget, reasoning_max_tokens
+    ):
+        """openrouter.reasoning_effort is an independent config source and needs the clamp too.
+
+        The inherited config.reasoning_effort path is clamped before this stage, but an explicit
+        openrouter.reasoning_effort reaches it verbatim. An unclamped "none" is checked ahead of
+        the token budget and requests reasoning disablement, discarding the budget, so the clamp is
+        what lets a configured budget take effect.
+        """
+        kwargs = await _run(
+            monkeypatch,
+            model,
+            {"reasoning_effort": "none", "reasoning_max_tokens": reasoning_max_tokens},
+        )
+
+        expected = with_budget if reasoning_max_tokens else no_budget
+        assert kwargs["extra_body"]["reasoning"] == expected
 
     @pytest.mark.asyncio
     async def test_registered_model_inherits_default_global_effort(self, monkeypatch):

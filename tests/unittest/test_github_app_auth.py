@@ -37,7 +37,8 @@ class TestGithubAppAuth:
             provider = GithubProvider.__new__(GithubProvider)
             provider.installation_id = 987654
             provider.base_url = "https://api.github.com"
-            provider._get_github_client()
+            client = provider._get_github_client()
+            assert client.per_page == 100
 
             # Signing the app JWT is offline; PyJWT >=2.11 raises
             # "Issuer (iss) must be a string" here without the str() cast.
@@ -81,6 +82,7 @@ class TestGithubAppAuth:
         assert captured["seconds_between_requests"] == 0
         assert captured["seconds_between_writes"] == 0
         assert captured["retry"] is None
+        assert captured["per_page"] == 100
 
     def test_pacing_and_retry_settings_reach_the_client(self, monkeypatch):
         """Operators may opt into PyGithub 2.x throttling and backoff via the

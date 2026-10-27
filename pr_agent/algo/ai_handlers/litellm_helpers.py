@@ -98,7 +98,17 @@ async def _close_stream(response):
         task = asyncio.ensure_future(_aclose_quietly(response))
         # Keep a strong reference when a cancelled consumer leaves cleanup running.
         _stream_close_tasks.add(task)
-        task.add_done_callback(_stream_close_tasks.discard)
+
+        def release_cleanup(completed):
+            _stream_close_tasks.discard(completed)
+            if completed.cancelled():
+                _warn_stream_cleanup("Failed to close streaming response: CancelledError")
+            else:
+                error = completed.exception()
+                if error is not None:
+                    _warn_stream_cleanup(f"Failed to close streaming response: {type(error).__name__}")
+
+        task.add_done_callback(release_cleanup)
         # Skip waiting while cancellation unwinds, even without a task.cancel() request.
         if not asyncio.current_task().cancelling() and not isinstance(sys.exception(), asyncio.CancelledError):
             try:
@@ -106,7 +116,6 @@ async def _close_stream(response):
             except asyncio.CancelledError:
                 if asyncio.current_task().cancelling():
                     raise
-                _warn_stream_cleanup("Failed to close streaming response: CancelledError")
     finally:
         # LiteLLM's close task cannot restore the consuming task's correlation IDs.
         restore = getattr(type(response), "_restore_consumer_correlation_context", None)
@@ -153,11 +162,12 @@ async def _handle_streaming_response(response, model=None, stream_cleanup=None):
         else:
             stream_cleanup.append(response)
 
-    if not full_response and finish_reason is None:
+    empty_content = not full_response or full_response.isspace()
+    if empty_content and finish_reason is None:
         get_logger().warning("Streaming response resulted in empty content with no finish reason")
         raise openai.APIError("Empty streaming response received without proper completion",
                               request=httpx.Request("POST", model or ""), body=None)
-    elif not full_response and finish_reason:
+    elif empty_content and finish_reason:
         get_logger().debug(
             f"Streaming response resulted in empty content but completed with finish_reason: {finish_reason}"
         )
@@ -274,7 +284,7 @@ def _process_litellm_extra_body(kwargs: dict) -> dict:
                 raise ValueError(f"LITELLM.EXTRA_BODY cannot override existing parameters: {', '.join(colliding_keys)}")
             kwargs.update(litellm_extra_body)
         except json.JSONDecodeError as e:
-            raise ValueError(f"LITELLM.EXTRA_BODY contains invalid JSON: {str(e)}")
+            raise ValueError(f"LITELLM.EXTRA_BODY contains invalid JSON: {str(e)}") from e
     return kwargs
 
 

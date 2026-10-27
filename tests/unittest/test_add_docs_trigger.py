@@ -19,6 +19,7 @@ from pr_agent.tools.pr_add_docs import PRAddDocs
     ],
 )
 async def test_add_docs_trigger(monkeypatch, action, draft, state, should_run):
+    monkeypatch.setattr("pr_agent.agent.pr_agent.enforce_request_policy", lambda _url: None)
     # Mock settings to enable the "/add_docs" auto-command on PR opened
     settings = get_settings()
     settings.github_app.pr_commands = ["/add_docs"]

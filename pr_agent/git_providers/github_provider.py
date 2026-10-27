@@ -7,17 +7,19 @@ import os
 import re
 import time
 import traceback
-from typing import Optional, Tuple
 from urllib.parse import quote, urlparse
 
 from github import Auth, Github, GithubException, GithubIntegration, GithubRetry, RateLimitExceededException
 from github.Commit import Commit
+from github.GithubObject import GithubObject
 from github.Issue import Issue
 from jwt.exceptions import PyJWTError
 from requests.exceptions import RequestException
 from retry.api import retry_call
 from starlette_context import context
 from starlette_context.errors import ContextDoesNotExistError
+
+from pr_agent.agent.request_policy import policy_metadata, policy_value
 
 from ..algo.comment_identity import (
     comment_matches_any_identity,
@@ -26,6 +28,7 @@ from ..algo.comment_identity import (
 from ..algo.file_filter import filter_ignored
 from ..algo.git_patch_processing import extract_hunk_headers
 from ..algo.inline_comment_dedup import (
+    KEY_ISSUE_LOCATION_MARKER_RE,
     body_fingerprint,
     body_with_markers,
     code_fingerprint,
@@ -39,6 +42,7 @@ from ..algo.utils import (
     Range,
     find_line_number_of_relevant_line_in_file,
     load_large_diff,
+    replace_suggestion_blocks,
     set_file_languages,
 )
 from ..config_loader import get_settings
@@ -46,6 +50,7 @@ from ..log import get_logger
 from ..servers.utils import RateLimitExceeded
 from .git_provider import (
     MAX_FILES_ALLOWED_FULL,
+    CodeSuggestionThread,
     ConcurrentFileUpdateError,
     FileContentSnapshot,
     FilePatchInfo,
@@ -59,7 +64,7 @@ from .git_provider import (
 
 
 def _next_page_url(headers: dict) -> str:
-    link = headers.get("Link", "")
+    link = next((value for key, value in headers.items() if key.lower() == "link"), "")
     if not link:
         return ""
     for part in link.split(","):
@@ -69,8 +74,50 @@ def _next_page_url(headers: dict) -> str:
     return ""
 
 
+def _is_github_rate_limit_error(error: GithubException) -> bool:
+    """Recognize rate-limited 403 responses without retrying ordinary permission failures."""
+    if isinstance(error, RateLimitExceededException) or error.status == 429:
+        return True
+    if error.status != 403:
+        return False
+    message = error.data.get("message", "") if isinstance(error.data, dict) else ""
+    headers = error.headers or {}
+    remaining = headers.get("X-RateLimit-Remaining", headers.get("x-ratelimit-remaining", ""))
+    retry_after = headers.get("Retry-After", headers.get("retry-after"))
+    return (
+        "rate limit" in str(message).lower()
+        or "abuse detection" in str(message).lower()
+        or str(remaining) == "0"
+        or retry_after not in (None, "")
+    )
+
+
+def _is_permanent_github_error(error: GithubException) -> bool:
+    # Keep potentially transient client errors eligible for the existing retry policy.
+    return error.status in (400, 401, 403, 404, 410, 422) and not _is_github_rate_limit_error(error)
+
+
+def _review_comment_root_id(comment) -> int:
+    # Read the list response through the base getter: the completable raw_data getter
+    # fetches the comment again. Reading in_reply_to_id also fetches root comments,
+    # because GitHub omits that field on roots.
+    payload = GithubObject.raw_data.fget(comment)
+    return payload.get("in_reply_to_id") or comment.id
+
+
 class GithubProvider(GitProvider):
-    def __init__(self, pr_url: Optional[str] = None):
+    def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
+        pr = self.pr
+        if pr is None:  # Issue commands have no PR-specific policy fields.
+            return policy_metadata(title="", sender="",
+                                   repo_full_name=policy_value(self.issue_main, "repository", "full_name"),
+                                   source_branch="", target_branch="")
+        return policy_metadata(title=pr.title, sender=policy_value(pr, "user", "login"),
+                               repo_full_name=self.repo, source_branch=policy_value(pr, "head", "ref"),
+                               target_branch=policy_value(pr, "base", "ref"),
+                               labels=self.get_pr_labels() if "labels" in required_fields else ())
+
+    def __init__(self, pr_url: str | None = None):
         self.repo_obj = None
         try:
             self.installation_id = context.get("installation_id", None)
@@ -88,7 +135,8 @@ class GithubProvider(GitProvider):
         self.diff_files = None
         self.git_files = None
         self.incremental = IncrementalPR(False)
-        self._resolved_config_branch: str | None = None
+        self._repo_settings_snapshot: tuple[str, str] | None = None
+        self._repo_settings_acquired = False
         self._check_run_ids: dict = {}
         self._check_runs_in_progress: set = set()
         self._check_run_base_summaries: dict = {}
@@ -108,7 +156,7 @@ class GithubProvider(GitProvider):
         else: #Instantiated the provider without a PR / Issue
             self.pr_commits = None
 
-    def _get_issue_handle(self, issue_url) -> Optional[Issue]:
+    def _get_issue_handle(self, issue_url) -> Issue | None:
         repo_name, issue_number = self._parse_issue_url(issue_url)
         if not repo_name or not issue_number:
             get_logger().error(f"Given url: {issue_url} is not a valid issue.")
@@ -127,13 +175,7 @@ class GithubProvider(GitProvider):
                                    f"belonging to owner/repo: {repo_name}")
             return None
 
-    def reset_diff_cache_for_command(self) -> None:
-        self.diff_files = None
-        if context.exists():
-            context.pop("diff_files", None)
-        self.incremental = IncrementalPR(False)
-
-    def get_incremental_commits(self, incremental: Optional[IncrementalPR] = None):
+    def get_incremental_commits(self, incremental: IncrementalPR | None = None):
         # Constructed per call: a default in the signature is one object shared by every provider that omits it.
         # Invalidate completed diffs when the file scope is being reconfigured.
         self.diff_files = None
@@ -203,7 +245,7 @@ class GithubProvider(GitProvider):
     # "https://github.com/the-pr-agent/pr-agent/blob/v0.8", suffix: ""
     # In case git url is not provided, provider will use PR context (which includes
     # branch) to determine the prefix and suffix.
-    def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> Tuple[str, str]:
+    def get_canonical_url_parts(self, repo_git_url:str, desired_branch:str) -> tuple[str, str]:
         owner = None
         repo = None
         scheme_and_netloc = None
@@ -212,7 +254,7 @@ class GithubProvider(GitProvider):
         # provider was initialized with, or an issue:
         if repo_git_url or self.issue_main:
             desired_branch = desired_branch if repo_git_url else self.issue_main.repository.default_branch
-            html_url = repo_git_url if repo_git_url else self.issue_main.html_url
+            html_url = repo_git_url or self.issue_main.html_url
             parsed_git_url = urlparse(html_url)
             scheme_and_netloc = parsed_git_url.scheme + "://" + parsed_git_url.netloc
             repo_path = self._get_owner_and_repo_path(html_url)
@@ -268,10 +310,20 @@ class GithubProvider(GitProvider):
             # Get all files changed during the commit range
 
             for commit in self.incremental.commits_range:
-                if commit.commit.message.startswith(f"Merge branch '{self._get_repo().default_branch}'"):
+                raw_data = getattr(commit, "_rawData", None)
+                parents = raw_data.get("parents") if isinstance(raw_data, dict) else None
+                if parents is None:
+                    parents = getattr(commit, "parents", None)
+                is_merge_commit = parents is not None and len(parents) > 1
+                if not is_merge_commit:
+                    message = getattr(getattr(commit, "commit", None), "message", "")
+                    is_merge_commit = message.startswith(f"Merge branch '{self._get_repo().default_branch}'")
+                if is_merge_commit:
                     get_logger().info(f"Skipping merge commit {commit.commit.message}")
                     continue
-                self.unreviewed_files_map.update({file.filename: file for file in commit.files})
+                self.unreviewed_files_map.update({
+                    file.filename: file for file in commit.get_files(commit_files_per_page=300)
+                })
         else:
             get_logger().info("No previous review found, will review the entire PR")
             self.incremental.is_incremental = False
@@ -302,8 +354,14 @@ class GithubProvider(GitProvider):
             self.comments = list(self.pr.get_issue_comments())
         identifiers = get_pr_review_comment_identifiers(full=full, incremental=incremental)
         for index in range(len(self.comments) - 1, -1, -1):
-            if comment_matches_any_identity(self.comments[index].body, identifiers):
-                return self.comments[index]
+            comment = self.comments[index]
+            if not comment_matches_any_identity(comment.body, identifiers):
+                continue
+            try:
+                if self.is_comment_authored_by_pr_agent(comment):
+                    return comment
+            except RuntimeError:
+                get_logger().debug("Could not verify the author of a GitHub review anchor")
         return None
 
     @staticmethod
@@ -349,9 +407,10 @@ class GithubProvider(GitProvider):
             except RateLimitExceededException:
                 raise
             except GithubException as e:
-                if e.status == 429 or attempt == 1:
+                if (_is_github_rate_limit_error(e) or _is_permanent_github_error(e)
+                        or attempt == 1):
                     raise
-            except Exception:
+            except RequestException:
                 if attempt == 1:
                     raise
 
@@ -432,22 +491,10 @@ class GithubProvider(GitProvider):
             invalid_files_names = []
             is_close_to_rate_limit = False
 
-            # The base.sha will point to the current state of the base branch (including
-            # parallel merges), not the original base commit when the PR was created
-            # We can fix this by finding the merge base commit between the PR head and base branches
-            # Note that The pr.head.sha is actually correct as is - it points to the latest commit in your PR branch.
-            # This SHA isn't affected by parallel merges to the base branch since it's specific to your PR's branch.
+            # Resolve the merge base only when pre-change content is needed.
+            merge_base_commit = None
             repo = self.repo_obj
             pr = self.pr
-            try:
-                compare = repo.compare(pr.base.sha, pr.head.sha) # communication with GitHub
-                merge_base_commit = compare.merge_base_commit
-            except (GithubException, RequestException) as e:
-                get_logger().error(f"Failed to get merge base commit: {e}")
-                merge_base_commit = pr.base
-            if merge_base_commit.sha != pr.base.sha:
-                get_logger().info(
-                    f"Using merge base commit {merge_base_commit.sha} instead of base commit ")
 
             counter_valid = 0
             for file in files:
@@ -486,9 +533,19 @@ class GithubProvider(GitProvider):
                         if avoid_load or file.status == "added":
                             original_file_content_str = ""
                         else:
+                            if merge_base_commit is None:
+                                # Use the merge base instead of a potentially advanced target branch.
+                                try:
+                                    compare = repo.compare(pr.base.sha, pr.head.sha)
+                                    merge_base_commit = compare.merge_base_commit
+                                except (GithubException, RequestException) as e:
+                                    get_logger().error(f"Failed to get merge base commit: {e}")
+                                    merge_base_commit = pr.base
+                                if merge_base_commit.sha != pr.base.sha:
+                                    get_logger().info(
+                                        f"Using merge base commit {merge_base_commit.sha} instead of base commit ")
                             original_file_content_str = self._get_pr_file_content(
                                 file, merge_base_commit.sha, path=old_filename)
-                            # original_file_content_str = self._get_pr_file_content(file, self.pr.base.sha)
                         if not patch:
                             patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
 
@@ -534,12 +591,20 @@ class GithubProvider(GitProvider):
 
             return diff_files
 
-        except IncompletePullRequestFilesError:
+        except (IncompletePullRequestFilesError, RateLimitExceeded):
             raise
-        except Exception as e:
+        except (GithubException, RequestException) as e:
             get_logger().error(f"Failing to get diff files: {e}",
                                artifact={"traceback": traceback.format_exc()})
-            raise RateLimitExceeded("Rate limit exceeded for GitHub API.") from e
+            if isinstance(e, GithubException) and _is_permanent_github_error(e):
+                # Skip outer retries for permanent client errors.
+                raise
+            raise RateLimitExceeded("Retryable GitHub API failure while collecting diff files.") from e
+        except Exception as e:
+            # Preserve traceback logging while avoiding retries for programming errors.
+            get_logger().error(f"Failing to get diff files: {e}",
+                               artifact={"traceback": traceback.format_exc()})
+            raise
 
     def publish_description(self, pr_title: str, pr_body: str):
         if pr_title is None:
@@ -565,7 +630,8 @@ class GithubProvider(GitProvider):
                                    final_update_message=True,
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
+                                   legacy_initial_header: str | None = None,
+                                   require_agent_authorship: bool = False):
         if get_settings().github.publish_as_check_run:
             if self._publish_check_run(pr_comment, name):
                 return
@@ -578,6 +644,7 @@ class GithubProvider(GitProvider):
             as_thread=as_thread,
             identity_marker=identity_marker,
             legacy_initial_header=legacy_initial_header,
+            require_agent_authorship=require_agent_authorship,
         )
 
     def supports_review_comment_identity(self) -> bool:
@@ -647,6 +714,10 @@ class GithubProvider(GitProvider):
         that GitHub reserves the `[bot]` suffix, so no human account can hold this login. It
         applies only when `GITHUB_ACTIONS=true` and `GET /user` failed; a deployment that can
         resolve its real login never reaches it.
+
+        When `github.agent_login` is set (host-only), it is used instead of that fallback, so a
+        workflow that posts with a GitHub App installation token can name the app's
+        `<app-slug>[bot]` login.
         """
         try:
             login = self.get_user_id()
@@ -655,6 +726,12 @@ class GithubProvider(GitProvider):
             login = ""
         if isinstance(login, str) and login.strip():
             return login.strip()
+        # A GitHub App installation token cannot call `GET /user` either, but it posts as
+        # `<app-slug>[bot]`, not `github-actions[bot]`. The operator names that login here;
+        # the setting is host-only because it decides which comments PR-Agent may edit.
+        configured = get_settings().get("GITHUB.AGENT_LOGIN", "")
+        if isinstance(configured, str) and configured.strip():
+            return configured.strip()
         if os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true":
             return "github-actions[bot]"
         return ""
@@ -818,14 +895,15 @@ class GithubProvider(GitProvider):
             get_logger().warning(f"Failed to create check run, error: {e}")
             return False
 
-    def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> Optional[int]:
+    def _find_existing_check_run(self, check_run_name: str, head_sha: str) -> int | None:
         pr = getattr(self, 'pr', None)
         if not pr:
             return None
         url = f"{self.base_url}/repos/{self.repo}/commits/{head_sha}/check-runs"
+        parameters = {"check_name": check_run_name}
         while url:
             try:
-                headers, data = pr._requester.requestJsonAndCheck("GET", url)
+                headers, data = pr._requester.requestJsonAndCheck("GET", url, parameters=parameters)
             except (GithubException, RequestException) as e:
                 get_logger().warning(f"Failed to look up existing check runs, error: {e}")
                 return None
@@ -837,6 +915,7 @@ class GithubProvider(GitProvider):
                 get_logger().warning(f"Failed to read the check runs payload, error: {e}")
                 return None
             url = _next_page_url(headers)
+            parameters = None  # Use the filter embedded in the next-page URL.
         return None
 
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
@@ -983,7 +1062,7 @@ class GithubProvider(GitProvider):
             List of comments in the same thread
         """
         try:
-            # Fetch all comments with a single API call
+            # Fetch the review comments once, including all pages.
             all_comments = list(self.pr.get_comments())
 
             # Find the target comment by ID
@@ -992,11 +1071,11 @@ class GithubProvider(GitProvider):
                 return []
 
             # Get root comment id
-            root_comment_id = target_comment.raw_data.get("in_reply_to_id", target_comment.id)
+            root_comment_id = _review_comment_root_id(target_comment)
             # Build the thread - include the root comment and all replies to it
             thread_comments = [
                 c for c in all_comments if
-                c.id == root_comment_id or c.raw_data.get("in_reply_to_id") == root_comment_id
+                _review_comment_root_id(c) == root_comment_id
             ]
 
 
@@ -1010,15 +1089,122 @@ class GithubProvider(GitProvider):
     def supports_thread_resolution(self) -> bool:
         return True
 
+    def _post_graphql(self, query: str) -> tuple[int, dict, str]:
+        """POST a GraphQL document and return PyGithub's raw ``(status, headers, body)``.
+
+        PyGithub resolves a relative path under the REST prefix, so "/graphql" becomes "/api/v3/graphql"
+        on GitHub Enterprise Server. ``graphql_url`` is the endpoint PyGithub derives from ``base_url``
+        instead: "/api/graphql" there and "/graphql" on github.com.
+        """
+        requester = self.github_client._Github__requester
+        return requester.requestJson("POST", requester.graphql_url, input={"query": query})
+
+    def _review_thread_nodes(self, *, root_only: bool = False):
+        """List review threads, optionally fetching only their root comment IDs."""
+        owner, repo_name = self.repo.split("/")
+        cursor = None
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!, $cursor: String, $comment_limit: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) {
+                    reviewThreads(first: 100, after: $cursor) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                            id
+                            isResolved
+                            resolvedBy { login }
+                            comments(first: $comment_limit) {
+                                nodes { id }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        """
+        while True:
+            _, response = self.github_client._Github__requester.graphql_query(
+                query, {
+                    "owner": owner, "repo": repo_name, "number": self.pr_num, "cursor": cursor,
+                    "comment_limit": 1 if root_only else 100,
+                }
+            )
+            review_threads = (response.get("data", {}).get("repository", {})
+                              .get("pullRequest", {}).get("reviewThreads", {}))
+            yield from review_threads.get("nodes") or []
+            page_info = review_threads.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                raise RuntimeError("Review thread pagination has no end cursor")
+
+    def _iter_review_threads(self):
+        """Yield human-resolved PR-Agent key issues for the previous-findings context."""
+        agent_login = self._agent_login()
+        if not agent_login or self._deployment_type() not in {"user", "app"}:
+            return
+        threads = []
+        for thread in self._review_thread_nodes():
+            resolved_by = (thread.get("resolvedBy") or {}).get("login")
+            if (thread.get("isResolved") is True and isinstance(resolved_by, str)
+                    and resolved_by.strip() and resolved_by.casefold() != agent_login.casefold()):
+                threads.append(thread)
+        if not threads:
+            return
+        comments = list(self.pr.get_comments())
+        by_node_id = {getattr(comment, "node_id", None): comment for comment in comments}
+        for thread in reversed(threads):
+            nodes = (thread.get("comments") or {}).get("nodes") or []
+            if not nodes:
+                continue
+            root = by_node_id.get(nodes[0].get("id"))
+            body = getattr(root, "body", None)
+            if not isinstance(body, str) or not KEY_ISSUE_LOCATION_MARKER_RE.search(body):
+                continue
+            try:
+                if not self.is_comment_authored_by_pr_agent(root):
+                    continue
+            except RuntimeError:
+                continue
+            path = getattr(root, "path", None)
+            end_line = getattr(root, "line", None) or getattr(root, "original_line", None)
+            start_line = (getattr(root, "start_line", None)
+                          or getattr(root, "original_start_line", None) or end_line)
+            if not isinstance(path, str) or not path.strip() or not isinstance(start_line, int) \
+                    or not isinstance(end_line, int) or start_line < 1 or end_line < start_line:
+                continue
+            replies = []
+            for node in nodes[1:]:
+                reply = by_node_id.get(node.get("id"))
+                if reply is not None:
+                    author = getattr(getattr(reply, "user", None), "login", None)
+                    replies.append((author, getattr(reply, "body", None)))
+            yield CodeSuggestionThread(
+                thread_id=thread.get("id"), status="resolved", file=path,
+                start_line=start_line, end_line=end_line, suggestion=body,
+                replies=replies, authored_by_agent=True,
+            )
+
     def resolve_comment_thread(self, comment_id: int) -> bool:
         """Resolve the review thread containing the given comment via GitHub GraphQL API."""
         try:
-            owner, repo_name = self.repo.split("/")
-
             # Get the comment's node_id via REST
             headers, data = self.pr._requester.requestJsonAndCheck(
                 "GET", f"{self.base_url}/repos/{self.repo}/pulls/comments/{comment_id}"
             )
+            # Fetch the root to find replies beyond the first comment page.
+            root_only = not data.get("in_reply_to_id")
+            if not root_only:
+                try:
+                    headers, data = self.pr._requester.requestJsonAndCheck(
+                        "GET", f"{self.base_url}/repos/{self.repo}/pulls/comments/{data['in_reply_to_id']}"
+                    )
+                    root_only = True
+                except (GithubException, RequestException) as e:
+                    get_logger().warning(
+                        f"Could not fetch root of comment {comment_id}: status {getattr(e, 'status', 'network error')}"
+                    )
             comment_node_id = data.get("node_id", "")
             if not comment_node_id:
                 get_logger().warning(f"No node_id found for comment {comment_id}")
@@ -1027,62 +1213,14 @@ class GithubProvider(GitProvider):
             # Find the review thread containing this comment (paginated)
             thread_id = None
             is_already_resolved = False
-            cursor = None
-            while True:
-                after_clause = f', after: "{cursor}"' if cursor else ""
-                query = f"""
-                query {{
-                    repository(owner: "{owner}", name: "{repo_name}") {{
-                        pullRequest(number: {self.pr_num}) {{
-                            reviewThreads(first: 100{after_clause}) {{
-                                pageInfo {{ hasNextPage endCursor }}
-                                nodes {{
-                                    id
-                                    isResolved
-                                    comments(first: 100) {{
-                                        nodes {{
-                                            id
-                                        }}
-                                    }}
-                                }}
-                            }}
-                        }}
-                    }}
-                }}
-                """
-                response_tuple = self.github_client._Github__requester.requestJson(
-                    "POST", "/graphql", input={"query": query}
-                )
-                if not (isinstance(response_tuple, tuple) and len(response_tuple) == 3):
-                    get_logger().error("Unexpected GraphQL response format")
-                    return False
-
-                response_json = json.loads(response_tuple[2])
-                errors = response_json.get("errors")
-                if errors:
-                    get_logger().error(
-                        f"GraphQL errors querying review threads: {errors}"
-                    )
-                    return False
-                review_threads = (response_json.get("data", {}).get("repository", {})
-                                  .get("pullRequest", {}).get("reviewThreads", {}))
-                threads = review_threads.get("nodes", [])
-
-                for thread in threads:
-                    comment_ids = [c["id"] for c in thread.get("comments", {}).get("nodes", [])]
-                    if comment_node_id in comment_ids:
-                        if thread.get("isResolved"):
-                            is_already_resolved = True
-                        else:
-                            thread_id = thread["id"]
-                        break
-
-                if thread_id or is_already_resolved:
+            for thread in self._review_thread_nodes(root_only=root_only):
+                comment_ids = [c["id"] for c in thread.get("comments", {}).get("nodes", [])]
+                if comment_node_id in comment_ids:
+                    if thread.get("isResolved"):
+                        is_already_resolved = True
+                    else:
+                        thread_id = thread["id"]
                     break
-                page_info = review_threads.get("pageInfo", {})
-                if not page_info.get("hasNextPage"):
-                    break
-                cursor = page_info.get("endCursor")
 
             if is_already_resolved:
                 get_logger().info(f"Thread for comment {comment_id} is already resolved")
@@ -1102,9 +1240,7 @@ class GithubProvider(GitProvider):
                 }}
             }}
             """
-            resolve_tuple = self.github_client._Github__requester.requestJson(
-                "POST", "/graphql", input={"query": mutation}
-            )
+            resolve_tuple = self._post_graphql(mutation)
             if not isinstance(resolve_tuple, tuple) or len(resolve_tuple) != 3:
                 get_logger().error(f"Unexpected mutation response format for thread {thread_id}: {type(resolve_tuple)}")
                 return False
@@ -1123,7 +1259,7 @@ class GithubProvider(GitProvider):
                 return False
             get_logger().info(f"Resolved review thread {thread_id}")
             return True
-        except (GithubException, RequestException, ValueError, KeyError, TypeError, AttributeError) as e:
+        except (GithubException, RequestException, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as e:
             get_logger().exception(f"Failed to resolve comment thread: {e}")
             return False
 
@@ -1221,10 +1357,13 @@ class GithubProvider(GitProvider):
         for comment in invalid_comments:
             try:
                 fixed_comment = copy.deepcopy(comment)  # avoid modifying the original comment dict for later logging
-                if "```suggestion" in comment["body"]:
-                    # Keep what follows the block, where the dedup markers live.
-                    before, _, rest = comment["body"].partition("```suggestion")
-                    fixed_comment["body"] = before + rest.rsplit("```", 1)[-1]
+                opener = re.search(r"(?<!`)(`{3,})suggestion", comment["body"])
+                if opener:
+                    # Keep what follows the block, where the dedup markers live. The
+                    # block may be fenced with more than three backticks.
+                    fence = opener.group(1)
+                    before, rest = comment["body"][:opener.start()], comment["body"][opener.end():]
+                    fixed_comment["body"] = before + rest.rsplit(fence, 1)[-1]
                 if "start_line" in comment:
                     fixed_comment["line"] = comment["start_line"]
                     del fixed_comment["start_line"]
@@ -1248,6 +1387,8 @@ class GithubProvider(GitProvider):
 
     def _build_code_suggestion_payload(self, suggestion: dict) -> dict:
         body = suggestion["body"]
+        if len(body) > self.max_comment_chars:
+            body = self.limit_output_characters(replace_suggestion_blocks(body, ""), self.max_comment_chars)
         relevant_file = suggestion["relevant_file"]
         relevant_lines_start = suggestion["relevant_lines_start"]
         relevant_lines_end = suggestion["relevant_lines_end"]
@@ -1295,6 +1436,7 @@ class GithubProvider(GitProvider):
             )
         except (GithubException, RequestException) as e:
             get_logger().exception(f"Failed to reply comment, error: {e}")
+            raise
 
     def remove_initial_comment(self):
         try:
@@ -1321,7 +1463,7 @@ class GithubProvider(GitProvider):
     def get_pr_branch(self):
         return self.pr.head.ref
 
-    def get_owning_namespace(self, *, resolved: bool = False) -> Optional[str]:
+    def get_owning_namespace(self, *, resolved: bool = False) -> str | None:
         # Be robust to providers built without full __init__ (e.g. __new__ in tests/helpers):
         # without a repo there is no org to resolve, so skip global settings quietly.
         if not getattr(self, "repo", None):
@@ -1379,20 +1521,31 @@ class GithubProvider(GitProvider):
             if isinstance(body, str) and body and body not in recent:
                 recent.append(body)
 
+    def _resolve_settings_snapshot(self, ref: str) -> tuple[str, str]:
+        commit = self.repo_obj.get_commit(ref)
+        # PyGithub initially derives sha from the URL, which can still name a branch.
+        commit.complete()
+        return commit.sha, commit.commit.tree.sha
+
     def get_repo_settings(self):
+        self._repo_settings_snapshot = None
+        self._repo_settings_acquired = True
         settings_files = []
         global_settings = self._get_global_repo_settings()
         if global_settings:
             settings_files.append(("global", global_settings))
 
         config_branch = get_config_branch()
+        config_snapshot = None
+        default_snapshot = None
         if config_branch:
             # Only treat a missing branch/file (GithubException) as an expected
             # reason to fall back to the default branch. Unexpected errors are
             # left to propagate so they aren't masked by a silent fallback.
             try:
-                contents = self.repo_obj.get_contents(".pr_agent.toml", ref=config_branch).decoded_content
-                self._resolved_config_branch = config_branch
+                config_snapshot = self._resolve_settings_snapshot(config_branch)
+                contents = self.repo_obj.get_contents(".pr_agent.toml", ref=config_snapshot[0]).decoded_content
+                self._repo_settings_snapshot = config_snapshot
                 if settings_files:
                     settings_files.append(("local", contents))
                     return settings_files
@@ -1406,9 +1559,14 @@ class GithubProvider(GitProvider):
                 get_logger().debug(
                     f"No .pr_agent.toml on branch '{config_branch}', falling back to default branch")
         try:
-            # more logical to take 'pr_agent.toml' from the default branch
-            contents = self.repo_obj.get_contents(".pr_agent.toml").decoded_content
-            self._resolved_config_branch = getattr(self.repo_obj, "default_branch", "") or ""
+            default_branch = self.repo_obj.default_branch
+            if config_branch == default_branch:
+                # The same root was already absent at this snapshot; do not resolve it again.
+                self._repo_settings_snapshot = config_snapshot
+                return settings_files or ""
+            default_snapshot = self._resolve_settings_snapshot(default_branch)
+            contents = self.repo_obj.get_contents(".pr_agent.toml", ref=default_snapshot[0]).decoded_content
+            self._repo_settings_snapshot = default_snapshot
             if config_branch and not settings_files:
                 return contents
             settings_files.append(("local", contents))
@@ -1416,67 +1574,68 @@ class GithubProvider(GitProvider):
             # A missing local .pr_agent.toml (404) is expected for most repos; log it quietly to
             # avoid warning noise, and surface only unexpected errors as warnings.
             if e.status == 404:
+                # Preserve configured nested-only preference when neither root exists.
+                self._repo_settings_snapshot = config_snapshot or default_snapshot
                 get_logger().debug("No local .pr_agent.toml found; using existing settings")
             else:
                 get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
         except (RequestException, AttributeError, binascii.Error, AssertionError) as e:
             get_logger().warning(f"Failed to load .pr_agent.toml file, error: {e}")
 
-        return settings_files if settings_files else ""
+        return settings_files or ""
 
     def get_repo_settings_tree(self, ref: str = "") -> tuple[list[str], str]:
-        """Recursively list every `.pr_agent.toml` at *ref* ("" = default branch).
-
-        Follows the same branch resolution as get_repo_settings(): when the root
-        lookup resolved a config, the tree is read from that same branch
-        (``_resolved_config_branch``). When the root lookup resolved nothing (no
-        root ``.pr_agent.toml`` anywhere), the tree is read from *ref* -- the
-        CONFIG.CONFIG_BRANCH / PR_AGENT_CONFIG_BRANCH hint, or the repository
-        default branch when *ref* is empty -- falling back to the default branch
-        on a 404. Returns ``(paths, resolved_ref)`` where *resolved_ref* is the
-        branch the tree was actually read from; an empty *paths* list means the
-        recursive tree hit GitHub's truncation cap and per-directory settings had
-        to be skipped.
-        """
+        """List settings at the root acquisition's tree, returning its commit for content reads."""
         repo = getattr(self, "repo_obj", None)
         if repo is None:
             return [], ""
-        resolved_ref = self._resolved_config_branch or ref or ""
+        if getattr(self, "_repo_settings_acquired", False):
+            snapshot = self._repo_settings_snapshot
+            if snapshot is None:
+                # Root acquisition failed; a new branch lookup could mix settings.
+                return [], ""
+            commit_sha, tree_sha = snapshot
+            try:
+                return self._list_config_tree_paths(repo, tree_sha), commit_sha
+            except GithubException as e:
+                if e.status != 404:
+                    raise
+                get_logger().debug("Selected settings tree is unavailable; skipping per-directory settings")
+                return [], commit_sha
+
+        # Standalone tree callers have no root payload to preserve.
+        selected_ref = ref or repo.default_branch
         try:
-            if not resolved_ref:
-                resolved_ref = repo.default_branch
-            return self._list_config_tree_paths(repo, resolved_ref), resolved_ref
+            commit_sha, tree_sha = self._resolve_settings_snapshot(selected_ref)
+            return self._list_config_tree_paths(repo, tree_sha), commit_sha
         except GithubException as e:
-            if e.status == 404 and resolved_ref:
-                # Branch or tree not found (possibly deleted between root and per-dir
-                # resolution). Fall back to the default branch; matches the root config
-                # fallback when CONFIG_BRANCH is stale.
-                get_logger().debug(
-                    f"No git tree for branch '{resolved_ref}' while listing per-directory "
-                    "settings; falling back to default branch"
-                )
-                resolved_ref = repo.default_branch
-                return self._list_config_tree_paths(repo, resolved_ref), resolved_ref
-            # Unlike 404, a 403/5xx is not an expected fallback signal: propagate so it
-            # is not masked by a silent downgrade (matches get_repo_settings()).
-            raise
+            if e.status != 404 or selected_ref == repo.default_branch:
+                raise
+            commit_sha, tree_sha = self._resolve_settings_snapshot(repo.default_branch)
+            return self._list_config_tree_paths(repo, tree_sha), commit_sha
 
     def _list_config_tree_paths(self, repo, ref: str) -> list[str]:
-        """Fetch a recursive tree at *ref* and return its `.pr_agent.toml` blob paths.
+        """Reuse the latest immutable tree's `.pr_agent.toml` blob paths within this provider.
 
         A truncated tree (GitHub caps recursive trees at 100k entries / 7 MB and sets
         ``truncated``) cannot be trusted to name every config, so it degrades to no
         per-directory settings with a warning rather than applying an incomplete, silent
         subset. The root config is unaffected.
         """
+        cached = getattr(self, "_repo_settings_tree_cache", None)
+        if cached is not None and cached[0] is repo and cached[1] == ref:
+            return list(cached[2])
         tree = repo.get_git_tree(ref, recursive=True)
         if getattr(tree, "truncated", False):
             get_logger().warning(
-                f"Git tree for branch '{ref}' is truncated by GitHub's recursive-tree "
+                f"Git tree '{ref}' is truncated by GitHub's recursive-tree "
                 "limit; skipping per-directory settings for this repository"
             )
             return []
-        return self._extract_config_tree_paths(tree)
+        paths = self._extract_config_tree_paths(tree)
+        # Retain only filtered paths from one tree, not the full API response.
+        self._repo_settings_tree_cache = (repo, ref, tuple(paths))
+        return paths
 
     @staticmethod
     def _extract_config_tree_paths(tree) -> list[str]:
@@ -1525,6 +1684,25 @@ class GithubProvider(GitProvider):
                     artifact={"status": e.status})
                 return ""
             # Transient/unexpected errors propagate so the caller does not cache the failure.
+            raise
+
+    def list_repo_directory(self, dir_path: str, from_default_branch: bool = False) -> list[str] | None:
+        try:
+            if from_default_branch:
+                ref = None
+            else:
+                base = getattr(getattr(self, "pr", None), "base", None)
+                ref = getattr(base, "sha", None) or getattr(base, "ref", None)
+            if ref:
+                entries = self.repo_obj.get_contents(dir_path, ref=ref)
+            else:
+                entries = self.repo_obj.get_contents(dir_path)
+            if not isinstance(entries, list):
+                return []
+            return [entry.path for entry in entries if getattr(entry, "type", None) == "file"]
+        except GithubException as e:
+            if e.status == 404:
+                return []
             raise
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
@@ -1644,7 +1822,7 @@ class GithubProvider(GitProvider):
         # repo context records a fetch error instead of silently dropping the sibling file.
         return bool(sibling_repo.has_in_collaborators(requester_login))
 
-    def get_repo_context_ref(self, from_default_branch: bool = False) -> Optional[str]:
+    def get_repo_context_ref(self, from_default_branch: bool = False) -> str | None:
         # Match get_repo_file_content: the PR target (base) commit is the cached revision.
         # When the default branch is read (explicitly, or because no PR base exists) resolve
         # its head commit so a push to the default branch invalidates cached content within
@@ -1666,7 +1844,7 @@ class GithubProvider(GitProvider):
     # The reaction API accepts only this closed set; anything else is rejected with 422.
     SUPPORTED_REACTIONS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")
 
-    def add_reaction(self, issue_comment_id: int, reaction: str) -> Optional[int]:
+    def add_reaction(self, issue_comment_id: int, reaction: str) -> int | None:
         if reaction not in self.SUPPORTED_REACTIONS:
             get_logger().warning(
                 f"GitHub does not support the reaction {reaction!r}; "
@@ -1694,14 +1872,15 @@ class GithubProvider(GitProvider):
             get_logger().exception(f"Failed to remove eyes reaction, error: {e}")
             return False
 
-    def _parse_pr_url(self, pr_url: str) -> Tuple[str, int]:
+    def _parse_pr_url(self, pr_url: str) -> tuple[str, int]:
         parsed_url = urlparse(pr_url)
 
-        if parsed_url.path.startswith('/api/v3'):
-            parsed_url = urlparse(pr_url.replace("/api/v3", ""))
+        is_api_url = parsed_url.netloc == "api.github.com" or parsed_url.path.startswith("/api/v3/")
+        if parsed_url.path.startswith("/api/v3/"):
+            parsed_url = urlparse(parsed_url.path[len("/api/v3") :])
 
         path_parts = parsed_url.path.strip('/').split('/')
-        if 'api.github.com' in parsed_url.netloc or '/api/v3' in pr_url:
+        if is_api_url:
             if len(path_parts) < 5 or path_parts[3] != 'pulls':
                 raise ValueError("The provided URL does not appear to be a GitHub PR URL")
             repo_name = '/'.join(path_parts[1:3])
@@ -1722,14 +1901,15 @@ class GithubProvider(GitProvider):
 
         return repo_name, pr_number
 
-    def _parse_issue_url(self, issue_url: str) -> Tuple[str, int]:
+    def _parse_issue_url(self, issue_url: str) -> tuple[str, int]:
         parsed_url = urlparse(issue_url)
 
-        if parsed_url.path.startswith('/api/v3'): #Check if came from github app
-            parsed_url = urlparse(issue_url.replace("/api/v3", ""))
+        is_api_url = parsed_url.netloc == "api.github.com" or parsed_url.path.startswith("/api/v3/")
+        if parsed_url.path.startswith("/api/v3/"):
+            parsed_url = urlparse(parsed_url.path[len("/api/v3") :])
 
         path_parts = parsed_url.path.strip('/').split('/')
-        if 'api.github.com' in parsed_url.netloc or '/api/v3' in issue_url: #Check if came from github app
+        if is_api_url:
             if len(path_parts) < 5 or path_parts[3] != 'issues':
                 raise ValueError("The provided URL does not appear to be a GitHub ISSUE URL")
             repo_name = '/'.join(path_parts[1:3])
@@ -1789,6 +1969,7 @@ class GithubProvider(GitProvider):
             return Github(
                 auth=self.auth,
                 base_url=self.base_url,
+                per_page=100,
                 seconds_between_requests=seconds_between_requests,
                 seconds_between_writes=seconds_between_writes,
                 retry=retry,
@@ -1823,10 +2004,8 @@ class GithubProvider(GitProvider):
                 raise
             file_content_str = ""
         except (RequestException, UnicodeDecodeError, binascii.Error, AssertionError, AttributeError):
-            # binascii.Error: PyGithub base64-decodes the payload in `decoded_content`, so a
-            # corrupt body fails here rather than at the request. Letting it escape would reach
-            # the diff-build handler and be re-raised as RateLimitExceeded, retrying the review.
-            # AssertionError: the same property asserts on an entry with no content, such as a submodule pointer.
+            # Decoding corrupt base64 content can raise binascii.Error; submodule entries
+            # without file content may raise AssertionError.
             if propagate_errors:
                 raise
             file_content_str = ""
@@ -1893,7 +2072,17 @@ class GithubProvider(GitProvider):
         return head_name.casefold() == base_name.casefold()
 
     def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
-        return self.get_pr_file_content(path or file.filename, sha)
+        file_path = path or file.filename
+        cache = getattr(self, "_revision_file_contents", None)
+        if cache is None:
+            cache = self._revision_file_contents = {}
+        key = (self.repo, sha, file_path)
+        if key in cache:
+            return cache[key]
+        content = self.get_pr_file_content(file_path, sha)
+        if content:
+            cache[key] = content
+        return content
 
     def publish_labels(self, pr_types):
         try:
@@ -1923,18 +2112,41 @@ class GithubProvider(GitProvider):
                 get_logger().exception(f"Failed to read the labels payload, error: {e}")
                 return None
 
-        # obtain the latest labels. Maybe they changed while the AI was running
-        try:
-            headers, labels = self.pr._requester.requestJsonAndCheck(
-                "GET", f"{self.pr.issue_url}/labels")
-        except (GithubException, RequestException) as e:
-            get_logger().exception(f"Failed to get labels, error: {e}")
-            return None
-        try:
-            return [label['name'] for label in labels]
-        except (KeyError, TypeError) as e:
-            get_logger().exception(f"Failed to read the labels payload, error: {e}")
-            return None
+        # Refresh every page without allowing malformed or incomplete pages to replace labels.
+        url = f"{self.pr.issue_url}/labels"
+        label_names = []
+        visited_urls = set()
+        while url:
+            if url in visited_urls:
+                get_logger().warning("Failed to refresh labels: repeated pagination URL")
+                return None
+            visited_urls.add(url)
+            try:
+                headers, labels = self.pr._requester.requestJsonAndCheck("GET", url)
+            except (GithubException, RequestException) as e:
+                get_logger().exception(f"Failed to get labels, error: {e}")
+                return None
+            try:
+                if not isinstance(labels, list):
+                    raise TypeError("Expected a list of labels")
+                names = [label["name"] for label in labels]
+                if not all(isinstance(name, str) for name in names):
+                    raise TypeError("Expected string label names")
+                label_names.extend(names)
+                next_url = _next_page_url(headers)
+                if next_url:
+                    original = urlparse(f"{self.pr.issue_url}/labels")
+                    next_page = urlparse(next_url)
+                    if (next_page.scheme, next_page.netloc) != (original.scheme, original.netloc):
+                        raise ValueError("Invalid label pagination URL")
+                    # Only reuse query parameters; never fetch the link's untrusted path.
+                    url = original._replace(query=next_page.query).geturl()
+                else:
+                    url = ""
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
+                get_logger().exception(f"Failed to read the labels payload, error: {e}")
+                return None
+        return label_names
 
     def get_commit_messages(self) -> str:
         """
@@ -2014,40 +2226,12 @@ class GithubProvider(GitProvider):
         owner, repo, issue_number = parts[-4], parts[-3], parts[-1]
 
         try:
-            # Gets Issue ID from Issue Number
+            # Fetch the issue and its sub-issues in one GraphQL request.
             query = f"""
             query {{
                 repository(owner: "{owner}", name: "{repo}") {{
                     issue(number: {issue_number}) {{
                         id
-                    }}
-                }}
-            }}
-            """
-            response_tuple = self.github_client._Github__requester.requestJson("POST", "/graphql",
-                                                                               input={"query": query})
-
-            # Extract the JSON response from the tuple and parses it
-            if isinstance(response_tuple, tuple) and len(response_tuple) == 3:
-                response_json = json.loads(response_tuple[2])
-            else:
-                get_logger().error(f"Unexpected response format: {response_tuple}")
-                return sub_issues
-
-
-            issue_id = (((response_json.get("data") or {})
-                        .get("repository") or {})
-                        .get("issue") or {}).get("id")
-
-            if not issue_id:
-                get_logger().warning(f"Issue ID not found for {issue_url}")
-                return sub_issues
-
-            # Fetch Sub-Issues
-            sub_issues_query = f"""
-            query {{
-                node(id: "{issue_id}") {{
-                    ... on Issue {{
                         subIssues(first: 100) {{
                             nodes {{
                                 url
@@ -2057,20 +2241,22 @@ class GithubProvider(GitProvider):
                 }}
             }}
             """
-            sub_issues_response_tuple = self.github_client._Github__requester.requestJson("POST", "/graphql", input={
-                "query": sub_issues_query})
+            response_tuple = self._post_graphql(query)
 
-            # Extract the JSON response from the tuple and parses it
-            if isinstance(sub_issues_response_tuple, tuple) and len(sub_issues_response_tuple) == 3:
-                sub_issues_response_json = json.loads(sub_issues_response_tuple[2])
+            if isinstance(response_tuple, tuple) and len(response_tuple) == 3:
+                response_json = json.loads(response_tuple[2])
             else:
-                get_logger().error("Unexpected sub-issues response format",
-                                   artifact={"response": sub_issues_response_tuple})
+                get_logger().error(f"Unexpected response format: {response_tuple}")
                 return sub_issues
 
-            sub_issues_data = (((sub_issues_response_json.get("data") or {})
-                                .get("node") or {})
-                                .get("subIssues") or {})
+            issue_data = (((response_json.get("data") or {})
+                           .get("repository") or {})
+                           .get("issue") or {})
+            if not issue_data.get("id"):
+                get_logger().warning(f"Issue ID not found for {issue_url}")
+                return sub_issues
+
+            sub_issues_data = issue_data.get("subIssues") or {}
             if not sub_issues_data:
                 get_logger().error("Invalid sub-issues response structure")
                 return sub_issues
@@ -2179,8 +2365,8 @@ class GithubProvider(GitProvider):
                                 patch = "\n".join(patch_orig.splitlines()[5:]).strip('\n')
                                 diff_code = (f"\n\n<details><summary>New proposed code:</summary>\n\n"
                                              f"```diff\n{patch.rstrip()}\n```")
-                                # replace ```suggestion ... ``` with diff_code, using regex:
-                                body = re.sub(r'```suggestion.*?```', lambda _: diff_code, body, flags=re.DOTALL)
+                                # replace ```suggestion ... ``` with diff_code:
+                                body = replace_suggestion_blocks(body, diff_code)
                                 body += "\n\n</details>"
                                 suggestion['relevant_lines_start'] = new_start
                                 suggestion['relevant_lines_end'] = new_end

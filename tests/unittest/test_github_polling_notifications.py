@@ -18,7 +18,15 @@ from pr_agent.servers import github_polling
 @pytest.fixture(autouse=True)
 def isolate_notification_io(monkeypatch):
     monkeypatch.setattr(
-        github_polling, "global_settings", SimpleNamespace(get=lambda key, default: default)
+        github_polling,
+        "global_settings",
+        SimpleNamespace(
+            get=lambda key, default: (
+                ["owner/repo", "pulls-helper/widgets-pulls"]
+                if key == "github.polling_repositories"
+                else default
+            )
+        ),
     )
     monkeypatch.setattr(github_polling, "get_logger", MagicMock())
 
@@ -32,8 +40,8 @@ def _comment(comment_id=2, body="@bot /review", user="human"):
     return {"id": comment_id, "body": body, "user": {"login": user}}
 
 
-def _notification(base_url):
-    return {
+def _notification(base_url, repository="owner/repo"):
+    notification = {
         "reason": "mention",
         "subject": {
             "type": "PullRequest",
@@ -41,6 +49,9 @@ def _notification(base_url):
             "latest_comment_url": f"{base_url}/latest",
         },
     }
+    if repository is not None:
+        notification["repository"] = {"full_name": repository}
+    return notification
 
 
 @asynccontextmanager
@@ -63,6 +74,51 @@ async def _server(fallback, latest=None, api_prefix=""):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("repository", ["other/repo", None, "owner/repo/extra", 1])
+async def test_notification_repository_must_be_allowlisted(repository):
+    handled = set()
+    session = MagicMock()
+    result = await github_polling.is_valid_notification(
+        _notification("https://example.test", repository), {}, handled, session, "bot"
+    )
+
+    assert result == (False, handled)
+    assert handled == set()
+    session.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_notification_repository_allowlist_is_case_insensitive():
+    async with _server(
+        lambda request: web.json_response([]), latest=_comment(99)
+    ) as url, aiohttp.ClientSession() as session:
+        result = await github_polling.is_valid_notification(
+            _notification(url, "OWNER/REPO"), {}, set(), session, "bot"
+        )
+
+    assert result[0] is True
+
+
+@pytest.mark.asyncio
+async def test_empty_polling_repositories_allowlist_rejects_notifications(monkeypatch):
+    monkeypatch.setattr(
+        github_polling,
+        "global_settings",
+        SimpleNamespace(
+            get=lambda key, default: [] if key == "github.polling_repositories" else default
+        ),
+    )
+    handled = set()
+    session = MagicMock()
+    result = await github_polling.is_valid_notification(
+        _notification("https://example.test"), {}, handled, session, "bot"
+    )
+
+    assert result == (False, handled)
+    session.get.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_fallback_reuses_session_and_preserves_selection():
     selected = _comment(2)
     seen = []
@@ -79,12 +135,115 @@ async def test_fallback_reuses_session_and_preserves_selection():
         # Check that the consumed latest-comment response releases the only
         # connection before fallback.
         handled = set()
+        added = set()
         result = await github_polling.is_valid_notification(
-            _notification(url), {"Authorization": "Bearer test-token"}, handled, session, "bot"
+            _notification(url), {"Authorization": "Bearer test-token"}, handled, session, "bot", added
         )
     assert result == (True, handled, selected, "@bot /review", f"{url}/repos/owner/repo/pulls/1", "@bot")
-    assert handled == {99}
+    assert handled == {2, 99}
+    assert added == {2, 99}
     assert seen == ["Bearer test-token"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_does_not_replay_or_backfill_handled_mentions():
+    selected = _comment(2)
+    latest = _comment(99, "Other discussion")
+
+    async def fallback(request):
+        return web.json_response([_comment(1, "@bot /ask old"), selected, latest])
+
+    handled = set()
+    async with _server(fallback, latest) as url, aiohttp.ClientSession() as session:
+        result = await github_polling.is_valid_notification(_notification(url), {}, handled, session, "bot")
+        assert result[0] is True
+        assert result[2] == selected
+
+        for latest_id in (100, 101):
+            latest["id"] = latest_id
+            assert await github_polling.is_valid_notification(_notification(url), {}, handled, session, "bot") == (
+                False, handled
+            )
+
+    assert handled == {2, 99, 100, 101}
+
+
+@pytest.mark.asyncio
+async def test_fallback_accepts_latest_mention_added_between_reads():
+    latest = _comment(99, "Other discussion")
+    edited = _comment(99)
+
+    async def fallback(request):
+        return web.json_response([edited])
+
+    handled = set()
+    added = set()
+    async with _server(fallback, latest) as url, aiohttp.ClientSession() as session:
+        result = await github_polling.is_valid_notification(
+            _notification(url), {}, handled, session, "bot", added
+        )
+
+    assert result == (True, handled, edited, "@bot /review", f"{url}/repos/owner/repo/pulls/1", "@bot")
+    assert handled == {99}
+    assert added == {99}
+
+
+def test_pr_comments_url_anchors_pulls_segment():
+    assert github_polling._pr_comments_url("https://api.github.com/repos/owner/repo/pulls/1") == (
+        "https://api.github.com/repos/owner/repo/issues/1/comments"
+    )
+    assert github_polling._pr_comments_url("https://api.github.com/repos/pulls-helper/widgets/pulls/7") == (
+        "https://api.github.com/repos/pulls-helper/widgets/issues/7/comments"
+    )
+    assert github_polling._pr_comments_url("https://api.github.com/repos/owner/widgets-pulls/pulls/7") == (
+        "https://api.github.com/repos/owner/widgets-pulls/issues/7/comments"
+    )
+    assert github_polling._pr_comments_url("https://api.github.com/repos/owner/pulls/pulls/7") == (
+        "https://api.github.com/repos/owner/pulls/issues/7/comments"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fallback_keeps_pulls_in_owner_and_repo_names():
+    selected = _comment(2)
+    requested = []
+
+    async def fallback(request):
+        requested.append(request.path)
+        return web.json_response([_comment(1, "@bot /ask old"), selected])
+
+    @asynccontextmanager
+    async def server():
+        async def latest_handler(request):
+            return web.json_response(_comment(99, "Other discussion"))
+
+        app = web.Application()
+        app.router.add_get("/latest", latest_handler)
+        app.router.add_get("/repos/pulls-helper/widgets-pulls/issues/17/comments", fallback)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            base_url = f"http://{runner.addresses[0][0]}:{runner.addresses[0][1]}"
+            yield base_url
+        finally:
+            await runner.cleanup()
+
+    async with server() as url, aiohttp.ClientSession() as session:
+        handled = set()
+        result = await github_polling.is_valid_notification(
+            {"reason": "mention", "repository": {"full_name": "pulls-helper/widgets-pulls"}, "subject": {
+                "type": "PullRequest",
+                "url": f"{url}/repos/pulls-helper/widgets-pulls/pulls/17",
+                "latest_comment_url": f"{url}/latest",
+            }},
+            {}, handled, session, "bot",
+        )
+
+    assert result[0] is True
+    assert result[2] == selected
+    assert requested == ["/repos/pulls-helper/widgets-pulls/issues/17/comments"]
 
 
 @pytest.mark.asyncio

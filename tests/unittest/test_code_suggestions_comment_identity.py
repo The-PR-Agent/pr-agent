@@ -195,3 +195,38 @@ def test_persistent_summary_updates_the_marked_summary_comment():
         f"## PR Code Suggestions ✨\n\n{PRCodeSuggestionsIdentity.SUMMARY.value}"
     )
     provider.publish_comment.assert_not_called()
+
+
+@pytest.mark.parametrize("identity_marker", [PRCodeSuggestionsIdentity.SUMMARY.value, None])
+def test_history_stops_reading_after_matching_comment(identity_marker):
+    header = "## PR Code Suggestions ✨"
+    existing = SimpleNamespace(body=(
+        f"{header}\n\n{identity_marker or ''}\n\n"
+        "<!-- aaa1111 -->\n\n<table>old suggestions</table>"
+    ))
+
+    def newest_first():
+        yield SimpleNamespace(body="New discussion")
+        yield existing
+        raise AssertionError("Older comments must not be read after finding the target")
+
+    provider = MagicMock()
+    provider._publish_check_run.return_value = False
+    provider.get_issue_comments_newest_first.return_value = newest_first()
+    provider.get_comment_url.return_value = "https://example.test/comment/1"
+    provider.get_latest_commit_url.return_value = "https://example.test/commit/deadbee"
+
+    result = PRCodeSuggestions.publish_persistent_comment_with_history(
+        provider,
+        f"{header}\n\n<table>new suggestions</table>",
+        initial_header=header,
+        name="suggestions",
+        identity_marker=identity_marker,
+        legacy_initial_header=header,
+    )
+
+    assert result is existing
+    provider.edit_comment.assert_called_once()
+    assert "<table>new suggestions</table>" in provider.edit_comment.call_args.args[1]
+    assert "<table>old suggestions</table>" in provider.edit_comment.call_args.args[1]
+    provider.publish_comment.assert_not_called()

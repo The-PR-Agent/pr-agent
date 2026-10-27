@@ -6,7 +6,7 @@ import copy
 import json
 import os
 import re
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 import uvicorn
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,6 +20,7 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, command2class, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.utils import encode_user_text_arg
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -72,6 +73,8 @@ async def handle_request_comment(url: str, body: str, thread_id: int, comment_id
                 # false, and then a resolved discussion thread plus a deleted progress comment would
                 # read as "review done" for a review that was never published.
                 propagate_tool_errors=True)
+            if handled is RequestOutcome.SKIPPED:
+                return
             if handled and not is_question:
                 provider.set_thread_status(thread_id, "closed")
             # The progress reply was posted before the command ran, so a failed run still has to
@@ -223,18 +226,66 @@ async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: s
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"Performing command: {new_command}")
             with get_logger().contextualize(**log_context):
-                await agent.handle_request(api_url, new_command)
+                if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                    return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
+
+
+def _created_event_pr_url(data):
+    """Use the web link or build the created event's structured PR identity."""
+    resource = data["resource"]
+    if not isinstance(resource, dict):
+        return None
+    links = resource.get("_links", {})
+    if not isinstance(links, dict):
+        return None
+    web = links.get("web", {})
+    if not isinstance(web, dict):
+        return None
+    href = web.get("href", "")
+    if not isinstance(href, str):
+        return None
+    if href:
+        return unquote(href.replace("_apis/git/repositories", "_git"))
+
+    repository = resource["repository"]
+    project = repository["project"]["name"]
+    repo = repository["name"]
+    base_url = data["resourceContainers"]["collection"]["baseUrl"]
+    pr_id = resource["pullRequestId"]
+    if (not all(isinstance(value, str) and value.strip() for value in (project, repo, base_url))
+            or type(pr_id) is not int or pr_id <= 0):
+        return None
+    collection = urlsplit(base_url)
+    port = collection.port  # Validate self-hosted collection ports.
+    if (collection.scheme not in {"http", "https"} or not collection.hostname
+            or collection.username is not None or collection.password is not None
+            or (port is None and collection.netloc.endswith(":"))
+            or "?" in base_url or "#" in base_url):
+        return None
+    return f"{base_url.rstrip('/')}/{quote(project, safe='')}/_git/{quote(repo, safe='')}/pullrequest/{pr_id}"
 
 
 async def handle_request_azure(data, log_context):
     if data["eventType"] == "git.pullrequest.created":
         # API V1 (latest)
-        pr_url = unquote(data["resource"]["_links"]["web"]["href"].replace("_apis/git/repositories", "_git"))
+        try:
+            pr_url = _created_event_pr_url(data)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pr_url = None
+        if pr_url is None:
+            get_logger().warning("Ignoring Azure created event with invalid pull request identity")
+            return
         log_context["event"] = data["eventType"]
         log_context["api_url"] = pr_url
         await _perform_commands_azure("pr_commands", PRAgent(), pr_url, log_context)

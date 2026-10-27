@@ -1,12 +1,10 @@
 """Route a small pull request to a cheaper primary model.
 
 The [model_routing] settings hold an ordered list of rules, each naming a model and the largest
-pull request it takes, measured in diff hunks and changed files. Both counts come from the
-provider's diff, so they do not depend on which model's tokenizer would count the tokens.
+pull request it takes, measured in diff hunks, changed files, or supplied patch characters.
+These sizes come from the provider's diff and do not depend on a model's tokenizer.
 """
 from __future__ import annotations
-
-from typing import List, Optional, Tuple
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import ModelType
@@ -14,25 +12,39 @@ from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
 
-def count_hunks(diff_files: List[FilePatchInfo]) -> int:
+def count_hunks(diff_files: list[FilePatchInfo]) -> int:
     """Count the diff hunks across the files. A patch without hunk headers still counts as one."""
     total = 0
     for diff_file in diff_files:
         patch = getattr(diff_file, "patch", "") or ""
-        if not patch.strip():
+        if not patch or patch.isspace():
             continue
-        total += sum(1 for line in patch.splitlines() if line.startswith("@@")) or 1
+        # Git delimits diff lines with LF; other separators may occur in source text.
+        total += (patch.count("\n@@") + patch.startswith("@@")) or 1
     return total
 
 
-def _limit(rule, key: str) -> Optional[int]:
+def count_patch_chars(diff_files: list[FilePatchInfo]) -> int | None:
+    """Count literal supplied patch characters, or return None for untrustworthy patches."""
+    total = 0
+    for diff_file in diff_files:
+        patch = getattr(diff_file, "patch", None)
+        if getattr(diff_file, "content_fetch_failed", False) or not isinstance(patch, str):
+            return None
+        total += len(patch)
+    return total
+
+
+def _limit(rule, key: str) -> int | None:
     value = rule.get(key)
     if value is None or value == "":
+        return None
+    if isinstance(value, bool):
         return None
     return int(value)
 
 
-def route_primary_model(model_type: ModelType, git_provider) -> Optional[Tuple[str, Optional[str]]]:
+def route_primary_model(model_type: ModelType, git_provider) -> tuple[str, str | None] | None:
     """Return the (model, deployment_id) a routing rule picks for this pull request.
 
     None keeps the configured primary. Only a call for the regular model is routed: a tool that
@@ -50,8 +62,9 @@ def route_primary_model(model_type: ModelType, git_provider) -> Optional[Tuple[s
 
     diff_files = git_provider.get_diff_files()
     num_files = len(diff_files)
-    num_hunks = count_hunks(diff_files)
-    size = f"{num_hunks} hunks in {num_files} files"
+    num_hunks = None
+    num_patch_chars = None
+    patch_chars_computed = False
     global_deployment_id = settings.get("openai.deployment_id", None)
 
     for rule in rules:
@@ -59,12 +72,11 @@ def route_primary_model(model_type: ModelType, git_provider) -> Optional[Tuple[s
             model = rule.get("model")
             max_hunks = _limit(rule, "max_hunks")
             max_files = _limit(rule, "max_files")
+            max_patch_chars = _limit(rule, "max_patch_chars")
         except (AttributeError, TypeError, ValueError):
-            model = max_hunks = max_files = None
-        if not model or (max_hunks is None and max_files is None):
+            model = max_hunks = max_files = max_patch_chars = None
+        if not model or (max_hunks is None and max_files is None and max_patch_chars is None):
             get_logger().warning(f"Ignoring model routing rule without a model or a limit: {rule}")
-            continue
-        if max_hunks is not None and num_hunks > max_hunks:
             continue
         if max_files is not None and num_files > max_files:
             continue
@@ -73,8 +85,29 @@ def route_primary_model(model_type: ModelType, git_provider) -> Optional[Tuple[s
             get_logger().warning(f"Model routing rule for '{model}' has no deployment_id while "
                                  f"openai.deployment_id is set, skipping it")
             continue
+        if max_patch_chars is not None:
+            if not patch_chars_computed:
+                num_patch_chars = count_patch_chars(diff_files)
+                patch_chars_computed = True
+                if num_patch_chars is None:
+                    get_logger().warning(
+                        "Patch character count is unknown; skipping character-limited model routing rules"
+                    )
+            if num_patch_chars is None or num_patch_chars > max_patch_chars:
+                continue
+        if max_hunks is not None:
+            if num_hunks is None:
+                num_hunks = count_hunks(diff_files)
+            if num_hunks > max_hunks:
+                continue
+        size = f"{num_hunks} hunks in {num_files} files" if num_hunks is not None else f"{num_files} files"
+        if num_patch_chars is not None:
+            size += f", {num_patch_chars} patch characters"
         get_logger().info(f"Model routing: {size}, using '{model}' as the primary model")
         return model, deployment_id
 
+    size = f"{num_hunks} hunks in {num_files} files" if num_hunks is not None else f"{num_files} files"
+    if num_patch_chars is not None:
+        size += f", {num_patch_chars} patch characters"
     get_logger().info(f"Model routing: {size} fit no rule, keeping the configured primary model")
     return None

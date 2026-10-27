@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pr_agent.algo.pr_processing import PackedPRDiffs
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from pr_agent.tools.pr_description import DESCRIBE_PROGRESS_COMMENT, PRDescription
@@ -77,8 +78,16 @@ class _FakeBudget:
     def require_input_capacity(self, *_args, **_kwargs):
         return None
 
-    def fit_optional_text(self, optional_text, *_args, **_kwargs):
-        return SimpleNamespace(optional_text=optional_text)
+    def render_prompt_templates(self, variables):
+        return "system", variables["diff_no_line_numbers"]
+
+    def prepare_request(self, _handler, system_prompt, user_prompt):
+        return SimpleNamespace(
+            input_tokens=0, system_prompt=system_prompt, user_prompt=user_prompt
+        )
+
+    def input_token_limit(self, *_args, **_kwargs):
+        return 1
 
 
 def _review_progress_editor(**overrides):
@@ -146,7 +155,7 @@ async def _run_chunked_review(reviewer, chunk_count=2):
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch(
             "pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-            return_value=([f"chunk-{index}" for index in range(chunk_count)], []),
+            return_value=PackedPRDiffs([f"chunk-{index}" for index in range(chunk_count)], [], []),
         ),
         patch("pr_agent.tools.pr_reviewer.extract_and_cache_pr_tickets", AsyncMock()),
         _stub_ticket_budget_fit(reviewer),
@@ -290,7 +299,7 @@ async def test_review_progress_counts_include_chunks_an_earlier_attempt_finished
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-0", "chunk-1"], [])),
+              return_value=PackedPRDiffs(["chunk-0", "chunk-1"], [], [])),
     ):
         await reviewer._prepare_chunked_prediction("model")
 
@@ -309,7 +318,7 @@ async def test_review_progress_never_moves_backward_across_a_fallback(published_
     with (
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=(["chunk-0", "chunk-1"], [])),
+              return_value=PackedPRDiffs(["chunk-0", "chunk-1"], [], [])),
     ):
         with pytest.raises(RuntimeError):
             await reviewer._prepare_chunked_prediction("model-a")
@@ -429,7 +438,7 @@ async def _run_chunked_suggestions(tool, chunk_count=3, **overrides):
         patch("pr_agent.algo.token_budget.get_max_tokens", return_value=10000),
         patch(
             "pr_agent.tools.pr_code_suggestions.get_pr_multi_diffs",
-            return_value=(chunks, []),
+            return_value=PackedPRDiffs(chunks, [], []),
         ),
         patch(
             "pr_agent.tools.pr_code_suggestions.AttemptTokenBudget.for_prompt_attempt",
@@ -547,7 +556,7 @@ def _make_describe_tool(provider, chunk_predictions):
 
     async def fake_get_prediction(model, patches_diff, prompt=""):
         if prompt != "pr_description_only_files_prompts":
-            return "### PR Walker\n\nwalkthrough"
+            return "title: PR Walker\ndescription: walkthrough"
         value = remaining.pop(0) if len(remaining) > 1 else remaining[0]
         if isinstance(value, BaseException):
             raise value
@@ -789,7 +798,7 @@ async def test_suggestion_progress_is_skipped_for_a_single_chunk(published_sugge
 
 @pytest.mark.asyncio
 async def test_suggestion_progress_counts_an_unparseable_chunk(published_suggestions):
-    """The footer counts parse failures, so the progress line has to count them too."""
+    """Malformed prediction output must count as a failed chunk in the progress line."""
     provider, edits = _review_progress_editor()
     tool = _make_suggestion_tool(provider, [_SUGGESTION_CHUNK] * 3)
     tool._progress_base_body = tool.progress
@@ -805,7 +814,6 @@ async def test_suggestion_progress_counts_an_unparseable_chunk(published_suggest
 
     await _run_chunked_suggestions(tool)
 
-    assert tool.parse_failure_count == 1
     assert tool.failed_chunk_count == 1
     assert edits[-1].splitlines()[-1] == "analyzed 3 of 3 chunks, 1 chunk failed"
 

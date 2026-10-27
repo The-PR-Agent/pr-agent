@@ -56,6 +56,7 @@ def _make_instance(prediction_yaml: str = "") -> PRDescription:
 def _settings(
     *,
     add_original_user_description: bool = False,
+    publish_description_as_comment: bool = False,
     publish_labels: bool = False,
     enable_pr_type: bool = True,
     enable_pr_description: bool = True,
@@ -69,6 +70,7 @@ def _settings(
     settings = MagicMock()
     pd = settings.pr_description
     pd.add_original_user_description = add_original_user_description
+    pd.publish_description_as_comment = publish_description_as_comment
     pd.publish_labels = publish_labels
     pd.enable_pr_type = enable_pr_type
     pd.generate_ai_title = generate_ai_title
@@ -211,6 +213,18 @@ class TestPrepareData:
         obj._prepare_data()
 
         assert obj.data["User Description"] == "Original body from user"
+
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_user_description_is_skipped_when_published_as_comment(self, mock_get_settings):
+        mock_get_settings.return_value = _settings(
+            add_original_user_description=True, publish_description_as_comment=True
+        )
+        obj = _make_instance(yaml.dump({"title": "t", "description": "d"}))
+        obj.user_description = "Original body from user"
+
+        obj._prepare_data()
+
+        assert "User Description" not in obj.data
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +513,38 @@ class TestPrepareAnswer:
 
         assert "AI summary" in body
 
+    @pytest.mark.parametrize(
+        ("description_fields", "expected_description"),
+        [
+            ({}, None),
+            ({"description": None}, ""),
+            ({"description": ""}, ""),
+            ({"description": "Intro\n- one\n- two"}, "Intro\n\n- one\n\n- two"),
+        ],
+        ids=["missing", "null", "empty", "bullets"],
+    )
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_optional_description_preserves_other_sections(
+        self, mock_get_settings, description_fields, expected_description,
+    ):
+        mock_get_settings.return_value = _settings(add_original_user_description=True)
+        obj = self._obj({})
+        obj.prediction = yaml.safe_dump({"title": "AI title", "type": ["Bug fix"], **description_fields})
+        obj.user_description = "User notes\n- preserve original spacing"
+
+        obj._prepare_data()
+        assert obj._validate_description_schema(obj.data)
+        title, body, walkthrough = obj._prepare_pr_answer()
+
+        assert title == "AI title"
+        assert f"### **User description**\n{obj.user_description}\n" in body
+        assert "### **PR Type**\nBug fix\n" in body
+        assert walkthrough == ""
+        if expected_description is None:
+            assert "### **Description**" not in body
+        else:
+            assert body.endswith(f"### **Description**\n{expected_description}\n")
+
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_description_list_value_is_joined_and_bullets_spaced(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
@@ -554,15 +600,19 @@ class TestProcessPRFilesPrediction:
         body = obj.process_pr_files_prediction("PRE", value)
 
         assert body == "PRE"
+        obj.git_provider.get_diff_files.assert_not_called()
 
     @patch("pr_agent.tools.pr_description.get_settings")
-    def test_gfm_provider_emits_table_with_file_row(self, mock_get_settings):
+    def test_gfm_provider_reuses_diff_files_across_semantic_groups(self, mock_get_settings):
         mock_get_settings.return_value = _settings()
-        diff = FilePatchInfo("", "", "", "src/app.py")
-        diff.num_plus_lines = 5
-        diff.num_minus_lines = 2
-        obj = self._obj(gfm=True, diff_files=[diff])
-        value = {"backend": [("src/app.py", "Add cache", "Adds a bounded cache.")]}
+        obj = self._obj(gfm=True, diff_files=[
+            FilePatchInfo("", "", "", "README.md", num_plus_lines=1, num_minus_lines=0),
+            FilePatchInfo("", "", "", "src/app.py", num_plus_lines=5, num_minus_lines=2),
+        ])
+        value = {
+            "backend": [("src/app.py", "Add cache", "Adds a bounded cache.")],
+            "documentation": [("README.md", "Document cache", "Explains cache behavior.")],
+        }
 
         body = obj.process_pr_files_prediction("", value)
 
@@ -570,7 +620,42 @@ class TestProcessPRFilesPrediction:
         assert body.rstrip().endswith("</table>")
         assert "<strong>Backend</strong>" in body
         assert "<strong>app.py</strong>" in body
-        assert "+5/-2" in body
+        app_body, readme_body = body.split("<strong>README.md</strong>", 1)
+        assert "+5/-2" in app_body
+        assert "+1/-0" in readme_body
+        obj.git_provider.get_diff_files.assert_called_once_with()
+
+    @pytest.mark.parametrize("value", [{}, {"backend": []}])
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_empty_file_groups_do_not_fetch_diffs(self, mock_get_settings, value):
+        mock_get_settings.return_value = _settings()
+        obj = self._obj(gfm=True)
+
+        body = obj.process_pr_files_prediction("", value)
+
+        assert body.startswith("<table>")
+        assert body.rstrip().endswith("</table>")
+        obj.git_provider.get_diff_files.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("plus", "minus", "expected_stats"), [(5, 2, "+5/-2"), (0, 0, "[link]"), (10**12, 0, "[link]")],
+    )
+    @patch("pr_agent.tools.pr_description.get_settings")
+    def test_normalized_first_match_and_missing_file_stats(self, mock_get_settings, plus, minus, expected_stats):
+        mock_get_settings.return_value = _settings()
+        obj = self._obj(gfm=True, diff_files=[
+            FilePatchInfo("", "", "", "/SRC/APP.py/", num_plus_lines=plus, num_minus_lines=minus),
+            FilePatchInfo("", "", "", "src/app.PY", num_plus_lines=99, num_minus_lines=88),
+        ])
+        value = {"backend": [("src/App.py", "", ""), ("missing.py", "", "")]}
+
+        body = obj.process_pr_files_prediction("", value)
+
+        app_body, missing_body = body.split("<strong>missing.py</strong>", 1)
+        assert expected_stats in app_body
+        assert "+99/-88" not in body
+        assert '<a href=""></a>' in missing_body
+        obj.git_provider.get_diff_files.assert_called_once_with()
 
     @patch("pr_agent.tools.pr_description.get_settings")
     def test_adaptive_collapsible_triggers_above_threshold(self, mock_get_settings):
@@ -587,6 +672,7 @@ class TestProcessPRFilesPrediction:
         body = obj.process_pr_files_prediction("", value)
 
         assert "<details><summary>2 files</summary>" in body
+        obj.git_provider.get_diff_files.assert_called_once_with()
 
     def test_rendered_href_preserves_reserved_filename_from_gitlab_provider(self):
         filename = "src/a#b?c&d space-☃.py"
@@ -689,6 +775,40 @@ class TestPrepareFileLabelsEdgeCases:
         assert "'" not in recovered_name
         assert '"' not in recovered_name
 
+    def test_null_required_field_skips_only_that_file(self):
+        # A null/empty required field passes the old key-presence check and
+        # then raised on .strip(), which dropped the file through the broad
+        # except while its valid siblings were kept. An empty field must skip
+        # only the offending file.
+        obj = _make_instance()
+        obj.vars = {"include_file_summary_changes": True}
+        obj.data = {
+            "pr_files": [
+                {
+                    "filename": "src/ok.py",
+                    "changes_title": "Keep me",
+                    "changes_summary": "Valid summary.",
+                    "label": "backend",
+                },
+                {
+                    "filename": "src/null_label.py",
+                    "changes_title": "Null label",
+                    "changes_summary": "Valid summary.",
+                    "label": None,
+                },
+                {
+                    "filename": "src/empty_summary.py",
+                    "changes_title": "Empty summary",
+                    "changes_summary": "   ",
+                    "label": "backend",
+                },
+            ]
+        }
+
+        labels = obj._prepare_file_labels()
+
+        assert labels == {"backend": [("src/ok.py", "Keep me", "Valid summary.")]}
+
 
 # ---------------------------------------------------------------------------
 # prompt gating for enable_pr_description
@@ -703,6 +823,7 @@ class TestDescriptionPromptGating:
         "language": "python",
         "diff": "diff",
         "extra_instructions": "",
+        "artifact_context": None,
         "skills_context": "",
         "repo_context": "",
         "commit_messages_str": "",

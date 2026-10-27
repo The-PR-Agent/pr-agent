@@ -88,6 +88,7 @@ from pr_agent.algo.ai_handlers.cloud_auth import (
     _databricks_request_keyless,
     _exchange_azure_oidc_token,
     _get_bedrock_model_region,
+    _google_cloud_sdk,
     _guard_request_routing_globals,
     _has_live_provider_api_key_environment,
     _has_provider_api_key_global,
@@ -137,14 +138,19 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
     _response_field,
     get_repetition_penalty,
 )
+from pr_agent.algo.prompt_fragments import render_skills_prefix
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
+from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
+# Lowest config.max_output_tokens honored; Bedrock Claude with thinking needs this much to answer.
+MIN_MAX_OUTPUT_TOKENS = 4096
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
 _IMAGE_NOT_ALIVE_MESSAGE = (
     "The image link is not [alive](img_path).\n"
@@ -164,11 +170,15 @@ _ANTHROPIC_CACHE_REQUEST_PROVIDERS = ("anthropic", "bedrock", "bedrock_mantle", 
 # _warn_prompt_cache_conditions.
 _ANTHROPIC_CACHE_WARNING_LOG: set[tuple[str, str]] = set()
 
+_OPENROUTER_APP_URL = "https://github.com/the-pr-agent/pr-agent"
+_OPENROUTER_APP_TITLE = "PR-Agent"
+
 PROVIDER_SETTING_PATHS = {
     "anthropic": {"api_key": "ANTHROPIC.KEY"},
     "codestral": {"api_key": "CODESTRAL.KEY"},
     "cohere": {"api_key": "COHERE.KEY"},
     "cohere_chat": {"api_key": "COHERE.KEY"},
+    "compactifai": {"api_key": "COMPACTIFAI.KEY"},
     "dashscope": {"api_key": "DASHSCOPE.KEY"},
     "databricks": {"api_key": "DATABRICKS.API_KEY", "api_base": "DATABRICKS.API_BASE"},
     "deepinfra": {"api_key": "DEEPINFRA.KEY"},
@@ -213,12 +223,8 @@ def _strip_openai_azure_prefixes(model: str) -> str:
 
 
 def _as_bool(value, default: bool) -> bool:
-    """Parse a config value that may arrive as a bool (toml) or a string (env override)."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes", "on")
-    return default
+    """Preserve the old invalid-string fallback while accepting integer flags."""
+    return _as_bool_setting(value, default=False if isinstance(value, str) else default)
 
 
 def _as_list(value) -> list:
@@ -284,7 +290,13 @@ def _should_retry_same_model(exc: BaseException) -> bool:
     An empty, length-truncated response is deterministic for the same request and cap, so it is
     not replayed unless config.retry_same_model_on_length enables it.
     """
-    if isinstance(exc, (openai.RateLimitError, openai.BadRequestError, openai.UnprocessableEntityError)):
+    if isinstance(exc, (
+        openai.RateLimitError,
+        openai.BadRequestError,
+        openai.UnprocessableEntityError,
+        openai.AuthenticationError,
+        openai.PermissionDeniedError,
+    )):
         return False
     if isinstance(exc, openai.APITimeoutError):
         return _as_bool(get_settings().config.get("retry_same_model_on_timeout", True), default=True)
@@ -397,9 +409,10 @@ class LiteLLMAIHandler(BaseAiHandler):
             identity = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode("utf-8")).hexdigest()
             snapshot["cache_key"] = json.dumps({"_pr_agent_default_adc": identity})
             self._vertex_gac_adc = snapshot
+        cloud_sdk = None
         if self._vertex_credentials is None and self._vertex_credentials_error is None:
-            from google.auth import _cloud_sdk
-
+            cloud_sdk = _google_cloud_sdk()
+        if cloud_sdk is not None:
             snapshot = {
                 "info": None, "error": None, "sdk_project": None, "sdk_project_error": None,
                 "explicit_path": None,
@@ -408,7 +421,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 "aws_environment": dict(self._vertex_aws_environment),
             }
             try:
-                path = _cloud_sdk.get_application_default_credentials_path()
+                path = cloud_sdk.get_application_default_credentials_path()
                 if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") == path:
                     snapshot["explicit_path"] = path
                 try:
@@ -497,12 +510,13 @@ class LiteLLMAIHandler(BaseAiHandler):
         if global_settings.get("LITELLM.DISABLE_AIOHTTP", False):
             litellm.disable_aiohttp_transport = True
         self._initialize_aws_request_credentials(settings)
-        if settings.get("LITELLM.SUCCESS_CALLBACK", None):
-            litellm.success_callback = settings.litellm.success_callback
-        if settings.get("LITELLM.FAILURE_CALLBACK", None):
-            litellm.failure_callback = settings.litellm.failure_callback
-        if settings.get("LITELLM.SERVICE_CALLBACK", None):
-            litellm.service_callback = settings.litellm.service_callback
+        # LiteLLM callbacks are process globals, so only deployment settings may set them.
+        if global_settings.get("LITELLM.SUCCESS_CALLBACK", None):
+            litellm.success_callback = normalize_setting_list(global_settings.litellm.success_callback)
+        if global_settings.get("LITELLM.FAILURE_CALLBACK", None):
+            litellm.failure_callback = normalize_setting_list(global_settings.litellm.failure_callback)
+        if global_settings.get("LITELLM.SERVICE_CALLBACK", None):
+            litellm.service_callback = normalize_setting_list(global_settings.litellm.service_callback)
         # litellm callbacks attach full prompt and response content unless message logging is disabled.
         if settings.get("LITELLM.TURN_OFF_MESSAGE_LOGGING", False):
             litellm.turn_off_message_logging = True
@@ -826,13 +840,11 @@ class LiteLLMAIHandler(BaseAiHandler):
         credentials_path = vertex_credentials or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
         if not credentials_path:
             return None, None
-        if not vertex_credentials:
-            from google.auth import _cloud_sdk
-
-            # Match Google Auth's exact-path exception so the captured SDK
-            # resource project remains distinct from the billing quota project.
-            if credentials_path == _cloud_sdk.get_application_default_credentials_path():
-                return None, None
+        cloud_sdk = None if vertex_credentials else _google_cloud_sdk()
+        # Match Google Auth's exact-path exception so the captured SDK
+        # resource project remains distinct from the billing quota project.
+        if cloud_sdk is not None and credentials_path == cloud_sdk.get_application_default_credentials_path():
+            return None, None
         try:
             with open(credentials_path, encoding="utf-8") as credentials_file:
                 return credentials_file.read(), None
@@ -1713,6 +1725,33 @@ class LiteLLMAIHandler(BaseAiHandler):
             params["headers"] = request_headers
         return self._finalize_provider_request_params(provider, params)
 
+    @staticmethod
+    def _with_openrouter_attribution(headers: dict) -> dict:
+        """Attribute OpenRouter requests without overriding explicit headers."""
+        normalized = {name.lower(): value for name, value in headers.items()}
+        if "http-referer" in normalized:
+            site_url = normalized["http-referer"]
+        else:
+            site_url = litellm.get_secret("OR_SITE_URL") or _OPENROUTER_APP_URL
+
+        if "x-openrouter-title" in normalized:
+            title = normalized["x-openrouter-title"]
+        elif "x-title" in normalized:
+            title = normalized["x-title"]
+        else:
+            title = litellm.get_secret("OR_APP_NAME") or _OPENROUTER_APP_TITLE
+
+        other_headers = {
+            name: value for name, value in headers.items()
+            if name.lower() not in ("http-referer", "x-openrouter-title", "x-title")
+        }
+        return {
+            **other_headers,
+            "HTTP-Referer": site_url,
+            "X-OpenRouter-Title": title,
+            "X-Title": title,  # Keep LiteLLM's legacy title consistent.
+        }
+
     def _finalize_provider_request_params(self, provider: str | None, params: dict) -> dict:
         """Merge request-local headers and reject LiteLLM's process-wide header fallback."""
         params = _guard_request_routing_globals(provider, params)
@@ -1742,6 +1781,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             params["headers"] = request_headers
         elif getattr(litellm, "headers", None):
             raise ValueError(f"Refusing process-wide LiteLLM headers fallback for provider {provider or 'unknown'}")
+        if provider == "openrouter":
+            params["headers"] = self._with_openrouter_attribution(request_headers)
         return params
 
     def _requires_streaming(self, model: str) -> bool:
@@ -2020,6 +2061,59 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
 
     @classmethod
+    def _clamp_openrouter_reasoning_effort(
+        cls, model: str, reasoning_effort: str, reasoning_max_tokens: int = 0
+    ) -> str:
+        """Apply every OpenRouter-side reasoning-effort clamp and return the level requested.
+
+        Both the request builder and get_output_token_reserve route through this, so a clamp
+        added for one model family cannot be missing from the output-token reserve and leave
+        it disagreeing with the reasoning object actually sent.
+        """
+        if not reasoning_effort:
+            return reasoning_effort
+
+        if reasoning_effort == ReasoningEffort.MINIMAL.value and reasoning_max_tokens <= 0:
+            # Every GPT-6 model page omits "minimal", so PR-Agent corrects an explicit
+            # "minimal" to "low". A positive budget still takes precedence below, which is why
+            # this is skipped when one is configured.
+            gpt6_model = model.removeprefix("openrouter/")
+            if gpt6_model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES):
+                gpt6_model = gpt6_model.rsplit(":", 1)[0]
+            if cls._gpt6_model_name(gpt6_model) in GPT6_MODELS:
+                get_logger().info(
+                    f"{model} does not support reasoning_effort='minimal'; using 'low' instead."
+                )
+                reasoning_effort = ReasoningEffort.LOW.value
+
+        if reasoning_effort == ReasoningEffort.NONE.value:
+            # The pages of GPT6_MODELS_WITHOUT_NONE_EFFORT members omit "none", so PR-Agent
+            # corrects an explicit "none" to "low". That branch would otherwise be reached
+            # ahead of the token budget and win, discarding the budget, so correcting the value
+            # is what lets a configured budget apply. Clamp regardless of budget.
+            gpt6_model = model.removeprefix("openrouter/")
+            if gpt6_model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES):
+                gpt6_model = gpt6_model.rsplit(":", 1)[0]
+            if cls._gpt6_model_name(gpt6_model) in GPT6_MODELS_WITHOUT_NONE_EFFORT:
+                get_logger().info(
+                    f"{model} does not support reasoning_effort='none'; using 'low' instead."
+                )
+                reasoning_effort = ReasoningEffort.LOW.value
+
+        clamped_effort = cls._clamp_grok_reasoning_effort(model, reasoning_effort)
+        if clamped_effort != reasoning_effort:
+            get_logger().info(
+                f"Grok model {model} does not support reasoning_effort="
+                f"'{reasoning_effort}'; using '{clamped_effort}' instead."
+            )
+            reasoning_effort = clamped_effort
+
+        if reasoning_effort == "none" and cls._uses_gemini_low_reasoning_floor(model):
+            get_logger().info(f"Gemini model {model} does not support reasoning_effort='none'; using 'low' instead.")
+            reasoning_effort = "low"
+        return reasoning_effort
+
+    @classmethod
     def _clamp_grok_reasoning_effort(cls, model: str, reasoning_effort: str) -> str:
         """Clamp a configured reasoning effort to the closest supported Grok level."""
         grok_levels = cls._grok_reasoning_levels_for(model)
@@ -2112,23 +2206,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 effective_reasoning_effort = inherited_reasoning_effort or ""
 
         if effective_reasoning_effort:
-            if effective_reasoning_effort == ReasoningEffort.MINIMAL.value and reasoning_max_tokens <= 0:
-                gpt6_model = model.removeprefix("openrouter/")
-                if gpt6_model.endswith(GPT6_OPENROUTER_ROUTING_SUFFIXES):
-                    gpt6_model = gpt6_model.rsplit(":", 1)[0]
-                if self._gpt6_model_name(gpt6_model) in GPT6_SOL_TIER_MODELS:
-                    effective_reasoning_effort = ReasoningEffort.LOW.value
-            clamped_effort = self._clamp_grok_reasoning_effort(model, effective_reasoning_effort)
-            if clamped_effort != effective_reasoning_effort:
-                get_logger().info(
-                    f"Grok model {model} does not support reasoning_effort="
-                    f"'{effective_reasoning_effort}'; using '{clamped_effort}' instead."
-                )
-                effective_reasoning_effort = clamped_effort
-
-        if effective_reasoning_effort == "none" and self._uses_gemini_low_reasoning_floor(model):
-            get_logger().info(f"Gemini model {model} does not support reasoning_effort='none'; using 'low' instead.")
-            effective_reasoning_effort = "low"
+            effective_reasoning_effort = self._clamp_openrouter_reasoning_effort(
+                model, effective_reasoning_effort, reasoning_max_tokens
+            )
 
         # Preserve explicit disablement; otherwise keep effort and max_tokens
         # mutually exclusive by preferring the token budget.
@@ -2224,11 +2304,33 @@ class LiteLLMAIHandler(BaseAiHandler):
             )
         return extended_thinking_budget_tokens, extended_thinking_max_output_tokens
 
+    @classmethod
+    def _configured_max_output_tokens(cls) -> int:
+        """Return config.max_output_tokens, warning about values that would unset or undercut the cap."""
+        value = get_settings().config.get("max_output_tokens", 0)
+        output_tokens = cls._coerce_token_value(value)
+        if value is None or value is False or value == 0 or str(value).strip() in ("", "0"):
+            return 0
+        if output_tokens == 0:
+            get_logger().warning(f"Ignoring invalid config.max_output_tokens: {value!r}")
+            return 0
+        if output_tokens < 0:
+            get_logger().warning(f"Ignoring negative config.max_output_tokens: {output_tokens}")
+            return 0
+        if output_tokens < MIN_MAX_OUTPUT_TOKENS:
+            get_logger().warning(
+                f"Raising config.max_output_tokens from {output_tokens} to {MIN_MAX_OUTPUT_TOKENS}: "
+                f"smaller caps can leave no room for the answer when reasoning is enabled"
+            )
+            return MIN_MAX_OUTPUT_TOKENS
+        return output_tokens
+
     def _resolve_output_token_limit(self, model: str, openrouter_model: str | None) -> int:
         """Return the final positive output cap selected by PR-Agent request controls."""
-        output_tokens = self._coerce_token_value(get_settings().config.get("max_output_tokens", 0))
         if self._claude_thinking_mode(model) == "extended":
             _, output_tokens = self._get_claude_extended_thinking_limits()
+        else:
+            output_tokens = self._configured_max_output_tokens()
 
         if openrouter_model:
             openrouter_output_tokens = self._coerce_token_value(self._openrouter_controls.get("max_tokens", 0))
@@ -2238,7 +2340,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     if output_tokens > 0
                     else openrouter_output_tokens
                 )
-        return output_tokens if output_tokens > 0 else 0
+        return max(0, output_tokens)
 
     def get_output_token_limit(self, model: str) -> int:
         """Return the output cap that this handler will request for the supplied model."""
@@ -2266,16 +2368,15 @@ class LiteLLMAIHandler(BaseAiHandler):
         if not openrouter_model:
             return default_output_tokens
 
-        reasoning_effort = str(
-            self._openrouter_controls.get("reasoning_effort", "") or ""
-        ).strip().lower()
-        reasoning_effort = self._clamp_grok_reasoning_effort(
-            openrouter_model, reasoning_effort
-        )
-        if reasoning_effort == "none" and self._uses_gemini_low_reasoning_floor(openrouter_model):
-            reasoning_effort = "low"
         reasoning_tokens = self._coerce_token_value(
             self._openrouter_controls.get("reasoning_max_tokens", 0)
+        )
+        # Route through the same clamp the request builder uses: if that request will send a
+        # reasoning token budget, this reserve has to account for it.
+        reasoning_effort = self._clamp_openrouter_reasoning_effort(
+            openrouter_model,
+            str(self._openrouter_controls.get("reasoning_effort", "") or "").strip().lower(),
+            reasoning_tokens,
         )
         if reasoning_effort == "none" or reasoning_tokens <= 0:
             return default_output_tokens
@@ -2383,7 +2484,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         """Return whether a Claude model requires the adaptive thinking API."""
         normalized_model = model.lower().replace("_", "-").replace(".", "-")
         return re.search(
-            r"claude-(?:opus-4-(?:7|8)|(?:opus|sonnet|fable)-5)(?:[^0-9]|$)",
+            r"claude-(?:opus-4-(?:7|8)|(?:opus|sonnet|fable)-5|haiku-5-5)(?:[^0-9]|$)",
             normalized_model,
         ) is not None
 
@@ -2547,6 +2648,45 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
         return cache_control_injection_points
 
+    def _split_system_prompt_for_skills_cache(self, messages: list[dict], model: str, injection_points) -> None:
+        """Add a cache breakpoint at the end of the shared skills prefix (#4007).
+
+        The review tools open their system prompts with an identical skills block, so marking
+        that block lets Anthropic read one cache entry across /review, /describe and /improve
+        instead of writing one per tool. The tool-specific remainder keeps its own breakpoint
+        rather than losing it, so a tool that repeats still reads its whole system prompt; the
+        price is a second breakpoint slot of the four Anthropic allows, not a smaller cache.
+        Only applies to Anthropic Claude models when a configured injection point targets the
+        system message and the rendered prefix matches; every other request keeps the plain
+        system string. Splitting at the prefix is safe because the two text blocks concatenate
+        back to the original content.
+        """
+        if not injection_points or not self._is_claude_model(model):
+            return
+        system_point = next(
+            (point for point in injection_points if isinstance(point, dict) and point.get("role") == "system"),
+            None,
+        )
+        if system_point is None:
+            return
+        system_index = next(
+            (index for index, message in enumerate(messages) if message.get("role") == "system"),
+            None,
+        )
+        if system_index is None:
+            return
+        content = messages[system_index].get("content")
+        if not isinstance(content, str):
+            return
+        prefix = render_skills_prefix(skills_context=get_skills_context())
+        if not prefix or not content.startswith(prefix):
+            return
+        control = system_point.get("control") or {"type": "ephemeral"}
+        messages[system_index]["content"] = [
+            {"type": "text", "text": prefix, "cache_control": control},
+            {"type": "text", "text": content[len(prefix):], "cache_control": control},
+        ]
+
     @staticmethod
     def _warn_prompt_cache_conditions(
         model: str, system: str, user: str, injection_points, request_provider: str | None = None
@@ -2635,7 +2775,10 @@ class LiteLLMAIHandler(BaseAiHandler):
 
         try:
             timeout = aiohttp.ClientTimeout(total=_IMAGE_HEAD_TIMEOUT_SECONDS)
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with (
+                asyncio.timeout(_IMAGE_HEAD_TIMEOUT_SECONDS),
+                aiohttp.ClientSession(timeout=timeout, trust_env=True) as session,
+            ):
                 status = await with_safe_redirects(session, img_path, _status, method="HEAD")
         except Exception as e:
             get_logger().error(f"Error fetching image: {img_path}", e)
@@ -2730,6 +2873,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                     user,
                     image_path=img_path,
                 )
+                self._split_system_prompt_for_skills_cache(messages, model, cache_control_injection_points)
 
                 thinking_kwargs_gpt5 = None
                 openrouter_reasoning_effort = None
@@ -3090,7 +3234,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 get_logger().error(f"Rate limit error during LLM inference: {e}")
                 raise
             except openai.APIError as e:
-                if aws_can_fallback:
+                if aws_can_fallback and isinstance(
+                    e, (openai.AuthenticationError, openai.PermissionDeniedError),
+                ):
                     if not self._aws_imds_fell_back:
                         self._activate_static_aws_fallback()
                         get_logger().warning(f"{AWS_PROVIDER_CALL_FALLBACK_MESSAGE}: {type(e).__name__}")
@@ -3248,7 +3394,7 @@ class LiteLLMAIHandler(BaseAiHandler):
                 )
             content = response["choices"][0]['message']['content']
             finish_reason = response["choices"][0]["finish_reason"]
-            if not content:
+            if not content or (isinstance(content, str) and content.isspace()):
                 get_logger().warning(
                     f"Empty content in model response, finish_reason: {finish_reason}")
                 error_message = f"Empty content in model response (finish_reason: {finish_reason})"

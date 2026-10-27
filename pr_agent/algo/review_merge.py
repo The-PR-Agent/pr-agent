@@ -7,6 +7,10 @@ one verdict. Three rules cover the schema:
 
 - Fields that report what a chunk *found* - key issues, security concerns, TODO sections,
   priority files, sub-PRs, ticket bullet lists - are unioned in chunk order, dropping repeats.
+  Ticket entries are keyed by the ticket they refer to, resolved against `related_tickets`,
+  so a chunk that writes a full URL, `#12`, or a shortened URL still lands on one entry.
+  The merged key issues are then cut to `max_findings`, the per-review limit that
+  `num_max_findings` advertises, because every chunk may report its own full allowance.
 - Fields that are one *judgement* about the whole PR - score, risk level, merge
   recommendation, review effort, "does the PR have tests" - take the most conservative value
   any chunk reported, so a merged review is never less alarming than its worst chunk.
@@ -19,9 +23,11 @@ added to the prompt later still survives the merge instead of disappearing from 
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Hashable, List, Optional
+from collections.abc import Callable, Hashable
+from typing import Any
 
 from pr_agent.algo.comment_identity import as_review_text
+from pr_agent.algo.output_models import parse_failure_modes
 from pr_agent.algo.utils import is_value_no
 from pr_agent.log import get_logger
 
@@ -29,20 +35,43 @@ MAX_EFFORT = 5
 MAX_SUB_PRS = 3
 CONTRIBUTION_TIME_CASES = ("best_case", "average_case", "worst_case")
 RISK_LEVELS = ("low", "medium", "high")
-MERGE_RECOMMENDATIONS = ("safe_to_merge", "merge_with_caution", "changes_required")
+MERGE_RECOMMENDATIONS = ("no_concerns_found", "needs_review", "changes_required")
 
 _DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([mh])", re.IGNORECASE)
 _WHITESPACE_RE = re.compile(r"\s+")
+_TRAILING_NUMBER_RE = re.compile(r"(?<!\d)(\d+)\D*$")
 
 
-def merge_review_chunks(chunk_outputs: List[dict]) -> dict:
-    """Reduce the parsed review of every chunk to a single `{'review': {...}}` dict."""
+def merge_review_chunks(chunk_outputs: list[dict],
+                        related_tickets: list[Any] | None = None,
+                        max_findings: int | None = None) -> dict:
+    """Reduce the parsed review of every chunk to a single `{'review': {...}}` dict.
+
+    `related_tickets` is the ticket list the prompt was built from. It gives every ticket
+    entry a canonical URL, so chunks that describe the same ticket differently merge into one
+    entry instead of contradicting each other.
+
+    `max_findings` is the per-review limit from `num_max_findings`. Each chunk may report up
+    to that many findings about its own part of the diff, so the union can be several times
+    larger; passing the limit cuts the merged list back to what a single-call review would
+    publish. `all_key_issues` returns the list before this cut, for callers that must tell a cut
+    finding from an absent one.
+    """
     reviews = [chunk["review"] for chunk in chunk_outputs
                if isinstance(chunk, dict) and isinstance(chunk.get("review"), dict)]
     if not reviews:
         return {}
+    ticket_index = _ticket_url_index(related_tickets)
     if len(reviews) == 1:
-        return {"review": dict(reviews[0])}
+        review = dict(reviews[0])
+        if "failure_modes" in review:
+            review["failure_modes"] = parse_failure_modes(review["failure_modes"])
+        if (ticket_index[0] or ticket_index[1]) and isinstance(
+                review.get("ticket_compliance_check"), list):
+            review["ticket_compliance_check"] = _merge_ticket_compliance(
+                [review["ticket_compliance_check"]], ticket_index)
+        _cap_key_issues(review, max_findings)
+        return {"review": review}
 
     # keep the prompt's field order, which is also the order the review is rendered in
     keys = []
@@ -56,12 +85,53 @@ def merge_review_chunks(chunk_outputs: List[dict]) -> dict:
         values = [review[key] for review in reviews if key in review]
         merge = _MERGE_RULES.get(_rule_name(key), _first_non_empty)
         try:
-            merged[key] = merge(values)
+            if merge is _merge_ticket_compliance:
+                merged[key] = merge(values, ticket_index)
+            else:
+                merged[key] = merge(values)
         except Exception as e:
             get_logger().warning(f"Failed to merge review field '{key}' across chunks, "
                                  f"keeping the first chunk's value, error: {e}")
             merged[key] = _first_non_empty(values)
+    _cap_key_issues(merged, max_findings)
     return {"review": merged}
+
+
+def _cap_key_issues(review: dict, max_findings: int | None) -> None:
+    """Cut the merged findings to the per-review limit, in place.
+
+    Without the cut, N chunks can each publish `num_max_findings` issues, so a chunked review
+    exceeds the configured maximum that a single-call review respects.
+    """
+    if max_findings is None:
+        return
+    try:
+        limit = max(0, int(max_findings))
+    except (TypeError, ValueError):
+        return
+    issues = review.get("key_issues_to_review")
+    if isinstance(issues, list) and len(issues) > limit:
+        review["key_issues_to_review"] = issues[:limit]
+
+
+def _chunk_key_issues(chunk_outputs: list[dict]) -> list[list]:
+    per_chunk = [chunk["review"].get("key_issues_to_review") for chunk in chunk_outputs
+                 if isinstance(chunk, dict) and isinstance(chunk.get("review"), dict)]
+    return [issues if isinstance(issues, list) else [] for issues in per_chunk]
+
+
+def all_key_issues(chunk_outputs: list[dict]) -> list:
+    """Return every distinct finding the chunks reported, before `max_findings` cuts the list."""
+    return _union_of_lists(_key_issue_identity)(_chunk_key_issues(chunk_outputs))
+
+
+def chunk_hit_findings_limit(chunk_outputs: list[dict], max_findings: int) -> bool:
+    """Say whether a chunk reported `max_findings` findings on its own.
+
+    The model may have stopped at its allowance, so a finding it never listed is not known to be
+    gone. A merge that cuts the union is different: `all_key_issues` still holds what it cut.
+    """
+    return any(len(issues) >= max_findings for issues in _chunk_key_issues(chunk_outputs))
 
 
 def _rule_name(key: str) -> str:
@@ -72,7 +142,7 @@ def _rule_name(key: str) -> str:
     return normalized
 
 
-def _first_non_empty(values: List[Any]) -> Any:
+def _first_non_empty(values: list[Any]) -> Any:
     for value in values:
         if value is not None and value != "" and value != [] and value != {}:
             return value
@@ -83,7 +153,11 @@ def _normalize_text(value: Any) -> str:
     return _WHITESPACE_RE.sub(" ", str(value if value is not None else "")).strip().lower()
 
 
-def _as_int(value: Any) -> Optional[int]:
+def _normalize_path(value: Any) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _as_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -94,7 +168,7 @@ def _as_int(value: Any) -> Optional[int]:
         return None
 
 
-def _merge_effort(values: List[Any]) -> Any:
+def _merge_effort(values: list[Any]) -> Any:
     """Effort is a 1-5 judgement, so the merged review reports the hardest chunk.
 
     Summing would saturate at 5 for any PR of a few modest chunks, and the field would stop
@@ -106,7 +180,7 @@ def _merge_effort(values: List[Any]) -> Any:
     return max(1, min(MAX_EFFORT, max(numbers)))
 
 
-def _merge_score(values: List[Any]) -> Any:
+def _merge_score(values: list[Any]) -> Any:
     """Lowest score wins: a clean chunk must not raise the grade of a bad one."""
     scored = [(number, value) for number, value in ((_as_int(value), value) for value in values)
               if number is not None]
@@ -115,9 +189,9 @@ def _merge_score(values: List[Any]) -> Any:
     return min(scored, key=lambda pair: pair[0])[1]
 
 
-def _worst_of(order: tuple) -> Callable[[List[Any]], Any]:
+def _worst_of(order: tuple) -> Callable[[list[Any]], Any]:
     """Pick the value ranked last in `order`; values outside it are ignored."""
-    def merge(values: List[Any]) -> Any:
+    def merge(values: list[Any]) -> Any:
         ranked = [(order.index(choice), value) for choice, value
                   in ((_normalize_text(value).replace(" ", "_"), value) for value in values)
                   if choice in order]
@@ -146,7 +220,7 @@ def _reported_text(value: Any) -> str:
     return "" if is_value_no(text) else text
 
 
-def _merge_findings_text(values: List[Any]) -> Any:
+def _merge_findings_text(values: list[Any]) -> Any:
     """Union the chunks that reported something; 'No' only when every chunk said no."""
     reported, seen = [], set()
     for value in values:
@@ -166,7 +240,7 @@ def _merge_findings_text(values: List[Any]) -> Any:
     return "\n\n".join(reported)
 
 
-def _merge_relevant_tests(values: List[Any]) -> Any:
+def _merge_relevant_tests(values: list[Any]) -> Any:
     """A test added in any chunk is a test added by the PR."""
     for value in values:
         if not is_value_no(value):
@@ -174,8 +248,8 @@ def _merge_relevant_tests(values: List[Any]) -> Any:
     return _first_non_empty(values)
 
 
-def _union_of_lists(identity: Callable[[Any], Hashable]) -> Callable[[List[Any]], list]:
-    def merge(values: List[Any]) -> list:
+def _union_of_lists(identity: Callable[[Any], Hashable]) -> Callable[[list[Any]], list]:
+    def merge(values: list[Any]) -> list:
         merged, seen = [], set()
         for value in values:
             for item in value if isinstance(value, list) else []:
@@ -191,15 +265,17 @@ def _union_of_lists(identity: Callable[[Any], Hashable]) -> Callable[[List[Any]]
 def _key_issue_identity(issue: Any) -> Hashable:
     if not isinstance(issue, dict):
         return _normalize_text(issue)
-    return (_normalize_text(issue.get("relevant_file")),
+    return (_normalize_path(issue.get("relevant_file")),
             _normalize_text(issue.get("issue_header")),
             _normalize_text(issue.get("issue_content")))
 
 
 def _todo_identity(todo: Any) -> Hashable:
+    if isinstance(todo, str):
+        return ("", "0", _normalize_text(todo))
     if not isinstance(todo, dict):
         return _normalize_text(todo)
-    return (_normalize_text(todo.get("relevant_file")),
+    return (_normalize_path(todo.get("relevant_file")),
             _normalize_text(todo.get("line_number")),
             _normalize_text(todo.get("content")))
 
@@ -209,27 +285,38 @@ def _sub_pr_identity(sub_pr: Any) -> Hashable:
         return _normalize_text(sub_pr)
     relevant_files = sub_pr.get("relevant_files")
     if isinstance(relevant_files, list) and relevant_files:
-        return frozenset(_normalize_text(name) for name in relevant_files)
+        return frozenset(_normalize_path(name) for name in relevant_files)
     return _normalize_text(sub_pr.get("title"))
 
 
-def _merge_todo_sections(values: List[Any]) -> Any:
-    return _union_of_lists(_todo_identity)(values) or _first_non_empty(values)
+def _merge_todo_sections(values: list[Any]) -> Any:
+    sections = []
+    for value in values:
+        if isinstance(value, list):
+            sections.append(value)
+        elif isinstance(value, str) and value.strip() and not is_value_no(value):
+            # Preserve prose alongside located TODOs without inventing a file or line.
+            sections.append([{"relevant_file": "", "line_number": 0, "content": value}])
+    return _union_of_lists(_todo_identity)(sections) or _first_non_empty(values)
 
 
-def _merge_can_be_split(values: List[Any]) -> list:
+def _merge_can_be_split(values: list[Any]) -> list:
     # the prompt asks for at most 3 sub-PRs, so the merged list keeps the same bound
     return _union_of_lists(_sub_pr_identity)(values)[:MAX_SUB_PRS]
 
 
-def _merge_priority_files(values: List[Any]) -> list:
+def _merge_failure_modes(values: list[Any]) -> list:
+    return parse_failure_modes([item for value in values if isinstance(value, list) for item in value])
+
+
+def _merge_priority_files(values: list[Any]) -> list:
     merged, seen = [], set()
     for value in values:
         for item in value if isinstance(value, list) else []:
             name = str(item).strip()
-            if not name or name.lower() in seen:
+            if not name or name in seen:
                 continue
-            seen.add(name.lower())
+            seen.add(name)
             merged.append(name)
     return merged
 
@@ -247,9 +334,60 @@ def _union_bullet_lines(first: str, second: str) -> str:
     return "\n".join(lines)
 
 
-def _merge_ticket_compliance(values: List[Any]) -> list:
+def _ticket_number(value: Any) -> str:
+    """Return the last number in `value`, the part a ticket URL or ID ends with."""
+    match = _TRAILING_NUMBER_RE.search(str(value if value is not None else ""))
+    return match.group(1) if match else ""
+
+
+def _ticket_url_index(related_tickets: list[Any] | None) -> tuple:
+    """Map each related ticket's URL text and trailing number to its canonical URL.
+
+    A number that two tickets share is dropped, so a bare `#12` never merges unrelated tickets
+    from different repositories. The canonical URL is what the review links to.
+    """
+    by_url: dict = {}
+    by_number: dict = {}
+    ambiguous_numbers = set()
+    for ticket in related_tickets or []:
+        if not isinstance(ticket, dict):
+            continue
+        url = str(ticket.get("ticket_url") or "").strip()
+        if not url:
+            continue
+        by_url.setdefault(_normalize_text(url), url)
+        number = _ticket_number(ticket.get("ticket_id")) or _ticket_number(url)
+        if not number:
+            continue
+        existing = by_number.get(number)
+        if existing is not None and existing != url:
+            ambiguous_numbers.add(number)
+        else:
+            by_number[number] = url
+    for number in ambiguous_numbers:
+        by_number.pop(number, None)
+    return by_url, by_number
+
+
+def _canonical_ticket_url(raw_url: Any, ticket_index: tuple) -> str:
+    """Resolve a chunk's ticket text to a related ticket's URL, falling back to the raw text."""
+    text = str(raw_url if raw_url is not None else "").strip()
+    if not text:
+        return ""
+    by_url, by_number = ticket_index
+    if _normalize_text(text) in by_url:
+        return by_url[_normalize_text(text)]
+    number = _ticket_number(text)
+    if number and number in by_number:
+        return by_number[number]
+    return text
+
+
+def _merge_ticket_compliance(values: list[Any], ticket_index: tuple = ({}, {})) -> list:
     """One entry per ticket; its bullet lists are unioned across the chunks that saw it.
 
+    Each chunk's `ticket_url` is resolved against the related tickets first, so the same
+    ticket written as a full URL, an ID, or a shortened URL reaches one entry and one link.
     A requirement that one chunk met and another did not ends up in both lists, which
     `ticket_markdown_logic` already renders as 'Partially compliant'.
     """
@@ -259,12 +397,23 @@ def _merge_ticket_compliance(values: List[Any]) -> list:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            ticket = _normalize_text(entry.get("ticket_url"))
+            canonical_url = _canonical_ticket_url(entry.get("ticket_url"), ticket_index)
+            ticket_url = _normalize_text(canonical_url)
+            ticket = ("url", ticket_url) if ticket_url else (
+                "missing_url",
+                tuple(sorted((str(key), _normalize_text(field_value)) for key, field_value in entry.items())),
+            )
             if ticket not in merged:
-                merged[ticket] = dict(entry)
+                record = dict(entry)
+                if ticket_url:
+                    record["ticket_url"] = canonical_url
+                merged[ticket] = record
                 continue
             target = merged[ticket]
             for field, field_value in entry.items():
+                if field == "ticket_url":
+                    # the canonical URL is already on the recorded entry; never union link text
+                    continue
                 if isinstance(field_value, str) and isinstance(target.get(field), str):
                     target[field] = _union_bullet_lines(target[field], field_value)
                 elif not target.get(field):
@@ -272,7 +421,7 @@ def _merge_ticket_compliance(values: List[Any]) -> list:
     return list(merged.values())
 
 
-def _duration_minutes(value: Any) -> Optional[float]:
+def _duration_minutes(value: Any) -> float | None:
     match = _DURATION_RE.fullmatch(str(value if value is not None else "").strip())
     if not match:
         return None
@@ -286,7 +435,7 @@ def _format_duration(minutes: float) -> str:
     return f"{int(hours)}h" if float(hours).is_integer() else f"{hours:.1f}h"
 
 
-def _merge_contribution_time(values: List[Any]) -> Any:
+def _merge_contribution_time(values: list[Any]) -> Any:
     """The chunks partition the change, so the time to write them adds up."""
     estimates = [value for value in values if isinstance(value, dict)]
     if not estimates:
@@ -307,6 +456,7 @@ _MERGE_RULES: dict = {
     "score": _merge_score,
     "risk_level": _worst_of(RISK_LEVELS),
     "merge_recommendation": _worst_of(MERGE_RECOMMENDATIONS),
+    "failure_modes": _merge_failure_modes,
     "security_concerns": _merge_findings_text,
     "insights_from_user_answers": _merge_findings_text,
     "relevant_tests": _merge_relevant_tests,

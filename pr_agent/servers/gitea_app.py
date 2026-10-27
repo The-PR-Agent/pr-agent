@@ -1,6 +1,6 @@
 import copy
 import os
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from starlette.background import BackgroundTasks
@@ -9,6 +9,8 @@ from starlette_context import context
 from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
+from pr_agent.agent.request_policy import RequestOutcome
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
@@ -61,7 +63,7 @@ async def get_body(request: Request):
         verify_signature(body_bytes, webhook_secret, f"sha256={signature_header}")
     except Exception as ex:
         get_logger().error(f"Invalid signature: {ex}")
-        raise HTTPException(status_code=401, detail="Invalid signature")
+        raise HTTPException(status_code=401, detail="Invalid signature") from ex
 
     try:
         body = await request.json()
@@ -70,7 +72,7 @@ async def get_body(request: Request):
         raise HTTPException(status_code=400, detail="Error parsing request body") from e
     return body
 
-async def handle_request(body: Dict[str, Any], event: str):
+async def handle_request(body: dict[str, Any], event: str):
     """Process Gitea webhook events"""
     action = body.get("action")
     if not action:
@@ -92,7 +94,7 @@ async def handle_request(body: Dict[str, Any], event: str):
 
     return {}
 
-async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: PRAgent):
+async def handle_pr_event(body: dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle pull request events"""
     pr = body.get("pull_request", {})
     if not pr:
@@ -114,7 +116,7 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
         #     await agent.handle_request(api_url, command)
     elif action == "synchronized":
         # Handle push to PR
-        commands_on_push = get_settings().get("gitea.push_commands", {})
+        commands_on_push = normalize_setting_list(get_settings().get("gitea.push_commands", {}))
         handle_push_trigger = get_settings().get("gitea.handle_push_trigger", False)
         if not commands_on_push or not handle_push_trigger:
             get_logger().info("Push event, but no push commands found or push trigger is disabled")
@@ -126,7 +128,7 @@ async def handle_pr_event(body: Dict[str, Any], event: str, action: str, agent: 
         # for command in commands_on_push:
         #     await agent.handle_request(api_url, command)
 
-async def handle_comment_event(body: Dict[str, Any], event: str, action: str, agent: PRAgent):
+async def handle_comment_event(body: dict[str, Any], event: str, action: str, agent: PRAgent):
     """Handle comment events"""
     comment = body.get("comment", {})
     if not comment:
@@ -151,7 +153,7 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
     commands = (
         get_pr_commands("gitea")
         if commands_conf == "pr_commands"
-        else get_settings().get(f"gitea.{commands_conf}")
+        else normalize_setting_list(get_settings().get(f"gitea.{commands_conf}"))
     )
     if not commands:
         get_logger().info("New PR, but no auto commands configured")
@@ -159,9 +161,16 @@ async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict
     get_settings().set("config.is_auto_command", True)
     for command in commands:
         try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(api_url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             new_command = prepare_command(command)
             get_logger().info(f"{commands_conf}. Performing auto command '{new_command}', for {api_url=}")
-            await agent.handle_request(api_url, new_command)
+            if await agent.handle_request(api_url, new_command) is RequestOutcome.SKIPPED:
+                return RequestOutcome.SKIPPED
         except Exception as e:
             get_logger().error(f"Failed to perform command {command}: {e}")
 

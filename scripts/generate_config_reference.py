@@ -52,6 +52,25 @@ LABEL_MAX_LEN = 60
 KEY_RE = re.compile(r"^(?P<key>[a-zA-Z0-9_]+)\s*=\s*(?P<rest>.*)$")
 SECTION_RE = re.compile(r"^\[(?P<name>[^\]]+)\](?:\s*#+\s*(?P<tag>.+?)\s*#*)?$")
 
+# Notes that document a key's behavior but read as prose rather than as a table cell, so
+# they are emitted between the key's row and whatever follows it. Keyed by section and by
+# the key they follow because key names repeat across sections. These live here rather than
+# in the page because the page is generated: an edit made only to the page is lost the next
+# time someone regenerates it.
+_AZURE_DISMISSAL_NOTE = """\
+Azure DevOps also supplies verified PR-Agent inline key issues as dismissed when their status is `wontFix`
+or `byDesign` and differs from `azure_devops.default_comment_status`. Matching defaults, `fixed`, `closed`,
+active, and pending threads do not count as dismissals. This requires a stable
+`azure_devops_server.agent_identity` and infers a human decision from the current configuration; it cannot
+verify the status-changing actor or historical defaults. Dismissed findings share the existing
+`max_previous_findings_chars` budget and may be reported again if the code makes them worse."""
+
+NOTES_AFTER_KEY = {
+    "pr_reviewer": {
+        "final_update_message": _AZURE_DISMISSAL_NOTE,
+    },
+}
+
 
 def _is_assignment(text: str) -> bool:
     return bool(re.match(r"^[a-zA-Z0-9_\"']+\s*=", text))
@@ -177,9 +196,11 @@ def load_sections(text: str) -> list:
 
 def render_page(sections: list) -> str:
     out = [PAGE_HEADER.rstrip(), ""]
+    rendered_notes = set()
 
     for section in sections:
         keys = section["keys"]
+        notes = NOTES_AFTER_KEY.get(section["name"], {})
         heading = f"## `[{section['name']}]`"
         anchor = section["name"]
         if section["tag"]:
@@ -214,9 +235,26 @@ def render_page(sections: list) -> str:
             desc = _escape_cell(key["desc"]) if key["desc"] else ""
             value = _escape_cell(key["value"])
             out.append(f"| `{key['key']}` | {value if value.strip() else '`""`'} | {desc} |")
+            if key["key"] in notes:
+                if table_open:
+                    out.append("")
+                    table_open = False
+                out.append(notes[key["key"]])
+                out.append("")
+                rendered_notes.add((section["name"], key["key"]))
         if table_open:
             out.append("")
         out.append("")
+
+    missing = [
+        f"[{name}] {key}" for name, keys in NOTES_AFTER_KEY.items() for key in keys if (name, key) not in rendered_notes
+    ]
+    if missing:
+        raise ValueError(
+            "NOTES_AFTER_KEY refers to keys the generator did not render: "
+            + ", ".join(missing)
+            + "; update the note or the key it follows"
+        )
 
     return "\n".join(out).rstrip("\n") + "\n"
 
@@ -227,7 +265,7 @@ def main() -> int:
     sections = load_sections(text)
 
     rendered_keys = sum(len(section["keys"]) for section in sections)
-    expected_keys = len(re.findall(r"^[a-zA-Z0-9_]+\s*=", text, re.M))
+    expected_keys = len(re.findall(r"^[a-zA-Z0-9_]+\s*=", text, re.MULTILINE))
     if rendered_keys != expected_keys:
         print(f"ERROR: rendered {rendered_keys} keys, expected {expected_keys}", file=sys.stderr)
         return 1

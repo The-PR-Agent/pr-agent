@@ -32,7 +32,7 @@ If you set `config.output_relevant_configurations` to True, each tool will also 
 
 By uploading a local `.pr_agent.toml` file to the root of the repo's default branch, you can customize parameters that support repository-level overrides. Note that you need to upload or update `.pr_agent.toml` before using the PR Agent tools (either at PR creation or via manual trigger) for the configuration to take effect.
 
-Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host.
+Provider endpoint settings are host-controlled: `openai.api_base`, `openai.api_type`, `openai.api_version`, `azure_ad.api_base`, `databricks.api_base`, `huggingface.api_base`, `moonshot.api_base`, `ollama.api_base`, and `openrouter.api_base` are ignored when set in repository-local `.pr_agent.toml` and must be configured on the host. The same restriction applies to provider authentication and TLS settings: `github.deployment_type`, `bitbucket.auth_type`, `gitlab.auth_type`, `gitlab.ssl_verify`, `gitea.skip_ssl_verification`, and `gitea.ssl_ca_cert`. Jira ticket lookups run with the host's Atlassian credentials, so `jira.cloud_id`, `jira.jira_site`, `jira.jira_api_email`, and `jira.project_keys` are host-controlled as well. These settings are also rejected in command arguments.
 
 For example, if you set in `.pr_agent.toml`:
 
@@ -84,7 +84,7 @@ retain their provider-specific settings source.
 Name an organization-level settings repository with `global_settings_repo` in the deployment's own configuration; its `.pr_agent.toml` (read from that repo's default branch) is used as a global configuration for every repository under the same organization. The setting is empty by default, which turns this off, and a repository's `.pr_agent.toml` or a comment cannot set it. With `global_settings_repo = "pr-agent-settings"`, the repository read is:
 
 - **GitHub:** `<organization>/pr-agent-settings`
-- **GitLab:** `<top-level-group>/pr-agent-settings` (both GitLab.com and self-hosted GitLab)
+- **GitLab:** `<top-level-group>/pr-agent-settings`, optionally followed by the closest matching subgroup settings when explicitly enabled below (both GitLab.com and self-hosted GitLab)
 - **Bitbucket (cloud):** `<workspace>/pr-agent-settings`
 - **Bitbucket Server:** `<project>/pr-agent-settings`
 - **Azure DevOps:** `<org>/<project>/pr-agent-settings` (looked up in the same project as the current repository)
@@ -109,18 +109,44 @@ For example, with `global_settings_repo = "pr-agent-settings"` in a GitHub organ
 
 - The file `my-org/pr-agent-settings/.pr_agent.toml` (read from that repository's default branch) serves as a global configuration file for all the repos in the organization.
 
-- A repository such as `my-org/my-repo` inherits that global configuration file, and may override any of its values in its own `.pr_agent.toml`.
+- A repository such as `my-org/my-repo` inherits that global configuration file, and may override its repository-configurable values in its own `.pr_agent.toml`.
 
 ## Project/Group level configuration file
 
 `Platforms supported: GitLab, Bitbucket Data Center`
 
-Once `global_settings_repo` is set, the repository with that name within a specific project (Bitbucket) or a group/subgroup (GitLab) is read.
-The configuration file in this repository will apply to all repositories directly under the same project/group/subgroup.
+For Bitbucket Data Center, the repository named by `global_settings_repo` within the project supplies the project's shared configuration. Its behavior is unchanged.
 
-:::note[Note]
-For GitLab, in case of a repository nested in several sub groups, the lookup for the settings repository will be only on one level above such repository.
-:::
+### GitLab subgroup inheritance
+
+GitLab subgroup inheritance is **disabled by default** (`config.use_group_settings_file = false`). Upgrading does not automatically load subgroup settings, even if `global_settings_repo` is already configured: the existing global-plus-local behavior is preserved until the operator explicitly opts in.
+
+GitLab uses the same host-only `global_settings_repo` name for top-level and subgroup settings; there is no new subgroup repository naming option. It defaults to an empty string, disabling both lookups. To opt in, set the bare repository name and both enable flags in the deployment's own configuration:
+
+```toml
+[config]
+global_settings_repo = "pr-agent-settings"
+use_global_settings_file = true
+use_group_settings_file = true
+```
+
+Alternatively, enable the subgroup gate with the host environment variable `CONFIG__USE_GROUP_SETTINGS_FILE=true`; `use_global_settings_file` must still be true and `global_settings_repo` nonempty. `use_group_settings_file` is a host-only boolean: shared or repository-local `.pr_agent.toml` files and command/comment arguments cannot enable it.
+
+With subgroup inheritance enabled, a merge request in `company/platform/backend/service` receives settings in this order:
+
+1. **Global:** `company/pr-agent-settings/.pr_agent.toml`.
+2. **Group:** the closest available subgroup file, starting at `company/platform/backend/pr-agent-settings/.pr_agent.toml`, then trying `company/platform/pr-agent-settings/.pr_agent.toml` if the nearer file or repository is unavailable. Only **one** subgroup file is selected; intermediate subgroup files are not all merged.
+3. **Local:** the reviewed repository's `.pr_agent.toml`, using the existing repository configuration branch rules.
+
+Each later source overrides matching keys from earlier sources and retains keys it does not override. All shared files are read from their settings repository's **default branch**, independent of the reviewed repository's configuration branch. A project directly under the top-level group has only global and local sources; the top-level settings file is not applied twice. GitLab.com, self-hosted instances, and numeric project IDs use the same hierarchy.
+
+A present but empty closest subgroup file selects that subgroup without adding overrides; it does not cause more distant subgroup files to be loaded. Malformed TOML is reported as a group settings error with shared file contents omitted from the comment; it is not a reason to select a different subgroup. Other valid sources still apply.
+
+Missing or inaccessible shared settings are optional, matching existing global-settings behavior. PR-Agent needs read access to the applicable settings repositories. Shared configuration is **not an enforcement boundary**: a local file can override repository-configurable keys, and the host-only key restrictions continue to apply to every source. Whoever can create a project with the `global_settings_repo` name in a subgroup sets the defaults for every project beneath it that has no closer subgroup settings file, so treat project creation rights in those subgroups as control over their review settings.
+
+The existing bounded, 15-minute in-process cache is reused. GitLab entries are isolated by host, full group path, configured repository name, and credential context; when a safe credential scope is unavailable, lookup bypasses the shared cache. Missing-file/access results are cached too; transient API/transport failures are not cached. Therefore, adding or editing a settings file may take up to 15 minutes to affect a running webhook process.
+
+Set `use_group_settings_file = false` to disable subgroup lookups while preserving global and local settings. Set `use_global_settings_file = false` or leave `global_settings_repo` empty to disable both global and subgroup lookups; the subgroup opt-in does not bypass these prerequisites. As with existing global configuration, `use_repo_settings_file = false` bypasses the repository-settings loading flow entirely. The optional per-directory configuration layer inside a repository remains separate and unchanged.
 
 ## External configuration URL
 
@@ -128,7 +154,7 @@ For GitLab, in case of a repository nested in several sub groups, the lookup for
 
 When running PR-Agent from the CLI (or any wrapper that exposes its arguments), you can merge an additional `.pr_agent.toml` from any URL or local path before the repo-local and global configurations are applied. This is useful when:
 
-- You want a single shared configuration that applies to repositories nested deep inside subgroups, where the [project/group-level lookup](./configuration_options.md#projectgroup-level-configuration-file) only walks one level up.
+- You want a shared configuration source outside the namespace hierarchy used by [GitLab subgroup inheritance](./configuration_options.md#gitlab-subgroup-inheritance).
 - The shared configuration is published outside of a Git host (a static site, an internal artifact server, an S3 bucket, etc.).
 - You want CI-time control over which defaults are layered in, without committing a file to the target repository.
 
@@ -148,6 +174,10 @@ Accepted values:
 - `https://…` or `http://…` — fetched at runtime
 - `file:///path/to/shared.toml` — read from the local filesystem
 - A bare filesystem path — same as `file://`
+
+GitLab comment webhooks apply this host layer before their first provider lookup; repository and per-directory settings remain part of normal command dispatch.
+
+GitLab tokens obtained from a secret provider during webhook authentication remain bound to that request. External files and environment reapplication cannot replace those authenticated credentials.
 
 ### Authentication for private endpoints
 

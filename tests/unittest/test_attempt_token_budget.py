@@ -1,5 +1,6 @@
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -663,3 +664,62 @@ def test_matches_accepts_source_or_own_bound_handler_only(monkeypatch, token_set
     assert not budget.matches("different-model", source)
     assert not budget.matches("fallback-model", equivalent_handler)
     assert not budget.matches("fallback-model", object())
+
+
+def test_required_text_stops_after_full_request_while_optional_text_still_fits(monkeypatch):
+    handler = FakeTokenHandler()
+    handler.system = "{{ title }}"
+    handler.user = "{{ diff }}"
+    handler.encoder = SimpleNamespace(
+        encode=Mock(side_effect=lambda text, disallowed_special=(): list(text)),
+        decode=Mock(side_effect=lambda tokens, errors="replace": "".join(tokens)),
+    )
+    budget = token_budget_module.AttemptTokenBudget("attempt-model", handler, handler, 78)
+    variables = {"title": "PR", "diff": ""}
+    text = "abcdefghijklmnopqrstuvwxyz"
+    prepared = []
+    original_prepare = token_budget_module.AttemptTokenBudget.prepare_request
+
+    def record_prepare(self, *args, **kwargs):
+        prepared.append(kwargs["optional_text"])
+        return original_prepare(self, *args, **kwargs)
+
+    monkeypatch.setattr(token_budget_module.AttemptTokenBudget, "prepare_request", record_prepare)
+    marker = token_budget_module.DEFAULT_TRUNCATION_MARKER
+    fitted = budget.fit_prompt_variable(
+        variables, "diff", text, ai_handler=object(), default_output_tokens=5,
+    )
+    assert prepared == [text, "", marker, "abcdefg" + marker]
+    assert fitted.optional_text == "abcdefg" + marker
+    assert fitted.input_tokens == 73
+    handler.encoder.encode.assert_called_once()
+    handler.encoder.decode.assert_called_once()
+    assert variables == {"title": "PR", "diff": ""}
+
+    prepared.clear()
+    handler.counted.clear()
+    handler.encoder.encode.reset_mock()
+    handler.encoder.decode.reset_mock()
+    with pytest.raises(token_budget_module.FallbackEligibleError, match="required prompt exceeds"):
+        budget.fit_prompt_variable(
+            variables, "diff", text, ai_handler=object(), default_output_tokens=5,
+            require_full_text=True,
+        )
+    assert prepared == [text]
+    assert handler.counted == ["PR", text]
+    handler.encoder.encode.assert_not_called()
+    handler.encoder.decode.assert_not_called()
+    assert variables == {"title": "PR", "diff": ""}
+
+    prepared.clear()
+    fitted = budget.fit_prompt_variable(
+        variables, "diff", "short", ai_handler=object(), default_output_tokens=5,
+        require_full_text=True,
+    )
+    assert prepared == ["short"]
+    assert fitted.optional_text == "short"
+    assert fitted.system_prompt == "PR"
+    assert fitted.user_prompt == "short"
+    handler.encoder.encode.assert_not_called()
+    handler.encoder.decode.assert_not_called()
+    assert variables == {"title": "PR", "diff": ""}

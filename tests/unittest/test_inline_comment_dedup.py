@@ -135,6 +135,7 @@ def _gh_provider(existing_bodies):
     p.pr = MagicMock()
     p.pr.get_comments.return_value = [_GHComment(b) for b in existing_bodies]
     p.last_commit_id = "deadbeef"
+    p.max_comment_chars = 65000
     return p
 
 

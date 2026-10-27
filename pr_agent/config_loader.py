@@ -1,6 +1,5 @@
 from os.path import abspath, dirname, join
 from pathlib import Path
-from typing import Optional
 
 from dynaconf import Dynaconf
 from starlette_context import context
@@ -55,20 +54,22 @@ global_settings = Dynaconf(
 )
 
 
-def get_settings(use_context=False):
+def get_settings(use_context=True):
     """
     Retrieves the current settings.
 
-    This function attempts to fetch the settings from the starlette_context's context object. If it fails,
-    it defaults to the global settings defined outside of this function.
+    By default, return request-scoped settings when a context exists. Callers that need
+    deployment-global settings can pass ``use_context=False``.
 
     Returns:
-        Dynaconf: The current settings object, either from the context or the global default.
+        Dynaconf: The request-scoped settings or the deployment-global settings.
     """
-    try:
-        return context["settings"]
-    except Exception:
-        return global_settings
+    if use_context:
+        try:
+            return context["settings"]
+        except Exception:
+            pass
+    return global_settings
 
 
 def get_verbosity_level() -> int:
@@ -86,7 +87,7 @@ def get_verbosity_level() -> int:
         return 0
 
 
-def _find_repository_root() -> Optional[Path]:
+def _find_repository_root() -> Path | None:
     """
     Identify project root directory by recursively searching for the .git directory in the parent directories.
     """
@@ -126,7 +127,7 @@ def apply_secrets_manager_config():
         try:
             from pr_agent.log import get_logger
             get_logger().debug(f"Secret provider not configured: {e}")
-        except:
+        except ImportError:
             # Fail completely silently if log module is not available
             pass
 
@@ -138,7 +139,7 @@ def apply_secrets_to_config(secrets: dict):
     try:
         # Dynamic import to avoid potential circular dependency
         from pr_agent.log import get_logger
-    except:
+    except ImportError:
         def get_logger():
             class DummyLogger:
                 def debug(self, msg): pass

@@ -48,6 +48,13 @@ class UnsupportedProvider:
     get_repo_file_content = GitProvider.get_repo_file_content
 
 
+class FailingRefProvider(FakeProvider):
+    """FakeProvider whose revision lookup fails."""
+
+    def get_repo_context_ref(self, from_default_branch: bool = False):
+        raise RuntimeError("502 Bad Gateway")
+
+
 class SiblingFakeProvider(FakeProvider):
     """FakeProvider that additionally resolves sibling-repository files."""
 
@@ -122,6 +129,8 @@ def test_build_repo_context_reads_from_target_branch_when_disabled(repo_context_
 @pytest.mark.parametrize(
     "config_value,expected",
     [
+        (0, False),
+        (1, True),
         ("false", False),
         ("False", False),
         ("0", False),
@@ -138,6 +147,49 @@ def test_build_repo_context_parses_string_default_branch_flag(repo_context_setti
     build_repo_context(provider)
 
     assert provider.from_default_branch_calls == [expected]
+
+
+def test_build_repo_context_survives_a_failed_revision_lookup(repo_context_settings):
+    """A provider that cannot resolve the revision still yields the context.
+
+    The revision only keys the cache. Losing it costs the revision pinning and
+    not the context, and repo context is an optional extra, so a failure here
+    must not abort the command that asked for it.
+    """
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = FailingRefProvider({"AGENTS.md": "Repo purpose"})
+
+    context = build_repo_context(provider)
+
+    assert "Repo purpose" in context
+    assert provider.requested_paths == ["AGENTS.md"]
+
+
+def test_build_repo_context_reports_a_failed_revision_lookup(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    provider = FailingRefProvider({"AGENTS.md": "Repo purpose"})
+
+    with patch("pr_agent.algo.repo_context.get_logger") as mock_get_logger:
+        build_repo_context(provider)
+
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "Failed to resolve the repo context revision; continuing without it",
+        artifact={"error": "502 Bad Gateway"},
+    )
+
+
+def test_build_repo_context_caches_without_a_revision(repo_context_settings):
+    """Without a revision the provider cache still serves the same files."""
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = FailingRefProvider({"AGENTS.md": "Repo purpose"})
+
+    first_context = build_repo_context(provider)
+    second_context = build_repo_context(provider)
+
+    assert second_context == first_context
+    assert provider.requested_paths == ["AGENTS.md"]
 
 
 def test_build_repo_context_fetches_and_formats_configured_files(repo_context_settings):
@@ -310,7 +362,7 @@ def test_provider_supports_repo_context_warns_once_for_unsupported_provider(repo
 
 def test_load_repo_context_files_normalizes_fetch_results():
     provider = FakeProvider({
-        "AGENTS.md": b"Repo purpose",
+        "AGENTS.md": b"Repo purpose \n",
         "EMPTY.md": "",
         "MISSING.md": None,
     })
@@ -342,7 +394,6 @@ def test_load_repo_context_files_reports_fetch_errors():
         ("  src/ x.py  ", None, "src/ x.py"),
         ("docs/guide:part.md", None, "docs/guide:part.md"),
         ({"repo_id": "group/sub/lib", "file_path": "src/api.py"}, "group/sub/lib", "src/api.py"),
-        ({"repo_id": "owner/lib", "file_path": "/deep/file.py"}, "owner/lib", "deep/file.py"),
         ({"repo_id": "owner/lib", "file_path": "  file.py  "}, "owner/lib", "file.py"),
         ({"repo_id": "  owner/lib  ", "file_path": "  file.py  "}, "owner/lib", "file.py"),
     ],
@@ -371,6 +422,21 @@ def test_parse_repo_context_file_entry_rejects_malformed(entry):
 def test_parse_repo_context_file_entry_treats_blank_as_plain_path():
     assert repo_context._parse_repo_context_file_entry("   ") == (None, "")
     assert repo_context._parse_repo_context_file_entry("") == (None, "")
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "/etc/passwd",
+        "../secret.md",
+        "docs/../secret.md",
+        {"repo_id": "owner/lib", "file_path": "/etc/passwd"},
+        {"repo_id": "owner/lib", "file_path": "../secret.md"},
+        {"repo_id": "owner/lib", "file_path": "docs/../secret.md"},
+    ],
+)
+def test_parse_repo_context_file_entry_rejects_escaping_paths(entry):
+    assert repo_context._parse_repo_context_file_entry(entry) == (None, "")
 
 
 def test_load_repo_context_files_fetches_sibling_and_same_repo_files():
@@ -1283,17 +1349,23 @@ def test_build_repo_context_process_cache_invalidates_when_config_changes(repo_c
     assert second_provider.requested_paths == ["CONTRIBUTING.md"]
 
 
-def test_build_repo_context_does_not_cache_empty_context_after_fetch_error(repo_context_settings):
-    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+@pytest.mark.parametrize("context_files", [["AGENTS.md"], ["AGENTS.md", " AGENTS.md "]])
+def test_build_repo_context_does_not_cache_empty_context_after_fetch_error(repo_context_settings, context_files):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", context_files)
     repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
     provider = FakeProvider({"AGENTS.md": "Repo purpose"}, pr_url="https://example.com/org/repo/pull/1")
     provider.get_repo_file_content = Mock(side_effect=[Exception("temporary outage"), "Repo purpose"])
 
     first_context = build_repo_context(provider)
-    second_context = build_repo_context(provider)
-
     assert first_context == ""
+    assert provider.get_repo_file_content.call_count == 1
+
+    second_context = build_repo_context(provider)
     assert "Repo purpose" in second_context
+    assert provider.get_repo_file_content.call_count == 2
+
+    assert build_repo_context(provider) == second_context
+    assert provider.get_repo_file_content.call_count == 2
 
 
 def test_build_repo_context_does_not_cache_sibling_content(repo_context_settings):
@@ -1412,7 +1484,7 @@ def test_build_repo_context_keeps_cache_for_malformed_sibling_entries(repo_conte
     [
         ("group/sub/lib:src/api.py", None, "group/sub/lib:src/api.py"),
         ({"repo_id": "group/sub/lib", "file_path": "src/api.py"}, "group/sub/lib", "src/api.py"),
-        ({"repo_id": "/group/sub/lib", "file_path": "/src/api.py"}, "group/sub/lib", "src/api.py"),
+        ({"repo_id": "/group/sub/lib", "file_path": "src/api.py"}, "group/sub/lib", "src/api.py"),
     ],
 )
 def test_sibling_entry_shapes_are_unambiguous(entry, expected_repo_id, expected_path):
@@ -1504,6 +1576,78 @@ def test_render_instruction_files_with_line_budget_uses_longer_fence_for_conflic
     )
 
 
+@pytest.mark.parametrize("separator", ["\n", "\u2028"])
+def test_build_repo_context_bounds_content_processing_and_ignores_omitted_fences(repo_context_settings, separator):
+    class GuardedContent(str):
+        def __str__(self):
+            return self
+
+        def rstrip(self, *args):
+            raise AssertionError("The full document must not be stripped when only a prefix is retained")
+
+        def splitlines(self, *args):
+            raise AssertionError("The full document must not be split when only a prefix is retained")
+
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 11)
+    provider = FakeProvider({
+        "AGENTS.md": GuardedContent("one\n`````\nthree\n" + ("````````" + separator) * 10_000),
+    })
+
+    context = build_repo_context(provider)
+
+    lines = context.splitlines()
+    assert lines[3] == "``````markdown"
+    assert lines[4:-4] == ["one", "`````", TRUNCATION_MARKER]
+    assert lines[-4] == "``````"
+
+
+@pytest.mark.parametrize("separator", ["\n", "\u2028"])
+@pytest.mark.parametrize("truncated", [False, True])
+def test_render_instruction_files_handles_large_sparse_line_breaks(separator, truncated):
+    first_line = "A" * (64 * 1024)
+    content = first_line + separator + "B"
+    if truncated:
+        content += (separator + "C") * 4096
+
+    rendered = render_instruction_files_with_line_budget({"AGENTS.md": content}, max_lines=10)
+
+    assert rendered.splitlines()[4:-4] == [first_line, TRUNCATION_MARKER if truncated else "B"]
+
+
+@pytest.mark.parametrize("tail", ["\nB\u2028C\u2028D", "\nB\nC"])
+def test_render_instruction_files_bounds_large_line_breaks_at_limit(tail):
+    class GuardedContent(str):
+        def rstrip(self, *args):
+            raise AssertionError("The discarded content must not be stripped")
+
+        def splitlines(self, *args):
+            raise AssertionError("The discarded content must not be split")
+
+    first_line = "A" * (64 * 1024)
+    content = GuardedContent(first_line + tail)
+
+    rendered = render_instruction_files_with_line_budget({"AGENTS.md": content}, max_lines=10)
+
+    assert rendered.splitlines()[4:-4] == [first_line, TRUNCATION_MARKER]
+
+
+@pytest.mark.parametrize(
+    "separator", ["\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
+)
+def test_render_instruction_files_bounded_prefix_preserves_line_breaks_and_trailing_whitespace(separator):
+    content = separator.join(["", "first", "", "last \t", "\u00a0", "", ""])
+
+    exact = render_instruction_files_with_line_budget({"AGENTS.md": content}, max_lines=12)
+    truncated = render_instruction_files_with_line_budget({"AGENTS.md": content}, max_lines=11)
+
+    assert exact.splitlines()[4:-4] == ["", "first", "", "last"]
+    assert truncated.splitlines()[4:-4] == ["", "first", TRUNCATION_MARKER]
+    padded = content + " " * (64 * 1024)
+    assert render_instruction_files_with_line_budget({"AGENTS.md": padded}, max_lines=12) == exact
+    assert render_instruction_files_with_line_budget({"AGENTS.md": padded}, max_lines=11) == truncated
+
+
 def test_build_repo_context_skips_invalid_missing_and_empty_files(repo_context_settings):
     repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["", 7, "MISSING.md", "EMPTY.md", "AGENTS.md"])
     provider = FakeProvider({"EMPTY.md": "", "AGENTS.md": "Loaded context"})
@@ -1521,9 +1665,13 @@ def test_build_repo_context_skips_invalid_missing_and_empty_files(repo_context_s
     assert provider.requested_paths == ["MISSING.md", "EMPTY.md", "AGENTS.md"]
 
 
-def test_build_repo_context_enforces_total_line_cap(repo_context_settings):
-    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "CONTRIBUTING.md"])
-    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 4)
+@pytest.mark.parametrize(
+    "max_lines,context_files",
+    [(4, ["AGENTS.md", "CONTRIBUTING.md"]), (18, ["AGENTS.md", " AGENTS.md ", "CONTRIBUTING.md"])],
+)
+def test_build_repo_context_enforces_total_line_cap(repo_context_settings, max_lines, context_files):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", context_files)
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", max_lines)
     provider = FakeProvider({
         "AGENTS.md": "one\ntwo\nthree",
         "CONTRIBUTING.md": "four\nfive",
@@ -1531,12 +1679,19 @@ def test_build_repo_context_enforces_total_line_cap(repo_context_settings):
 
     context = build_repo_context(provider)
 
-    assert context == (
-        "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
-        "<instruction_files>\n"
-        "</instruction_files>"
-    )
-    assert len(context.splitlines()) <= 4
+    if max_lines == 4:
+        assert context == (
+            "You are being given instruction files. Follow them as project-specific guidance when reviewing code.\n"
+            "<instruction_files>\n"
+            "</instruction_files>"
+        )
+    else:
+        assert all(line in context.splitlines() for line in ["one", "two", "three", "four", "five"])
+        assert context.count('<file path="AGENTS.md"') == 1
+        assert context.index('<file path="AGENTS.md"') < context.index('<file path="CONTRIBUTING.md"')
+    expected_paths = ["AGENTS.md"] if max_lines == 4 else ["AGENTS.md", "CONTRIBUTING.md"]
+    assert provider.requested_paths == expected_paths
+    assert len(context.splitlines()) <= max_lines
 
 
 def test_render_instruction_files_with_line_budget_returns_empty_when_wrapper_exceeds_budget():
@@ -1545,6 +1700,16 @@ def test_render_instruction_files_with_line_budget_returns_empty_when_wrapper_ex
     }, max_lines=2)
 
     assert context == ""
+
+
+@pytest.mark.parametrize("empty_content", ["", " \t\r\n\u00a0"])
+def test_render_instruction_files_with_line_budget_preserves_empty_entry_at_wrapper_limit(empty_content):
+    context = render_instruction_files_with_line_budget(
+        {"AGENTS.md": "first line\nsecond line", "EMPTY.md": empty_content}, max_lines=15
+    )
+
+    assert context.count("<file path=") == 2
+    assert len(context.splitlines()) <= 15
 
 
 @pytest.mark.parametrize("max_lines", range(0, 12))
@@ -1666,6 +1831,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             "pr_review_prompt",
             {
                 "extra_instructions": "",
+                "artifact_context": None,
                 "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
                 "previous_findings": "",
                 "skills_context": "",
@@ -1680,6 +1846,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "require_estimate_effort_to_review": True,
                 "require_risk_assessment": False,
                 "require_merge_recommendation": False,
+                "require_failure_modes": False,
                 "require_priority_files": False,
                 "num_max_findings": 3,
                 "num_pr_files": 1,
@@ -1690,6 +1857,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             "pr_description_prompt",
             {
                 "extra_instructions": "",
+                "artifact_context": None,
                 "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
                 "skills_context": "",
                 "enable_custom_labels": False,
@@ -1704,6 +1872,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             "pr_code_suggestions_prompt",
             {
                 "extra_instructions": "",
+                "artifact_context": None,
                 "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
                 "skills_context": "",
                 "focus_only_on_problems": True,
@@ -1715,6 +1884,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
             "pr_code_suggestions_prompt_not_decoupled",
             {
                 "extra_instructions": "",
+                "artifact_context": None,
                 "repo_context": render_instruction_files({"AGENTS.md": "Repo purpose"}),
                 "skills_context": "",
                 "focus_only_on_problems": True,
@@ -1724,7 +1894,9 @@ def test_github_provider_reads_from_default_branch_when_requested():
         ),
     ],
 )
-def test_prompt_templates_render_configured_repo_context(prompt_name, variables):
+@pytest.mark.parametrize("artifact_context", [None, {"instructions": "Consider CI failures."}])
+def test_prompt_templates_render_configured_repo_context(prompt_name, variables, artifact_context):
+    variables = {**variables, "artifact_context": artifact_context}
     template = getattr(get_settings(), prompt_name).system
 
     if prompt_name == "pr_review_prompt":
@@ -1745,6 +1917,8 @@ def test_prompt_templates_render_configured_repo_context(prompt_name, variables)
 
     assert "Repository context:" in rendered
     assert '<file path="AGENTS.md" scope="repo-root">' in rendered
+    if artifact_context:
+        assert "Consider CI failures." in rendered
 
 
 class RefishProvider(FakeProvider):
@@ -2031,3 +2205,354 @@ def test_selected_sibling_build_requires_allowlist(repo_context_settings):
     assert "interface" in build_repo_context(provider)
     repo_context_settings.set("CONFIG.REPO_CONTEXT_SIBLING_REPOS", [])
     assert build_repo_context(provider) == ""
+
+
+class ListingFakeProvider(FakeProvider):
+    def __init__(self, files, directories, pr_url=None):
+        super().__init__(files, pr_url)
+        self.directories = directories
+        self.listed_dirs = []
+
+    def list_repo_directory(self, dir_path: str, from_default_branch: bool = False):
+        self.listed_dirs.append((dir_path, from_default_branch))
+        return self.directories.get(dir_path, [])
+
+
+def test_load_repo_context_files_expands_single_directory_glob():
+    provider = ListingFakeProvider(
+        {"AGENTS.md": "rules", "docs/adr/0002-b.md": "B", "docs/adr/0001-a.md": "A"},
+        {"docs/adr": ["docs/adr/0002-b.md", "docs/adr/README.txt", "docs/adr/0001-a.md"]},
+    )
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider, ["AGENTS.md", "docs/adr/*.md", "docs/adr/0001-a.md"], from_default_branch=True
+    )
+
+    assert files == [("AGENTS.md", "rules"), ("docs/adr/0001-a.md", "A"), ("docs/adr/0002-b.md", "B")]
+    assert had_fetch_error is False
+    assert provider.listed_dirs == [("docs/adr", True)]
+
+
+@pytest.mark.parametrize("configured,expected", [(None, 20), (5, 5), (500, 100), ("bad", 20), (-3, 0)])
+def test_load_repo_context_files_caps_glob_matches(monkeypatch, configured, expected):
+    if configured is not None:
+        monkeypatch.setattr(get_settings().config, "repo_context_max_glob_matches", configured, raising=False)
+    else:
+        monkeypatch.delattr(get_settings().config, "repo_context_max_glob_matches", raising=False)
+    listed = [f"adr/{index:03}.md" for index in range(150)]
+    provider = ListingFakeProvider({path: path for path in listed}, {"adr": listed})
+
+    files, _ = repo_context._load_repo_context_files(provider, ["adr/*.md"], from_default_branch=True)
+
+    assert [label for label, _ in files] == listed[:expected]
+
+
+def test_repo_context_cache_key_tracks_glob_limit_only_for_glob_entries(monkeypatch):
+    config = get_settings().config
+    monkeypatch.setattr(config, "repo_context_max_glob_matches", 5, raising=False)
+    glob_key = repo_context._get_repo_context_cache_key(["docs/adr/*.md"], 500, "ref")
+    plain_key = repo_context._get_repo_context_cache_key(["AGENTS.md"], 500, "ref")
+    monkeypatch.setattr(config, "repo_context_max_glob_matches", 50, raising=False)
+
+    assert repo_context._get_repo_context_cache_key(["docs/adr/*.md"], 500, "ref") != glob_key
+    assert repo_context._get_repo_context_cache_key(["AGENTS.md"], 500, "ref") == plain_key
+
+
+AGENT_INSTRUCTION_ALTERNATIVES = ["AGENTS.md", "CLAUDE.md", ".kiro/steering/*.md"]
+
+
+@pytest.mark.parametrize(
+    "files,expected",
+    [
+        ({"AGENTS.md": "agents", "CLAUDE.md": "claude"}, [("AGENTS.md", "agents")]),
+        ({"CLAUDE.md": "claude"}, [("CLAUDE.md", "claude")]),
+        (
+            {".kiro/steering/b.md": "B", ".kiro/steering/a.md": "A"},
+            [(".kiro/steering/a.md", "A"), (".kiro/steering/b.md", "B")],
+        ),
+        ({}, []),
+    ],
+)
+def test_load_repo_context_files_uses_first_available_alternative(files, expected):
+    provider = ListingFakeProvider(files, {".kiro/steering": sorted(files, reverse=True)})
+
+    loaded, had_fetch_error = repo_context._load_repo_context_files(
+        provider, [AGENT_INSTRUCTION_ALTERNATIVES], from_default_branch=True
+    )
+
+    assert loaded == expected
+    assert had_fetch_error is False
+
+
+def test_load_repo_context_files_alternatives_skip_structured_entries_and_duplicates():
+    provider = FakeProvider({"AGENTS.md": "agents", "CLAUDE.md": "claude"})
+
+    loaded, _ = repo_context._load_repo_context_files(
+        provider,
+        ["AGENTS.md", [{"repo_id": "org/other", "file_path": "AGENTS.md"}, "AGENTS.md"], ["CLAUDE.md"]],
+        from_default_branch=True,
+    )
+
+    assert loaded == [("AGENTS.md", "agents"), ("CLAUDE.md", "claude")]
+
+
+def test_repo_context_cache_key_tracks_glob_limit_for_nested_glob_alternatives(monkeypatch):
+    config = get_settings().config
+    monkeypatch.setattr(config, "repo_context_max_glob_matches", 5, raising=False)
+    key = repo_context._get_repo_context_cache_key([AGENT_INSTRUCTION_ALTERNATIVES], 500, "ref")
+    monkeypatch.setattr(config, "repo_context_max_glob_matches", 50, raising=False)
+
+    assert repo_context._get_repo_context_cache_key([AGENT_INSTRUCTION_ALTERNATIVES], 500, "ref") != key
+
+
+def test_load_repo_context_files_rejects_wildcards_in_directory_part():
+    provider = ListingFakeProvider({}, {})
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider, ["docs/*/rules.md", "docs/**/*.md"], from_default_branch=True
+    )
+
+    assert files == []
+    assert had_fetch_error is False
+    assert provider.listed_dirs == []
+
+
+@pytest.mark.parametrize("pattern", ["/docs/*.md", "../docs/*.md", "docs/../*.md"])
+def test_load_repo_context_files_rejects_escaping_glob_directories(pattern):
+    provider = ListingFakeProvider({}, {})
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider, [pattern], from_default_branch=True
+    )
+
+    assert files == []
+    assert had_fetch_error is False
+    assert provider.listed_dirs == []
+
+
+def test_load_repo_context_files_skips_glob_when_provider_cannot_list():
+    provider = FakeProvider({"AGENTS.md": "rules"})
+    provider.list_repo_directory = lambda dir_path, from_default_branch=False: None
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider, ["AGENTS.md", "docs/adr/*.md"], from_default_branch=True
+    )
+
+    assert files == [("AGENTS.md", "rules")]
+    assert had_fetch_error is False
+
+
+def test_load_repo_context_files_reports_listing_errors():
+    provider = FakeProvider({})
+    provider.list_repo_directory = Mock(side_effect=Exception("temporary outage"))
+
+    files, had_fetch_error = repo_context._load_repo_context_files(
+        provider, ["docs/adr/*.md"], from_default_branch=True
+    )
+
+    assert files == []
+    assert had_fetch_error is True
+
+
+def test_base_provider_does_not_list_directories():
+    assert GitProvider.list_repo_directory(Mock(), "docs") is None
+
+
+def test_github_list_repo_directory_returns_files_only():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = Mock()
+    provider.repo_obj.get_contents.return_value = [
+        SimpleNamespace(type="file", path="docs/adr/0001.md"),
+        SimpleNamespace(type="dir", path="docs/adr/old"),
+    ]
+
+    assert provider.list_repo_directory("docs/adr", from_default_branch=True) == ["docs/adr/0001.md"]
+    provider.repo_obj.get_contents.assert_called_once_with("docs/adr")
+
+
+def test_github_list_repo_directory_missing_directory_is_empty():
+    provider = GithubProvider.__new__(GithubProvider)
+    provider.repo_obj = Mock()
+    provider.repo_obj.get_contents.side_effect = GithubException(404, "Not Found", None)
+
+    assert provider.list_repo_directory("docs/adr", from_default_branch=True) == []
+
+
+def test_gitlab_list_repo_directory_returns_blobs_only():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    project = Mock()
+    project.default_branch = "main"
+    project.repository_tree.return_value = [
+        {"type": "blob", "path": "docs/adr/0001.md"},
+        {"type": "tree", "path": "docs/adr/old"},
+    ]
+    provider.gl = Mock()
+    provider.gl.projects.get.return_value = project
+    provider.id_project = "group/repo"
+
+    assert provider.list_repo_directory("docs/adr", from_default_branch=True) == ["docs/adr/0001.md"]
+    project.repository_tree.assert_called_once_with(
+        path="docs/adr", ref="main", recursive=False, page=1, per_page=100)
+
+
+def test_gitlab_list_repo_directory_reads_all_pages():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    project = Mock()
+    project.default_branch = "main"
+    project.repository_tree.side_effect = [
+        [{"type": "blob", "path": f"docs/adr/{index:04}.md"} for index in range(page * 100, (page + 1) * 100)]
+        for page in range(10)
+    ]
+    provider.gl = Mock()
+    provider.gl.projects.get.return_value = project
+    provider.id_project = "group/repo"
+
+    with patch("pr_agent.git_providers.gitlab_provider.get_logger") as mock_get_logger:
+        assert provider.list_repo_directory("docs/adr", from_default_branch=True) == [
+            f"docs/adr/{index:04}.md" for index in range(1000)
+        ]
+
+    assert [call.kwargs["page"] for call in project.repository_tree.call_args_list] == list(range(1, 11))
+    mock_get_logger.return_value.warning.assert_called_once_with(
+        "GitLab directory listing stopped at 1,000 entries: docs/adr"
+    )
+
+
+def test_gitlab_list_repo_directory_missing_directory_is_empty():
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.gl = Mock()
+    provider.gl.projects.get.return_value.repository_tree.side_effect = GitlabGetError("Not Found", 404)
+    provider.id_project = "group/repo"
+
+    assert provider.list_repo_directory("docs/adr", from_default_branch=True) == []
+
+
+def test_build_repo_context_stops_loading_after_truncated_file(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "CONTRIBUTING.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
+    provider = FakeProvider({
+        "AGENTS.md": "\n".join(f"line {index}" for index in range(20)),
+        "CONTRIBUTING.md": "This file should not be fetched.",
+    })
+
+    context = build_repo_context(provider)
+
+    assert TRUNCATION_MARKER in context
+    assert "CONTRIBUTING.md" not in context
+    assert provider.requested_paths == ["AGENTS.md"]
+
+
+def test_build_repo_context_stops_fetching_glob_alternative_after_budget(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", [["docs/adr/*.md"]])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
+    provider = ListingFakeProvider(
+        {
+            "docs/adr/0001.md": "\n".join(f"line {index}" for index in range(20)),
+            "docs/adr/0002.md": "This file should not be fetched.",
+        },
+        {"docs/adr": ["docs/adr/0001.md", "docs/adr/0002.md"]},
+    )
+
+    context = build_repo_context(provider)
+
+    assert TRUNCATION_MARKER in context
+    assert provider.requested_paths == ["docs/adr/0001.md"]
+
+
+def test_load_repo_context_files_reads_bracketed_path_literally():
+    provider = ListingFakeProvider({"src/app/[locale]/AGENTS.md": "rules"}, {})
+
+    files, _ = repo_context._load_repo_context_files(
+        provider, ["src/app/[locale]/AGENTS.md"], from_default_branch=True
+    )
+
+    assert files == [("src/app/[locale]/AGENTS.md", "rules")]
+    assert provider.listed_dirs == []
+
+
+def test_build_repo_context_does_not_fetch_after_exact_budget_fill(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "CONTRIBUTING.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
+    provider = FakeProvider({
+        "AGENTS.md": "first line\nsecond line",
+        "CONTRIBUTING.md": "This file should not be fetched.",
+    })
+
+    context = build_repo_context(provider)
+
+    assert "first line" in context
+    assert "second line" in context
+    assert TRUNCATION_MARKER not in context
+    assert "CONTRIBUTING.md" not in context
+    assert provider.requested_paths == ["AGENTS.md"]
+
+
+@pytest.mark.parametrize(
+    "content,truncated",
+    [("\n".join(f"line {index}" for index in range(20)), True), ("first line\nsecond line", False)],
+    ids=["truncated", "exact-fill"],
+)
+def test_build_repo_context_skips_unused_globs_and_caches_result(repo_context_settings, content, truncated):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "docs/adr/*.md", "docs/rules/*.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
+    provider = FakeProvider({"AGENTS.md": content})
+    provider.list_repo_directory = Mock(side_effect=RuntimeError("unused directory is unavailable"))
+
+    first_context = build_repo_context(provider)
+    second_context = build_repo_context(provider)
+
+    assert first_context == second_context
+    assert 'path="AGENTS.md"' in first_context
+    assert (TRUNCATION_MARKER in first_context) is truncated
+    assert provider.requested_paths == ["AGENTS.md"]
+    provider.list_repo_directory.assert_not_called()
+
+
+def test_build_repo_context_stops_listing_after_first_glob_fills_budget(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["docs/adr/*.md", "docs/rules/*.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 10)
+    provider = ListingFakeProvider(
+        {
+            "docs/adr/0001.md": "\n".join(f"line {index}" for index in range(20)),
+            "docs/adr/0002.md": "This file should not be fetched.",
+        },
+        {"docs/adr": ["docs/adr/0002.md", "docs/adr/0001.md"], "docs/rules": []},
+    )
+
+    context = build_repo_context(provider)
+
+    assert TRUNCATION_MARKER in context
+    assert provider.requested_paths == ["docs/adr/0001.md"]
+    assert provider.listed_dirs == [("docs/adr", True)]
+
+
+def test_build_repo_context_skips_glob_when_only_wrapper_lines_fit(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "docs/adr/*.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 15)
+    provider = ListingFakeProvider(
+        {"AGENTS.md": "first line\nsecond line", "docs/adr/0001.md": "unusable content"},
+        {"docs/adr": ["docs/adr/0001.md"]},
+    )
+
+    context = build_repo_context(provider)
+
+    assert "second line" in context
+    assert "docs/adr/0001.md" not in context
+    assert provider.requested_paths == ["AGENTS.md"]
+    assert provider.listed_dirs == []
+
+
+def test_build_repo_context_retries_reached_glob_listing_errors(repo_context_settings):
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_FILES", ["AGENTS.md", "docs/adr/*.md"])
+    repo_context_settings.set("CONFIG.REPO_CONTEXT_MAX_LINES", 500)
+    provider = FakeProvider({"AGENTS.md": "rules", "docs/adr/0001.md": "ADR instructions"})
+    provider.list_repo_directory = Mock(side_effect=[RuntimeError("temporary outage"), ["docs/adr/0001.md"]])
+
+    first_context = build_repo_context(provider)
+    second_context = build_repo_context(provider)
+
+    assert "rules" in first_context
+    assert "ADR instructions" not in first_context
+    assert "ADR instructions" in second_context
+    assert provider.requested_paths == ["AGENTS.md", "AGENTS.md", "docs/adr/0001.md"]
+    assert provider.list_repo_directory.call_count == 2

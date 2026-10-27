@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
@@ -9,7 +10,7 @@ from starlette.background import BackgroundTasks
 from starlette.responses import Response
 from starlette_context import request_cycle_context
 
-from pr_agent.servers import bitbucket_server_webhook, gitea_app, gitlab_webhook
+from pr_agent.servers import bitbucket_app, bitbucket_server_webhook, gitea_app, gitlab_webhook
 
 SENTINEL = "private-title-sentinel"
 
@@ -32,6 +33,26 @@ class _Request:
 
     async def json(self):
         return json.loads(self._body)
+
+
+async def test_bitbucket_cloud_rejects_invalid_jwt_before_parsing():
+    parsed = []
+
+    class _CloudRequest:
+        headers = {"authorization": "JWT not-a-jwt"}
+        method = "POST"
+        url = SimpleNamespace(path="/webhook", query="")
+
+        async def json(self):
+            parsed.append(True)
+            return {}
+
+    tasks = BackgroundTasks()
+    result = await bitbucket_app.handle_github_webhooks(tasks, _CloudRequest())
+
+    assert result == "OK"
+    assert parsed == []
+    assert not tasks.tasks
 
 
 async def test_gitea_rejects_bad_signature_before_parsing(monkeypatch):
@@ -59,7 +80,7 @@ async def test_gitlab_rejects_bad_token_before_parsing(monkeypatch):
 async def test_gitlab_does_not_log_the_payload(monkeypatch):
     logger = _Logger()
     monkeypatch.setattr(gitlab_webhook, "get_logger", lambda: logger)
-    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", lambda *args: None)
+    monkeypatch.setattr(gitlab_webhook, "authenticate_gitlab_webhook", AsyncMock(return_value=None))
     request = _Request(json.dumps({"object_kind": "push", "title": SENTINEL}).encode())
     tasks = BackgroundTasks()
 

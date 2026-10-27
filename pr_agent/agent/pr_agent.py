@@ -8,16 +8,16 @@ import dynaconf
 from opentelemetry.trace import StatusCode
 from starlette_context import context, request_cycle_context
 
+from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
-from pr_agent.algo.artifacts import reapply_artifact_context
 from pr_agent.algo.cli_args import CliArgs
 from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
 from pr_agent.algo.run_details import get_run_details, init_run_details
-from pr_agent.algo.utils import update_settings_from_args
+from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.git_provider import (
@@ -99,28 +99,26 @@ def _publish_incomplete_files_comment(
 
     try:
         comments = provider.get_issue_comments_newest_first()
+        for comment in comments:
+            try:
+                body = provider._get_comment_body(comment)
+            except Exception:
+                # Ignore comments whose bodies cannot be read. Continue looking
+                # for a verifiable PR-Agent marker and publish if none can be
+                # confirmed.
+                get_logger().warning(
+                    "Failed to read an existing incomplete-files notice; continuing"
+                )
+                continue
+            if not comment_matches_identity(body, error.notice_marker):
+                continue
+            try:
+                if provider.is_comment_authored_by_pr_agent(comment):
+                    return
+            except Exception:
+                get_logger().exception("Failed to verify the author of an incomplete-files notice")
     except Exception:
         get_logger().exception("Failed to inspect existing incomplete-files notices")
-        comments = []
-
-    for comment in comments:
-        try:
-            body = provider._get_comment_body(comment)
-        except Exception:
-            # Ignore comments whose bodies cannot be read. Continue looking
-            # for a verifiable PR-Agent marker and publish if none can be
-            # confirmed.
-            get_logger().warning(
-                "Failed to read an existing incomplete-files notice; continuing"
-            )
-            continue
-        if not comment_matches_identity(body, error.notice_marker):
-            continue
-        try:
-            if provider.is_comment_authored_by_pr_agent(comment):
-                return
-        except Exception:
-            get_logger().exception("Failed to verify the author of an incomplete-files notice")
 
     body = add_comment_identity(
         error.notice,
@@ -132,7 +130,7 @@ def _publish_incomplete_files_comment(
     except Exception:
         get_logger().exception("Failed to publish the incomplete-files notice")
 
-def _split_command(command: str) -> list[tuple[str, bool]]:
+def _split_command(command: str, *, single_quotes: bool = True) -> list[tuple[str, bool]]:
     """Split an auto command and retain whether each token was quoted.
 
     ``shlex.split`` removes quote markers before setting overrides are handed to
@@ -144,7 +142,8 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
     Apostrophes inside a word remain literal, matching the legacy request parser
     (for example, ``What's``). An apostrophe at a token boundary or immediately
     after ``=`` still starts a single-quoted value, as used by the documented
-    webhook configuration examples.
+    webhook configuration examples. Raw request parsing disables single quotes
+    to match its shlex lexer.
     """
     tokens = []
     token = []
@@ -182,7 +181,7 @@ def _split_command(command: str) -> list[tuple[str, bool]]:
                 quote = character
                 value_was_quoted = equals_seen
                 token_started = True
-            elif character == "'" and (not token_started or command[index - 1] == "="):
+            elif single_quotes and character == "'" and (not token_started or command[index - 1] == "="):
                 quote = character
                 value_was_quoted = equals_seen
                 token_started = True
@@ -227,9 +226,43 @@ def parse_command(command: str) -> list[str]:
     for argument, value_was_quoted in token_args:
         if value_was_quoted and argument.startswith("--") and "=" in argument:
             key, value = argument.split("=", 1)
-            argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
+            _, parsed = _fix_key_value(key, value)
+            # A quoted list such as --ignore.glob="['*.py']" is the user's explicit list value,
+            # so JSON-encoding it would collapse it into a string and silently disable list
+            # settings. Other quoted values keep being encoded so update_settings_from_args
+            # cannot coerce "true" to a boolean or a colon-prefixed value to a mapping.
+            if not isinstance(parsed, list):
+                argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
         args.append(argument)
     return [action] + args
+
+
+def _reencode_quoted_setting_args(command: str, args: list[str]) -> list[str]:
+    """Keep quoted setting values as strings in raw command strings.
+
+    The raw request parser strips quotes before ``update_settings_from_args``
+    hands values to ``yaml.safe_load``, which coerces ``"true"`` to a boolean or
+    a colon-prefixed string to a mapping. When the original command quoted a
+    value that YAML would coerce to a non-string, re-encode it as JSON so the
+    applied setting keeps the string the user typed, matching ``parse_command``.
+    Plain scalars such as ``--pr_reviewer.num_max_findings=3`` keep their normal
+    type conversion. Quoted lists keep their list type.
+    Match quote flags by argument position so repeated values retain their own types.
+    """
+    try:
+        tokens = _split_command(command, single_quotes=False)[1:]
+    except ValueError:
+        tokens = []
+    encoded = []
+    for index, argument in enumerate(args):
+        value_was_quoted = index < len(tokens) and tokens[index][0] == argument and tokens[index][1]
+        if value_was_quoted and argument.startswith("--") and "=" in argument:
+            key, value = argument.split("=", 1)
+            _, parsed = _fix_key_value(key, value)
+            if not isinstance(parsed, (str, list)):
+                argument = f"{key}={json.dumps(value, ensure_ascii=False)}"
+        encoded.append(argument)
+    return encoded
 
 
 def _validation_args(args: list[str]) -> list[str]:
@@ -249,7 +282,7 @@ def prepare_command(command: str) -> list[str]:
 
     Apply settings now so they can control repository loading. Return the same
     argv so ``PRAgent`` reapplies overrides after repository settings are loaded.
-    Quoted setting values retain their string type.
+    Quoted setting values retain their string type; quoted lists keep their list type.
     """
     command_args = parse_command(command)
     if not command_args:
@@ -306,7 +339,7 @@ class PRAgent:
 
     async def _handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
-    ) -> bool:
+    ) -> bool | RequestOutcome:
         # Exceptions raised inside are caught below, but a BaseException (e.g. the
         # CancelledError a webhook timeout raises) still escapes the span, and the SDK
         # would auto-record its message and stacktrace — request content, so opt-in.
@@ -347,11 +380,13 @@ class PRAgent:
 
     async def _run_command(
         self, pr_url, request, notify, span, propagate_tool_errors: bool | None = None
-    ) -> bool:
-        # First, apply repo specific settings if exists
+    ) -> bool | RequestOutcome:
+        # Evaluate repository policy before command overrides, notifications or tools.
         apply_repo_settings(pr_url)
+        if enforce_request_policy(pr_url) is False:
+            span.set_attribute("pr_agent.request.ignored", True)
+            return RequestOutcome.SKIPPED
 
-        # Then, apply user specific settings if exists
         if isinstance(request, str):
             lexer = shlex.shlex(request, posix=True)
             lexer.whitespace_split = True
@@ -361,12 +396,14 @@ class PRAgent:
             # comment, which silently truncated questions such as "/ask what does #123 do?".
             # This input is a single already-parsed command, never a shell script.
             lexer.commenters = ''
-            action, *args = list(lexer)
+            action, *raw_args = list(lexer)
+            args = _reencode_quoted_setting_args(request, raw_args)
         else:
-            action, *args = request
+            action, *raw_args = request
+            args = raw_args
 
         # validate args
-        is_valid, arg = CliArgs.validate_user_args(_validation_args(args))
+        is_valid, arg = CliArgs.validate_user_args(_validation_args(raw_args))
         if not is_valid:
             get_logger().error(
                 f"CLI argument for param '{arg}' is forbidden. Use instead a configuration file."
@@ -419,8 +456,6 @@ class PRAgent:
                 span.set_attribute("error.message", f"Unknown command: {action}")
             return False
 
-        reapply_artifact_context()
-
         # Only after validation: an unknown action is arbitrary user input and
         # must not become a span name, span attribute, or metric label.
         span.update_name(f"pr_agent {action}")
@@ -465,7 +500,11 @@ class PRAgent:
 
     async def handle_request(
         self, pr_url, request, notify=None, propagate_tool_errors: bool | None = None
-    ) -> bool:
+    ) -> bool | RequestOutcome:
+        """Return True, False, or RequestOutcome.SKIPPED without raising command errors.
+
+        Callers must check for SKIPPED before reactions or other command follow-up.
+        """
         try:
             if propagate_tool_errors is None:
                 return await self._handle_request(pr_url, request, notify)
@@ -475,7 +514,7 @@ class PRAgent:
         except Exception:
             # _handle_request already catches command failures and annotates the span;
             # this is the outer contract every caller relies on — webhook handlers and
-            # the router get False, never an exception, even if telemetry itself fails.
+            # the router get False for failures. Policy skips are a distinct return value.
             get_logger().exception("Failed to process the command.")
             return False
         finally:

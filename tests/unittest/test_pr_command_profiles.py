@@ -112,13 +112,27 @@ def test_missing_dynaconf_key_uses_the_default_profile(monkeypatch):
     assert server_utils.get_pr_commands("github_app") == DEFAULT_PR_COMMANDS["github_app"]
 
 
-@pytest.mark.parametrize("override", [[], "", ["/custom"]])
+@pytest.mark.parametrize("override", [[], ["/custom"]])
 def test_explicit_pr_command_overrides_are_preserved(monkeypatch, override):
     configured = copy.deepcopy(override)
     settings = _Settings({"github_app.pr_commands": configured})
     monkeypatch.setattr(server_utils, "get_settings", lambda: settings)
 
     assert server_utils.get_pr_commands("github_app") is configured
+
+
+def test_empty_string_pr_command_override_is_normalized(monkeypatch):
+    settings = _Settings({"github_app.pr_commands": ""})
+    monkeypatch.setattr(server_utils, "get_settings", lambda: settings)
+
+    assert server_utils.get_pr_commands("github_app") == []
+
+
+def test_scalar_pr_command_override_is_dispatchable(monkeypatch):
+    settings = _Settings({"github_app.pr_commands": "/review"})
+    monkeypatch.setattr(server_utils, "get_settings", lambda: settings)
+
+    assert server_utils.get_pr_commands("github_app") == ["/review"]
 
 
 def test_provider_sections_no_longer_duplicate_pr_command_defaults():
@@ -594,3 +608,27 @@ async def test_bitbucket_app_push_uses_shared_dedupe_slot(monkeypatch, proceed):
     assert len(calls) == int(proceed)
     if proceed:
         assert calls[0][0] == ["/review"]
+
+
+async def test_gitlab_auto_commands_invalidate_cached_empty_diffs(monkeypatch):
+    from pr_agent.git_providers.gitlab_provider import GitLabProvider
+
+    settings = copy.deepcopy(global_settings)
+    settings.set("config.disable_auto_feedback", False)
+    provider = GitLabProvider.__new__(GitLabProvider)
+    provider.diff_files = None
+    api_url = "https://gitlab.example/group/repo/-/merge_requests/7"
+    seen = []
+
+    class Agent:
+        async def handle_request(self, _url, _command):
+            seen.append(provider.diff_files)
+            provider.diff_files = []
+            return True
+
+    monkeypatch.setattr(gitlab_webhook, "should_process_pr_logic", lambda _: True)
+    monkeypatch.setattr(gitlab_webhook, "get_pr_commands", lambda _: ["/review", "/improve"])
+    with request_cycle_context({"settings": settings, "git_provider": {api_url: provider}}):
+        await gitlab_webhook._perform_commands_gitlab("pr_commands", Agent(), api_url, {}, {})
+
+    assert seen == [None, None]

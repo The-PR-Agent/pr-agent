@@ -91,7 +91,7 @@ def test_e2e_run_bitbucket_app():
         # delete the branch
         pr.decline()
         repo.branches.delete(new_branch)
-        raise AssertionError()
+        raise AssertionError() from e
 
 
 if __name__ == '__main__':

@@ -21,6 +21,47 @@ def _provider_with_result(result=None, error=None):
     return provider
 
 
+def test_revision_content_is_reused_across_command_scope_resets():
+    provider = _provider_with_result(result=b"file content")
+    provider.repo = "owner/repo"
+    file = SimpleNamespace(filename="src/file.py")
+
+    for _ in range(3):
+        assert provider._get_pr_file_content(file, "a" * 40) == "file content"
+        provider.reset_diff_cache_for_command()
+
+    provider._get_repo().get_contents.assert_called_once_with("src/file.py", ref="a" * 40)
+
+
+def test_revision_content_cache_keys_include_repository_sha_and_old_path():
+    provider = _provider_with_result(result=b"file content")
+    provider.repo = "owner/repo"
+    file = SimpleNamespace(filename="src/new.py")
+
+    assert provider._get_pr_file_content(file, "a" * 40) == "file content"
+    assert provider._get_pr_file_content(file, "b" * 40) == "file content"
+    assert provider._get_pr_file_content(file, "a" * 40, path="src/old.py") == "file content"
+    provider.repo = "other/repo"
+    assert provider._get_pr_file_content(file, "a" * 40) == "file content"
+
+    assert provider._get_repo().get_contents.call_count == 4
+
+
+def test_revision_content_does_not_cache_failed_empty_reads():
+    provider = _provider_with_result()
+    provider.repo = "owner/repo"
+    file = SimpleNamespace(filename="src/file.py")
+    provider._get_repo().get_contents.side_effect = [
+        GithubException(500, {"message": "temporary failure"}, {}),
+        SimpleNamespace(decoded_content=b"recovered"),
+    ]
+
+    assert provider._get_pr_file_content(file, "a" * 40) == ""
+    assert provider._get_pr_file_content(file, "a" * 40) == "recovered"
+    assert provider._get_pr_file_content(file, "a" * 40) == "recovered"
+    assert provider._get_repo().get_contents.call_count == 2
+
+
 def test_get_pr_file_content_keeps_default_leniency():
     provider_error = GithubException(500, {"message": "upstream failure"}, {})
     provider = _provider_with_result(error=provider_error)

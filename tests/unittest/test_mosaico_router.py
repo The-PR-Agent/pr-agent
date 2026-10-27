@@ -5,6 +5,8 @@ Pins: each path returns a string and NEVER raises; no-files/no-suggestions/empty
 with no exception escaping.
 
 asyncio_mode=auto."""
+import asyncio
+
 import aiohttp
 import pytest
 
@@ -22,6 +24,20 @@ from pr_agent.mosaico.dispatch import (
     route_and_run,
     route_and_run_result,
 )
+
+
+def _patch_questions(monkeypatch, question_class):
+    from pr_agent.agent import pr_agent
+    from pr_agent.mosaico import provider_registration  # noqa: F401
+
+    class CapturedQuestion(question_class):
+        async def run(self):
+            result = await super().run()
+            get_settings().set("data.answer", (self.prediction or "").strip())
+            return result
+
+    monkeypatch.setitem(pr_agent.command2class, "ask", CapturedQuestion)
+
 
 PR_URL = "https://github.com/org/repo/pull/123"
 DEAD_PR_URL = "https://github.com/org/repo/pull/999999999"
@@ -385,11 +401,12 @@ class TestAskWithContext:
 
         async def fail_handle_request(self, *a, **k):
             pr_agent_used["called"] = True
-            return True
+            return await original_handle_request(self, *a, **k)
 
         monkeypatch.setattr(dispatch, "_fetch_public_diff", fake_fetch_public_diff)
-        monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", FakePRQuestions)
+        _patch_questions(monkeypatch, FakePRQuestions)
         from pr_agent.agent.pr_agent import PRAgent
+        original_handle_request = PRAgent.handle_request
         monkeypatch.setattr(PRAgent, "handle_request", fail_handle_request)
 
         out = await route_and_run(f"what does this change? {PR_URL}")
@@ -397,7 +414,7 @@ class TestAskWithContext:
         # After Fix B path (a) routes through supplied-diff target, not the raw PR URL.
         assert captured["pr_url"] == "mosaico://supplied-diff"
         assert global_settings.get("CONFIG.GIT_PROVIDER") == "mosaico_diff"
-        assert pr_agent_used["called"] is False
+        assert pr_agent_used["called"] is True
 
     @pytest.mark.asyncio
     async def test_supplied_diff_question_runs_prquestions(self, monkeypatch, restore_settings):
@@ -412,7 +429,7 @@ class TestAskWithContext:
             async def run(self):
                 return ""
 
-        monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", FakePRQuestions)
+        _patch_questions(monkeypatch, FakePRQuestions)
 
         out = await route_and_run(f"what changed here?\n{SAMPLE_DIFF}")
         assert out == "DIFF ANSWER"
@@ -441,10 +458,11 @@ class TestPathFreeText:
 
         async def fail_handle_request(self, *a, **k):
             pr_agent_used["called"] = True
-            return True
+            return await original_handle_request(self, *a, **k)
 
-        monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", FakePRQuestions)
+        _patch_questions(monkeypatch, FakePRQuestions)
         from pr_agent.agent.pr_agent import PRAgent
+        original_handle_request = PRAgent.handle_request
         monkeypatch.setattr(PRAgent, "handle_request", fail_handle_request)
 
         out = await route_and_run("what does this codebase do?")
@@ -604,7 +622,7 @@ class TestDefensiveCapture:
                 raise RuntimeError("boom")
 
         monkeypatch.setattr(dispatch, "_fetch_public_diff", fake_fetch_public_diff)
-        monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", RaisingPRQuestions)
+        _patch_questions(monkeypatch, RaisingPRQuestions)
         # Use a PR URL so the ask path (a) actually runs PRQuestions (free-text no longer
         # invokes it after Fix B); a raise there -> error fallback.
         out = await route_and_run(f"what is the meaning of this? {PR_URL}")
@@ -700,6 +718,53 @@ class TestFetchPublicDiff:
         result = await dispatch._fetch_public_diff("https://github.com/o/r/pull/1")
         assert len(result) == 200000
 
+    @pytest.mark.asyncio
+    async def test_fetch_deadline_covers_streamed_body(self, monkeypatch):
+        stream_started = asyncio.Event()
+        stream_release = asyncio.Event()
+        stream_cancelled = False
+
+        class BlockingResp(_FakeResp):
+            exited = False
+
+            async def iter_chunked(self, n):
+                nonlocal stream_cancelled
+                stream_started.set()
+                try:
+                    await stream_release.wait()
+                    yield b"diff --git a/a b/a\n"
+                except asyncio.CancelledError:
+                    stream_cancelled = True
+                    raise
+
+            async def __aexit__(self, *args):
+                self.exited = True
+                return await super().__aexit__(*args)
+
+        class ObservedSession(_FakeSession):
+            exited = False
+
+            async def __aexit__(self, *args):
+                self.exited = True
+                return await super().__aexit__(*args)
+
+        response = BlockingResp(200, b"")
+        session = ObservedSession(response)
+        monkeypatch.setattr(dispatch, "_url_is_safe", _always_safe)
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: session)
+        monkeypatch.setattr(dispatch, "_DIFF_FETCH_TIMEOUT_S", 0.05)
+
+        try:
+            async with asyncio.timeout(0.5):
+                result = await dispatch._fetch_public_diff("https://github.com/o/r/pull/1")
+            assert stream_started.is_set()
+            assert result is None
+            assert stream_cancelled
+            assert response.exited
+            assert session.exited
+        finally:
+            stream_release.set()
+
 
 # ---------------------------------------------------------------------------
 # SSRF guard unit tests
@@ -781,6 +846,52 @@ class TestFetchPublicDiffSSRF:
         result = await dispatch._fetch_public_diff(f"https://{PUBLIC_HOST}/o/r/pull/1")
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_fetch_deadline_covers_redirect_validation(self, monkeypatch):
+        redirect_validation_started = asyncio.Event()
+        redirect_validation_release = asyncio.Event()
+        redirect_validation_cancelled = False
+        requested = []
+
+        async def blocking_second_hop(url):
+            nonlocal redirect_validation_cancelled
+            if url.endswith("/next"):
+                redirect_validation_started.set()
+                try:
+                    await redirect_validation_release.wait()
+                except asyncio.CancelledError:
+                    redirect_validation_cancelled = True
+                    raise
+            return True
+
+        class ObservedSession(_FakeSession):
+            exited = False
+
+            def request(self, method, url, allow_redirects=True):
+                requested.append((method, url, allow_redirects))
+                return super().request(method, url, allow_redirects=allow_redirects)
+
+            async def __aexit__(self, *args):
+                self.exited = True
+                return await super().__aexit__(*args)
+
+        response = _FakeResp(302, b"", headers={"Location": "https://github.com/next"})
+        session = ObservedSession(response)
+        monkeypatch.setattr(dispatch, "_url_is_safe", blocking_second_hop)
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: session)
+        monkeypatch.setattr(dispatch, "_DIFF_FETCH_TIMEOUT_S", 0.05)
+
+        try:
+            async with asyncio.timeout(0.5):
+                result = await dispatch._fetch_public_diff("https://github.com/o/r/pull/1")
+            assert redirect_validation_started.is_set()
+            assert result is None
+            assert redirect_validation_cancelled
+            assert session.exited
+            assert requested == [("GET", "https://github.com/o/r/pull/1.diff", False)]
+        finally:
+            redirect_validation_release.set()
+
 
 # ---------------------------------------------------------------------------
 # Regression: production default must NEVER publish to the real PR
@@ -826,9 +937,7 @@ class TestPublishOutputForced:
         """_run_ask must set CONFIG.PUBLISH_OUTPUT=False before calling PRQuestions.run()
         so that the publish guards in run() never publish_comment to the real PR.
 
-        PRQuestions.parse_args() does a plain join (no --config.* parsing), so the
-        arg-injection trick used by _run_pr_agent cannot apply; a settings.set() is
-        required instead."""
+        The agent applies the explicit non-publishing override after repository settings."""
         publish_output_at_run_time = {}
 
         class CapturingPRQuestions:
@@ -842,9 +951,12 @@ class TestPublishOutputForced:
                     "CONFIG.PUBLISH_OUTPUT", True
                 )
 
-        monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", CapturingPRQuestions)
+        _patch_questions(monkeypatch, CapturingPRQuestions)
 
+        from pr_agent.agent import pr_agent
         from pr_agent.mosaico.dispatch import _run_ask
+        monkeypatch.setattr(pr_agent, "apply_repo_settings", lambda _url: None)
+        monkeypatch.setattr(pr_agent, "enforce_request_policy", lambda _url: None)
         # Force global default to True (production default) so the test would fail
         # if _run_ask does NOT explicitly override it.
         global_settings.set("CONFIG.PUBLISH_OUTPUT", True)
@@ -865,7 +977,11 @@ def _routed(monkeypatch):
     seen = {"fetched": []}
 
     async def fake_handle_request(self, pr_url, request, notify=None):
-        seen["verb"] = next((a.lstrip("/") for a in request if a.startswith("/")), None)
+        seen["verb"] = request[0].lstrip("/")
+        if seen["verb"] == "ask":
+            from pr_agent.algo.utils import decode_user_text_args
+            seen["question"] = decode_user_text_args([request[1]])
+            get_settings().set("data.answer", "ROUTED")
         mosaico_input = global_settings.get("MOSAICO.INPUT") or {}
         seen["files"] = [f.filename for f in mosaico_input.get("files", [])]
         seen["title"] = mosaico_input.get("title")
@@ -890,7 +1006,7 @@ def _routed(monkeypatch):
 
     from pr_agent.agent.pr_agent import PRAgent
     monkeypatch.setattr(PRAgent, "handle_request", fake_handle_request)
-    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions", FakePRQuestions)
+    _patch_questions(monkeypatch, FakePRQuestions)
     monkeypatch.setattr(dispatch, "_fetch_public_diff", fake_fetch_public_diff)
     return seen
 
