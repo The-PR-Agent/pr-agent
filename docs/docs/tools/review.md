@@ -236,7 +236,8 @@ for the authoritative default values.
   <tr>
     <td><b>blast_radius_churn_ignore_pattern</b></td>
     <td>Extra regex over repo-relative paths whose changes do not count as churn, added to the built-in list.
-    An invalid pattern is logged and ignored. Cannot be set from a comment.</td>
+    An invalid pattern is logged and ignored. Host configuration only: a repository settings file or a comment
+    cannot set it, because it runs over every changed path.</td>
   </tr>
 </table>
 

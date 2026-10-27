@@ -66,7 +66,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "ollama": frozenset({"api_base"}),
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
-    "pr_reviewer": frozenset({"publish_error_details"}),
+    # blast_radius_churn_ignore_pattern runs over every changed path, and a pull request
+    # chooses those paths, so a backtracking-prone pattern must be the operator's choice.
+    "pr_reviewer": frozenset({"publish_error_details", "blast_radius_churn_ignore_pattern"}),
     # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who

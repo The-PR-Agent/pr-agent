@@ -236,6 +236,23 @@ def test_repo_settings_can_override_ai_timeout(monkeypatch, settings_snapshot):
     assert settings.get("config.ai_timeout") == 600
 
 
+def test_repo_settings_cannot_set_blast_radius_churn_ignore_pattern(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[pr_reviewer]\nblast_radius_churn_ignore_pattern = "(a+)+$"\nnum_max_findings = 11\n'
+    )
+    _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    pattern_before = _section(settings, "pr_reviewer").get("blast_radius_churn_ignore_pattern")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("blast_radius_churn_ignore_pattern") == pattern_before
+    assert pr_reviewer.get("num_max_findings") == 11
+
+
 def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n')
     captured = _install_provider(monkeypatch, provider)
