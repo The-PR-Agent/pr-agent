@@ -587,6 +587,7 @@ class PRCodeSuggestions:
                 if (
                     not isinstance(e, IncompleteProviderPullRequestFilesError)
                     and not self._output_published
+                    and get_settings().pr_code_suggestions.get("publish_failure_comment", True)
                 ):
                     try:
                         if not self.progress_response:

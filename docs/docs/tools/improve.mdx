@@ -92,11 +92,13 @@ pr_commands = [
 
 [pr_code_suggestions]
 num_code_suggestions_per_chunk = ...
+publish_failure_comment = true
 ...
 ```
 
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
 - The `[pr_code_suggestions]` section contains the configurations for the `improve` tool you want to edit (if any)
+- Set `publish_failure_comment = false` to suppress failure comments while preserving the command failure status.
 
 ### Incremental suggestions
 

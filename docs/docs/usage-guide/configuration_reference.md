@@ -269,6 +269,7 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 | `enable_help_text` | false |  |
 | `enable_chat_text` | false |  |
 | `persistent_comment` | true |  |
+| `publish_failure_comment` | true | Set to false to suppress /improve failure comments without changing the command's failure status. |
 | `max_history_len` | 4 |  |
 | `publish_output_no_suggestions` | true |  |
 | `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
