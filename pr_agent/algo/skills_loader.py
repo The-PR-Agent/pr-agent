@@ -277,10 +277,7 @@ def format_skills_context(skills: list[Skill], max_tokens: int) -> str:
     sep_tokens = _count_tokens(separator)
     marker_tokens = _count_tokens(truncate_marker)
     if max_tokens < marker_tokens:
-        marker = clip_tokens(truncate_marker, max_tokens, add_three_dots=False)
-        while marker and _count_tokens(marker) > max_tokens:
-            marker = marker[:-1]
-        return marker
+        return ""
     pieces: list[str] = []
     used = 0
     for skill in skills:

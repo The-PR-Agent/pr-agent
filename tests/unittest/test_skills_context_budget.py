@@ -25,7 +25,7 @@ def test_the_truncated_context_stays_within_budget(budget):
 def test_tiny_budget_stays_within_budget_even_when_marker_does_not_fit():
     out = format_skills_context([BIG], 1)
 
-    assert _tokens(out) <= 1
+    assert out == ""
 
 
 @pytest.mark.parametrize("budget", [20, 50, 200, 1000])
