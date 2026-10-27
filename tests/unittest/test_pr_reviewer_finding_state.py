@@ -1849,3 +1849,35 @@ def test_render_previous_findings_uses_exact_json_length_for_unicode_and_escapes
     shorter = json.loads(render_previous_findings(state, len(full) - 1))
     assert [entry["relevant_file"] for entry in shorter] == ["src/中文.py"]
     assert shorter[0]["issue_content"] == 'A "quoted" line\nEmoji 🙂'
+
+
+@pytest.mark.parametrize("threshold,expect_resolution", [(0, True), (50, False)])
+def test_low_confidence_filtering_prevents_resolution(monkeypatch, threshold, expect_resolution):
+    settings = _settings(monkeypatch)
+    monkeypatch.setattr(settings.pr_reviewer, "min_finding_confidence", threshold, raising=False)
+    previous = reconcile_review_findings(
+        None,
+        [_finding()],
+        allow_resolution=True,
+        head_sha="head-1",
+        timestamp="2026-01-01T00:00:00Z",
+    ).state
+    old_body = f"{PRReviewHeader.REGULAR.value} 🔍\n\nold review\n\n{serialize_review_state(previous)}"
+    provider = MagicMock()
+    provider.last_commit_id = "head-2"
+    provider.get_issue_comments.return_value = [SimpleNamespace(body=old_body)]
+    provider.get_diff_files.return_value = []
+    provider.is_supported.side_effect = lambda capability: capability == "get_issue_comments"
+    reviewer = _reviewer(provider)
+    low_confidence = {"relevant_file": "other.py", "issue_content": "maybe a problem", "confidence": 10}
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.load_yaml",
+              return_value={"review": {"key_issues_to_review": [low_confidence]}}),
+        patch("pr_agent.tools.pr_reviewer.github_action_output"),
+        patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="review"),
+    ):
+        reviewer._prepare_pr_review()
+
+    assert reviewer.low_confidence_filtered_count == (0 if expect_resolution else 1)
+    assert bool(reviewer._review_state_result.resolved_ids) is expect_resolution

@@ -2230,3 +2230,49 @@ async def test_prepare_pr_review_pushes_outputs_when_publishing():
     assert push.call_args.args[0] == "review"
     assert push.call_args.kwargs["payload"] == {"score": "1"}
     assert push.call_args.kwargs["markdown"] == "original review"
+
+
+@pytest.mark.parametrize(
+    "threshold,expected_contents,expected_dropped",
+    [
+        (0, ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        (60, ["high", "none", "string", "garbage", "float-string", "out-of-range"], 2),
+        (80, ["high", "none", "garbage", "float-string", "out-of-range"], 3),
+        ("not-a-number", ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+    ],
+)
+def test_filter_low_confidence_findings(monkeypatch, threshold, expected_contents, expected_dropped):
+    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", threshold, raising=False)
+    reviewer = _make_reviewer()
+    data = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="high", confidence=95),
+        _key_issue(issue_content="low", confidence=40),
+        _key_issue(issue_content="none"),
+        _key_issue(issue_content="string", confidence=" 70 "),
+        _key_issue(issue_content="garbage", confidence="very"),
+        _key_issue(issue_content="float", confidence=59.9),
+        _key_issue(issue_content="float-string", confidence="85.5"),
+        _key_issue(issue_content="out-of-range", confidence=150),
+    ]}}
+
+    reviewer._filter_low_confidence_findings(data)
+
+    assert [issue["issue_content"] for issue in data["review"]["key_issues_to_review"]] == expected_contents
+    assert reviewer.low_confidence_filtered_count == expected_dropped
+
+
+def test_convert_to_markdown_renders_the_confidence_the_filter_compares():
+    output = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="whole", confidence=85),
+        _key_issue(issue_content="fractional", confidence=85.5),
+        _key_issue(issue_content="string", confidence="70"),
+        _key_issue(issue_content="garbage", confidence="high"),
+        _key_issue(issue_content="out-of-range", confidence=150),
+    ]}}
+
+    markdown = convert_to_markdown_v2(output, gfm_supported=True)
+
+    assert "Possible Issue (confidence: 85)" in markdown
+    assert "Possible Issue (confidence: 85.5)" in markdown
+    assert "Possible Issue (confidence: 70)" in markdown
+    assert markdown.count("confidence:") == 3

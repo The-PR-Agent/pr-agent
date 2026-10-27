@@ -33,6 +33,7 @@ from pr_agent.algo.output_models import (
     SubPR,
     TicketCompliance,
     TodoSection,
+    finding_confidence,
 )
 from pr_agent.algo.utils import load_yaml
 
@@ -461,3 +462,33 @@ def test_ranking_example_is_a_valid_numeric_payload():
     parsed = load_yaml(text)
     assert isinstance(parsed["which_response_was_better"], int)
     PRRankResponses.model_validate(parsed)
+
+
+@pytest.mark.parametrize("confidence", [-1, 101])
+def test_key_issue_confidence_must_be_a_percentage(confidence):
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=confidence)
+
+    with pytest.raises(ValueError):
+        KeyIssuesComponentLink.model_validate(issue)
+
+
+@pytest.mark.parametrize("confidence", [85, 85.5])
+def test_key_issue_accepts_integer_and_fractional_confidence(confidence):
+    issue = dict(_review_fixture()["review"]["key_issues_to_review"][0], confidence=confidence)
+
+    assert KeyIssuesComponentLink.model_validate(issue).confidence == confidence
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [(85, 85.0), (85.5, 85.5), (" 70 ", 70.0), ("85.0", 85.0), (0, 0.0), (100, 100.0),
+     (None, None), (True, None), ("very", None), (-1, None), (150, None), (float("nan"), None),
+     (float("inf"), None), ([85], None)],
+)
+def test_finding_confidence_normalises_one_value_for_filtering_and_rendering(value, expected):
+    assert finding_confidence({"confidence": value}) == expected
+
+
+def test_finding_confidence_of_a_non_finding_is_none():
+    assert finding_confidence("not a dict") is None
+    assert finding_confidence({}) is None

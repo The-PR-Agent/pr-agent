@@ -27,7 +27,7 @@ from pr_agent.algo.inline_comment_dedup import (
     key_issue_location_fingerprint,
     strip_markers,
 )
-from pr_agent.algo.output_models import PRReview, parse_failure_modes
+from pr_agent.algo.output_models import PRReview, finding_confidence, parse_failure_modes
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
@@ -178,6 +178,7 @@ class PRReviewer:
     prediction_data = None  # merged review dict; None means "parse self.prediction instead"
     review_chunk_count = 1
     review_failed_chunk_count = 0
+    low_confidence_filtered_count = 0
     # chunked reviews only: every finding the chunks reported (before the merge cut it to
     # num_max_findings), and whether a chunk reached that limit on its own
     review_all_issues = None
@@ -868,6 +869,8 @@ class PRReviewer:
             and current_findings is not None
             # a dropped finding is not an absent one, so this run cannot resolve anything
             and not dropped_findings
+            # neither is a finding suppressed by min_finding_confidence
+            and not self.low_confidence_filtered_count
             and (
                 len(current_findings) < max_findings
                 # a chunked review that reached the limit is complete unless a chunk stopped at it
@@ -917,6 +920,7 @@ class PRReviewer:
         self.review_failed_chunk_count = 0
         self.review_all_issues = None
         self.review_chunk_hit_limit = None
+        self.low_confidence_filtered_count = 0
         self.partial_files_list = []
         raw_prompt_vars = getattr(self, "_raw_prompt_vars", getattr(self, "vars", None))
         ai_handler = getattr(self, "ai_handler", None)
@@ -1199,7 +1203,13 @@ class PRReviewer:
         # Keep raw text for logging only; use the merged verdict from self.prediction_data.
         indices = sorted(chunk_results)
         raw_predictions = [chunk_results[index][0] for index in indices]
-        chunk_outputs = [chunk_results[index][1] for index in indices]
+        # Filter before merge_review_chunks cuts to num_max_findings, so low-confidence findings cannot
+        # take the place of a confident one from another chunk. Cached chunks stay raw (a fallback attempt
+        # reuses them), so filter copies and recount on every merge.
+        self.low_confidence_filtered_count = 0
+        chunk_outputs = [copy.deepcopy(chunk_results[index][1]) for index in indices]
+        for chunk_output in chunk_outputs:
+            self._filter_low_confidence_findings(chunk_output)
         self.prediction = "\n".join(raw_predictions)
         try:
             max_findings = int(get_settings().pr_reviewer.num_max_findings)
@@ -1342,6 +1352,7 @@ class PRReviewer:
                 data["review"].pop("failure_modes", None)
         if self.prediction_data is None:
             self._validate_review_schema(data)
+            self._filter_low_confidence_findings(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
             data["review"]["failure_modes"] = parse_failure_modes(data["review"]["failure_modes"])
         github_action_output(data, 'review')
@@ -1502,6 +1513,30 @@ class PRReviewer:
         self._pending_sink_output = None
         message_type, payload, markdown = pending
         await push_outputs_async(message_type, payload=payload, markdown=markdown)
+
+    def _filter_low_confidence_findings(self, data) -> None:
+        """Drop findings below `min_finding_confidence`, counting them in `low_confidence_filtered_count`."""
+        review = data.get("review") if isinstance(data, dict) else None
+        issues = review.get("key_issues_to_review") if isinstance(review, dict) else None
+        if not isinstance(issues, list):
+            return
+        try:
+            threshold = float(get_settings().pr_reviewer.get("min_finding_confidence", 0))
+        except (TypeError, ValueError):
+            threshold = 0
+        if threshold <= 0:
+            return
+        kept = []
+        for issue in issues:
+            confidence = finding_confidence(issue)
+            if confidence is not None and confidence < threshold:
+                continue
+            kept.append(issue)
+        dropped = len(issues) - len(kept)
+        if dropped:
+            get_logger().info(f"Dropped {dropped} finding(s) below min_finding_confidence={threshold:g}")
+            review["key_issues_to_review"] = kept
+            self.low_confidence_filtered_count += dropped
 
     def _build_key_issue_comment(self, issue, diff_files: dict) -> dict | None:
         if not isinstance(issue, dict):
