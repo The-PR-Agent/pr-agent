@@ -490,6 +490,7 @@ async def test_run_can_suppress_failure_comment_without_changing_failure_status(
         provider = MagicMock()
         provider.get_files.return_value = [object()]
         tool = _make_tool(provider)
+        tool.progress = None
         original_error = RuntimeError("generation failed")
         monkeypatch.setattr(
             pr_code_suggestions_module,
