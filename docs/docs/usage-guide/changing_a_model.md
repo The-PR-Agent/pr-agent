@@ -515,6 +515,21 @@ To route Bedrock traffic through a VPC interface endpoint instead of the public 
 AWS_BEDROCK_RUNTIME_ENDPOINT="https://bedrock-runtime.us-east-1.amazonaws.com"
 ```
 
+#### Guardrails and VPC endpoints
+
+To apply an [Amazon Bedrock Guardrail](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-use-converse-api.html) to every request, use a `bedrock/converse/` model and set:
+
+```toml
+[bedrock]
+guardrail_identifier = "your-guardrail-id"
+guardrail_version = "1"
+guardrail_trace = "disabled" # or "enabled" / "enabled_full"
+```
+
+or the equivalent environment variables `BEDROCK__GUARDRAIL_IDENTIFIER` and `BEDROCK__GUARDRAIL_VERSION`. The `[bedrock]` section is host-only and cannot be overridden from a repository's `.pr_agent.toml`. Requests to `bedrock/invoke/` models fail when a guardrail is configured.
+
+To reach Bedrock through a VPC interface endpoint, set the `AWS_BEDROCK_RUNTIME_ENDPOINT` environment variable to the endpoint URL.
+
 See [litellm](https://docs.litellm.ai/docs/providers/bedrock#usage) documentation for more information about the environment variables required for Amazon Bedrock.
 
 ### DeepSeek

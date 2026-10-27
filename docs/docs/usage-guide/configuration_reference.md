@@ -469,6 +469,15 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude" or that are listed in a Claude thinking override; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
 
 
+## `[bedrock]` {#bedrock}
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `guardrail_identifier` | "" | guardrail ID or ARN; empty = disabled |
+| `guardrail_version` | "" | e.g. "1" or "DRAFT"; required when guardrail_identifier is set |
+| `guardrail_trace` | "disabled" | "enabled", "enabled_full" or "disabled" |
+
+
 ## `[openrouter]` {#openrouter}
 
 | Key | Default | Description |

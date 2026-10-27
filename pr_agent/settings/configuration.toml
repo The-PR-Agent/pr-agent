@@ -517,6 +517,15 @@ base_models = {}
 # a prefix below the model's minimum).
 cache_control_injection_points = []
 
+[bedrock]
+# Amazon Bedrock Guardrails, applied to "bedrock/..." models via the Converse API
+# (https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-use-converse-api.html).
+# Host-only: these keys cannot be overridden from a repo's .pr_agent.toml.
+# To reach Bedrock through a VPC interface endpoint, set the AWS_BEDROCK_RUNTIME_ENDPOINT env var.
+guardrail_identifier = "" # guardrail ID or ARN; empty = disabled
+guardrail_version = "" # e.g. "1" or "DRAFT"; required when guardrail_identifier is set
+guardrail_trace = "disabled" # "enabled", "enabled_full" or "disabled"
+
 [openrouter]
 # OpenRouter provider routing, reasoning control and output cap. These apply only
 # to models addressed as "openrouter/...". The API key and api_base live in
