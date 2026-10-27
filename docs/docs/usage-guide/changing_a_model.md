@@ -431,7 +431,7 @@ The IAM role must have `bedrock:InvokeModel` permission on the inference profile
 }
 ```
 
-If you also configure static keys in `[aws]`, they serve as an automatic fallback when ambient credentials cannot be resolved or a SigV4 call using the opted-in provider chain raises an API error other than a rate-limit error. This applies to Bedrock, Bedrock Mantle, and SageMaker routes and preserves the existing fallback behavior for IAM authorization and connection failures, using only the static credentials captured by the handler.
+If you also configure static keys in `[aws]`, they serve as an automatic fallback when ambient credentials cannot be resolved or a SigV4 call using the opted-in provider chain raises an authentication or permission error. Transient service errors, timeouts, and rate limits keep the ambient credentials for the normal retry path. This applies to Bedrock, Bedrock Mantle, and SageMaker routes, using only the static credentials captured by the handler.
 
 #### Custom Inference Profiles
 
