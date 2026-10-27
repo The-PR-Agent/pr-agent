@@ -14,6 +14,7 @@ from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import gerrit_provider
 from pr_agent.git_providers.gerrit_provider import GerritProvider
+from pr_agent.tools.ticket_pr_compliance_check import add_jira_tickets
 from tests.unittest import _settings_helpers as settings_helpers
 
 
@@ -317,6 +318,33 @@ def test_get_commit_messages_returns_text(tmp_path):
     provider.repo = _make_repo(tmp_path, ["app.py"])
 
     assert provider.get_commit_messages() == "initial files"
+
+
+def test_detached_gerrit_branch_keeps_commit_message_in_jira_context(tmp_path, monkeypatch):
+    repo_path = tmp_path / "clone"
+    repo = _make_repo(repo_path, ["app.py"])
+    repo.git.checkout("--detach")
+    repo.index.commit("Implement ABC-123 from Gerrit change")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, str(repo_path)
+    provider.pr = gerrit_provider.PullRequestMimic("Review change", [])
+    contexts = []
+
+    def extract(context, max_characters, remaining):
+        contexts.append(context)
+        return [{"ticket_url": "https://example.atlassian.net/browse/ABC-123"}]
+
+    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.extract_jira_tickets", extract)
+    try:
+        assert repo.head.is_detached
+        assert provider.get_user_description() == "Implement ABC-123 from Gerrit change"
+        tickets = add_jira_tickets(provider, [])
+        assert contexts == ["Review change\nImplement ABC-123 from Gerrit change"]
+        assert tickets == [{"ticket_url": "https://example.atlassian.net/browse/ABC-123"}]
+        assert provider.get_pr_branch() == ""
+    finally:
+        repo.close()
+        provider.cleanup()
 
 
 def test_get_repo_settings_reads_the_default_branch_not_the_change(tmp_path):

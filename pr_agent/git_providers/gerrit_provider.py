@@ -607,4 +607,4 @@ class GerritProvider(GitProvider):
         pass
 
     def get_pr_branch(self):
-        return self.repo.head
+        return ""
