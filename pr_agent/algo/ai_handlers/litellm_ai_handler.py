@@ -3238,7 +3238,9 @@ class LiteLLMAIHandler(BaseAiHandler):
                 get_logger().error(f"Rate limit error during LLM inference: {e}")
                 raise
             except openai.APIError as e:
-                if aws_can_fallback:
+                if aws_can_fallback and isinstance(
+                    e, (openai.AuthenticationError, openai.PermissionDeniedError),
+                ):
                     if not self._aws_imds_fell_back:
                         self._activate_static_aws_fallback()
                         get_logger().warning(f"{AWS_PROVIDER_CALL_FALLBACK_MESSAGE}: {type(e).__name__}")

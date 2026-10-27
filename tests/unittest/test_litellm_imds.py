@@ -1819,7 +1819,7 @@ async def test_imds_stream_cleanup_does_not_hold_call_lock(monkeypatch, aws_sess
 
 
 @pytest.mark.asyncio
-async def test_imds_stream_fallback_closes_first_stream_before_retry(monkeypatch, aws_session):
+async def test_imds_stream_retry_closes_first_stream_without_switching_credentials(monkeypatch, aws_session):
     monkeypatch.setenv("AWS_USE_IMDS", "true")
     monkeypatch.setattr(litellm_handler, "get_settings", _static_aws_settings)
     handler = LiteLLMAIHandler()
@@ -1867,7 +1867,8 @@ async def test_imds_stream_fallback_closes_first_stream_before_retry(monkeypatch
     assert (result, finish_reason) == ("ok", "stop")
     assert len(calls) == 2
     assert calls[0]["aws_access_key_id"] == "IMDS-KEY"
-    assert calls[1]["aws_access_key_id"] == "STATIC-KEY"
+    assert calls[1]["aws_access_key_id"] == "IMDS-KEY"
+    assert handler._aws_imds_fell_back is False
     assert first.closed and second.closed
     assert not handler._aws_bedrock_lock.locked()
 
@@ -2128,19 +2129,13 @@ async def test_health_probe_does_not_retry_api_errors(monkeypatch, error):
     assert not handler._aws_bedrock_lock.locked()
 
 
-@pytest.mark.parametrize(
-    "error",
-    (
-        openai.APITimeoutError(request=httpx.Request("POST", "https://bedrock.example")),
-        openai.PermissionDeniedError(
-            "Bedrock - AccessDeniedException: User is not authorized to perform this action",
-            response=httpx.Response(403, request=httpx.Request("POST", "https://bedrock.example")),
-            body=None,
-        ),
-    ),
-)
 @pytest.mark.asyncio
-async def test_chat_completion_preserves_static_fallback_for_api_errors(monkeypatch, error):
+async def test_chat_completion_preserves_static_fallback_for_permission_error(monkeypatch):
+    error = openai.PermissionDeniedError(
+        "Bedrock - AccessDeniedException: User is not authorized to perform this action",
+        response=httpx.Response(403, request=httpx.Request("POST", "https://bedrock.example")),
+        body=None,
+    )
     monkeypatch.setenv("AWS_USE_IMDS", "true")
     monkeypatch.setattr(litellm_handler, "get_settings", _static_aws_settings)
     credentials = MagicMock()
@@ -2163,6 +2158,42 @@ async def test_chat_completion_preserves_static_fallback_for_api_errors(monkeypa
     assert completion.await_args_list[0].kwargs["aws_access_key_id"] == "IMDS-KEY"
     assert completion.await_args_list[1].kwargs["aws_access_key_id"] == "STATIC-KEY"
     assert handler._aws_imds_fell_back is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        openai.InternalServerError(
+            "Bedrock service unavailable",
+            response=httpx.Response(503, request=httpx.Request("POST", "https://bedrock.example")),
+            body=None,
+        ),
+        openai.APITimeoutError(request=httpx.Request("POST", "https://bedrock.example")),
+    ),
+)
+@pytest.mark.asyncio
+async def test_chat_completion_retries_transient_api_errors_without_static_fallback(monkeypatch, error):
+    monkeypatch.setenv("AWS_USE_IMDS", "true")
+    monkeypatch.setattr(litellm_handler, "get_settings", _static_aws_settings)
+    credentials = MagicMock()
+    credentials.get_frozen_credentials.return_value = _frozen_creds()
+    session = MagicMock()
+    session.get_credentials.return_value = credentials
+    session.region_name = "us-east-1"
+    completion = AsyncMock(side_effect=(error, _mock_response()))
+
+    with patch("boto3.Session", return_value=session):
+        handler = LiteLLMAIHandler()
+        with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", completion):
+            await handler.chat_completion(
+                model="bedrock/anthropic.claude-sonnet-4-5",
+                system="sys",
+                user="usr",
+            )
+
+    assert completion.await_count == 2
+    assert [call.kwargs["aws_access_key_id"] for call in completion.await_args_list] == ["IMDS-KEY", "IMDS-KEY"]
+    assert handler._aws_imds_fell_back is False
 
 
 @pytest.mark.asyncio
