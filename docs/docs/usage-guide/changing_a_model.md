@@ -22,8 +22,45 @@ repeats. For extra attempts on the primary model instead, set `config.num_retrie
 To see which of these models actually handled a given PR, enable `config.output_run_details` (see [Additional configurations](./additional_configurations.md#showing-the-agent-run-details)).
 To send small pull requests to a cheaper model, see [Routing small pull requests to a cheaper model](#routing-small-pull-requests-to-a-cheaper-model).
 
-For models and environments not from OpenAI, you might need to provide additional keys and other parameters.
-You can give parameters via a configuration file, or from environment variables.
+PR-Agent supports LiteLLM's native model providers and third-party endpoints that implement
+the OpenAI-compatible or Anthropic-compatible API. These compatible endpoints need no
+provider-specific integration in PR-Agent: configure the endpoint and credentials under the
+matching LiteLLM provider, and use that provider's model prefix.
+
+For OpenAI-compatible endpoints, use the `openai/` prefix and set the endpoint URL and key:
+
+```toml
+[config]
+model = "openai/<provider-model-id>"
+fallback_models = []
+custom_model_max_tokens = 32000 # set this when the model is not in PR-Agent's token-limit table
+
+[openai] # in .secrets.toml
+api_base = "https://api.example.com/v1"
+key = "..."
+```
+
+For Anthropic-compatible endpoints, use the `anthropic/` prefix and the `[anthropic]`
+settings instead:
+
+```toml
+[config]
+model = "anthropic/<provider-model-id>"
+fallback_models = []
+custom_model_max_tokens = 32000 # set this when the model is not in PR-Agent's token-limit table
+
+[anthropic] # in .secrets.toml
+key = "..."
+```
+
+The endpoint must support the corresponding API protocol and request features PR-Agent uses.
+The model ID, API base URL, required version/path, and supported parameters are provider-specific;
+check that provider's API documentation. For OpenAI-compatible endpoints, the settings can also
+be supplied as `OPENAI__API_BASE` and `OPENAI__KEY`. For Anthropic-compatible endpoints, set
+`ANTHROPIC_API_BASE` (or `ANTHROPIC_BASE_URL`) for the endpoint and `ANTHROPIC__KEY` for
+authentication.
+For models absent from PR-Agent's token-limit table, set `config.custom_model_max_tokens` to
+the endpoint's supported input limit.
 
 :::note[Model-specific environment variables]
 See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
@@ -35,23 +72,6 @@ PR-Agent captures request settings and supported provider environment values per
 
 Process-wide routing fallbacks such as `litellm.api_base`, `litellm.api_version`, `litellm.organization`, `litellm.vertex_project`, and `litellm.vertex_location` can be rejected even when unchanged. Use the corresponding PR-Agent settings (`OPENAI.API_BASE`, `OPENAI.API_VERSION`, `OPENAI.ORG`, `VERTEXAI.VERTEX_PROJECT`, and `VERTEXAI.VERTEX_LOCATION`) or supported provider environment variables, and clear the corresponding LiteLLM globals even when they match the intended routing. Use `LITELLM.EXTRA_HEADERS` instead of `litellm.headers`.
 :::
-
-### OpenAI like API
-
-To use an OpenAI like API, set the following in your `.secrets.toml` file:
-
-```toml
-[openai]
-api_base = "https://api.openai.com/v1"
-api_key = "sk-..."
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.openai.com/v1
-OPENAI__KEY=sk-...
-```
 
 ### OpenAI Flex Processing
 
@@ -772,66 +792,6 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 
 `provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6, Gemini 3.7/3.8 Flash, and the GPT-6 models whose pages omit `"none"` (GPT-6 Astra and GPT-6.1 Sol) clamp it to `"low"` before precedence is applied, so a positive budget wins for those models; explicit Openrouter `"minimal"` remains unchanged for Gemini. Otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model. For models not covered by these clamps, do not assume `"none"` disables reasoning; check the selected model and provider's support. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
-### OrcaRouter
-
-[OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible AI gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to OrcaRouter's base URL through litellm's OpenAI-compatible path, the same way the [Neon AI Gateway](#neon-ai-gateway) is handled.
-
-To use a model through OrcaRouter, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/anthropic/claude-fable-5"
-fallback_models = ["openai/auto"]
-custom_model_max_tokens = 20000
-
-[openai] # in .secrets.toml
-api_base = "https://api.orcarouter.ai/v1"
-key = "..." # your OrcaRouter api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.orcarouter.ai/v1
-OPENAI__KEY=...
-```
-
-(you can obtain an OrcaRouter API key from [here](https://www.orcarouter.ai/register))
-
-Keep the `openai/` prefix on the model name, whatever OrcaRouter model ID you use (`openai/anthropic/claude-fable-5`, `openai/auto`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. OrcaRouter governs routing and guardrails itself, but `config.reasoning_effort` still reaches it: PR-Agent probes the suffixed model ID against litellm's bundled reasoning metadata (or `config.additional_reasoning_effort_models`), so an ID such as `openai/google/gemini-2.5-pro` or `openai/o3` sends the configured effort (default `"medium"`) even with nothing set. The example IDs above are not flagged as reasoning-capable and are unaffected.
-
-### Neon AI Gateway
-
-[Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) is an OpenAI-compatible inference gateway. Each Neon branch has its own gateway host, so the base URL points at a single branch and not at an account. Neon publishes that host alongside the credential as `NEON_AI_GATEWAY_BASE_URL`. The value has no path, so append `/v1` to reach chat completions.
-
-To use a model served by a Neon branch, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/gpt-5-mini"
-fallback_models = []
-custom_model_max_tokens = 400000 # the context window Neon publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://<your-neon-branch-host>/v1"
-key = "..." # your Neon AI Gateway credential
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://<your-neon-branch-host>/v1
-OPENAI__KEY=...
-```
-
-Keep the `openai/` prefix on the model name, whichever Neon model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Neon's [model catalog](https://neon.com/docs/ai-gateway/models).
-
-Create the credential per branch in the [Neon Console](https://console.neon.tech/) with the `ai_gateway:invoke` scope. The credential also works on branches descended from the one it was created on. The gateway is in beta and requires a paid Neon plan. It runs only in AWS US East (Ohio), `aws-us-east-2`.
-
-:::note[Chat completions only]
-Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
-:::
-
 ### GitHub Copilot
 
 Models under an active GitHub Copilot subscription are available through litellm's `github_copilot` provider, which authenticates as your GitHub identity rather than with a dedicated API key:
@@ -851,240 +811,6 @@ Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/p
 3. The Copilot API key (`api-key.json` in the same directory) is refreshed automatically against `https://api.github.com/copilot_internal/v2/token`, using the pre-seeded access token.
 
 Whether Copilot's terms permit this programmatic use is a question for GitHub rather than a guarantee this project can make, so confirm before relying on the route.
-
-### Cheaper Inference
-
-[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible LLM gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Cheaper Inference's base URL through litellm's OpenAI-compatible path.
-
-To use a model through Cheaper Inference, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/gpt-5.4-mini"
-fallback_models = ["openai/claude-sonnet-5"]
-custom_model_max_tokens = 400000 # the smaller context window Cheaper Inference publishes for the two models
-
-[openai] # in .secrets.toml
-api_base = "https://api.cheaperinference.com/v1"
-key = "..." # your Cheaper Inference api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.cheaperinference.com/v1
-OPENAI__KEY=...
-```
-
-(you can obtain a Cheaper Inference API key from [here](https://cheaperinference.com/signup))
-
-Keep the `openai/` prefix on the model name, whichever Cheaper Inference model ID you use (`openai/gpt-5.4-mini`, `openai/claude-sonnet-5`, `openai/gemini-3.1-pro`, `openai/deepseek-v4-flash`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Cheaper Inference's [model catalog](https://cheaperinference.com/#models).
-
-### API Route
-
-[API Route](https://www.api-route.com) exposes an OpenAI-compatible endpoint. Use
-PR-Agent's existing `openai/` model prefix and `[openai]` settings to configure it:
-
-```toml
-[config] # in configuration.toml
-model = "openai/gpt-6.1-sol"
-fallback_models = []
-custom_model_max_tokens = 32000 # example input budget; keep within the selected model's context limit
-
-[openai] # in .secrets.toml
-api_base = "https://global.api-route.com/v1"
-key = "..." # your API Route API key
-```
-
-The endpoint and key can also be supplied through environment variables (with double
-underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://global.api-route.com/v1
-OPENAI__KEY=...
-```
-
-Obtain an API key from [API Route](https://www.api-route.com) and choose an available
-model from its [model catalog](https://www.api-route.com/pricing) or the authenticated
-`GET https://global.api-route.com/v1/models` endpoint. Keep the `openai/` prefix in
-PR-Agent's configuration; the endpoint receives the model ID without that prefix.
-
-Set `custom_model_max_tokens` for model IDs absent from PR-Agent's token-limit table.
-The example uses a 32,000-token input budget, rather than claiming the model's maximum
-context window. If you change the model or add fallback models, use a budget supported
-by all of them and keep their requests on the configured API Route endpoint.
-
-### RelaxAI
-
-[RelaxAI](https://relax.ai) offers an OpenAI-compatible API. It needs no provider-specific
-code in PR-Agent: use the `openai/` model prefix and configure RelaxAI's endpoint and key
-through the existing `[openai]` settings.
-
-```toml
-[config] # in configuration.toml
-model = "openai/DeepSeek-V4-Pro"
-custom_model_max_tokens = 1049000 # use the context window published for the selected model
-
-[openai] # in .secrets.toml
-api_base = "https://api.relax.ai/v1/"
-key = "..." # your RelaxAI API key
-```
-
-or use environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.relax.ai/v1/
-OPENAI__KEY=...
-```
-
-Keep the `openai/` prefix on the model name to route through LiteLLM's OpenAI-compatible
-path. The model IDs and context windows can change; see the
-[RelaxAI API documentation](https://relax.ai/docs/getting-started/introduction) for current
-integration details and available models.
-
-### Atlas Cloud
-
-[Atlas Cloud](https://www.atlascloud.ai) is an OpenAI-compatible inference platform. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Atlas's base URL through litellm's OpenAI-compatible path, the same way [OrcaRouter](#orcarouter) and the [Neon AI Gateway](#neon-ai-gateway) are handled.
-
-To use a model served by Atlas Cloud, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/deepseek-ai/deepseek-v4-pro"
-fallback_models = []
-custom_model_max_tokens = 1048000 # the context window Atlas publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://api.atlascloud.ai/v1"
-key = "..." # your Atlas Cloud api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.atlascloud.ai/v1
-OPENAI__KEY=...
-```
-
-(you can obtain an Atlas Cloud API key from the [console](https://www.atlascloud.ai/console))
-
-Keep the `openai/` prefix on the model name, whichever Atlas model ID you use (`openai/deepseek-ai/deepseek-v4-pro`, `openai/zai-org/glm-5`, `openai/moonshotai/kimi-k2.6`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Atlas's [model catalog](https://www.atlascloud.ai/models).
-
-:::note[Reasoning models need output headroom]
-Several Atlas models are reasoning models that spend completion tokens on a hidden chain of thought before writing the answer. `deepseek-ai/deepseek-v4-pro` with `max_tokens = 16` returns `finish_reason = "length"` and an **empty** `message.content` — all 16 completion tokens were reasoning tokens. If a tool comes back blank, raise the output budget rather than assuming the request failed. Non-reasoning IDs such as `deepseek-ai/DeepSeek-V3.1` are unaffected.
-:::
-
-### Heabsy
-
-[Heabsy](https://heabsy.com/platform) is an OpenAI-compatible inference API for open models, operated in the EU. Models in its EEA tier run on dedicated GPUs in EEA data centres with zero data retention. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Heabsy's base URL through litellm's OpenAI-compatible path, the same way [Atlas Cloud](#atlas-cloud) and [OrcaRouter](#orcarouter) are handled.
-
-To use a model served by Heabsy, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/qwen38"
-fallback_models = []
-custom_model_max_tokens = 262144 # the context window Heabsy publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://api.heabsy.com/v1"
-key = "..." # your Heabsy api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.heabsy.com/v1
-OPENAI__KEY=...
-```
-
-(API keys are issued in the [Heabsy console](https://platform.heabsy.com); accounts are opened on request at [heabsy.com/contacts](https://heabsy.com/contacts).)
-
-Keep the `openai/` prefix on the model name: a prefixed name is not in the `MAX_TOKENS` table, so you also have to set `custom_model_max_tokens`. Take the value from Heabsy's [model catalog](https://heabsy.com/models).
-
-### DemonRoute
-
-[DemonRoute](https://demonroute.com) is an OpenAI-compatible API for open-weight models, billed prepaid with a hard stop at a $0 balance. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to DemonRoute's base URL through litellm's OpenAI-compatible path, the same way [Atlas Cloud](#atlas-cloud) and [Heabsy](#heabsy) are handled.
-
-To use a model served by DemonRoute, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
-fallback_models = []
-custom_model_max_tokens = 131072 # the context window DemonRoute publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://api.demonroute.com/v1"
-key = "..." # your DemonRoute api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.demonroute.com/v1
-OPENAI__KEY=...
-```
-
-(you can obtain a DemonRoute API key from [demonroute.com](https://demonroute.com))
-
-Keep the `openai/` prefix on the model name, whichever DemonRoute model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`.
-
-### Runcrate
-
-[Runcrate](https://www.runcrate.ai/?utm_source=pr-agent&utm_medium=directory&utm_campaign=gpu_pricing) is a GPU cloud that also serves open models (DeepSeek V4.1 Flash, GLM-5.3, Qwen3.8 Flash, gpt-oss 120B and others) on an OpenAI-compatible API. Open models are free with your GitHub account. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Runcrate's base URL through litellm's OpenAI-compatible path, the same way [Atlas Cloud](#atlas-cloud) and [DemonRoute](#demonroute) are handled.
-
-To use a model served by Runcrate, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/deepseek-ai/DeepSeek-V4.1-Flash"
-fallback_models = []
-custom_model_max_tokens = 1048576 # the context window Runcrate publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://api.runcrate.ai/v1"
-key = "..." # your Runcrate api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.runcrate.ai/v1
-OPENAI__KEY=...
-```
-
-(you can create a Runcrate API key in the [Runcrate dashboard](https://www.runcrate.ai/dashboard/api-keys?utm_source=pr-agent&utm_medium=directory&utm_campaign=gpu_pricing))
-
-Keep the `openai/` prefix on the model name, whichever Runcrate model ID you use. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`; take the value from the `context_length` field of the public model list at `https://api.runcrate.ai/v1/models`.
-
-### APIClaw
-
-[APIClaw](https://apiclaw.biz) is an OpenAI-compatible AI API gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to APIClaw's base URL through litellm's OpenAI-compatible path, the same way [Heabsy](#heabsy) and [DemonRoute](#demonroute) are handled.
-
-To use a model served by APIClaw, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/apiclaw/claude-sonnet-5.5"
-fallback_models = []
-custom_model_max_tokens = 1000000 # the max_input_tokens APIClaw's /v1/models returns for the model
-
-[openai] # in .secrets.toml
-api_base = "https://apiclaw.biz/v1"
-key = "..." # your APIClaw api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://apiclaw.biz/v1
-OPENAI__KEY=...
-```
-
-(you can obtain an APIClaw API key from [apiclaw.biz](https://apiclaw.biz); setup is in the [APIClaw docs](https://apiclaw.biz/docs/))
-
-Keep the `openai/` prefix on the model name, whichever APIClaw model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from the `max_input_tokens` field that `GET https://apiclaw.biz/v1/models` returns for your key.
 
 ### Custom models
 
