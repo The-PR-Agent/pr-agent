@@ -169,7 +169,6 @@ def _make_tool(monkeypatch, client):
     tool.qdrant = client
     tool.qdrant_collection_name = "codium-ai-pr-agent-issues-v2"
     tool.max_issues_to_scan = 100
-    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 0)
     tool._process_issue = lambda issue: (
         f"title: {issue.title}\nbody: {issue.body}",
         [],
@@ -220,11 +219,6 @@ def _stub_constructor_dependencies(monkeypatch, client, issues):
 
     monkeypatch.setattr(psi, "get_git_provider", lambda: provider_factory)
     monkeypatch.setattr(psi, "_provider_supports_issue_indexing", lambda: True)
-    monkeypatch.setattr(
-        psi,
-        "TokenHandler",
-        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
-    )
 
 
 def test_qdrant_sentinel_is_the_final_point_of_a_full_ingest(monkeypatch):
@@ -247,13 +241,11 @@ def test_qdrant_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
     client = FakeQdrantClient()
     tool = _make_tool(monkeypatch, client)
     tool.max_issues_to_scan = 2
-    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 10 ** 6)
-    monkeypatch.setattr(psi, "get_max_tokens", lambda model: 8192)
 
     oversized = SimpleNamespace(
         pull_request=False,
         title="Oversized",
-        body="x" * 9000,
+        body="🧪" * 4000,
         number=1,
         user=SimpleNamespace(login="user"),
         created_at="2020-01-01",

@@ -77,7 +77,6 @@ def _make_tool(monkeypatch, fake_db):
     tool.db = fake_db
     tool.index_name = "codium-ai-pr-agent-issues"
     tool.max_issues_to_scan = 10
-    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 0)
     tool.table = fake_db.table
     tool._process_issue = lambda issue: (
         f"title: {issue.title}\nbody: {issue.body}",
@@ -256,13 +255,11 @@ def test_ingest_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
 
     tool = _make_tool(monkeypatch, fake_db)
     tool.max_issues_to_scan = 2
-    tool.token_handler = SimpleNamespace(count_tokens=lambda _: 10 ** 6)
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_max_tokens", lambda model: 8192)
 
     oversized = SimpleNamespace(
         number=1,
         title="oversized",
-        body="x" * 9000,
+        body="🧪" * 4000,
         pull_request=False,
         user=SimpleNamespace(login="tester"),
         created_at="2026-01-01T00:00:00Z",
@@ -401,15 +398,13 @@ def test_ingest_does_not_read_comments_for_oversized_issue(monkeypatch):
     fake_db = FakeDB(["codium-ai-pr-agent-issues"])
     fake_db.table = _capturing_table()
     tool = _tool_with_comments(monkeypatch, fake_db)
-    tool.token_handler.count_tokens = lambda _: 8192
-    monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_max_tokens", lambda _: 8192)
 
     class UnusedComments:
         def __iter__(self):
             pytest.fail("An oversized issue must not consume its comments")
 
     issue = _fake_issue_with_comments(UnusedComments())
-    issue.body = "x" * 8000
+    issue.body = "🧪" * 4000
 
     tool._update_table_with_issues([issue], "org/repo", ingest=True)
 
@@ -545,10 +540,6 @@ def _stub_constructor_dependencies(monkeypatch, fake_db):
         lambda: True,
     )
     monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
-    monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue.TokenHandler",
-        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
-    )
     monkeypatch.setattr("pr_agent.tools.pr_similar_issue.time.sleep", lambda seconds: None)
 
 
@@ -590,10 +581,6 @@ def test_constructor_backfills_an_older_index_gap(monkeypatch):
     )
     monkeypatch.setattr("pr_agent.tools.pr_similar_issue.get_git_provider", lambda: _FakeProvider)
     monkeypatch.setattr("pr_agent.tools.pr_similar_issue._embed_with_fallback", _fake_embed)
-    monkeypatch.setattr(
-        "pr_agent.tools.pr_similar_issue.TokenHandler",
-        lambda *args, **kwargs: SimpleNamespace(count_tokens=lambda text: 0),
-    )
 
     PRSimilarIssue("https://github.com/org/repo-b/pull/5", None)
 

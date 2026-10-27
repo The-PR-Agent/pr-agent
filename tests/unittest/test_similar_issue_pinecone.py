@@ -72,7 +72,6 @@ def _make_tool(pc):
     tool.pc_spec = None
     tool.index_name = "codium-ai-pr-agent-issues"
     tool.max_issues_to_scan = 100
-    tool.token_handler = SimpleNamespace(count_tokens=lambda text: 1)
     tool.pinecone_index = None
     return tool
 
@@ -82,8 +81,6 @@ def _stub_embeddings(monkeypatch):
                         SimpleNamespace(DataFrame=_PandasDataFrame))
     embedding = [0.5, 0.5]
     monkeypatch.setattr(psi, "get_settings", lambda: SettingsStub)
-    monkeypatch.setattr(psi, "get_max_tokens", lambda model: 8192)
-    monkeypatch.setattr(psi, "TokenHandler", lambda: SimpleNamespace(count_tokens=lambda text: 1))
     monkeypatch.setattr(psi, "_embed_with_fallback",
                         lambda texts: [embedding for _ in texts])
     monkeypatch.setattr(psi.time, "sleep", lambda seconds: None)
@@ -126,13 +123,12 @@ def test_pinecone_oversized_issues_do_not_burn_the_scan_budget(monkeypatch):
 
     tool = _make_tool(SimpleNamespace(Index=lambda name: FakeIndex()))
     tool.max_issues_to_scan = 2
-    tool.token_handler = SimpleNamespace(count_tokens=lambda text: 10 ** 6)
     _stub_embeddings(monkeypatch)
 
     oversized = SimpleNamespace(
         pull_request=False,
         title="Oversized",
-        body="x" * 9000,
+        body="🧪" * 4000,
         number=1,
         user=SimpleNamespace(login="user"),
         created_at="2020-01-01",
@@ -242,7 +238,6 @@ def test_pinecone_existing_index_fetches_in_bounded_repo_batches(monkeypatch, sc
     monkeypatch.setattr(psi, "get_settings", lambda: SettingsStub)
     monkeypatch.setattr(psi, "get_git_provider", lambda: FakeProvider)
     monkeypatch.setattr(SettingsStub.pr_similar_issue, "max_issues_to_scan", scan_limit)
-    monkeypatch.setattr(psi, "TokenHandler", lambda: SimpleNamespace(count_tokens=lambda text: 1))
     monkeypatch.setattr(psi.PRSimilarIssue, "_update_index_with_issues",
                         lambda *args, **kwargs: pytest.fail("lookup must not trigger an index write"))
 

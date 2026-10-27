@@ -31,6 +31,12 @@ To perform retrieval, the `similar_issue` tool indexes the repository's issues i
 - `force_update_dataset = true` makes every run re-index the whole repository: LanceDB deletes the repository's rows first, Pinecone and Qdrant upsert over the existing rows.
 - `skip_comments = true` skips issue comments and embeds only the issue title and body.
 
+Embedding inputs are limited to **8,191 tokens** (one token below the model's
+8,192-token context). Issues or comments exceeding this limit are skipped during
+indexing; an oversized issue also excludes its comments. Long similarity queries
+are truncated to their first 8,191 tokens, so later content does not influence
+the results.
+
 These keys live under the `[pr_similar_issue]` section. Each backend section below describes its own configuration and re-run behaviour.
 
 ### Selecting a Vector Database
