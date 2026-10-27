@@ -17,7 +17,10 @@ fallback_models = ["..."]
 
 Keep `fallback_models` different from `model`, or set it to `[]` for no backup model. Listing the
 primary model again only runs a failed call on the same model, so each fallback-eligible failure
-repeats. For extra attempts on the primary model instead, set `config.num_retries`.
+repeats. A request the provider rejects (a 429, a 5xx answer or a connection error) is already
+retried on the same model up to `config.num_retries` times (default 4) before the fallback models
+are tried, waiting for the provider's `Retry-After` (up to 30 seconds) or with exponential backoff
+between attempts. Set it to `0` to move to the fallback models at once.
 
 To see which of these models actually handled a given PR, enable `config.output_run_details` (see [Additional configurations](./additional_configurations.md#showing-the-agent-run-details)).
 To send small pull requests to a cheaper model, see [Routing small pull requests to a cheaper model](#routing-small-pull-requests-to-a-cheaper-model).

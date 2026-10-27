@@ -4,6 +4,7 @@ import contextlib
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import shutil  # noqa: F401  (module attribute asserted by tests)
@@ -15,7 +16,8 @@ import httpx
 import litellm
 import openai
 from litellm import acompletion
-from tenacity import retry, retry_if_exception, stop_after_attempt
+from litellm.exceptions import MidStreamFallbackError
+from tenacity import RetryCallState, retry, retry_if_exception, wait_random_exponential
 
 try:
     from litellm.llms.anthropic.common_utils import AnthropicModelInfo
@@ -149,6 +151,9 @@ from pr_agent.config_loader import get_settings, get_verbosity_level, global_set
 from pr_agent.log import get_logger
 
 MODEL_RETRIES = 2
+DEFAULT_NUM_RETRIES = 4
+# Longest Retry-After honored; a longer one waits with jitter instead.
+MAX_RETRY_AFTER_SECONDS = 30
 # Lowest config.max_output_tokens honored; Bedrock Claude with thinking needs this much to answer.
 MIN_MAX_OUTPUT_TOKENS = 4096
 _IMAGE_HEAD_TIMEOUT_SECONDS = 5
@@ -265,7 +270,10 @@ def _coerce_string_list_config(value):
 
 
 def _configured_client_retries():
-    """config.num_retries as a non-negative int, or None (unset/invalid = client defaults).
+    """config.num_retries as a non-negative int (unset/invalid = DEFAULT_NUM_RETRIES).
+
+    It is the number of same-model retries of a rejected request (see _is_rejected_request); the
+    completion client's own retries are always off, so this handler's retry is the only layer.
 
     Invalid values are logged and ignored rather than raised: this is read on the request
     path, and a config typo should not fail the run nor be wrapped and retried as an API
@@ -273,15 +281,15 @@ def _configured_client_retries():
     """
     value = get_settings().config.get("num_retries", None)
     if value is None:
-        return None
+        return DEFAULT_NUM_RETRIES
     try:
         parsed = int(str(value).strip())
     except ValueError:
         get_logger().warning(f"Ignoring invalid config.num_retries: {value!r}")
-        return None
+        return DEFAULT_NUM_RETRIES
     if parsed < 0:
         get_logger().warning(f"Ignoring negative config.num_retries: {parsed}")
-        return None
+        return DEFAULT_NUM_RETRIES
     return parsed
 
 
@@ -295,7 +303,6 @@ def _should_retry_same_model(exc: BaseException) -> bool:
     not replayed unless config.retry_same_model_on_length enables it.
     """
     if isinstance(exc, (
-        openai.RateLimitError,
         openai.BadRequestError,
         openai.UnprocessableEntityError,
         openai.AuthenticationError,
@@ -307,6 +314,61 @@ def _should_retry_same_model(exc: BaseException) -> bool:
     if isinstance(exc, EmptyTruncatedResponseError):
         return _as_bool(get_settings().config.get("retry_same_model_on_length", False), default=False)
     return isinstance(exc, openai.APIError)
+
+
+def _is_rejected_request(exc: BaseException) -> bool:
+    """A 429, a 5xx answer or a connection error, worth replaying after a wait. A 200 that failed to
+    parse also reaches here as a 5xx or APIConnectionError, but with no answer and no transport error."""
+    if not isinstance(exc, openai.APIError):
+        return False
+    if isinstance(exc, (openai.APITimeoutError, MidStreamFallbackError)):
+        return False
+    if isinstance(exc, openai.RateLimitError):
+        return True
+    status_code = getattr(exc, "status_code", None)
+    answered = getattr(exc, "litellm_response_headers", None) is not None
+    if isinstance(status_code, int) and status_code >= 500 and answered:
+        return True
+    cause = exc.__cause__ or exc.__context__
+    while cause is not None:
+        if isinstance(cause, httpx.TransportError) and not isinstance(cause, httpx.TimeoutException):
+            return True
+        cause = cause.__cause__ or cause.__context__
+    return False
+
+
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """A finite, positive Retry-After of at most MAX_RETRY_AFTER_SECONDS, in seconds, or None."""
+    headers = getattr(exc, "litellm_response_headers", None)
+    if not headers:
+        return None
+    value = next((v for k, v in headers.items() if k.lower() == "retry-after"), None)
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds <= 0 or seconds > MAX_RETRY_AFTER_SECONDS:
+        return None
+    return seconds
+
+
+def _stop_same_model_retries(retry_state: RetryCallState) -> bool:
+    """Stop after config.num_retries retries of a rejected request, or MODEL_RETRIES attempts otherwise."""
+    if _is_rejected_request(retry_state.outcome.exception()):
+        return retry_state.attempt_number > _configured_client_retries()
+    return retry_state.attempt_number >= MODEL_RETRIES
+
+
+def _same_model_retry_wait(retry_state: RetryCallState) -> float:
+    """Wait the provider's Retry-After, or exponential backoff with jitter, before replaying a rejected
+    request. Timeouts and empty responses are replayed at once, as before."""
+    exc = retry_state.outcome.exception()
+    if not _is_rejected_request(exc):
+        return 0
+    retry_after = _retry_after_seconds(exc)
+    if retry_after is not None:
+        return retry_after
+    return wait_random_exponential(multiplier=1, max=20)(retry_state)
 
 
 def _log_anthropic_cache_warning(model: str, reason: str) -> None:
@@ -2807,7 +2869,8 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     @retry(
         retry=retry_if_exception(_should_retry_same_model),
-        stop=stop_after_attempt(MODEL_RETRIES),
+        stop=_stop_same_model_retries,
+        wait=_same_model_retry_wait,
         reraise=True,  # surface the provider's error; RetryError hides the reason
     )
     async def _chat_completion_with_retry(
@@ -2823,7 +2886,6 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
-        client_retries = _configured_client_retries()
         custom_llm_provider = self._custom_llm_provider
         user_model = model
         routed_model = self._route_model_for_request(user_model, custom_llm_provider, configured_deployment_id)
@@ -3004,12 +3066,10 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["deployment_id"] = deployment_id
                 kwargs.update(provider_request_params)
 
-                # Caps the completion client's own per-call retries, which otherwise
-                # multiply this handler's retry attempts. Parsed before the request
-                # try/except (see _configured_client_retries).
-                if client_retries is not None:
-                    kwargs["num_retries"] = client_retries
-                    kwargs["max_retries"] = client_retries
+                # The completion client's own retries (LiteLLM's and the OpenAI SDK's) would multiply
+                # this handler's attempts, so they are always off; config.num_retries applies here.
+                kwargs["num_retries"] = 0
+                kwargs["max_retries"] = 0
 
                 # Add temperature only if the model supports it. Support comes from
                 # litellm's parameter metadata (probed over suffix forms, mirroring the

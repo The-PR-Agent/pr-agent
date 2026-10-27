@@ -2255,8 +2255,9 @@ async def test_chat_completion_rate_limit_does_not_switch_aws_credentials(monkey
                     user="usr",
                 )
 
-    completion.assert_awaited_once()
-    assert completion.call_args.kwargs["aws_access_key_id"] == "IMDS-KEY"
+    # Retried on the same model with the same ambient credentials, never the static fallback keys.
+    assert completion.await_count == litellm_handler.DEFAULT_NUM_RETRIES + 1
+    assert all(call.kwargs["aws_access_key_id"] == "IMDS-KEY" for call in completion.await_args_list)
     assert handler._aws_imds_fell_back is False
 
 
