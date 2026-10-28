@@ -9,7 +9,6 @@ from pydantic import ValidationError
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.artifacts import get_artifact_context, resolve_artifact_path
-from pr_agent.algo.blast_radius import build_blast_radius
 from pr_agent.algo.comment_identity import (
     PRReviewHeader,
     PRReviewIdentity,
@@ -60,6 +59,7 @@ from pr_agent.algo.run_output import (
 )
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.structural_reach import build_structural_reach
 from pr_agent.algo.token_budget import AttemptTokenBudget
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
@@ -1341,7 +1341,7 @@ class PRReviewer:
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
                 data["review"].pop("failure_modes", None)
-            data["review"].pop("blast_radius", None)
+            data["review"].pop("structural_reach", None)
         if self.prediction_data is None:
             self._validate_review_schema(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
@@ -1357,9 +1357,9 @@ class PRReviewer:
             return ""
 
         diff_files = self.git_provider.get_diff_files()
-        blast_radius = build_blast_radius(diff_files, resolve_artifact_path)
-        if blast_radius:
-            data["review"] = {"blast_radius": blast_radius, **data["review"]}
+        structural_reach = build_structural_reach(diff_files, resolve_artifact_path)
+        if structural_reach:
+            data["review"] = {"structural_reach": structural_reach, **data["review"]}
 
         structured_publisher = getattr(self.git_provider, "publish_structured_review", None)
         if callable(structured_publisher) or review_json_output_path.get():

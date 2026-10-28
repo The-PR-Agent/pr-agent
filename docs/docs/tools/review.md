@@ -215,12 +215,12 @@ for the authoritative default values.
     <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
   </tr>
   <tr>
-    <td><b>blast_radius_input_file</b></td>
+    <td><b>structural_reach_input_file</b></td>
     <td>Path to a JSON file with structural reach facts, written by a build-graph tool earlier in CI. When the file
     exists, adds a deterministic change-risk row (Low, Moderate, High or Critical) with no model call. Relative to
     <code>GITHUB_WORKSPACE</code> when that is set, otherwise to the working directory. Host configuration only: a
     repository settings file or a comment cannot set it, because the file is read from the host. See
-    <a href="#blast-radius">Blast radius</a>.</td>
+    <a href="#structural-reach">Structural reach</a>.</td>
   </tr>
 </table>
 
@@ -379,16 +379,16 @@ The merged verdict is deliberately never less alarming than the worst chunk: a c
 cannot raise a score, clear a security concern, or soften a risk level set by another chunk.
 :::
 
-### Blast radius
+### Structural reach
 
 :::tip
 
-When `blast_radius_input_file` points at a file that exists, the review gets one row at the top that rates how
+When `structural_reach_input_file` points at a file that exists, the review gets one row at the top that rates how
 risky the change is to merge. The row is computed from that file and the diff, not by the model, so the same PR
 always gets the same rating.
 
 ```
-💣 Blast radius: Critical
+🔗 Structural reach: Critical
 Reach: 69 projects, cross-domain
 Churn: 2 files, +33/-1
 Sensitivity: payouts
@@ -423,8 +423,8 @@ The row lists each factor and names the one that set the band.
 structural and sensitivity facts the model cannot see in the diff.
 
 **Input file.** Any build-graph tool (Nx, Bazel, Gradle, Turborepo, and so on) can write the reach facts in an
-earlier CI step, so pr-agent needs no adapter per tool. Point `blast_radius_input_file` at the file in host
-configuration, for example the `PR_REVIEWER__BLAST_RADIUS_INPUT_FILE` environment variable. Every field is
+earlier CI step, so pr-agent needs no adapter per tool. Point `structural_reach_input_file` at the file in host
+configuration, for example the `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE` environment variable. Every field is
 optional:
 
 ```json
@@ -456,10 +456,10 @@ transitive dependents. This step writes them as `dependents`, and lists affected
 ```bash
 affected() { npx nx show projects --affected --base="$BASE_SHA" --head="$HEAD_SHA" --json "$@"; }
 affected | jq --argjson sensitive "$(affected -p 'tag:sensitive')" \
-  '{version: 1, dependents: ., sensitive_domains: $sensitive}' > blast-radius.json
+  '{version: 1, dependents: ., sensitive_domains: $sensitive}' > structural-reach.json
 ```
 
-Then set `PR_REVIEWER__BLAST_RADIUS_INPUT_FILE=blast-radius.json` for the review step. Another tool needs only a
+Then set `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE=structural-reach.json` for the review step. Another tool needs only a
 query that lists the affected projects or packages.
 
 **Failure handling.** The row never blocks a review. If the setting is empty, the input file is missing or does

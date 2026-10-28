@@ -28,7 +28,6 @@ from yaml.tokens import (
 )
 
 import pr_agent.algo.comment_identity as _ci
-from pr_agent.algo.blast_radius import render_blast_radius
 from pr_agent.algo.git_patch_processing import (
     NO_NEWLINE_AT_EOF_MARKER,
     extract_hunk_headers,
@@ -38,6 +37,7 @@ from pr_agent.algo.git_patch_processing import (
 )
 from pr_agent.algo.language_handler import build_language_file_matcher
 from pr_agent.algo.output_models import PRType, parse_failure_modes
+from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.log import get_logger
@@ -331,8 +331,8 @@ def convert_to_markdown_v2(output_data: dict,
                     value = _ci.emphasize_header(
                         value.strip(), only_markdown=True) if isinstance(value, str) else _ci.as_review_text(value)
                     markdown_text += f"{value}\n\n"
-        elif key.lower() == 'blast_radius':
-            markdown_text += render_blast_radius(value, gfm_supported)
+        elif key.lower() == 'structural_reach':
+            markdown_text += render_structural_reach(value, gfm_supported)
         elif 'risk level' in key_nice.lower():
             risk_value = str(value).strip().lower().replace("_", " ")
             risk_display = risk_value.capitalize() if risk_value else "Unknown"

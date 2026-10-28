@@ -1,4 +1,4 @@
-"""Deterministic blast-radius row for /review.
+"""Deterministic structural-reach row for /review.
 
 Rates a change Low, Moderate, High or Critical from structural reach and sensitivity in an
 input file written by a build-graph tool, and churn from the diff. The row appears only
@@ -34,13 +34,13 @@ IGNORED_CHURN = re.compile(
     r"|(^|/)(vendor|node_modules)/"
 )
 
-def build_blast_radius(files, resolve_path) -> dict | None:
+def build_structural_reach(files, resolve_path) -> dict | None:
     """Return the row for this review, or None. Never raises."""
     try:
-        structure = load_structure(get_settings().pr_reviewer.get("blast_radius_input_file", ""), resolve_path)
+        structure = load_structure(get_settings().pr_reviewer.get("structural_reach_input_file", ""), resolve_path)
         return assess_change(files, structure)
     except Exception as e:
-        get_logger().warning(f"Blast radius row skipped: {e!r}")
+        get_logger().warning(f"Structural reach row skipped: {e!r}")
         return None
 
 
@@ -57,9 +57,9 @@ def assess_change(files, structure) -> dict | None:
     }
 
 
-def render_blast_radius(row: dict, gfm_supported: bool) -> str:
+def render_structural_reach(row: dict, gfm_supported: bool) -> str:
     if not _is_row(row):
-        get_logger().warning("Skipping malformed blast radius row", artifact={"row": row})
+        get_logger().warning("Skipping malformed structural reach row", artifact={"row": row})
         return ""
     band = _escape(row["band"], gfm_supported)
     lines = [
@@ -68,10 +68,10 @@ def render_blast_radius(row: dict, gfm_supported: bool) -> str:
     ]
     rationale = f"Rating driven by {_escape(row['driver'], gfm_supported)}"
     if gfm_supported:
-        parts = [f"💣&nbsp;<strong>Blast radius</strong>: <strong>{band}</strong>", *lines, f"<em>{rationale}</em>"]
+        parts = [f"🔗&nbsp;<strong>Structural reach</strong>: <strong>{band}</strong>", *lines, f"<em>{rationale}</em>"]
         return f"<tr><td>{'<br>'.join(parts)}</td></tr>\n"
     bullets = "".join(f"- {line}\n" for line in [*lines, rationale])
-    return f"### 💣 Blast radius: **{band}**\n\n{bullets}\n"
+    return f"### 🔗 Structural reach: **{band}**\n\n{bullets}\n"
 
 
 # Risk model: impact (reach, sensitivity) x likelihood (churn).
@@ -208,19 +208,19 @@ def load_structure(path, resolve_path):
         return None
     resolved = resolve_path(path)
     if resolved is None:
-        get_logger().info(f"Blast radius: no input file at '{path}'")
+        get_logger().info(f"Structural reach: no input file at '{path}'")
         return None
     try:
         if resolved.stat().st_size > MAX_INPUT_BYTES:
-            get_logger().warning(f"Blast radius: input file '{path}' is larger than {MAX_INPUT_BYTES} bytes")
+            get_logger().warning(f"Structural reach: input file '{path}' is larger than {MAX_INPUT_BYTES} bytes")
             return None
         raw = json.loads(resolved.read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
-        get_logger().warning(f"Blast radius: could not read input file '{path}': {e!r}")
+        get_logger().warning(f"Structural reach: could not read input file '{path}': {e!r}")
         return None
     structure = parse_structure(raw)
     if structure is None:
-        get_logger().warning(f"Blast radius: input file '{path}' does not match the schema")
+        get_logger().warning(f"Structural reach: input file '{path}' does not match the schema")
     return structure
 
 

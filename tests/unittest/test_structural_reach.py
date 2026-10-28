@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pr_agent.algo import blast_radius as br
+from pr_agent.algo import structural_reach as sr
 from pr_agent.algo.artifacts import resolve_artifact_path
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
@@ -13,7 +13,7 @@ from pr_agent.config_security import CLI_HOST_ONLY_KEYS_BY_SECTION
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
-_KEYS = ("pr_reviewer.blast_radius_input_file",)
+_KEYS = ("pr_reviewer.structural_reach_input_file",)
 
 STRUCTURE = {"reach": 69, "cross_domain": True, "sensitive_domains": []}
 SMALL_CHURN = {"files": 1, "added": 1, "deleted": 0}
@@ -21,11 +21,11 @@ LARGE_CHURN = {"files": 40, "added": 500, "deleted": 0}
 
 
 @pytest.fixture
-def blast_settings(monkeypatch, tmp_path):
+def reach_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
     snapshot = snapshot_settings(_KEYS)
     settings = get_settings()
-    settings.set("pr_reviewer.blast_radius_input_file", "")
+    settings.set("pr_reviewer.structural_reach_input_file", "")
     yield settings
     restore_settings(snapshot)
 
@@ -39,32 +39,32 @@ def _multi_file_diff():
 
 
 def _write_input(tmp_path, payload):
-    path = tmp_path / "blast-radius.json"
+    path = tmp_path / "structural-reach.json"
     path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
     return path.name
 
 
 def test_reach_band():
-    assert br.reach_band(None) is None
-    assert br.reach_band(2) == "narrow"
-    assert br.reach_band(10) == "moderate"
-    assert br.reach_band(50) == "wide"
+    assert sr.reach_band(None) is None
+    assert sr.reach_band(2) == "narrow"
+    assert sr.reach_band(10) == "moderate"
+    assert sr.reach_band(50) == "wide"
 
 
 def test_churn_band():
-    assert br.churn_band(None) is None
-    assert br.churn_band({"files": 1, "added": 1, "deleted": 0}) == "small"
-    assert br.churn_band({"files": 3, "added": 60, "deleted": 0}) == "moderate"
-    assert br.churn_band({"files": 7, "added": 1, "deleted": 0}) == "moderate"
-    assert br.churn_band({"files": 40, "added": 10, "deleted": 0}) == "large"
-    assert br.churn_band({"files": 2, "added": 300, "deleted": 200}) == "large"
+    assert sr.churn_band(None) is None
+    assert sr.churn_band({"files": 1, "added": 1, "deleted": 0}) == "small"
+    assert sr.churn_band({"files": 3, "added": 60, "deleted": 0}) == "moderate"
+    assert sr.churn_band({"files": 7, "added": 1, "deleted": 0}) == "moderate"
+    assert sr.churn_band({"files": 40, "added": 10, "deleted": 0}) == "large"
+    assert sr.churn_band({"files": 2, "added": 300, "deleted": 200}) == "large"
 
 
 @pytest.mark.parametrize(("reach", "expected"), [
     (0, "narrow"), (3, "narrow"), (4, "moderate"), (25, "moderate"), (26, "wide"),
 ])
 def test_reach_band_boundaries(reach, expected):
-    assert br.reach_band(reach) == expected
+    assert sr.reach_band(reach) == expected
 
 
 @pytest.mark.parametrize(("files", "added", "deleted", "expected"), [
@@ -82,11 +82,11 @@ def test_reach_band_boundaries(reach, expected):
     (31, 1, 0, "large"),
 ])
 def test_churn_band_boundaries(files, added, deleted, expected):
-    assert br.churn_band({"files": files, "added": added, "deleted": deleted}) == expected
+    assert sr.churn_band({"files": files, "added": added, "deleted": deleted}) == expected
 
 
 def test_compose_low():
-    risk = br.compose_risk(
+    risk = sr.compose_risk(
         {"reach": 2, "cross_domain": False, "sensitive_domains": []},
         {"files": 1, "added": 2, "deleted": 0},
     )
@@ -94,7 +94,7 @@ def test_compose_low():
 
 
 def test_compose_moderate_on_wide_reach():
-    risk = br.compose_risk(
+    risk = sr.compose_risk(
         {"reach": 50, "cross_domain": False, "sensitive_domains": []},
         {"files": 1, "added": 1, "deleted": 0},
     )
@@ -102,7 +102,7 @@ def test_compose_moderate_on_wide_reach():
 
 
 def test_compose_high_on_wide_and_large():
-    risk = br.compose_risk(
+    risk = sr.compose_risk(
         {"reach": 50, "cross_domain": True, "sensitive_domains": []},
         {"files": 40, "added": 500, "deleted": 50},
     )
@@ -110,7 +110,7 @@ def test_compose_high_on_wide_and_large():
 
 
 def test_compose_sensitive_escalates_regardless_of_size():
-    risk = br.compose_risk(
+    risk = sr.compose_risk(
         {"reach": 2, "cross_domain": False, "sensitive_domains": ["auth"]},
         {"files": 1, "added": 1, "deleted": 0},
     )
@@ -119,7 +119,7 @@ def test_compose_sensitive_escalates_regardless_of_size():
 
 
 def test_compose_sensitive_plus_wide_is_critical():
-    risk = br.compose_risk(
+    risk = sr.compose_risk(
         {"reach": 50, "cross_domain": True, "sensitive_domains": ["payments"]},
         {"files": 40, "added": 900, "deleted": 0},
     )
@@ -127,14 +127,14 @@ def test_compose_sensitive_plus_wide_is_critical():
 
 
 def test_compose_reach_only_when_no_churn():
-    risk = br.compose_risk({"reach": 50, "cross_domain": False, "sensitive_domains": []}, None)
+    risk = sr.compose_risk({"reach": 50, "cross_domain": False, "sensitive_domains": []}, None)
     assert risk["band"] == "Moderate"
     assert any("reach" in reason for reason in risk["reasons"])
     assert not any("churn" in reason for reason in risk["reasons"])
 
 
 def test_compose_cross_domain_alone_is_moderate():
-    risk = br.compose_risk(
+    risk = sr.compose_risk(
         {"reach": 2, "cross_domain": True, "sensitive_domains": []},
         {"files": 1, "added": 2, "deleted": 0},
     )
@@ -153,9 +153,9 @@ def test_compose_cross_domain_alone_is_moderate():
     (2, None, "High"),
 ])
 def test_compose_sensitive_escalation_by_reach_or_churn(reach, churn, expected):
-    risk = br.compose_risk({"reach": reach, "cross_domain": False, "sensitive_domains": ["auth"]}, churn)
+    risk = sr.compose_risk({"reach": reach, "cross_domain": False, "sensitive_domains": ["auth"]}, churn)
     assert risk["band"] == expected
-    assert risk["level"] == br.BANDS.index(expected)
+    assert risk["level"] == sr.BANDS.index(expected)
 
 
 @pytest.mark.parametrize(("structure", "churn", "expected"), [
@@ -169,12 +169,12 @@ def test_compose_sensitive_escalation_by_reach_or_churn(reach, churn, expected):
     (None, None, "contained reach and churn"),
 ])
 def test_driver_names_the_strongest_axis(structure, churn, expected):
-    assert br.driver(structure, churn) == expected
+    assert sr.driver(structure, churn) == expected
 
 
 def test_count_patch_lines_ignores_headers():
     patch = "--- a/x\n+++ b/x\n@@\n+added one\n+added two\n-removed one\n unchanged"
-    assert br.count_patch_lines(patch) == (2, 1)
+    assert sr.count_patch_lines(patch) == (2, 1)
 
 
 def test_compute_churn_excludes_generated_and_sums():
@@ -183,16 +183,16 @@ def test_compute_churn_excludes_generated_and_sums():
         _file("package-lock.json", "+lots\n+more"),
         _file("libs/b/foo.snap", "+snap"),
     ]
-    assert br.compute_churn(files) == {"files": 1, "added": 2, "deleted": 1}
+    assert sr.compute_churn(files) == {"files": 1, "added": 2, "deleted": 1}
 
 
 def test_compute_churn_none_without_diff():
-    assert br.compute_churn(None) is None
+    assert sr.compute_churn(None) is None
 
 
 def test_compute_churn_reads_file_patch_info():
     files = [FilePatchInfo(base_file="", head_file="", patch="@@\n+a\n-b\n-c", filename="src/app.py")]
-    assert br.compute_churn(files) == {"files": 1, "added": 1, "deleted": 2}
+    assert sr.compute_churn(files) == {"files": 1, "added": 1, "deleted": 2}
 
 
 IGNORED_MECHANICAL_FILES = [
@@ -265,15 +265,15 @@ AUTHORED_FILES = [
 
 
 def test_ignored_churn_matches_mechanical_files():
-    assert [name for name in IGNORED_MECHANICAL_FILES if not br.IGNORED_CHURN.search(name)] == []
+    assert [name for name in IGNORED_MECHANICAL_FILES if not sr.IGNORED_CHURN.search(name)] == []
 
 
 def test_ignored_churn_keeps_authored_files():
-    assert [name for name in AUTHORED_FILES if br.IGNORED_CHURN.search(name)] == []
+    assert [name for name in AUTHORED_FILES if sr.IGNORED_CHURN.search(name)] == []
 
 
 def test_assess_with_structure():
-    row = br.assess_change([_file("a.ts", "+a\n+b\n-c")], structure=STRUCTURE)
+    row = sr.assess_change([_file("a.ts", "+a\n+b\n-c")], structure=STRUCTURE)
     assert row["band"] == "Moderate"
     assert {"label": "Reach", "value": "69 projects, cross-domain"} in row["factors"]
     assert {"label": "Churn", "value": "1 file, +2/-1"} in row["factors"]
@@ -281,8 +281,8 @@ def test_assess_with_structure():
 
 
 def test_assess_without_structure_is_none():
-    assert br.assess_change(_multi_file_diff(), None) is None
-    assert br.assess_change(_multi_file_diff(), {}) is None
+    assert sr.assess_change(_multi_file_diff(), None) is None
+    assert sr.assess_change(_multi_file_diff(), {}) is None
 
 
 @pytest.mark.parametrize(
@@ -301,26 +301,26 @@ def test_assess_without_structure_is_none():
         {"domains": "draw"},
         {"domains": [1, 2]},
         {"sensitive_domains": [""]},
-        {"sensitive_domains": ["x" * (br.MAX_NAME_CHARS + 1)]},
+        {"sensitive_domains": ["x" * (sr.MAX_NAME_CHARS + 1)]},
         {},
         {"unrelated": 1},
     ],
 )
 def test_parse_structure_rejects_malformed_input(raw):
-    assert br.parse_structure(raw) is None
+    assert sr.parse_structure(raw) is None
 
 
 def test_parse_structure_accepts_zero_reach():
-    assert br.parse_structure({"reach": 0}) == {"reach": 0}
+    assert sr.parse_structure({"reach": 0}) == {"reach": 0}
 
 
 def test_parse_structure_accepts_name_of_exactly_the_limit():
-    name = "x" * br.MAX_NAME_CHARS
-    assert br.parse_structure({"domains": [name]}) == {"domains": [name]}
+    name = "x" * sr.MAX_NAME_CHARS
+    assert sr.parse_structure({"domains": [name]}) == {"domains": [name]}
 
 
 def test_parse_structure_keeps_known_fields_and_drops_unknown():
-    parsed = br.parse_structure({
+    parsed = sr.parse_structure({
         "version": 1,
         "reach": 4,
         "dependents": ["a", "b"],
@@ -339,83 +339,83 @@ def test_parse_structure_keeps_known_fields_and_drops_unknown():
 
 
 def test_parse_structure_derives_reach_from_dependents():
-    assert br.parse_structure({"dependents": ["a", "b", "c"]})["reach"] == 3
+    assert sr.parse_structure({"dependents": ["a", "b", "c"]})["reach"] == 3
 
 
-def test_load_structure_reads_file_under_workspace(blast_settings, tmp_path):
+def test_load_structure_reads_file_under_workspace(reach_settings, tmp_path):
     name = _write_input(tmp_path, {"reach": 5, "domains": ["draw"]})
-    assert br.load_structure(name, resolve_artifact_path) == {"reach": 5, "domains": ["draw"]}
+    assert sr.load_structure(name, resolve_artifact_path) == {"reach": 5, "domains": ["draw"]}
 
 
 @pytest.mark.parametrize("payload", ["{not json", json.dumps({"reach": "five"}), "\udcff"])
-def test_load_structure_fails_open_on_bad_file(blast_settings, tmp_path, payload):
-    path = tmp_path / "blast-radius.json"
+def test_load_structure_fails_open_on_bad_file(reach_settings, tmp_path, payload):
+    path = tmp_path / "structural-reach.json"
     path.write_bytes(payload.encode("utf-8", "surrogateescape"))
-    assert br.load_structure(path.name, resolve_artifact_path) is None
+    assert sr.load_structure(path.name, resolve_artifact_path) is None
 
 
-def test_load_structure_ignores_non_string_path(blast_settings, tmp_path):
+def test_load_structure_ignores_non_string_path(reach_settings, tmp_path):
     name = _write_input(tmp_path, {"reach": 5})
-    assert br.load_structure(tmp_path / name, resolve_artifact_path) is None
-    assert br.load_structure(None, resolve_artifact_path) is None
+    assert sr.load_structure(tmp_path / name, resolve_artifact_path) is None
+    assert sr.load_structure(None, resolve_artifact_path) is None
 
 
-def test_load_structure_rejects_missing_and_outside_files(blast_settings, tmp_path):
-    outside = tmp_path.parent / "outside-blast-radius.json"
+def test_load_structure_rejects_missing_and_outside_files(reach_settings, tmp_path):
+    outside = tmp_path.parent / "outside-structural-reach.json"
     outside.write_text(json.dumps({"reach": 5}), encoding="utf-8")
     try:
-        assert br.load_structure("missing.json", resolve_artifact_path) is None
-        assert br.load_structure(str(outside), resolve_artifact_path) is None
-        assert br.load_structure("", resolve_artifact_path) is None
+        assert sr.load_structure("missing.json", resolve_artifact_path) is None
+        assert sr.load_structure(str(outside), resolve_artifact_path) is None
+        assert sr.load_structure("", resolve_artifact_path) is None
     finally:
         outside.unlink()
 
 
-def test_load_structure_rejects_oversized_file(blast_settings, tmp_path, monkeypatch):
-    monkeypatch.setattr(br, "MAX_INPUT_BYTES", 10)
+def test_load_structure_rejects_oversized_file(reach_settings, tmp_path, monkeypatch):
+    monkeypatch.setattr(sr, "MAX_INPUT_BYTES", 10)
     name = _write_input(tmp_path, {"reach": 5, "domains": ["a-long-domain-name"]})
-    assert br.load_structure(name, resolve_artifact_path) is None
+    assert sr.load_structure(name, resolve_artifact_path) is None
 
 
 @pytest.mark.parametrize(("size_offset", "expected"), [(0, {"reach": 5}), (-1, None)])
-def test_load_structure_size_limit_is_inclusive(blast_settings, tmp_path, monkeypatch, size_offset, expected):
+def test_load_structure_size_limit_is_inclusive(reach_settings, tmp_path, monkeypatch, size_offset, expected):
     name = _write_input(tmp_path, {"reach": 5})
-    monkeypatch.setattr(br, "MAX_INPUT_BYTES", (tmp_path / name).stat().st_size + size_offset)
-    assert br.load_structure(name, resolve_artifact_path) == expected
+    monkeypatch.setattr(sr, "MAX_INPUT_BYTES", (tmp_path / name).stat().st_size + size_offset)
+    assert sr.load_structure(name, resolve_artifact_path) == expected
 
 
-def test_build_reads_input_file(blast_settings, tmp_path):
-    blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, STRUCTURE))
-    row = br.build_blast_radius([_file("a.ts", "+a")], resolve_artifact_path)
+def test_build_reads_input_file(reach_settings, tmp_path):
+    reach_settings.set("pr_reviewer.structural_reach_input_file", _write_input(tmp_path, STRUCTURE))
+    row = sr.build_structural_reach([_file("a.ts", "+a")], resolve_artifact_path)
     assert row["band"] == "Moderate"
 
 
-def test_build_has_no_row_without_input_file(blast_settings, tmp_path):
-    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
-    blast_settings.set("pr_reviewer.blast_radius_input_file", "missing.json")
-    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
-    blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, "{broken"))
-    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
+def test_build_has_no_row_without_input_file(reach_settings, tmp_path):
+    assert sr.build_structural_reach(_multi_file_diff(), resolve_artifact_path) is None
+    reach_settings.set("pr_reviewer.structural_reach_input_file", "missing.json")
+    assert sr.build_structural_reach(_multi_file_diff(), resolve_artifact_path) is None
+    reach_settings.set("pr_reviewer.structural_reach_input_file", _write_input(tmp_path, "{broken"))
+    assert sr.build_structural_reach(_multi_file_diff(), resolve_artifact_path) is None
 
 
 def test_build_has_no_row_when_setting_is_missing(monkeypatch):
-    monkeypatch.setattr(br, "get_settings", lambda: SimpleNamespace(pr_reviewer={}))
-    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
+    monkeypatch.setattr(sr, "get_settings", lambda: SimpleNamespace(pr_reviewer={}))
+    assert sr.build_structural_reach(_multi_file_diff(), resolve_artifact_path) is None
 
 
-def test_build_fails_open_on_any_exception(blast_settings, monkeypatch):
+def test_build_fails_open_on_any_exception(reach_settings, monkeypatch):
     def boom(*_args, **_kwargs):
         raise RuntimeError("unexpected")
 
-    monkeypatch.setattr(br, "assess_change", boom)
-    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
+    monkeypatch.setattr(sr, "assess_change", boom)
+    assert sr.build_structural_reach(_multi_file_diff(), resolve_artifact_path) is None
 
 
 def test_render_gfm_row():
-    row = br.assess_change([_file("a.ts", "+a\n+b\n-c")], structure=STRUCTURE)
-    rendered = br.render_blast_radius(row, gfm_supported=True)
+    row = sr.assess_change([_file("a.ts", "+a\n+b\n-c")], structure=STRUCTURE)
+    rendered = sr.render_structural_reach(row, gfm_supported=True)
     assert rendered == (
-        "<tr><td>💣&nbsp;<strong>Blast radius</strong>: <strong>Moderate</strong>"
+        "<tr><td>🔗&nbsp;<strong>Structural reach</strong>: <strong>Moderate</strong>"
         "<br>Reach: 69 projects, cross-domain<br>Churn: 1 file, +2/-1"
         "<br><em>Rating driven by wide reach</em></td></tr>\n"
     )
@@ -429,23 +429,23 @@ MARKDOWN_ROW = {
 
 
 def test_render_markdown_escapes_special_characters():
-    assert br.render_blast_radius(MARKDOWN_ROW, gfm_supported=False) == (
-        "### 💣 Blast radius: **High**\n\n"
+    assert sr.render_structural_reach(MARKDOWN_ROW, gfm_supported=False) == (
+        "### 🔗 Structural reach: **High**\n\n"
         "- L\\[1\\]: \\`v\\`\\|x &lt;b&gt;\n"
         "- Rating driven by a\\_b\\*c\n\n"
     )
 
 
 def test_render_gfm_keeps_special_characters_unescaped():
-    assert br.render_blast_radius(MARKDOWN_ROW, gfm_supported=True) == (
-        "<tr><td>💣&nbsp;<strong>Blast radius</strong>: <strong>High</strong>"
+    assert sr.render_structural_reach(MARKDOWN_ROW, gfm_supported=True) == (
+        "<tr><td>🔗&nbsp;<strong>Structural reach</strong>: <strong>High</strong>"
         "<br>L[1]: `v`|x &lt;b&gt;<br><em>Rating driven by a_b*c</em></td></tr>\n"
     )
 
 
 def test_render_escapes_input_values():
-    row = br.assess_change(None, structure={"reach": 1, "sensitive_domains": ["<img src=x>"]})
-    rendered = br.render_blast_radius(row, gfm_supported=True)
+    row = sr.assess_change(None, structure={"reach": 1, "sensitive_domains": ["<img src=x>"]})
+    rendered = sr.render_structural_reach(row, gfm_supported=True)
     assert "<img" not in rendered
     assert "&lt;img src=x&gt;" in rendered
 
@@ -460,26 +460,26 @@ def test_render_escapes_input_values():
 ])
 def test_render_skips_row_with_malformed_factor(factors):
     row = {"band": "Low", "factors": factors, "driver": "x"}
-    assert br.render_blast_radius(row, gfm_supported=True) == ""
-    assert br.render_blast_radius(row, gfm_supported=False) == ""
+    assert sr.render_structural_reach(row, gfm_supported=True) == ""
+    assert sr.render_structural_reach(row, gfm_supported=False) == ""
 
 
 def test_render_skips_row_with_non_string_driver():
-    assert br.render_blast_radius({"band": "Low", "factors": [], "driver": 1}, gfm_supported=True) == ""
+    assert sr.render_structural_reach({"band": "Low", "factors": [], "driver": 1}, gfm_supported=True) == ""
 
 
 @pytest.mark.parametrize("row", ["Critical", {}, {"band": "Severe", "factors": [], "driver": "x"},
                                  {"band": "Low", "factors": [{"label": 1}], "driver": "x"}])
 def test_render_skips_malformed_row(row):
-    assert br.render_blast_radius(row, gfm_supported=True) == ""
-    assert br.render_blast_radius(row, gfm_supported=False) == ""
+    assert sr.render_structural_reach(row, gfm_supported=True) == ""
+    assert sr.render_structural_reach(row, gfm_supported=False) == ""
 
 
 def test_convert_to_markdown_renders_row_first():
-    row = br.assess_change([_file("a.ts", "+a")], structure=STRUCTURE)
-    review = {"review": {"blast_radius": row, "estimated_effort_to_review_[1-5]": "2"}}
+    row = sr.assess_change([_file("a.ts", "+a")], structure=STRUCTURE)
+    review = {"review": {"structural_reach": row, "estimated_effort_to_review_[1-5]": "2"}}
     markdown = convert_to_markdown_v2(review, gfm_supported=True)
-    assert markdown.index("Blast radius") < markdown.index("Estimated effort to review")
+    assert markdown.index("Structural reach") < markdown.index("Estimated effort to review")
 
 
 def _prepare(reviewer, review_yaml, diff_files):
@@ -503,30 +503,30 @@ def _reviewer():
     return reviewer
 
 
-def test_prepare_pr_review_adds_row_when_input_file_exists(blast_settings, tmp_path):
-    blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, STRUCTURE))
+def test_prepare_pr_review_adds_row_when_input_file_exists(reach_settings, tmp_path):
+    reach_settings.set("pr_reviewer.structural_reach_input_file", _write_input(tmp_path, STRUCTURE))
     markdown = _prepare(_reviewer(), "review:\n  relevant_tests: |\n    No\n", [_file("a.ts", "+a")])
-    assert "💣&nbsp;<strong>Blast radius</strong>: <strong>Moderate</strong>" in markdown
+    assert "🔗&nbsp;<strong>Structural reach</strong>: <strong>Moderate</strong>" in markdown
 
 
-def test_prepare_pr_review_has_no_row_without_input_file(blast_settings):
+def test_prepare_pr_review_has_no_row_without_input_file(reach_settings):
     markdown = _prepare(_reviewer(), "review:\n  relevant_tests: |\n    No\n", [_file("a.ts", "+a")])
-    assert "Blast radius" not in markdown
+    assert "Structural reach" not in markdown
 
 
-def test_prepare_pr_review_drops_model_supplied_row(blast_settings):
-    review_yaml = "review:\n  relevant_tests: |\n    No\n  blast_radius: Critical\n"
+def test_prepare_pr_review_drops_model_supplied_row(reach_settings):
+    review_yaml = "review:\n  relevant_tests: |\n    No\n  structural_reach: Critical\n"
     markdown = _prepare(_reviewer(), review_yaml, [_file("a.ts", "+a")])
-    assert "Blast radius" not in markdown
+    assert "Structural reach" not in markdown
 
 
 def test_input_file_is_host_only_for_comment_arguments():
-    assert "blast_radius_input_file" in CLI_HOST_ONLY_KEYS_BY_SECTION["pr_reviewer"]
+    assert "structural_reach_input_file" in CLI_HOST_ONLY_KEYS_BY_SECTION["pr_reviewer"]
 
 
 def test_count_patch_lines_counts_repeated_sign_content_inside_hunks():
     patch = "--- a/x.cpp\n+++ b/x.cpp\n@@ -1,1 +1,1 @@\n+++counter;\n---counter;\n context"
-    assert br.count_patch_lines(patch) == (1, 1)
+    assert sr.count_patch_lines(patch) == (1, 1)
 
 
 @pytest.mark.parametrize(
@@ -537,8 +537,8 @@ def test_count_patch_lines_counts_repeated_sign_content_inside_hunks():
     ],
 )
 def test_render_keeps_multiline_values_on_one_line(gfm_supported, expected):
-    row = br.assess_change(None, structure={"reach": 1, "sensitive_domains": ["auth\n\n![x](https://example.com/x.png)"]})
-    rendered = br.render_blast_radius(row, gfm_supported=gfm_supported)
+    row = sr.assess_change(None, structure={"reach": 1, "sensitive_domains": ["auth\n\n![x](https://example.com/x.png)"]})
+    rendered = sr.render_structural_reach(row, gfm_supported=gfm_supported)
     sensitivity = next(line for line in rendered.split("<br>" if gfm_supported else "\n") if "Sensitivity" in line)
     assert sensitivity == expected
     assert "\n\n" not in rendered.split("Sensitivity", 1)[1].split("Rating driven", 1)[0]
