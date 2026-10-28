@@ -8,18 +8,18 @@ from pr_agent.tools.pr_similar_issue import Corpus, IssueLevel, Metadata, Record
 
 
 def test_metadata_config_uses_configdict_without_deprecation_warning():
+    code = (
+        "import warnings\n"
+        "from pydantic.warnings import PydanticDeprecatedSince20\n"
+        "warnings.simplefilter('error', PydanticDeprecatedSince20)\n"
+        "from pr_agent.tools.pr_similar_issue import Metadata\n"
+    )
     subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import warnings\n"
-            "from pydantic.warnings import PydanticDeprecatedSince20\n"
-            "warnings.simplefilter('error', PydanticDeprecatedSince20)\n"
-            "from pr_agent.tools.pr_similar_issue import Metadata\n",
-        ],
+        [sys.executable, "-c", code],
         check=True,
         capture_output=True,
         text=True,
+        timeout=60,
     )
 
     with warnings.catch_warnings(record=True) as recorded_warnings:
