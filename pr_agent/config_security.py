@@ -100,6 +100,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "http_request_timeout",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
+        "num_retries",
     }),
 }
 

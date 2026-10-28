@@ -173,6 +173,11 @@ class TestConfiguredClientRetries:
         get_settings().set("config.num_retries", value)
         assert _configured_client_retries() == DEFAULT_NUM_RETRIES
 
+    @pytest.mark.parametrize("value,expected", [(11, 10), (100, 10), ("15", 10)])
+    def test_excessive_values_are_clamped(self, value, expected):
+        get_settings().set("config.num_retries", value)
+        assert _configured_client_retries() == expected
+
 
 class TestIsRejectedRequest:
     @pytest.mark.parametrize("error", [

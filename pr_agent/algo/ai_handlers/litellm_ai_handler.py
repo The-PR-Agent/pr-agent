@@ -265,6 +265,9 @@ def _coerce_string_list_config(value):
     return None
 
 
+MAX_CONFIG_NUM_RETRIES = 10
+
+
 def _configured_client_retries():
     """config.num_retries as a non-negative int (unset/invalid = DEFAULT_NUM_RETRIES).
 
@@ -286,6 +289,11 @@ def _configured_client_retries():
     if parsed < 0:
         get_logger().warning(f"Ignoring negative config.num_retries: {parsed}")
         return DEFAULT_NUM_RETRIES
+    if parsed > MAX_CONFIG_NUM_RETRIES:
+        get_logger().warning(
+            f"Clamping config.num_retries from {parsed} to {MAX_CONFIG_NUM_RETRIES}"
+        )
+        return MAX_CONFIG_NUM_RETRIES
     return parsed
 
 
