@@ -835,6 +835,7 @@ class GitLabProvider(GitProvider):
         self.diff_files = None
         self._merge_request_changes_cache = None
         self.mr_commits = None
+        self._commit_diff_refs = None
         if not self.incremental.is_incremental:
             return
         self.unreviewed_files_map = {}
@@ -1008,6 +1009,7 @@ class GitLabProvider(GitProvider):
         self.incremental = incremental
         self.diff_files = None
         self.unreviewed_files_map = {}
+        self._commit_diff_refs = None
         project = self.gl.projects.get(self.id_project, lazy=True)
         gl_commit = project.commits.get(commit.sha)
         parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
@@ -1018,6 +1020,8 @@ class GitLabProvider(GitProvider):
         incremental.first_new_commit = SimpleNamespace(sha=commit.sha)
         incremental.last_seen_commit = SimpleNamespace(sha=parent_ids[0])
         self._incremental_head_sha = commit.sha
+        self._commit_diff_refs = SimpleNamespace(
+            base_commit_sha=parent_ids[0], start_commit_sha=parent_ids[0], head_commit_sha=commit.sha)
         for diff in gl_commit.diff(get_all=True):
             if diff.get("new_path"):
                 self.unreviewed_files_map[diff["new_path"]] = diff
@@ -1557,7 +1561,8 @@ class GitLabProvider(GitProvider):
         return False
 
     def resolve_outdated_inline_threads(self):
-        if not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False):
+        if (not get_settings().get("GITLAB.RESOLVE_OUTDATED_INLINE_THREADS", False)
+                or getattr(self, "_commit_diff_refs", None) is not None):
             return
         own_user_id = self._get_own_user_id()
         try:
@@ -1888,6 +1893,8 @@ class GitLabProvider(GitProvider):
                 return False
 
     def get_relevant_diff(self, relevant_file: str, relevant_line_in_file: str) -> dict | None:
+        if getattr(self, "_commit_diff_refs", None) is not None:
+            return self._commit_diff_refs
         _changes = self._get_merge_request_changes()
         _changes['changes'] = self._expand_submodule_changes(_changes.get('changes', []), _changes["diff_refs"])
         changes = _changes

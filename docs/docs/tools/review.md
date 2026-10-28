@@ -346,11 +346,19 @@ again, fixup commits that no longer exist are not reviewed, and commits that wer
 The `minimal_commits_for_incremental_review` and `minimal_minutes_for_incremental_review` thresholds apply as for a
 regular incremental review.
 
+Set `publish_output_no_suggestions = false` to skip the comment of a commit where nothing was found.
+With `inline_key_issues = true`, each finding is published as an inline comment on the commit it was found in,
+anchored to that commit's own diff, so GitHub and GitLab show it as outdated once a later commit changes those lines.
+A finding that cannot be anchored there, for example because the provider rejects its line, stays in that commit's
+review comment.
+
 Merge commits, empty commits and the root commit of a history have no diff of their own and are skipped. A commit that
 fails to review is reported like a failed review and does not stop the remaining commits. Every reviewed commit is a
 separate model call, so a PR with many commits costs accordingly; `-i` keeps repeated runs to the new commits.
 
 Per commit review is available on GitHub and GitLab. Other git providers fall back to a regular review of the whole PR.
+GitHub lists at most 250 commits of a PR, so a PR with more commits than that is also reviewed as a whole, with a
+notice explaining why.
 :::
 
 ### Reviewing a PR that does not fit in one call

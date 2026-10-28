@@ -183,6 +183,8 @@ class GithubProvider(GitProvider):
         if context.exists():
             context.pop("diff_files", None)
         self.incremental = incremental if incremental is not None else IncrementalPR(False)
+        if getattr(self, "_pr_head_commit", None) is not None:
+            self.last_commit_id, self._pr_head_commit = self._pr_head_commit, None
         if self.incremental.is_incremental:
             self.unreviewed_files_map = dict()
             self._get_incremental_commits()
@@ -367,6 +369,8 @@ class GithubProvider(GitProvider):
         incremental.first_new_commit = gh_commit
         incremental.last_seen_commit = parents[0]
         incremental.head_sha = commit.sha
+        self._pr_head_commit = getattr(self, "_pr_head_commit", None) or getattr(self, "last_commit_id", None)
+        self.last_commit_id = gh_commit
         self.unreviewed_files_map = {file.filename: file for file in gh_commit.get_files(commit_files_per_page=300)}
         return list(self.unreviewed_files_map)
 

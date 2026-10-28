@@ -321,6 +321,16 @@ class PRReviewer:
                                                   "so the whole PR was reviewed instead.")
             await self._run_review()
             return
+        total_commits = getattr(getattr(self.git_provider, "pr", None), "commits", None)
+        if isinstance(total_commits, int) and len(commits) < total_commits:
+            get_logger().warning(f"PR has {total_commits} commits but the git provider listed only {len(commits)}, "
+                                 f"reviewing the whole PR")
+            if publish_notice:
+                self.git_provider.publish_comment(
+                    f"This PR has {total_commits} commits, more than the {len(commits)} the git provider API "
+                    f"returns, so per commit review was skipped and the whole PR was reviewed instead.")
+            await self._run_review()
+            return
         commits = self._commits_to_review(commits)
         if commits is None:
             return
@@ -1466,8 +1476,7 @@ class PRReviewer:
             data['review']['key_issues_to_review'] = key_issues_to_review
 
         self._prepare_review_finding_state(data)
-        if (get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False)
-                and self._review_commit is None):
+        if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
             data = self._publish_key_issues_as_inline_comments(data)
 
         incremental_review_markdown_text = None

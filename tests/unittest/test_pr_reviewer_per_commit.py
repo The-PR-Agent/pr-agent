@@ -1,9 +1,12 @@
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from github import GithubException
 
 from pr_agent.algo.run_details import command_failed, init_run_details, record_command_failure
+from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import IncrementalPR, PRCommit
@@ -109,6 +112,21 @@ async def test_unsupported_provider_reviews_the_whole_pr_with_a_notice(settings)
 
     run_review.assert_awaited_once()
     assert "not supported" in provider.publish_comment.call_args.args[0]
+    provider.set_commit_review_scope.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_more_commits_than_the_provider_lists_reviews_the_whole_pr_with_a_notice(settings):
+    provider = _provider({})
+    provider.pr.commits = 251
+    reviewer = _reviewer(provider)
+
+    with patch.object(reviewer, "_run_review") as run_review:
+        await reviewer.run()
+
+    run_review.assert_awaited_once()
+    notice = provider.publish_comment.call_args.args[0]
+    assert "251 commits" in notice and "3 the git provider API returns" in notice
     provider.set_commit_review_scope.assert_not_called()
 
 
@@ -276,9 +294,16 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
     provider.should_publish_review_as_thread.return_value = False
     provider.get_pr_url.return_value = "https://host/pr/1"
     provider.get_pr_labels.return_value = []
+    provider.get_diff_files.return_value = [FilePatchInfo(base_file="", head_file="x\n", patch="", filename="a.py")]
+    provider._inline_comment_store = None
+    provider.get_persistent_comment_bodies.return_value = []
+    provider.get_recent_inline_comment_bodies.return_value = []
+    monkeypatch.setattr(get_settings().pr_reviewer, "inline_key_issues", True, raising=False)
 
     async def predict(prepare, **_):
-        reviewer.prediction = "review:\n  security_concerns: 'SQL injection: raw query'\n  key_issues_to_review: []\n"
+        reviewer.prediction = ("review:\n  security_concerns: 'SQL injection: raw query'\n  key_issues_to_review:\n"
+                               "  - relevant_file: a.py\n    issue_header: Bug\n    issue_content: Broken\n"
+                               "    start_line: 1\n    end_line: 1\n")
 
     monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", MagicMock(side_effect=lambda *_: _noop()))
@@ -288,6 +313,8 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
     bodies = [call.args[0] for call in provider.publish_comment.call_args_list]
     review = next(body for body in bodies if "Review of commit" in body)
     assert "[`aaaaaaa`](https://host/c/a) `Add parser`" in review
+    [suggestions] = provider.publish_code_suggestions.call_args.args
+    assert [suggestion["relevant_file"] for suggestion in suggestions] == ["a.py"]
     assert PRReviewIdentity.INCREMENTAL.value in review
     provider.publish_persistent_comment.assert_not_called()
     provider.publish_labels.assert_not_called()
@@ -296,3 +323,80 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
 
 async def _noop():
     return None
+
+
+def _key_issue(start_line, content):
+    return {"relevant_file": "a.py", "issue_header": "Possible Issue", "issue_content": content,
+            "start_line": start_line, "end_line": start_line}
+
+
+@pytest.fixture
+def inline_settings(monkeypatch):
+    monkeypatch.setattr(get_settings().config, "persistent_inline_comments", False, raising=False)
+    monkeypatch.setattr(get_settings().github, "try_fix_invalid_inline_comments", False, raising=False)
+    monkeypatch.setattr(get_settings().gitlab, "resolve_outdated_inline_threads", True, raising=False)
+    monkeypatch.setattr(get_settings().gitlab, "publish_code_suggestions_as_review", False, raising=False)
+
+
+def test_github_inline_findings_anchor_on_the_commit_and_rejected_ones_stay_in_the_summary(inline_settings):
+    file = SimpleNamespace(filename="a.py", status="modified", patch="", previous_filename=None,
+                           additions=1, deletions=1)
+    provider = _github_provider([SimpleNamespace(sha="parent")], [file])
+    head = SimpleNamespace(sha="head")
+    provider.last_commit_id = head
+    provider.set_commit_review_scope(PRCommit("child", "msg"), IncrementalPR(True))
+    gh_commit = provider._get_repo().get_commit.return_value
+    gh_commit.sha = "child"
+    provider.pr = MagicMock(url="https://api/pulls/1")
+    provider.max_comment_chars = 65000
+    provider.get_diff_files = MagicMock(return_value=[
+        FilePatchInfo(base_file="1\n", head_file="1\n2\n3\n4\n5\n", patch="@@ -1 +1,2 @@\n 1\n+2\n",
+                      filename="a.py")])
+    provider.pr.create_review.side_effect = [GithubException(422, {}, None), None]
+
+    def verify(method, url, input=None):
+        if method == "POST" and input["comments"][0]["line"] == 5:
+            raise GithubException(422, {}, None)
+        return {}, {"id": 7}
+
+    provider.pr._requester.requestJsonAndCheck.side_effect = verify
+    reviewer = _reviewer(provider)
+    anchored, unanchored = _key_issue(2, "Lock is never released."), _key_issue(5, "Line outside the commit.")
+
+    with patch("pr_agent.git_providers.github_provider.time.sleep"):
+        result = reviewer._publish_key_issues_as_inline_comments({"review": {"key_issues_to_review": [anchored,
+                                                                                                    unanchored]}})
+
+    assert [call.kwargs["commit"] for call in provider.pr.create_review.call_args_list] == [gh_commit, gh_commit]
+    [published] = provider.pr.create_review.call_args.kwargs["comments"]
+    assert published["line"] == 2 and "Lock is never released." in published["body"]
+    posts = [call for call in provider.pr._requester.requestJsonAndCheck.call_args_list if call.args[0] == "POST"]
+    assert {call.kwargs["input"]["commit_id"] for call in posts} == {"child"}
+    assert result["review"]["key_issues_to_review"] == [unanchored]
+
+    provider.get_incremental_commits(IncrementalPR(False))
+    assert provider.last_commit_id is head
+
+
+def test_gitlab_inline_findings_anchor_on_the_commit_diff_refs(inline_settings):
+    provider = _gitlab_provider()
+    change = {"old_path": "a.py", "new_path": "a.py", "diff": "@@ -1 +1 @@\n-x\n+y\n",
+              "new_file": False, "deleted_file": False, "renamed_file": False}
+    provider.gl.projects.get.return_value.commits.get.return_value = _gitlab_commit(["parent"], [change])
+    provider.set_commit_review_scope(PRCommit("child", "msg"), IncrementalPR(True))
+    provider.mr = MagicMock()
+    provider.id_mr = 1
+    provider.RE_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@[ ]?(.*)")
+    provider.get_diff_files = MagicMock(return_value=[
+        FilePatchInfo(base_file="x\n", head_file="y\n", patch=change["diff"], filename="a.py")])
+
+    assert provider.publish_code_suggestions([{"body": "finding", "relevant_file": "a.py",
+                                               "relevant_lines_start": 1, "relevant_lines_end": 1}])
+
+    position = provider.mr.discussions.create.call_args.args[0]["position"]
+    assert (position["base_sha"], position["start_sha"], position["head_sha"]) == ("parent", "parent", "child")
+    assert position["new_line"] == 1
+    provider.mr.discussions.list.assert_not_called()
+
+    provider.get_incremental_commits(IncrementalPR(False))
+    assert provider._commit_diff_refs is None
