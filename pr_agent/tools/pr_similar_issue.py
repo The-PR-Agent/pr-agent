@@ -6,7 +6,7 @@ from itertools import batched, islice
 
 import openai
 import tiktoken
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from pr_agent.algo import MAX_TOKENS
 from pr_agent.config_loader import get_settings
@@ -955,13 +955,12 @@ class IssueLevel(StrEnum):
 
 
 class Metadata(BaseModel):
+    model_config = ConfigDict(use_enum_values=True)
+
     repo: str
     username: str = Field(default="@codium")
     created_at: str = Field(default="01-01-1970 00:00:00.00000")
     level: IssueLevel = Field(default=IssueLevel.ISSUE)
-
-    class Config:
-        use_enum_values = True
 
 
 class Record(BaseModel):
