@@ -5,6 +5,8 @@ The fallback logs at DEBUG - the level every webhook server runs at, because
 `configuration.toml` ships `log_level="DEBUG"` - so the log call is on the hot path for any
 value YAML rejects.
 """
+import copy
+
 import pytest
 
 import pr_agent.agent.pr_agent as agent_module
@@ -90,3 +92,29 @@ async def test_a_plain_instruction_reaches_the_tool(monkeypatch, debug_logging, 
 
     assert handled is True
     assert review_tool.get("ran") is True
+
+
+@pytest.fixture
+def pr_description_section():
+    """The configured [pr_description] section, restored after the test."""
+    settings = get_settings()
+    original = copy.deepcopy(settings.as_dict()["PR_DESCRIPTION"])
+    yield original
+    settings.unset("PR_DESCRIPTION")
+    settings.set("PR_DESCRIPTION", original, merge=False)
+
+
+def test_a_section_argument_changes_only_the_keys_it_names(debug_logging, pr_description_section):
+    update_settings_from_args(["--pr_description={'publish_labels':true}"])
+
+    updated = get_settings().as_dict()["PR_DESCRIPTION"]
+    assert updated["publish_labels"] is True
+    assert {k: v for k, v in updated.items() if k != "publish_labels"} == {
+        k: v for k, v in pr_description_section.items() if k != "publish_labels"
+    }
+
+
+def test_a_section_argument_that_is_not_a_mapping_is_ignored(debug_logging, pr_description_section):
+    update_settings_from_args(["--pr_description=x"])
+
+    assert get_settings().as_dict()["PR_DESCRIPTION"] == pr_description_section

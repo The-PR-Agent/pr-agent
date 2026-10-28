@@ -802,7 +802,19 @@ def update_settings_from_args(args: list[str]) -> list[str]:
                     other_args.append(arg)
                     continue
                 key, value = _fix_key_value(*vals)
-                get_settings().set(key, value)
+                section_dict = get_settings().as_dict().get(key)
+                if isinstance(section_dict, dict):
+                    # whole-section arg merges into section as repo settings do
+                    if not isinstance(value, dict):
+                        get_logger().error(f'Ignoring argument {key}: a section can only be set to a mapping')
+                        continue
+                    from pr_agent.git_providers.utils import _merge_section_keys
+                    section_dict = copy.deepcopy(section_dict)
+                    _merge_section_keys(section_dict, value)
+                    get_settings().unset(key)
+                    get_settings().set(key, section_dict, merge=False)
+                else:
+                    get_settings().set(key, value)
                 get_logger().info(f'Updated setting {key} to: "{value}"')
             else:
                 other_args.append(arg)
