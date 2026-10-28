@@ -1889,7 +1889,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
 
     def prepare_logs(self, response, system, user, resp, finish_reason):
-        response_log = response.dict().copy()
+        if hasattr(response, "model_dump"):
+            response_log = response.model_dump().copy()
+        else:
+            response_log = response.dict().copy()
         response_log['system'] = system
         response_log['user'] = user
         response_log['output'] = resp
