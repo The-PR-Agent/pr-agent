@@ -1889,7 +1889,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         )
 
     def prepare_logs(self, response, system, user, resp, finish_reason):
-        response_log = response.dict().copy()
+        if hasattr(response, "model_dump"):
+            response_log = response.model_dump().copy()
+        else:
+            response_log = response.dict().copy()
         response_log['system'] = system
         response_log['user'] = user
         response_log['output'] = resp
@@ -2710,6 +2713,35 @@ class LiteLLMAIHandler(BaseAiHandler):
             raise ValueError("LITELLM.CACHE_CONTROL_INJECTION_POINTS must be a JSON/TOML array")
         return cache_control_injection_points
 
+    @staticmethod
+    def _resolve_bedrock_guardrail_config():
+        """Build the Bedrock Converse ``guardrailConfig`` from the [bedrock] settings.
+
+        Returns None when no guardrail is configured. Raises ValueError on an incomplete or invalid
+        configuration so it surfaces as a config error instead of being retried.
+        """
+        identifier = str(get_settings().get("BEDROCK.GUARDRAIL_IDENTIFIER", "") or "").strip()
+        version = str(get_settings().get("BEDROCK.GUARDRAIL_VERSION", "") or "").strip()
+        trace = str(get_settings().get("BEDROCK.GUARDRAIL_TRACE", "") or "disabled").strip().lower()
+        if not identifier and not version:
+            return None
+        if not identifier or not version:
+            raise ValueError("BEDROCK.GUARDRAIL_IDENTIFIER and BEDROCK.GUARDRAIL_VERSION must be set together")
+        if trace not in ("enabled", "enabled_full", "disabled"):
+            raise ValueError("BEDROCK.GUARDRAIL_TRACE must be one of: enabled, enabled_full, disabled")
+        return {"guardrailIdentifier": identifier, "guardrailVersion": version, "trace": trace}
+
+    @staticmethod
+    def _check_bedrock_guardrail_route(guardrail_config, model: str, request_provider: str | None) -> None:
+        """Fail closed for Bedrock routes that would silently drop the guardrail."""
+        if not guardrail_config:
+            return
+        # Unprefixed Bedrock models fall back to LiteLLM's version-dependent route inference (e.g. InvokeModel).
+        if request_provider == "bedrock_mantle" or (
+            request_provider == "bedrock" and not model.removeprefix("bedrock/").startswith("converse/")
+        ):
+            raise ValueError("Bedrock guardrails require the Converse route; use a 'bedrock/converse/' model")
+
     def _split_system_prompt_for_skills_cache(self, messages: list[dict], model: str, injection_points) -> None:
         """Add a cache breakpoint at the end of the shared skills prefix (#4007).
 
@@ -2882,11 +2914,13 @@ class LiteLLMAIHandler(BaseAiHandler):
         # Validate config-derived kwargs before the try/except below, so a malformed value raises a
         # ValueError config error instead of being wrapped as openai.APIError and retried.
         cache_control_injection_points = self._resolve_cache_control_injection_points()
+        bedrock_guardrail_config = self._resolve_bedrock_guardrail_config()
         custom_llm_provider = self._custom_llm_provider
         user_model = model
         routed_model = self._route_model_for_request(user_model, custom_llm_provider, configured_deployment_id)
         completion_model = self._normalize_gpt5_model_for_request(routed_model, user_model, custom_llm_provider)
         request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
+        self._check_bedrock_guardrail_route(bedrock_guardrail_config, completion_model, request_provider)
         deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
         if img_path:
             # Finish external image I/O before validating mutable credential fallbacks.
@@ -3264,6 +3298,14 @@ class LiteLLMAIHandler(BaseAiHandler):
                     kwargs["model_id"] = bedrock_model_id
                     get_logger().info(f"Using Bedrock custom inference profile: {bedrock_model_id}")
 
+                if bedrock_guardrail_config:
+                    if request_provider == "bedrock":
+                        kwargs["guardrailConfig"] = bedrock_guardrail_config
+                    else:
+                        get_logger().debug(
+                            f"Bedrock guardrail configured but not applied: {model} is not a Bedrock model"
+                        )
+
                 # OpenRouter provider routing, reasoning control and output cap.
                 # Registered reasoning models inherit config.reasoning_effort when
                 # no OpenRouter-specific effort or token budget is configured.
@@ -3333,6 +3375,13 @@ class LiteLLMAIHandler(BaseAiHandler):
                     _stream_cleanup=fallback_stream_cleanup, **fallback_kwargs,
                 )
 
+        # Bedrock returns a successful response whose content is the guardrail's block message.
+        if bedrock_guardrail_config and request_provider == "bedrock" and finish_reason == "content_filter":
+            raise ValueError(
+                f"Bedrock guardrail {bedrock_guardrail_config['guardrailIdentifier']} "
+                f"(version {bedrock_guardrail_config['guardrailVersion']}) blocked the {user_model} request"
+            )
+
         # Post-response bookkeeping happens outside the Bedrock IMDS lock above: it
         # touches no os.environ credentials, and in IMDS mode the lock serializes
         # every concurrent call, so holding it through logging and cost pricing
@@ -3353,10 +3402,12 @@ class LiteLLMAIHandler(BaseAiHandler):
 
     async def probe_completion(self, model: str, *, max_tokens: int = 10, timeout: int = 10, _completion=None) -> None:
         """Preserve the single-call health probe using request-local credentials."""
+        bedrock_guardrail_config = self._resolve_bedrock_guardrail_config()
         custom_llm_provider = self._custom_llm_provider
         configured_deployment_id = self.deployment_id
         routed_model = self._route_model_for_request(model, custom_llm_provider, configured_deployment_id)
         request_provider = self._resolve_configured_request_provider(routed_model, custom_llm_provider)
+        self._check_bedrock_guardrail_route(bedrock_guardrail_config, routed_model, request_provider)
         deployment_id = self._request_deployment_id(routed_model, request_provider, configured_deployment_id)
         use_aws_imds = self._should_use_aws_imds(request_provider)
         stream_cleanup = [] if use_aws_imds else None
@@ -3398,6 +3449,8 @@ class LiteLLMAIHandler(BaseAiHandler):
             probe_model_id = self._bedrock_model_id_for(model)
             if probe_model_id and request_provider == "bedrock":
                 kwargs["model_id"] = probe_model_id
+            if bedrock_guardrail_config and request_provider == "bedrock":
+                kwargs["guardrailConfig"] = bedrock_guardrail_config
             streaming = self._requires_streaming(kwargs["model"]) or self._force_streaming_for_request(
                 custom_llm_provider, kwargs.get("api_base")
             )

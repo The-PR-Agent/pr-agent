@@ -415,6 +415,19 @@ push_commands = [
 ]
 ```
 
+### BitBucket Server webhook
+
+For a BitBucket Server webhook deployment, new commits pushed to an open PR (the `pr:from_ref_updated` and `repo:refs_changed` events) run no tools by default. To run tools on each **push**, set (for example):
+
+```toml
+[bitbucket_server]
+handle_push_trigger = true
+push_commands = [
+    "/describe",
+    "/review",
+]
+```
+
 ### Azure DevOps provider
 
 To use Azure DevOps provider use the following settings in configuration.toml:

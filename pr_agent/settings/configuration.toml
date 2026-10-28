@@ -431,6 +431,8 @@ identity_request_timeout = 30 # positive seconds for authenticated-account verif
 [bitbucket_app]
 avoid_full_files = false
 request_timeout = 30 # positive seconds for connection and response-read inactivity timeouts
+handle_push_trigger = false # run push_commands when new commits are pushed to an open PR
+push_commands = []
 
 [local]
 # LocalGitProvider settings - uncomment to use paths other than default
@@ -458,6 +460,8 @@ webhook_password = ""
 [bitbucket_server]
 # url = "https://git.bitbucket.com"
 url = "" # URL to the BitBucket Server instance
+handle_push_trigger = false # run push_commands when new commits are pushed to an open PR
+push_commands = []
 
 [jira]
 # Jira Cloud ticket context. Only Jira Cloud is supported; the base URL is built as
@@ -518,6 +522,15 @@ base_models = {}
 # once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or
 # a prefix below the model's minimum).
 cache_control_injection_points = []
+
+[bedrock]
+# Amazon Bedrock Guardrails, applied to "bedrock/..." models via the Converse API
+# (https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-use-converse-api.html).
+# Host-only: these keys cannot be overridden from a repo's .pr_agent.toml.
+# To reach Bedrock through a VPC interface endpoint, set the AWS_BEDROCK_RUNTIME_ENDPOINT env var.
+guardrail_identifier = "" # guardrail ID or ARN; empty = disabled. When set, Bedrock models must use "bedrock/converse/..."; other Bedrock routes fail instead of running unguarded
+guardrail_version = "" # e.g. "1" or "DRAFT"; required when guardrail_identifier is set
+guardrail_trace = "disabled" # "enabled", "enabled_full" or "disabled"
 
 [openrouter]
 # OpenRouter provider routing, reasoning control and output cap. These apply only

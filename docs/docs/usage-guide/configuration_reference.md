@@ -423,6 +423,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 | --- | --- | --- |
 | `avoid_full_files` | false |  |
 | `request_timeout` | 30 | positive seconds for connection and response-read inactivity timeouts |
+| `handle_push_trigger` | false | run push_commands when new commits are pushed to an open PR |
+| `push_commands` | [] |  |
 
 
 ## `[local]` {#local}
@@ -443,6 +445,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "" | URL to the BitBucket Server instance |
+| `handle_push_trigger` | false | run push_commands when new commits are pushed to an open PR |
+| `push_commands` | [] |  |
 
 
 ## `[jira]` {#jira}
@@ -469,6 +473,15 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
 | `base_models` | {} | Optional: map an opaque request model id (for example a Bedrock application inference profile ARN) to a LiteLLM-priced model id, so run cost is reported instead of unavailable. Default empty; named models are priced by LiteLLM directly and need no entry here. |
 | `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude" or that are listed in a Claude thinking override; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
+
+
+## `[bedrock]` {#bedrock}
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `guardrail_identifier` | "" | guardrail ID or ARN; empty = disabled. When set, Bedrock models must use "bedrock/converse/..."; other Bedrock routes fail instead of running unguarded |
+| `guardrail_version` | "" | e.g. "1" or "DRAFT"; required when guardrail_identifier is set |
+| `guardrail_trace` | "disabled" | "enabled", "enabled_full" or "disabled" |
 
 
 ## `[openrouter]` {#openrouter}
