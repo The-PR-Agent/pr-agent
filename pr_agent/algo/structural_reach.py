@@ -35,10 +35,10 @@ def build_structural_reach(resolve_path) -> dict | None:
 def assess_change(structure) -> dict | None:
     if not structure:
         return None
-    row = {"factors": factors(structure)}
-    if is_banded(structure):
-        level = compose_risk(structure)
-        row.update(band=BANDS[level], level=level, driver=driver(structure))
+    if not is_banded(structure):
+        return {"factors": factors(structure)} if structure.get("reach") else None
+    level = compose_risk(structure)
+    row = {"band": BANDS[level], "level": level, "factors": factors(structure), "driver": driver(structure)}
     return row if row["factors"] else None
 
 

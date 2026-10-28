@@ -370,6 +370,7 @@ def test_project_is_the_default_reach_unit():
 
 def test_row_without_factors_is_none():
     assert sr.assess_change({"reach_unit": "files"}) is None
+    assert sr.assess_change({"reach": 0, "reach_unit": "modules"}) is None
     assert sr.assess_change({"domains": ["draw"]}) is None
 
 

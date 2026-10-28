@@ -465,6 +465,31 @@ affected | jq --argjson sensitive "$(affected -p 'tag:sensitive')" \
 Then set `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE=structural-reach.json` for the review step. Another tool
 needs only a query that lists the affected projects or packages.
 
+**Example producer: tree-sitter.** For a repository without a build-graph tool,
+`scripts/structural_reach_producer.py` builds a reverse-import graph of the Python, TypeScript and JavaScript
+files at the base commit and follows importers from the changed files. Test files are left out of reach and
+domains, because counting them makes most changes to a shared module read wide. It writes `reach_unit` as
+`modules` (directories) by default, so the row shows the count and the first dependents without a band. Run it as
+a CI step before the review; it is not a pr-agent dependency:
+
+```bash
+pip install "tree-sitter-language-pack==1.22.1"
+python scripts/structural_reach_producer.py --repo . --base "$BASE_SHA" --head "$HEAD_SHA" \
+  --unit module --out structural-reach.json
+```
+
+On this repository, the change merged in pull request 4420 gives:
+
+```
+🔗 Structural reach
+Reach: 9 modules
+Dependents: pr_agent/git_providers, pr_agent/tools, pr_agent/servers, pr_agent/algo, pr_agent/mosaico (+4 more)
+```
+
+`dependents` is ordered by the number of affected files in each unit. The graph does not see imports built at
+run time, files loaded by name such as settings, or dependencies declared only in a manifest, such as a shared
+`tsconfig` package used through `extends`. In a monorepo with Nx, Turborepo or Bazel, use that tool instead.
+
 **Failure handling.** The row never blocks a review. If the setting is empty, the input file is missing or does
 not match the schema, or anything fails while computing the row, the review is published without it.
 
