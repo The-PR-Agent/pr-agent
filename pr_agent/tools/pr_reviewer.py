@@ -1356,8 +1356,7 @@ class PRReviewer:
             get_logger().exception("Failed to parse review data", artifact={"data": data})
             return ""
 
-        diff_files = self.git_provider.get_diff_files()
-        structural_reach = build_structural_reach(diff_files, resolve_artifact_path)
+        structural_reach = build_structural_reach(resolve_artifact_path)
         if structural_reach:
             data["review"] = {"structural_reach": structural_reach, **data["review"]}
 
@@ -1405,7 +1404,7 @@ class PRReviewer:
         markdown_text = convert_to_markdown_v2(data, self.git_provider.is_supported("gfm_markdown"),
                                             incremental_review_markdown_text,
                                                git_provider=self.git_provider,
-                                               files=diff_files)
+                                               files=self.git_provider.get_diff_files())
 
         if self.review_chunk_count > 1:
             markdown_text += (

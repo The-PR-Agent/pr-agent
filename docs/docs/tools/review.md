@@ -384,43 +384,36 @@ cannot raise a score, clear a security concern, or soften a risk level set by an
 :::tip
 
 When `structural_reach_input_file` points at a file that exists, the review gets one row at the top that rates how
-risky the change is to merge. The row is computed from that file and the diff, not by the model, so the same PR
+far a defect in the change could spread. The row is computed from that file, not by the model, so the same input
 always gets the same rating.
 
 ```
 🔗 Structural reach: Critical
 Reach: 69 projects, cross-domain
-Churn: 2 files, +33/-1
 Sensitivity: payouts
 Rating driven by sensitive domain (escalates regardless of size)
 ```
 
-**Risk model.** Risk is impact multiplied by likelihood, as in ISO 31000. Three axes feed it:
+**Rating.** Two facts from the input file set the band:
 
-- **Reach** (impact) is the number of downstream projects a defect in the change can break: the blast radius in
-  the SRE sense. Only a build-graph tool knows it, so it comes from the input file.
-- **Sensitivity** (impact) flags changes to areas the repository marks as high-criticality, such as authentication,
-  payments or secrets. A one-line auth change outranks a wide styling sweep. It also comes from the input file.
-- **Churn** (likelihood) is the files changed and lines added and deleted. Relative churn predicts defect density,
-  and review effectiveness falls off past a few hundred lines. Lockfiles, snapshots, generated code, mocks,
-  minified bundles, sourcemaps, `dist/` output and vendored dependencies do not count, because their diffs are a
-  mechanical consequence of an authored change.
+- **Reach** is the number of downstream projects a defect in the change can break. Only a build-graph tool knows
+  it.
+- **Sensitivity** flags changes to areas the repository marks as high-criticality, such as authentication,
+  payments or secrets. A one-line auth change outranks a wide styling sweep.
 
-Reach is narrow up to 3 projects, moderate up to 25 and wide above that. Churn is small below 50 lines and up to
-5 files, large above 400 lines or 30 files, and moderate in between. The band then follows these rules:
+Reach is narrow up to 3 projects, moderate up to 25 and wide above that. The band then follows these rules:
 
 | Condition | Band |
 | --- | --- |
-| Wide reach or large churn | At least Moderate |
+| Wide reach | At least Moderate |
 | Cross-domain change | At least Moderate |
-| Wide reach and large churn | At least High |
 | Any sensitive domain | At least High |
-| Sensitive domain with wide reach or large churn | Critical |
+| Sensitive domain with wide reach | Critical |
 | Anything else | Low |
 
-The row lists each factor and names the one that set the band.
-`estimated_effort_to_review_[1-5]` and `require_risk_assessment` are the model's judgement; this row adds the
-structural and sensitivity facts the model cannot see in the diff.
+The row lists each factor and names the one that set the band. Change size is not part of the rating, because
+`estimated_effort_to_review_[1-5]` already reflects it. That row and `require_risk_assessment` are the model's
+judgement; this row adds the structural and sensitivity facts the model cannot see in the diff.
 
 **Input file.** Any build-graph tool (Nx, Bazel, Gradle, Turborepo, and so on) can write the reach facts in an
 earlier CI step, so pr-agent needs no adapter per tool. Point `structural_reach_input_file` at the file in host
@@ -459,8 +452,8 @@ affected | jq --argjson sensitive "$(affected -p 'tag:sensitive')" \
   '{version: 1, dependents: ., sensitive_domains: $sensitive}' > structural-reach.json
 ```
 
-Then set `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE=structural-reach.json` for the review step. Another tool needs only a
-query that lists the affected projects or packages.
+Then set `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE=structural-reach.json` for the review step. Another tool
+needs only a query that lists the affected projects or packages.
 
 **Failure handling.** The row never blocks a review. If the setting is empty, the input file is missing or does
 not match the schema, or anything fails while computing the row, the review is published without it.
@@ -469,11 +462,6 @@ not match the schema, or anything fails while computing the row, the review is p
 
 - Beyer, B. et al. *Site Reliability Engineering* (Google, 2016), and the AWS Well-Architected Framework: blast
   radius as the scope of impact of a change or failure.
-- Nagappan, N. and Ball, T. "Use of Relative Code Churn Measures to Predict System Defect Density", ICSE 2005.
-- Cohen, J. et al. *Best Kept Secrets of Peer Code Review* (SmartBear, 2006): the Cisco study of review
-  effectiveness against change size.
-- Google Engineering Practices, [Small CLs](https://google.github.io/eng-practices/review/developer/small-cls.html).
-- ISO 31000 Risk management: risk as a function of impact and likelihood.
 - OWASP guidance on sensitive functionality: authentication, session management, cryptography and payments.
 
 :::
