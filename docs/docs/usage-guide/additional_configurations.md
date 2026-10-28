@@ -236,7 +236,7 @@ The default log level is "DEBUG", which provides detailed output of all operatio
 
 PR-Agent counts tokens with [tiktoken](https://github.com/openai/tiktoken), which normally downloads its encoding files from `openaipublic.blob.core.windows.net`. Unless `TIKTOKEN_CACHE_DIR`, `DATA_GYM_CACHE_DIR` or `CUSTOM_TIKTOKEN_CACHE_DIR` is set, PR-Agent points tiktoken at the `o200k_base` and `cl100k_base` files bundled with LiteLLM, so no download is needed.
 
-If you set your own cache directory, place the encoding files there yourself; tiktoken names each file after the SHA-1 of its original download URL.
+If you use your own cache directory, set `CUSTOM_TIKTOKEN_CACHE_DIR` (LiteLLM overwrites `TIKTOKEN_CACHE_DIR`) and place the encoding files there yourself; tiktoken names each file after the SHA-1 of its original download URL.
 
 ## Attributing requests to a PR on the provider side
 
