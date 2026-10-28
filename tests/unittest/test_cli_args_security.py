@@ -90,6 +90,14 @@ FORBIDDEN_ARGS = [
     "--config.repo_context_sibling_repos=[]",
     "--config__repo_context_sibling_repos=[]",
     '--config={"repo_context_sibling_repos": []}',
+    # GitHub client pacing and retries affect host worker occupancy and API load, so they are
+    # operator-controlled for both repository settings and comment arguments.
+    "--github.seconds_between_requests=1",
+    "--github__seconds_between_writes=1",
+    "--github.api_retries=3",
+    '--github={"ratelimit_retries": 3}',
+    "--config.ai_timeout=300",
+    "--pr_code_suggestions.max_number_of_calls=10",
     # description_issue_regex is compiled and run with finditer over the whole pull-request
     # description. An ambiguous pattern backtracks exponentially, so a commenter who can choose
     # it can burn a worker on a short body; it stays an operator choice.

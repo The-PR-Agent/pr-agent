@@ -47,7 +47,10 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "gitea": frozenset({"skip_ssl_verification", "ssl_ca_cert"}),
     # agent_login decides which comments PR-Agent treats as its own and may edit, so the
     # reviewed repository must not choose it.
-    "github": frozenset({"agent_login", "deployment_type", "polling_repositories"}),
+    "github": frozenset({
+        "agent_login", "deployment_type", "polling_repositories",
+        "seconds_between_requests", "seconds_between_writes", "api_retries", "ratelimit_retries",
+    }),
     "gitlab": frozenset({"auth_type", "ssl_verify"}),
     "huggingface": frozenset({"api_base"}),
     # Jira lookups use the host's Atlassian credentials, so the reviewed repository must not
@@ -139,6 +142,7 @@ def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
         "branch_issue_regex",
+        "ai_timeout",
         "fallback_models",
         "num_retries",
         "output_relevant_configurations",
@@ -147,7 +151,7 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
     "ignore": frozenset({"regex"}),
-    "pr_code_suggestions": frozenset({"parallel_calls"}),
+    "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     "pr_questions": frozenset({"resolve_threads"}),
     "pr_reviewer": frozenset({"max_number_of_calls"}),
     "pr_similar_issue": frozenset({"force_update_dataset"}),
