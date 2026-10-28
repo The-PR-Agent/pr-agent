@@ -1,8 +1,8 @@
 """Deterministic blast-radius row for /review.
 
-Rates a change Low, Moderate, High or Critical from three axes: churn from the diff,
-structural reach from an optional input file written by a build-graph tool, and
-sensitivity. No model call is involved. The risk model and its sources are documented
+Rates a change Low, Moderate, High or Critical from structural reach and sensitivity in an
+input file written by a build-graph tool, and churn from the diff. The row appears only
+when that file is present. No model call is involved. The risk model and its sources are documented
 in docs/docs/tools/review.md.
 """
 
@@ -12,7 +12,6 @@ import html
 import json
 import re
 
-from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -22,7 +21,7 @@ MAX_NAME_CHARS = 200
 _LIST_FIELDS = ("dependents", "domains", "sensitive_domains")
 
 # Files whose large diffs are a mechanical consequence of an authored change elsewhere.
-# Only the churn axis and the path heuristic skip them.
+# The churn axis skips them.
 IGNORED_CHURN = re.compile(
     r"\.(lock|lockb|lockfile)$"
     r"|(^|/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml"
@@ -35,58 +34,26 @@ IGNORED_CHURN = re.compile(
     r"|(^|/)(vendor|node_modules)/"
 )
 
-SENSITIVE_TERMS = (
-    "auth", "oauth", "authn", "authz", "login", "logout", "session",
-    "token", "jwt", "secret", "credential", "password", "passwd",
-    "payment", "billing", "invoice", "kms", "iam", "crypto", "privatekey",
-    "apikey",
-)
-
-
 def build_blast_radius(files, resolve_path) -> dict | None:
     """Return the row for this review, or None. Never raises."""
     try:
-        if not _as_bool_setting(get_settings().pr_reviewer.get("enable_blast_radius", False)):
-            return None
-        return assess_change(
-            files,
-            structure=load_structure(get_settings().pr_reviewer.get("blast_radius_input_file", ""), resolve_path),
-            path_heuristic=_as_bool_setting(get_settings().pr_reviewer.get("blast_radius_path_heuristic", False)),
-            sensitive_terms=_as_terms(get_settings().pr_reviewer.get("blast_radius_sensitive_terms", [])),
-            churn_ignore=compile_churn_ignore(get_settings().pr_reviewer.get("blast_radius_churn_ignore_pattern", "")),
-        )
+        structure = load_structure(get_settings().pr_reviewer.get("blast_radius_input_file", ""), resolve_path)
+        return assess_change(files, structure)
     except Exception as e:
         get_logger().warning(f"Blast radius row skipped: {e!r}")
         return None
 
 
-def assess_change(files, structure=None, path_heuristic=False, sensitive_terms=(), churn_ignore=None) -> dict | None:
-    churn = compute_churn(files, churn_ignore)
-
-    if structure:
-        risk = compose_risk(structure, churn)
-        return {
-            "band": risk["band"],
-            "level": risk["level"],
-            "heuristic": False,
-            "factors": factors(structure, churn),
-            "driver": driver(structure, churn),
-        }
-
-    if not path_heuristic:
+def assess_change(files, structure) -> dict | None:
+    if not structure:
         return None
-
-    signal = path_signal(changed_paths(files, churn_ignore), sensitive_terms)
-    if not signal and not (churn and churn["files"]):
-        return None
-
-    band = path_band(signal, churn)
+    churn = compute_churn(files)
+    risk = compose_risk(structure, churn)
     return {
-        "band": band,
-        "level": BANDS.index(band),
-        "heuristic": True,
-        "factors": path_factors(signal, churn),
-        "driver": path_driver(signal, churn),
+        "band": risk["band"],
+        "level": risk["level"],
+        "factors": factors(structure, churn),
+        "driver": driver(structure, churn),
     }
 
 
@@ -101,13 +68,10 @@ def render_blast_radius(row: dict, gfm_supported: bool) -> str:
     ]
     rationale = f"Rating driven by {_escape(row['driver'], gfm_supported)}"
     if gfm_supported:
-        heuristic = " <em>(heuristic)</em>" if row.get("heuristic") else ""
-        parts = [f"💣&nbsp;<strong>Blast radius</strong>{heuristic}: <strong>{band}</strong>", *lines,
-                 f"<em>{rationale}</em>"]
+        parts = [f"💣&nbsp;<strong>Blast radius</strong>: <strong>{band}</strong>", *lines, f"<em>{rationale}</em>"]
         return f"<tr><td>{'<br>'.join(parts)}</td></tr>\n"
-    heuristic = " _(heuristic)_" if row.get("heuristic") else ""
     bullets = "".join(f"- {line}\n" for line in [*lines, rationale])
-    return f"### 💣 Blast radius{heuristic}: **{band}**\n\n{bullets}\n"
+    return f"### 💣 Blast radius: **{band}**\n\n{bullets}\n"
 
 
 # Risk model: impact (reach, sensitivity) x likelihood (churn).
@@ -198,100 +162,26 @@ def driver(structure, churn):
     return "contained reach and churn"
 
 
-# Path heuristic for repositories without an input file. Capped at Moderate: path names
-# are too weak a signal to justify High or Critical.
-
-
-def sensitive_pattern(extra_terms=()):
-    terms = [*SENSITIVE_TERMS, *extra_terms]
-    joined = "|".join(re.escape(term) for term in terms)
-    return re.compile(rf"(?<![A-Za-z])({joined})s?(?![A-Za-z])", re.IGNORECASE)
-
-
-def path_signal(paths, extra_terms=()):
-    if not paths:
-        return None
-    pattern = sensitive_pattern(extra_terms)
-    dirs = {path.rsplit("/", 1)[0] if "/" in path else "" for path in paths}
-    tops = {path.split("/", 1)[0] for path in paths if "/" in path}
-    hits = sorted({m.group(1).lower() for path in paths for m in [pattern.search(path)] if m})
-    return {"areas": len(dirs), "cross_area": len(tops) > 1, "sensitive_hits": hits}
-
-
-def path_band(signal, churn):
-    signal = signal or {}
-    cb = churn_band(churn)
-    level = 0
-    if cb == "large":
-        level = 1
-    if signal.get("sensitive_hits"):
-        level = 1
-    if signal.get("cross_area") and cb in ("moderate", "large"):
-        level = 1
-    if signal.get("areas", 0) > 10:
-        level = 1
-    return BANDS[min(level, 1)]
-
-
-def path_factors(signal, churn):
-    signal = signal or {}
-    out = []
-    areas = signal.get("areas")
-    if areas:
-        cross = ", cross-area" if signal.get("cross_area") else ""
-        out.append(_factor("Reach (est.)", f"~{areas} area{_plural(areas)}{cross}, path-based"))
-    if churn:
-        out.append(_factor("Churn", _churn_text(churn)))
-    if signal.get("sensitive_hits"):
-        out.append(_factor("Sensitivity (path match)", ", ".join(signal["sensitive_hits"])))
-    return out
-
-
-def path_driver(signal, churn):
-    signal = signal or {}
-    cb = churn_band(churn)
-    if signal.get("sensitive_hits"):
-        reason = "sensitive path match"
-    elif cb == "large":
-        reason = "large churn"
-    elif signal.get("cross_area"):
-        reason = "cross-area change"
-    elif signal.get("areas", 0) > 10:
-        reason = "many areas touched"
-    else:
-        reason = "small, contained change"
-    return f"{reason} (heuristic estimate, no dependency graph)"
-
-
 # Churn from the diff files the reviewer already holds.
 
 
-def is_mechanical(path, extra=None):
-    return bool(IGNORED_CHURN.search(path) or (extra and extra.search(path)))
+def is_mechanical(path):
+    return bool(IGNORED_CHURN.search(path))
 
 
-def compute_churn(files, churn_ignore=None):
+def compute_churn(files):
     if files is None:
         return None
     count = added = deleted = 0
     for file in files:
         name = getattr(file, "filename", "") or ""
-        if is_mechanical(name, churn_ignore):
+        if is_mechanical(name):
             continue
         plus, minus = count_patch_lines(getattr(file, "patch", "") or "")
         count += 1
         added += plus
         deleted += minus
     return {"files": count, "added": added, "deleted": deleted}
-
-
-def changed_paths(files, churn_ignore=None):
-    if files is None:
-        return None
-    return [
-        name for file in files
-        if (name := getattr(file, "filename", "") or "") and not is_mechanical(name, churn_ignore)
-    ]
 
 
 def count_patch_lines(patch: str):
@@ -308,17 +198,6 @@ def count_patch_lines(patch: str):
         elif line.startswith("-"):
             deleted += 1
     return added, deleted
-
-
-def compile_churn_ignore(pattern):
-    pattern = (pattern or "").strip() if isinstance(pattern, str) else ""
-    if not pattern:
-        return None
-    try:
-        return re.compile(pattern)
-    except re.error as e:
-        get_logger().warning(f"Blast radius: ignoring invalid blast_radius_churn_ignore_pattern: {e}")
-        return None
 
 
 # Structural input file. See the schema in docs/docs/tools/review.md.
@@ -389,14 +268,6 @@ def _is_row(row) -> bool:
             for factor in row["factors"]
         )
     )
-
-
-def _as_terms(value):
-    if isinstance(value, str):
-        value = value.split(",")
-    if not isinstance(value, list | tuple):
-        return ()
-    return tuple(term.strip() for term in value if isinstance(term, str) and term.strip())
 
 
 def _factor(label, value):

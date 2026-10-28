@@ -215,30 +215,12 @@ for the authoritative default values.
     <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
   </tr>
   <tr>
-    <td><b>enable_blast_radius</b></td>
-    <td>Off by default. If enabled, adds a deterministic change-risk row (Low, Moderate, High or Critical) computed
-    from churn, structural reach and sensitivity, with no model call. See <a href="#blast-radius">Blast radius</a>.</td>
-  </tr>
-  <tr>
     <td><b>blast_radius_input_file</b></td>
-    <td>Path to a JSON file with structural reach facts, written by a build-graph tool earlier in CI. Relative to
+    <td>Path to a JSON file with structural reach facts, written by a build-graph tool earlier in CI. When the file
+    exists, adds a deterministic change-risk row (Low, Moderate, High or Critical) with no model call. Relative to
     <code>GITHUB_WORKSPACE</code> when that is set, otherwise to the working directory. Host configuration only: a
-    repository settings file or a comment cannot set it, because the file is read from the host.</td>
-  </tr>
-  <tr>
-    <td><b>blast_radius_path_heuristic</b></td>
-    <td>Off by default. If enabled and no input file is available, estimates reach and sensitivity from the changed
-    paths. The heuristic row is labelled as an estimate and never rates above Moderate.</td>
-  </tr>
-  <tr>
-    <td><b>blast_radius_sensitive_terms</b></td>
-    <td>Extra path terms the heuristic treats as sensitive, added to the built-in list.</td>
-  </tr>
-  <tr>
-    <td><b>blast_radius_churn_ignore_pattern</b></td>
-    <td>Extra regex over repo-relative paths whose changes do not count as churn, added to the built-in list.
-    An invalid pattern is logged and ignored. Host configuration only: a repository settings file or a comment
-    cannot set it, because it runs over every changed path.</td>
+    repository settings file or a comment cannot set it, because the file is read from the host. See
+    <a href="#blast-radius">Blast radius</a>.</td>
   </tr>
 </table>
 
@@ -401,9 +383,9 @@ cannot raise a score, clear a security concern, or soften a risk level set by an
 
 :::tip
 
-`enable_blast_radius` adds one row at the top of the review that rates how risky the change is to merge.
-The row is computed from the diff and an optional input file, not by the model, so the same PR always gets
-the same rating.
+When `blast_radius_input_file` points at a file that exists, the review gets one row at the top that rates how
+risky the change is to merge. The row is computed from that file and the diff, not by the model, so the same PR
+always gets the same rating.
 
 ```
 💣 Blast radius: Critical
@@ -417,12 +399,12 @@ Rating driven by sensitive domain (escalates regardless of size)
 
 - **Reach** (impact) is the number of downstream projects a defect in the change can break: the blast radius in
   the SRE sense. Only a build-graph tool knows it, so it comes from the input file.
-- **Sensitivity** (impact) flags changes to high-criticality areas such as authentication, payments or secrets.
-  A one-line auth change outranks a wide styling sweep.
+- **Sensitivity** (impact) flags changes to areas the repository marks as high-criticality, such as authentication,
+  payments or secrets. A one-line auth change outranks a wide styling sweep. It also comes from the input file.
 - **Churn** (likelihood) is the files changed and lines added and deleted. Relative churn predicts defect density,
   and review effectiveness falls off past a few hundred lines. Lockfiles, snapshots, generated code, mocks,
   minified bundles, sourcemaps, `dist/` output and vendored dependencies do not count, because their diffs are a
-  mechanical consequence of an authored change. `blast_radius_churn_ignore_pattern` adds more.
+  mechanical consequence of an authored change.
 
 Reach is narrow up to 3 projects, moderate up to 25 and wide above that. Churn is small below 50 lines and up to
 5 files, large above 400 lines or 30 files, and moderate in between. The band then follows these rules:
@@ -441,8 +423,9 @@ The row lists each factor and names the one that set the band.
 structural and sensitivity facts the model cannot see in the diff.
 
 **Input file.** Any build-graph tool (Nx, Bazel, Gradle, Turborepo, and so on) can write the reach facts in an
-earlier CI step. Point `blast_radius_input_file` at the file in host configuration, for example the
-`PR_REVIEWER__BLAST_RADIUS_INPUT_FILE` environment variable. Every field is optional:
+earlier CI step, so pr-agent needs no adapter per tool. Point `blast_radius_input_file` at the file in host
+configuration, for example the `PR_REVIEWER__BLAST_RADIUS_INPUT_FILE` environment variable. Every field is
+optional:
 
 ```json
 {
@@ -466,14 +449,21 @@ earlier CI step. Point `blast_radius_input_file` at the file in host configurati
 
 Unknown fields are ignored. Strings are limited to 200 characters and the file to 1 MB.
 
-**Without an input file.** Set `blast_radius_path_heuristic=true` to get a row from the changed paths alone:
-distinct directories touched stand in for reach, and a word-bounded match on terms such as `auth`, `payment` or
-`token` stands in for sensitivity. `blast_radius_sensitive_terms` extends the list. These are weak signals, so the
-row is labelled `(heuristic)` and never rates above Moderate.
+**Example producer: Nx.** `nx show projects --affected` lists every project the change affects, including
+transitive dependents. This step writes them as `dependents`, and lists affected projects tagged `sensitive` as
+`sensitive_domains`:
 
-**Failure handling.** The row never blocks a review. If the feature is off, the input file is missing or does not
-match the schema and the heuristic is off, or anything fails while computing the row, the review is published
-without it. A missing or malformed input file falls through to the heuristic when that is enabled.
+```bash
+affected() { npx nx show projects --affected --base="$BASE_SHA" --head="$HEAD_SHA" --json "$@"; }
+affected | jq --argjson sensitive "$(affected -p 'tag:sensitive')" \
+  '{version: 1, dependents: ., sensitive_domains: $sensitive}' > blast-radius.json
+```
+
+Then set `PR_REVIEWER__BLAST_RADIUS_INPUT_FILE=blast-radius.json` for the review step. Another tool needs only a
+query that lists the affected projects or packages.
+
+**Failure handling.** The row never blocks a review. If the setting is empty, the input file is missing or does
+not match the schema, or anything fails while computing the row, the review is published without it.
 
 **Sources.**
 

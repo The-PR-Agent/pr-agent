@@ -13,13 +13,7 @@ from pr_agent.config_security import CLI_HOST_ONLY_KEYS_BY_SECTION
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
-_KEYS = (
-    "pr_reviewer.enable_blast_radius",
-    "pr_reviewer.blast_radius_input_file",
-    "pr_reviewer.blast_radius_path_heuristic",
-    "pr_reviewer.blast_radius_sensitive_terms",
-    "pr_reviewer.blast_radius_churn_ignore_pattern",
-)
+_KEYS = ("pr_reviewer.blast_radius_input_file",)
 
 STRUCTURE = {"reach": 69, "cross_domain": True, "sensitive_domains": []}
 SMALL_CHURN = {"files": 1, "added": 1, "deleted": 0}
@@ -31,11 +25,7 @@ def blast_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
     snapshot = snapshot_settings(_KEYS)
     settings = get_settings()
-    settings.set("pr_reviewer.enable_blast_radius", True)
     settings.set("pr_reviewer.blast_radius_input_file", "")
-    settings.set("pr_reviewer.blast_radius_path_heuristic", False)
-    settings.set("pr_reviewer.blast_radius_sensitive_terms", [])
-    settings.set("pr_reviewer.blast_radius_churn_ignore_pattern", "")
     yield settings
     restore_settings(snapshot)
 
@@ -282,157 +272,17 @@ def test_ignored_churn_keeps_authored_files():
     assert [name for name in AUTHORED_FILES if br.IGNORED_CHURN.search(name)] == []
 
 
-def test_compute_churn_applies_extra_ignore_pattern():
-    files = [_file("docs/huge-generated-page.md", "+a\n+b"), _file("src/real-change.ts", "+one")]
-    extra = br.compile_churn_ignore(r"(^|/)docs/")
-    assert br.compute_churn(files, extra) == {"files": 1, "added": 1, "deleted": 0}
-
-
-def test_invalid_extra_ignore_pattern_is_dropped():
-    assert br.compile_churn_ignore("([unclosed") is None
-    assert br.compile_churn_ignore("") is None
-    assert br.compile_churn_ignore(None) is None
-
-
-def test_path_signal_none_without_paths():
-    assert br.path_signal(None) is None
-    assert br.path_signal([]) is None
-
-
-def test_path_signal_counts_areas_and_cross_area():
-    signal = br.path_signal(["src/player/a.ts", "src/player/b.ts", "docs/x.md"])
-    assert signal["areas"] == 2
-    assert signal["cross_area"] is True
-    assert signal["sensitive_hits"] == []
-
-
-def test_path_signal_single_area_not_cross():
-    signal = br.path_signal(["src/player/a.ts", "src/player/b.ts"])
-    assert signal["areas"] == 1
-    assert signal["cross_area"] is False
-
-
-def test_path_signal_detects_sensitive_paths():
-    signal = br.path_signal(["libs/auth/login.ts", "services/payments/charge.ts"])
-    assert "auth" in signal["sensitive_hits"]
-    assert "payment" in signal["sensitive_hits"]
-
-
-def test_path_signal_ignores_sensitive_lookalikes():
-    assert br.path_signal(["docs/authored-guide.md", "src/tokenizer.ts"])["sensitive_hits"] == []
-
-
-def test_path_signal_extends_sensitive_terms():
-    signal = br.path_signal(["libs/payout/run.ts", "services/kyc/check.ts"], ("payout", "kyc"))
-    assert "payout" in signal["sensitive_hits"]
-    assert "kyc" in signal["sensitive_hits"]
-
-
-def test_path_band_small_change_is_low():
-    band = br.path_band(
-        {"areas": 1, "cross_area": False, "sensitive_hits": []},
-        {"files": 1, "added": 3, "deleted": 0},
-    )
-    assert band == "Low"
-
-
-def test_path_band_large_churn_is_moderate():
-    band = br.path_band(
-        {"areas": 1, "cross_area": False, "sensitive_hits": []},
-        {"files": 40, "added": 500, "deleted": 0},
-    )
-    assert band == "Moderate"
-
-
-def test_path_band_caps_sensitive_and_spread_at_moderate():
-    band = br.path_band(
-        {"areas": 40, "cross_area": True, "sensitive_hits": ["payment"]},
-        {"files": 80, "added": 2000, "deleted": 500},
-    )
-    assert band == "Moderate"
-
-
-@pytest.mark.parametrize(("areas", "cross_area", "churn", "expected"), [
-    (10, False, SMALL_CHURN, "Low"),
-    (11, False, SMALL_CHURN, "Moderate"),
-    (1, True, SMALL_CHURN, "Low"),
-    (1, False, {"files": 1, "added": 50, "deleted": 0}, "Low"),
-    (2, True, {"files": 1, "added": 50, "deleted": 0}, "Moderate"),
-    (2, True, LARGE_CHURN, "Moderate"),
-    (2, False, LARGE_CHURN, "Moderate"),
-])
-def test_path_band_triggers(areas, cross_area, churn, expected):
-    assert br.path_band({"areas": areas, "cross_area": cross_area, "sensitive_hits": []}, churn) == expected
-
-
-@pytest.mark.parametrize(("signal", "churn", "reason"), [
-    ({"areas": 1, "cross_area": False, "sensitive_hits": ["auth"]}, LARGE_CHURN, "sensitive path match"),
-    ({"areas": 1, "cross_area": False, "sensitive_hits": []}, LARGE_CHURN, "large churn"),
-    ({"areas": 11, "cross_area": True, "sensitive_hits": []}, SMALL_CHURN, "cross-area change"),
-    ({"areas": 11, "cross_area": False, "sensitive_hits": []}, SMALL_CHURN, "many areas touched"),
-    ({"areas": 10, "cross_area": False, "sensitive_hits": []}, SMALL_CHURN, "small, contained change"),
-    ({"areas": 1, "cross_area": False, "sensitive_hits": []}, SMALL_CHURN, "small, contained change"),
-])
-def test_path_driver_names_the_strongest_signal(signal, churn, reason):
-    assert br.path_driver(signal, churn) == f"{reason} (heuristic estimate, no dependency graph)"
-
-
-def test_assess_path_heuristic_counts_many_areas_in_one_tree():
-    files = [_file(f"src/area{i}/mod.ts", "+a") for i in range(11)]
-    row = br.assess_change(files, path_heuristic=True)
-    assert row["band"] == "Moderate"
-    assert row["driver"] == "many areas touched (heuristic estimate, no dependency graph)"
-    assert {"label": "Reach (est.)", "value": "~11 areas, path-based"} in row["factors"]
-
-
-def test_assess_path_heuristic_ten_areas_in_one_tree_stays_low():
-    files = [_file(f"src/area{i}/mod.ts", "+a") for i in range(10)]
-    row = br.assess_change(files, path_heuristic=True)
-    assert row["band"] == "Low"
-    assert row["driver"] == "small, contained change (heuristic estimate, no dependency graph)"
-
-
-def test_assess_path_heuristic_rates_nameless_file_by_churn_alone():
-    row = br.assess_change([_file("", "+a")], path_heuristic=True)
-    assert row == {
-        "band": "Low",
-        "level": 0,
-        "heuristic": True,
-        "factors": [{"label": "Churn", "value": "1 file, +1/-0"}],
-        "driver": "small, contained change (heuristic estimate, no dependency graph)",
-    }
-
-
 def test_assess_with_structure():
     row = br.assess_change([_file("a.ts", "+a\n+b\n-c")], structure=STRUCTURE)
     assert row["band"] == "Moderate"
-    assert row["heuristic"] is False
     assert {"label": "Reach", "value": "69 projects, cross-domain"} in row["factors"]
     assert {"label": "Churn", "value": "1 file, +2/-1"} in row["factors"]
     assert row["driver"] == "wide reach"
 
 
-def test_assess_without_structure_or_diff_is_none():
-    assert br.assess_change(None) is None
-    assert br.assess_change(None, path_heuristic=True) is None
-
-
-def test_assess_path_heuristic_is_off_by_default():
-    assert br.assess_change(_multi_file_diff()) is None
-
-
-def test_assess_path_heuristic_when_enabled():
-    row = br.assess_change(_multi_file_diff(), path_heuristic=True)
-    assert row["heuristic"] is True
-    assert row["band"] == "Moderate"
-    assert {"label": "Churn", "value": "2 files, +3/-1"} in row["factors"]
-    assert {"label": "Sensitivity (path match)", "value": "auth"} in row["factors"]
-    assert row["driver"].startswith("sensitive path match")
-
-
-def test_assess_path_heuristic_none_when_all_files_mechanical():
-    files = [_file("package-lock.json", "+lots\n+more"), _file("dist/main.js", "+bundle")]
-    assert br.assess_change(files, path_heuristic=True) is None
+def test_assess_without_structure_is_none():
+    assert br.assess_change(_multi_file_diff(), None) is None
+    assert br.assess_change(_multi_file_diff(), {}) is None
 
 
 @pytest.mark.parametrize(
@@ -534,50 +384,22 @@ def test_load_structure_size_limit_is_inclusive(blast_settings, tmp_path, monkey
     assert br.load_structure(name, resolve_artifact_path) == expected
 
 
-def test_build_is_off_by_default(blast_settings):
-    blast_settings.set("pr_reviewer.enable_blast_radius", False)
-    blast_settings.set("pr_reviewer.blast_radius_path_heuristic", True)
-    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
-
-
 def test_build_reads_input_file(blast_settings, tmp_path):
     blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, STRUCTURE))
     row = br.build_blast_radius([_file("a.ts", "+a")], resolve_artifact_path)
     assert row["band"] == "Moderate"
-    assert row["heuristic"] is False
 
 
-def test_build_falls_back_to_path_heuristic_on_malformed_input(blast_settings, tmp_path):
+def test_build_has_no_row_without_input_file(blast_settings, tmp_path):
+    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
+    blast_settings.set("pr_reviewer.blast_radius_input_file", "missing.json")
+    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
     blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, "{broken"))
     assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
-    blast_settings.set("pr_reviewer.blast_radius_path_heuristic", True)
-    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path)["heuristic"] is True
 
 
-def test_build_applies_configured_terms_and_pattern(blast_settings):
-    blast_settings.set("pr_reviewer.blast_radius_path_heuristic", "true")
-    blast_settings.set("pr_reviewer.blast_radius_sensitive_terms", ["payout"])
-    blast_settings.set("pr_reviewer.blast_radius_churn_ignore_pattern", r"(^|/)docs/")
-    files = [_file("libs/payout/run.ts", "+a"), _file("docs/page.md", "+b\n+c")]
-    row = br.build_blast_radius(files, resolve_artifact_path)
-    assert {"label": "Sensitivity (path match)", "value": "payout"} in row["factors"]
-    assert {"label": "Churn", "value": "1 file, +1/-0"} in row["factors"]
-
-
-def test_build_accepts_comma_separated_terms(blast_settings):
-    blast_settings.set("pr_reviewer.blast_radius_path_heuristic", True)
-    blast_settings.set("pr_reviewer.blast_radius_sensitive_terms", "payout, kyc")
-    row = br.build_blast_radius([_file("libs/kyc/run.ts", "+a")], resolve_artifact_path)
-    assert {"label": "Sensitivity (path match)", "value": "kyc"} in row["factors"]
-
-
-def test_build_is_off_when_enable_setting_is_missing(monkeypatch):
-    monkeypatch.setattr(br, "get_settings", lambda: SimpleNamespace(pr_reviewer={"blast_radius_path_heuristic": True}))
-    assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
-
-
-def test_build_path_heuristic_is_off_when_setting_is_missing(monkeypatch):
-    monkeypatch.setattr(br, "get_settings", lambda: SimpleNamespace(pr_reviewer={"enable_blast_radius": True}))
+def test_build_has_no_row_when_setting_is_missing(monkeypatch):
+    monkeypatch.setattr(br, "get_settings", lambda: SimpleNamespace(pr_reviewer={}))
     assert br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is None
 
 
@@ -597,13 +419,6 @@ def test_render_gfm_row():
         "<br>Reach: 69 projects, cross-domain<br>Churn: 1 file, +2/-1"
         "<br><em>Rating driven by wide reach</em></td></tr>\n"
     )
-
-
-def test_render_markdown_row_labels_heuristic():
-    row = br.assess_change(_multi_file_diff(), path_heuristic=True)
-    rendered = br.render_blast_radius(row, gfm_supported=False)
-    assert rendered.startswith("### 💣 Blast radius _(heuristic)_: **Moderate**\n\n")
-    assert "- Churn: 2 files, +3/-1\n" in rendered
 
 
 MARKDOWN_ROW = {
@@ -653,33 +468,11 @@ def test_render_skips_row_with_non_string_driver():
     assert br.render_blast_radius({"band": "Low", "factors": [], "driver": 1}, gfm_supported=True) == ""
 
 
-@pytest.mark.parametrize(("value", "expected"), [
-    ("payout, kyc", ("payout", "kyc")),
-    (" a , ,b,", ("a", "b")),
-    (["a", " b ", "", "  ", 5, None], ("a", "b")),
-    (("a", "b"), ("a", "b")),
-    (5, ()),
-    (None, ()),
-])
-def test_as_terms_keeps_only_non_blank_strings(value, expected):
-    assert br._as_terms(value) == expected
-
-
 @pytest.mark.parametrize("row", ["Critical", {}, {"band": "Severe", "factors": [], "driver": "x"},
                                  {"band": "Low", "factors": [{"label": 1}], "driver": "x"}])
 def test_render_skips_malformed_row(row):
     assert br.render_blast_radius(row, gfm_supported=True) == ""
     assert br.render_blast_radius(row, gfm_supported=False) == ""
-
-
-@pytest.mark.parametrize(("value", "expected"), [
-    (True, True), (False, False), (1, True), (0, False), (2, False),
-    ("1", True), ("true", True), ("ON", True), ("0", False), ("no", False), ("", False), (None, False),
-])
-def test_toggle_values(blast_settings, value, expected):
-    blast_settings.set("pr_reviewer.enable_blast_radius", value)
-    blast_settings.set("pr_reviewer.blast_radius_path_heuristic", True)
-    assert (br.build_blast_radius(_multi_file_diff(), resolve_artifact_path) is not None) is expected
 
 
 def test_convert_to_markdown_renders_row_first():
@@ -710,30 +503,25 @@ def _reviewer():
     return reviewer
 
 
-def test_prepare_pr_review_adds_row_when_enabled(blast_settings, tmp_path):
+def test_prepare_pr_review_adds_row_when_input_file_exists(blast_settings, tmp_path):
     blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, STRUCTURE))
     markdown = _prepare(_reviewer(), "review:\n  relevant_tests: |\n    No\n", [_file("a.ts", "+a")])
     assert "💣&nbsp;<strong>Blast radius</strong>: <strong>Moderate</strong>" in markdown
 
 
-def test_prepare_pr_review_has_no_row_when_disabled(blast_settings, tmp_path):
-    blast_settings.set("pr_reviewer.enable_blast_radius", False)
-    blast_settings.set("pr_reviewer.blast_radius_input_file", _write_input(tmp_path, STRUCTURE))
+def test_prepare_pr_review_has_no_row_without_input_file(blast_settings):
     markdown = _prepare(_reviewer(), "review:\n  relevant_tests: |\n    No\n", [_file("a.ts", "+a")])
     assert "Blast radius" not in markdown
 
 
 def test_prepare_pr_review_drops_model_supplied_row(blast_settings):
-    blast_settings.set("pr_reviewer.enable_blast_radius", False)
     review_yaml = "review:\n  relevant_tests: |\n    No\n  blast_radius: Critical\n"
     markdown = _prepare(_reviewer(), review_yaml, [_file("a.ts", "+a")])
     assert "Blast radius" not in markdown
 
 
-def test_input_file_and_pattern_are_host_only_for_comment_arguments():
-    assert {"blast_radius_input_file", "blast_radius_churn_ignore_pattern"} <= (
-        CLI_HOST_ONLY_KEYS_BY_SECTION["pr_reviewer"]
-    )
+def test_input_file_is_host_only_for_comment_arguments():
+    assert "blast_radius_input_file" in CLI_HOST_ONLY_KEYS_BY_SECTION["pr_reviewer"]
 
 
 def test_count_patch_lines_counts_repeated_sign_content_inside_hunks():
