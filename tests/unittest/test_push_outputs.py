@@ -286,7 +286,7 @@ class TestPushOutputs:
         monkeypatch.setattr(output_sinks.requests, 'post', boom)
 
         # Must not raise.
-        push_outputs("review", payload={"a": 1}, markdown="hi")
+        assert push_outputs("review", payload={"a": 1}, markdown="hi") is None
 
     @pytest.mark.parametrize("bad_url", [
         "http://example.test/hook",       # plaintext

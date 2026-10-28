@@ -15,6 +15,7 @@ from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequ
 from requests.exceptions import RequestException
 
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.git_provider import (
     DEFAULT_DISCUSSION_CONTEXT_CHARS,
     ConcurrentFileUpdateError,
@@ -989,6 +990,108 @@ class TestGitLabProvider:
 
         assert [file.filename for file in files] == ["src/lib_a"]
         child_project.repository_compare.assert_called_once_with("aaa1111", "bbb2222")
+
+    @pytest.fixture
+    def submodule_content_changes(self, gitlab_provider, mock_project):
+        parent = {**self._submodule_bump(), "a_mode": "160000", "b_mode": "160000"}
+        child = {
+            "old_path": "child.py", "new_path": "child.py", "diff": "@@ -1 +1 @@\n-old\n+new\n",
+            "new_file": False, "deleted_file": False, "renamed_file": False,
+        }
+        ordinary = {**child, "old_path": "ordinary.py", "new_path": "ordinary.py"}
+        gitlab_provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head"}
+        gitlab_provider.gl.http_list.return_value = [ordinary, parent]
+        child_project = MagicMock()
+        child_project.repository_compare.return_value = {"diffs": [child]}
+
+        def get_file(path, ref):
+            if path != "ordinary.py":
+                raise GitlabGetError("File not found", response_code=404)
+            file_obj = MagicMock(ProjectFile)
+            file_obj.decode.return_value = b"old\n" if ref == "base" else b"new\n"
+            return file_obj
+
+        mock_project.files.get.side_effect = get_file
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"src/lib_a": "group/child.git"}), \
+             patch.object(gitlab_provider, "_project_by_path", return_value=child_project), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True):
+            yield parent, child
+
+    @pytest.mark.parametrize("edit_type", [EDIT_TYPE.MODIFIED, EDIT_TYPE.ADDED, EDIT_TYPE.DELETED, EDIT_TYPE.RENAMED])
+    def test_submodule_diffs_skip_parent_content_reads(
+        self, gitlab_provider, mock_project, submodule_content_changes, edit_type
+    ):
+        _, child = submodule_content_changes
+        child.update(new_file=edit_type == EDIT_TYPE.ADDED, deleted_file=edit_type == EDIT_TYPE.DELETED,
+                     renamed_file=edit_type == EDIT_TYPE.RENAMED)
+        if edit_type == EDIT_TYPE.RENAMED:
+            child["old_path"] = "previous.py"
+        child["diff"] = {
+            EDIT_TYPE.ADDED: "@@ -0,0 +1 @@\n+new\n",
+            EDIT_TYPE.DELETED: "@@ -1 +0,0 @@\n-old\n",
+        }.get(edit_type, child["diff"])
+
+        assert gitlab_provider.get_files() == ["ordinary.py", "src/lib_a", "src/lib_a/child.py"]
+        files = gitlab_provider.get_diff_files()
+
+        assert (files[0].base_file, files[0].head_file) == ("old\n", "new\n")
+        assert files[-1] == FilePatchInfo(
+            "", "", child["diff"], "src/lib_a/child.py", edit_type=edit_type,
+            old_filename="src/lib_a/previous.py" if edit_type == EDIT_TYPE.RENAMED else None,
+            num_plus_lines=int(edit_type != EDIT_TYPE.DELETED), num_minus_lines=int(edit_type != EDIT_TYPE.ADDED),
+        )
+        assert [call.args for call in mock_project.files.get.call_args_list] == [
+            ("ordinary.py", "base"), ("ordinary.py", "head"), ("src/lib_a", "base"), ("src/lib_a", "head"),
+        ]
+
+    @pytest.mark.parametrize("parent_changes", [
+        {"a_mode": None, "b_mode": None},
+        {"a_mode": "100644", "b_mode": "100644"},
+        {"a_mode": "100644"},
+        {"b_mode": "100644"},
+        {"old_path": "previous/lib_a", "renamed_file": True},
+    ], ids=["missing_modes", "regular_modes", "new_gitlink", "old_gitlink", "renamed_gitlink"])
+    def test_submodule_diffs_keep_content_reads_without_stable_gitlink(
+        self, gitlab_provider, mock_project, submodule_content_changes, parent_changes
+    ):
+        parent, _ = submodule_content_changes
+        for key, value in parent_changes.items():
+            if value is None:
+                parent.pop(key)
+            else:
+                parent[key] = value
+        file_obj = MagicMock(ProjectFile)
+        file_obj.decode.return_value = b"existing base content\n"
+        original_get = mock_project.files.get.side_effect
+        mock_project.files.get.side_effect = lambda path, ref: (
+            file_obj if (path, ref) == ("src/lib_a/child.py", "base") else original_get(path, ref)
+        )
+
+        gitlab_provider.get_files()
+        child_file = gitlab_provider.get_diff_files()[-1]
+
+        assert child_file.base_file == "existing base content\n"
+        assert child_file.head_file == ""
+        assert [call.args for call in mock_project.files.get.call_args_list][-2:] == [
+            ("src/lib_a/child.py", "base"), ("src/lib_a/child.py", "head"),
+        ]
+
+    def test_submodule_empty_patch_keeps_content_failure(
+        self, gitlab_provider, mock_project, submodule_content_changes
+    ):
+        _, child = submodule_content_changes
+        child["diff"] = ""
+
+        gitlab_provider.get_files()
+        child_file = gitlab_provider.get_diff_files()[-1]
+
+        mock_project.files.get.assert_called_with("src/lib_a/child.py", "base")
+        assert child_file.patch == ""
+        assert child_file.base_file == child_file.head_file == ""
+        assert child_file.content_fetch_failed is True
 
     def test_compare_submodule_cache_hit_skips_project_resolution(self, gitlab_provider):
         cached_diffs = [{"diff": "d"}]

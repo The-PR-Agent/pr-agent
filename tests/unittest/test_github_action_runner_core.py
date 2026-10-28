@@ -25,6 +25,9 @@ def test_is_true_accepts_bool_and_case_insensitive_true_string():
     assert github_action_runner.is_true(False) is False
     assert github_action_runner.is_true("TRUE") is True
     assert github_action_runner.is_true("false") is False
+    assert github_action_runner.is_true(" on ") is True
+    assert github_action_runner.is_true(1) is True
+    assert github_action_runner.is_true(0) is False
     assert github_action_runner.is_true(None) is False
 
 
@@ -96,7 +99,10 @@ async def test_direct_auto_tool_publishes_and_preserves_error_when_comment_decod
 
 
 @pytest.mark.asyncio
-async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monkeypatch, tmp_path):
+@pytest.mark.parametrize("enable_output,expected_output", [(True, True), ("", False), ("  ", False)])
+async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(
+    monkeypatch, tmp_path, enable_output, expected_output
+):
     settings = get_settings()
     original_is_auto_command = settings.config.get("is_auto_command", False)
     original_final_update_message = settings.pr_description.final_update_message
@@ -124,7 +130,7 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
             "GITHUB_ACTION.AUTO_DESCRIBE": True,
             "GITHUB_ACTION.AUTO_REVIEW": False,
             "GITHUB_ACTION.AUTO_IMPROVE": True,
-            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": enable_output,
         }
         return values.get(key, default)
 
@@ -158,6 +164,7 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
 
         await github_action_runner.run_action()
 
+        assert settings.get("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT") is expected_output
         assert runs == [
             ("describe", "https://api.github.com/repos/org/repo/pulls/1"),
             ("improve", "https://api.github.com/repos/org/repo/pulls/1"),

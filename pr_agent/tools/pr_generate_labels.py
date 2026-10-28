@@ -109,7 +109,8 @@ class PRGenerateLabels:
                     else:
                         user_labels = get_user_labels(current_labels)
                         pr_labels = pr_labels + user_labels
-                        self.git_provider.publish_labels(pr_labels)
+                        if set(pr_labels) != set(current_labels):
+                            self.git_provider.publish_labels(pr_labels)
                 elif pr_labels:
                     value = ', '.join(v for v in pr_labels)
                     pr_labels_text = f"## PR Labels:\n{value}\n"

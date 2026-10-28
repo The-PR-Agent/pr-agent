@@ -11,7 +11,7 @@ import yaml
 
 from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, create_output_sink
 from pr_agent.algo.run_details import get_run_details
-from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.config_security import should_skip_config_key
 from pr_agent.log import get_logger
@@ -20,9 +20,7 @@ from pr_agent.log import get_logger
 def github_action_output(output_data: dict, key_name: str):
     try:
         enable_output = get_settings().get("github_action_config.enable_output", False)
-        if isinstance(enable_output, str):
-            enable_output = enable_output.lower().strip() not in ("false", "0", "no", "")
-        if not enable_output:
+        if not _as_bool_setting(enable_output):
             return
 
         key_data = output_data.get(key_name, {})

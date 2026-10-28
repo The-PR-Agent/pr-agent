@@ -1190,6 +1190,7 @@ async def test_review_publish_uses_shared_full_signature_for_authorship(monkeypa
     provider = GithubProvider.__new__(GithubProvider)
     provider.deployment_type = "user"
     provider.get_files = lambda: ["app.py"]
+    provider.get_diff_files = MagicMock(return_value=[])
     provider.should_publish_review_as_thread = lambda: False
     provider.publish_comment = MagicMock()
     provider.publish_persistent_comment_full = MagicMock(return_value=object())
@@ -1330,6 +1331,9 @@ class _ReviewRunProvider:
 
     def get_files(self):
         return ["app.py"]
+
+    def get_diff_files(self):
+        return []
 
     def should_publish_review_as_thread(self):
         return False

@@ -145,3 +145,41 @@ def test_unknown_reply_author_is_labelled():
     )
 
     assert discussions[0]["replies"] == [{"author": "Unknown", "message": "No."}]
+
+
+def test_budget_uses_exact_json_length_for_unicode_and_escapes(monkeypatch):
+    threads = [
+        _thread(
+            thread_id="t1",
+            suggestion='**Suggestion:** 檢查 "引號" 與換行\nEmoji 🙂',
+            replies=[("レビュアー", 'Line 1\nLine "2"')],
+        ),
+        _thread(
+            thread_id="t2",
+            suggestion="**Suggestion:** Second finding",
+            replies=[("Bob", "Acknowledged")],
+        ),
+    ]
+    full = _ThreadProvider(threads).get_code_suggestion_thread_context()
+    first_only = _ThreadProvider(threads[:1]).get_code_suggestion_thread_context()
+
+    get_settings().set(_BUDGET_KEY, len(full))
+    assert _ThreadProvider(threads).get_code_suggestion_thread_context() == full
+
+    get_settings().set(_BUDGET_KEY, len(full) - 1)
+    assert _ThreadProvider(threads).get_code_suggestion_thread_context() == first_only
+
+    get_settings().set(_BUDGET_KEY, len(first_only) - 1)
+    assert _ThreadProvider(threads).get_code_suggestion_thread_context() == ""
+
+    dumps_sizes = []
+    real_dumps = json.dumps
+
+    def spy_dumps(obj, *args, **kwargs):
+        dumps_sizes.append(len(obj) if isinstance(obj, list) else -1)
+        return real_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr("pr_agent.git_providers.git_provider.json.dumps", spy_dumps)
+    get_settings().set(_BUDGET_KEY, len(full))
+    assert _ThreadProvider(threads).get_code_suggestion_thread_context() == full
+    assert dumps_sizes == [1, 1, 2]

@@ -162,6 +162,33 @@ def test_publish_the_documented_response(publish_output, monkeypatch):
     assert provider.initial_comment_removed
 
 
+@pytest.mark.parametrize("separator,newline", [
+    pytest.param("", "\n", id="lf"),
+    pytest.param("", "\r\n", id="crlf"),
+    pytest.param("\u2028", "\n", id="unicode-separator-lf"),
+    pytest.param("\u2028", "\r\n", id="unicode-separator-crlf"),
+    pytest.param("\f", "\n", id="form-feed"),
+])
+def test_published_documentation_preserves_git_source_lines(publish_output, monkeypatch, separator, newline):
+    provider = FakeGitProvider()
+    head = newline.join([f'TEXT = "left{separator}right"', "def f():", "    return 1", ""])
+    provider.diff_files[0].head_file = head
+    prediction = DOCUMENTED.replace("relevant line: 1", "relevant line: 2").replace("    before", "    after")
+
+    run(prediction, monkeypatch, provider)
+
+    assert [len(batch) for batch in provider.suggestions] == [1]
+    suggestion = provider.suggestions[0][0]
+    assert suggestion["relevant_file"] == "src/app.py"
+    assert suggestion["relevant_lines_start"] == suggestion["relevant_lines_end"] == 2
+    replacement = suggestion["body"].split("```suggestion\n", 1)[1].removesuffix("\n```")
+    assert replacement == 'def f():\n    """Do the thing."""'
+    # Accept the suggestion using Git's LF-based line positions, preserving inline separators.
+    source_lines = head.split("\n")
+    source_lines[1] = replacement
+    compile("\n".join(source_lines), "src/app.py", "exec")
+
+
 @pytest.mark.parametrize("include_valid", [False, True])
 def test_missing_head_content_is_filtered_before_publication(include_valid):
     provider = FakeGitProvider()

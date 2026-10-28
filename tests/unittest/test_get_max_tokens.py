@@ -1180,87 +1180,67 @@ class TestGetMaxTokens:
         assert "bedrock/jp.anthropic.claude-sonnet-5-5" not in MAX_TOKENS
         assert "bedrock/apac.anthropic.claude-sonnet-5-5" not in MAX_TOKENS
 
-    def test_claude_opus_4_6_family_expansion_and_capabilities(self):
-        """Independent verification of Opus 4.6 generated aliases and capabilities."""
-        expected_max_tokens_aliases = {
-            "claude-opus-4-6",
-            "anthropic/claude-opus-4-6",
-            "vertex_ai/claude-opus-4-6",
-            "bedrock/anthropic.claude-opus-4-6-v1:0",
-            "bedrock/global.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/au.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/apac.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/us.anthropic.claude-opus-4-6-v1:0",
-            "claude-opus-4-6-20260120",
-            "anthropic/claude-opus-4-6-20260120",
-            "vertex_ai/claude-opus-4-6@20260120",
-            "bedrock/anthropic.claude-opus-4-6-20260120-v1:0",
-            "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0",
-        }
+    _OPUS_4_6_MAX_TOKENS_ALIASES = {
+        "claude-opus-4-6",
+        "anthropic/claude-opus-4-6",
+        "vertex_ai/claude-opus-4-6",
+        "bedrock/anthropic.claude-opus-4-6-v1:0",
+        "bedrock/global.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/au.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/apac.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/us.anthropic.claude-opus-4-6-v1:0",
+        "claude-opus-4-6-20260120",
+        "anthropic/claude-opus-4-6-20260120",
+        "vertex_ai/claude-opus-4-6@20260120",
+        "bedrock/anthropic.claude-opus-4-6-20260120-v1:0",
+        "bedrock/us.anthropic.claude-opus-4-6-20260120-v1:0",
+    }
+    # Extended thinking: 9 aliases
+    _OPUS_4_6_THINKING_ALIASES = {
+        "anthropic/claude-opus-4-6",
+        "claude-opus-4-6",
+        "vertex_ai/claude-opus-4-6",
+        "bedrock/anthropic.claude-opus-4-6-v1:0",
+        "bedrock/us.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/au.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
+        "bedrock/global.anthropic.claude-opus-4-6-v1:0",
+    }
 
+    def test_claude_opus_4_6_family_registers_expected_aliases(self):
+        """Independent verification of Opus 4.6 generated aliases and capabilities."""
         # Exact set equality against filtered MAX_TOKENS
         actual_aliases = {k for k in MAX_TOKENS if "claude-opus-4-6" in k}
-        assert actual_aliases == expected_max_tokens_aliases
+        assert actual_aliases == self._OPUS_4_6_MAX_TOKENS_ALIASES
 
+    def test_claude_opus_4_6_aliases_use_1m_context_window(self):
         # Context window tokens
-        for alias in expected_max_tokens_aliases:
+        for alias in self._OPUS_4_6_MAX_TOKENS_ALIASES:
             assert MAX_TOKENS[alias] == 1000000
 
-        # Extended thinking: 9 aliases
-        expected_thinking_aliases = {
-            "anthropic/claude-opus-4-6",
-            "claude-opus-4-6",
-            "vertex_ai/claude-opus-4-6",
-            "bedrock/anthropic.claude-opus-4-6-v1:0",
-            "bedrock/us.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/au.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/eu.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/jp.anthropic.claude-opus-4-6-v1:0",
-            "bedrock/global.anthropic.claude-opus-4-6-v1:0",
-        }
+    def test_claude_opus_4_6_extended_thinking_aliases(self):
         actual_thinking_aliases = {k for k in CLAUDE_EXTENDED_THINKING_MODELS if "claude-opus-4-6" in k}
-        assert actual_thinking_aliases == expected_thinking_aliases
+        assert actual_thinking_aliases == self._OPUS_4_6_THINKING_ALIASES
 
+    def test_claude_opus_4_6_apac_and_dated_variants_lack_extended_thinking(self):
         # Negative checks: apac and dated variants NOT in extended thinking
         assert "bedrock/apac.anthropic.claude-opus-4-6-v1:0" not in CLAUDE_EXTENDED_THINKING_MODELS
         assert "claude-opus-4-6-20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
         assert "anthropic/claude-opus-4-6-20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
         assert "vertex_ai/claude-opus-4-6@20260120" not in CLAUDE_EXTENDED_THINKING_MODELS
 
-    def test_claude_model_family_metadata_key_validation(self):
-        """Regression test for validating Claude model family metadata keys.
-
-        Proves:
-        - all current shipped families validate successfully.
-        - an unknown top-level key (e.g. 'bedrock_region') raises ValueError naming the key and model_id.
-        - an unknown nested extra_aliases key (e.g. 'extended_thinkin') raises ValueError with key, alias, and model_id.
-        - global family definitions are not mutated.
-        """
-        # All current shipped families must pass validation
-        for fam in _CLAUDE_MODEL_FAMILIES:
-            _validate_claude_model_family(fam)
-
-        # 1. Copied family with unknown top-level key must raise ValueError
+    @pytest.fixture
+    def family_with_unknown_top_level_key(self):
         bad_fam = dict(_CLAUDE_MODEL_FAMILIES[0])
         bad_fam["bedrock_region"] = ("global", "us")
+        return bad_fam
 
-        with pytest.raises(ValueError) as exc_info:
-            _validate_claude_model_family(bad_fam)
-
-        err_msg = str(exc_info.value)
-        assert "bedrock_region" in err_msg
-        assert bad_fam["model_id"] in err_msg
-
-        # Generator must also reject the unknown top-level key when expanding
-        with pytest.raises(ValueError) as exc_info_gen:
-            _generate_claude_registries(families=[bad_fam])
-        assert "bedrock_region" in str(exc_info_gen.value)
-        assert bad_fam["model_id"] in str(exc_info_gen.value)
-
-        # 2. Family with unknown nested extra_aliases key must raise ValueError
-        bad_nested_fam = {
+    @pytest.fixture
+    def family_with_unknown_nested_alias_key(self):
+        return {
             "model_id": "claude-opus-4-6",
             "extra_aliases": {
                 "some/alias": {
@@ -1270,6 +1250,38 @@ class TestGetMaxTokens:
             },
         }
 
+    def test_shipped_claude_model_families_pass_validation(self):
+        # All current shipped families must pass validation
+        for fam in _CLAUDE_MODEL_FAMILIES:
+            _validate_claude_model_family(fam)
+
+    def test_validator_rejects_unknown_top_level_family_key(self, family_with_unknown_top_level_key):
+        # 1. Copied family with unknown top-level key must raise ValueError
+        bad_fam = family_with_unknown_top_level_key
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_claude_model_family(bad_fam)
+
+        err_msg = str(exc_info.value)
+        assert "bedrock_region" in err_msg
+        assert bad_fam["model_id"] in err_msg
+
+    def test_generator_rejects_unknown_top_level_family_key(self, family_with_unknown_top_level_key):
+        # Generator must also reject the unknown top-level key when expanding
+        bad_fam = family_with_unknown_top_level_key
+
+        with pytest.raises(ValueError) as exc_info_gen:
+            _generate_claude_registries(families=[bad_fam])
+        assert "bedrock_region" in str(exc_info_gen.value)
+        assert bad_fam["model_id"] in str(exc_info_gen.value)
+
+        # Ensure global families list was not mutated
+        assert "bedrock_region" not in _CLAUDE_MODEL_FAMILIES[0]
+
+    def test_validator_rejects_unknown_nested_alias_key(self, family_with_unknown_nested_alias_key):
+        # 2. Family with unknown nested extra_aliases key must raise ValueError
+        bad_nested_fam = family_with_unknown_nested_alias_key
+
         with pytest.raises(ValueError) as exc_info_nested:
             _validate_claude_model_family(bad_nested_fam)
 
@@ -1278,15 +1290,15 @@ class TestGetMaxTokens:
         assert "some/alias" in err_nested
         assert "claude-opus-4-6" in err_nested
 
+    def test_generator_rejects_unknown_nested_alias_key(self, family_with_unknown_nested_alias_key):
         # Generator must also reject the unknown nested key
+        bad_nested_fam = family_with_unknown_nested_alias_key
+
         with pytest.raises(ValueError) as exc_info_gen_nested:
             _generate_claude_registries(families=[bad_nested_fam])
         assert "extended_thinkin" in str(exc_info_gen_nested.value)
         assert "some/alias" in str(exc_info_gen_nested.value)
         assert "claude-opus-4-6" in str(exc_info_gen_nested.value)
-
-        # Ensure global families list was not mutated
-        assert "bedrock_region" not in _CLAUDE_MODEL_FAMILIES[0]
 
     def test_claude_exceptional_extra_alias_capabilities(self):
         """Prove exceptional extra-alias capability routing.

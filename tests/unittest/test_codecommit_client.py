@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
 
 
@@ -18,80 +20,92 @@ class TestCodeCommitProvider:
 
         boto_client.assert_called_once_with("codecommit", region_name="us-west-2")
 
-    def test_get_differences(self):
+    _DIFFERENCES_RESPONSE = [
+        {
+            "differences": [
+                {
+                    "beforeBlob": {
+                        "path": "file1.py",
+                        "blobId": "291b15c3ab4219e43a5f4f9091e5a97ee9d7400b",
+                    },
+                    "afterBlob": {
+                        "path": "file1.py",
+                        "blobId": "46ad86582da03cc34c804c24b17976571bca1eba",
+                    },
+                    "changeType": "M",
+                },
+                {
+                    "beforeBlob": {"path": "", "blobId": ""},
+                    "afterBlob": {
+                        "path": "file2.py",
+                        "blobId": "2404c7874fcbd684d6779c1420072f088647fd79",
+                    },
+                    "changeType": "A",
+                },
+                {
+                    "beforeBlob": {
+                        "path": "file3.py",
+                        "blobId": "9af7989045ce40e9478ebb8089dfbadac19a9cde",
+                    },
+                    "afterBlob": {"path": "", "blobId": ""},
+                    "changeType": "D",
+                },
+                {
+                    "beforeBlob": {
+                        "path": "file5.py",
+                        "blobId": "738e36eec120ef9d6393a149252698f49156d5b4",
+                    },
+                    "afterBlob": {
+                        "path": "file6.py",
+                        "blobId": "faecdb85f7ba199df927a783b261378a1baeca85",
+                    },
+                    "changeType": "R",
+                },
+            ]
+        }
+    ]
+
+    @pytest.fixture
+    def differences(self):
         # Create a mock CodeCommitClient instance and codecommit_client member
         api = CodeCommitClient()
         api.boto_client = MagicMock()
 
         # Mock the response from the AWS client for get_differences method
-        api.boto_client.get_paginator.return_value.paginate.return_value = [
-            {
-                "differences": [
-                    {
-                        "beforeBlob": {
-                            "path": "file1.py",
-                            "blobId": "291b15c3ab4219e43a5f4f9091e5a97ee9d7400b",
-                        },
-                        "afterBlob": {
-                            "path": "file1.py",
-                            "blobId": "46ad86582da03cc34c804c24b17976571bca1eba",
-                        },
-                        "changeType": "M",
-                    },
-                    {
-                        "beforeBlob": {"path": "", "blobId": ""},
-                        "afterBlob": {
-                            "path": "file2.py",
-                            "blobId": "2404c7874fcbd684d6779c1420072f088647fd79",
-                        },
-                        "changeType": "A",
-                    },
-                    {
-                        "beforeBlob": {
-                            "path": "file3.py",
-                            "blobId": "9af7989045ce40e9478ebb8089dfbadac19a9cde",
-                        },
-                        "afterBlob": {"path": "", "blobId": ""},
-                        "changeType": "D",
-                    },
-                    {
-                        "beforeBlob": {
-                            "path": "file5.py",
-                            "blobId": "738e36eec120ef9d6393a149252698f49156d5b4",
-                        },
-                        "afterBlob": {
-                            "path": "file6.py",
-                            "blobId": "faecdb85f7ba199df927a783b261378a1baeca85",
-                        },
-                        "changeType": "R",
-                    },
-                ]
-            }
-        ]
+        api.boto_client.get_paginator.return_value.paginate.return_value = self._DIFFERENCES_RESPONSE
 
-        diffs = api.get_differences("my_test_repo", "commit1", "commit2")
+        return api.get_differences("my_test_repo", "commit1", "commit2")
 
-        assert len(diffs) == 4
-        assert diffs[0].before_blob_path == "file1.py"
-        assert diffs[0].before_blob_id == "291b15c3ab4219e43a5f4f9091e5a97ee9d7400b"
-        assert diffs[0].after_blob_path == "file1.py"
-        assert diffs[0].after_blob_id == "46ad86582da03cc34c804c24b17976571bca1eba"
-        assert diffs[0].change_type == "M"
-        assert diffs[1].before_blob_path == ""
-        assert diffs[1].before_blob_id == ""
-        assert diffs[1].after_blob_path == "file2.py"
-        assert diffs[1].after_blob_id == "2404c7874fcbd684d6779c1420072f088647fd79"
-        assert diffs[1].change_type == "A"
-        assert diffs[2].before_blob_path == "file3.py"
-        assert diffs[2].before_blob_id == "9af7989045ce40e9478ebb8089dfbadac19a9cde"
-        assert diffs[2].after_blob_path == ""
-        assert diffs[2].after_blob_id == ""
-        assert diffs[2].change_type == "D"
-        assert diffs[3].before_blob_path == "file5.py"
-        assert diffs[3].before_blob_id == "738e36eec120ef9d6393a149252698f49156d5b4"
-        assert diffs[3].after_blob_path == "file6.py"
-        assert diffs[3].after_blob_id == "faecdb85f7ba199df927a783b261378a1baeca85"
-        assert diffs[3].change_type == "R"
+    def test_get_differences_returns_every_difference(self, differences):
+        assert len(differences) == 4
+
+    def test_get_differences_maps_modified_file(self, differences):
+        assert differences[0].before_blob_path == "file1.py"
+        assert differences[0].before_blob_id == "291b15c3ab4219e43a5f4f9091e5a97ee9d7400b"
+        assert differences[0].after_blob_path == "file1.py"
+        assert differences[0].after_blob_id == "46ad86582da03cc34c804c24b17976571bca1eba"
+        assert differences[0].change_type == "M"
+
+    def test_get_differences_maps_added_file(self, differences):
+        assert differences[1].before_blob_path == ""
+        assert differences[1].before_blob_id == ""
+        assert differences[1].after_blob_path == "file2.py"
+        assert differences[1].after_blob_id == "2404c7874fcbd684d6779c1420072f088647fd79"
+        assert differences[1].change_type == "A"
+
+    def test_get_differences_maps_deleted_file(self, differences):
+        assert differences[2].before_blob_path == "file3.py"
+        assert differences[2].before_blob_id == "9af7989045ce40e9478ebb8089dfbadac19a9cde"
+        assert differences[2].after_blob_path == ""
+        assert differences[2].after_blob_id == ""
+        assert differences[2].change_type == "D"
+
+    def test_get_differences_maps_renamed_file(self, differences):
+        assert differences[3].before_blob_path == "file5.py"
+        assert differences[3].before_blob_id == "738e36eec120ef9d6393a149252698f49156d5b4"
+        assert differences[3].after_blob_path == "file6.py"
+        assert differences[3].after_blob_id == "faecdb85f7ba199df927a783b261378a1baeca85"
+        assert differences[3].change_type == "R"
 
     def test_get_file(self):
         # Create a mock CodeCommitClient instance and codecommit_client member

@@ -4,7 +4,11 @@ import pytest
 
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings
-from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions, render_suggestions_markdown
+from pr_agent.tools.pr_code_suggestions import (
+    PRCodeSuggestions,
+    filter_suggestions_by_score_threshold,
+    render_suggestions_markdown,
+)
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 TRUNCATION_SETTINGS = (
@@ -754,20 +758,120 @@ def test_validate_one_liner_skips_when_existing_code_contains_ellipsis():
 # get_score_str thresholds
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("high,medium", [(9, 7), ("9", "7")])
 @pytest.mark.parametrize(
     "score,expected",
     [(10, "High"), (9, "High"), (8, "Medium"), (7, "Medium"), (6, "Low"), (0, "Low")],
 )
-def test_get_score_str_returns_bucket_for_default_thresholds(score, expected):
+def test_get_score_str_returns_bucket_for_integer_thresholds(high, medium, score, expected):
     settings = get_settings()
     snapshot = snapshot_settings([
         "pr_code_suggestions.new_score_mechanism_th_high",
         "pr_code_suggestions.new_score_mechanism_th_medium",
     ])
-    settings.set("pr_code_suggestions.new_score_mechanism_th_high", 9)
-    settings.set("pr_code_suggestions.new_score_mechanism_th_medium", 7)
+    settings.set("pr_code_suggestions.new_score_mechanism_th_high", high)
+    settings.set("pr_code_suggestions.new_score_mechanism_th_medium", medium)
     try:
         tool = _make_tool()
         assert tool.get_score_str(score) == expected
     finally:
         restore_settings(snapshot)
+
+
+@pytest.mark.parametrize(
+    "high,medium,score,expected",
+    [
+        ("invalid", 7, 9, "High"),
+        (9, "invalid", 6, "Low"),
+        (8.5, 7, 8, "High"),
+        ("8.5", 7, 8, "Medium"),
+        (9, 6.5, 6, "Medium"),
+        (9, "6.5", 6, "Low"),
+    ],
+)
+def test_get_score_str_uses_existing_integer_threshold_coercion(high, medium, score, expected):
+    settings = get_settings()
+    snapshot = snapshot_settings([
+        "pr_code_suggestions.new_score_mechanism_th_high",
+        "pr_code_suggestions.new_score_mechanism_th_medium",
+    ])
+    settings.set("pr_code_suggestions.new_score_mechanism_th_high", high)
+    settings.set("pr_code_suggestions.new_score_mechanism_th_medium", medium)
+    try:
+        assert _make_tool().get_score_str(score) == expected
+    finally:
+        restore_settings(snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("high,medium", [(9, 7), ("9", 7), (9, "7"), ("9", "7")])
+@pytest.mark.parametrize("display_impact", [True, False])
+async def test_summary_renders_normalized_reflection_scores_with_quoted_thresholds(
+    high, medium, display_impact,
+):
+    settings = get_settings()
+    snapshot = snapshot_settings([
+        "config.publish_output",
+        "pr_code_suggestions.new_score_mechanism",
+        "pr_code_suggestions.new_score_mechanism_th_high",
+        "pr_code_suggestions.new_score_mechanism_th_medium",
+        "pr_code_suggestions.suggestions_score_threshold",
+    ])
+    try:
+        settings.set("config.publish_output", False)
+        settings.set("pr_code_suggestions.new_score_mechanism", display_impact)
+        settings.set("pr_code_suggestions.new_score_mechanism_th_high", high)
+        settings.set("pr_code_suggestions.new_score_mechanism_th_medium", medium)
+        settings.set("pr_code_suggestions.suggestions_score_threshold", 1)
+        git_provider = _provider_with_diff_files("app.py")
+        git_provider.get_diff_files.return_value = git_provider.diff_files
+        tool = _make_tool(git_provider)
+        suggestions = [
+            _suggestion(
+                one_sentence_summary=f"Score {score}",
+                existing_code="return new()",
+                improved_code="return better()",
+            )
+            for score in (9, 8, 6)
+        ]
+        reflection = {
+            "code_suggestions": [
+                {"suggestion_score": str(score), "why": "Useful change"}
+                for score in (9, 8, 6)
+            ]
+        }
+        assert tool._has_usable_reflection_feedback(reflection, suggestions)
+        data = {"code_suggestions": suggestions}
+        await tool.analyze_self_reflection_response(data, reflection)
+        data["code_suggestions"] = filter_suggestions_by_score_threshold(data["code_suggestions"])
+        assert [suggestion["score"] for suggestion in data["code_suggestions"]] == [9, 8, 6]
+        assert all(type(suggestion["score"]) is int for suggestion in data["code_suggestions"])
+
+        out = tool.generate_summarized_suggestions(data)
+
+        assert "<table>" in out and "</table>" in out
+        expected = ("High", "Medium", "Low") if display_impact else ("9", "8", "6")
+        for impact in expected:
+            assert f"<td align=center>{impact}\n\n" in out
+    finally:
+        restore_settings(snapshot)
+
+
+def test_get_score_str_does_not_coerce_unused_medium_threshold(monkeypatch):
+    calls = []
+
+    def read_threshold(setting_name, default, minimum):
+        calls.append(setting_name)
+        return default
+
+    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions._as_threshold", read_threshold)
+    tool = _make_tool()
+    assert tool.get_score_str(10) == "High"
+    assert calls == ["pr_code_suggestions.new_score_mechanism_th_high"]
+
+    assert tool.get_score_str(8) == "Medium"
+    assert calls == [
+        "pr_code_suggestions.new_score_mechanism_th_high",
+        "pr_code_suggestions.new_score_mechanism_th_high",
+        "pr_code_suggestions.new_score_mechanism_th_medium",
+    ]

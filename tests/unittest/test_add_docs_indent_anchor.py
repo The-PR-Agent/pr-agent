@@ -122,7 +122,7 @@ def test_partial_head_content_cannot_supply_an_original_line():
 
 def test_source_read_error_does_not_become_a_documentation_only_replacement():
     class UnreadableSource(str):
-        def splitlines(self):
+        def split(self, *args, **kwargs):
             raise ValueError("source unavailable")
 
     assert _tool(UnreadableSource("def f():")).dedent_code("a.py", 1, SNIPPET, add_original_line=True) is None

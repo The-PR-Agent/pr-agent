@@ -15,7 +15,7 @@ from pr_agent.algo.ai_handlers.litellm_helpers import (
 )
 from pr_agent.algo.artifacts import inject_artifact_context as _inject_artifact_context
 from pr_agent.algo.run_details import command_failed, init_run_details
-from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
 from pr_agent.doctor import missing_provider_key_env_vars
 from pr_agent.git_providers import get_git_provider
@@ -41,12 +41,8 @@ class _ActionStatus:
 _action_status: ContextVar[_ActionStatus | None] = ContextVar("pr_agent_action_status", default=None)
 
 
-def is_true(value: str | bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.lower() == 'true'
-    return False
+def is_true(value: str | bool | int) -> bool:
+    return _as_bool_setting(value)
 
 
 def get_setting_or_env(key: str, default: str | bool = None) -> str | bool:
@@ -249,8 +245,10 @@ async def run_action():
     get_settings().set("GITHUB.USER_TOKEN", GITHUB_TOKEN)
     get_settings().set("GITHUB.DEPLOYMENT_TYPE", "user")
     enable_output = get_setting_or_env("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT", True)
-    if isinstance(enable_output, str):
-        enable_output = enable_output.lower().strip() not in ("false", "0", "no", "")
+    if isinstance(enable_output, str) and not enable_output.strip():
+        enable_output = False
+    else:
+        enable_output = _as_bool_setting(enable_output, default=True)
     get_settings().set("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT", enable_output)
 
     # Load the event payload

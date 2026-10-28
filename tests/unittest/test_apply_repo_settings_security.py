@@ -199,6 +199,43 @@ def test_repo_settings_cannot_enable_publish_error_details(monkeypatch, settings
     assert pr_reviewer.get("num_max_findings") == 11
 
 
+@pytest.mark.parametrize(
+    ("section", "key", "host_value", "repo_value"),
+    [
+        ("github", "seconds_between_requests", 0, 10),
+        ("github", "seconds_between_writes", 0, 10),
+        ("github", "api_retries", 0, 10),
+        ("github", "ratelimit_retries", 5, 10),
+    ],
+)
+def test_repo_settings_cannot_override_host_only_pacing_and_call_limits(
+    monkeypatch, settings_snapshot, section, key, host_value, repo_value
+):
+    provider = FakeGitProvider(repo_settings_bytes=f"[{section}]\n{key} = {repo_value}\n".encode())
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set(f"{section}.{key}", host_value)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get(f"{section}.{key}") == host_value
+
+
+def test_repo_settings_can_override_ai_timeout(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b"[config]\nai_timeout = 600\n")
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.ai_timeout", 120)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get("config.ai_timeout") == 600
+
+
 def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
     provider = FakeGitProvider(repo_settings_bytes=b'[prompt_fragments]\ndiff_hunk_format = "UNTRUSTED-FRAGMENT"\n')
     captured = _install_provider(monkeypatch, provider)

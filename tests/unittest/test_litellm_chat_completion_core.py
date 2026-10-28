@@ -733,6 +733,18 @@ def _timeout_error():
     return openai.APITimeoutError(request=httpx.Request("POST", "http://model.invalid"))
 
 
+def _answered(error):
+    # LiteLLM attaches the provider's response headers to an error the provider answered.
+    error.litellm_response_headers = httpx.Headers({})
+    return error
+
+
+def _connection_error(cause):
+    error = litellm.APIConnectionError("no answer", llm_provider="bedrock", model="m")
+    error.__cause__ = cause
+    return error
+
+
 def _empty_response(finish_reason, content=""):
     mock = MagicMock()
     response = {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
@@ -792,6 +804,27 @@ def _empty_response(finish_reason, content=""):
             litellm_handler.MODEL_RETRIES,
             id="generic-api-error",
         ),
+        pytest.param(
+            _answered(litellm.RateLimitError("throttled", llm_provider="bedrock", model="m")),
+            litellm_handler.DEFAULT_NUM_RETRIES + 1,
+            id="rate-limit",
+        ),
+        pytest.param(
+            _answered(litellm.ServiceUnavailableError("unavailable", llm_provider="bedrock", model="m")),
+            litellm_handler.DEFAULT_NUM_RETRIES + 1,
+            id="service-unavailable",
+        ),
+        pytest.param(
+            _connection_error(httpx.ConnectError("refused")),
+            litellm_handler.DEFAULT_NUM_RETRIES + 1,
+            id="connection-error",
+        ),
+        pytest.param(
+            # A 200 that failed to parse; LiteLLM reports it as a 500 with no response behind it.
+            litellm.InternalServerError("Expecting value", llm_provider="openai", model="m"),
+            litellm_handler.MODEL_RETRIES,
+            id="unparsed-response",
+        ),
     ],
 )
 async def test_chat_completion_retry_classification(monkeypatch, error, expected_attempts):
@@ -809,8 +842,10 @@ async def test_chat_completion_retry_classification(monkeypatch, error, expected
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_passes_configured_retries_to_completion_call(monkeypatch):
-    monkeypatch.setattr(litellm_handler, "get_settings", lambda: FakeSettings(config_values={"num_retries": 0}))
+@pytest.mark.parametrize("config_values", [{}, {"num_retries": 0}, {"num_retries": 7}], ids=["unset", "zero", "set"])
+async def test_chat_completion_always_turns_off_client_retries(monkeypatch, config_values):
+    # The handler's retry is the only layer; config.num_retries never reaches the client.
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: FakeSettings(config_values=config_values))
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
@@ -823,17 +858,42 @@ async def test_chat_completion_passes_configured_retries_to_completion_call(monk
 
 
 @pytest.mark.asyncio
-async def test_chat_completion_unset_num_retries_keeps_client_defaults(monkeypatch):
-    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+@pytest.mark.parametrize("num_retries,expected_attempts", [(0, 1), (2, 3)])
+async def test_chat_completion_num_retries_sets_rate_limit_attempts(monkeypatch, num_retries, expected_attempts):
+    settings = FakeSettings(config_values={"num_retries": num_retries})
+    monkeypatch.setattr(litellm_handler, "get_settings", lambda: settings)
+    error = _answered(litellm.RateLimitError("throttled", llm_provider="bedrock", model="m"))
 
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
-        mock_call.return_value = _mock_response()
+        mock_call.side_effect = error
         handler = litellm_handler.LiteLLMAIHandler()
 
-        await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+        with pytest.raises(litellm.RateLimitError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
 
-    assert "num_retries" not in mock_call.call_args.kwargs
-    assert "max_retries" not in mock_call.call_args.kwargs
+    assert mock_call.call_count == expected_attempts
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_waits_retry_after_between_rate_limit_retries(monkeypatch):
+    monkeypatch.setattr(litellm_handler, "get_settings", FakeSettings)
+    sleeps = []
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(litellm_handler.LiteLLMAIHandler._chat_completion_with_retry.retry, "sleep", record_sleep)
+    error = _answered(litellm.RateLimitError("throttled", llm_provider="bedrock", model="m"))
+    error.litellm_response_headers = httpx.Headers({"retry-after": "7"})
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.side_effect = error
+        handler = litellm_handler.LiteLLMAIHandler()
+
+        with pytest.raises(litellm.RateLimitError):
+            await handler.chat_completion(model="gpt-4o", system="sys", user="usr")
+
+    assert sleeps == [7.0] * litellm_handler.DEFAULT_NUM_RETRIES
 
 
 @pytest.mark.asyncio

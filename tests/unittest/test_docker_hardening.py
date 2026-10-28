@@ -46,9 +46,8 @@ def test_external_build_images_are_digest_pinned(filename):
     assert external
     assert all(re.fullmatch(r".+:[^@]+@sha256:[0-9a-f]{64}", image) for image in external)
 
-
-def test_dockerignore_lists_both_supported_secret_files():
+@pytest.mark.parametrize("folder", ("settings", "settings_prod"))
+def test_dockerignore_lists_both_supported_secret_files(folder):
     patterns = (ROOT / ".dockerignore").read_text().splitlines()
-    for folder in ("settings", "settings_prod"):
-        assert f"pr_agent/{folder}/.secrets.toml" in patterns
-        assert f"pr_agent/{folder}/.secrets_template.toml" not in patterns
+    assert f"pr_agent/{folder}/.secrets.toml" in patterns
+    assert f"pr_agent/{folder}/.secrets_template.toml" not in patterns

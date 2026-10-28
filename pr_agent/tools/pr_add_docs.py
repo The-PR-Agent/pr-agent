@@ -3,6 +3,7 @@ from functools import partial
 
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.git_patch_processing import split_diff_lines
 from pr_agent.algo.pr_processing import (
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     FallbackEligibleError,
@@ -274,7 +275,7 @@ class PRAddDocs:
                 if file.filename.strip() == relevant_file:
                     if add_original_line and not getattr(file, "head_file_is_complete", True):
                         return None
-                    file_lines = file.head_file.splitlines() if file.head_file else []
+                    file_lines = split_diff_lines(file.head_file) if file.head_file else []
                     if not 1 <= relevant_lines_start <= len(file_lines):
                         get_logger().warning(
                             "Could not dedent code snippet, relevant_lines_start is out of range",

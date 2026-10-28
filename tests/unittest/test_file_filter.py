@@ -779,27 +779,27 @@ class TestUnfilteredPlatformIsReported:
 
         assert warnings == []
 
-    def test_every_supported_platform_actually_drops_a_matching_file(self, monkeypatch):
+    @pytest.mark.parametrize("platform, build", _ENTRY_SHAPES.items())
+    def test_every_supported_platform_actually_drops_a_matching_file(self, monkeypatch, platform, build):
         """Each listed platform must reach its branch; an unreachable one is dead config."""
         self._ignore(monkeypatch)
 
-        for platform, build in _ENTRY_SHAPES.items():
-            matching = build('vendor/lib.py')
-            kept = build('src/app.py')
+        matching = build('vendor/lib.py')
+        kept = build('src/app.py')
 
-            assert filter_ignored([matching, kept], platform=platform) == [kept], (
-                f"platform {platform!r} did not apply the ignore pattern"
-            )
+        assert filter_ignored([matching, kept], platform=platform) == [kept], (
+            f"platform {platform!r} did not apply the ignore pattern"
+        )
 
-    def test_supported_platforms_do_not_warn(self, monkeypatch):
+    @pytest.mark.parametrize("platform, build", _ENTRY_SHAPES.items())
+    def test_supported_platforms_do_not_warn(self, monkeypatch, platform, build):
         self._ignore(monkeypatch)
 
-        for platform, build in _ENTRY_SHAPES.items():
-            files = [build('vendor/lib.py')]
+        files = [build('vendor/lib.py')]
 
-            assert _capture_warnings(lambda p=platform, f=files: filter_ignored(list(f), platform=p)) == [], (
-                f"platform {platform!r} should not warn"
-            )
+        assert _capture_warnings(lambda p=platform, f=files: filter_ignored(list(f), platform=p)) == [], (
+            f"platform {platform!r} should not warn"
+        )
 
 
 class TestFilterFailureIsReported:

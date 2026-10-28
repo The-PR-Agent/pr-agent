@@ -31,12 +31,11 @@ def test_clamp_a_score_below_the_scale():
     assert blue == 1
     assert white == 4
 
-
-def test_the_bar_is_always_five_segments():
+@pytest.mark.parametrize("value", ["0", "1", "3", "5", "8", "99"])
+def test_the_bar_is_always_five_segments(value):
     """Keep the total segment count constant so the bar reads as a 1-5 scale."""
-    for value in ("0", "1", "3", "5", "8", "99"):
-        blue, white = _bars(value)
-        assert blue + white == 5, value
+    blue, white = _bars(value)
+    assert blue + white == 5, value
 
 
 @pytest.mark.parametrize("score, expected", [("8", 5), ("0", 1), ("3", 3)])

@@ -92,11 +92,13 @@ pr_commands = [
 
 [pr_code_suggestions]
 num_code_suggestions_per_chunk = ...
+publish_failure_comment = true
 ...
 ```
 
 - The `pr_commands` lists commands that will be executed automatically when a PR is opened.
 - The `[pr_code_suggestions]` section contains the configurations for the `improve` tool you want to edit (if any)
+- Set `publish_failure_comment = false` to suppress failure comments while preserving the command failure status.
 
 ### Incremental suggestions
 
@@ -121,6 +123,11 @@ The table format offers several key advantages:
 - **IDE integration**: Allows applying suggestions directly in your IDE via the CLI tool
 
 Table mode is the default of PR-Agent, and is recommended approach for most users due to these benefits.
+
+When `pr_code_suggestions.new_score_mechanism` is enabled, the Impact column uses
+integer `new_score_mechanism_th_high` and `new_score_mechanism_th_medium` thresholds.
+Quoted integers such as `"9"` and `"7"` are accepted; invalid values fall back to
+the defaults of 9 and 7. Other numeric values follow the existing integer coercion rules.
 
 <img src="/img/code_suggestions_as_comment_closed.png" alt="code_suggestions_as_comment_closed.png" width="512" />
 

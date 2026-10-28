@@ -22,6 +22,12 @@ def test_the_truncated_context_stays_within_budget(budget):
     assert _tokens(out) <= budget
 
 
+def test_tiny_budget_stays_within_budget_even_when_marker_does_not_fit():
+    out = format_skills_context([BIG], 1)
+
+    assert out == ""
+
+
 @pytest.mark.parametrize("budget", [20, 50, 200, 1000])
 def test_the_truncated_context_still_carries_the_skill(budget):
     """Keep the skill and its truncation marker, so shrinking cannot degenerate to nothing."""

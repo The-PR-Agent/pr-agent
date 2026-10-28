@@ -425,7 +425,9 @@ class GitProvider(ABC):
         budget = _discussion_context_budget()
         if budget <= 0:
             return ""
-        discussions, context = [], ""
+        discussions = []
+        # Reserve two characters for the outer JSON array brackets.
+        context_chars = 2
         for thread in self._iter_code_suggestion_threads():
             if thread.authored_by_agent is False:
                 continue
@@ -440,14 +442,14 @@ class GitProvider(ABC):
                 "replies": [{"author": author or "Unknown", "message": message[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS]}
                             for author, message in replies[-DISCUSSION_CONTEXT_MAX_REPLIES:]],
             }
-            candidate = json.dumps(discussions + [discussion], ensure_ascii=False, indent=2)
-            if len(candidate) > budget:
+            discussion_chars = len(json.dumps([discussion], ensure_ascii=False, indent=2)) - 2
+            if context_chars + discussion_chars > budget:
                 break
             discussions.append(discussion)
-            context = candidate
+            context_chars += discussion_chars
             if len(discussions) >= DISCUSSION_CONTEXT_MAX_THREADS:
                 break
-        return context
+        return json.dumps(discussions, ensure_ascii=False, indent=2) if discussions else ""
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this.

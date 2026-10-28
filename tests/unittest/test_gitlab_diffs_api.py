@@ -397,6 +397,44 @@ def test_fresh_metadata_supplies_count_and_blob_refs_without_mutating_cached_mr(
     assert len(transport.requests) == 3
 
 
+@pytest.mark.parametrize("count", ["1", None], ids=["cached-changes", "uncached-changes"])
+def test_review_head_tracks_loaded_diff_until_scope_reset(provider_factory, count):
+    reviewed = _metadata(count=count, head_sha="reviewed-head")
+    newer = _metadata(count=count, head_sha="newer-head")
+    collections = 1 if count is not None else 2
+    provider, transport = provider_factory(
+        [(200, [_change("a.py")], {})] * (collections + 1),
+        count=count,
+        metadata_responses=_metadata_reads(*([reviewed] * (collections * 2) + [newer] * 3)),
+    )
+
+    assert provider.get_pr_head_sha() == "head"
+    assert provider.get_files() == ["a.py"]
+    assert provider.get_pr_head_sha() == "head"
+    files = provider.get_diff_files()
+
+    assert files[0].head_file == "new\n"
+    provider.get_pr_file_content.assert_any_call("a.py", "reviewed-head")
+    assert provider.get_pr_head_sha() == "reviewed-head"
+    assert len(transport.diff_requests) == collections
+    if count is None:
+        assert getattr(provider, "_merge_request_changes_cache", None) is None
+
+    provider.mr = provider._get_merge_request()
+    assert provider.mr.diff_refs["head_sha"] == "newer-head"
+    assert provider.get_diff_files() is files
+    assert provider.get_pr_head_sha() == "reviewed-head"
+
+    provider.get_incremental_commits(IncrementalPR(False))
+    assert provider.diff_files is None
+    assert provider.get_pr_head_sha() == "newer-head"
+    assert provider.get_diff_files() is not files
+    provider.get_pr_file_content.assert_any_call("a.py", "newer-head")
+    assert provider.get_pr_head_sha() == "newer-head"
+    assert len(transport.diff_requests) == collections + 1
+    assert len(transport.requests) == (collections + 1) * 3 + 1
+
+
 @pytest.mark.parametrize("field", ["sha", "head_sha", "base_sha", "start_sha", "changes_count"])
 def test_moving_metadata_discards_pages_and_retries_once(provider_factory, field):
     old = _metadata()

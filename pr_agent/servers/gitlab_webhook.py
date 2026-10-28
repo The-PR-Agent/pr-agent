@@ -19,7 +19,7 @@ from starlette_context.middleware import RawContextMiddleware
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
 from pr_agent.algo.run_details import command_failed, init_run_details
-from pr_agent.algo.setting_utils import normalize_setting_list
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
 from pr_agent.git_providers.request_timeout import get_http_request_timeout, refresh_session_request_timeout
@@ -433,8 +433,7 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 apply_repo_settings(url)
                 handle_assignment = get_settings().get("gitlab.handle_reviewer_assignment", False)
-                if isinstance(handle_assignment, str):
-                    handle_assignment = handle_assignment.lower() in ("true", "1", "yes")
+                handle_assignment = _as_bool_setting(handle_assignment)
                 if not handle_assignment:
                     return JSONResponse(status_code=status.HTTP_200_OK,
                                         content=jsonable_encoder({"message": "success"}))

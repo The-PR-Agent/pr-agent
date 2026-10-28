@@ -23,6 +23,32 @@ def stub_settings(monkeypatch):
     psi._EMBEDDING_CLIENTS.clear()
 
 
+def test_embedding_limit_uses_model_tokens_not_character_count():
+    # Under 8,000 characters, but over the embedding API token budget.
+    text = "🧪" * 4000
+    assert len(text) < psi.EMBEDDING_INPUT_TOKEN_LIMIT
+    assert len(psi._embedding_token_ids(text)) > psi.EMBEDDING_INPUT_TOKEN_LIMIT
+    assert not psi._fits_embedding_input(text)
+    assert psi._fits_embedding_input("hello world")
+    assert psi._fits_embedding_input("literal <|endoftext|> marker")
+    assert psi._embedding_token_ids("literal <|endoftext|> marker")
+
+
+@pytest.mark.parametrize(
+    ("token_count", "expected"),
+    [(8000, True), (8001, True), (8191, True), (8192, False)],
+)
+def test_embedding_accepts_api_token_boundary(monkeypatch, token_count, expected):
+    assert psi.EMBEDDING_INPUT_TOKEN_LIMIT == psi.MAX_TOKENS[psi.MODEL] - 1 == 8191
+
+    class Encoding:
+        def encode(self, text, disallowed_special=()):
+            return [1] * token_count
+
+    monkeypatch.setattr(psi.tiktoken, "encoding_for_model", lambda model: Encoding())
+    assert psi._fits_embedding_input("🧪") is expected
+
+
 def test_no_removed_v0_embedding_api_remains():
     """Assert the removed openai.Embedding.create call is gone; it raises APIRemovedInV1."""
     source = inspect.getsource(psi)
@@ -317,6 +343,20 @@ def query_tool(monkeypatch, request):
             assert call["with_payload"] == ["id"]
             condition, = call["query_filter"].must
             assert (condition.key, condition.match.value) == ("metadata.repo", "example-repo")
+
+
+@pytest.mark.asyncio
+async def test_long_query_uses_bounded_embedding_tokens(query_tool):
+    state = query_tool
+    long_text = "🧪" * 4000
+    state.tool._process_issue = lambda issue, include_comments=False: (long_text, [], issue.number)
+    state.responses = [[]]
+
+    await state.tool.run()
+
+    assert isinstance(state.embedded[0][0], list)
+    assert len(state.embedded[0][0]) == psi.EMBEDDING_INPUT_TOKEN_LIMIT
+    assert state.embedded[0][0] == psi._embedding_token_ids(long_text)[:psi.EMBEDDING_INPUT_TOKEN_LIMIT]
 
 
 def _limits(state):

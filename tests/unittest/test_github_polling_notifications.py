@@ -561,11 +561,11 @@ async def test_comment_history_uses_only_page_number_from_link(prefix):
 @pytest.mark.asyncio
 async def test_comment_history_shares_deadline_across_pages(monkeypatch):
     calls = []
-    monkeypatch.setattr(github_polling, "_get_polling_request_timeout", lambda: 0.1)
+    monkeypatch.setattr(github_polling, "_get_polling_request_timeout", lambda: 0.5)
 
     async def fallback(request):
         calls.append(int(request.query.get("page", 1)))
-        await asyncio.sleep(0.06)
+        await asyncio.sleep(0.3)
         return _page_response(request, list(range(1, 205)))
 
     async with _server(fallback) as url, aiohttp.ClientSession() as session:

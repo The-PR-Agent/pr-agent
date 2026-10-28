@@ -1,4 +1,6 @@
+import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -906,6 +908,45 @@ def test_should_publish_review_no_suggestions_respects_config():
 
 
 @pytest.mark.asyncio
+async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    started = threading.Event()
+    release = threading.Event()
+    fetch_thread_ids = []
+
+    def fetch_diff():
+        fetch_thread_ids.append(threading.get_ident())
+        started.set()
+        assert release.wait(10)
+        return []
+
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.get_diff_files.side_effect = fetch_diff
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", AsyncMock())
+    monkeypatch.setattr(get_settings().config, "publish_output", False)
+
+    run = asyncio.create_task(reviewer.run())
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), 10)
+        assert not run.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(run, 10)
+
+    assert len(fetch_thread_ids) == 1
+    assert fetch_thread_ids[0] != threading.get_ident()
+    git_provider.get_diff_files.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("has_new_files", "valid_anchor"),
     [(False, True), (True, True), (False, False)],
@@ -954,9 +995,11 @@ async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkey
         extract.assert_awaited_once_with(git_provider, reviewer.vars)
         retry.assert_awaited_once()
         assert reviewer.incremental.is_incremental is valid_anchor
+        git_provider.get_diff_files.assert_called_once_with()
     else:
         extract.assert_not_called()
         retry.assert_not_called()
+        git_provider.get_diff_files.assert_not_called()
         git_provider.publish_comment.assert_called_once_with(
             "Incremental Review Skipped\n"
             f"No files were changed since the [previous PR Review]({previous_review_url})"

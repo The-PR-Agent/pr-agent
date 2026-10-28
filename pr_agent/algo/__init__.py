@@ -257,7 +257,7 @@ GPT6_MAX_INPUT_TOKENS = {"gpt-6-sol": 922000, "gpt-6-luna": 922000, "gpt-6.1-sol
 # because they also drive the extended-thinking registry and their 1M-context
 # handling is a separate, deliberate judgement (issue #3196).
 MAX_TOKENS = {
-    'text-embedding-ada-002': 8000,
+    'text-embedding-ada-002': 8192,
     'gpt-3.5-turbo': 16000,
     'gpt-3.5-turbo-0125': 16000,
     'gpt-4': 8000,

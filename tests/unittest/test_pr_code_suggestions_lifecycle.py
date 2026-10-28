@@ -25,6 +25,7 @@ _TRACKED_SETTINGS = (
     "pr_code_suggestions.committable_code_suggestions",
     "pr_code_suggestions.dual_publishing_score_threshold",
     "pr_code_suggestions.persistent_comment",
+    "pr_code_suggestions.publish_failure_comment",
     "pr_code_suggestions.max_history_len",
     "github.publish_as_check_run",
 )
@@ -478,6 +479,36 @@ async def test_run_publishes_failure_when_inline_suggestions_never_publish(monke
 
         provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
         assert provider.remove_initial_comment.call_count == 2
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_can_suppress_failure_comment_without_changing_failure_status(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [object()]
+        tool = _make_tool(provider)
+        tool.progress = None
+        original_error = RuntimeError("generation failed")
+        monkeypatch.setattr(
+            pr_code_suggestions_module,
+            "retry_with_fallback_models",
+            AsyncMock(side_effect=original_error),
+        )
+        _configure_published_run()
+        settings = get_settings()
+        settings.config.publish_output_progress = False
+        settings.config.propagate_tool_errors = True
+        settings.pr_code_suggestions.publish_failure_comment = False
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await tool.run()
+
+        assert exc_info.value is original_error
+        provider.publish_comment.assert_not_called()
+        assert command_failed() is True
     finally:
         restore_settings(settings_snapshot)
 
