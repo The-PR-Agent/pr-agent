@@ -389,9 +389,9 @@ always gets the same rating.
 
 ```
 🔗 Structural reach: Critical
-Reach: 69 projects, cross-domain
-Dependents: billing-api, payouts-worker, web-app, admin-app, reports (+64 more)
-Sensitivity: payouts
+Reach: 40 projects, cross-domain
+Dependents: billing-api, payments-worker, web-app, admin-app, reports (+35 more)
+Sensitivity: payments
 Rating driven by sensitive domain (escalates regardless of size)
 ```
 

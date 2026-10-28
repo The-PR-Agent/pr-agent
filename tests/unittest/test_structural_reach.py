@@ -14,7 +14,7 @@ from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 _KEYS = ("pr_reviewer.structural_reach_input_file",)
 
-STRUCTURE = {"reach": 69, "cross_domain": True, "sensitive_domains": []}
+STRUCTURE = {"reach": 40, "cross_domain": True, "sensitive_domains": []}
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def test_reach_band_boundaries(reach, expected):
     ({"reach": 25, "sensitive_domains": ["auth"]}, "High"),
     ({"sensitive_domains": ["auth"]}, "High"),
     ({"reach": 26, "sensitive_domains": ["auth"]}, "Critical"),
-    ({"domains": ["draw"]}, "Low"),
+    ({"domains": ["search"]}, "Low"),
 ])
 def test_compose_risk(structure, expected):
     assert sr.BANDS[sr.compose_risk(structure)] == expected
@@ -82,7 +82,7 @@ def test_assess_with_structure():
     assert sr.assess_change(STRUCTURE) == {
         "band": "Moderate",
         "level": 1,
-        "factors": [{"label": "Reach", "value": "69 projects, cross-domain"}],
+        "factors": [{"label": "Reach", "value": "40 projects, cross-domain"}],
         "driver": "wide reach",
     }
 
@@ -105,7 +105,7 @@ def test_assess_without_structure_is_none():
         {"reach": True},
         {"reach": 1.5},
         {"cross_domain": "yes"},
-        {"domains": "draw"},
+        {"domains": "search"},
         {"domains": [1, 2]},
         {"sensitive_domains": [""]},
         {"sensitive_domains": ["x" * (sr.MAX_NAME_CHARS + 1)]},
@@ -131,7 +131,7 @@ def test_parse_structure_keeps_known_fields_and_drops_unknown():
         "version": 1,
         "reach": 4,
         "dependents": ["a", "b"],
-        "domains": ["draw", "player"],
+        "domains": ["search", "checkout"],
         "cross_domain": True,
         "sensitive_domains": ["auth"],
         "tool": "anything",
@@ -139,7 +139,7 @@ def test_parse_structure_keeps_known_fields_and_drops_unknown():
     assert parsed == {
         "reach": 4,
         "dependents": ["a", "b"],
-        "domains": ["draw", "player"],
+        "domains": ["search", "checkout"],
         "cross_domain": True,
         "sensitive_domains": ["auth"],
     }
@@ -150,8 +150,8 @@ def test_parse_structure_derives_reach_from_dependents():
 
 
 def test_load_structure_reads_file_under_workspace(reach_settings, tmp_path):
-    name = _write_input(tmp_path, {"reach": 5, "domains": ["draw"]})
-    assert sr.load_structure(name, resolve_artifact_path) == {"reach": 5, "domains": ["draw"]}
+    name = _write_input(tmp_path, {"reach": 5, "domains": ["search"]})
+    assert sr.load_structure(name, resolve_artifact_path) == {"reach": 5, "domains": ["search"]}
 
 
 @pytest.mark.parametrize("payload", ["{not json", json.dumps({"reach": "five"}), "\udcff"])
@@ -223,7 +223,7 @@ def test_render_gfm_row():
     rendered = sr.render_structural_reach(row, gfm_supported=True)
     assert rendered == (
         "<tr><td>🔗&nbsp;<strong>Structural reach</strong>: <strong>Moderate</strong>"
-        "<br>Reach: 69 projects, cross-domain"
+        "<br>Reach: 40 projects, cross-domain"
         "<br><em>Rating driven by wide reach</em></td></tr>\n"
     )
 
@@ -371,7 +371,7 @@ def test_project_is_the_default_reach_unit():
 def test_row_without_factors_is_none():
     assert sr.assess_change({"reach_unit": "files"}) is None
     assert sr.assess_change({"reach": 0, "reach_unit": "modules"}) is None
-    assert sr.assess_change({"domains": ["draw"]}) is None
+    assert sr.assess_change({"domains": ["search"]}) is None
 
 
 @pytest.mark.parametrize(("structure", "expected"), [
