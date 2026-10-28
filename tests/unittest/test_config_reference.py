@@ -27,7 +27,7 @@ def _documented_keys(text: str) -> Counter:
 
 def test_config_reference_covers_every_active_key():
     keys = _toml_keys(CONFIG_TOML.read_text(encoding="utf-8"))
-    assert sum(keys.values()) == 304
+    assert sum(keys.values()) == 305
 
     assert {
         "model",

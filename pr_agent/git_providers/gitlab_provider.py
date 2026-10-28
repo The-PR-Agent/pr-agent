@@ -53,6 +53,7 @@ from .git_provider import (
     GitProvider,
     IncompleteProviderPullRequestFilesError,
     IncrementalPR,
+    PRCommit,
     get_cached_global_settings,
     get_config_branch,
     redact_credentials,
@@ -998,6 +999,29 @@ class GitLabProvider(GitProvider):
                 self.incremental.last_seen_commit = adapter
                 break
         return self.mr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
+
+    def get_pr_commits(self) -> list[PRCommit]:
+        return [PRCommit(sha=commit.id, message=commit.message or "", url=getattr(commit, "web_url", "") or "")
+                for commit in list(self.mr.commits(per_page=100))[::-1]]
+
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> list[str]:
+        self.incremental = incremental
+        self.diff_files = None
+        self.unreviewed_files_map = {}
+        project = self.gl.projects.get(self.id_project, lazy=True)
+        gl_commit = project.commits.get(commit.sha)
+        parent_ids = list(getattr(gl_commit, "parent_ids", None) or [])
+        if len(parent_ids) != 1:
+            get_logger().info(f"Skipping commit {commit.sha} with {len(parent_ids)} parents in per commit review")
+            return []
+
+        incremental.first_new_commit = SimpleNamespace(sha=commit.sha)
+        incremental.last_seen_commit = SimpleNamespace(sha=parent_ids[0])
+        self._incremental_head_sha = commit.sha
+        for diff in gl_commit.diff(get_all=True):
+            if diff.get("new_path"):
+                self.unreviewed_files_map[diff["new_path"]] = diff
+        return list(self.unreviewed_files_map)
 
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):

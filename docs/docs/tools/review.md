@@ -79,6 +79,10 @@ for the authoritative default values.
     <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
   </tr>
   <tr>
+    <td><b>per_commit_review</b></td>
+    <td>If set to true, each commit of the PR is reviewed on its own diff and commit message, and one review comment is published per commit. See <a href="#reviewing-each-commit-separately">Reviewing each commit separately</a>. Default is false.</td>
+  </tr>
+  <tr>
     <td><b>publish_review_failure_comment</b></td>
     <td>
       Set to false to suppress the "Failed to review PR" comment, including when a persistent review comment
@@ -311,6 +315,42 @@ In the code feedback section, emphasize the following:
 """
 ```
 Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.
+:::
+
+### Reviewing each commit separately
+
+:::tip
+
+Projects that keep one logical change per commit can ask for a review of every commit instead of the combined PR diff:
+
+```
+/review --pr_reviewer.per_commit_review=true
+```
+
+or, for every review, in a configuration file:
+
+```
+[pr_reviewer]
+per_commit_review = true
+```
+
+Each commit is reviewed against its own parent, with its commit message in the prompt, and gets its own
+incremental review comment that names and links the commit. These comments are never the persistent
+review comment, and they do not change the review labels.
+
+Add `-i` (`/review -i`, or `pr_commands = ["/review -i"]` and `push_commands = ["/review -i"]` for automatic runs) to
+review only the commits added since the last review. The commit list is read from the git provider on every run, so
+after a force push the review follows the rewritten history: commits that were rebased, squashed or amended (for
+example with `git rebase --autosquash` folding fixup commits) get new SHAs and newer commit dates and are reviewed
+again, fixup commits that no longer exist are not reviewed, and commits that were left untouched are not repeated.
+The `minimal_commits_for_incremental_review` and `minimal_minutes_for_incremental_review` thresholds apply as for a
+regular incremental review.
+
+Merge commits, empty commits and the root commit of a history have no diff of their own and are skipped. A commit that
+fails to review is reported like a failed review and does not stop the remaining commits. Every reviewed commit is a
+separate model call, so a PR with many commits costs accordingly; `-i` keeps repeated runs to the new commits.
+
+Per commit review is available on GitHub and GitLab. Other git providers fall back to a regular review of the whole PR.
 :::
 
 ### Reviewing a PR that does not fit in one call

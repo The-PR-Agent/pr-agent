@@ -57,6 +57,7 @@ from .git_provider import (
     GitProvider,
     IncompletePullRequestFilesError,
     IncrementalPR,
+    PRCommit,
     cache_languages,
     get_config_branch,
     redact_credentials,
@@ -347,6 +348,28 @@ class GithubProvider(GitProvider):
                 break
         return self.pr_commits[first_new_commit_index:] if first_new_commit_index is not None else []
 
+    def get_pr_commits(self) -> list[PRCommit]:
+        return [PRCommit(sha=commit.sha, message=commit.commit.message or "", url=commit.html_url or "")
+                for commit in self.pr.get_commits()]
+
+    def set_commit_review_scope(self, commit: PRCommit, incremental: IncrementalPR) -> list[str]:
+        self.incremental = incremental
+        self.diff_files = None
+        if context.exists():
+            context.pop("diff_files", None)
+        self.unreviewed_files_map = {}
+        gh_commit = self._get_repo().get_commit(commit.sha)
+        parents = gh_commit.parents
+        if len(parents) != 1:
+            get_logger().info(f"Skipping commit {commit.sha} with {len(parents)} parents in per commit review")
+            return []
+
+        incremental.first_new_commit = gh_commit
+        incremental.last_seen_commit = parents[0]
+        incremental.head_sha = commit.sha
+        self.unreviewed_files_map = {file.filename: file for file in gh_commit.get_files(commit_files_per_page=300)}
+        return list(self.unreviewed_files_map)
+
     def get_previous_review(self, *, full: bool, incremental: bool):
         if not (full or incremental):
             raise ValueError("At least one of full or incremental must be True")
@@ -522,7 +545,8 @@ class GithubProvider(GitProvider):
                         new_file_content_str = ""
                     else:
                         # communication with GitHub
-                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)
+                        new_file_content_str = self._get_pr_file_content(
+                            file, getattr(self.incremental, "head_sha", None) or self.pr.head.sha)
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(

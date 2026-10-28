@@ -180,11 +180,11 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
 # also root-controlled so a nested file cannot re-enable sending private review-thread
 # discussion bodies to the model after the operator opted out.
 # Similarly, budget/call-count controls (max_number_of_calls, max_ai_calls, parallel_calls,
-# enable_large_pr_chunking, enable_large_pr_handling, async_ai_calls) are restricted so
+# enable_large_pr_chunking, per_commit_review, enable_large_pr_handling, async_ai_calls) are restricted so
 # a nested file cannot multiply AI calls independently of the host-trusted defaults.
 PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
     "pr_reviewer": frozenset({
-        "enable_large_pr_chunking", "max_number_of_calls",
+        "enable_large_pr_chunking", "max_number_of_calls", "per_commit_review",
         "inline_key_issues", "enable_review_labels_security",
         "enable_review_labels_effort", "require_estimate_effort_to_review",
         "require_security_review", "require_ticket_analysis_review", "max_previous_findings_chars",

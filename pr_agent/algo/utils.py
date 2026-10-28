@@ -205,7 +205,8 @@ def convert_to_markdown_v2(output_data: dict,
                            gfm_supported: bool = True,
                            incremental_review=None,
                            git_provider=None,
-                           files=None) -> str:
+                           files=None,
+                           commit_review=None) -> str:
     """
     Convert a dictionary of data into markdown format.
     Args:
@@ -235,8 +236,10 @@ def convert_to_markdown_v2(output_data: dict,
         "Review priority files": "📂",
     }
     markdown_text = ""
-    markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review))}\n\n"
-    if incremental_review:
+    markdown_text += f"{_ci.format_pr_review_header(incremental=bool(incremental_review or commit_review))}\n\n"
+    if commit_review:
+        markdown_text += f"🔂 Review of commit {commit_review}.\n\n"
+    elif incremental_review:
         markdown_text += f"⏮️ Review for commits since previous PR-Agent review {incremental_review}.\n\n"
     if not output_data or not output_data.get('review', {}):
         return ""
