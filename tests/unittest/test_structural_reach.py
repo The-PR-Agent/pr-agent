@@ -344,3 +344,68 @@ def test_render_keeps_multiline_values_on_one_line(gfm_supported, expected):
     sensitivity = next(line for line in rendered.split("<br>" if gfm_supported else "\n") if "Sensitivity" in line)
     assert sensitivity == expected
     assert "\n\n" not in rendered.split("Sensitivity", 1)[1].split("Rating driven", 1)[0]
+
+
+@pytest.mark.parametrize("unit", ["modules", "files"])
+def test_module_and_file_reach_have_no_band(unit):
+    row = sr.assess_change({"reach": 300, "reach_unit": unit, "dependents": ["a", "b"]})
+    assert row == {"factors": [
+        {"label": "Reach", "value": f"300 {unit}"},
+        {"label": "Dependents", "value": "a, b (+298 more)"},
+    ]}
+
+
+def test_module_reach_keeps_band_when_sensitive_or_cross_domain():
+    sensitive = sr.assess_change({"reach": 300, "reach_unit": "modules", "sensitive_domains": ["auth"]})
+    assert (sensitive["band"], sensitive["driver"]) == ("High", "sensitive domain (escalates regardless of size)")
+    cross = sr.assess_change({"reach": 300, "reach_unit": "modules", "cross_domain": True})
+    assert (cross["band"], cross["driver"]) == ("Moderate", "cross-domain change")
+
+
+def test_project_is_the_default_reach_unit():
+    assert sr.assess_change({"reach": 26})["band"] == "Moderate"
+    assert sr.assess_change({"reach": 26, "reach_unit": "projects"})["band"] == "Moderate"
+    assert sr.assess_change({"reach": 1, "reach_unit": "files"})["factors"] == [{"label": "Reach", "value": "1 file"}]
+
+
+def test_row_without_factors_is_none():
+    assert sr.assess_change({"reach_unit": "files"}) is None
+    assert sr.assess_change({"domains": ["draw"]}) is None
+
+
+@pytest.mark.parametrize(("structure", "expected"), [
+    ({"dependents": ["a", "b", "c"]}, "a, b, c"),
+    ({"dependents": list("abcdef")}, "a, b, c, d, e (+1 more)"),
+    ({"reach": 161, "dependents": list("abcdefg")}, "a, b, c, d, e (+156 more)"),
+    ({"reach": 2, "dependents": list("abc")}, "a, b, c"),
+])
+def test_dependents_lists_the_first_five(structure, expected):
+    dependents = next(f for f in sr.factors(structure) if f["label"] == "Dependents")
+    assert dependents["value"] == expected
+
+
+@pytest.mark.parametrize("unit", ["project", "packages", "", 3, None])
+def test_parse_structure_rejects_unknown_reach_unit(unit):
+    assert sr.parse_structure({"reach": 3, "reach_unit": unit}) is None
+
+
+def test_parse_structure_keeps_reach_unit():
+    assert sr.parse_structure({"reach": 3, "reach_unit": "modules"}) == {"reach": 3, "reach_unit": "modules"}
+
+
+@pytest.mark.parametrize(("gfm_supported", "expected"), [
+    (True, "<tr><td>🔗&nbsp;<strong>Structural reach</strong><br>Reach: 12 modules</td></tr>\n"),
+    (False, "### 🔗 Structural reach\n\n- Reach: 12 modules\n\n"),
+])
+def test_render_unbanded_row(gfm_supported, expected):
+    row = sr.assess_change({"reach": 12, "reach_unit": "modules"})
+    assert sr.render_structural_reach(row, gfm_supported=gfm_supported) == expected
+
+
+@pytest.mark.parametrize("row", [
+    {"factors": [], "driver": "x"},
+    {"band": None, "factors": [], "driver": "x"},
+    {"band": "Low", "factors": []},
+])
+def test_render_skips_row_with_band_and_driver_mismatch(row):
+    assert sr.render_structural_reach(row, gfm_supported=True) == ""

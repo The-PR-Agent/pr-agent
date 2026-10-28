@@ -390,6 +390,7 @@ always gets the same rating.
 ```
 🔗 Structural reach: Critical
 Reach: 69 projects, cross-domain
+Dependents: billing-api, payouts-worker, web-app, admin-app, reports (+64 more)
 Sensitivity: payouts
 Rating driven by sensitive domain (escalates regardless of size)
 ```
@@ -411,7 +412,14 @@ Reach is narrow up to 3 projects, moderate up to 25 and wide above that. The ban
 | Sensitive domain with wide reach | Critical |
 | Anything else | Low |
 
-The row lists each factor and names the one that set the band. Change size is not part of the rating, because
+The row lists each factor and names the one that set the band. It also lists the first five names in
+`dependents`, in the order the producer wrote them.
+
+The reach bands are defined for projects only. When `reach_unit` is `modules` or `files`, the row shows the count
+and the dependents without a band, because no threshold separates a change to a shared utility from a real spread.
+A cross-domain or sensitive change still gets a band from the rules above, with reach left out.
+
+Change size is not part of the rating, because
 `estimated_effort_to_review_[1-5]` already reflects it. That row and `require_risk_assessment` are the model's
 judgement; this row adds the structural and sensitivity facts the model cannot see in the diff.
 
@@ -424,6 +432,7 @@ optional:
 {
   "version": 1,
   "reach": 12,
+  "reach_unit": "projects",
   "dependents": ["billing-api", "web-app"],
   "domains": ["billing", "web"],
   "cross_domain": true,
@@ -434,8 +443,9 @@ optional:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `version` | integer | Schema version. Only `1` is accepted. |
-| `reach` | integer, 0 or more | Number of projects affected by the change, including transitive dependents. Defaults to the length of `dependents`. |
-| `dependents` | list of strings | Names of the affected projects. |
+| `reach` | integer, 0 or more | Number of units affected by the change, including transitive dependents. Defaults to the length of `dependents`. |
+| `reach_unit` | string | What `reach` counts: `projects` (the default), `modules` or `files`. Only `projects` gets a reach band. |
+| `dependents` | list of strings | Names of the affected units, most relevant first. |
 | `domains` | list of strings | Distinct domains or areas the affected projects belong to. |
 | `cross_domain` | boolean | Whether the change spans more than one domain. |
 | `sensitive_domains` | list of strings | Affected domains the repository treats as sensitive. |
@@ -449,7 +459,7 @@ transitive dependents. This step writes them as `dependents`, and lists affected
 ```bash
 affected() { npx nx show projects --affected --base="$BASE_SHA" --head="$HEAD_SHA" --json "$@"; }
 affected | jq --argjson sensitive "$(affected -p 'tag:sensitive')" \
-  '{version: 1, dependents: ., sensitive_domains: $sensitive}' > structural-reach.json
+  '{version: 1, reach_unit: "projects", dependents: ., sensitive_domains: $sensitive}' > structural-reach.json
 ```
 
 Then set `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE=structural-reach.json` for the review step. Another tool

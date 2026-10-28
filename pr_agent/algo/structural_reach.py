@@ -18,6 +18,8 @@ BANDS = ("Low", "Moderate", "High", "Critical")
 MAX_INPUT_BYTES = 1_000_000
 MAX_NAME_CHARS = 200
 _LIST_FIELDS = ("dependents", "domains", "sensitive_domains")
+REACH_UNITS = {"projects": "project", "modules": "module", "files": "file"}
+DEPENDENTS_SHOWN = 5
 
 
 def build_structural_reach(resolve_path) -> dict | None:
@@ -33,25 +35,30 @@ def build_structural_reach(resolve_path) -> dict | None:
 def assess_change(structure) -> dict | None:
     if not structure:
         return None
-    level = compose_risk(structure)
-    return {"band": BANDS[level], "level": level, "factors": factors(structure), "driver": driver(structure)}
+    row = {"factors": factors(structure)}
+    if is_banded(structure):
+        level = compose_risk(structure)
+        row.update(band=BANDS[level], level=level, driver=driver(structure))
+    return row if row["factors"] else None
 
 
 def render_structural_reach(row: dict, gfm_supported: bool) -> str:
     if not _is_row(row):
         get_logger().warning("Skipping malformed structural reach row", artifact={"row": row})
         return ""
-    band = _escape(row["band"], gfm_supported)
     lines = [
         f"{_escape(factor['label'], gfm_supported)}: {_escape(factor['value'], gfm_supported)}"
         for factor in row["factors"]
     ]
-    rationale = f"Rating driven by {_escape(row['driver'], gfm_supported)}"
+    band = _escape(row["band"], gfm_supported) if row.get("band") else None
+    rationale = f"Rating driven by {_escape(row['driver'], gfm_supported)}" if band else None
     if gfm_supported:
-        parts = [f"🔗&nbsp;<strong>Structural reach</strong>: <strong>{band}</strong>", *lines, f"<em>{rationale}</em>"]
+        title = "🔗&nbsp;<strong>Structural reach</strong>" + (f": <strong>{band}</strong>" if band else "")
+        parts = [title, *lines, *([f"<em>{rationale}</em>"] if rationale else [])]
         return f"<tr><td>{'<br>'.join(parts)}</td></tr>\n"
-    bullets = "".join(f"- {line}\n" for line in [*lines, rationale])
-    return f"### 🔗 Structural reach: **{band}**\n\n{bullets}\n"
+    bullets = "".join(f"- {line}\n" for line in [*lines, *([rationale] if rationale else [])])
+    title = "### 🔗 Structural reach" + (f": **{band}**" if band else "")
+    return f"{title}\n\n{bullets}\n"
 
 
 def reach_band(reach):
@@ -64,8 +71,22 @@ def reach_band(reach):
     return "narrow"
 
 
+def reach_unit(structure):
+    return structure.get("reach_unit", "projects")
+
+
+def is_banded(structure):
+    # Reach bands are defined for projects only, so a module or file count is shown without one.
+    return (reach_unit(structure) == "projects" or "reach" not in structure
+            or bool(structure.get("cross_domain") or structure.get("sensitive_domains")))
+
+
+def banded_reach(structure):
+    return reach_band(structure.get("reach")) if reach_unit(structure) == "projects" else None
+
+
 def compose_risk(structure) -> int:
-    wide = reach_band(structure.get("reach")) == "wide"
+    wide = banded_reach(structure) == "wide"
     if structure.get("sensitive_domains"):
         return 3 if wide else 2
     return 1 if wide or structure.get("cross_domain") else 0
@@ -76,7 +97,12 @@ def factors(structure):
     reach = structure.get("reach")
     if reach is not None:
         cross = ", cross-domain" if structure.get("cross_domain") else ""
-        out.append(_factor("Reach", f"{reach} project{_plural(reach)}{cross}"))
+        out.append(_factor("Reach", f"{reach} {_unit_text(reach, reach_unit(structure))}{cross}"))
+    dependents = structure.get("dependents") or []
+    if dependents:
+        shown = dependents[:DEPENDENTS_SHOWN]
+        more = max(reach or 0, len(dependents)) - len(shown)
+        out.append(_factor("Dependents", ", ".join(shown) + (f" (+{more} more)" if more > 0 else "")))
     sensitive = structure.get("sensitive_domains") or []
     if sensitive:
         out.append(_factor("Sensitivity", ", ".join(sensitive)))
@@ -86,7 +112,7 @@ def factors(structure):
 def driver(structure):
     if structure.get("sensitive_domains"):
         return "sensitive domain (escalates regardless of size)"
-    if reach_band(structure.get("reach")) == "wide":
+    if banded_reach(structure) == "wide":
         return "wide reach"
     if structure.get("cross_domain"):
         return "cross-domain change"
@@ -139,6 +165,11 @@ def parse_structure(raw):
             return None
         out["cross_domain"] = raw["cross_domain"]
 
+    if "reach_unit" in raw:
+        if raw["reach_unit"] not in REACH_UNITS:
+            return None
+        out["reach_unit"] = raw["reach_unit"]
+
     if "reach" in raw:
         reach = raw["reach"]
         if isinstance(reach, bool) or not isinstance(reach, int) or reach < 0:
@@ -153,8 +184,10 @@ def parse_structure(raw):
 def _is_row(row) -> bool:
     return (
         isinstance(row, dict)
-        and row.get("band") in BANDS
-        and isinstance(row.get("driver"), str)
+        and (
+            (row.get("band") in BANDS and isinstance(row.get("driver"), str))
+            or (row.get("band") is None and row.get("driver") is None)
+        )
         and isinstance(row.get("factors"), list)
         and all(
             isinstance(factor, dict) and isinstance(factor.get("label"), str) and isinstance(factor.get("value"), str)
@@ -167,8 +200,8 @@ def _factor(label, value):
     return {"label": label, "value": value}
 
 
-def _plural(count):
-    return "" if count == 1 else "s"
+def _unit_text(count, unit):
+    return REACH_UNITS[unit] if count == 1 else unit
 
 
 def _escape(text, gfm_supported):
