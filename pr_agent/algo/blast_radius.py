@@ -12,6 +12,7 @@ import html
 import json
 import re
 
+from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
 
@@ -45,12 +46,12 @@ SENSITIVE_TERMS = (
 def build_blast_radius(files, resolve_path) -> dict | None:
     """Return the row for this review, or None. Never raises."""
     try:
-        if not _is_on(get_settings().pr_reviewer.get("enable_blast_radius", False)):
+        if not _as_bool_setting(get_settings().pr_reviewer.get("enable_blast_radius", False)):
             return None
         return assess_change(
             files,
             structure=load_structure(get_settings().pr_reviewer.get("blast_radius_input_file", ""), resolve_path),
-            path_heuristic=_is_on(get_settings().pr_reviewer.get("blast_radius_path_heuristic", False)),
+            path_heuristic=_as_bool_setting(get_settings().pr_reviewer.get("blast_radius_path_heuristic", False)),
             sensitive_terms=_as_terms(get_settings().pr_reviewer.get("blast_radius_sensitive_terms", [])),
             churn_ignore=compile_churn_ignore(get_settings().pr_reviewer.get("blast_radius_churn_ignore_pattern", "")),
         )
@@ -375,14 +376,6 @@ def parse_structure(raw):
         out["reach"] = len(out["dependents"])
 
     return out or None
-
-
-def _is_on(value) -> bool:
-    if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
-    if isinstance(value, bool):
-        return value
-    return isinstance(value, int) and value == 1
 
 
 def _is_row(row) -> bool:
