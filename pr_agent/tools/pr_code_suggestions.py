@@ -400,6 +400,8 @@ class PRCodeSuggestions:
                 get_logger().info(f"PR has no files: {self.pr_url}, skipping code suggestions")
                 return None
 
+            await asyncio.to_thread(self.git_provider.get_diff_files)
+
             get_logger().info('Generating code suggestions for PR...')
             relevant_configs = {'pr_code_suggestions': dict(get_settings().pr_code_suggestions),
                                 'config': dict(get_settings().config)}
@@ -1018,12 +1020,15 @@ class PRCodeSuggestions:
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        self.patches_diff = get_pr_diff(self.git_provider,
-                                        self._suggestion_attempt_budget.token_handler,
-                                        model,
-                                        add_line_numbers_to_hunks=True,
-                                        disable_extra_lines=False,
-                                        output_token_reserve=output_token_reserve)
+        self.patches_diff = await asyncio.to_thread(
+            get_pr_diff,
+            self.git_provider,
+            self._suggestion_attempt_budget.token_handler,
+            model,
+            add_line_numbers_to_hunks=True,
+            disable_extra_lines=False,
+            output_token_reserve=output_token_reserve,
+        )
         self.patches_diff_list = [self.patches_diff]
         self.patches_diff_no_line_number = self.remove_line_numbers([self.patches_diff])[0]
 
@@ -2152,7 +2157,8 @@ class PRCodeSuggestions:
         # get PR diff
         deleted_files = []
         if get_settings().pr_code_suggestions.decouple_hunks:
-            packed_diffs = get_pr_multi_diffs(
+            packed_diffs = await asyncio.to_thread(
+                get_pr_multi_diffs,
                 self.git_provider, attempt_token_handler, model,
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=True, return_coverage=True,
@@ -2163,7 +2169,8 @@ class PRCodeSuggestions:
 
         else:
             # non-decoupled hunks
-            packed_diffs = get_pr_multi_diffs(
+            packed_diffs = await asyncio.to_thread(
+                get_pr_multi_diffs,
                 self.git_provider, attempt_token_handler, model,
                 max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                 add_line_numbers=False, return_coverage=True,
@@ -2178,7 +2185,8 @@ class PRCodeSuggestions:
             if not self.patches_diff_list:
                 # fallback to decoupled hunks
                 deleted_files.clear()
-                packed_diffs = get_pr_multi_diffs(
+                packed_diffs = await asyncio.to_thread(
+                    get_pr_multi_diffs,
                     self.git_provider, attempt_token_handler, model,
                     max_calls=get_settings().pr_code_suggestions.max_number_of_calls,
                     add_line_numbers=True, return_coverage=True,

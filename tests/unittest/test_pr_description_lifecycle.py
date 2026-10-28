@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
@@ -80,6 +81,43 @@ async def test_run_removes_progress_comment_when_description_generation_fails(
             "Preparing PR description...", is_temporary=True
         )
         provider.remove_comment.assert_called_once_with(progress_comment)
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    fetch_thread_ids = []
+
+    def fetch_diff():
+        fetch_thread_ids.append(threading.get_ident())
+        started.set()
+        assert release.wait(10)
+        return []
+
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_diff_files.side_effect = fetch_diff
+        description = _make_description(provider)
+
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
+        get_settings().config.publish_output = False
+
+        run = asyncio.create_task(description.run())
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), 10)
+            assert not run.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(run, 10)
+
+        assert len(fetch_thread_ids) == 1
+        assert fetch_thread_ids[0] != threading.get_ident()
+        provider.get_diff_files.assert_called_once_with()
     finally:
         restore_settings(settings_snapshot)
 

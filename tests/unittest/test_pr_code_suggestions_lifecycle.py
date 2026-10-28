@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -200,6 +201,46 @@ async def test_chunk_progress_does_not_hide_failed_persistent_summary_update(mon
         warning = provider.publish_comment.call_args.args[0]
         assert "update could not be confirmed" in warning
         assert PRCodeSuggestionsIdentity.SUMMARY.value not in warning
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    fetch_thread_ids = []
+
+    def fetch_diff():
+        fetch_thread_ids.append(threading.get_ident())
+        started.set()
+        assert release.wait(10)
+        return []
+
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = ["app.py"]
+        provider.get_diff_files.side_effect = fetch_diff
+        provider.supports_code_suggestion_state.return_value = False
+        provider.is_supported.return_value = False
+        tool = _make_tool(provider)
+
+        monkeypatch.setattr(pr_code_suggestions_module, "retry_with_fallback_models", AsyncMock())
+        get_settings().config.publish_output = False
+        get_settings().config.publish_output_progress = False
+
+        run = asyncio.create_task(tool.run())
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), 10)
+            assert not run.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(run, 10)
+
+        assert len(fetch_thread_ids) == 1
+        assert fetch_thread_ids[0] != threading.get_ident()
+        provider.get_diff_files.assert_called_once_with()
     finally:
         restore_settings(settings_snapshot)
 

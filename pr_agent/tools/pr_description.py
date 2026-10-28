@@ -114,7 +114,7 @@ class PRDescription:
             "related_tickets": "",
             "related_tickets_omitted": 0,
             "include_file_summary_changes": (
-                len(self.git_provider.get_diff_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD
+                len(self.git_provider.get_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD
             ),
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
@@ -162,6 +162,8 @@ class PRDescription:
             if get_settings().config.publish_output and not get_settings().config.get('is_auto_command', False):
                 self.progress_response = self.git_provider.publish_comment(
                     DESCRIBE_PROGRESS_COMMENT, is_temporary=True)
+
+            await asyncio.to_thread(self.git_provider.get_diff_files)
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
@@ -392,7 +394,8 @@ class PRDescription:
         output_token_reserve_kwargs = (
             {"output_token_reserve": output_token_reserve} if callable(output_token_reserve) else {}
         )
-        output = get_pr_diff(
+        output = await asyncio.to_thread(
+            get_pr_diff,
             self.git_provider,
             self.token_handler,
             model,
@@ -448,7 +451,8 @@ class PRDescription:
                 token_handler_only_files_prompt
             )
             (patches_compressed_list, total_tokens_list, deleted_files_list, remaining_files_list, file_dict,
-             files_in_patches_list) = get_pr_diff_multiple_patchs(
+             files_in_patches_list) = await asyncio.to_thread(
+                get_pr_diff_multiple_patchs,
                 self.git_provider,
                 token_handler_only_files_prompt,
                 model,
