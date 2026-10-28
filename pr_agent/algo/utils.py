@@ -802,8 +802,37 @@ def update_settings_from_args(args: list[str]) -> list[str]:
                     other_args.append(arg)
                     continue
                 key, value = _fix_key_value(*vals)
-                get_settings().set(key, value)
-                get_logger().info(f'Updated setting {key} to: "{value}"')
+                if '.' not in key:
+                    # A section-level argument targets a whole settings table.
+                    existing = get_settings().as_dict().get(key, None)
+                    if isinstance(value, dict):
+                        # Merge a mapping into the existing section, as repository
+                        # settings do: a plain set() would replace the whole section
+                        # (e.g. 23 keys -> 1), dropping every other configured key.
+                        if isinstance(existing, dict):
+                            merged = copy.deepcopy(existing)
+                            for new_key, new_value in value.items():
+                                for old_key in [k for k in merged if k.lower() == new_key.lower()]:
+                                    del merged[old_key]
+                                merged[new_key] = new_value
+                            get_settings().unset(key)
+                            get_settings().set(key, merged, merge=False)
+                            get_logger().info(f'Merged keys {sorted(value.keys())} into section {key}')
+                        else:
+                            get_settings().set(key, value)
+                            get_logger().info(f'Updated setting {key} to: "{value}"')
+                    elif isinstance(existing, dict):
+                        # A non-mapping section value would replace the whole table
+                        # with a scalar, breaking every attribute read on it.
+                        raise ValueError(
+                            f"Invalid argument format: section-level setting '{key}' requires a mapping value"
+                        )
+                    else:
+                        get_settings().set(key, value)
+                        get_logger().info(f'Updated setting {key} to: "{value}"')
+                else:
+                    get_settings().set(key, value)
+                    get_logger().info(f'Updated setting {key} to: "{value}"')
             else:
                 other_args.append(arg)
     return other_args
