@@ -16,7 +16,6 @@ import json
 import posixpath
 import re
 import subprocess
-import sys
 from collections import Counter, deque
 
 from tree_sitter_language_pack import get_parser
@@ -421,4 +420,4 @@ def cat_blobs(repo, oids):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
