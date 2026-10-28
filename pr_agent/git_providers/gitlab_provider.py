@@ -36,6 +36,7 @@ from ..algo.inline_comment_dedup import (
     body_fingerprint,
     body_with_markers,
     code_fingerprint,
+    extract_markers,
     get_inline_comment_store,
     is_agent_inline_comment,
     marker_fingerprints,
@@ -1806,10 +1807,7 @@ class GitLabProvider(GitProvider):
                     new_code_snippet = original_suggestion['new_code_snippet']
                     content = original_suggestion['suggestion_summary']
                     label = original_suggestion['category']
-                    if 'score' in original_suggestion:
-                        score = original_suggestion['score']
-                    else:
-                        score = 7
+                    score = original_suggestion.get('score')
                 else:
                     line_start = original_suggestion['relevant_lines_start']
                     line_end = original_suggestion['relevant_lines_end']
@@ -1817,11 +1815,13 @@ class GitLabProvider(GitProvider):
                     new_code_snippet = original_suggestion['improved_code']
                     content = original_suggestion['suggestion_content']
                     label = original_suggestion['label']
-                    score = original_suggestion.get('score', 7)
+                    score = original_suggestion.get('score')
 
                 score_why = str(original_suggestion.get('score_why') or "").strip()
                 link = self.get_line_link(relevant_file, line_start, line_end)
-                body_fallback =f"**Suggestion:** {content} [{label}, importance: {score}]\n\n"
+                # /review findings carry no importance score; do not invent one
+                tag = f"[{label}, importance: {score}]" if score is not None else f"[{label}]"
+                body_fallback = f"**Suggestion:** {content} {tag}\n\n"
                 if score_why:
                     body_fallback += f"Why: {score_why}\n\n"
                 body_fallback += (f"\n\n<details><summary>[{target_file.filename} [{line_start}-{line_end}]]({link}):"
@@ -1839,6 +1839,11 @@ class GitLabProvider(GitProvider):
                 if store is not None:
                     body_fallback = body_with_markers(
                         body_fallback, body_fp, code_fp, getattr(self, "max_comment_chars", None))
+                # Keep markers the caller embedded (e.g. /review's key-issue location marker), which it
+                # needs to find this note and recognise the finding as published.
+                carried_markers = [m for m in extract_markers(body) if m not in body_fallback]
+                if carried_markers:
+                    body_fallback += "\n\n" + "\n".join(carried_markers)
                 # Create a general note on the file in the MR
                 fallback_position = {
                     'base_sha': diff.base_commit_sha,

@@ -1851,6 +1851,7 @@ def test_github_provider_reads_from_default_branch_when_requested():
                 "num_max_findings": 3,
                 "num_pr_files": 1,
                 "is_ai_metadata": False,
+                "enable_suggested_fixes": True,
             },
         ),
         (

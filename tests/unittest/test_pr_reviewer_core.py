@@ -2230,3 +2230,212 @@ async def test_prepare_pr_review_pushes_outputs_when_publishing():
     assert push.call_args.args[0] == "review"
     assert push.call_args.kwargs["payload"] == {"score": "1"}
     assert push.call_args.kwargs["markdown"] == "original review"
+
+
+@pytest.mark.parametrize(
+    "threshold,expected_contents,expected_dropped",
+    [
+        (0, ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+        (60, ["high", "none", "string", "garbage", "float-string", "out-of-range"], 2),
+        (80, ["high", "none", "garbage", "float-string", "out-of-range"], 3),
+        ("not-a-number", ["high", "low", "none", "string", "garbage", "float", "float-string", "out-of-range"], 0),
+    ],
+)
+def test_filter_low_confidence_findings(monkeypatch, threshold, expected_contents, expected_dropped):
+    monkeypatch.setattr(get_settings().pr_reviewer, "min_finding_confidence", threshold, raising=False)
+    reviewer = _make_reviewer()
+    data = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="high", confidence=95),
+        _key_issue(issue_content="low", confidence=40),
+        _key_issue(issue_content="none"),
+        _key_issue(issue_content="string", confidence=" 70 "),
+        _key_issue(issue_content="garbage", confidence="very"),
+        _key_issue(issue_content="float", confidence=59.9),
+        _key_issue(issue_content="float-string", confidence="85.5"),
+        _key_issue(issue_content="out-of-range", confidence=150),
+    ]}}
+
+    reviewer._filter_low_confidence_findings(data)
+
+    assert [issue["issue_content"] for issue in data["review"]["key_issues_to_review"]] == expected_contents
+    assert reviewer.low_confidence_filtered_count == expected_dropped
+
+
+def test_convert_to_markdown_renders_the_confidence_the_filter_compares():
+    output = {"review": {"key_issues_to_review": [
+        _key_issue(issue_content="whole", confidence=85),
+        _key_issue(issue_content="fractional", confidence=85.5),
+        _key_issue(issue_content="string", confidence="70"),
+        _key_issue(issue_content="garbage", confidence="high"),
+        _key_issue(issue_content="out-of-range", confidence=150),
+    ]}}
+
+    markdown = convert_to_markdown_v2(output, gfm_supported=True)
+
+    assert "Possible Issue (confidence: 85)" in markdown
+    assert "Possible Issue (confidence: 85.5)" in markdown
+    assert "Possible Issue (confidence: 70)" in markdown
+    assert markdown.count("confidence:") == 3
+
+
+@pytest.fixture
+def suggested_fixes_enabled(monkeypatch):
+    monkeypatch.setattr(get_settings().pr_reviewer, "enable_suggested_fixes", True, raising=False)
+
+
+def test_key_issue_suggested_fix_is_published_as_committable_suggestion(suggested_fixes_enabled):
+    issue = _key_issue(start_line=2, end_line=2, suggested_fix="two = 2")
+    reviewer, data = _reviewer_with_findings(issue)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion\ntwo = 2\n```" in comment["body"]
+    assert comment["original_suggestion"] == {
+        "relevant_lines_start": 2,
+        "relevant_lines_end": 2,
+        "existing_code": "two",
+        "improved_code": "two = 2",
+        "suggestion_content": "The new branch never releases the lock.",
+        "label": "Possible Issue",
+    }
+
+
+def test_key_issue_suggested_fix_with_invalid_python_is_not_committable(suggested_fixes_enabled):
+    issue = _key_issue(start_line=2, end_line=2, suggested_fix="two(")
+    reviewer, data = _reviewer_with_findings(issue)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion" not in comment["body"]
+    assert "invalid syntax" in comment["body"]
+    assert "```\ntwo(\n```" in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+def test_key_issue_suggested_fix_on_incomplete_file_is_not_committable(suggested_fixes_enabled):
+    issue = _key_issue(start_line=2, end_line=2, suggested_fix="two = 2")
+    reviewer, data = _reviewer_with_findings(issue)
+    reviewer.git_provider.get_diff_files.return_value[0].head_file_is_complete = False
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```suggestion" not in comment["body"]
+    assert "could not be verified" in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+@pytest.mark.parametrize("suggested_fix", ["two", "  ", None, 3])
+def test_key_issue_without_usable_suggested_fix_has_no_fix_block(suggested_fixes_enabled, suggested_fix):
+    issue = _key_issue(start_line=2, end_line=2, suggested_fix=suggested_fix)
+    reviewer, data = _reviewer_with_findings(issue)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "fix" not in comment["body"].lower()
+    assert "```" not in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+@pytest.mark.parametrize("value", [False, "false", None])
+def test_disabled_suggested_fixes_are_dropped_from_every_output(monkeypatch, value):
+    monkeypatch.setattr(get_settings().pr_reviewer, "enable_suggested_fixes", value, raising=False)
+    issue = _key_issue(start_line=2, end_line=2, suggested_fix="two = 2")
+    reviewer = _make_reviewer()
+    data = {"review": {"key_issues_to_review": [issue, "not a dict"]}}
+
+    reviewer._drop_disabled_suggested_fixes(data)
+
+    assert "suggested_fix" not in data["review"]["key_issues_to_review"][0]
+    assert "two = 2" not in convert_to_markdown_v2(data, gfm_supported=True)
+
+
+@pytest.mark.parametrize("value,expected", [(True, True), ("true", True), (False, False), ("false", False)])
+def test_suggested_fixes_are_kept_only_when_enabled(monkeypatch, value, expected):
+    monkeypatch.setattr(get_settings().pr_reviewer, "enable_suggested_fixes", value, raising=False)
+    reviewer = _make_reviewer()
+    data = {"review": {"key_issues_to_review": [_key_issue(suggested_fix="two = 2")]}}
+
+    reviewer._drop_disabled_suggested_fixes(data)
+
+    assert ("suggested_fix" in data["review"]["key_issues_to_review"][0]) is expected
+
+
+def test_suggested_fixes_default_to_off():
+    assert get_settings().pr_reviewer.enable_suggested_fixes is False
+
+
+@pytest.mark.parametrize(
+    "fix,fence",
+    [
+        ('doc = """\n```\nexample\n```\n"""', "~~~"),
+        ('doc = """\n````\nexample\n````\n~~~\n"""', "~~~~"),
+    ],
+)
+def test_key_issue_suggested_fix_containing_a_fence_is_not_committable(suggested_fixes_enabled, fix, fence):
+    issue = _key_issue(start_line=2, end_line=2, suggested_fix=fix)
+    reviewer, data = _reviewer_with_findings(issue)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "suggestion\n" not in comment["body"]
+    assert f"{fence}\n{fix}\n{fence}" in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+@pytest.mark.parametrize(
+    "head_file,expected_fix",
+    [
+        ("def f():\n    if x:\n        return 1\n", "    if x is not None:\n        return 1"),
+        ("def f():\n\tif x:\n\t\treturn 1\n", "\tif x is not None:\n\t\treturn 1"),
+    ],
+)
+def test_key_issue_suggested_fix_is_reindented_to_the_replaced_lines(suggested_fixes_enabled, head_file, expected_fix):
+    # YAML block scalars strip the common indentation of the model's fix
+    issue = _key_issue(start_line=2, end_line=3, suggested_fix="if x is not None:\n    return 1")
+    reviewer, data = _reviewer_with_findings(issue, head_file=head_file)
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert f"```suggestion\n{expected_fix}\n```" in comment["body"]
+    assert comment["original_suggestion"]["improved_code"] == expected_fix
+
+
+def test_key_issue_suggested_fix_equal_to_the_code_after_reindenting_has_no_fix_block(suggested_fixes_enabled):
+    issue = _key_issue(start_line=2, end_line=3, suggested_fix="if x:\n    return 1")
+    reviewer, data = _reviewer_with_findings(issue, head_file="def f():\n    if x:\n        return 1\n")
+
+    reviewer._publish_key_issues_as_inline_comments(data)
+
+    comment = _published_comment(reviewer.git_provider)
+    assert "```" not in comment["body"]
+    assert "original_suggestion" not in comment
+
+
+@pytest.mark.parametrize("gfm_supported", [True, False])
+def test_convert_to_markdown_renders_suggested_fix(gfm_supported):
+    output = {"review": {"key_issues_to_review": [
+        _key_issue(confidence=85, suggested_fix="release(lock)"),
+    ]}}
+
+    markdown = convert_to_markdown_v2(output, gfm_supported=gfm_supported)
+
+    assert "```\nrelease(lock)\n```" in markdown
+    if gfm_supported:
+        assert "<details><summary>Suggested fix</summary>" in markdown
+    else:
+        assert "Suggested fix:" in markdown
+
+
+def test_convert_to_markdown_tags_the_suggested_fix_with_the_file_language():
+    output = {"review": {"key_issues_to_review": [_key_issue(suggested_fix="release(lock)")]}}
+    files = [FilePatchInfo(base_file="", head_file="one\ntwo\n", patch="", filename="app.py")]
+
+    markdown = convert_to_markdown_v2(output, gfm_supported=True, files=files)
+
+    assert "```python\nrelease(lock)\n```" in markdown
