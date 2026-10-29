@@ -396,6 +396,15 @@ def test_dependents_lists_the_first_five(structure, expected):
     assert dependents["value"] == expected
 
 
+@pytest.mark.parametrize(("sensitive", "expected"), [
+    (["auth", "payments"], "auth, payments"),
+    (list("abcdefgh"), "a, b, c, d, e (+3 more)"),
+])
+def test_sensitivity_lists_the_first_five(sensitive, expected):
+    sensitivity = next(f for f in sr.factors({"sensitive_domains": sensitive}) if f["label"] == "Sensitivity")
+    assert sensitivity["value"] == expected
+
+
 @pytest.mark.parametrize("unit", ["project", "packages", "", 3, None])
 def test_parse_structure_rejects_unknown_reach_unit(unit):
     assert sr.parse_structure({"reach": 3, "reach_unit": unit}) is None

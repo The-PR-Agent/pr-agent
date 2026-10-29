@@ -105,7 +105,9 @@ def factors(structure):
         out.append(_factor("Dependents", ", ".join(shown) + (f" (+{more} more)" if more > 0 else "")))
     sensitive = structure.get("sensitive_domains") or []
     if sensitive:
-        out.append(_factor("Sensitivity", ", ".join(sensitive)))
+        shown = sensitive[:DEPENDENTS_SHOWN]
+        more = len(sensitive) - len(shown)
+        out.append(_factor("Sensitivity", ", ".join(shown) + (f" (+{more} more)" if more > 0 else "")))
     return out
 
 
