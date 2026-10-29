@@ -3270,11 +3270,11 @@ async def test_provider_without_key_blocks_residual_generic_global(monkeypatch, 
     assert kwargs["api_key"] == DUMMY_LITELLM_API_KEY
 
 
-@pytest.mark.parametrize(("provider", "global_name"), (
+@pytest.mark.parametrize(("provider", "global_name"), [
     (provider, global_name)
     for provider, global_names in litellm_handler.PROVIDER_API_KEY_GLOBALS.items()
     for global_name in global_names
-))
+])
 @pytest.mark.asyncio
 async def test_provider_without_key_blocks_residual_provider_global(monkeypatch, provider, global_name):
     if provider == "gdc":

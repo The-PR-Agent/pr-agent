@@ -246,7 +246,7 @@ class TestIgnoreFilter:
         """
         Test files are ignored when regex patterns are specified.
         """
-        monkeypatch.setattr(global_settings.ignore, 'regex', ['^file[2-4]\..*$'])
+        monkeypatch.setattr(global_settings.ignore, 'regex', [r'^file[2-4]\..*$'])
 
         files = [
             type('', (object,), {'filename': 'file1.py'})(),
@@ -270,7 +270,7 @@ class TestIgnoreFilter:
         """
         Test invalid patterns are quietly ignored.
         """
-        monkeypatch.setattr(global_settings.ignore, 'regex', ['(((||', '^file[2-4]\..*$'])
+        monkeypatch.setattr(global_settings.ignore, 'regex', ['(((||', r'^file[2-4]\..*$'])
 
         files = [
             type('', (object,), {'filename': 'file1.py'})(),
