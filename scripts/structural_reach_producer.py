@@ -372,7 +372,8 @@ def loads_jsonc(raw):
             i = len(raw) if i < 0 else i
             continue
         elif raw.startswith("/*", i):
-            i = raw.find("*/", i) + 2
+            end = raw.find("*/", i + 2)
+            i = len(raw) if end < 0 else end + 2
             continue
         else:
             out.append(ch)
