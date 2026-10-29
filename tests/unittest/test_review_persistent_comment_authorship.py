@@ -535,3 +535,9 @@ def test_agent_login_is_host_only():
     from pr_agent.config_security import is_repo_host_only_key
 
     assert is_repo_host_only_key("github", "agent_login")
+
+
+def test_azure_devops_agent_identity_is_host_only():
+    from pr_agent.config_security import is_repo_host_only_key
+
+    assert is_repo_host_only_key("azure_devops_server", "agent_identity")

@@ -122,6 +122,11 @@ FORBIDDEN_ARGS = [
     "--gerrit.command_timeout_seconds=600",
     "--gerrit__command_timeout_seconds=600",
     '--gerrit={"command_timeout_seconds": 600}',
+    # agent_identity decides which Azure DevOps comments PR-Agent treats as its own and may edit,
+    # so comment arguments must not be able to choose it.
+    "--azure_devops_server.agent_identity=attacker",
+    "--azure_devops_server__agent_identity=attacker",
+    '--azure_devops_server={"agent_identity": "attacker"}',
     # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_tool_errors=false",

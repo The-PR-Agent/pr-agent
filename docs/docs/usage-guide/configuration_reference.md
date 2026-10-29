@@ -606,7 +606,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `agent_identity` | "" | empty: discover the identity from earlier agent comments on the PR |
+| `agent_identity` | "" | Host-only identity (email, GUID, or descriptor) PR-Agent posts as on Azure DevOps. Empty discovers the identity from earlier agent comments on the PR. Repository settings and comment arguments cannot change it |
 
 
 ## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)}
