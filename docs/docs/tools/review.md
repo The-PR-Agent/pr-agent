@@ -417,7 +417,8 @@ The row lists each factor and names the one that set the band. It also lists the
 
 The reach bands are defined for projects only. When `reach_unit` is `modules` or `files`, the row shows the count
 and the dependents without a band, because no threshold separates a change to a shared utility from a real spread.
-A cross-domain or sensitive change still gets a band from the rules above, with reach left out.
+A cross-domain or sensitive change still gets a band from the rules above. The Reach line still shows the
+number, but it does not affect the band.
 
 Change size is not part of the rating, because
 `estimated_effort_to_review_[1-5]` already reflects it. That row and `require_risk_assessment` are the model's
