@@ -293,7 +293,7 @@ class PRDescription:
                         self.git_provider.publish_description(title_to_publish, pr_body)
                     except Exception:
                         try:
-                            self.git_provider.publish_comment("Failed to update PR description")
+                            self.git_provider.publish_tool_failure("describe", "Failed to update PR description")
                         except Exception as publication_error:
                             get_logger().exception(
                                 f"Failed to publish PR description failure result, error: {publication_error}"

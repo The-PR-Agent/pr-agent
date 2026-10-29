@@ -1010,6 +1010,10 @@ class GitProvider(ABC):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
+    def publish_tool_failure(self, tool: str, message: str):
+        """Report that `tool` ("describe", "improve") failed. Providers with per-tool outputs override this."""
+        return self.publish_comment(message)
+
     def should_publish_review_as_thread(self) -> bool:
         return False
 

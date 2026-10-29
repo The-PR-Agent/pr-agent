@@ -398,12 +398,7 @@ async def test_run_does_not_publish_failure_after_successful_inline_suggestions(
         provider.supports_code_suggestions_artifact.return_value = False
         provider.publish_code_suggestions.return_value = True
 
-        def publish_comment(body, **_kwargs):
-            if body == "Failed to generate code suggestions for PR":
-                return MagicMock()
-            raise RuntimeError("fallback comment rejected")
-
-        provider.publish_comment.side_effect = publish_comment
+        provider.publish_comment.side_effect = RuntimeError("fallback comment rejected")
         tool = _make_tool(provider)
         tool._validate_suggestion = MagicMock(
             side_effect=[
@@ -450,6 +445,7 @@ async def test_run_does_not_publish_failure_after_successful_inline_suggestions(
             "Proposed code (not offered as a committable change because the target range is outside the diff):\n"
             "```\nnew_value\n```\n\nLocation: `src/missing.py:5-5`"
         ]
+        provider.publish_tool_failure.assert_not_called()
         provider.remove_initial_comment.assert_called_once()
     finally:
         restore_settings(settings_snapshot)
@@ -477,7 +473,7 @@ async def test_run_publishes_failure_when_inline_suggestions_never_publish(monke
 
         await tool.run()
 
-        provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
+        provider.publish_tool_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
         assert provider.remove_initial_comment.call_count == 2
     finally:
         restore_settings(settings_snapshot)
@@ -519,7 +515,7 @@ async def test_run_preserves_original_error_when_failure_comment_publish_fails(m
     try:
         provider = MagicMock()
         provider.get_files.return_value = [object()]
-        provider.publish_comment.side_effect = RuntimeError("failure comment rejected")
+        provider.publish_tool_failure.side_effect = RuntimeError("failure comment rejected")
         tool = _make_tool(provider)
         original_error = RuntimeError("generation failed")
 
@@ -537,7 +533,7 @@ async def test_run_preserves_original_error_when_failure_comment_publish_fails(m
             await tool.run()
 
         assert exc_info.value is original_error
-        provider.publish_comment.assert_called_once_with("Failed to generate code suggestions for PR")
+        provider.publish_tool_failure.assert_called_once_with("improve", "Failed to generate code suggestions for PR")
     finally:
         restore_settings(settings_snapshot)
 

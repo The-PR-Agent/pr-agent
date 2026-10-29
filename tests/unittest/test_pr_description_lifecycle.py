@@ -266,7 +266,7 @@ async def test_run_reports_description_publication_failure(published_description
 
     provider.publish_description.assert_called_once()
     assert command_failed()
-    assert call("Failed to update PR description") in provider.publish_comment.call_args_list
+    provider.publish_tool_failure.assert_called_once_with("describe", "Failed to update PR description")
     provider.get_latest_commit_url.assert_not_called()
     provider.remove_comment.assert_called_once_with(progress_comment)
 
@@ -290,7 +290,7 @@ async def test_run_keeps_description_success_when_final_feedback_fails(
 
     provider.publish_description.assert_called_once()
     assert not command_failed()
-    assert call("Failed to update PR description") not in provider.publish_comment.call_args_list
+    provider.publish_tool_failure.assert_not_called()
     assert provider.publish_comment.call_count == (2 if failed_step == "publish_comment" else 1)
     provider.edit_comment.assert_called_once_with(progress_comment, "PR description generation finished.")
     provider.remove_comment.assert_called_once_with(progress_comment)

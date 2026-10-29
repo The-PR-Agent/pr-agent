@@ -416,6 +416,22 @@ def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypa
     assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe tool usage guide"
 
 
+@pytest.mark.parametrize("tool, output_attr", [("improve", "improve_path"), ("describe", "description_path")])
+def test_publish_tool_failure_keeps_review_file(tmp_path, tool, output_attr):
+    # A failed /improve or /describe must not overwrite the persisted /review result.
+    review_path = tmp_path / "review.md"
+    review_path.write_text("previous review")
+    provider = object.__new__(LocalGitProvider)
+    provider.review_path = review_path
+    provider.improve_path = tmp_path / "improve.md"
+    provider.description_path = tmp_path / "description.md"
+
+    provider.publish_tool_failure(tool, "Failed")
+
+    assert review_path.read_text() == "previous review"
+    assert getattr(provider, output_attr).read_text() == "Failed"
+
+
 def test_init_on_detached_head_falls_back_to_commit_sha(tmp_path, monkeypatch):
     # CI checkouts often point HEAD at a bare commit; repo.head.ref then raises
     # TypeError. The branch name is only used as the PR-mimic title, so fall

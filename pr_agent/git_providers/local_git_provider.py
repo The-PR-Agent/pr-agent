@@ -145,6 +145,12 @@ class LocalGitProvider(GitProvider):
             # Write the string to the file
             file.write(pr_comment)
 
+    def publish_tool_failure(self, tool: str, message: str):
+        # Write the failure to the tool's own file so it does not clobber review.md.
+        path = {"describe": self.description_path, "improve": self.improve_path}.get(tool, self.review_path)
+        with open(path, "w", encoding="utf-8") as file:
+            file.write(message)
+
     def supports_comment_publish_confirmation(self) -> bool:
         return False
 
