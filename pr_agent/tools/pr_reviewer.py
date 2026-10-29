@@ -1341,7 +1341,8 @@ class PRReviewer:
         if isinstance(data, dict) and isinstance(data.get("review"), dict):
             if not getattr(self, "vars", {}).get("require_failure_modes", False):
                 data["review"].pop("failure_modes", None)
-            data["review"].pop("structural_reach", None)
+            for key in [k for k in data["review"] if str(k).lower() == "structural_reach"]:
+                data["review"].pop(key)
         if self.prediction_data is None:
             self._validate_review_schema(data)
         if isinstance(data, dict) and isinstance(data.get("review"), dict) and "failure_modes" in data["review"]:
