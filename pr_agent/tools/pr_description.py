@@ -64,6 +64,8 @@ def _build_unprocessed_files_block(file_list: list, label: str, max_files: int =
 
 
 class PRDescription:
+    COLLAPSIBLE_FILE_LIST_THRESHOLD = 8
+
     def __init__(self, pr_url: str, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         """

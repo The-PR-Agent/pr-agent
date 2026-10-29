@@ -42,9 +42,6 @@ def _make_description(provider):
     description.prediction = None
     description.data = None
     description.file_label_dict = None
-    description.COLLAPSIBLE_FILE_LIST_THRESHOLD = get_settings().pr_description.get(
-        "collapsible_file_list_threshold", 8
-    )
     return description
 
 
