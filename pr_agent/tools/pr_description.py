@@ -113,9 +113,7 @@ class PRDescription:
             "enable_semantic_files_types": get_settings().pr_description.enable_semantic_files_types,
             "related_tickets": "",
             "related_tickets_omitted": 0,
-            "include_file_summary_changes": (
-                len(self.git_provider.get_files()) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD
-            ),
+            "include_file_summary_changes": True,
             "duplicate_prompt_examples": get_settings().config.get("duplicate_prompt_examples", False),
             "enable_pr_diagram": enable_pr_diagram,
             "enable_pr_description": get_settings().pr_description.get("enable_pr_description", True),
@@ -163,7 +161,11 @@ class PRDescription:
                 self.progress_response = self.git_provider.publish_comment(
                     DESCRIBE_PROGRESS_COMMENT, is_temporary=True)
 
-            await asyncio.to_thread(self.git_provider.get_diff_files)
+            # PyGithub fetches diff files synchronously; keep large fetches off the webhook event loop.
+            diff_files = await asyncio.to_thread(self.git_provider.get_diff_files)
+            self.vars["include_file_summary_changes"] = (
+                len(diff_files) <= self.COLLAPSIBLE_FILE_LIST_THRESHOLD
+            )
 
             # ticket extraction if exists
             await extract_and_cache_pr_tickets(self.git_provider, self.vars)
