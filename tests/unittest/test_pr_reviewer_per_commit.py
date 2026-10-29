@@ -183,12 +183,13 @@ def test_commit_review_markdown_uses_incremental_header_and_names_the_commit():
 
 
 def test_review_prompt_includes_the_commit_message_only_in_per_commit_mode(monkeypatch):
-    from jinja2 import Environment, StrictUndefined
+    from jinja2 import Environment, StrictUndefined, select_autoescape
 
     from tests.unittest.test_pr_reviewer_prompt_contract import _build_reviewer
 
     prompt_vars = _build_reviewer(monkeypatch).vars
-    template = Environment(undefined=StrictUndefined).from_string(get_settings().pr_review_prompt.user)
+    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+    template = environment.from_string(get_settings().pr_review_prompt.user)
     assert "COMMIT_MESSAGE_BEGIN" not in template.render(**prompt_vars)
     rendered = template.render(**dict(prompt_vars, commit_under_review="Fix the parser\n\nBecause X"))
     assert "<<<COMMIT_MESSAGE_BEGIN>>>\nFix the parser\n\nBecause X\n<<<COMMIT_MESSAGE_END>>>" in rendered
@@ -279,9 +280,7 @@ def test_github_merge_commit_has_no_own_diff():
     assert provider.unreviewed_files_map == {}
 
 
-@pytest.mark.asyncio
-async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_persistent_one(settings, monkeypatch):
-    from pr_agent.algo.comment_identity import PRReviewIdentity
+def _commit_reviewer(monkeypatch, prediction):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
     from tests.unittest.test_pr_reviewer_prompt_contract import _build_reviewer
 
@@ -298,16 +297,25 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
     provider._inline_comment_store = None
     provider.get_persistent_comment_bodies.return_value = []
     provider.get_recent_inline_comment_bodies.return_value = []
-    monkeypatch.setattr(get_settings().pr_reviewer, "inline_key_issues", True, raising=False)
 
     async def predict(prepare, **_):
-        reviewer.prediction = ("review:\n  security_concerns: 'SQL injection: raw query'\n  key_issues_to_review:\n"
-                               "  - relevant_file: a.py\n    issue_header: Bug\n    issue_content: Broken\n"
-                               "    start_line: 1\n    end_line: 1\n")
+        reviewer.prediction = prediction
 
     monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", predict)
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", MagicMock(side_effect=lambda *_: _noop()))
     monkeypatch.setattr(pr_reviewer_module, "add_pr_review_identity", lambda body, marker, _: f"{body}\n{marker}")
+    return reviewer
+
+
+@pytest.mark.asyncio
+async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_persistent_one(settings, monkeypatch):
+    from pr_agent.algo.comment_identity import PRReviewIdentity
+
+    monkeypatch.setattr(get_settings().pr_reviewer, "inline_key_issues", True, raising=False)
+    reviewer = _commit_reviewer(monkeypatch, "review:\n  security_concerns: 'SQL injection: raw query'\n"
+                                             "  key_issues_to_review:\n  - relevant_file: a.py\n    issue_header: Bug\n"
+                                             "    issue_content: Broken\n    start_line: 1\n    end_line: 1\n")
+    provider = reviewer.git_provider
     await reviewer.run()
 
     bodies = [call.args[0] for call in provider.publish_comment.call_args_list]
@@ -319,6 +327,24 @@ async def test_per_commit_reviews_publish_labelled_incremental_comments_not_the_
     provider.publish_persistent_comment.assert_not_called()
     provider.publish_labels.assert_not_called()
     assert reviewer._review_commit is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key_issues", ["  key_issues_to_review: []\n", "  key_issues_to_review: No\n", "",
+                                        "  key_issues_to_review: No major issues detected in this commit\n",
+                                        "  key_issues_to_review:\n  - {}\n"])
+@pytest.mark.parametrize("publish_no_suggestions", [False, True])
+async def test_commit_without_findings_publishes_only_when_configured(settings, monkeypatch, key_issues,
+                                                                      publish_no_suggestions):
+    monkeypatch.setattr(get_settings().pr_reviewer, "publish_output_no_suggestions", publish_no_suggestions)
+    monkeypatch.setattr(get_settings().pr_reviewer, "inline_key_issues", False, raising=False)
+    reviewer = _commit_reviewer(monkeypatch, "review:\n  estimated_effort_to_review_[1-5]: 1\n"
+                                             f"  security_concerns: No\n{key_issues}")
+    await reviewer.run()
+
+    bodies = [call.args[0] for call in reviewer.git_provider.publish_comment.call_args_list]
+    assert any("Review of commit" in body for body in bodies) is publish_no_suggestions
+    reviewer.git_provider.publish_persistent_comment.assert_not_called()
 
 
 async def _noop():

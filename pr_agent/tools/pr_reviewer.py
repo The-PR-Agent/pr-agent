@@ -191,6 +191,7 @@ class PRReviewer:
     review_chunk_hit_limit = None
     partial_files_list = ()
     _review_commit: PRCommit | None = None
+    _review_has_findings = False
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
                  ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
@@ -994,10 +995,11 @@ class PRReviewer:
         return findings, len(all_findings) < len(self.review_all_issues)
 
     def _should_publish_review_no_suggestions(self, pr_review: str) -> bool:
-        return (
-            get_settings().pr_reviewer.get('publish_output_no_suggestions', True)
-            or "No major issues detected" not in pr_review
-        )
+        if get_settings().pr_reviewer.get('publish_output_no_suggestions', True):
+            return True
+        if self._review_commit is not None:
+            return self._review_has_findings
+        return "No major issues detected" not in pr_review
 
     async def _prepare_prediction(self, model: str) -> None:
         # Each model attempt owns a fresh result. A malformed primary must not
@@ -1478,6 +1480,9 @@ class PRReviewer:
         self._prepare_review_finding_state(data)
         if get_settings().config.publish_output and get_settings().pr_reviewer.get('inline_key_issues', False):
             data = self._publish_key_issues_as_inline_comments(data)
+        issues = data['review'].get('key_issues_to_review')
+        self._review_has_findings = isinstance(issues, list) and any(
+            isinstance(issue, dict) and issue for issue in issues)
 
         incremental_review_markdown_text = None
         commit_review_markdown_text = None

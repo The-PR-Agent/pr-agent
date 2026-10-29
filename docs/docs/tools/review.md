@@ -346,7 +346,9 @@ again, fixup commits that no longer exist are not reviewed, and commits that wer
 The `minimal_commits_for_incremental_review` and `minimal_minutes_for_incremental_review` thresholds apply as for a
 regular incremental review.
 
-Set `publish_output_no_suggestions = false` to skip the comment of a commit where nothing was found.
+Set `publish_output_no_suggestions = false` in the `[pr_reviewer]` section (`--pr_reviewer.publish_output_no_suggestions=false`
+on the command line) to skip the comment of a commit where nothing was found. The setting of the same name in
+`[pr_code_suggestions]` applies to `/improve` only.
 With `inline_key_issues = true`, each finding is published as an inline comment on the commit it was found in,
 anchored to that commit's own diff, so GitHub and GitLab show it as outdated once a later commit changes those lines.
 A finding that cannot be anchored there, for example because the provider rejects its line, stays in that commit's
