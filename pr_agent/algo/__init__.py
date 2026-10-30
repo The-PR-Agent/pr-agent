@@ -327,6 +327,11 @@ MAX_TOKENS = {
     'bedrock/converse/moonshotai.kimi-k3': 1000000,
     'bedrock/converse/us.moonshotai.kimi-k3': 1000000,
     'bedrock/converse/global.moonshotai.kimi-k3': 1000000,
+    # -- Kimi K3 / K3.1 Pro (Moonshot / OpenAI-compatible) --
+    'kimi-k3': 1000000,
+    'kimi-k3.1-pro': 1000000,
+    'openai/kimi-k3': 1000000,
+    'openai/kimi-k3.1-pro': 1000000,
     'groq/llama-3.3-70b-versatile': 128000,
     'groq/llama-3.1-8b-instant': 128000,
     'sambanova/MiniMax-M3': 192000,
