@@ -537,10 +537,9 @@ If you encounter rate limiting (HTTP 429 responses):
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Add a fallback model for better reliability
         config.fallback_models: '["your-fallback-model"]'
-        # Number of retries for transient errors (including rate limits) inside the completion client.
-        # Unset keeps the client's default. Each model in a fallback chain gets its own retries.
-        # Note: quota / hard limit errors are retried but will not recover.
-        config.num_retries: "2"
+        # Same-model retries of a 429, 5xx or connection error before fallback_models (default 4, max 10),
+        # each waiting for the provider's Retry-After or backing off. A quota error is retried but never recovers.
+        config.num_retries: "6"
         # Increase timeout for slower models (does not help pure 429 rate-limit responses)
         config.ai_timeout: "300"
         github_action_config.auto_review: "true"
@@ -560,7 +559,7 @@ A 429 is returned immediately; raising `config.ai_timeout` only bounds the durat
 - **Note**: For non-OpenAI models (Gemini, Claude, etc.), you only need the model-specific API key, not `OPENAI_KEY`
 
 **Error: "Rate limit exceeded"**
-- **Solution**: Add fallback models and/or set `config.num_retries` (recommended for transient 429s). Raising `config.ai_timeout` only helps with timeouts, not pure rate-limit responses. For a manual `/review` failure, you can also set `pr_reviewer.publish_error_details = true` in the workflow `env` (it cannot be enabled via `.pr_agent.toml`) to surface a sanitized failure reason. See the [Review tool docs](../tools/review.md).
+- **Solution**: Add fallback models and/or set `config.num_retries` (recommended for transient 429s). Raising `config.ai_timeout` only helps with timeouts, not pure rate-limit responses. For a manual `/review` failure, you can also set `pr_reviewer.publish_error_details: "true"` in the workflow `env` (it cannot be enabled via `.pr_agent.toml`) to surface a sanitized failure reason. See the [Review tool docs](../tools/review.md).
 
 **Error: "Permission denied"**
 - **Solution**: Ensure your workflow has the correct permissions set:
