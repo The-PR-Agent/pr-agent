@@ -308,6 +308,60 @@ class TestConvertToMarkdown:
     def test_can_be_split(self):
         assert convert_to_markdown_v2(self._CAN_BE_SPLIT_INPUT).strip() == self._CAN_BE_SPLIT_EXPECTED_OUTPUT.strip()
 
+    @pytest.mark.parametrize("theme_count", [2, 3])
+    def test_can_be_split_non_gfm(self, theme_count):
+        themes = self._CAN_BE_SPLIT_INPUT["review"]["can_be_split"] + [
+            {"title": "Documentation", "relevant_files": ["docs/usage.md"]}
+        ]
+        expected = textwrap.dedent("""\
+            ## PR Reviewer Guide 🔍
+
+            Here are some key observations to aid the review process:
+
+            ### 🔀 Multiple PR themes
+
+            #### Sub-PR theme: Refactoring
+
+            Relevant files:
+
+            - src/file1.py
+            - src/file2.py
+
+            #### Sub-PR theme: Bug Fix
+
+            Relevant files:
+
+            - src/file3.py
+        """)
+        if theme_count == 3:
+            expected += textwrap.dedent("""
+                #### Sub-PR theme: Documentation
+
+                Relevant files:
+
+                - docs/usage.md
+            """)
+        output = convert_to_markdown_v2({"review": {"can_be_split": themes[:theme_count]}}, gfm_supported=False)
+        assert output.strip() == expected.strip()
+
+    @pytest.mark.parametrize("themes", [
+        [],
+        [{"title": "Only one", "relevant_files": ["src/file1.py"]}],
+        [{"title": "Missing files"}, {"title": "Valid", "relevant_files": []}],
+        [{"title": "Invalid", "relevant_files": "src/file1.py"}, {"title": "Valid", "relevant_files": []}],
+        _CAN_BE_SPLIT_INPUT["review"]["can_be_split"] * 2,
+    ])
+    def test_can_be_split_non_gfm_without_valid_multiple_themes(self, themes):
+        expected = textwrap.dedent("""\
+            ## PR Reviewer Guide 🔍
+
+            Here are some key observations to aid the review process:
+        """)
+        with patch('pr_agent.algo.utils.get_logger') as get_logger:
+            output = convert_to_markdown_v2({"review": {"can_be_split": themes}}, gfm_supported=False)
+        assert output.strip() == expected.strip()
+        get_logger.return_value.exception.assert_not_called()
+
     def test_contribution_time_cost_estimate(self):
         input_data = {
             'review': {
