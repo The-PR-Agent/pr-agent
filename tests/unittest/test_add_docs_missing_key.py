@@ -57,6 +57,7 @@ FILTERED_DOCUMENTATION = """Code Documentation:
 class FakeGitProvider:
     def __init__(self, suggestion_results=None, comment_error=None, comment_result="comment"):
         self.comments = []
+        self.tool_failures = []
         self.suggestions = []
         self.initial_comment_removed = False
         self.diff_files = [FilePatchInfo(
@@ -71,6 +72,12 @@ class FakeGitProvider:
         if self.comment_error and self.comment_error in body:
             raise RuntimeError("fallback comment unavailable")
         return self.comment_result
+
+    def publish_tool_failure(self, tool, message):
+        # Base-provider behaviour: the failure is published as a comment, so the
+        # assertions below keep seeing one message per failure.
+        self.tool_failures.append((tool, message))
+        return self.publish_comment(message)
 
     def remove_initial_comment(self):
         self.initial_comment_removed = True
@@ -248,6 +255,7 @@ def test_all_false_inline_publication_records_the_existing_command_failure(
 
     assert [len(suggestions) for suggestions in provider.suggestions] == [2, 1, 1]
     assert results(provider) == ["Failed to publish code documentation for this PR."]
+    assert provider.tool_failures == [("add_docs", "Failed to publish code documentation for this PR.")]
     assert command_failed() is True
 
 
@@ -380,6 +388,7 @@ def test_no_documentation_comment_return_value_is_not_terminal_publication_failu
     run("Code Documentation:\n", monkeypatch, provider)
 
     assert results(provider) == ["No code documentation found to improve this PR."]
+    assert provider.tool_failures == [("add_docs", "No code documentation found to improve this PR.")]
     assert command_failed() is False
 
 
