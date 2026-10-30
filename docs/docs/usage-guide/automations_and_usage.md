@@ -61,7 +61,7 @@ pr-agent doctor
 
 It checks that `config.model` is set, that the active provider has a real API key, and that a one-token completion against the configured model succeeds. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
 
-When host-configured `push_outputs` is enabled, `doctor` adds a fourth check for the selected output destinations: registered channel names, a nonempty file path, HTTPS scheme and hostname for webhook/Slack URLs, and nonempty Telegram token/chat ID strings. An omitted file path uses the normal default. Distinct custom sink names receive recognition-only checks; their private settings are not validated.
+When host-configured `push_outputs` is enabled, `doctor` adds a fourth check for the selected output destinations: registered channel names, a nonempty file path, HTTPS scheme and hostname for webhook/Slack URLs, and a nonempty Telegram token string and a chat ID that is a nonempty string or nonzero integer. An omitted file path uses the normal default. Distinct custom sink names receive recognition-only checks; their private settings are not validated.
 
 `push_outputs.enable` accepts booleans or strings. String values `false`, `0`, `no`, and the empty string disable it (ignoring case and surrounding whitespace); other strings enable it. Disabled output keeps the existing three checks and output unchanged.
 

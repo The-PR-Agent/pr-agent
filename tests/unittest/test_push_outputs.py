@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from urllib.parse import urlparse
 
 import pytest
+from dynaconf import Dynaconf
 
 from pr_agent.algo import output_sinks, run_output
 from pr_agent.algo.run_output import push_outputs
@@ -49,12 +50,35 @@ class TestOutputSinkPreflight:
         ("slack", {"slack_webhook_url": 1}, False),
         ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": "chat"}, True),
         ("telegram", {"telegram_bot_token": " ", "telegram_chat_id": "chat"}, False),
-        ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": 123}, False),
+        ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": 123}, True),
+        ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": True}, False),
+        ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": 1.5}, False),
+        ("telegram", {"telegram_bot_token": 123, "telegram_chat_id": "chat"}, False),
     ])
-    def test_selected_fields_are_bounded_strings_and_values_are_not_rendered(self, channel, fields, valid):
+    def test_selected_fields_are_validated_and_values_are_not_rendered(self, channel, fields, valid):
         result = output_sinks._check_output_sinks({"enable": True, "channels": [channel], **fields})
         assert result[0] is valid
         assert all(value not in result[1] for value in ("synthetic-secret", "synthetic-private-path", "example.test"))
+
+    def test_zero_telegram_chat_id_is_missing_without_rendering_values(self):
+        result = output_sinks._check_output_sinks({
+            "enable": True,
+            "channels": ["telegram"],
+            "telegram_bot_token": "synthetic-secret",
+            "telegram_chat_id": 0,
+        })
+        assert result == (False, "push_outputs.telegram_chat_id must be a nonempty string or nonzero integer")
+
+    def test_telegram_chat_id_from_environment_accepts_dynaconf_integer(self, monkeypatch):
+        monkeypatch.setenv("PUSH_OUTPUTS__ENABLE", "true")
+        monkeypatch.setenv("PUSH_OUTPUTS__CHANNELS", '["telegram"]')
+        monkeypatch.setenv("PUSH_OUTPUTS__TELEGRAM_BOT_TOKEN", "synthetic-secret")
+        monkeypatch.setenv("PUSH_OUTPUTS__TELEGRAM_CHAT_ID", "-100123")
+        settings = Dynaconf(envvar_prefix=False, settings_files=[], load_dotenv=False)
+        cfg = settings.get("push_outputs")
+        assert type(cfg.get("telegram_chat_id")) is int
+        assert cfg.get("telegram_chat_id") == -100123
+        assert output_sinks._check_output_sinks(cfg)[0] is True
 
     def test_custom_registry_name_is_recognized_without_construction(self, monkeypatch):
         class CustomSink:

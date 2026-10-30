@@ -151,7 +151,11 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
     if "telegram" in selected:
         for key in ("telegram_bot_token", "telegram_chat_id"):
             value = cfg.get(key)
+            if key == "telegram_chat_id" and isinstance(value, int) and not isinstance(value, bool):
+                value = str(value or "")
             if not isinstance(value, str) or not value.strip():
+                if key == "telegram_chat_id":
+                    return False, "push_outputs.telegram_chat_id must be a nonempty string or nonzero integer"
                 return False, f"push_outputs.{key} must be a nonempty string"
     # Distinct custom names are recognized only; their private configuration is not inspected.
     return True, "push_outputs basic destination settings checked (custom sinks: recognition only)"
