@@ -527,7 +527,7 @@ class AzureDevopsProvider(GitProvider):
         except Exception as e:
             get_logger().exception(f"Failed to remove comment, error: {e}")
 
-    def publish_labels(self, pr_types):
+    def publish_labels(self, pr_types) -> bool:
         try:
             for pr_type in pr_types:
                 self.azure_devops_client.create_pull_request_label(
@@ -538,6 +538,8 @@ class AzureDevopsProvider(GitProvider):
                 )
         except Exception as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+            return False
+        return True
 
     def get_pr_labels(self, update=False):
         try:
@@ -549,7 +551,7 @@ class AzureDevopsProvider(GitProvider):
             return [label.name for label in labels]
         except Exception as e:
             get_logger().exception(f"Failed to get labels, error: {e}")
-            return []
+            return None
 
     def is_supported(self, capability: str) -> bool:
         return True

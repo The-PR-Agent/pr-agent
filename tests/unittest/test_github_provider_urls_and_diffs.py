@@ -16,6 +16,7 @@ from github.PullRequest import PullRequest
 from github.Repository import Repository
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
+from pr_agent.algo.pr_processing import pr_generate_extended_diff
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers import github_provider
 from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
@@ -350,7 +351,7 @@ class TestGetDiffFilesEditTypes:
         """When file.patch is falsy, load_large_diff fills it in."""
         f = _make_file("big.py", "modified", patch="")
         p = _make_provider_for_diff([f])
-        p._get_pr_file_content = lambda file, sha, path=None: "content"
+        p._get_pr_file_content = lambda file, sha, path=None, **kwargs: "content"
 
         diffs = p.get_diff_files()
 
@@ -417,8 +418,9 @@ class TestGetDiffFilesEditTypes:
 
 
 class TestGetDiffFilesContentReads:
-    def test_added_file_skips_impossible_base_read(self, patched_helpers):
-        f = _make_file("added.py", "added")
+    @pytest.mark.parametrize("api_patch", [None, "@@ -0,0 +1 @@\n+new"])
+    def test_added_file_skips_impossible_base_read(self, patched_helpers, api_patch):
+        f = _make_file("added.py", "added", patch=api_patch)
         p = _make_provider_for_diff([f])
         spy = Mock(return_value="content")
         p._get_pr_file_content = spy
@@ -427,8 +429,9 @@ class TestGetDiffFilesContentReads:
 
         assert [call.args[1] for call in spy.call_args_list] == ["head-sha"]
 
-    def test_removed_file_skips_impossible_head_read(self, patched_helpers):
-        f = _make_file("removed.py", "removed", patch="@@ -1 +0,0 @@\n-old")
+    @pytest.mark.parametrize("api_patch", [None, "@@ -1 +0,0 @@\n-old"])
+    def test_removed_file_skips_impossible_head_read(self, patched_helpers, api_patch):
+        f = _make_file("removed.py", "removed", patch=api_patch)
         p = _make_provider_for_diff([f])
         spy = Mock(return_value="content")
         p._get_pr_file_content = spy
@@ -470,6 +473,89 @@ class TestGetDiffFilesContentReads:
         p.get_diff_files()
 
         assert [call.args[1] for call in spy.call_args_list] == ["base-sha"]
+
+
+class TestGetDiffFilesContentFailures:
+    @pytest.fixture
+    def content_provider(self):
+        file = _make_file("changed.py", "modified", patch=None)
+        provider = _make_provider_for_diff([file])
+        provider.repo = provider.repo_obj.full_name = "owner/repo"
+        provider.repo_obj.get_contents = Mock(return_value=SimpleNamespace(decoded_content=b"value = 1\n"))
+        return provider, file
+
+    @pytest.mark.parametrize("incremental,failed_ref,error", [
+        (False, "base-sha", GithubException(503, {}, {})),
+        (False, "head-sha", GithubException(503, {}, {})),
+        (False, "base-sha", GithubException(404, {}, {})),
+        (False, "head-sha", GithubException(404, {}, {})),
+        (False, "head-sha", UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
+        (False, "head-sha", AssertionError("unsupported encoding: none")),
+        (True, "prev-sha", GithubException(503, {}, {})),
+        (True, "head-sha", GithubException(503, {}, {})),
+    ])
+    def test_reconstruction_keeps_failed_reads_visible(self, content_provider, incremental, failed_ref, error):
+        provider, file = content_provider
+        if incremental:
+            file.patch = "@@ -1 +1 @@\n-old\n+new"
+            provider.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+            provider.unreviewed_files_map = {file.filename: file}
+
+        def get_contents(_path, ref):
+            if ref == failed_ref:
+                raise error
+            return SimpleNamespace(decoded_content=b"value = 1\n")
+
+        provider.repo_obj.get_contents.side_effect = get_contents
+        diffs = provider.get_diff_files()
+
+        assert len(diffs) == 1
+        assert diffs[0].patch == diffs[0].base_file == diffs[0].head_file == ""
+        assert diffs[0].content_fetch_failed is True
+        token_handler = SimpleNamespace(prompt_tokens=0, count_tokens=len)
+        patches, _, _ = pr_generate_extended_diff([{"files": diffs}], token_handler, False)
+        assert "changed.py" in patches[0]
+        assert "This file could not be read" in patches[0]
+        assert "value = 1" not in patches[0]
+
+    @pytest.mark.parametrize("failed_ref", ["base-sha", "head-sha"])
+    def test_existing_patch_survives_optional_content_failure(self, content_provider, failed_ref):
+        provider, file = content_provider
+        file.patch = "@@ -1 +1 @@\n-old\n+new"
+
+        def get_contents(_path, ref):
+            if ref == failed_ref:
+                raise GithubException(503, {}, {})
+            return SimpleNamespace(decoded_content=b"value = 1\n")
+
+        provider.repo_obj.get_contents.side_effect = get_contents
+        diff = provider.get_diff_files()[0]
+
+        assert diff.patch == file.patch
+        assert diff.content_fetch_failed is False
+
+    @pytest.mark.parametrize("incremental,empty_ref", [
+        (False, "base-sha"), (False, "head-sha"),
+        (True, "prev-sha"), (True, "head-sha"),
+    ])
+    def test_reconstruction_allows_empty_or_absent_snapshot(self, content_provider, incremental, empty_ref):
+        provider, file = content_provider
+        if incremental:
+            provider.incremental = SimpleNamespace(is_incremental=True, last_seen_commit_sha="prev-sha")
+            provider.unreviewed_files_map = {file.filename: file}
+
+        def get_contents(_path, ref):
+            if ref == empty_ref and incremental:
+                raise GithubException(404, {}, {})
+            return SimpleNamespace(decoded_content=b"" if ref == empty_ref else b"value = 1\n")
+
+        provider.repo_obj.get_contents.side_effect = get_contents
+        diff = provider.get_diff_files()[0]
+
+        assert diff.content_fetch_failed is False
+        assert diff.patch
+        assert diff.head_file == ("" if empty_ref == "head-sha" else "value = 1\n")
+        assert diff.base_file == ("value = 1\n" if empty_ref == "head-sha" else "")
 
 
 class TestLazyMergeBaseLookup:
@@ -572,7 +658,7 @@ class TestGetDiffFilesRename:
             previous_filename="old_dir/module.py",
         )
         p = _make_provider_for_diff([f])
-        p._get_pr_file_content = lambda file, sha, path=None: "same content\n"
+        p._get_pr_file_content = lambda file, sha, path=None, **kwargs: "same content\n"
 
         diffs = p.get_diff_files()
 

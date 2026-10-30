@@ -3,7 +3,7 @@ import fnmatch
 import pytest
 
 from pr_agent.algo import file_filter
-from pr_agent.algo.file_filter import filter_ignored, translate_globs_to_regexes
+from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status, translate_globs_to_regexes
 from pr_agent.config_loader import global_settings
 from pr_agent.log import get_logger
 
@@ -201,6 +201,8 @@ class TestIgnoreFilter:
 
         assert translate_globs_to_regexes([pattern]) == [fnmatch.translate(pattern)]
         assert "Skipped zero-directory '**/' variants" in logs
+        assert file_filter._translate_globs_to_regexes_with_status([pattern]) == ([fnmatch.translate(pattern)], False)
+        assert _capture_logs(lambda: file_filter._translate_globs_to_regexes_with_status([pattern])) == logs
 
     def test_too_many_globstars_keep_the_root_level_form(self):
         """Over the limit, a glob still matches at the repository root as it did before."""
@@ -285,6 +287,7 @@ class TestIgnoreFilter:
         ]
 
         filtered_files = filter_ignored(files)
+        assert filter_ignored_with_status(files) == (expected, False)
         assert filtered_files == expected, (
             f"Expected {[file.filename for file in expected]}, "
             f"but got {[file.filename for file in filtered_files]}."
@@ -335,10 +338,63 @@ class TestIgnoreFilter:
         ]
 
         filtered = filter_ignored(files)
+        assert filter_ignored_with_status(files) == (expected, False)
         assert filtered == expected, (
             f"Expected {[f.filename for f in expected]}, "
             f"but got {[f.filename for f in filtered]}"
         )
+
+    @pytest.mark.parametrize("source", ["regex", "configured", "generated"])
+    def test_malformed_patterns_preserve_best_effort_filter(self, monkeypatch, source):
+        pattern = r"^.*\.pb\.go$" if source == "regex" else "*.pb.go"
+        malformed = {pattern: "not a pattern list"}
+        monkeypatch.setattr(global_settings.ignore, "regex", malformed if source == "regex" else [])
+        monkeypatch.setattr(global_settings.ignore, "glob", malformed if source == "configured" else ["vendor/**"])
+        monkeypatch.setattr(global_settings.config, "ignore_language_framework", ["protobuf"])
+        monkeypatch.setattr(global_settings.generated_code, "protobuf",
+                            malformed if source == "generated" else ["vendor/**"])
+        files = [type("", (object,), {"filename": name})()
+                 for name in ("vendor/yarn.lock", "service.pb.go", "app.py", "package-lock.json")]
+        results = {}
+        legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files))))
+        status_logs = _capture_logs(lambda: results.setdefault("status", filter_ignored_with_status(list(files))))
+
+        assert results["legacy"] == files[2:]
+        assert results["status"] == (files[2:], False)
+        assert status_logs == legacy_logs == ""
+
+    @pytest.mark.parametrize("source", ["regex", "configured", "generated"])
+    def test_nonstring_patterns_report_incomplete_filtering(self, monkeypatch, source):
+        patterns = [None, r"^vendor/" if source == "regex" else "vendor/**"]
+        monkeypatch.setattr(global_settings.ignore, "regex", patterns if source == "regex" else [])
+        monkeypatch.setattr(global_settings.ignore, "glob", patterns if source == "configured" else [])
+        monkeypatch.setattr(global_settings.config, "ignore_language_framework", ["protobuf"])
+        monkeypatch.setattr(global_settings.generated_code, "protobuf", patterns if source == "generated" else [])
+        files = [type("", (object,), {"filename": name})()
+                 for name in ("vendor/yarn.lock", "app.py", "package-lock.json")]
+        results = {}
+        legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files))))
+        status_logs = _capture_logs(lambda: results.setdefault("status", filter_ignored_with_status(list(files))))
+
+        assert results["legacy"] == files[1:]
+        assert results["status"] == (files[1:], False)
+        assert status_logs == legacy_logs
+        assert "Skipping non-string ignore" in status_logs
+
+    def test_nonstring_framework_identifier_preserves_legacy_filter_but_reports_incomplete(self, monkeypatch):
+        monkeypatch.setattr(global_settings.ignore, "regex", [])
+        monkeypatch.setattr(global_settings.ignore, "glob", [])
+        monkeypatch.setattr(global_settings.config, "ignore_language_framework", [42, "protobuf"])
+        monkeypatch.setattr(global_settings.generated_code, "protobuf", ["vendor/**"])
+        files = [type("", (object,), {"filename": name})()
+                 for name in ("vendor/yarn.lock", "app.py", "package-lock.json")]
+        results = {}
+        legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files))))
+        status_logs = _capture_logs(lambda: results.setdefault("status", filter_ignored_with_status(list(files))))
+
+        assert results["legacy"] == files[1:]
+        assert results["status"] == (files[1:], False)
+        assert status_logs == legacy_logs == ""
 
     def test_repeated_filtering_does_not_mutate_regex_settings(self, monkeypatch):
         """Ensure repeated filtering does not append translated glob patterns to shared settings."""
@@ -706,6 +762,7 @@ class TestNoPatternsConfigured:
 _ENTRY_SHAPES = {
     'github': lambda p: type('', (object,), {'filename': p})(),
     'codecommit': lambda p: type('', (object,), {'filename': p})(),
+    'mosaico': lambda p: type('', (object,), {'filename': p})(),
     'bitbucket': lambda p: _BitbucketDiffstat(p, p),
     'bitbucket_server': lambda p: {'path': {'toString': p}},
     'gitlab': lambda p: _gitlab_change(p, p),
@@ -778,6 +835,7 @@ class TestUnfilteredPlatformIsReported:
         warnings = _capture_warnings(lambda: filter_ignored(list(files), platform='giteaaa'))
 
         assert warnings == []
+        assert filter_ignored_with_status(list(files), platform='giteaaa') == (files, False)
 
     @pytest.mark.parametrize("platform, build", _ENTRY_SHAPES.items())
     def test_every_supported_platform_actually_drops_a_matching_file(self, monkeypatch, platform, build):
@@ -787,6 +845,7 @@ class TestUnfilteredPlatformIsReported:
         matching = build('vendor/lib.py')
         kept = build('src/app.py')
 
+        assert filter_ignored_with_status([matching, kept], platform=platform) == ([kept], True)
         assert filter_ignored([matching, kept], platform=platform) == [kept], (
             f"platform {platform!r} did not apply the ignore pattern"
         )
@@ -840,6 +899,7 @@ class TestFilterFailureIsReported:
         files = [type('', (object,), {'filename': 'vendor/lib.py'})()]
 
         assert filter_ignored(list(files), platform='github') == files
+        assert filter_ignored_with_status(list(files), platform='github') == (files, False)
 
     def test_failure_after_an_earlier_pass_returns_that_pass_s_result(self, monkeypatch):
         """Pin the partly filtered state the message describes.
@@ -867,8 +927,11 @@ class TestFilterFailureIsReported:
         files = [type('', (object,), {'filename': 'vendor/lib.py'})(), _FailsOnThirdRead()]
 
         captured = {}
-        errors = _capture_errors(lambda: captured.setdefault('result', filter_ignored(list(files), 'github')))
-        result = captured['result']
+        errors = _capture_errors(
+            lambda: captured.setdefault('result', filter_ignored_with_status(list(files), 'github'))
+        )
+        result, complete = captured['result']
+        assert complete is False
 
         assert len(result) == 1
         assert result[0] is files[1]
@@ -885,10 +948,12 @@ class TestGlobstarLimits:
         configured = {fnmatch.translate(pattern) for pattern in globs}
         configured.add(fnmatch.translate("private/report.py"))
 
+        assert file_filter._translate_globs_to_regexes_with_status(globs) == (regexes, False)
         assert configured <= set(regexes)
         assert len(set(regexes) - configured) == file_filter._MAX_IGNORE_GLOB_VARIANT_REGEXES
         logs = _capture_logs(lambda: translate_globs_to_regexes(globs))
         assert logs.count("Skipped zero-directory '**/' variants") == 1
+        assert _capture_logs(lambda: file_filter._translate_globs_to_regexes_with_status(globs)) == logs
 
     def test_duplicate_variants_do_not_crowd_out_later_zero_directory_forms(self, monkeypatch):
         globs = ["a/" + "**/" * 6 + f"file{i}.py" for i in range(5)]
@@ -909,20 +974,25 @@ class TestGlobstarLimits:
         configured = {fnmatch.translate(pattern)}
         if leading:
             configured.add(fnmatch.translate(pattern[3:]))
-        regexes = set(translate_globs_to_regexes([pattern]))
+        legacy_regexes = translate_globs_to_regexes([pattern])
+        assert file_filter._translate_globs_to_regexes_with_status([pattern]) == (legacy_regexes, not over_limit)
+        regexes = set(legacy_regexes)
 
         assert configured <= regexes
         assert (regexes == configured) == over_limit
         logs = _capture_logs(lambda: translate_globs_to_regexes([pattern]))
         assert ("Skipped" in logs) == over_limit
+        assert _capture_logs(lambda: file_filter._translate_globs_to_regexes_with_status([pattern])) == logs
 
     def test_overlong_glob_is_skipped_before_translation(self):
         long_pattern = "x" * 20_000
         regexes = translate_globs_to_regexes([long_pattern, "*.py"])
 
         assert regexes == [fnmatch.translate("*.py")]
+        assert file_filter._translate_globs_to_regexes_with_status([long_pattern, "*.py"]) == (regexes, False)
         logs = _capture_logs(lambda: translate_globs_to_regexes([long_pattern]))
         assert "Skipped 1 ignore glob(s) longer than" in logs
+        assert _capture_logs(lambda: file_filter._translate_globs_to_regexes_with_status([long_pattern])) == logs
 
     def test_generated_code_list_has_its_own_allowance(self, monkeypatch):
         monkeypatch.setattr(global_settings.ignore, "glob", list(self.HEAVY))
@@ -950,6 +1020,7 @@ class TestGlobstarLimits:
         expected = translate_globs_to_regexes([pattern])
 
         assert translate_globs_to_regexes(iter([pattern] * 50)) == expected
+        assert file_filter._translate_globs_to_regexes_with_status(iter([pattern] * 50)) == (expected, True)
 
     @pytest.mark.parametrize("pattern", ["**/**/**/", "**/"])
     def test_globstars_do_not_produce_an_empty_regex(self, pattern):
@@ -972,3 +1043,30 @@ class TestGlobstarLimits:
         warnings = [record for record in records if "Skipped zero-directory" in record["message"]]
         assert len(warnings) == 2
         assert warnings[1]["extra"]["artifact"]["globs"] == warnings[0]["extra"]["artifact"]["globs"] + 1
+
+
+@pytest.mark.parametrize("source", ["configured", "first_generated", "second_generated"])
+def test_ignore_status_aggregates_every_glob_source(monkeypatch, source):
+    patterns = ["x" * (file_filter._MAX_GLOB_LENGTH + 1)]
+    monkeypatch.setattr(global_settings.ignore, "regex", [])
+    monkeypatch.setattr(global_settings.ignore, "glob", patterns if source == "configured" else [])
+    monkeypatch.setattr(global_settings.config, "ignore_language_framework", ["protobuf", "go_gen"])
+    monkeypatch.setattr(global_settings.generated_code, "protobuf",
+                        patterns if source == "first_generated" else ["vendor/**"])
+    monkeypatch.setattr(global_settings.generated_code, "go_gen",
+                        patterns if source == "second_generated" else ["generated/**"])
+    files = [type("", (object,), {"filename": name})()
+             for name in ("vendor/yarn.lock", "generated/uv.lock", "package-lock.json", "app.py")]
+    results = {}
+    legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files), "mosaico")))
+    status_logs = _capture_logs(
+        lambda: results.setdefault("status", filter_ignored_with_status(list(files), "mosaico"))
+    )
+
+    assert results["status"] == (results["legacy"], False)
+    assert status_logs == legacy_logs
+    assert files[2:] == results["legacy"][-2:]
+    if source != "first_generated":
+        assert files[0] not in results["legacy"]
+    if source != "second_generated":
+        assert files[1] not in results["legacy"]

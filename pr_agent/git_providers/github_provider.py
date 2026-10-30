@@ -553,6 +553,13 @@ class GithubProvider(GitProvider):
                     continue
 
                 patch = file.patch
+                incremental_active = bool(self.incremental.is_incremental and self.unreviewed_files_map)
+                reconstruct_patch = incremental_active or not patch
+                content_fetch_failed = False
+                # Allow files changed since the last review to be absent at that older snapshot.
+                read_options = (
+                    {"required": True, "missing_is_error": not incremental_active} if reconstruct_patch else {}
+                )
                 is_renamed = file.status == "renamed" and getattr(file, "previous_filename", None)
                 old_filename = file.previous_filename if is_renamed else None
                 if is_close_to_rate_limit:
@@ -572,13 +579,11 @@ class GithubProvider(GitProvider):
                         new_file_content_str = ""
                     else:
                         # communication with GitHub
-                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha)
+                        new_file_content_str = self._get_pr_file_content(file, self.pr.head.sha, **read_options)
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
-                            file, self.incremental.last_seen_commit_sha, path=old_filename)
-                        patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
-                        self.unreviewed_files_map[file.filename] = patch
+                            file, self.incremental.last_seen_commit_sha, path=old_filename, **read_options)
                     else:
                         if avoid_load or file.status == "added":
                             original_file_content_str = ""
@@ -595,9 +600,18 @@ class GithubProvider(GitProvider):
                                     get_logger().info(
                                         f"Using merge base commit {merge_base_commit.sha} instead of base commit ")
                             original_file_content_str = self._get_pr_file_content(
-                                file, merge_base_commit.sha, path=old_filename)
-                        if not patch:
-                            patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
+                                file, merge_base_commit.sha, path=old_filename, **read_options)
+
+                if reconstruct_patch:
+                    if original_file_content_str is None or new_file_content_str is None:
+                        original_file_content_str = new_file_content_str = patch = ""
+                        content_fetch_failed = True
+                        get_logger().warning(
+                            f"Cannot reconstruct GitHub patch for {file.filename}: content read failed")
+                    else:
+                        patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
+                    if incremental_active:
+                        self.unreviewed_files_map[file.filename] = patch
 
 
                 if file.status == 'added':
@@ -623,7 +637,8 @@ class GithubProvider(GitProvider):
                                                                file.filename, edit_type=edit_type,
                                                                old_filename=old_filename,
                                                                num_plus_lines=num_plus_lines,
-                                                               num_minus_lines=num_minus_lines,)
+                                                               num_minus_lines=num_minus_lines,
+                                                               content_fetch_failed=content_fetch_failed,)
                 diff_files.append(file_patch_canonical_structure)
             if invalid_files_names:
                 get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
@@ -2040,7 +2055,8 @@ class GithubProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().get_pull(self.pr_num)
 
-    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False,
+                            *, missing_is_error: bool = False) -> str:
         try:
             file_content_str = str(
                 self._get_repo()
@@ -2048,7 +2064,7 @@ class GithubProvider(GitProvider):
                 .decoded_content.decode()
             )
         except GithubException as e:
-            if e.status == 404:
+            if e.status == 404 and not missing_is_error:
                 return ""
             if propagate_errors:
                 raise
@@ -2121,7 +2137,8 @@ class GithubProvider(GitProvider):
             return False
         return head_name.casefold() == base_name.casefold()
 
-    def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
+    def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None,
+                             *, required: bool = False, missing_is_error: bool = False) -> str | None:
         file_path = path or file.filename
         cache = getattr(self, "_revision_file_contents", None)
         if cache is None:
@@ -2129,18 +2146,26 @@ class GithubProvider(GitProvider):
         key = (self.repo, sha, file_path)
         if key in cache:
             return cache[key]
-        content = self.get_pr_file_content(file_path, sha)
+        read_options = {"propagate_errors": True, "missing_is_error": missing_is_error} if required else {}
+        try:
+            content = self.get_pr_file_content(file_path, sha, **read_options)
+        except (GithubException, RequestException, UnicodeDecodeError, binascii.Error, AssertionError, AttributeError):
+            if required:
+                return None
+            raise
         if content:
             cache[key] = content
         return content
 
-    def publish_labels(self, pr_types):
+    def publish_labels(self, pr_types) -> bool:
         try:
             headers, data = self.pr._requester.requestJsonAndCheck(
                 "PUT", f"{self.pr.issue_url}/labels", input=pr_types
             )
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+            return False
+        return True
 
     def get_pr_labels(self, update=False):
         # A failed read must never look like "this PR has no labels": publish_labels issues a PUT

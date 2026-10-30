@@ -88,17 +88,52 @@ async def test_user_label_changes_during_prediction_are_preserved(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["read", "write"])
+@pytest.mark.parametrize("propagate_errors", [False, True])
 @patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
 @patch("pr_agent.tools.pr_generate_labels.get_settings")
-async def test_labels_are_not_published_when_refresh_fails(mock_get_settings, _mock_retry):
+async def test_primary_labels_failure_records_status_and_cleans_up(
+        mock_get_settings, _mock_retry, failure, propagate_errors):
     mock_get_settings.return_value.config.publish_output = True
+    mock_get_settings.return_value.config.get.return_value = propagate_errors
     provider = _provider(supports_labels=True)
-    provider.get_pr_labels.return_value = None
+    if failure == "read":
+        provider.get_pr_labels.return_value = None
+    else:
+        provider.publish_labels.return_value = False
+    init_run_details()
 
-    await _tool(provider).run()
+    if propagate_errors:
+        with pytest.raises(RuntimeError, match="labels"):
+            await _tool(provider).run()
+    else:
+        assert await _tool(provider).run() == ""
 
+    assert command_failed() is True
     provider.get_pr_labels.assert_called_once_with(update=True)
-    provider.publish_labels.assert_not_called()
+    if failure == "read":
+        provider.publish_labels.assert_not_called()
+    else:
+        provider.publish_labels.assert_called_once_with(["Bug fix"])
+    provider.remove_initial_comment.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("acknowledgement", [True, None, 0])
+@patch("pr_agent.tools.pr_generate_labels.retry_with_fallback_models", new_callable=AsyncMock)
+@patch("pr_agent.tools.pr_generate_labels.get_settings")
+async def test_only_exact_false_label_acknowledgement_records_failure(
+        mock_get_settings, _mock_retry, acknowledgement):
+    mock_get_settings.return_value.config.publish_output = True
+    mock_get_settings.return_value.config.get.return_value = True
+    provider = _provider(supports_labels=True)
+    provider.publish_labels.return_value = acknowledgement
+    init_run_details()
+
+    assert await _tool(provider).run() == ""
+
+    assert command_failed() is False
+    provider.publish_labels.assert_called_once_with(["Bug fix"])
     provider.remove_initial_comment.assert_called_once()
 
 

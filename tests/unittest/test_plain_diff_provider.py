@@ -157,14 +157,34 @@ diff --git a/weird.zzz b/weird.zzz
 
 
 def test_plain_diff_applies_ignore_rules_to_files_and_patches(cfg, monkeypatch):
-    cfg("plain_diff.content", _MULTI_LANG_DIFF)
-    cfg("ignore.glob", ["foo.py"])
+    diff = _MULTI_LANG_DIFF + DIFF.replace("foo.py", "yarn.lock") + DIFF.replace("foo.py", "generated/uv.lock")
+    cfg("plain_diff.content", diff)
+    cfg("ignore.glob", ["foo.py", "generated/**"])
     cfg("ignore.regex", [])
     monkeypatch.setattr("pr_agent.git_providers.plain_diff_provider._find_repository_root", lambda: None)
 
     provider = PlainDiffGitProvider(None)
-    assert provider.get_files() == ["app.js", "weird.zzz"]
-    assert [file.filename for file in provider.get_diff_files()] == ["app.js", "weird.zzz"]
+    first = provider.get_diff_files()
+    assert provider.get_files() == ["app.js", "weird.zzz", "yarn.lock"]
+    assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+    assert provider.get_diff_files() is first
+    assert first[-1].patch == "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2-changed\n line3\n"
+    assert first[-1].head_file == first[-1].base_file == ""
+
+    cfg("ignore.glob", ["*.lock"])
+    assert provider.get_diff_files() is first
+    assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+    cfg("ignore.glob", [])
+    cfg("ignore.regex", ["["])
+    provider.reset_diff_cache_for_command()
+    assert provider.get_files() == ["foo.py", "app.js", "weird.zzz", "yarn.lock", "generated/uv.lock"]
+    assert provider.get_filtered_diff_file_names() == []
+    cfg("ignore.glob", ["*.lock"])
+    cfg("ignore.regex", [])
+    provider.reset_diff_cache_for_command()
+    assert provider.get_files() == ["foo.py", "app.js", "weird.zzz"]
+    assert provider.get_diff_files() is not first
+    assert provider.get_filtered_diff_file_names() == []
 
 
 _FILENAME_MATCHING_DIFF = """diff --git a/upper.C b/upper.C

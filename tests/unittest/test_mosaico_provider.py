@@ -5,7 +5,7 @@ artifact, no un-stubbed provider method raises, and the incremental path never f
 asyncio_mode=auto."""
 import pytest
 
-from pr_agent.algo.types import EDIT_TYPE
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.mosaico.diff_provider import DiffInputProvider, parse_unified_diff
 
@@ -229,6 +229,41 @@ class TestDiffInputProviderBasics:
         assert p.get_pr_description_full() == ""
         assert p.pr.title == "test PR"
         assert p.pr.diff_files == p.get_diff_files()
+
+    def test_filtered_metadata_preserves_supplied_patches(self, mosaico_input, monkeypatch):
+        p = DiffInputProvider()
+        p.diff_files.extend(FilePatchInfo("old", "new", "patch", name)
+                            for name in ("yarn.lock", "generated/uv.lock"))
+        original = p.diff_files
+        original_elements = list(original)
+        contents = [(f.filename, f.base_file, f.head_file, f.patch) for f in original]
+        monkeypatch.setattr(global_settings.ignore, "glob", ["generated/**"])
+        monkeypatch.setattr(global_settings.ignore, "regex", [])
+        monkeypatch.setattr(global_settings.config, "ignore_language_framework", [])
+
+        assert p.get_diff_files() is original
+        assert p.pr.diff_files is original
+        assert p.get_filtered_diff_file_names() == ["yarn.lock"]
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == ["yarn.lock"]
+        monkeypatch.setattr(global_settings.ignore, "glob", [])
+        monkeypatch.setattr(global_settings.ignore, "regex", ["["])
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == []
+        monkeypatch.setattr(global_settings.ignore, "regex", [])
+        monkeypatch.setattr(global_settings.ignore, "glob", ["*.lock"])
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == []
+
+        monkeypatch.setattr(global_settings.ignore, "glob", [])
+        monkeypatch.setattr(global_settings.config, "ignore_language_framework", [42])
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == []
+
+        assert p.pr.diff_files is original
+        assert p.get_files() == [row[0] for row in contents]
+        assert all(actual is expected for actual, expected in zip(original, original_elements, strict=True))
+        assert [(f.filename, f.base_file, f.head_file, f.patch) for f in original] == contents
 
 
 _SENTINEL = object()

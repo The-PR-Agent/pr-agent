@@ -148,13 +148,14 @@ def test_get_files_returns_new_path_for_renamed_file(tmp_path):
 
 
 def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
-    repo = _make_repo(tmp_path, ["generated/schema.py", "src/app.py"])
+    names = ["generated/schema.py", "generated/uv.lock", "src/app.py", "yarn.lock"]
+    repo = _make_repo(tmp_path, names)
     target_branch_name = repo.active_branch.name
     repo.git.checkout("-b", "feature")
-    for name in ("generated/schema.py", "src/app.py"):
+    for name in names:
         (tmp_path / name).write_text("changed\n")
-    repo.index.add(["generated/schema.py", "src/app.py"])
-    repo.index.commit("change both files")
+    repo.index.add(names)
+    repo.index.commit("change files")
 
     provider = object.__new__(LocalGitProvider)
     provider.repo = repo
@@ -164,8 +165,28 @@ def test_local_diff_applies_ignore_rules_to_files_and_patches(tmp_path):
     try:
         get_settings().set("IGNORE.GLOB", ["generated/**"])
         get_settings().set("IGNORE.REGEX", [])
-        assert provider.get_files() == ["src/app.py"]
-        assert [file.filename for file in provider.get_diff_files()] == ["src/app.py"]
+        first = provider.get_diff_files()
+        assert provider.get_files() == ["src/app.py", "yarn.lock"]
+        assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+        assert provider.get_diff_files() is first
+        assert first[1].head_file == "changed\n"
+        assert first[1].patch
+
+        get_settings().set("IGNORE.GLOB", ["*.lock"])
+        assert provider.get_diff_files() is first
+        assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+        get_settings().set("IGNORE.GLOB", [])
+        get_settings().set("IGNORE.REGEX", ["["])
+        provider.reset_diff_cache_for_command()
+        assert [file.filename for file in provider.get_diff_files()] == names
+        assert provider.get_filtered_diff_file_names() == []
+        get_settings().set("IGNORE.GLOB", ["*.lock"])
+        get_settings().set("IGNORE.REGEX", [])
+        provider.reset_diff_cache_for_command()
+        second = provider.get_diff_files()
+        assert [file.filename for file in second] == ["generated/schema.py", "src/app.py"]
+        assert second is not first
+        assert provider.get_filtered_diff_file_names() == []
     finally:
         restore_settings(snapshot)
 

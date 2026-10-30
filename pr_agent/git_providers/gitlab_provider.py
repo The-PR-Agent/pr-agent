@@ -2610,7 +2610,7 @@ class GitLabProvider(GitProvider):
     def get_user_id(self):
         return None
 
-    def publish_labels(self, pr_types):
+    def publish_labels(self, pr_types) -> bool:
         try:
             # Send an incremental diff instead of assigning ``self.mr.labels``, which
             # would PUT the whole array and wipe any label added to the MR after this
@@ -2623,7 +2623,7 @@ class GitLabProvider(GitProvider):
             to_add = sorted(desired - current)
             to_remove = sorted(current - desired)
             if not to_add and not to_remove:
-                return
+                return True
             try:
                 if to_add:
                     self.mr.add_labels = ",".join(to_add)
@@ -2637,6 +2637,8 @@ class GitLabProvider(GitProvider):
                 self._clear_pending_mr_attrs("add_labels", "remove_labels")
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+            return False
+        return True
 
     def _read_mr_labels(self):
         # Reading ``mr.labels`` is not free of side effects: python-gitlab cannot detect

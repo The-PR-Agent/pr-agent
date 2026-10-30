@@ -6,8 +6,8 @@ from unidiff.errors import UnidiffParseError
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
-from pr_agent.algo.file_filter import filter_ignored
-from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.file_filter import filter_ignored_with_status
+from pr_agent.algo.language_handler import build_language_file_matcher, partition_files_by_language_filter
 from pr_agent.algo.review_json_output import write_review_json_output
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import FilePatchInfo
@@ -59,7 +59,7 @@ class PlainDiffGitProvider(GitProvider):
             files = parse_unified_diff(self.diff_text)
         except UnidiffParseError as e:
             raise ValueError(f"Failed to parse the provided diff: {e}") from e
-        files = filter_ignored(files, platform="plain_diff")
+        files, ignore_complete = filter_ignored_with_status(files, platform="plain_diff")
         # Resolve diff paths against the actual repository root (not the raw CWD)
         # so working-tree enrichment still works when run from a subdirectory.
         # If there is no detectable .git root, disable enrichment entirely and
@@ -104,6 +104,7 @@ class PlainDiffGitProvider(GitProvider):
             # rest of the pipeline expects hunk-only patches, so normalize after.
             f.patch = to_hunk_only_patch(f.patch)
         self.diff_files = files
+        self.filtered_diff_file_names = partition_files_by_language_filter(files)[1] if ignore_complete else []
         return files
 
     def get_files(self) -> list[str]:

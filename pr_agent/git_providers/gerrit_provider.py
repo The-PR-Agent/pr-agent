@@ -17,8 +17,8 @@ import urllib3.util
 from git import Repo
 
 from pr_agent.agent.request_policy import policy_metadata
-from pr_agent.algo.file_filter import filter_ignored
-from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.file_filter import filter_ignored, filter_ignored_with_status
+from pr_agent.algo.language_handler import build_language_file_matcher, partition_files_by_language_filter
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider, cache_languages, redact_credentials
@@ -368,7 +368,7 @@ class GerritProvider(GitProvider):
     def get_diff_files(self) -> list[FilePatchInfo]:
         # Apply ignore rules at call time: __init__ reads the diff before repository
         # settings are loaded.
-        diffs = filter_ignored(self._get_commit_diffs(), 'gerrit')
+        diffs, ignore_complete = filter_ignored_with_status(self._get_commit_diffs(), 'gerrit')
 
         diff_files = []
         for diff_item in diffs:
@@ -406,6 +406,7 @@ class GerritProvider(GitProvider):
                 )
             )
         self.diff_files = diff_files
+        self.filtered_diff_file_names = partition_files_by_language_filter(diff_files)[1] if ignore_complete else []
         return diff_files
 
     def get_files(self):

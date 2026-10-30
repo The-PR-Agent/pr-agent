@@ -5,8 +5,8 @@ from git import Repo
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
-from pr_agent.algo.file_filter import filter_ignored
-from pr_agent.algo.language_handler import build_language_file_matcher
+from pr_agent.algo.file_filter import filter_ignored_with_status
+from pr_agent.algo.language_handler import build_language_file_matcher, partition_files_by_language_filter
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
@@ -122,7 +122,10 @@ class LocalGitProvider(GitProvider):
                               old_filename=None if diff_item.a_path == diff_item.b_path else diff_item.a_path
                               )
             )
-        self.diff_files = filter_ignored(diff_files, platform="local")
+        self.diff_files, ignore_complete = filter_ignored_with_status(diff_files, platform="local")
+        self.filtered_diff_file_names = (
+            partition_files_by_language_filter(self.diff_files)[1] if ignore_complete else []
+        )
         return self.diff_files
 
     def get_files(self) -> list[str]:

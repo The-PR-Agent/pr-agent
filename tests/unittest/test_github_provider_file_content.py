@@ -47,7 +47,8 @@ def test_revision_content_cache_keys_include_repository_sha_and_old_path():
     assert provider._get_repo().get_contents.call_count == 4
 
 
-def test_revision_content_does_not_cache_failed_empty_reads():
+@pytest.mark.parametrize("required", [False, True])
+def test_revision_content_does_not_cache_failed_reads(required):
     provider = _provider_with_result()
     provider.repo = "owner/repo"
     file = SimpleNamespace(filename="src/file.py")
@@ -56,9 +57,9 @@ def test_revision_content_does_not_cache_failed_empty_reads():
         SimpleNamespace(decoded_content=b"recovered"),
     ]
 
-    assert provider._get_pr_file_content(file, "a" * 40) == ""
-    assert provider._get_pr_file_content(file, "a" * 40) == "recovered"
-    assert provider._get_pr_file_content(file, "a" * 40) == "recovered"
+    assert provider._get_pr_file_content(file, "a" * 40, required=required) == (None if required else "")
+    assert provider._get_pr_file_content(file, "a" * 40, required=required) == "recovered"
+    assert provider._get_pr_file_content(file, "a" * 40, required=required) == "recovered"
     assert provider._get_repo().get_contents.call_count == 2
 
 

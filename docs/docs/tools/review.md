@@ -214,6 +214,14 @@ for the authoritative default values.
     <td><b>require_priority_files</b></td>
     <td>If set to true, the tool will add a section listing the files a human reviewer should inspect first.</td>
   </tr>
+  <tr>
+    <td><b>structural_reach_input_file</b></td>
+    <td>Path to a JSON file with structural reach facts, written by a build-graph tool earlier in CI. When the file
+    exists, adds a deterministic change-risk row (Low, Moderate, High or Critical) with no model call. Relative to
+    <code>GITHUB_WORKSPACE</code> when that is set, otherwise to the working directory. Host configuration only: a
+    repository settings file or a comment cannot set it, because the file is read from the host. See
+    <a href="#structural-reach">Structural reach</a>.</td>
+  </tr>
 </table>
 
 </details>
@@ -369,4 +377,127 @@ summaries. Prose without a file location is shown as text without a source link.
 
 The merged verdict is deliberately never less alarming than the worst chunk: a clean chunk
 cannot raise a score, clear a security concern, or soften a risk level set by another chunk.
+:::
+
+### Structural reach
+
+:::tip
+
+When `structural_reach_input_file` points at a file that exists, the review gets one row at the top that rates how
+far a defect in the change could spread. The row is computed from that file, not by the model, so the same input
+always gets the same rating.
+
+```
+🔗 Structural reach: Critical
+Reach: 40 projects, cross-domain
+Dependents: billing-api, payments-worker, web-app, admin-app, reports (+35 more)
+Sensitivity: payments
+Rating driven by sensitive domain (escalates regardless of size)
+```
+
+**Rating.** Two facts from the input file set the band:
+
+- **Reach** is the number of downstream projects a defect in the change can break. Only a build-graph tool knows
+  it.
+- **Sensitivity** flags changes to areas the repository marks as high-criticality, such as authentication,
+  payments or secrets. A one-line auth change outranks a wide styling sweep.
+
+Reach is narrow up to 3 projects, moderate up to 25 and wide above that. The band then follows these rules:
+
+| Condition | Band |
+| --- | --- |
+| Wide reach | At least Moderate |
+| Cross-domain change | At least Moderate |
+| Any sensitive domain | At least High |
+| Sensitive domain with wide reach | Critical |
+| Anything else | Low |
+
+The row lists each factor and names the one that set the band. It also lists the first five names in
+`dependents`, in the order the producer wrote them.
+
+The reach bands are defined for projects only. When `reach_unit` is `modules` or `files`, the row shows the count
+and the dependents without a band, because no threshold separates a change to a shared utility from a real spread.
+A cross-domain or sensitive change still gets a band from the rules above. The Reach line still shows the
+number, but it does not affect the band.
+
+Change size is not part of the rating, because
+`estimated_effort_to_review_[1-5]` already reflects it. That row and `require_risk_assessment` are the model's
+judgement; this row adds the structural and sensitivity facts the model cannot see in the diff.
+
+**Input file.** Any build-graph tool (Nx, Bazel, Gradle, Turborepo, and so on) can write the reach facts in an
+earlier CI step, so pr-agent needs no adapter per tool. Point `structural_reach_input_file` at the file in host
+configuration, for example the `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE` environment variable. Every field is
+optional:
+
+```json
+{
+  "version": 1,
+  "reach": 12,
+  "reach_unit": "projects",
+  "dependents": ["billing-api", "web-app"],
+  "domains": ["billing", "web"],
+  "cross_domain": true,
+  "sensitive_domains": ["billing"]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | integer | Schema version. Only `1` is accepted. |
+| `reach` | integer, 0 or more | Number of units affected by the change, including transitive dependents. Defaults to the length of `dependents`. |
+| `reach_unit` | string | What `reach` counts: `projects` (the default), `modules` or `files`. Only `projects` gets a reach band. |
+| `dependents` | list of strings | Names of the affected units, most relevant first. |
+| `domains` | list of strings | Distinct domains or areas the affected projects belong to. |
+| `cross_domain` | boolean | Whether the change spans more than one domain. |
+| `sensitive_domains` | list of strings | Affected domains the repository treats as sensitive. |
+
+Unknown fields are ignored. Strings are limited to 200 characters and the file to 1 MB.
+
+**Example producer: Nx.** `nx show projects --affected` lists every project the change affects, including
+transitive dependents. This step writes them as `dependents`, and lists affected projects tagged `sensitive` as
+`sensitive_domains`:
+
+```bash
+affected() { npx nx show projects --affected --base="$BASE_SHA" --head="$HEAD_SHA" --json "$@"; }
+affected | jq --argjson sensitive "$(affected -p 'tag:sensitive')" \
+  '{version: 1, reach_unit: "projects", dependents: ., sensitive_domains: $sensitive}' > structural-reach.json
+```
+
+Then set `PR_REVIEWER__STRUCTURAL_REACH_INPUT_FILE=structural-reach.json` for the review step. Another tool
+needs only a query that lists the affected projects or packages.
+
+**Example producer: tree-sitter.** For a repository without a build-graph tool,
+`scripts/structural_reach_producer.py` builds a reverse-import graph of the Python, TypeScript and JavaScript
+files at the base commit and follows importers from the changed files. Test files are left out of reach and
+domains, because counting them makes most changes to a shared module read wide. It writes `reach_unit` as
+`modules` (directories) by default, so the row shows the count and the first dependents without a band. Run it as
+a CI step before the review; it is not a pr-agent dependency:
+
+```bash
+pip install "tree-sitter-language-pack==1.22.1"
+python scripts/structural_reach_producer.py --repo . --base "$BASE_SHA" --head "$HEAD_SHA" \
+  --unit module --out structural-reach.json
+```
+
+On this repository, the change merged in pull request 4420 gives:
+
+```
+🔗 Structural reach
+Reach: 9 modules
+Dependents: pr_agent/git_providers, pr_agent/tools, pr_agent/servers, pr_agent/algo, pr_agent/mosaico (+4 more)
+```
+
+`dependents` is ordered by the number of affected files in each unit. The graph does not see imports built at
+run time, files loaded by name such as settings, or dependencies declared only in a manifest, such as a shared
+`tsconfig` package used through `extends`. In a monorepo with Nx, Turborepo or Bazel, use that tool instead.
+
+**Failure handling.** The row never blocks a review. If the setting is empty, the input file is missing or does
+not match the schema, or anything fails while computing the row, the review is published without it.
+
+**Sources.**
+
+- Beyer, B. et al. *Site Reliability Engineering* (Google, 2016), and the AWS Well-Architected Framework: blast
+  radius as the scope of impact of a change or failure.
+- OWASP guidance on sensitive functionality: authentication, session management, cryptography and payments.
+
 :::
