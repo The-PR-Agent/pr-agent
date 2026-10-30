@@ -95,6 +95,20 @@ def test_bedrock_ambient_auth_defers_to_the_run(monkeypatch, cli_mode_settings):
     assert doctor.missing_provider_key_env_vars() is None
 
 
+@pytest.mark.parametrize("model", ("bedrock/us.anthropic.claude-sonnet-4-5", "azure/gpt-4o"))
+def test_doctor_passes_with_ambient_auth_and_no_static_key(monkeypatch, cli_mode_settings, capsys, model):
+    # IRSA/IMDS or Azure AD: no static key, but the ping succeeds, so doctor must exit 0 (#4531).
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.delenv("AZURE_API_KEY", raising=False)
+    _install_handler(monkeypatch, key=None)
+    get_settings().set("config.model", model)
+
+    assert cli.run(inargs=["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "(ambient auth or custom endpoint); ping decides" in out
+    assert "3 of 3 checks passed" in out
+
+
 def test_custom_endpoint_defers_to_the_run(monkeypatch, cli_mode_settings):
     _install_handler(monkeypatch, key=None)
     get_settings().set("openai.api_base", "https://gateway.example/v1")
