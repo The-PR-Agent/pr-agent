@@ -505,6 +505,9 @@ class GerritProvider(GitProvider):
             except ValueError:
                 get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")
                 continue
+            # add_suggestion keeps lines[end:], so an inverted range would repeat lines.
+            if not self._is_valid_code_suggestion(suggestion):
+                continue
 
             publishable_count += 1
             description, code = self.split_suggestion(suggestion['body'])

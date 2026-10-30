@@ -1174,6 +1174,20 @@ def test_publish_code_suggestions_skips_a_symlink(tmp_path, monkeypatch):
     assert (tmp_path / ".git" / "config").exists()
 
 
+def test_publish_code_suggestions_skips_an_inverted_line_range(tmp_path, monkeypatch):
+    # add_suggestion writes lines[:start - 1] and then lines[end:], so a 5-to-3 range
+    # would keep every original line and repeat line 4.
+    provider = _provider_for_suggestions(tmp_path)
+    applied = []
+    monkeypatch.setattr(gerrit_provider, "add_suggestion", lambda *args, **kwargs: applied.append(args))
+    suggestion = _suggestion("app.py")
+    suggestion["relevant_lines_start"], suggestion["relevant_lines_end"] = 5, 3
+
+    assert provider.publish_code_suggestions([suggestion]) is True
+    assert applied == []
+    assert (tmp_path / "app.py").read_text() == "print(1)\n"
+
+
 @pytest.mark.parametrize("relevant_file", [".git/config", ".GIT/config"])
 def test_publish_code_suggestions_skips_git_metadata(tmp_path, monkeypatch, relevant_file):
     provider = _provider_for_suggestions(tmp_path)
