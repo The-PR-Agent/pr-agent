@@ -39,6 +39,7 @@ class PRConfig:
     def _prepare_pr_configs(self) -> str:
         try:
             conf_file = get_settings().find_file("configuration.toml")
+            custom_labels_file = get_settings().find_file("custom_labels.toml")
             dynconf_kwargs = {
                 'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
                 'loaders': ['pr_agent.custom_merge_loader'],
@@ -48,7 +49,7 @@ class PRConfig:
                 # Merge multiple TOML files; prevent full section overwrite—only overlapping keys
                 # in sections overwrite prior ones.
             }
-            conf_settings = Dynaconf(settings_files=[conf_file],
+            conf_settings = Dynaconf(settings_files=[conf_file, custom_labels_file],
                                      # Security: Disable all dynamic loading features
                                      load_dotenv=False,  # Don't load .env files
                                      envvar_prefix=False,

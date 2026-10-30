@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from dynaconf import Dynaconf
 from starlette_context import request_cycle_context
@@ -73,6 +75,20 @@ def test_config_output_hides_host_only_keys():
     assert "config.model = " in output
     assert "global_settings_repo" not in output
     assert "hidden_option" not in output
+
+
+def test_shipped_config_defaults_have_no_undeclared_keys():
+    settings_dir = Path(config_loader.current_dir) / "settings"
+    settings = Dynaconf(
+        settings_files=[settings_dir / "configuration.toml", settings_dir / "custom_labels.toml"],
+        core_loaders=[], loaders=["pr_agent.custom_merge_loader"],
+        root_path=settings_dir, envvar_prefix=False, load_dotenv=False,
+    )
+    with request_cycle_context({"settings": settings}):
+        output = PRConfig.__new__(PRConfig)._prepare_pr_configs()
+
+    assert "config.enable_custom_labels = False" in output
+    assert "not declared in the shipped configuration" not in output
 
 
 @pytest.mark.parametrize("include_extras", [False, True])
