@@ -5,6 +5,7 @@ from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.local_git_provider import LocalGitProvider
+from pr_agent.tools.pr_add_docs import PRAddDocs
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
@@ -454,6 +455,23 @@ def test_publish_tool_failure_keeps_review_file(tmp_path, tool, output_attr):
 
     assert review_path.read_text() == "previous review"
     assert getattr(provider, output_attr).read_text() == "Failed"
+
+
+def test_add_docs_empty_result_keeps_review_file(tmp_path):
+    review_path = tmp_path / "review.md"
+    review_path.write_text("previous review")
+    provider = object.__new__(LocalGitProvider)
+    provider.review_path = review_path
+    provider.improve_path = tmp_path / "improve.md"
+    provider.description_path = tmp_path / "description.md"
+    tool = PRAddDocs.__new__(PRAddDocs)
+    tool.git_provider = provider
+
+    result = tool.push_inline_docs({"Code Documentation": []})
+
+    assert result is None
+    assert review_path.read_text() == "previous review"
+    assert provider.improve_path.read_text() == "No code documentation found to improve this PR."
 
 
 def test_init_on_detached_head_falls_back_to_commit_sha(tmp_path, monkeypatch):
