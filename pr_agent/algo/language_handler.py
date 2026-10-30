@@ -12,13 +12,25 @@ AUTO_GENERATED_FILES_EXACT = frozenset({
 
 
 def filter_bad_extensions(files):
+    return partition_files_by_language_filter(files)[0]
+
+
+def partition_files_by_language_filter(files):
+    """Partition files and omitted names using the shared language-filter predicate."""
     # Bad Extensions, source: https://github.com/EleutherAI/github-downloader/blob/345e7c4cbb9e0dc8a0615fd995a08bf9d73b3fe6/download_repo_text.py  # noqa: E501
     settings = get_settings()
     bad_extensions = normalize_setting_list(settings.bad_extensions.default)
     if settings.config.use_extra_bad_extensions:
         bad_extensions.extend(normalize_setting_list(settings.bad_extensions.extra))
     excluded_extensions = {str(extension).lower() for extension in bad_extensions}
-    return [f for f in files if f.filename is not None and _is_valid_file(f.filename, excluded_extensions)]
+    valid_files = []
+    filtered_names = []
+    for file in files:
+        if file.filename is not None and _is_valid_file(file.filename, excluded_extensions):
+            valid_files.append(file)
+        elif file.filename:
+            filtered_names.append(file.filename)
+    return valid_files, filtered_names
 
 
 def is_valid_file(filename: str, bad_extensions=None) -> bool:
