@@ -39,7 +39,7 @@ The commands above assume the `pr_agent` package is importable — use the venv 
    This is useful for debugging or experimenting with different tools.
 
 3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
-   `github` **(default)**, `gitlab`, `bitbucket`, `azure`, `codecommit`, `local`, and `gitea`.
+   `github` **(default)**, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, and `plain-diff`.
 
 4. For scripts that need a failed request to return a non-zero process status, enable tool error propagation:
 
