@@ -683,7 +683,7 @@ class GitLabProvider(GitProvider):
         """Collect the diff pages once, failing on unstable or not-yet-ready responses."""
         for attempt in range(2):
             before = self.gl.http_get(path)
-            changes = self.gl.http_list(f"{path}/diffs", get_all=True)
+            changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=100)
             after = self.gl.http_get(path)
             if any(before.get(key) != after.get(key) for key in ("sha", "diff_refs", "changes_count")):
                 if attempt == 0:
@@ -1031,7 +1031,7 @@ class GitLabProvider(GitProvider):
         # otherwise we'd re-fetch from GitLab on every call for MRs that have no notes.
         if not hasattr(self, '_incremental_notes_cache'):
             try:
-                self._incremental_notes_cache = list(self.mr.notes.list(get_all=True))
+                self._incremental_notes_cache = list(self.mr.notes.list(get_all=True, per_page=100))
             except (GitlabError, RequestException) as e:
                 get_logger().error(f"Failed to list MR notes for incremental review: {e}")
                 return None
@@ -1395,7 +1395,7 @@ class GitLabProvider(GitProvider):
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         try:
-            discussions = self.mr.discussions.list(get_all=True)
+            discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return
@@ -1547,7 +1547,7 @@ class GitLabProvider(GitProvider):
             )
             return
         try:
-            discussions = self.mr.discussions.list(get_all=True)
+            discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return
@@ -1617,7 +1617,7 @@ class GitLabProvider(GitProvider):
             )
             return 0
         try:
-            discussions = self.mr.discussions.list(get_all=True)
+            discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return 0
@@ -1691,7 +1691,7 @@ class GitLabProvider(GitProvider):
         seen = set(bodies)
         if self.mr is None:
             return bodies
-        for discussion in self.mr.discussions.list(get_all=True):
+        for discussion in self.mr.discussions.list(get_all=True, per_page=100):
             attrs = getattr(discussion, "attributes", None) or {}
             for note in attrs.get("notes", []) or []:
                 if isinstance(note, dict):
@@ -1699,13 +1699,13 @@ class GitLabProvider(GitProvider):
                     if body and body not in seen:
                         bodies.append(body)
                         seen.add(body)
-        for note in self.mr.notes.list(get_all=True):
+        for note in self.mr.notes.list(get_all=True, per_page=100):
             body = getattr(note, "body", "") or ""
             if body and body not in seen:
                 bodies.append(body)
                 seen.add(body)
         try:
-            for draft in self.mr.draft_notes.list(get_all=True):
+            for draft in self.mr.draft_notes.list(get_all=True, per_page=100):
                 body = getattr(draft, "note", "") or ""
                 if body and body not in seen:
                     bodies.append(body)
@@ -1901,7 +1901,7 @@ class GitLabProvider(GitProvider):
             # Caller retries publish the queued batch without recreating its suggestions.
             if not self._failed_draft_batch:
                 try:
-                    self._publish_suggestion_drafts(self.mr.draft_notes.list(get_all=True))
+                    self._publish_suggestion_drafts(self.mr.draft_notes.list(get_all=True, per_page=100))
                     self._failed_draft_batch = True
                 except (GitlabError, RequestException) as e:
                     get_logger().warning(f"Retrying draft publication for MR {self.id_mr} failed: {e}")
@@ -2006,7 +2006,7 @@ class GitLabProvider(GitProvider):
             try:
                 # Dedup-only runs may still refer to pending drafts from an earlier operation.
                 try:
-                    pending = self.mr.draft_notes.list(get_all=True)
+                    pending = self.mr.draft_notes.list(get_all=True, per_page=100)
                 except (GitlabError, RequestException) as e:
                     if self._code_suggestion_draft_queued:
                         raise
