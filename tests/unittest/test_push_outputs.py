@@ -9,6 +9,62 @@ from pr_agent.algo.run_output import push_outputs
 from pr_agent.config_loader import get_settings
 
 
+class TestOutputSinkPreflight:
+    @pytest.mark.parametrize("enable", [False, "false", "  FaLsE  ", "0", "no", ""])
+    def test_disabled_skips_destination_validation(self, enable):
+        assert output_sinks._check_output_sinks({"enable": enable, "channels": object()}) is None
+
+    @pytest.mark.parametrize("enable", [True, "true", "yes"])
+    def test_enabled_accepts_dynaconf_wrappers(self, enable):
+        get_settings().set("push_outputs", {"enable": enable, "channels": ["stdout", "file"]})
+        cfg = get_settings().get("push_outputs")
+        assert isinstance(cfg, dict) and isinstance(cfg.get("channels"), list)
+        assert output_sinks._check_output_sinks(cfg)[0] is True
+
+    @pytest.mark.parametrize("channels, valid", [
+        ("stdout", True),
+        ("stdout,file", True),
+        ("prefixstdoutsuffix", True),
+        ("unknown", False),
+        (["stdout", "stdout"], True),
+        (("file", "stdout"), True),
+        ([], False),
+        (["stdout", "unknown"], False),
+        (["stdout", 1], False),
+        ({"stdout": True}, False),
+    ])
+    def test_selection_matches_runtime_string_membership_and_exact_collections(self, channels, valid):
+        result = output_sinks._check_output_sinks({"enable": True, "channels": channels})
+        assert result[0] is valid
+
+    @pytest.mark.parametrize("channel, fields, valid", [
+        ("stdout", {"file_path": None, "webhook_url": object()}, True),
+        ("file", {"file_path": "synthetic-private-path"}, True),
+        ("file", {"file_path": ""}, False),
+        ("file", {"file_path": 1}, False),
+        ("webhook", {"webhook_url": "https://example.test/synthetic-secret"}, True),
+        ("webhook", {"webhook_url": "http://example.test/synthetic-secret"}, False),
+        ("webhook", {"webhook_url": "https://[synthetic-secret"}, False),
+        ("slack", {"slack_webhook_url": "https:///synthetic-secret"}, False),
+        ("slack", {"slack_webhook_url": 1}, False),
+        ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": "chat"}, True),
+        ("telegram", {"telegram_bot_token": " ", "telegram_chat_id": "chat"}, False),
+        ("telegram", {"telegram_bot_token": "synthetic-secret", "telegram_chat_id": 123}, False),
+    ])
+    def test_selected_fields_are_bounded_strings_and_values_are_not_rendered(self, channel, fields, valid):
+        result = output_sinks._check_output_sinks({"enable": True, "channels": [channel], **fields})
+        assert result[0] is valid
+        assert all(value not in result[1] for value in ("synthetic-secret", "synthetic-private-path", "example.test"))
+
+    def test_custom_registry_name_is_recognized_without_construction(self, monkeypatch):
+        class CustomSink:
+            def __init__(self):
+                pytest.fail("Preflight must not construct or send to a sink")
+
+        monkeypatch.setitem(output_sinks.OUTPUT_SINK_TYPES, "custom", CustomSink)
+        assert output_sinks._check_output_sinks({"enable": True, "channels": ["custom"]})[0] is True
+
+
 @pytest.fixture(autouse=True)
 def _reset_push_outputs():
     # These tests mutate the global settings singleton; restore to disabled afterwards

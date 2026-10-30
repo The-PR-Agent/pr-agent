@@ -3,13 +3,15 @@
 `pr-agent doctor` reports, without touching any git provider, whether the active
 configuration can actually reach a model: the model is set, its provider has a
 usable API key, and a one-token completion succeeds. The exit code is 0 only when
-every check passes, so CI setups can gate on it.
+every check passes, so CI setups can gate on it. Enabled output sinks receive an
+additional syntax check, without constructing sinks or probing their destinations.
 """
 
 import os
 
 from pr_agent.algo.ai_handlers.cloud_auth import DUMMY_LITELLM_API_KEY, PROVIDER_API_KEY_ENV_VARS
 from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
+from pr_agent.algo.output_sinks import _check_output_sinks
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import redact_credentials
 from pr_agent.log import get_logger
@@ -103,6 +105,13 @@ async def run_doctor_checks() -> int:
         _check_provider_key(handler, provider),
         await _check_model_ping(handler, model),
     ]
+    try:
+        sink_result = _check_output_sinks(get_settings().get("push_outputs", {}) or {})
+    except Exception:
+        # Settings operations can include secret-bearing values in their exceptions.
+        sink_result = False, "push_outputs configuration could not be checked"
+    if sink_result is not None:
+        results.append(sink_result)
 
     lines = []
     for ok, detail in results:
