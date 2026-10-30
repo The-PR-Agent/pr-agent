@@ -1130,6 +1130,29 @@ class TestCodeCommitProvider:
             annotation_line=4,
         )
 
+    def test_publish_code_suggestions_skips_an_inverted_range(self):
+        provider = object.__new__(CodeCommitProvider)
+        provider.repo_name = "source-repository"
+        provider.pr_num = 321
+        provider.codecommit_client = MagicMock()
+        provider._get_target_contexts_for_file = MagicMock(return_value=[{
+            "repository_name": "source-repository",
+            "destination_commit": "destination-commit-1",
+            "source_commit": "source-commit-1",
+        }])
+
+        result = provider.publish_code_suggestions([
+            {
+                "body": "Use a constant",
+                "relevant_file": "one.py",
+                "relevant_lines_start": 5,
+                "relevant_lines_end": 3,
+            }
+        ])
+
+        assert result is True
+        provider.codecommit_client.publish_comment.assert_not_called()
+
     def test_publish_code_suggestions_continues_after_one_failure(self):
         provider = object.__new__(CodeCommitProvider)
         provider.repo_name = "source-repository"

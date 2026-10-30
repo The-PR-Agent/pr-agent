@@ -180,6 +180,10 @@ class LocalGitProvider(GitProvider):
         readable section per suggestion. Returns True so the caller does not fall back
         to publishing suggestions one by one.
         """
+        code_suggestions = [
+            suggestion for suggestion in code_suggestions
+            if self._is_valid_code_suggestion(suggestion)
+        ]
         sections = []
         for suggestion in code_suggestions:
             relevant_file = suggestion.get('relevant_file', '').strip()

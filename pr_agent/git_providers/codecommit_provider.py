@@ -349,6 +349,8 @@ class CodeCommitProvider(GitProvider):
                     f"Skipping code suggestion #{counter}: "
                     f"Each suggestion must have 'body', 'relevant_file', 'relevant_lines_start' keys")
                 continue
+            if not self._is_valid_code_suggestion(suggestion):
+                continue
 
             publishable_count += 1
             prepared_body = self._prepare_comment_body(suggestion["body"])

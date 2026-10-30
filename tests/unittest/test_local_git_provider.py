@@ -287,6 +287,25 @@ def test_publish_code_suggestions_writes_improve_file(tmp_path):
     assert "add guard" in content
 
 
+def test_publish_code_suggestions_skips_an_inverted_range(tmp_path):
+    improve_path = tmp_path / "improve.md"
+    provider = object.__new__(LocalGitProvider)
+    provider.improve_path = improve_path
+
+    code_suggestions = [
+        {"body": "**Suggestion:** keep this",
+         "relevant_file": "a.py", "relevant_lines_start": 3, "relevant_lines_end": 5},
+        {"body": "**Suggestion:** drop this",
+         "relevant_file": "b.py", "relevant_lines_start": 5, "relevant_lines_end": 3},
+    ]
+
+    assert provider.publish_code_suggestions(code_suggestions) is True
+    content = improve_path.read_text()
+    assert "keep this" in content
+    assert "drop this" not in content
+    assert "### b.py" not in content
+
+
 def test_publish_code_suggestions_no_suggestions(tmp_path):
     improve_path = tmp_path / "improve.md"
     provider = object.__new__(LocalGitProvider)

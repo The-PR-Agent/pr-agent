@@ -1502,6 +1502,14 @@ class TestGiteaProviderInlineCommentStatus:
         assert result is True
         assert provider.repo_api.create_inline_comment.call_count == 1
 
+    def test_publish_code_suggestions_skips_an_inverted_range(self):
+        provider = self._provider(create_inline_comment_result=True)
+        suggestions = [{"body": "**Suggestion:** fix it", "relevant_file": "a.py",
+                        "relevant_lines_start": 5, "relevant_lines_end": 3}]
+
+        assert provider.publish_code_suggestions(suggestions) is True
+        provider.repo_api.create_inline_comment.assert_not_called()
+
     def test_publish_code_suggestions_reports_failure(self):
         provider = self._provider(create_inline_comment_result=False)
         suggestions = [{"body": "**Suggestion:** fix it", "relevant_file": "a.py",

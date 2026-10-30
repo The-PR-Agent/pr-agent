@@ -381,6 +381,23 @@ def test_publish_code_suggestions_renders_to_stdout(cfg, capsys):
     )
 
 
+def test_publish_code_suggestions_skips_an_inverted_range(cfg, capsys):
+    cfg("plain_diff.content", DIFF)
+    cfg("plain_diff.output_path", None)
+    provider = PlainDiffGitProvider(None)
+    suggestions = [
+        {"body": "**Suggestion:** keep this", "relevant_file": "foo.py",
+         "relevant_lines_start": 2, "relevant_lines_end": 2},
+        {"body": "**Suggestion:** drop this", "relevant_file": "foo.py",
+         "relevant_lines_start": 5, "relevant_lines_end": 3},
+    ]
+
+    assert provider.publish_code_suggestions(suggestions) is True
+    out = capsys.readouterr().out
+    assert "keep this" in out
+    assert "drop this" not in out
+
+
 def test_publish_code_suggestions_empty_is_noop(cfg, capsys):
     cfg("plain_diff.content", DIFF)
     cfg("plain_diff.output_path", None)

@@ -1159,6 +1159,22 @@ def test_publish_code_suggestions_applies_a_file_inside_the_checkout(tmp_path, m
     assert applied and applied[0][0].name == "app.py"
 
 
+def test_publish_code_suggestions_skips_an_inverted_range(tmp_path, monkeypatch):
+    provider = _provider_for_suggestions(tmp_path)
+    applied = []
+    monkeypatch.setattr(gerrit_provider, "add_suggestion", lambda *args, **kwargs: applied.append(args))
+    monkeypatch.setattr(
+        gerrit_provider, "upload_patch",
+        lambda *args, **kwargs: pytest.fail("an inverted range must not upload a patch"),
+    )
+    suggestion = _suggestion("app.py")
+    suggestion["relevant_lines_start"] = 5
+    suggestion["relevant_lines_end"] = 3
+
+    assert provider.publish_code_suggestions([suggestion]) is True
+    assert applied == []
+
+
 def test_publish_code_suggestions_skips_a_symlink(tmp_path, monkeypatch):
     provider = _provider_for_suggestions(tmp_path)
     link = tmp_path / "linked.py"

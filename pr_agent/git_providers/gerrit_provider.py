@@ -493,6 +493,8 @@ class GerritProvider(GitProvider):
             if not isinstance(suggestion, dict) or not isinstance(suggestion.get("relevant_file"), str):
                 get_logger().warning("Skipping malformed suggestion: missing or invalid 'relevant_file'")
                 continue
+            if not self._is_valid_code_suggestion(suggestion):
+                continue
             # Sanitize file path to prevent directory traversal.
             # resolve() follows symlinks, so a tracked symlink into .git/
             # would pass relative_to() and then be written by add_suggestion.

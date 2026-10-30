@@ -103,3 +103,36 @@ def test_publish_error_is_reported_at_default_verbosity(provider_type: type[GitP
         settings.set("config.verbosity_level", original)
 
     assert "network down" in buffer.getvalue()
+
+
+@pytest.mark.parametrize("start", [0, -1, -5, None])
+def test_is_valid_code_suggestion_rejects_starts_below_one(start):
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider._log_invalid_code_suggestion = MagicMock()
+    suggestion = _suggestion()
+    suggestion["relevant_lines_start"] = start
+
+    assert provider._is_valid_code_suggestion(suggestion) is False
+    provider._log_invalid_code_suggestion.assert_called_once_with(
+        f"Failed to publish code suggestion, relevant_lines_start is {start}"
+    )
+
+
+def test_is_valid_code_suggestion_rejects_an_inverted_range():
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider._log_invalid_code_suggestion = MagicMock()
+
+    assert provider._is_valid_code_suggestion(_suggestion(start=5, end=3)) is False
+    provider._log_invalid_code_suggestion.assert_called_once_with(
+        "Failed to publish code suggestion, relevant_lines_end is 3 and relevant_lines_start is 5"
+    )
+
+
+def test_is_valid_code_suggestion_defaults_a_missing_end_to_the_start():
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider._log_invalid_code_suggestion = MagicMock()
+    suggestion = _suggestion()
+    suggestion.pop("relevant_lines_end")
+
+    assert provider._is_valid_code_suggestion(suggestion) is True
+    provider._log_invalid_code_suggestion.assert_not_called()

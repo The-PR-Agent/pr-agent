@@ -214,6 +214,10 @@ class PlainDiffGitProvider(GitProvider):
     def publish_code_suggestions_artifact(
             self, code_suggestions: list, artifact_footer: str = "",
             no_suggestions_message: str = "No code suggestions found for the PR.") -> bool:
+        code_suggestions = [
+            suggestion for suggestion in code_suggestions
+            if self._is_valid_code_suggestion(suggestion)
+        ]
         if not code_suggestions:
             content = f"{format_pr_code_suggestions_header()}\n\n{no_suggestions_message}{artifact_footer}"
             if get_settings().get("config.output_run_details", False):
