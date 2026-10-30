@@ -1220,7 +1220,13 @@ class GitProvider(ABC):
 
     #### labels operations ####
     @abstractmethod
-    def publish_labels(self, labels):
+    def publish_labels(self, labels) -> bool | None:
+        """Acknowledge label publication without guaranteeing remote label equality.
+
+        Return True on normal completion or a provider-specific no-op, and exact False
+        for a known normalized failure. Legacy/custom providers may return None;
+        callers must check ``result is False`` to detect an acknowledged failure.
+        """
         pass
 
     @abstractmethod

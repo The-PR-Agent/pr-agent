@@ -301,6 +301,80 @@ def test_gitea_publish_description_raises_when_update_returns_no_response():
         provider.publish_description("AI title", "Updated description")
 
 
+class TestGiteaProviderLabels:
+    @pytest.fixture
+    def provider(self):
+        provider = GiteaProvider.__new__(GiteaProvider)
+        provider.repo_api = MagicMock()
+        provider.owner = "owner"
+        provider.repo = "repo"
+        provider.pr_number = 1
+        provider.issue_number = 2
+        provider.enabled_pr = True
+        provider.pr = SimpleNamespace(labels=[])
+        provider.logger = MagicMock()
+        return provider
+
+    def test_publish_labels_empty_input_is_a_noop(self, provider):
+        assert provider.publish_labels([]) is True
+        provider.repo_api.add_labels.assert_not_called()
+
+    @pytest.mark.parametrize("response", [[SimpleNamespace(name="Bug fix")], [], None])
+    def test_publish_labels_acknowledges_nonraising_sdk_completion(self, provider, response):
+        provider.repo_api.add_labels.return_value = response
+
+        assert provider.publish_labels(["Bug fix"]) is True
+
+        provider.repo_api.add_labels.assert_called_once_with(
+            owner="owner", repo="repo", issue_number=1, labels=["Bug fix"],
+        )
+
+    def test_publish_labels_reports_only_known_sdk_failure(self, provider):
+        provider.repo_api.add_labels.side_effect = ApiException(status=403, reason="rejected")
+
+        assert provider.publish_labels(["Bug fix"]) is False
+        provider.repo_api.add_labels.assert_called_once()
+
+    def test_publish_labels_preserves_unrelated_errors(self, provider):
+        provider.repo_api.add_labels.side_effect = RuntimeError("unexpected failure")
+
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            provider.publish_labels(["Bug fix"])
+
+    @pytest.mark.parametrize("update,payload,expected", [
+        (False, [], []),
+        (True, [SimpleNamespace(name="triaged")], ["triaged"]),
+        (True, [], []),
+        (False, None, None),
+        (True, None, None),
+        (True, "not a list", None),
+        (True, [SimpleNamespace()], None),
+        (False, [SimpleNamespace(name=None)], None),
+        (True, [SimpleNamespace(name="")], None),
+        (True, [SimpleNamespace(name=7)], None),
+    ])
+    def test_get_pr_labels_validates_returned_and_cached_payloads(self, provider, update, payload, expected):
+        provider.pr.labels = payload
+        provider.repo_api.get_issue_labels.return_value = payload
+
+        assert provider.get_pr_labels(update=update) == expected
+        if update:
+            provider.repo_api.get_issue_labels.assert_called_once_with(owner="owner", repo="repo", issue_number=1)
+        else:
+            provider.repo_api.get_issue_labels.assert_not_called()
+
+    def test_get_pr_labels_reports_known_sdk_failure(self, provider):
+        provider.repo_api.get_issue_labels.side_effect = ApiException(status=503, reason="unavailable")
+
+        assert provider.get_pr_labels(update=True) is None
+
+    def test_get_pr_labels_preserves_unrelated_errors(self, provider):
+        provider.repo_api.get_issue_labels.side_effect = RuntimeError("unexpected failure")
+
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            provider.get_pr_labels(update=True)
+
+
 def test_gitea_get_issue_comments_returns_empty_list_when_no_comments():
     provider = GiteaProvider.__new__(GiteaProvider)
     provider.enabled_issue = False

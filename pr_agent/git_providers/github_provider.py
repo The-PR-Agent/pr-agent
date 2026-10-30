@@ -2134,13 +2134,15 @@ class GithubProvider(GitProvider):
             cache[key] = content
         return content
 
-    def publish_labels(self, pr_types):
+    def publish_labels(self, pr_types) -> bool:
         try:
             headers, data = self.pr._requester.requestJsonAndCheck(
                 "PUT", f"{self.pr.issue_url}/labels", input=pr_types
             )
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+            return False
+        return True
 
     def get_pr_labels(self, update=False):
         # A failed read must never look like "this PR has no labels": publish_labels issues a PUT

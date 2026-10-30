@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from github import GithubException
+from requests.exceptions import RequestException
 
 from pr_agent.git_providers.github_provider import GithubProvider
 
@@ -40,7 +41,8 @@ def _make_provider(requester):
     return provider
 
 
-def test_publish_labels_sends_label_names_as_strings():
+@pytest.mark.parametrize("labels", [["Review effort 3/5", "Enhancement"], []])
+def test_publish_labels_sends_label_names_as_strings(labels):
     """Send an array of label names, not {\"name\", \"color\"} objects.
 
     The GitHub set-labels endpoint rejects an object payload with a 422 that the
@@ -49,15 +51,23 @@ def test_publish_labels_sends_label_names_as_strings():
     requester = _FakeRequester()
     provider = _make_provider(requester)
 
-    provider.publish_labels(["Review effort 3/5", "Enhancement"])
+    assert provider.publish_labels(labels) is True
 
     assert requester.calls == [
         (
             "PUT",
             "https://api.github.com/repos/owner/repo/issues/42/labels",
-            ["Review effort 3/5", "Enhancement"],
+            labels,
         )
     ]
+
+
+@pytest.mark.parametrize("error", [GithubException(422, {"message": "rejected"}, {}), RequestException("network blip")])
+def test_publish_labels_reports_known_write_failure(error):
+    requester = _FakeRequester([error])
+
+    assert _make_provider(requester).publish_labels(["Bug fix"]) is False
+    assert len(requester.calls) == 1
 
 
 def test_publish_labels_keeps_model_label_names_untouched():
