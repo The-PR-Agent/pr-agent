@@ -21,9 +21,9 @@ from tests.unittest._reaction_helpers import _RecordingProvider
 @pytest.fixture
 def reactions(monkeypatch):
     def _set(start="eyes", success="", failure=""):
-        monkeypatch.setattr(get_settings().config, "reaction_on_start", start, raising=False)
-        monkeypatch.setattr(get_settings().config, "reaction_on_success", success, raising=False)
-        monkeypatch.setattr(get_settings().config, "reaction_on_failure", failure, raising=False)
+        monkeypatch.setitem(get_settings().config, "reaction_on_start", start)
+        monkeypatch.setitem(get_settings().config, "reaction_on_success", success)
+        monkeypatch.setitem(get_settings().config, "reaction_on_failure", failure)
     _set()
     return _set
 
@@ -330,7 +330,7 @@ async def test_a_swallowed_tool_failure_gets_a_failure_outcome(
     import pr_agent.agent.pr_agent as pr_agent_module
 
     reactions(success="hooray", failure="confused")
-    monkeypatch.setattr(get_settings().config, "propagate_tool_errors", False, raising=False)
+    monkeypatch.setitem(get_settings().config, "propagate_tool_errors", False)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
@@ -374,7 +374,7 @@ async def test_incomplete_files_constructor_failure_is_visible_and_marked_failed
     import pr_agent.agent.pr_agent as pr_agent_module
 
     reactions(failure="confused")
-    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
@@ -417,8 +417,8 @@ async def test_documentation_and_label_failures_get_failure_outcomes(
 
     reactions(success="hooray", failure="confused")
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "propagate_tool_errors", False, raising=False)
-    monkeypatch.setattr(settings.config, "publish_output", False, raising=False)
+    monkeypatch.setitem(settings.config, "propagate_tool_errors", False)
+    monkeypatch.setitem(settings.config, "publish_output", False)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))
@@ -454,7 +454,7 @@ async def test_contextless_propagation_override_isolated_from_concurrent_request
     import pr_agent.agent.pr_agent as pr_agent_module
 
     assert get_settings() is global_settings
-    monkeypatch.setattr(global_settings.config, "propagate_tool_errors", False, raising=False)
+    monkeypatch.setitem(global_settings.config, "propagate_tool_errors", False)
     monkeypatch.setattr(pr_agent_module, "enforce_request_policy", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _pr_url: None)
     monkeypatch.setattr(pr_agent_module.CliArgs, "validate_user_args", lambda _args: (True, None))

@@ -57,9 +57,9 @@ class _PersistentCommentProvider:
 
 def test_invalid_structured_finding_fails_closed(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_comment", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_finding_state", True, raising=False)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_finding_state", True)
 
     provider = MagicMock()
     provider.is_supported.return_value = True
@@ -183,9 +183,9 @@ def test_stateful_persistent_update_still_creates_first_comment():
 
 def test_stateful_mode_is_enabled_for_generic_persistent_publisher(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_comment", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_finding_state", True, raising=False)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_finding_state", True)
     provider = MagicMock()
     provider.publish_persistent_comment = GitProvider.publish_persistent_comment.__get__(provider, type(provider))
     provider.is_supported.return_value = True

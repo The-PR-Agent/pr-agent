@@ -1065,8 +1065,8 @@ def test_output_token_reserve_keeps_the_legacy_minimum(default, resolved):
 
 @pytest.mark.parametrize("packing_path", ["single", "multi", "multiple_patchs", "prepared"])
 def test_small_output_reserve_preserves_legacy_packing(monkeypatch, packing_path):
-    monkeypatch.setattr(get_settings().config, "patch_extra_lines_before", 0)
-    monkeypatch.setattr(get_settings().config, "patch_extra_lines_after", 0)
+    monkeypatch.setitem(get_settings().config, "patch_extra_lines_before", 0)
+    monkeypatch.setitem(get_settings().config, "patch_extra_lines_after", 0)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 6_500)
 
@@ -1092,8 +1092,8 @@ def test_small_output_reserve_preserves_legacy_packing(monkeypatch, packing_path
 
 @pytest.mark.parametrize("packing_path", ["get_pr_diff", "get_pr_diff_multiple_patchs"])
 def test_compressed_paths_keep_distinct_soft_and_hard_floors(monkeypatch, packing_path):
-    monkeypatch.setattr(get_settings().config, "patch_extra_lines_before", 0)
-    monkeypatch.setattr(get_settings().config, "patch_extra_lines_after", 0)
+    monkeypatch.setitem(get_settings().config, "patch_extra_lines_before", 0)
+    monkeypatch.setitem(get_settings().config, "patch_extra_lines_after", 0)
     monkeypatch.setattr(pr_processing, "sort_files_by_main_languages", lambda languages, files: [{"files": files}])
     monkeypatch.setattr(token_budget, "get_max_tokens", lambda model, ignore_max_model_tokens=False: 6_500)
     original_compressed_diff = pr_processing.pr_generate_compressed_diff

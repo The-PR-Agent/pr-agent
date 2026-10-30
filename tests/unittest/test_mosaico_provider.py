@@ -237,26 +237,26 @@ class TestDiffInputProviderBasics:
         original = p.diff_files
         original_elements = list(original)
         contents = [(f.filename, f.base_file, f.head_file, f.patch) for f in original]
-        monkeypatch.setattr(global_settings.ignore, "glob", ["generated/**"])
-        monkeypatch.setattr(global_settings.ignore, "regex", [])
-        monkeypatch.setattr(global_settings.config, "ignore_language_framework", [])
+        monkeypatch.setitem(global_settings.ignore, "glob", ["generated/**"])
+        monkeypatch.setitem(global_settings.ignore, "regex", [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", [])
 
         assert p.get_diff_files() is original
         assert p.pr.diff_files is original
         assert p.get_filtered_diff_file_names() == ["yarn.lock"]
         assert p.get_diff_files() is original
         assert p.get_filtered_diff_file_names() == ["yarn.lock"]
-        monkeypatch.setattr(global_settings.ignore, "glob", [])
-        monkeypatch.setattr(global_settings.ignore, "regex", ["["])
+        monkeypatch.setitem(global_settings.ignore, "glob", [])
+        monkeypatch.setitem(global_settings.ignore, "regex", ["["])
         assert p.get_diff_files() is original
         assert p.get_filtered_diff_file_names() == []
-        monkeypatch.setattr(global_settings.ignore, "regex", [])
-        monkeypatch.setattr(global_settings.ignore, "glob", ["*.lock"])
+        monkeypatch.setitem(global_settings.ignore, "regex", [])
+        monkeypatch.setitem(global_settings.ignore, "glob", ["*.lock"])
         assert p.get_diff_files() is original
         assert p.get_filtered_diff_file_names() == []
 
-        monkeypatch.setattr(global_settings.ignore, "glob", [])
-        monkeypatch.setattr(global_settings.config, "ignore_language_framework", [42])
+        monkeypatch.setitem(global_settings.ignore, "glob", [])
+        monkeypatch.setitem(global_settings.config, "ignore_language_framework", [42])
         assert p.get_diff_files() is original
         assert p.get_filtered_diff_file_names() == []
 

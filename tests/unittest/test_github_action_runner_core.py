@@ -88,7 +88,7 @@ async def test_direct_auto_tool_publishes_and_preserves_error_when_comment_decod
     provider = Mock()
     provider.get_issue_comments_newest_first.return_value = [object()]
     provider._get_comment_body.side_effect = RuntimeError("comment decoding failed")
-    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
 
     class IncompleteTool:

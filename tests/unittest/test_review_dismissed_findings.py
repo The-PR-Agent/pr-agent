@@ -156,9 +156,9 @@ def test_dismissed_finding_missing_from_the_state_is_rendered_within_the_budget(
 
 def test_previous_findings_context_feeds_human_resolved_gitlab_threads(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings.config, "publish_output", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_comment", True)
-    monkeypatch.setattr(settings.pr_reviewer, "persistent_finding_state", True)
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_comment", True)
+    monkeypatch.setitem(settings.pr_reviewer, "persistent_finding_state", True)
     state = reconcile_review_findings(
         None, [{"path": "app.py", "body": _KEY_ISSUE_BODY, "line_start": 2, "line_end": 2}],
         allow_resolution=False, head_sha="head-1").state

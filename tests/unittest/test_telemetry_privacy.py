@@ -292,7 +292,7 @@ async def test_incomplete_files_error_keeps_bounded_telemetry_when_notification_
                 f"failed to fetch {SENTINEL_URL}"
             )
 
-    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
     monkeypatch.setitem(pr_agent_module.command2class, "customcmd", IncompleteTool)
 
@@ -322,7 +322,7 @@ async def test_incomplete_files_error_keeps_primary_telemetry_when_comment_decod
         def __init__(self, pr_url, ai_handler, args):
             raise pr_agent_module.IncompletePullRequestFilesError("primary failure")
 
-    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
     monkeypatch.setitem(pr_agent_module.command2class, "customcmd", IncompleteTool)
 
