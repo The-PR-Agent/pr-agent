@@ -139,7 +139,9 @@ class GiteaProvider(GitProvider):
         self.last_commit = None
         self.last_commit_id = None
 
-        if "pulls" in url:
+        url_path_parts = self._url_path_parts(url)
+        resource = url_path_parts[2] if len(url_path_parts) > 2 else ""
+        if resource == "pulls":
             self.pr_url = url
             self.__set_repo_and_owner_from_pr()
             self.enabled_pr = True
@@ -153,7 +155,7 @@ class GiteaProvider(GitProvider):
             self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha or ""
             self.base_ref = self.pr.base.ref or ""
-        elif "issues" in url:
+        elif resource == "issues":
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
             self.enabled_issue = True
@@ -797,24 +799,29 @@ class GiteaProvider(GitProvider):
 
         return self.pr.body or ""
 
-    def get_pr_labels(self,update=False) -> list[str]:
+    def get_pr_labels(self, update=False) -> list[str] | None:
         """Get labels assigned to the PR"""
-        if not update:
-            if not self.pr.labels:
-                self.logger.error("Failed to get PR labels")
-                return []
-            return [label.name for label in self.pr.labels]
+        if update:
+            try:
+                labels = self.repo_api.get_issue_labels(
+                    owner=self.owner,
+                    repo=self.repo,
+                    issue_number=self.pr_number
+                )
+            except ApiException as e:
+                self.logger.error(f"Failed to get PR labels: {e}")
+                return None
+        else:
+            labels = self.pr.labels
 
-        labels = self.repo_api.get_issue_labels(
-            owner=self.owner,
-            repo=self.repo,
-            issue_number=self.pr_number
-        )
-        if not labels:
-            self.logger.error("Failed to get PR labels")
-            return []
-
-        return [label.name for label in labels]
+        if not isinstance(labels, list):
+            self.logger.error("Failed to read PR labels: expected a list")
+            return None
+        names = [getattr(label, "name", None) for label in labels]
+        if not all(isinstance(name, str) and name for name in names):
+            self.logger.error("Failed to read PR labels: expected non-empty label names")
+            return None
+        return names
 
     def get_repo_settings(self):
         """Get repository settings (org/global first, then repo-local)."""
@@ -912,21 +919,26 @@ class GiteaProvider(GitProvider):
                 pr_number=self.pr_number
             )
 
-    def publish_labels(self, labels: list[int]) -> None:
+    def publish_labels(self, labels: list[int]) -> bool:
         """Publish labels to the PR"""
         if not labels:
             self.logger.error("No labels provided to publish")
-            return None
+            return True
 
-        response = self.repo_api.add_labels(
-            owner=self.owner,
-            repo=self.repo,
-            issue_number=self.pr_number if self.enabled_pr else self.issue_number,
-            labels=labels
-        )
+        try:
+            response = self.repo_api.add_labels(
+                owner=self.owner,
+                repo=self.repo,
+                issue_number=self.pr_number if self.enabled_pr else self.issue_number,
+                labels=labels
+            )
+        except ApiException as e:
+            self.logger.error(f"Failed to publish labels: {e}")
+            return False
 
         if response:
             self.logger.info("Labels added successfully")
+        return True
 
     def remove_comment(self, comment) -> None:
         """Remove a specific comment"""

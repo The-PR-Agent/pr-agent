@@ -4,6 +4,7 @@ import difflib
 import hashlib
 import json
 import os
+import random
 import re
 import time
 import traceback
@@ -15,9 +16,9 @@ from github.GithubObject import GithubObject
 from github.Issue import Issue
 from jwt.exceptions import PyJWTError
 from requests.exceptions import RequestException
-from retry.api import retry_call
 from starlette_context import context
 from starlette_context.errors import ContextDoesNotExistError
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, stop_never
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 
@@ -26,7 +27,7 @@ from ..algo.comment_identity import (
     get_pr_review_comment_identifiers,
 )
 from ..algo.file_filter import filter_ignored
-from ..algo.git_patch_processing import extract_hunk_headers
+from ..algo.git_patch_processing import count_patch_lines, extract_hunk_headers
 from ..algo.inline_comment_dedup import (
     KEY_ISSUE_LOCATION_MARKER_RE,
     body_fingerprint,
@@ -143,7 +144,8 @@ class GithubProvider(GitProvider):
         self._check_run_base_summaries: dict = {}
         self._check_runs_progress_blocked: set = set()
         self._published_inline_comment_bodies: list[str] = []
-        if pr_url and 'pull' in pr_url:
+        resource = self._get_url_resource(pr_url) if pr_url else ""
+        if resource in ('pull', 'pulls'):
             self.set_pr(pr_url)
             self.pr_commits = list(self.pr.get_commits())
             if self.pr_commits:
@@ -152,9 +154,9 @@ class GithubProvider(GitProvider):
                 self.last_commit_id = self._get_repo().get_commit(self.pr.head.sha)
             # pr_url for github actions can be as api.github.com, so we need to get the url from the pr object
             self.pr_url = self.get_pr_url()
-        elif pr_url and 'issue' in pr_url: #url is an issue
+        elif resource == 'issues':
             self.issue_main = self._get_issue_handle(pr_url)
-        else: #Instantiated the provider without a PR / Issue
+        else:
             self.pr_commits = None
 
     def _get_issue_handle(self, issue_url) -> Issue | None:
@@ -216,12 +218,24 @@ class GithubProvider(GitProvider):
     def supports_issue_url_tickets(self) -> bool:
         return True
 
+    @staticmethod
+    def _get_url_resource(url: str) -> str:
+        parsed_url = urlparse(url)
+        path = parsed_url.path
+        is_api_url = parsed_url.netloc == "api.github.com" or path.startswith("/api/v3/")
+        if path.startswith("/api/v3/"):
+            path = path[len("/api/v3"):]
+        path_parts = path.strip('/').split('/')
+        resource_index = 3 if is_api_url else 2
+        return path_parts[resource_index] if len(path_parts) > resource_index else ""
+
     def _get_owner_and_repo_path(self, given_url: str) -> str:
         try:
             repo_path = None
-            if 'issues' in given_url:
+            resource = self._get_url_resource(given_url)
+            if resource == 'issues':
                 repo_path, _ = self._parse_issue_url(given_url)
-            elif 'pull' in given_url:
+            elif resource in ('pull', 'pulls'):
                 repo_path, _ = self._parse_pr_url(given_url)
             elif given_url.endswith('.git'):
                 parsed_url = urlparse(given_url)
@@ -483,8 +497,44 @@ class GithubProvider(GitProvider):
         """
         # the retry settings are read at call time rather than in a decorator, so that importing this module
         # does not require a [github] settings section (issue #2427)
-        return retry_call(self._get_diff_files, exceptions=RateLimitExceeded,
-                          tries=get_settings().get("GITHUB.RATELIMIT_RETRIES", 5), delay=2, backoff=2, jitter=(1, 3))
+        tries = get_settings().get("GITHUB.RATELIMIT_RETRIES", 5)
+        invalid_tries = isinstance(tries, bool) or (isinstance(tries, float) and not tries.is_integer())
+        if not invalid_tries and not isinstance(tries, (int, float)):
+            try:
+                tries = int(tries)
+            except (TypeError, ValueError, OverflowError):
+                invalid_tries = True
+        if invalid_tries:
+            get_logger().warning("Invalid GITHUB.RATELIMIT_RETRIES; using default 5 attempts.")
+            tries = 5
+        if tries == 0:
+            return None
+
+        delay = 2
+
+        def log_before_retry(retry_state):
+            get_logger().warning(f"{retry_state.outcome.exception()}, retrying in {delay} seconds...")
+
+        def sleep_with_backoff(seconds):
+            nonlocal delay
+            time.sleep(seconds)
+            # Preserve cumulative jitter, drawn after each sleep even if the next attempt succeeds.
+            delay = delay * 2 + random.uniform(1, 3)
+
+        for attempt in Retrying(
+            retry=retry_if_exception_type(RateLimitExceeded),
+            stop=stop_after_attempt(tries) if tries > 0 else stop_never,
+            wait=lambda _retry_state: delay,
+            before_sleep=log_before_retry,
+            sleep=sleep_with_backoff,
+            reraise=True,
+        ):
+            try:
+                return self._get_diff_files()
+            except RateLimitExceeded:
+                # Keep unrelated exceptions (including Tenacity's TryAgain) outside the retry controller.
+                with attempt:
+                    raise
 
     def _get_diff_files(self) -> list[FilePatchInfo]:
         try:
@@ -530,6 +580,13 @@ class GithubProvider(GitProvider):
                     continue
 
                 patch = file.patch
+                incremental_active = bool(self.incremental.is_incremental and self.unreviewed_files_map)
+                reconstruct_patch = incremental_active or not patch
+                content_fetch_failed = False
+                # Allow files changed since the last review to be absent at that older snapshot.
+                read_options = (
+                    {"required": True, "missing_is_error": not incremental_active} if reconstruct_patch else {}
+                )
                 is_renamed = file.status == "renamed" and getattr(file, "previous_filename", None)
                 old_filename = file.previous_filename if is_renamed else None
                 if is_close_to_rate_limit:
@@ -550,13 +607,11 @@ class GithubProvider(GitProvider):
                     else:
                         # communication with GitHub
                         new_file_content_str = self._get_pr_file_content(
-                            file, getattr(self.incremental, "head_sha", None) or self.pr.head.sha)
+                            file, getattr(self.incremental, "head_sha", None) or self.pr.head.sha, **read_options)
 
                     if self.incremental.is_incremental and self.unreviewed_files_map:
                         original_file_content_str = self._get_pr_file_content(
-                            file, self.incremental.last_seen_commit_sha, path=old_filename)
-                        patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
-                        self.unreviewed_files_map[file.filename] = patch
+                            file, self.incremental.last_seen_commit_sha, path=old_filename, **read_options)
                     else:
                         if avoid_load or file.status == "added":
                             original_file_content_str = ""
@@ -573,9 +628,18 @@ class GithubProvider(GitProvider):
                                     get_logger().info(
                                         f"Using merge base commit {merge_base_commit.sha} instead of base commit ")
                             original_file_content_str = self._get_pr_file_content(
-                                file, merge_base_commit.sha, path=old_filename)
-                        if not patch:
-                            patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
+                                file, merge_base_commit.sha, path=old_filename, **read_options)
+
+                if reconstruct_patch:
+                    if original_file_content_str is None or new_file_content_str is None:
+                        original_file_content_str = new_file_content_str = patch = ""
+                        content_fetch_failed = True
+                        get_logger().warning(
+                            f"Cannot reconstruct GitHub patch for {file.filename}: content read failed")
+                    else:
+                        patch = load_large_diff(file.filename, new_file_content_str, original_file_content_str)
+                    if incremental_active:
+                        self.unreviewed_files_map[file.filename] = patch
 
 
                 if file.status == 'added':
@@ -595,15 +659,14 @@ class GithubProvider(GitProvider):
                     num_plus_lines = file.additions
                     num_minus_lines = file.deletions
                 else:
-                    patch_lines = patch.splitlines(keepends=True)
-                    num_plus_lines = len([line for line in patch_lines if line.startswith('+')])
-                    num_minus_lines = len([line for line in patch_lines if line.startswith('-')])
+                    num_plus_lines, num_minus_lines = count_patch_lines(patch)
 
                 file_patch_canonical_structure = FilePatchInfo(original_file_content_str, new_file_content_str, patch,
                                                                file.filename, edit_type=edit_type,
                                                                old_filename=old_filename,
                                                                num_plus_lines=num_plus_lines,
-                                                               num_minus_lines=num_minus_lines,)
+                                                               num_minus_lines=num_minus_lines,
+                                                               content_fetch_failed=content_fetch_failed,)
                 diff_files.append(file_patch_canonical_structure)
             if invalid_files_names:
                 get_logger().info(f"Filtered out files with invalid extensions: {invalid_files_names}")
@@ -2008,7 +2071,9 @@ class GithubProvider(GitProvider):
     def _get_repo(self):
         if hasattr(self, 'repo_obj') and \
                 hasattr(self.repo_obj, 'full_name') and \
-                self.repo_obj.full_name == self.repo:
+                isinstance(self.repo_obj.full_name, str) and \
+                isinstance(self.repo, str) and \
+                self.repo_obj.full_name.lower() == self.repo.lower():
             return self.repo_obj
         else:
             self.repo_obj = self.github_client.get_repo(self.repo)
@@ -2018,7 +2083,8 @@ class GithubProvider(GitProvider):
     def _get_pr(self):
         return self._get_repo().get_pull(self.pr_num)
 
-    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False) -> str:
+    def get_pr_file_content(self, file_path: str, branch: str, propagate_errors: bool = False,
+                            *, missing_is_error: bool = False) -> str:
         try:
             file_content_str = str(
                 self._get_repo()
@@ -2026,7 +2092,7 @@ class GithubProvider(GitProvider):
                 .decoded_content.decode()
             )
         except GithubException as e:
-            if e.status == 404:
+            if e.status == 404 and not missing_is_error:
                 return ""
             if propagate_errors:
                 raise
@@ -2099,7 +2165,8 @@ class GithubProvider(GitProvider):
             return False
         return head_name.casefold() == base_name.casefold()
 
-    def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None) -> str:
+    def _get_pr_file_content(self, file: FilePatchInfo, sha: str, path: str = None,
+                             *, required: bool = False, missing_is_error: bool = False) -> str | None:
         file_path = path or file.filename
         cache = getattr(self, "_revision_file_contents", None)
         if cache is None:
@@ -2107,18 +2174,26 @@ class GithubProvider(GitProvider):
         key = (self.repo, sha, file_path)
         if key in cache:
             return cache[key]
-        content = self.get_pr_file_content(file_path, sha)
+        read_options = {"propagate_errors": True, "missing_is_error": missing_is_error} if required else {}
+        try:
+            content = self.get_pr_file_content(file_path, sha, **read_options)
+        except (GithubException, RequestException, UnicodeDecodeError, binascii.Error, AssertionError, AttributeError):
+            if required:
+                return None
+            raise
         if content:
             cache[key] = content
         return content
 
-    def publish_labels(self, pr_types):
+    def publish_labels(self, pr_types) -> bool:
         try:
             headers, data = self.pr._requester.requestJsonAndCheck(
                 "PUT", f"{self.pr.issue_url}/labels", input=pr_types
             )
         except (GithubException, RequestException) as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+            return False
+        return True
 
     def get_pr_labels(self, update=False):
         # A failed read must never look like "this PR has no labels": publish_labels issues a PUT

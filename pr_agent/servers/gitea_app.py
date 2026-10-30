@@ -16,6 +16,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
+    auto_feedback_disabled,
     get_pr_commands,
     is_command_comment,
     push_trigger_slot,
@@ -146,8 +147,7 @@ async def handle_comment_event(body: dict[str, Any], event: str, action: str, ag
     await agent.handle_request(pr_url, comment_body)
 
 async def _perform_commands_gitea(commands_conf: str, agent: PRAgent, body: dict, api_url: str):
-    if (commands_conf == "pr_commands"
-            and get_settings().config.disable_auto_feedback):  # auto commands for PR, and auto feedback is disabled
+    if auto_feedback_disabled():  # auto commands, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     commands = (

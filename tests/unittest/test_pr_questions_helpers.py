@@ -1507,7 +1507,6 @@ async def test_line_question_only_reads_diff_when_hunk_is_missing(
                             MagicMock(side_effect=TypeError("invalid extension map")))
 
     monkeypatch.setattr(plq, "get_git_provider", lambda: lambda _url: provider)
-    monkeypatch.setattr(plq, "TokenHandler", lambda *_args, **_kwargs: MagicMock())
     extract_hunk = MagicMock(return_value=("@@ -1 +1 @@\n-old\n+new", "new"))
     monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", extract_hunk)
     prediction = AsyncMock(return_value="answer")
@@ -1538,7 +1537,6 @@ def _construct_line_question(monkeypatch, factory):
     provider.supports_thread_resolution.return_value = False
     provider.supports_line_question_history.return_value = False
     monkeypatch.setattr(plq, "get_git_provider", lambda: lambda _url: provider)
-    monkeypatch.setattr(plq, "TokenHandler", lambda *_args, **_kwargs: MagicMock())
     return plq.PR_LineQuestions("https://github.com/org/repo/pull/1", ["why?"], ai_handler=factory)
 
 

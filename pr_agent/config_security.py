@@ -44,6 +44,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
     "azure_devops": frozenset({"pat"}),
+    # agent_identity decides which Azure DevOps comments PR-Agent treats as its own and may edit,
+    # so the reviewed repository must not choose it.
+    "azure_devops_server": frozenset({"agent_identity"}),
     "bitbucket": frozenset({"auth_type"}),
     "databricks": frozenset({"api_base"}),
     "gerrit": frozenset({"command_timeout_seconds", "webhook_password", "webhook_username"}),
@@ -66,7 +69,9 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     "ollama": frozenset({"api_base"}),
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
-    "pr_reviewer": frozenset({"publish_error_details"}),
+    # structural_reach_input_file is read from the host and echoed into the review, and outside
+    # GITHUB_WORKSPACE nothing bounds the path.
+    "pr_reviewer": frozenset({"publish_error_details", "structural_reach_input_file"}),
     # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
@@ -103,6 +108,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "http_request_timeout",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
+        "num_retries",
     }),
 }
 
@@ -156,7 +162,10 @@ CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "ignore": frozenset({"regex"}),
     "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     "pr_questions": frozenset({"resolve_threads"}),
-    "pr_reviewer": frozenset({"max_number_of_calls", "per_commit_review", "max_commits_per_review"}),
+    # A commenter must not choose which host file the structural-reach row reads.
+    "pr_reviewer": frozenset({
+        "max_number_of_calls", "structural_reach_input_file", "per_commit_review", "max_commits_per_review",
+    }),
     "pr_similar_issue": frozenset({"force_update_dataset"}),
     "pr_update_changelog": frozenset({"push_changelog_changes"}),
 }

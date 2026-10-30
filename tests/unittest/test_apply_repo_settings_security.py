@@ -63,6 +63,7 @@ SNAPSHOT_SECTIONS = (
     "CUSTOM_SECTION_FOR_TEST",
     "OPENAI",
     "AZURE_AD",
+    "AZURE_DEVOPS_SERVER",
     "HUGGINGFACE",
     "OLLAMA",
     "MOONSHOT",
@@ -234,6 +235,23 @@ def test_repo_settings_can_override_ai_timeout(monkeypatch, settings_snapshot):
 
     assert captured["errors"] is None
     assert settings.get("config.ai_timeout") == 600
+
+
+def test_repo_settings_cannot_set_structural_reach_input_file(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[pr_reviewer]\nstructural_reach_input_file = "/etc/secrets.json"\nnum_max_findings = 11\n'
+    )
+    _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    input_file_before = _section(settings, "pr_reviewer").get("structural_reach_input_file")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("structural_reach_input_file") == input_file_before
+    assert pr_reviewer.get("num_max_findings") == 11
 
 
 def test_repo_settings_cannot_override_prompt_fragments(monkeypatch, settings_snapshot):
@@ -491,6 +509,7 @@ def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypat
         ("gerrit", "webhook_username"),
         ("azure_devops", "org"),
         ("azure_devops", "pat"),
+        ("azure_devops_server", "agent_identity"),
         ("aws", "aws_access_key_id"),
         ("aws", "aws_region_name"),
         ("anthropic", "key"),
@@ -521,6 +540,28 @@ def test_repo_settings_cannot_override_gerrit_command_timeout(
 
     assert _section(settings, "gerrit")["command_timeout_seconds"] == 21
     assert is_repo_host_only_key("gerrit", "command_timeout_seconds")
+
+
+@pytest.mark.parametrize("repo_settings_bytes", [
+    b"[azure_devops_server]\nagent_identity = 'attacker'\n",
+    b"[azure_devops_server.agent_identity]\nx = 'attacker'\n",
+    b"[azure_devops_server__agent_identity]\nx = 'attacker'\n",
+])
+def test_repo_settings_cannot_override_azure_devops_server_agent_identity(
+    monkeypatch, settings_snapshot, repo_settings_bytes
+):
+    provider = FakeGitProvider(repo_settings_bytes=repo_settings_bytes)
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("azure_devops_server.agent_identity", "operator-agent")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert _section(settings, "azure_devops_server")["agent_identity"] == "operator-agent"
+    assert is_repo_host_only_key("azure_devops_server", "agent_identity")
+    assert CliArgs.validate_user_args(["--azure_devops_server.agent_identity=attacker"])[0] is False
+    assert CliArgs.validate_user_args(["--azure_devops_server__agent_identity=attacker"])[0] is False
 
 
 def test_polling_repositories_is_host_only_for_repo_and_cli():

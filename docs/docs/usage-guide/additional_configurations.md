@@ -74,6 +74,8 @@ You can ignore files or folders using the following methods:
 
 which you can edit to ignore files or folders based on glob or regex patterns.
 
+Pattern list entries must be strings. A non-string entry in `ignore.regex`, `ignore.glob`, or an enabled generated-code glob list is skipped with a warning; the remaining valid rules still apply.
+
 ### Example usage
 
 Let's look at an example where we want to ignore all files with `.py` extension from the analysis.
@@ -259,6 +261,22 @@ add_user_to_requests = true
 
 The setting is disabled by default, since it shares request-attribution data with the model
 provider: enabling it is an explicit operator choice.
+
+## Grouping requests by PR in LiteLLM
+
+When `add_session_id_to_requests` is enabled, PR-Agent sends a stable
+`x-litellm-session-id` header with every request. LiteLLM stores the value in the
+`session_id` column of its spend logs, so all commands run against the same PR can be
+found and grouped together, even when they arrive as separate requests.
+
+```
+[litellm]
+add_session_id_to_requests = true
+```
+
+The value is derived from the PR URL and normalized to the character set LiteLLM accepts,
+for example `pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721`. A header set explicitly through
+`LITELLM.EXTRA_HEADERS` takes precedence, and the setting is disabled by default.
 
 ## Integrating with Logging Observability Platforms
 
@@ -541,6 +559,9 @@ comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In th
 `ignore_pr_authors` matches the **PR author**, not the person posting the command. An ignored CLI
 request exits successfully without running the tool. Plain-diff CLI inputs (`--diff-file` and
 `--stdin`) have no PR metadata and are not excluded by these rules.
+
+For GitHub Actions, matching PRs also skip automatic review, description, and improve commands
+on `pull_request`, `pull_request_target`, and `workflow_run` events.
 
 ### Ignoring PRs with specific titles
 

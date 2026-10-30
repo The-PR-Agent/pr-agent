@@ -520,6 +520,32 @@ def test_generate_summarized_suggestions_uses_safe_diff_fences(source_fence, out
     assert f"{outer_fence}diff\n{expected_patch}\n{outer_fence}\n</details>" in out
 
 
+@pytest.mark.parametrize("original,improved", [
+    ('VALUE = "part\u2028one"', 'VALUE = "better\u2028one"'),
+    ('VALUE = "part"\u2028', 'VALUE = "better"\u2028'),
+])
+def test_generate_summarized_suggestions_keeps_unicode_separator_within_diff_lines(original, improved):
+    git_provider = MagicMock()
+    git_provider.diff_files = [FilePatchInfo(
+        base_file='VALUE = "before\u2028one"\n',
+        head_file=f"{original}\n",
+        patch=f'@@ -1 +1 @@\n-VALUE = "before\u2028one"\n+{original}\n',
+        filename="app.py",
+    )]
+    git_provider.get_line_link.return_value = ""
+    tool = _make_tool(git_provider)
+    suggestion = _suggestion(
+        relevant_lines_start=1,
+        relevant_lines_end=1,
+        existing_code=original,
+        improved_code=improved,
+    )
+
+    out = tool.generate_summarized_suggestions({"code_suggestions": [suggestion]})
+
+    assert f"-{original}\n+{improved}" in out
+
+
 def test_generate_summarized_suggestions_uses_score_string_when_new_mechanism_enabled():
     git_provider = _provider_with_diff_files("app.py")
     tool = _make_tool(git_provider)
@@ -875,3 +901,23 @@ def test_get_score_str_does_not_coerce_unused_medium_threshold(monkeypatch):
         "pr_code_suggestions.new_score_mechanism_th_high",
         "pr_code_suggestions.new_score_mechanism_th_medium",
     ]
+
+
+@pytest.mark.parametrize(
+    ("content", "line_count"),
+    [
+        ("one", 1),
+        ("one\n", 1),
+        ("one\n\n", 2),
+        ("one\r\ntwo\r\n", 2),
+        ("one\u2028two", 1),
+    ],
+)
+def test_suggestion_line_range_counts_git_lines_without_splitting(content, line_count):
+    diff_file = _diff_file()
+    diff_file.head_file = content
+    tool = _make_tool(_provider_with_diff_files("app.py"))
+    tool.git_provider.diff_files = [diff_file]
+
+    assert tool._is_suggestion_line_range_in_diff("app.py", 1, line_count) is True
+    assert tool._is_suggestion_line_range_in_diff("app.py", 1, line_count + 1) is False

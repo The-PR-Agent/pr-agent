@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import dynaconf
 
 from pr_agent.agent.pr_agent import PRAgent, parse_command, publish_incomplete_files_comment
-from pr_agent.agent.request_policy import RequestOutcome
+from pr_agent.agent.request_policy import RequestOutcome, enforce_request_policy
 from pr_agent.algo.ai_handlers.litellm_helpers import (
     DEFAULT_CALLBACK_TIMEOUT_SECONDS,
     drain_litellm_callbacks,
@@ -287,13 +287,16 @@ async def run_action():
                 return
 
     pr_url = _settings_pr_url(event_payload, GITHUB_EVENT_NAME)
+    settings_provider = None
     try:
         get_logger().info("Applying repo settings")
         if pr_url:
-            apply_repo_settings(pr_url)
+            settings_provider = apply_repo_settings(pr_url)
             get_logger().info(f"enable_custom_labels: {get_settings().config.enable_custom_labels}")
     except Exception as e:
         get_logger().info(f"github action: failed to apply repo settings: {e}")
+    if GITHUB_EVENT_NAME not in ("pull_request", "pull_request_target", "workflow_run"):
+        settings_provider = None
 
     # Gate on the active provider's key after repo settings are applied (a repo-level
     # .pr_agent.toml can select a different provider) but before any tool runs: carrying
@@ -302,6 +305,10 @@ async def run_action():
     # PR, which have no repo settings to judge from.
     missing_key = missing_provider_key_env_vars() if pr_url else None
     if missing_key is not None:
+        # Skip ignored automatic PR batches before enforcing a model key they do not need.
+        if (GITHUB_EVENT_NAME in ("pull_request", "pull_request_target", "workflow_run")
+                and enforce_request_policy(pr_url, provider=settings_provider) is False):
+            return
         _provider, env_var_names = missing_key
         # Raised, not printed, and rendered only from constant-table env var names and
         # static text: CodeQL's clear-text-logging sinks (logging/print/stderr) never
@@ -395,6 +402,7 @@ async def run_action():
                 get_settings().config.is_auto_command = True
                 get_settings().pr_description.final_update_message = False
                 get_logger().info(f"Running push commands: {push_commands}")
+                del settings_provider
                 for command in push_commands:
                     if await _handle_configured_command(pr_url, command) is RequestOutcome.SKIPPED:
                         return
@@ -402,6 +410,10 @@ async def run_action():
         if action in pr_actions:
             pr_url = event_payload.get("pull_request", {}).get("url")
             if pr_url:
+                allowed = enforce_request_policy(pr_url, provider=settings_provider)
+                del settings_provider
+                if allowed is False:
+                    return
                 # legacy - supporting both GITHUB_ACTION and GITHUB_ACTION_CONFIG
                 auto_review = get_setting_or_env("GITHUB_ACTION.AUTO_REVIEW", None)
                 if auto_review is None:
@@ -507,6 +519,10 @@ async def run_action():
 
         # Repo settings were already applied before the key gate, which judges the
         # provider they select.
+        allowed = enforce_request_policy(pr_url, provider=settings_provider)
+        del settings_provider
+        if allowed is False:
+            return
 
         # Inject artifact context after repo settings are applied for workflow_run
         _inject_artifact_context()

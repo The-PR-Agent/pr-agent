@@ -65,7 +65,7 @@ def _gl_provider():
         pending_drafts.append(note)
         return note
 
-    def _list(get_all=True):
+    def _list(get_all=True, **kwargs):
         return list(pending_drafts)
 
     def _bulk_publish():

@@ -1,11 +1,16 @@
+import copy
 import json
+from unittest.mock import patch
 
 import pytest
+from starlette_context import request_cycle_context
 
+from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
+from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 # Diff-mode settings keys these tests mutate on the process-wide singleton.
 _SETTINGS_KEYS = ["plain_diff.content", "plain_diff.output_path", "plain_diff.json_output_path",
@@ -227,3 +232,58 @@ async def test_review_command_through_diff_provider_mocked_llm(cfg, monkeypatch)
         "The diff content ('line2') was not found in the prompt sent to the AI handler. "
         "End-to-end wiring from diff -> provider -> reviewer -> LLM is broken."
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decouple_hunks,line_count,max_tokens,remove_calls", [
+    pytest.param(True, 1, 32_000, 1, id="decoupled"),
+    pytest.param(False, 1, 32_000, 0, id="ordinary-default"),
+    pytest.param(False, 400, 10_000, 1, id="default-numbered-budget-fallback"),
+])
+async def test_improve_preserves_inline_separator_in_model_prompt(
+    tmp_path, monkeypatch, decouple_hunks, line_count, max_tokens, remove_calls
+):
+    monkeypatch.chdir(tmp_path)
+    diff = (
+        "diff --git a/message.py b/message.py\n--- a/message.py\n+++ b/message.py\n"
+        f"@@ -1,{line_count} +1,{line_count} @@\n"
+        + "".join(f'-VALUE_{i} = "old"\n' for i in range(line_count))
+        + "".join(f'+VALUE_{i} = "part\u2028123"\n' for i in range(line_count))
+    )
+    calls = []
+
+    class RecordingAI(BaseAiHandler):
+        def __init__(self):
+            pass
+
+        @property
+        def deployment_id(self):
+            return None
+
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+            calls.append(user)
+            return "code_suggestions: []", "stop"
+
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.max_model_tokens": max_tokens,
+            "config.fallback_models": [],
+            "config.repo_context_files": [],
+            "config.publish_output_progress": False,
+            "plain_diff.content": diff,
+            "plain_diff.output_path": None,
+            "plain_diff.json_output_path": None,
+            "pr_code_suggestions.decouple_hunks": decouple_hunks,
+        }.items():
+            get_settings().set(key, value)
+
+        # Spy on the real method: the default case must reach the fallback through token packing.
+        with patch.object(PRCodeSuggestions, "remove_line_numbers", autospec=True,
+                          side_effect=PRCodeSuggestions.remove_line_numbers) as remove:
+            assert await PRAgent(ai_handler=RecordingAI).handle_request("local_diff", "/improve") is True
+
+    assert remove.call_count == remove_calls
+    assert len(calls) == 1
+    assert '+VALUE_0 = "part\u2028123"' in calls[0]

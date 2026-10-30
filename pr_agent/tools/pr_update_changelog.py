@@ -16,7 +16,6 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details, show_relevant_configurations
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
@@ -101,10 +100,6 @@ class PRUpdateChangelog:
                 "extra_instructions": get_settings().pr_update_changelog.extra_instructions,
                 "commit_messages_str": self.git_provider.get_commit_messages(),
             }
-            self.token_handler = TokenHandler(self.git_provider.pr,
-                                              self.vars,
-                                              get_settings().pr_update_changelog_prompt.system,
-                                              get_settings().pr_update_changelog_prompt.user)
         except Exception as setup_error:
             changelog_read_error = self.changelog_read_error
             if changelog_read_error is None:

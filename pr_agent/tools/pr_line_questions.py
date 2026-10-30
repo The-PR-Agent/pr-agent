@@ -14,7 +14,6 @@ from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType, decode_user_text_args
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
@@ -61,10 +60,6 @@ class PR_LineQuestions:
                 else ""
             ),
         }
-        self.token_handler = TokenHandler(self.git_provider.pr,
-                                          self.vars,
-                                          get_settings().pr_line_questions_prompt.system,
-                                          get_settings().pr_line_questions_prompt.user)
         self.patches_diff = None
         self.prediction = None
 

@@ -10,6 +10,7 @@ import re
 import shutil  # noqa: F401  (module attribute asserted by tests)
 import stat
 import threading
+from urllib.parse import urlparse
 
 import aiohttp
 import httpx
@@ -265,6 +266,9 @@ def _coerce_string_list_config(value):
     return None
 
 
+MAX_CONFIG_NUM_RETRIES = 10
+
+
 def _configured_client_retries():
     """config.num_retries as a non-negative int (unset/invalid = DEFAULT_NUM_RETRIES).
 
@@ -286,6 +290,11 @@ def _configured_client_retries():
     if parsed < 0:
         get_logger().warning(f"Ignoring negative config.num_retries: {parsed}")
         return DEFAULT_NUM_RETRIES
+    if parsed > MAX_CONFIG_NUM_RETRIES:
+        get_logger().warning(
+            f"Clamping config.num_retries from {parsed} to {MAX_CONFIG_NUM_RETRIES}"
+        )
+        return MAX_CONFIG_NUM_RETRIES
     return parsed
 
 
@@ -2681,6 +2690,37 @@ class LiteLLMAIHandler(BaseAiHandler):
                 context[key] = value[:max_len]
         return json.dumps(context, separators=(",", ":"))
 
+    def _get_request_session_id(self) -> str:
+        """Build a stable LiteLLM session id for the current PR.
+
+        LiteLLM stores this value in the session_id column of its spend logs, so
+        every command run against the same PR shares one session. The header only
+        accepts alphanumerics, hyphens and underscores, so the URL is normalized
+        to that character set. Returns an empty string when no PR context exists.
+        """
+        context = self._capture_log_context(
+            "session_id_probe", "Capturing the request context for the session id",
+        )
+        pr_url = context.get("pr_url")
+        if not isinstance(pr_url, str) or not pr_url:
+            return ""
+        parsed = urlparse(pr_url)
+        raw = f"{parsed.netloc.rpartition('@')[2]}{parsed.path}" if parsed.netloc else pr_url
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw)
+        slug = re.sub(r"-{2,}", "-", slug).strip("-_").lower()
+        if not slug:
+            return ""
+        # Different URLs can normalize to the same slug, and long repository
+        # paths can push the PR number past the cutoff. Append a digest of the
+        # raw URL and reserve room for it before truncating the readable part,
+        # so unrelated PRs never share a session. The "pr-agent-" prefix also
+        # keeps the id above LiteLLM's 8-character minimum.
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        prefix = "pr-agent-"
+        slug_budget = 128 - len(prefix) - len(digest) - 1
+        slug = slug[:slug_budget].rstrip("-_")
+        return f"{prefix}{slug}-{digest}"
+
     @property
     def deployment_id(self):
         """
@@ -2847,7 +2887,7 @@ class LiteLLMAIHandler(BaseAiHandler):
 
             encoder = TokenEncoder.get_token_encoder("anthropic/claude")
             system_tokens = len(encoder.encode(system or "", disallowed_special=()))
-            user_tokens = len(encoder.encode(user or "", disallowed_special=()))
+            user_tokens = len(encoder.encode(user or "", disallowed_special=())) if targets_user else 0
         except Exception:
             system_tokens = len(system or "") // 4
             user_tokens = len(user or "") // 4
@@ -3244,6 +3284,17 @@ class LiteLLMAIHandler(BaseAiHandler):
 
                 # Support for custom OpenAI body fields (e.g., Flex Processing)
                 kwargs = _process_litellm_extra_body(kwargs)
+
+                # Group every command run against the same PR into one LiteLLM
+                # session by sending the proxy's session id header. Explicitly
+                # configured headers win, so an operator can override the value.
+                if get_settings().litellm.get("add_session_id_to_requests", False):
+                    session_id = self._get_request_session_id()
+                    if session_id:
+                        headers = dict(kwargs.get("headers") or {})
+                        if not any(name.lower() == "x-litellm-session-id" for name in headers):
+                            headers["x-litellm-session-id"] = session_id
+                            kwargs["headers"] = headers
 
                 # Optional provider-side request attribution: when config.add_user_to_requests
                 # is enabled, send the current command and PR URL in the OpenAI-compatible

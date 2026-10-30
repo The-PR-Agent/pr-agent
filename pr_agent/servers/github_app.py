@@ -30,6 +30,7 @@ from pr_agent.servers.github_common import matches_review_state as matches_revie
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
     DefaultDictWithTimeout,
+    auto_feedback_disabled,
     get_pr_commands,
     is_ask_command_comment,
     push_trigger_slot,
@@ -484,8 +485,8 @@ async def _perform_auto_commands_github(commands_conf: str, agent: PRAgent, body
     if is_draft and not feedback_on_draft:
         get_logger().info(f"Skipping draft PR {api_url=}")
         return
-    if commands_conf in ("pr_commands", "review_commands") and get_settings().config.disable_auto_feedback:
-        # auto commands for PR/review, and auto feedback is disabled
+    if auto_feedback_disabled():
+        # auto commands, and auto feedback is disabled
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}")
         return
     if not should_process_pr_logic(body): # Here we already updated the configuration with the repo settings

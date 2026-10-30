@@ -500,13 +500,11 @@ def fit_related_tickets_to_prompt_budget(
 ) -> tuple[dict, TokenHandler]:
     """Fit complete related-ticket records while preserving room for the PR diff."""
     prompt_vars = copy.deepcopy(raw_vars)
-    related_tickets = prompt_vars.get("related_tickets")
-    if not isinstance(related_tickets, list):
-        related_tickets = []
+    raw_tickets = prompt_vars.get("related_tickets")
+    if not isinstance(raw_tickets, list):
+        raw_tickets = prompt_vars["related_tickets"] = []
 
-    raw_tickets = copy.deepcopy(related_tickets)
-    prompt_vars["related_tickets"] = []
-    budget = AttemptTokenBudget.for_prompt_attempt(
+    full_budget = AttemptTokenBudget.for_prompt_attempt(
         model,
         pr,
         prompt_vars,
@@ -515,35 +513,17 @@ def fit_related_tickets_to_prompt_budget(
         ai_handler=ai_handler,
         output_token_reserve=output_token_reserve,
     )
-    if not raw_tickets:
-        budget.require_input_capacity(
-            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-            preserve_minimum=True,
-        )
-        return prompt_vars, budget.token_handler
-
-    prompt_token_limit = budget.input_token_limit(
+    prompt_token_limit = full_budget.input_token_limit(
         OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
         preserve_minimum=True,
         additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     )
-    full_vars = copy.deepcopy(prompt_vars)
-    full_vars["related_tickets"] = copy.deepcopy(raw_tickets)
-    full_budget = AttemptTokenBudget.for_prompt_attempt(
-        model,
-        pr,
-        full_vars,
-        system_prompt,
-        user_prompt,
-        ai_handler=ai_handler,
-        output_token_reserve=output_token_reserve,
-    )
-    if full_budget.prompt_tokens <= prompt_token_limit:
+    if not raw_tickets or full_budget.prompt_tokens <= prompt_token_limit:
         full_budget.require_input_capacity(
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        return full_vars, full_budget.token_handler
+        return prompt_vars, full_budget.token_handler
 
     best_vars = None
     best_budget = None
@@ -551,7 +531,11 @@ def fit_related_tickets_to_prompt_budget(
     upper_bound = len(raw_tickets) - 1
     while lower_bound <= upper_bound:
         prefix_size = (lower_bound + upper_bound) // 2
-        candidate_vars = copy.deepcopy(prompt_vars)
+        candidate_vars = {
+            key: copy.deepcopy(value)
+            for key, value in prompt_vars.items()
+            if key != "related_tickets"
+        }
         candidate_vars["related_tickets"] = copy.deepcopy(raw_tickets[:prefix_size])
         candidate_vars["related_tickets_omitted"] = len(raw_tickets) - prefix_size
         candidate_budget = AttemptTokenBudget.for_prompt_attempt(

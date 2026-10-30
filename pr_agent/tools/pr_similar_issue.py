@@ -58,6 +58,8 @@ def _embed_with_fallback(texts: list[str]) -> list[list[float]]:
         if len(embeddings) != len(texts):
             raise ValueError("Embedding response count does not match input")
         return embeddings
+    except (openai.AuthenticationError, openai.PermissionDeniedError):
+        raise
     except Exception as e:
         original_error = e
         get_logger().error("Failed to embed entire list, retrying in bounded batches...",
@@ -74,12 +76,16 @@ def _embed_with_fallback(texts: list[str]) -> list[list[float]]:
                     raise ValueError("Embedding batch response count does not match input")
                 embeds.extend(batch_embeds)
                 continue
+            except (openai.AuthenticationError, openai.PermissionDeniedError):
+                raise
             except Exception as e:
                 get_logger().warning("Embedding batch failed, retrying its items...",
                                      artifact={"error": str(e)})
         for text in batch:
             try:
                 embeds.append(_embed([text])[0])
+            except (openai.AuthenticationError, openai.PermissionDeniedError):
+                raise
             except Exception:
                 failures += 1
                 embeds.append([0] * 1536)
@@ -484,6 +490,8 @@ class PRSimilarIssue:
                     comment_number = -1
                 elif parts[1].startswith("comment_"):
                     comment_number = int(parts[1][len("comment_"):])
+                    if comment_number < 0:
+                        continue
                 else:
                     continue
             except (ValueError, TypeError, AttributeError, IndexError):
@@ -575,7 +583,8 @@ class PRSimilarIssue:
             title = issue.title
             url = issue.html_url
             if relevant_comment_number_list[i] != -1:
-                url = list(issue.get_comments())[relevant_comment_number_list[i]].html_url
+                comment_index = relevant_comment_number_list[i]
+                url = list(islice(issue.get_comments(), comment_index, comment_index + 1))[0].html_url
             similar_issues_str += f"{i + 1}. **[{title}]({url})** (score={score_list[i]})\n\n"
         if get_settings().config.publish_output:
             issue_main.create_comment(similar_issues_str)

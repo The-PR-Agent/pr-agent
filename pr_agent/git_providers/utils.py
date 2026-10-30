@@ -295,6 +295,7 @@ def apply_host_settings():
 
 
 def apply_repo_settings(pr_url):
+    """Apply repository overrides and return the provider that loaded them."""
     os.environ["AUTO_CAST_FOR_DYNACONF"] = "false"
     _restore_per_directory_settings()
 
@@ -353,6 +354,7 @@ def apply_repo_settings(pr_url):
                     os.remove(repo_settings_file)
                 except Exception as e:
                     get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}: {e}")
+    return git_provider
 
 
 def _restore_per_directory_settings():

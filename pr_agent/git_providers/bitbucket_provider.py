@@ -13,6 +13,7 @@ from starlette_context import context
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 
 from ..algo.file_filter import filter_ignored
+from ..algo.git_patch_processing import count_patch_lines
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, replace_suggestion_blocks
@@ -158,12 +159,18 @@ def _diffstat_line_count(diff, field: str) -> int | None:
     if value is None:
         return None
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
         get_logger().warning(
             f"Bitbucket diffstat reported a non-numeric {field} for file {_gef_filename(diff)}"
         )
         return None
+    if count < 0 or isinstance(value, bool) or (not isinstance(value, str) and count != value):
+        get_logger().warning(
+            f"Bitbucket diffstat reported an invalid {field} for file {_gef_filename(diff)}"
+        )
+        return None
+    return count
 
 
 class BitbucketProvider(GitProvider):
@@ -542,13 +549,14 @@ class BitbucketProvider(GitProvider):
             # counting the patch, field by field. The raw diff can carry no textual hunk, or a
             # truncated one, even when the diffstat reports real additions and removals, and a
             # partially populated diffstat still carries the side it does report.
-            patch_lines = diff_split[index].splitlines(keepends=True)
             lines_added = _diffstat_line_count(diff, "lines_added")
-            if lines_added is None:
-                lines_added = len([line for line in patch_lines if line.startswith('+')])
             lines_removed = _diffstat_line_count(diff, "lines_removed")
-            if lines_removed is None:
-                lines_removed = len([line for line in patch_lines if line.startswith('-')])
+            if lines_added is None or lines_removed is None:
+                patch_added, patch_removed = count_patch_lines(diff_split[index])
+                if lines_added is None:
+                    lines_added = patch_added
+                if lines_removed is None:
+                    lines_removed = patch_removed
 
             file_patch_canonic_structure = FilePatchInfo(
                 original_file_content_str,

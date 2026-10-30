@@ -8,6 +8,13 @@ on:
     branches:
       - main
 
+concurrency:
+  group: >-
+    pr-agent-build-and-test-${{ github.event_name }}-${{
+      github.event_name == 'pull_request' && github.run_attempt == 1 &&
+      format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.run_attempt == 1 }}
+
 permissions:
   contents: read
 

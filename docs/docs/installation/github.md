@@ -541,7 +541,7 @@ Remember these key points about environment variables:
 
 ##### Rate Limiting
 
-If you encounter rate limiting:
+If you encounter rate limiting (HTTP 429 responses):
 
 ```yaml
       env:
@@ -549,12 +549,17 @@ If you encounter rate limiting:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Add a fallback model for better reliability
         config.fallback_models: '["your-fallback-model"]'
-        # Increase timeout for slower models
+        # Same-model retries of a 429, 5xx or connection error before fallback_models (default 4, max 10),
+        # each waiting for the provider's Retry-After or backing off. A quota error is retried but never recovers.
+        config.num_retries: "6"
+        # Increase timeout for slower models (does not help pure 429 rate-limit responses)
         config.ai_timeout: "300"
         github_action_config.auto_review: "true"
         github_action_config.auto_describe: "true"
         github_action_config.auto_improve: "true"
 ```
+
+A 429 is returned immediately; raising `config.ai_timeout` only bounds the duration of each individual request and does not change rate-limit behavior. Use `config.num_retries` (see `pr_agent/settings/configuration.toml`) for transient provider errors. Each model listed in `config.fallback_models` receives its own independent retry budget.
 
 ##### Common Error Messages and Solutions
 
@@ -573,7 +578,7 @@ If you encounter rate limiting:
     - **Another provider's key is set, but the model is not.** Keys alone do not switch provider: set `config.model` (and `config.fallback_models`) as well, otherwise the default OpenAI model is used and only an OpenAI key counts. See [Changing a model in PR-Agent](../usage-guide/changing_a_model.md).
 
 **Error: "Rate limit exceeded"**
-- **Solution**: Add fallback models or increase the `config.ai_timeout` value
+- **Solution**: Add fallback models and/or set `config.num_retries` (recommended for transient 429s). Raising `config.ai_timeout` only helps with timeouts, not pure rate-limit responses. For a manual `/review` failure, you can also set `pr_reviewer.publish_error_details: "true"` in the workflow `env` (it cannot be enabled via `.pr_agent.toml`) to surface a sanitized failure reason. See the [Review tool docs](../tools/review.md).
 
 **Error: "Permission denied"**
 - **Solution**: Ensure your workflow has the correct permissions set:

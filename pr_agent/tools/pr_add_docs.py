@@ -13,7 +13,6 @@ from pr_agent.algo.pr_processing import (
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.run_details import record_command_failure
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import get_suggestion_fence, load_yaml
 from pr_agent.config_loader import get_settings, get_verbosity_level
 from pr_agent.git_providers import get_git_provider
@@ -51,10 +50,6 @@ class PRAddDocs:
             'docs_for_language': get_docs_for_language(self.main_language,
                                                        get_settings().pr_add_docs.docs_style),
         }
-        self.token_handler = TokenHandler(self.git_provider.pr,
-                                          self.vars,
-                                          get_settings().pr_add_docs_prompt.system,
-                                          get_settings().pr_add_docs_prompt.user)
 
     async def run(self):
         temporary_comment_published = False
@@ -74,7 +69,9 @@ class PRAddDocs:
                     and not isinstance(prediction_error, IncompleteProviderPullRequestFilesError)
                 ):
                     try:
-                        self.git_provider.publish_comment("Failed to generate code documentation for this PR.")
+                        self.git_provider.publish_tool_failure(
+                            "add_docs", "Failed to generate code documentation for this PR."
+                        )
                     except Exception as comment_error:
                         get_logger().warning(f"Failed to publish the documentation failure comment: {comment_error}")
                 raise
@@ -92,7 +89,9 @@ class PRAddDocs:
                 publication_result = self.push_inline_docs(data)
                 if publication_result is False:
                     publication_failed = True
-                    self.git_provider.publish_comment("Failed to publish code documentation for this PR.")
+                    self.git_provider.publish_tool_failure(
+                        "add_docs", "Failed to publish code documentation for this PR."
+                    )
                     raise RuntimeError("Failed to publish code documentation after individual retries")
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
@@ -213,7 +212,9 @@ class PRAddDocs:
         docs = []
 
         if not data['Code Documentation']:
-            self.git_provider.publish_comment('No code documentation found to improve this PR.')
+            self.git_provider.publish_tool_failure(
+                "add_docs", "No code documentation found to improve this PR."
+            )
             return None
 
         for d in data['Code Documentation']:

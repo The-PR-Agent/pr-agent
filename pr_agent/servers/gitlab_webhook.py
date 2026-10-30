@@ -28,6 +28,7 @@ from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.secret_providers import get_secret_provider, validate_secret_provider_setting
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
+    auto_feedback_disabled,
     get_pr_commands,
     is_ask_command_comment,
     is_command_comment,
@@ -95,7 +96,7 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
         get_logger().info(f"Skipping draft MR: {api_url}")
         return
     # auto commands for PR, and auto feedback is disabled
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
+    if auto_feedback_disabled():
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
     if not should_process_pr_logic(data): # Here we already updated the configurations

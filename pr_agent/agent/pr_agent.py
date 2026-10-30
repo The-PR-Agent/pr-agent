@@ -16,7 +16,7 @@ from pr_agent.algo.comment_identity import (
     add_comment_identity,
     comment_matches_identity,
 )
-from pr_agent.algo.run_details import get_run_details, init_run_details
+from pr_agent.algo.run_details import command_failed, get_run_details, init_run_details
 from pr_agent.algo.utils import _fix_key_value, update_settings_from_args
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers import get_git_provider_with_context
@@ -491,7 +491,11 @@ class PRAgent:
                         span.set_attribute("error.type", "documentation_publication_failed")
                         return False
 
-                span.set_status(StatusCode.OK)
+                if command_failed():
+                    span.set_status(StatusCode.ERROR)
+                    span.set_attribute("error.type", "tool_execution_failed")
+                else:
+                    span.set_status(StatusCode.OK)
                 return True
         finally:
             _record_token_metrics(action, _git_provider)

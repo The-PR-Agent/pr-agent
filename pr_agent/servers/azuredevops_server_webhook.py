@@ -28,7 +28,7 @@ from pr_agent.git_providers.azuredevops_provider import AZURE_AGENT_RESPONSE_MAR
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
-from pr_agent.servers.utils import basic_auth_matches, get_pr_commands
+from pr_agent.servers.utils import auto_feedback_disabled, basic_auth_matches, get_pr_commands
 from pr_agent.telemetry.prometheus import attach_metrics_endpoint, prometheus_metrics_enabled
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
@@ -212,7 +212,7 @@ def authorize(credentials: HTTPBasicCredentials = Depends(security)):  # noqa: B
 async def _perform_commands_azure(commands_conf: str, agent: PRAgent, api_url: str, log_context: dict):
     apply_repo_settings(api_url)
     # auto commands for PR, and auto feedback is disabled
-    if commands_conf == "pr_commands" and get_settings().config.disable_auto_feedback:
+    if auto_feedback_disabled():
         get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {api_url=}", **log_context)
         return
     commands = (

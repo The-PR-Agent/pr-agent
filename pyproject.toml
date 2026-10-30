@@ -26,13 +26,15 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 # Exact versions for this repo's own builds (Docker, CI, uv sync) come from
-# uv.lock. Security-sensitive packages below declare >=patched,<next-major
+# uv.lock. Security-sensitive packages generally declare >=patched,<next-major
 # ranges instead of == pins so pip consumers can pull security patches on
 # their own cadence (#2523); the floor is the last vetted patched release.
+# Keep certifi's calendar-versioned CA updates unbounded rather than
+# treating a new year as an API-major compatibility boundary.
 dependencies = [
   "aiohttp>=3.14.3,<4",
   "anthropic>=0.69.0",
-  "certifi>=2026.7.22",
+  "certifi>=2026.10.23",
   "dynaconf>=3.3.5,<4",
   "fastapi>=0.141.1,<1",
   "GitPython>=3.1.62,<4",
@@ -43,7 +45,6 @@ dependencies = [
   "openai>=1.55.3",
   "PyJWT>=2.15.1,<3",
   "PyYAML==6.0.3",
-  "retry==0.9.2",
   "starlette-context==0.5.1",
   "tiktoken==0.14.0",
   "ujson>=5.13.0,<7",
@@ -51,7 +52,8 @@ dependencies = [
   # Declare urllib3 directly because gerrit_provider.py imports urllib3.util; the >=2.8.0
   # floor is a security requirement and follows the >=patched,<next-major convention above.
   "urllib3>=2.8.0,<3",
-  "uvicorn>=0.31.1,<1",
+  "uvicorn>=0.36.0,<1",
+  "uvicorn-worker==0.4.0",
   "tenacity==8.2.3",
   "langfuse==4.18.0",
   "gunicorn==26.2.0",
@@ -181,6 +183,7 @@ lint.exclude = ["api/code_completions"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests/unittest"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

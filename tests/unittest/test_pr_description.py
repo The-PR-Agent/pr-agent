@@ -647,6 +647,45 @@ class TestPRDescriptionCore:
         if not include_summaries:
             assert all("changes_summary" not in file for file in obj.data["pr_files"])
 
+    @pytest.mark.asyncio
+    async def test_extend_uncovered_files_keeps_list_walkthrough_shape(self):
+        obj = _make_large_pr_instance([
+            FilePatchInfo("", "", "", "shown.py"),
+            FilePatchInfo("", "", "", "missing.py"),
+        ])
+        prediction = yaml.safe_dump([{"filename": "shown.py"}]).strip()
+
+        extended = await obj.extend_uncovered_files(prediction)
+
+        files = yaml.safe_load(extended)
+        assert isinstance(files, list)
+        assert [file["filename"].strip() for file in files] == ["shown.py", "missing.py"]
+        combined = _header_prediction() + "\npr_files:\n" + extended
+        assert combined.count("pr_files:") == 1
+        assert len(yaml.safe_load(combined)["pr_files"]) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("yaml_tag", ["!!omap", "!!pairs"])
+    async def test_extend_uncovered_files_keeps_walkthrough_when_merged_yaml_is_invalid(self, yaml_tag):
+        filename = f"bad\n  extra: {yaml_tag}\n    - x: y"
+        obj = _make_large_pr_instance([
+            FilePatchInfo("", "", "", "shown.py"),
+            FilePatchInfo("", "", "", filename),
+        ])
+        files = [{
+            "filename": "shown.py",
+            "changes_title": "Describe shown.py",
+            "changes_summary": "Keep the original summary.",
+            "label": "enhancement",
+        }]
+        prediction = yaml.safe_dump(files, sort_keys=False).strip()
+
+        extended = await obj.extend_uncovered_files(prediction)
+
+        assert extended == prediction
+        combined = _header_prediction() + "\npr_files:\n" + extended
+        assert load_yaml(combined, keys_fix_yaml=obj.keys_fix)["pr_files"] == files
+
 
 class TestDiagramEdgeParsing:
 

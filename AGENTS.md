@@ -69,7 +69,7 @@ Sensitive values should stay in environment variables or the gitignored `.secret
 - Install dependencies (runtime + dev) into a project virtualenv from the lockfile with `uv sync` using a uv version that satisfies `tool.uv.required-version` in `pyproject.toml`; `uv run` auto-syncs before each command.
 - Run a single unit test (verified): `PYTHONPATH=. uv run pytest tests/unittest/test_output_models.py -q`.
 - Run the full unit suite: `PYTHONPATH=. uv run pytest tests/unittest -v`.
-- CI also runs `uv run pytest -q tests/packaging/test_help_docs_package.py`; it is outside `testpaths`, so the unit suite does not cover it. The distribution-contract test asserts the exact uv version given by the lower bound of `tool.uv.required-version` in `pyproject.toml`; newer uv versions can fail that assertion.
+- CI also runs `uv run pytest -q tests/packaging/test_help_docs_package.py`; it is outside `testpaths`, so the unit suite does not cover it. The distribution-contract test checks that the installed uv version satisfies `tool.uv.required-version` in `pyproject.toml`.
 - Execute the CLI locally once dependencies and API keys are available: `uv run pr-agent --pr_url <https://host/org/repo/pull/123> review`.
 - Build the test Docker target mirror of CI when containerizing: `docker build -f docker/Dockerfile --target test .` (loads dev dependencies and copies `tests/`).
 - Build the documentation the same way CI does (Node.js 22): `npm ci` then `npm run build` from `docs/`; `npm start` serves a live preview. After building, run `python3 scripts/check_docs_urls.py` from the repository root to check `docs/build` as CI does. The `docs-ci` workflow publishes `docs/build` to GitHub Pages.

@@ -17,6 +17,8 @@ import tomllib
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from packaging.specifiers import SpecifierSet
+
 from pr_agent.tools.pr_help_message import HELP_DOCS_SUFFIXES, _is_help_doc_included
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -203,8 +205,9 @@ def test_help_docs_distribution_contract(tmp_path):
     uv = shutil.which("uv")
     assert uv, "uv is required for the packaging regression"
     with (REPOSITORY_ROOT / "pyproject.toml").open("rb") as pyproject:
-        required_uv = tomllib.load(pyproject)["tool"]["uv"]["required-version"].removeprefix(">=")
-    assert _run([uv, "--version"], cwd=tmp_path).stdout.startswith(f"uv {required_uv} ")
+        required_uv = tomllib.load(pyproject)["tool"]["uv"]["required-version"]
+    uv_version = _run([uv, "--version"], cwd=tmp_path).stdout.split()[1]
+    assert uv_version in SpecifierSet(required_uv)
 
     build_env = os.environ.copy()
     build_env["UV_CACHE_DIR"] = str(tmp_path / "uv-cache")

@@ -27,6 +27,7 @@ from pr_agent.algo.ai_handlers.litellm_ai_handler import (
     _stop_same_model_retries,
 )
 from pr_agent.config_loader import get_settings
+from pr_agent.config_security import is_repo_host_only_key
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 
 KEYS = (
@@ -172,6 +173,14 @@ class TestConfiguredClientRetries:
     def test_invalid_values_are_ignored_not_raised(self, value):
         get_settings().set("config.num_retries", value)
         assert _configured_client_retries() == DEFAULT_NUM_RETRIES
+
+    @pytest.mark.parametrize("value,expected", [(11, 10), (100, 10), ("15", 10)])
+    def test_excessive_values_are_clamped(self, value, expected):
+        get_settings().set("config.num_retries", value)
+        assert _configured_client_retries() == expected
+
+    def test_repository_settings_cannot_set_num_retries(self):
+        assert is_repo_host_only_key("config", "num_retries")
 
 
 class TestIsRejectedRequest:

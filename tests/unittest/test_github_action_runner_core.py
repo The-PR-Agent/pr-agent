@@ -1,23 +1,27 @@
 import copy
 import json
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.servers.github_action_runner as github_action_runner
+from pr_agent import config_loader
+from pr_agent.agent.request_policy import enforce_request_policy
 from pr_agent.algo import artifacts
 from pr_agent.algo.run_details import command_failed, get_run_details, record_command_failure
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as git_utils
-from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
+from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
 
 
 @pytest.fixture(autouse=True)
 def _provider_key_gate_passes(monkeypatch):
-    """These flows test tools, not credentials; the key gate has its own test file.
-    Tests that need the gate can override the attribute again."""
+    """Isolate unrelated routing tests from credential/policy I/O.
+    Tests of either gate override the corresponding attribute again."""
     monkeypatch.setattr(github_action_runner, "missing_provider_key_env_vars", lambda: None)
+    monkeypatch.setattr(github_action_runner, "enforce_request_policy", lambda *_args, **_kwargs: True)
 
 
 def test_is_true_accepts_bool_and_case_insensitive_true_string():
@@ -679,6 +683,71 @@ def _install_action_env(monkeypatch, tmp_path, event_path, event_name="pull_requ
     monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
     monkeypatch.setenv("GITHUB_TOKEN", "token")
+
+
+@pytest.mark.parametrize("event_name", ["pull_request", "pull_request_target", "workflow_run"])
+@pytest.mark.parametrize("missing_model_key", [False, True])
+@pytest.mark.parametrize("title,repo_settings,allowed", [
+    ("[Auto] Refresh docs", b"", False),
+    ("Regular change", b"", True),
+    ("[Auto] Refresh docs", b"[config]\nignore_pr_title = []\n", True),
+    ("Regular change", b'[config]\nignore_pr_labels = ["skip-review"]\n', False),
+])
+async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_provider(
+    monkeypatch, tmp_path, event_name, missing_model_key, title, repo_settings, allowed,
+):
+    # Keep the Action's real, context-free settings/provider path; mock only SDK I/O and tools.
+    get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
+    settings = copy.deepcopy(get_settings())
+    monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "false")
+    monkeypatch.setattr(config_loader, "global_settings", settings)
+    monkeypatch.setattr(github_action_runner, "enforce_request_policy", enforce_request_policy)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setattr(
+        github_action_runner, "missing_provider_key_env_vars",
+        lambda: ("openai", ("OPENAI_KEY",)) if missing_model_key else None,
+    )
+    settings.set("config.git_provider", "github")
+    settings.set("config.ignore_pr_title", ["^\\[Auto\\]", "^Auto"])
+    settings.set("github_action_config.pr_actions", ["opened"])
+    pr = SimpleNamespace(
+        title=title, html_url="https://github.com/org/repo/pull/1",
+        user=SimpleNamespace(login="author"), head=SimpleNamespace(ref="feature"),
+        base=SimpleNamespace(ref="main"), labels=[SimpleNamespace(name="skip-review")],
+        get_commits=Mock(return_value=[SimpleNamespace(sha="head")]),
+    )
+    repo = Mock(full_name="org/repo", default_branch="main")
+    repo.get_pull.return_value = pr
+    repo.get_contents.return_value = SimpleNamespace(decoded_content=repo_settings)
+    client = Mock()
+    client.get_repo.return_value = repo
+    monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
+    tools = [Mock(return_value=SimpleNamespace(run=AsyncMock())) for _ in range(3)]
+    for name, tool in zip(("PRDescription", "PRReviewer", "PRCodeSuggestions"), tools, strict=True):
+        monkeypatch.setattr(github_action_runner, name, tool)
+    event = (_write_workflow_run_event(tmp_path) if event_name == "workflow_run"
+             else _write_pull_request_opened_event(tmp_path))
+    _install_action_env(monkeypatch, tmp_path, event, event_name)
+    _patch_env_settings(monkeypatch, {
+        "GITHUB_ACTION.AUTO_DESCRIBE": True, "GITHUB_ACTION.AUTO_REVIEW": True, "GITHUB_ACTION.AUTO_IMPROVE": True,
+    })
+
+    # Verify that ignored batches succeed without a model key, while allowed ones still require it.
+    if missing_model_key and allowed:
+        with pytest.raises(SystemExit, match="no usable API key"):
+            await github_action_runner._run_action_and_drain()
+    else:
+        await github_action_runner._run_action_and_drain()
+
+    for tool in tools:
+        expected_calls = int(allowed and not missing_model_key)
+        assert tool.call_count == expected_calls
+        assert tool.return_value.run.await_count == expected_calls
+    # The policy reuses the instance that already loaded .pr_agent.toml.
+    client.get_repo.assert_called_once_with("org/repo")
+    repo.get_pull.assert_called_once()
+    pr.get_commits.assert_called_once()
+    repo.get_contents.assert_called_once()
 
 
 def _patch_env_settings(monkeypatch, overrides=None):

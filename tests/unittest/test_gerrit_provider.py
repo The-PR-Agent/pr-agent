@@ -957,10 +957,11 @@ def test_get_diff_files_walks_the_commit_once(tmp_path, monkeypatch):
 
 def test_get_diff_files_reflects_ignore_rules_merged_after_construction(tmp_path):
     # Read the diff before loading repository settings, then apply the new ignore rules.
-    repo = _make_repo(tmp_path, ["keep.py", "generated.py"])
-    for name in ["keep.py", "generated.py"]:
+    names = ["generated.py", "generated/uv.lock", "keep.py", "yarn.lock"]
+    repo = _make_repo(tmp_path, names)
+    for name in names:
         (tmp_path / name).write_text("changed\n")
-    repo.index.add(["keep.py", "generated.py"])
+    repo.index.add(names)
     repo.index.commit("change files")
 
     provider = object.__new__(GerritProvider)
@@ -972,25 +973,30 @@ def test_get_diff_files_reflects_ignore_rules_merged_after_construction(tmp_path
         # Simulate provider construction before repository settings are loaded.
         get_settings().set("ignore.glob", [])
         get_settings().set("ignore.regex", [])
-
         before_merge = provider.get_diff_files()
-    finally:
-        settings_helpers.restore_settings(settings_snapshot)
+        raw_diffs = provider._commit_diffs
+        assert [file.filename for file in before_merge] == names
+        assert provider.get_filtered_diff_file_names() == ["generated/uv.lock", "yarn.lock"]
 
-    assert {file.filename for file in before_merge} == {"keep.py", "generated.py"}
-
-    settings_snapshot = settings_helpers.snapshot_settings(["ignore.glob", "ignore.regex"])
-    try:
-        get_settings().set("ignore.glob", ["generated.py"])
-        get_settings().set("ignore.regex", [])
-
+        get_settings().set("ignore.glob", ["generated.py", "generated/**"])
         after_merge = provider.get_diff_files()
-        files_after_merge = provider.get_files()
+        assert [file.filename for file in after_merge] == ["keep.py", "yarn.lock"]
+        assert provider.get_files() == ["keep.py", "yarn.lock"]
+        assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+        assert provider.get_diff_files() == after_merge
+        assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+
+        get_settings().set("ignore.glob", [])
+        get_settings().set("ignore.regex", ["["])
+        assert [file.filename for file in provider.get_diff_files()] == names
+        assert provider.get_filtered_diff_file_names() == []
+        assert provider._commit_diffs is raw_diffs
+        get_settings().set("ignore.regex", [])
+        get_settings().set("ignore.glob", ["*.lock"])
+        assert [file.filename for file in provider.get_diff_files()] == ["generated.py", "keep.py"]
+        assert provider.get_filtered_diff_file_names() == []
     finally:
         settings_helpers.restore_settings(settings_snapshot)
-
-    assert [file.filename for file in after_merge] == ["keep.py"]
-    assert files_after_merge == ["keep.py"]
 
 
 def test_get_files_derives_names_from_the_diff(tmp_path, monkeypatch):

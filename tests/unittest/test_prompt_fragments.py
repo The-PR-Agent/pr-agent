@@ -222,7 +222,6 @@ def test_tool_initializers_supply_the_fragment_before_token_counting(
         include_ai_metadata=include_ai_metadata,
     )
     assert reviewer.token_handler.prompt_tokens > 0
-    assert add_docs.token_handler.prompt_tokens > 0
     assert suggestions.token_handler.prompt_tokens > 0
 
 

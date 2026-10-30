@@ -684,7 +684,7 @@ class GitLabProvider(GitProvider):
         """Collect the diff pages once, failing on unstable or not-yet-ready responses."""
         for attempt in range(2):
             before = self.gl.http_get(path)
-            changes = self.gl.http_list(f"{path}/diffs", get_all=True)
+            changes = self.gl.http_list(f"{path}/diffs", get_all=True, per_page=100)
             after = self.gl.http_get(path)
             if any(before.get(key) != after.get(key) for key in ("sha", "diff_refs", "changes_count")):
                 if attempt == 0:
@@ -729,13 +729,34 @@ class GitLabProvider(GitProvider):
     def supports_issue_reference_tickets(self) -> bool:
         return True
 
+    @staticmethod
+    def _url_resource_index(path_parts: list[str]) -> int | None:
+        """Index of the resource segment (``merge_requests``, ``issues``) of a project URL path.
+
+        GitLab puts it right after the ``/-/`` separator, which cannot be a group or project name;
+        older URLs without the separator have ``<resource>/<id>`` after the project, optionally followed
+        by a tab such as ``/diffs``. Matching the segment rather than a substring keeps a project such
+        as ``grp/my-issues`` from being read as an issue.
+        """
+        if '-' in path_parts:
+            resource_index = path_parts.index('-') + 1
+            return resource_index if resource_index < len(path_parts) else None
+        legacy_indexes = [index for index, part in enumerate(path_parts[:-1])
+                          if part in ('merge_requests', 'issues') and path_parts[index + 1].isdigit()]
+        return legacy_indexes[-1] if legacy_indexes else None
+
     def _get_project_path_from_pr_or_issue_url(self, pr_or_issue_url: str) -> str:
         repo_project_path = None
-        if 'issues' in pr_or_issue_url:
-            #replace 'issues' with 'merge_requests', since gitlab provider does not support issue urls,
-            # just to get the git repo url:
-            pr_or_issue_url = pr_or_issue_url.replace('issues', 'merge_requests')
-        if 'merge_requests' in pr_or_issue_url:
+        parsed_url = urlparse(pr_or_issue_url)
+        path_parts = parsed_url.path.strip('/').split('/')
+        resource_index = self._url_resource_index(path_parts)
+        resource = path_parts[resource_index] if resource_index is not None else ""
+        if resource == 'issues':
+            # gitlab provider does not support issue urls, so read the project path
+            # from the matching merge request url, just to get the git repo url:
+            path_parts[resource_index] = 'merge_requests'
+            pr_or_issue_url = parsed_url._replace(path='/' + '/'.join(path_parts)).geturl()
+        if resource in ('issues', 'merge_requests'):
             repo_project_path, _ = self._parse_merge_request_url(pr_or_issue_url)
         if not repo_project_path:
             get_logger().error(f"url is not a valid merge requests url: {pr_or_issue_url}")
@@ -743,12 +764,17 @@ class GitLabProvider(GitProvider):
         return repo_project_path
 
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
-        provider_url = issues_or_pr_url
-        repo_path = self._get_project_path_from_pr_or_issue_url(provider_url)
-        if not repo_path or repo_path not in issues_or_pr_url:
+        repo_path = self._get_project_path_from_pr_or_issue_url(issues_or_pr_url)
+        parsed_url = urlparse(issues_or_pr_url)
+        path_parts = parsed_url.path.strip('/').split('/')
+        resource_index = self._url_resource_index(path_parts)
+        if not repo_path or resource_index is None:
             get_logger().error(f"Unable to retrieve project path from url: {issues_or_pr_url}")
             return ""
-        return f"{issues_or_pr_url.split(repo_path)[0]}{repo_path}.git"
+        project_parts = path_parts[:resource_index]
+        if project_parts[-1:] == ['-']:
+            project_parts = project_parts[:-1]
+        return f"{parsed_url.scheme}://{parsed_url.netloc}/{'/'.join(project_parts)}.git"
 
     # Given a git repo url, return prefix and suffix of the provider in order to view
     # a given file belonging to that repo.
@@ -1022,7 +1048,7 @@ class GitLabProvider(GitProvider):
         self._incremental_head_sha = commit.sha
         self._commit_diff_refs = SimpleNamespace(
             base_commit_sha=parent_ids[0], start_commit_sha=parent_ids[0], head_commit_sha=commit.sha)
-        for diff in gl_commit.diff(get_all=True):
+        for diff in gl_commit.diff(get_all=True, per_page=100):
             if diff.get("new_path"):
                 self.unreviewed_files_map[diff["new_path"]] = diff
         return list(self.unreviewed_files_map)
@@ -1059,7 +1085,7 @@ class GitLabProvider(GitProvider):
         # otherwise we'd re-fetch from GitLab on every call for MRs that have no notes.
         if not hasattr(self, '_incremental_notes_cache'):
             try:
-                self._incremental_notes_cache = list(self.mr.notes.list(get_all=True))
+                self._incremental_notes_cache = list(self.mr.notes.list(get_all=True, per_page=100))
             except (GitlabError, RequestException) as e:
                 get_logger().error(f"Failed to list MR notes for incremental review: {e}")
                 return None
@@ -1423,7 +1449,7 @@ class GitLabProvider(GitProvider):
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         try:
-            discussions = self.mr.discussions.list(get_all=True)
+            discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return
@@ -1576,7 +1602,7 @@ class GitLabProvider(GitProvider):
             )
             return
         try:
-            discussions = self.mr.discussions.list(get_all=True)
+            discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return
@@ -1646,7 +1672,7 @@ class GitLabProvider(GitProvider):
             )
             return 0
         try:
-            discussions = self.mr.discussions.list(get_all=True)
+            discussions = self.mr.discussions.list(get_all=True, per_page=100)
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to list discussions of merge request {self.id_mr}: {e}")
             return 0
@@ -1720,7 +1746,7 @@ class GitLabProvider(GitProvider):
         seen = set(bodies)
         if self.mr is None:
             return bodies
-        for discussion in self.mr.discussions.list(get_all=True):
+        for discussion in self.mr.discussions.list(get_all=True, per_page=100):
             attrs = getattr(discussion, "attributes", None) or {}
             for note in attrs.get("notes", []) or []:
                 if isinstance(note, dict):
@@ -1728,13 +1754,13 @@ class GitLabProvider(GitProvider):
                     if body and body not in seen:
                         bodies.append(body)
                         seen.add(body)
-        for note in self.mr.notes.list(get_all=True):
+        for note in self.mr.notes.list(get_all=True, per_page=100):
             body = getattr(note, "body", "") or ""
             if body and body not in seen:
                 bodies.append(body)
                 seen.add(body)
         try:
-            for draft in self.mr.draft_notes.list(get_all=True):
+            for draft in self.mr.draft_notes.list(get_all=True, per_page=100):
                 body = getattr(draft, "note", "") or ""
                 if body and body not in seen:
                     bodies.append(body)
@@ -1932,7 +1958,7 @@ class GitLabProvider(GitProvider):
             # Caller retries publish the queued batch without recreating its suggestions.
             if not self._failed_draft_batch:
                 try:
-                    self._publish_suggestion_drafts(self.mr.draft_notes.list(get_all=True))
+                    self._publish_suggestion_drafts(self.mr.draft_notes.list(get_all=True, per_page=100))
                     self._failed_draft_batch = True
                 except (GitlabError, RequestException) as e:
                     get_logger().warning(f"Retrying draft publication for MR {self.id_mr} failed: {e}")
@@ -2037,7 +2063,7 @@ class GitLabProvider(GitProvider):
             try:
                 # Dedup-only runs may still refer to pending drafts from an earlier operation.
                 try:
-                    pending = self.mr.draft_notes.list(get_all=True)
+                    pending = self.mr.draft_notes.list(get_all=True, per_page=100)
                 except (GitlabError, RequestException) as e:
                     if self._code_suggestion_draft_queued:
                         raise
@@ -2175,7 +2201,7 @@ class GitLabProvider(GitProvider):
         return self.mr.description
 
     def get_issue_comments(self):
-        return self.mr.notes.list(get_all=True)[::-1]
+        return self.mr.notes.list(get_all=True, per_page=100)[::-1]
 
     def get_issue_comments_newest_first(self):
         return list(reversed(self.get_issue_comments()))
@@ -2600,10 +2626,11 @@ class GitLabProvider(GitProvider):
         if same_host and base_path_parts and path_parts[:len(base_path_parts)] == base_path_parts:
             path_parts = path_parts[len(base_path_parts):]
 
-        if 'merge_requests' not in path_parts:
+        resource_index = self._url_resource_index(path_parts)
+        if resource_index is not None and path_parts[resource_index] == 'merge_requests':
+            mr_index = resource_index
+        else:
             raise ValueError("The provided URL does not appear to be a GitLab merge request URL")
-
-        mr_index = path_parts.index('merge_requests')
         # Ensure there is an ID after 'merge_requests'
         if len(path_parts) <= mr_index + 1:
             raise ValueError("The provided URL does not contain a merge request ID")
@@ -2641,7 +2668,7 @@ class GitLabProvider(GitProvider):
     def get_user_id(self):
         return None
 
-    def publish_labels(self, pr_types):
+    def publish_labels(self, pr_types) -> bool:
         try:
             # Send an incremental diff instead of assigning ``self.mr.labels``, which
             # would PUT the whole array and wipe any label added to the MR after this
@@ -2654,7 +2681,7 @@ class GitLabProvider(GitProvider):
             to_add = sorted(desired - current)
             to_remove = sorted(current - desired)
             if not to_add and not to_remove:
-                return
+                return True
             try:
                 if to_add:
                     self.mr.add_labels = ",".join(to_add)
@@ -2668,6 +2695,8 @@ class GitLabProvider(GitProvider):
                 self._clear_pending_mr_attrs("add_labels", "remove_labels")
         except (GitlabError, RequestException) as e:
             get_logger().warning(f"Failed to publish labels, error: {e}")
+            return False
+        return True
 
     def _read_mr_labels(self):
         # Reading ``mr.labels`` is not free of side effects: python-gitlab cannot detect

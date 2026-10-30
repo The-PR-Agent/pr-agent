@@ -10,13 +10,19 @@ pr_agent.command attribute, or a pr_agent.commands metric label, and must not
 inflate the counter.
 """
 
-from unittest.mock import Mock
+import copy
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from httpx import Request
+from openai import APIConnectionError
 from opentelemetry.trace import StatusCode
+from starlette_context import request_cycle_context
 
 import pr_agent.agent.pr_agent as pr_agent_module
 from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.algo.run_details import command_failed
 from pr_agent.config_loader import get_settings
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
 from tests.unittest._telemetry_helpers import build_in_memory_tracer
@@ -124,6 +130,77 @@ async def test_known_command_increments_counter_with_bounded_labels(telemetry, m
     assert amount == 1
     assert labels["pr_agent.command"] == "customcmd"
     assert labels["vcs.provider.name"] == get_settings().config.git_provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("follow_up_filename", ["app.py", "ignored.py"])
+async def test_recorded_review_failure_marks_span_and_next_review_starts_clean(
+    follow_up_filename, monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OTEL_TRACES_SAMPLER", "always_on")
+    monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "false")
+    tracer, exporter = build_in_memory_tracer()
+    monkeypatch.setattr(pr_agent_module, "get_tracer", lambda: tracer)
+    settings = copy.deepcopy(get_settings())
+    for key, value in {
+        "config.git_provider": "plain-diff",
+        "config.model": "gpt-4o",
+        "config.fallback_models": ["gpt-4o-mini"],
+        "config.use_repo_settings_file": False,
+        "config.extra_config_url": None,
+        "config.propagate_tool_errors": False,
+        "config.repo_context_files": [],
+        "plain_diff.output_path": None,
+        "plain_diff.json_output_path": None,
+        "ignore.glob": ["ignored.py"],
+        "ignore.regex": [],
+        "pr_reviewer.persistent_comment": False,
+        "pr_reviewer.enable_review_labels_effort": False,
+        "pr_reviewer.enable_review_labels_security": False,
+        "otel.include_error_details": False,
+    }.items():
+        settings.set(key, value)
+    diff = """diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1 +1 @@
+-value = 1
++value = 2
+"""
+    response = (
+        "review:\n  estimated_effort_to_review_[1-5]: 1\n"
+        "  relevant_tests: 'No'\n  security_concerns: 'No'\n  key_issues_to_review: []\n",
+        "stop",
+    )
+    for failed, filename in [(True, "app.py"), (False, follow_up_filename)]:
+        ai = SimpleNamespace()
+        ai.chat_completion = AsyncMock(
+            side_effect=APIConnectionError(request=Request("POST", SENTINEL_URL)) if failed else None,
+            return_value=response,
+        )
+        settings.set("plain_diff.content", diff.replace("app.py", filename))
+        # Each request gets a fresh provider cache; the failure collector remains in this task.
+        with request_cycle_context({"settings": settings}):
+            handled = await PRAgent(ai_handler=lambda ai=ai: ai).handle_request("local_diff", "/review")
+
+        assert handled is True
+        assert command_failed() is failed
+        expected_models = ["gpt-4o", "gpt-4o-mini"] if failed else (
+            ["gpt-4o"] if filename == "app.py" else []
+        )
+        assert [call.kwargs["model"] for call in ai.chat_completion.await_args_list] == expected_models
+        for call in ai.chat_completion.await_args_list:
+            assert "value = 2" in call.kwargs["user"]
+        span = exporter.get_finished_spans()[-1]
+        assert span.status.status_code is (StatusCode.ERROR if failed else StatusCode.OK)
+        assert span.attributes.get("error.type") == ("tool_execution_failed" if failed else None)
+        assert span.status.description is None
+        assert "error.message" not in span.attributes
+        assert SENTINEL_URL not in str((span.attributes, span.status.description, span.events))
+        assert span.events == ()
+
+    assert len(exporter.get_finished_spans()) == 2
 
 
 @pytest.mark.asyncio

@@ -2056,7 +2056,7 @@ class TestGitLabProvider:
     def test_publish_labels_noop_when_sets_equal(self, gitlab_provider):
         gitlab_provider.mr = self._real_mr(["bug", "review effort 3/5"])
 
-        gitlab_provider.publish_labels(["bug", "review effort 3/5"])
+        assert gitlab_provider.publish_labels(["bug", "review effort 3/5"]) is True
 
         gitlab_provider.mr.manager.update.assert_not_called()
 
@@ -2065,7 +2065,7 @@ class TestGitLabProvider:
             ["bug"], update_result={"iid": 1, "labels": ["bug", "review effort 3/5"]}
         )
 
-        gitlab_provider.publish_labels(["bug", "review effort 3/5"])
+        assert gitlab_provider.publish_labels(["bug", "review effort 3/5"]) is True
 
         payload = self._wire_payload(gitlab_provider.mr)
         assert payload["add_labels"] == "review effort 3/5"
@@ -2118,7 +2118,7 @@ class TestGitLabProvider:
         # publish_description() saves the same object right afterwards.
         gitlab_provider.mr = self._real_mr(["bug"])
 
-        gitlab_provider.publish_labels(["bug"])
+        assert gitlab_provider.publish_labels(["bug"]) is True
 
         assert gitlab_provider.mr._get_updated_data() == {}
 
@@ -2138,13 +2138,14 @@ class TestGitLabProvider:
 
         assert gitlab_provider.get_pr_labels() == ["bug"]
 
-    def test_publish_labels_drops_pending_diff_when_save_fails(self, gitlab_provider):
+    @pytest.mark.parametrize("error", [RequestException("network blip"), GitlabUpdateError("rejected")])
+    def test_publish_labels_drops_pending_diff_when_save_fails(self, gitlab_provider, error):
         # save() clears pending attributes itself, but only when it succeeds. If they
         # survive a failure, the next save() on this MR — publish_description() runs
         # one moments later — resends the label diff.
-        gitlab_provider.mr = self._real_mr(["bug"], update_error=RequestException("network blip"))
+        gitlab_provider.mr = self._real_mr(["bug"], update_error=error)
 
-        gitlab_provider.publish_labels(["review effort 3/5"])
+        assert gitlab_provider.publish_labels(["review effort 3/5"]) is False
 
         assert gitlab_provider.mr.manager.update.call_count == 1
         assert gitlab_provider.mr._get_updated_data() == {}
@@ -3169,6 +3170,30 @@ class TestGitLabCapabilities:
         provider.mr.notes.list.return_value = ["newest", "middle", "oldest"]
 
         assert provider.get_issue_comments() == ["oldest", "middle", "newest"]
+
+    def test_get_issue_comments_reads_all_notes_with_larger_pages(self):
+        provider = self._provider()
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        provider.mr = client.projects.get("test/repo", lazy=True).mergerequests.get(1, lazy=True)
+        next_url = (
+            "https://gitlab.example.com/api/v4/projects/test%2Frepo/"
+            "merge_requests/1/notes?page=2&per_page=100"
+        )
+        responses = []
+        for start, stop, next_link in [(101, 1, next_url), (1, 0, None)]:
+            response = MagicMock()
+            response.json.return_value = [{"id": index} for index in range(start, stop, -1)]
+            response.links = {"next": {"url": next_link}} if next_link else {}
+            response.headers = {}
+            responses.append(response)
+        client.http_request = MagicMock(side_effect=responses)
+
+        comments = provider.get_issue_comments()
+
+        assert [comment.id for comment in comments] == list(range(1, 102))
+        assert client.http_request.call_count == 2
+        assert client.http_request.call_args_list[0].kwargs["per_page"] == 100
+        assert client.http_request.call_args_list[1].args[1] == next_url
 
     def test_persistent_state_ownership_uses_authenticated_user_id(self):
         provider = self._provider()

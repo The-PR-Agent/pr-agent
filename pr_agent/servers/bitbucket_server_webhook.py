@@ -22,6 +22,7 @@ from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
+    auto_feedback_disabled,
     get_pr_commands,
     is_command_comment,
     payload_log_summary,
@@ -156,7 +157,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             return JSONResponse(
                 status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "PR ignored by config"})
             )
-        if get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+        if auto_feedback_disabled():  # auto commands for PR, and auto feedback is disabled
             get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {pr_url}", **log_context)
             return JSONResponse(
                 status_code=status.HTTP_200_OK,

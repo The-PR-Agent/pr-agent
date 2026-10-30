@@ -265,7 +265,7 @@ def test_gitlab_scopes_the_diff_to_one_commit_against_its_parent():
     assert provider.get_files() == ["a.py"]
     assert (incremental.last_seen_commit_sha, incremental.first_new_commit_sha) == ("parent", "child")
     assert provider._incremental_head_sha == "child"
-    project.commits.get.return_value.diff.assert_called_once_with(get_all=True)
+    project.commits.get.return_value.diff.assert_called_once_with(get_all=True, per_page=100)
 
     provider._expand_submodule_changes = lambda changes, refs: changes
     provider.get_pr_file_content = MagicMock(side_effect=lambda path, sha, **_: f"{sha}\n")
@@ -311,7 +311,7 @@ def test_github_scopes_content_to_the_commit_instead_of_the_pr_head():
 
     provider.pr = SimpleNamespace(head=SimpleNamespace(sha="head"))
     provider.repo_obj = MagicMock()
-    provider._get_pr_file_content = MagicMock(side_effect=lambda file, sha, path=None: f"{sha}\n")
+    provider._get_pr_file_content = MagicMock(side_effect=lambda file, sha, path=None, **_: f"{sha}\n")
     with patch("pr_agent.git_providers.github_provider.filter_ignored", side_effect=lambda files: files):
         [patch_info] = provider._get_diff_files()
     assert (patch_info.base_file, patch_info.head_file) == ("parent\n", "child\n")
