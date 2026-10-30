@@ -111,7 +111,7 @@ OUTPUT_SINK_TYPES: dict[str, type[OutputSink]] = {
 
 
 def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
-    """Check enabled destination syntax without constructing sinks or probing resources."""
+    """Check basic enabled destination settings without constructing sinks or probing resources."""
     enable = cfg.get("enable", False)
     if isinstance(enable, str):
         enable = enable.lower().strip() not in ("false", "0", "no", "")
@@ -153,7 +153,7 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
             if not isinstance(value, str) or not value.strip():
                 return False, f"push_outputs.{key} must be a nonempty string"
     # Distinct custom names are recognized only; their private configuration is not inspected.
-    return True, "push_outputs destination syntax checked (custom sinks: recognition only)"
+    return True, "push_outputs basic destination settings checked (custom sinks: recognition only)"
 
 
 def create_output_sink(channel: str) -> OutputSink:

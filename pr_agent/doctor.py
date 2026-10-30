@@ -4,7 +4,7 @@
 configuration can actually reach a model: the model is set, its provider has a
 usable API key, and a one-token completion succeeds. The exit code is 0 only when
 every check passes, so CI setups can gate on it. Enabled output sinks receive an
-additional syntax check, without constructing sinks or probing their destinations.
+additional basic settings check, without constructing sinks or probing their destinations.
 """
 
 import os
