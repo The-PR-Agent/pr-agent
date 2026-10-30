@@ -80,7 +80,11 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>per_commit_review</b></td>
-    <td>If set to true, each commit of the PR is reviewed on its own diff and commit message, and one review comment is published per commit. See <a href="#reviewing-each-commit-separately">Reviewing each commit separately</a>. Default is false.</td>
+    <td>If set to true, each commit of the PR is reviewed on its own diff and commit message, and one review comment is published per commit. See <a href="#reviewing-each-commit-separately">Reviewing each commit separately</a>. It can't be turned on from a command argument, only from a configuration file or environment variable. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>max_commits_per_review</b></td>
+    <td>Maximum number of commits <code>per_commit_review</code> reviews one by one. When more commits are selected for review, they are reviewed together in one review instead, with a notice. 0 removes the limit. It can't be set from a command argument or a per directory configuration file. Default is 10.</td>
   </tr>
   <tr>
     <td><b>publish_review_failure_comment</b></td>
@@ -321,13 +325,8 @@ Use triple quotes to write multi-line instructions. Use bullet points to make th
 
 :::tip
 
-Projects that keep one logical change per commit can ask for a review of every commit instead of the combined PR diff:
-
-```
-/review --pr_reviewer.per_commit_review=true
-```
-
-or, for every review, in a configuration file:
+Projects that keep one logical change per commit can ask for a review of every commit instead of the combined PR diff,
+in a configuration file:
 
 ```
 [pr_reviewer]
@@ -357,6 +356,9 @@ review comment.
 Merge commits, empty commits and the root commit of a history have no diff of their own and are skipped. A commit that
 fails to review is reported like a failed review and does not stop the remaining commits. Every reviewed commit is a
 separate model call, so a PR with many commits costs accordingly; `-i` keeps repeated runs to the new commits.
+`max_commits_per_review` (default 10) caps the cost: when more commits than that are selected, they are reviewed
+together in one review with a notice. Both settings belong to the operator, so a command argument such as
+`--pr_reviewer.per_commit_review=true` is rejected.
 
 Per commit review is available on GitHub and GitLab. Other git providers fall back to a regular review of the whole PR.
 GitHub lists at most 250 commits of a PR, so a PR with more commits than that is also reviewed as a whole, with a

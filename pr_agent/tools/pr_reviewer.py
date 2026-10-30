@@ -65,7 +65,7 @@ from pr_agent.algo.run_output import (
 )
 from pr_agent.algo.setting_utils import _as_bool_setting
 from pr_agent.algo.skills_loader import get_skills_context
-from pr_agent.algo.token_budget import AttemptTokenBudget, clip_tokens
+from pr_agent.algo.token_budget import AttemptTokenBudget, _as_int, clip_tokens
 from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
@@ -310,30 +310,37 @@ class PRReviewer:
         else:
             await self._run_review()
 
+    async def _review_as_one(self, reason: str, notice: str) -> None:
+        get_logger().warning(f"{reason}, skipping per commit review")
+        if get_settings().config.publish_output and not get_settings().config.get("is_auto_command", False):
+            self.git_provider.publish_comment(notice)
+        await self._run_review()
+
     async def _run_per_commit(self) -> None:
         commits = self.git_provider.get_pr_commits()
         publish_notice = (get_settings().config.publish_output
                           and not get_settings().config.get("is_auto_command", False))
         if commits is None:
-            get_logger().warning(f"Per commit review is not supported for {get_settings().config.git_provider}, "
-                                 f"reviewing the whole PR")
-            if publish_notice:
-                self.git_provider.publish_comment("Per commit review is not supported for this git provider, "
-                                                  "so the whole PR was reviewed instead.")
-            await self._run_review()
+            await self._review_as_one(
+                f"Per commit review is not supported for {get_settings().config.git_provider}",
+                "Per commit review is not supported for this git provider, so the whole PR was reviewed instead.")
             return
         total_commits = getattr(getattr(self.git_provider, "pr", None), "commits", None)
         if isinstance(total_commits, int) and len(commits) < total_commits:
-            get_logger().warning(f"PR has {total_commits} commits but the git provider listed only {len(commits)}, "
-                                 f"reviewing the whole PR")
-            if publish_notice:
-                self.git_provider.publish_comment(
-                    f"This PR has {total_commits} commits, more than the {len(commits)} the git provider API "
-                    f"returns, so per commit review was skipped and the whole PR was reviewed instead.")
-            await self._run_review()
+            await self._review_as_one(
+                f"PR has {total_commits} commits but the git provider listed only {len(commits)}",
+                f"This PR has {total_commits} commits, more than the {len(commits)} the git provider API "
+                f"returns, so per commit review was skipped and the whole PR was reviewed instead.")
             return
         commits = self._commits_to_review(commits)
         if commits is None:
+            return
+        max_commits = _as_int(get_settings().pr_reviewer.get("max_commits_per_review", 10), 10)
+        if 0 < max_commits < len(commits):
+            await self._review_as_one(
+                f"{len(commits)} commits to review exceed max_commits_per_review={max_commits}",
+                f"There are {len(commits)} commits to review, more than the limit of {max_commits} for per commit "
+                f"review, so they were reviewed together in one review instead.")
             return
 
         base_vars = copy.deepcopy(self.vars)

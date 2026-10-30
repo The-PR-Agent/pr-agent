@@ -641,6 +641,8 @@ enable_help_text = true
 num_max_findings = 4
 enable_large_pr_chunking = true
 max_number_of_calls = 9999
+per_commit_review = true
+max_commits_per_review = 0
 inline_key_issues = true
 enable_review_labels_security = false
 enable_review_labels_effort = false
@@ -731,6 +733,8 @@ skip_comments = true
         # not multiply AI calls on their own.
         assert get_settings().pr_reviewer.enable_large_pr_chunking is False
         assert get_settings().pr_reviewer.max_number_of_calls != 9999
+        assert get_settings().pr_reviewer.per_commit_review is False
+        assert get_settings().pr_reviewer.max_commits_per_review == 10
         assert get_settings().pr_description.enable_large_pr_handling != 999999
         assert get_settings().pr_description.max_ai_calls != 400
         assert get_settings().pr_description.async_ai_calls is True

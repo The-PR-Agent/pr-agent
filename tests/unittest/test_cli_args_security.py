@@ -131,6 +131,10 @@ FORBIDDEN_ARGS = [
     # Resource, write, and regex controls stay host-controlled when commands are
     # supplied through comments, even when root repository settings may set them.
     "--pr_reviewer.max_number_of_calls=10",
+    "--pr_reviewer.per_commit_review=true",
+    "--pr_reviewer__per_commit_review=true",
+    '--pr_reviewer={"per_commit_review": true}',
+    "--pr_reviewer.max_commits_per_review=0",
     "--pr_code_suggestions.parallel_calls=true",
     '--config.fallback_models=["gpt-4.1"]',
     "--config.num_retries=10",

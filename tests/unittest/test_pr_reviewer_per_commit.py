@@ -131,6 +131,48 @@ async def test_more_commits_than_the_provider_lists_reviews_the_whole_pr_with_a_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("max_commits", "per_commit"), [(2, False), (3, True), (0, True), ("2", False)])
+async def test_max_commits_per_review_reviews_the_commits_together_above_the_cap(settings, monkeypatch, max_commits,
+                                                                                 per_commit):
+    monkeypatch.setattr(get_settings().pr_reviewer, "max_commits_per_review", max_commits, raising=False)
+    provider = _provider({"a" * 40: ["a.py"], "b" * 40: ["b.py"], "c" * 40: ["c.py"]})
+    reviewer = _reviewer(provider)
+    reviewed = []
+
+    async def review():
+        reviewed.append(reviewer._review_commit)
+
+    with patch.object(reviewer, "_run_review", side_effect=review):
+        await reviewer.run()
+
+    if per_commit:
+        assert [commit.sha for commit in reviewed] == [commit.sha for commit in COMMITS]
+        provider.publish_comment.assert_not_called()
+    else:
+        assert reviewed == [None]
+        assert "3 commits to review, more than the limit of 2" in provider.publish_comment.call_args.args[0]
+        provider.set_commit_review_scope.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_max_commits_per_review_counts_only_the_new_commits_of_an_incremental_review(settings, monkeypatch):
+    monkeypatch.setattr(get_settings().pr_reviewer, "max_commits_per_review", 2, raising=False)
+    provider = _provider({"b" * 40: ["b.py"], "c" * 40: ["c.py"]})
+    reviewer = _reviewer(provider)
+    reviewer.incremental = _incremental("b" * 40)
+    reviewed = []
+
+    async def review():
+        reviewed.append(reviewer._review_commit.sha)
+
+    with patch.object(reviewer, "_can_run_incremental_review", return_value=True), \
+            patch.object(reviewer, "_run_review", side_effect=review):
+        await reviewer.run()
+
+    assert reviewed == ["b" * 40, "c" * 40]
+
+
+@pytest.mark.asyncio
 async def test_no_commit_with_changes_publishes_a_skip_notice(settings):
     provider = _provider({"a" * 40: [], "b" * 40: [], "c" * 40: []})
     reviewer = _reviewer(provider)
@@ -183,12 +225,13 @@ def test_commit_review_markdown_uses_incremental_header_and_names_the_commit():
 
 
 def test_review_prompt_includes_the_commit_message_only_in_per_commit_mode(monkeypatch):
-    from jinja2 import Environment, StrictUndefined, select_autoescape
+    from jinja2 import StrictUndefined
+    from jinja2.sandbox import SandboxedEnvironment
 
     from tests.unittest.test_pr_reviewer_prompt_contract import _build_reviewer
 
     prompt_vars = _build_reviewer(monkeypatch).vars
-    environment = Environment(autoescape=select_autoescape(default_for_string=False), undefined=StrictUndefined)
+    environment = SandboxedEnvironment(undefined=StrictUndefined)
     template = environment.from_string(get_settings().pr_review_prompt.user)
     assert "COMMIT_MESSAGE_BEGIN" not in template.render(**prompt_vars)
     rendered = template.render(**dict(prompt_vars, commit_under_review="Fix the parser\n\nBecause X"))
