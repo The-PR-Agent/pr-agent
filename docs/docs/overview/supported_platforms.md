@@ -55,7 +55,7 @@ The `local`, `plain-diff`, and MOSAICO modes do not use a hosting platform. The 
 | [USAGE](../usage-guide/index.md) | [CLI](../usage-guide/automations_and_usage.md#local-repo-cli)                  |   ✅   |   ✅   |       |
 |       | A2A server                                                                             |        |        |   ✅   |
 
-Core abilities that work from the diff itself, such as compression, dynamic context, repo context files, multiple models, and self reflection, apply to all three modes. Output marked 💬 is written to the local output instead of a PR comment.
+Core abilities that work from the diff itself, such as compression, dynamic context, multiple models, and self reflection, apply to all three modes. Repo context files apply only to local mode. Output marked 💬 is written to the local output instead of a PR comment.
 
 ## Gerrit and CodeCommit
 
