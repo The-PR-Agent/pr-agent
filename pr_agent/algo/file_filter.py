@@ -43,6 +43,8 @@ def filter_ignored_with_status(files, platform='github'):
             get_logger().warning("'ignore_language_framework' should be a list. Skipping language framework filtering.")
             code_generators = []
         for cg in code_generators:
+            if not isinstance(cg, str):
+                complete = False
             glob_patterns = get_settings().generated_code.get(cg, [])
             if isinstance(glob_patterns, str):
                 glob_patterns = [glob_patterns]

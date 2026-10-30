@@ -255,6 +255,11 @@ class TestDiffInputProviderBasics:
         assert p.get_diff_files() is original
         assert p.get_filtered_diff_file_names() == []
 
+        monkeypatch.setattr(global_settings.ignore, "glob", [])
+        monkeypatch.setattr(global_settings.config, "ignore_language_framework", [42])
+        assert p.get_diff_files() is original
+        assert p.get_filtered_diff_file_names() == []
+
         assert p.pr.diff_files is original
         assert p.get_files() == [row[0] for row in contents]
         assert all(actual is expected for actual, expected in zip(original, original_elements, strict=True))

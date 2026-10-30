@@ -381,6 +381,21 @@ class TestIgnoreFilter:
         assert status_logs == legacy_logs
         assert "Skipping non-string ignore" in status_logs
 
+    def test_nonstring_framework_identifier_preserves_legacy_filter_but_reports_incomplete(self, monkeypatch):
+        monkeypatch.setattr(global_settings.ignore, "regex", [])
+        monkeypatch.setattr(global_settings.ignore, "glob", [])
+        monkeypatch.setattr(global_settings.config, "ignore_language_framework", [42, "protobuf"])
+        monkeypatch.setattr(global_settings.generated_code, "protobuf", ["vendor/**"])
+        files = [type("", (object,), {"filename": name})()
+                 for name in ("vendor/yarn.lock", "app.py", "package-lock.json")]
+        results = {}
+        legacy_logs = _capture_logs(lambda: results.setdefault("legacy", filter_ignored(list(files))))
+        status_logs = _capture_logs(lambda: results.setdefault("status", filter_ignored_with_status(list(files))))
+
+        assert results["legacy"] == files[1:]
+        assert results["status"] == (files[1:], False)
+        assert status_logs == legacy_logs == ""
+
     def test_repeated_filtering_does_not_mutate_regex_settings(self, monkeypatch):
         """Ensure repeated filtering does not append translated glob patterns to shared settings."""
         configured_regex = ['^docs/']
