@@ -313,6 +313,19 @@ MAX_TOKENS = {
     "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0": 200000,
     # -- Non-Claude models -------------------------------------------------
     "bedrock_mantle/xai.grok-4.3": 1000000,
+    # AWS lists Grok 4.6 on Mantle and Bedrock Runtime with 500K context.
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html
+    "bedrock_mantle/xai.grok-4.6": 500000,
+    "bedrock/us.xai.grok-4.6": 500000,
+    "bedrock/global.xai.grok-4.6": 500000,
+    "bedrock/converse/us.xai.grok-4.6": 500000,
+    "bedrock/converse/global.xai.grok-4.6": 500000,
+    # Grok 4.7 is Runtime-only, with 524,288 tokens shared between input and output.
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-7.html
+    "bedrock/us.xai.grok-4.7": 524288,
+    "bedrock/global.xai.grok-4.7": 524288,
+    "bedrock/converse/us.xai.grok-4.7": 524288,
+    "bedrock/converse/global.xai.grok-4.7": 524288,
     # 1M context, but may be limited by config.max_model_tokens
     'dashscope/qwen3.8-max': 1000000,
     # 1M, qwen3.8-max is the actual DashScope model id (context_window 1M per QwenCode metadata),

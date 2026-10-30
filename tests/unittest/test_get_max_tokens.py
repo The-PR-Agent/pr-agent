@@ -643,6 +643,29 @@ class TestGetMaxTokens:
 
         assert get_max_tokens("bedrock_mantle/xai.grok-4.3") == 1000000
 
+    @pytest.mark.parametrize("model,expected", [
+        ("bedrock_mantle/xai.grok-4.6", 500000),
+        ("bedrock/us.xai.grok-4.6", 500000),
+        ("bedrock/global.xai.grok-4.6", 500000),
+        ("bedrock/converse/us.xai.grok-4.6", 500000),
+        ("bedrock/converse/global.xai.grok-4.6", 500000),
+        ("bedrock/us.xai.grok-4.7", 524288),
+        ("bedrock/global.xai.grok-4.7", 524288),
+        ("bedrock/converse/us.xai.grok-4.7", 524288),
+        ("bedrock/converse/global.xai.grok-4.7", 524288),
+    ])
+    def test_bedrock_grok_4_6_and_4_7_model_max_tokens(self, monkeypatch, model, expected):
+        fake_settings = type("", (), {
+            "config": type("", (), {
+                "custom_model_max_tokens": 0,
+                "max_model_tokens": 0,
+            })()
+        })()
+
+        monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
+
+        assert get_max_tokens(model) == expected
+
     @pytest.mark.parametrize("model", [
         "bedrock/moonshotai.kimi-k3",
         "bedrock/us.moonshotai.kimi-k3",
