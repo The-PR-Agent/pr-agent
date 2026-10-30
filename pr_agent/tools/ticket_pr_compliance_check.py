@@ -1222,7 +1222,12 @@ async def extract_tickets(git_provider):
                     # Extract sub-issues
                     sub_issues_content = []
                     try:
-                        raw_sub_issues = git_provider.fetch_sub_issues(ticket) or []
+                        # Reuse the completed parent response when it explicitly reports no children.
+                        issue_data = getattr(issue_main, "raw_data", {})
+                        summary = issue_data.get("sub_issues_summary") if isinstance(issue_data, dict) else None
+                        total = summary.get("total") if isinstance(summary, dict) else None
+                        known_empty = isinstance(total, int) and not isinstance(total, bool) and total == 0
+                        raw_sub_issues = [] if known_empty else git_provider.fetch_sub_issues(ticket) or []
                         valid_sub_issues = [
                             url for url in raw_sub_issues
                             if isinstance(url, str) and url.strip()
