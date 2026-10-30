@@ -144,7 +144,7 @@ from pr_agent.algo.prompt_fragments import render_skills_prefix
 from pr_agent.algo.run_details import _as_decimal_cost, record_ai_call
 from pr_agent.algo.run_output import get_version
 from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
-from pr_agent.algo.skills_loader import get_skills_context
+from pr_agent.algo.skills_loader import get_skills_context, last_relevance_hint
 from pr_agent.algo.url_safety import with_safe_redirects
 from pr_agent.algo.utils import ReasoningEffort
 from pr_agent.config_loader import get_settings, get_verbosity_level, global_settings
@@ -2780,7 +2780,10 @@ class LiteLLMAIHandler(BaseAiHandler):
         content = messages[system_index].get("content")
         if not isinstance(content, str):
             return
-        prefix = render_skills_prefix(skills_context=get_skills_context())
+        # Re-render with the hint the tools recorded: when the token budget drops skills, the
+        # hinted block differs from the alphabetical one, and a mismatch here would silently
+        # skip the split (#3834).
+        prefix = render_skills_prefix(skills_context=get_skills_context(relevance_hint=last_relevance_hint()))
         if not prefix or not content.startswith(prefix):
             return
         control = system_point.get("control") or {"type": "ephemeral"}

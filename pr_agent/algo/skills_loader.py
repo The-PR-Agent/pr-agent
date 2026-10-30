@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import os
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 import yaml
@@ -50,6 +51,18 @@ from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+_last_relevance_hint: ContextVar[str] = ContextVar("pr_agent_skills_relevance_hint", default="")
+
+
+def last_relevance_hint() -> str:
+    """The relevance hint the most recent ``get_skills_context()`` call in this task used.
+
+    The prompt-cache split in the AI handler renders the skills prefix again; reading
+    the recorded hint keeps that render identical to the block the tools embedded,
+    including when the token budget drops skills (#3834).
+    """
+    return _last_relevance_hint.get()
 
 _FRONTMATTER_DELIMITER = "---"
 _DEFAULT_MAX_SKILLS_TOKENS = 8000
@@ -424,6 +437,7 @@ def get_skills_context(relevance_hint: str = "") -> str:
     ``''`` when skills are disabled, no paths are configured, or no skills are
     found.
     """
+    _last_relevance_hint.set(relevance_hint)
     settings = get_settings()
     enabled = bool(settings.skills.enabled)
     configured_paths = settings.skills.paths

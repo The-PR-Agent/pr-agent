@@ -10,6 +10,7 @@ import pytest
 from jinja2 import Environment, StrictUndefined
 from starlette_context import request_cycle_context
 
+import pr_agent.tools
 from pr_agent.algo import skills_loader
 from pr_agent.algo.skills_loader import (
     Skill,
@@ -679,3 +680,25 @@ class TestRelevanceHintCache:
         assert "Skill: a-release-notes" not in terraform
         assert "Skill: a-release-notes" in notes
         assert "Skill: z-terraform-standards" not in notes
+
+
+class TestLastRelevanceHint:
+    def test_get_skills_context_records_the_hint_for_the_cache_split(self):
+        # The AI handler's prompt-cache split re-renders the skills prefix with the
+        # recorded hint so it stays identical to the block the tools embedded when
+        # the budget drops skills (#3834).
+        skills_loader.get_skills_context(relevance_hint="Terraform migration PR")
+        assert skills_loader.last_relevance_hint() == "Terraform migration PR"
+
+        # A later hint-less call resets the record, so a stale hint cannot leak into
+        # the next command in the same task.
+        skills_loader.get_skills_context()
+        assert skills_loader.last_relevance_hint() == ""
+
+    @pytest.mark.parametrize(
+        "tool_file",
+        ["pr_reviewer", "pr_code_suggestions", "pr_description", "pr_questions"],
+    )
+    def test_every_tool_passes_a_relevance_hint(self, tool_file):
+        source = Path(pr_agent.tools.__file__).parent.joinpath(f"{tool_file}.py").read_text(encoding="utf-8")
+        assert "relevance_hint=" in source
