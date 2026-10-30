@@ -708,7 +708,7 @@ class GitProvider(ABC):
     def _is_valid_code_suggestion(self, suggestion: dict) -> bool:
         relevant_lines_start = suggestion["relevant_lines_start"]
         relevant_lines_end = suggestion["relevant_lines_end"]
-        if not relevant_lines_start or relevant_lines_start == -1:
+        if not relevant_lines_start or relevant_lines_start < 1:
             self._log_invalid_code_suggestion(
                 f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}"
             )

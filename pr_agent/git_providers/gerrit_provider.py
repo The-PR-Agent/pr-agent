@@ -506,6 +506,16 @@ class GerritProvider(GitProvider):
                 get_logger().warning(f"Skipping suggestion with path traversal: {suggestion['relevant_file']}")
                 continue
 
+            # Gerrit rewrites the file from the end line, so an inverted range keeps every
+            # original line and repeats one: drop it instead of uploading that patch.
+            start = suggestion.get("relevant_lines_start")
+            end = suggestion.get("relevant_lines_end")
+            if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start:
+                get_logger().warning(
+                    "Skipping code suggestion with an invalid line range: {} to {}", start, end
+                )
+                continue
+
             publishable_count += 1
             description, code = self.split_suggestion(suggestion['body'])
             add_suggestion(

@@ -784,6 +784,32 @@ def test_suggestion_upload_failure_preserves_error_and_attempts_cleanup(tmp_path
         assert not repo.is_dirty()
 
 
+def test_inverted_suggestion_range_is_skipped_without_uploading(tmp_path, monkeypatch):
+    # add_suggestion writes lines[:start-1] + context + lines[end:], so a 5-to-3 range
+    # kept every original line and repeated one. The range must be dropped, not applied.
+    repo = _make_repo(tmp_path, ["app.py"])
+    provider = object.__new__(GerritProvider)
+    provider.repo_path = str(tmp_path)
+    provider.refspec = "refs/changes/01/1/1"
+
+    def reject_upload(*_args, **_kwargs):
+        pytest.fail("a suggestion with an invalid line range must not be uploaded")
+
+    monkeypatch.setattr(gerrit_provider, "upload_patch", reject_upload)
+    monkeypatch.setattr(gerrit_provider, "add_comment", reject_upload)
+    inverted = {
+        "relevant_file": "app.py",
+        "body": "Replace the lines\n```suggestion\nreplacement\n```",
+        "relevant_lines_start": 5,
+        "relevant_lines_end": 3,
+    }
+
+    assert provider.publish_code_suggestions([inverted]) is True
+
+    assert (tmp_path / "app.py").read_text() == "app.py\n"
+    assert not repo.is_dirty()
+
+
 def test_successful_suggestion_upload_propagates_reset_failure(tmp_path, monkeypatch):
     repo = _make_repo(tmp_path, ["app.py"])
     provider = object.__new__(GerritProvider)

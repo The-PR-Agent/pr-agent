@@ -20,6 +20,21 @@ def _suggestion(start: int = 2, end: int = 2) -> dict:
     }
 
 
+@pytest.mark.parametrize("start, end, expected", [
+    (1, 1, True),
+    (2, 5, True),
+    (0, 1, False),      # there is no line 0
+    (-1, 1, False),
+    (-5, -3, False),    # both negative used to pass: -3 is not < -5
+    (5, 3, False),      # inverted range
+])
+def test_is_valid_code_suggestion_rejects_lines_outside_the_file(start, end, expected):
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider._log_invalid_code_suggestion = MagicMock()
+
+    assert GitProvider._is_valid_code_suggestion(provider, _suggestion(start, end)) is expected
+
+
 def test_publish_code_suggestions_runs_the_shared_template():
     provider = BitbucketProvider.__new__(BitbucketProvider)
     suggestions = [_suggestion(), _suggestion(-1), _suggestion(4, 5)]
