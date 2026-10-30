@@ -1,4 +1,3 @@
-from collections import Counter
 from pathlib import Path
 
 from git import Repo
@@ -6,7 +5,7 @@ from git import Repo
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.file_filter import filter_ignored_with_status
-from pr_agent.algo.language_handler import build_language_file_matcher, partition_files_by_language_filter
+from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.config_loader import _find_repository_root, get_settings
@@ -225,28 +224,10 @@ class LocalGitProvider(GitProvider):
     def get_languages(self):
         """
         Calculate percentage of languages in repository. Used for hunk prioritisation.
-
-        Keys are language NAMES (e.g. "Python"), not raw extensions: the consumer
-        sort_files_by_main_languages() maps each name back to its extensions, so
-        returning extensions ("py") silently drops every file into the "Other"
-        bucket and defeats the prioritisation this method exists for. Use the
-        shared configured filename matcher so all providers apply the same
-        full-filename, multipart-extension, and case-sensitive rules.
         """
-        lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        get_language = build_language_file_matcher(lang_map)
-
-        # Get all files in repository
-        filepaths = [Path(item.path) for item in self.repo.tree().traverse() if item.type == 'blob']
-        # Identify language by filename (mapped to its language name) and count
-        lang_count = Counter()
-        for filepath in filepaths:
-            language = get_language(filepath.name)
-            if language:
-                lang_count[language] += 1
-        # Convert counts to percentages
-        total = sum(lang_count.values()) or 1
-        return {lang: count / total * 100 for lang, count in lang_count.items()}
+        return self._language_percentages(
+            Path(item.path).name for item in self.repo.tree().traverse() if item.type == 'blob'
+        )
 
     def get_pr_branch(self):
         return self.head_branch_name

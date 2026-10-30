@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
@@ -733,6 +734,32 @@ class GitProvider(ABC):
     @abstractmethod
     def get_languages(self):
         pass
+
+    @staticmethod
+    def _language_percentages(paths: Iterable[str]) -> dict[str, float]:
+        """Return {language name: percentage} over the recognised files in `paths`.
+
+        Keys are language NAMES (e.g. "Python"), not raw extensions: the consumer
+        sort_files_by_main_languages() maps each name back to its extensions, so
+        returning extensions ("py") silently drops every file into the "Other"
+        bucket and defeats the hunk prioritisation this exists for. The shared
+        configured filename matcher applies the same full-filename,
+        multipart-extension, and case-sensitive rules for every provider. Empty
+        paths are skipped.
+        """
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
+        lang_count = Counter()
+        for path in paths:
+            if not path:
+                continue
+            language = get_language(path)
+            if language:
+                lang_count[language] += 1
+
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     @abstractmethod
     def get_pr_branch(self):

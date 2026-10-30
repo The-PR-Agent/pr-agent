@@ -1,13 +1,12 @@
 import os
 import sys
-from collections import Counter
 
 from unidiff.errors import UnidiffParseError
 
 from pr_agent.agent.request_policy import policy_metadata
 from pr_agent.algo.comment_identity import format_pr_code_suggestions_header
 from pr_agent.algo.file_filter import filter_ignored_with_status
-from pr_agent.algo.language_handler import build_language_file_matcher, partition_files_by_language_filter
+from pr_agent.algo.language_handler import partition_files_by_language_filter
 from pr_agent.algo.review_json_output import write_review_json_output
 from pr_agent.algo.run_output import show_run_details
 from pr_agent.algo.types import FilePatchInfo
@@ -170,25 +169,7 @@ class PlainDiffGitProvider(GitProvider):
         return True
 
     def get_languages(self):
-        # Return {language-name: percentage}, matching the hosted providers.
-        # sort_files_by_main_languages() keys on language NAMES (it maps each
-        # name back to its extensions), so returning raw extensions here would
-        # drop every file into the "Other" bucket and disable language-based
-        # hunk prioritization. Use the shared filename matcher so full names,
-        # multipart suffixes, and case-sensitive extensions behave consistently.
-        lang_map = get_settings().get("language_extension_map_org", {}) or {}
-        get_language = build_language_file_matcher(lang_map)
-
-        lang_count = Counter()
-        for f in self.get_diff_files():
-            if not f.filename:
-                continue
-            language = get_language(f.filename)
-            if language:
-                lang_count[language] += 1
-
-        total = sum(lang_count.values()) or 1
-        return {lang: count / total * 100 for lang, count in lang_count.items()}
+        return self._language_percentages(f.filename for f in self.get_diff_files())
 
     def get_pr_title(self):
         return "Local diff review"

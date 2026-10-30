@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 from pr_agent.algo.file_filter import filter_ignored
-from pr_agent.algo.language_handler import build_language_file_matcher, is_valid_file
+from pr_agent.algo.language_handler import is_valid_file
 from pr_agent.algo.review_finding_state import split_review_state_marker
 from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.codecommit_client import CodeCommitClient
@@ -17,7 +17,6 @@ from ..algo.comment_identity import (
     comment_matches_identity,
 )
 from ..algo.utils import load_large_diff
-from ..config_loader import get_settings
 from ..log import get_logger
 from .git_provider import GitProvider, cache_languages
 
@@ -437,18 +436,7 @@ class CodeCommitProvider(GitProvider):
     @cache_languages
     def get_languages(self):
         """Return recognized language percentages for diff prioritization."""
-        language_map = get_settings().get("language_extension_map_org", {}) or {}
-        get_language = build_language_file_matcher(language_map)
-        language_counts = Counter()
-        for file in self.get_files():
-            if not file.filename:
-                continue
-            language = get_language(file.filename)
-            if language:
-                language_counts[language] += 1
-
-        total = sum(language_counts.values()) or 1
-        return {language: count / total * 100 for language, count in language_counts.items()}
+        return self._language_percentages(file.filename for file in self.get_files())
 
     def get_pr_branch(self):
         return self.pr.source_branch
