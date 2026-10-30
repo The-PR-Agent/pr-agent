@@ -69,7 +69,9 @@ class PRAddDocs:
                     and not isinstance(prediction_error, IncompleteProviderPullRequestFilesError)
                 ):
                     try:
-                        self.git_provider.publish_comment("Failed to generate code documentation for this PR.")
+                        self.git_provider.publish_tool_failure(
+                            "add_docs", "Failed to generate code documentation for this PR."
+                        )
                     except Exception as comment_error:
                         get_logger().warning(f"Failed to publish the documentation failure comment: {comment_error}")
                 raise
@@ -87,7 +89,9 @@ class PRAddDocs:
                 publication_result = self.push_inline_docs(data)
                 if publication_result is False:
                     publication_failed = True
-                    self.git_provider.publish_comment("Failed to publish code documentation for this PR.")
+                    self.git_provider.publish_tool_failure(
+                        "add_docs", "Failed to publish code documentation for this PR."
+                    )
                     raise RuntimeError("Failed to publish code documentation after individual retries")
         except Exception as e:
             get_logger().error(f"Failed to generate code documentation for PR, error: {e}")
@@ -208,7 +212,9 @@ class PRAddDocs:
         docs = []
 
         if not data['Code Documentation']:
-            self.git_provider.publish_comment('No code documentation found to improve this PR.')
+            self.git_provider.publish_tool_failure(
+                "add_docs", "No code documentation found to improve this PR."
+            )
             return None
 
         for d in data['Code Documentation']:

@@ -437,9 +437,12 @@ def test_publish_description_writes_utf8_regardless_of_locale(tmp_path, monkeypa
     assert description_path.read_text(encoding="utf-8") == "my-branch\n✨ Describe tool usage guide"
 
 
-@pytest.mark.parametrize("tool, output_attr", [("improve", "improve_path"), ("describe", "description_path")])
+@pytest.mark.parametrize(
+    "tool, output_attr",
+    [("improve", "improve_path"), ("describe", "description_path"), ("add_docs", "improve_path")],
+)
 def test_publish_tool_failure_keeps_review_file(tmp_path, tool, output_attr):
-    # A failed /improve or /describe must not overwrite the persisted /review result.
+    # A failed /improve, /describe or /add_docs must not overwrite the persisted /review result.
     review_path = tmp_path / "review.md"
     review_path.write_text("previous review")
     provider = object.__new__(LocalGitProvider)

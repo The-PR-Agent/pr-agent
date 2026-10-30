@@ -57,6 +57,7 @@ FILTERED_DOCUMENTATION = """Code Documentation:
 class FakeGitProvider:
     def __init__(self, suggestion_results=None, comment_error=None, comment_result="comment"):
         self.comments = []
+        self.failures = []
         self.suggestions = []
         self.initial_comment_removed = False
         self.diff_files = [FilePatchInfo(
@@ -71,6 +72,10 @@ class FakeGitProvider:
         if self.comment_error and self.comment_error in body:
             raise RuntimeError("fallback comment unavailable")
         return self.comment_result
+
+    def publish_tool_failure(self, tool, message):
+        self.failures.append((tool, message))
+        return self.publish_comment(message)
 
     def remove_initial_comment(self):
         self.initial_comment_removed = True

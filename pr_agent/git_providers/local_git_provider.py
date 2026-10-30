@@ -150,7 +150,11 @@ class LocalGitProvider(GitProvider):
 
     def publish_tool_failure(self, tool: str, message: str):
         # Write the failure to the tool's own file so it does not clobber review.md.
-        path = {"describe": self.description_path, "improve": self.improve_path}.get(tool, self.review_path)
+        path = {
+            "describe": self.description_path,
+            "improve": self.improve_path,
+            "add_docs": self.improve_path,
+        }.get(tool, self.review_path)
         with open(path, "w", encoding="utf-8") as file:
             file.write(message)
 
