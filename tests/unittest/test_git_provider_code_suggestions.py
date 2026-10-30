@@ -62,7 +62,13 @@ def test_publish_code_suggestions_uses_the_provider_error_policy():
     assert str(provider._log_code_suggestion_publish_error.call_args.args[0]) == "network down"
 
 
-@pytest.mark.parametrize("start, end", [(0, 2), (-1, 2), (-5, -3), (None, 2), (5, 3)])
+@pytest.mark.parametrize(
+    "start, end",
+    [
+        (0, 2), (-1, 2), (-5, -3), (None, 2), (5, 3),
+        ("3", 4), (3, "4"), (2.5, 4), (3, 4.0), (True, 2), (1, True),
+    ],
+)
 def test_invalid_line_ranges_are_rejected(start, end):
     provider = BitbucketProvider.__new__(BitbucketProvider)
     provider._log_invalid_code_suggestion = MagicMock()

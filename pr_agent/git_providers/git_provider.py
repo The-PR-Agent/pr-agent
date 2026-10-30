@@ -351,6 +351,12 @@ def get_git_ssl_env() -> dict[str, str]:
     return returned_env
 
 
+def _is_line_number(value) -> bool:
+    # bool is an int subclass; a string or float would fail the comparisons or
+    # break slicing in the providers that apply suggestions themselves.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 class GitProvider(ABC):
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         """Return policy fields; None means unknown, empty values mean not applicable.
@@ -710,12 +716,14 @@ class GitProvider(ABC):
         # suggestions may carry no end line.
         relevant_lines_start = suggestion.get("relevant_lines_start")
         relevant_lines_end = suggestion.get("relevant_lines_end")
-        if not relevant_lines_start or relevant_lines_start < 1:
+        if not _is_line_number(relevant_lines_start) or relevant_lines_start < 1:
             self._log_invalid_code_suggestion(
                 f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}"
             )
             return False
-        if relevant_lines_end is not None and relevant_lines_end < relevant_lines_start:
+        if relevant_lines_end is not None and (
+            not _is_line_number(relevant_lines_end) or relevant_lines_end < relevant_lines_start
+        ):
             self._log_invalid_code_suggestion(
                 f"Failed to publish code suggestion, relevant_lines_end is {relevant_lines_end} and "
                 f"relevant_lines_start is {relevant_lines_start}"
