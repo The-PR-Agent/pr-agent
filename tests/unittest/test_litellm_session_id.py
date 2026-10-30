@@ -85,6 +85,19 @@ class TestSessionIdHeader:
         )
 
     @pytest.mark.asyncio
+    async def test_url_credentials_are_not_in_session_id(self, monkeypatch):
+        credential_url = "https://user:secret-token@github.com/owner/repo/pull/123"
+        clean = await _run(monkeypatch, True, log_context={"command": "review", "pr_url": PR_URL})
+        with_credentials = await _run(
+            monkeypatch, True, log_context={"command": "review", "pr_url": credential_url},
+        )
+        clean_id = clean["headers"]["x-litellm-session-id"]
+        credential_id = with_credentials["headers"]["x-litellm-session-id"]
+        assert credential_id == clean_id
+        assert "user" not in credential_id
+        assert "secret-token" not in credential_id
+
+    @pytest.mark.asyncio
     async def test_same_pr_shares_session_across_commands(self, monkeypatch):
         first = await _run(monkeypatch, True, log_context={"command": "improve", "pr_url": PR_URL})
         second = await _run(monkeypatch, True, log_context={"command": "review", "pr_url": PR_URL})

@@ -2705,7 +2705,7 @@ class LiteLLMAIHandler(BaseAiHandler):
         if not isinstance(pr_url, str) or not pr_url:
             return ""
         parsed = urlparse(pr_url)
-        raw = f"{parsed.netloc}{parsed.path}" if parsed.netloc else pr_url
+        raw = f"{parsed.netloc.rpartition('@')[2]}{parsed.path}" if parsed.netloc else pr_url
         slug = re.sub(r"[^A-Za-z0-9_-]+", "-", raw)
         slug = re.sub(r"-{2,}", "-", slug).strip("-_").lower()
         if not slug:
