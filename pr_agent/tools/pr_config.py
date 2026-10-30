@@ -59,6 +59,11 @@ class PRConfig:
                                artifact={"exception": e})
             conf_settings = {}
         configuration_headers = [header.lower() for header in conf_settings.keys()]
+        declared_config_keys = {
+            header.lower(): {key.lower() for key in configs}
+            for header, configs in conf_settings.items()
+            if header.lower().startswith(("pr_", "config"))
+        }
         relevant_configs = {
             header: configs for header, configs in get_settings().to_dict().items()
             if (header.lower().startswith("pr_") or header.lower().startswith("config"))
@@ -78,6 +83,7 @@ class PRConfig:
 
         markdown_text = "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
         markdown_text += "\n\n```yaml\n\n"
+        undeclared_config_keys = []
         for header, configs in relevant_configs.items():
             if configs:
                 markdown_text += "\n\n"
@@ -89,6 +95,13 @@ class PRConfig:
                     f"\n{header.lower()}.{key.lower()} = {repr(value) if isinstance(value, str) else value}"
                 )
                 markdown_text += "  "
+                if key.lower() not in declared_config_keys[header.lower()]:
+                    undeclared_config_keys.append(f"{header.lower()}.{key.lower()}")
+        if undeclared_config_keys:
+            markdown_text += "\n\n# These effective keys are not declared in the shipped configuration:"
+            markdown_text += "\n# They may be legacy aliases or extension settings; check them only if unexpected."
+            for name in sorted(undeclared_config_keys):
+                markdown_text += f"\n# - {name}"
         markdown_text += "\n```"
         markdown_text += "\n</details>\n"
         get_logger().info("Possible Configurations outputted to PR comment", artifact=markdown_text)
