@@ -244,20 +244,32 @@ def _edit_comment_safely(git_provider, comment, body: str) -> bool:
 
 
 class PRCodeSuggestions:
-    def __init__(self, pr_url: str, cli_mode=False, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+    # True so instances built without __init__ (e.g. via __new__) never trigger prepare() from run()
+    _prepared = True
 
-        self.git_provider = get_git_provider_with_context(pr_url)
+    def __init__(self, pr_url: str, cli_mode=False, args: list = None,
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, *, _defer_prepare: bool = False):
         self.pr_url = pr_url  # set early so the no-op log line in `run()` can reference it
         self.args = args
-        self.incremental = self._parse_incremental(args)
+        self.cli_mode = cli_mode
+        self._ai_handler_factory = ai_handler
+        self._prepared = False
+        if not _defer_prepare:
+            self.prepare()
+
+    def prepare(self) -> None:
+        """Load the git provider, PR context, prompt vars and TokenHandler. Runs once; later calls are no-ops."""
+        if self._prepared:
+            return
+        self.git_provider = get_git_provider_with_context(self.pr_url)
+        self.incremental = self._parse_incremental(self.args)
         self._incremental_empty_scope = False
         # When invoked as `/improve -i`, narrow `git_provider.get_diff_files()` to the files
         # changed since the previous suggestions pass. Falls back to full when the provider
         # doesn't support incremental scope or no prior suggestion comment exists.
         self._setup_incremental_scope()
         # If incremental is active but the scope came back empty (no files changed since the
-        # previous suggestions pass), short-circuit init now. `run()` checks the same flag and
+        # previous suggestions pass), short-circuit prepare() now. `run()` checks the same flag and
         # exits without touching the model. This avoids a wasted full MR-diff retrieval via
         # `get_files()` — when `unreviewed_files_map` is `{}` it's falsy and `get_files()` falls
         # back to the full MR file list, which is pure waste on the "nothing new" path.
@@ -265,6 +277,7 @@ class PRCodeSuggestions:
                 and hasattr(self.git_provider, "unreviewed_files_map")
                 and not self.git_provider.unreviewed_files_map):
             self._incremental_empty_scope = True
+            self._prepared = True
             return
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
@@ -279,11 +292,10 @@ class PRCodeSuggestions:
                 f"num_code_suggestions_per_chunk is not a number ({raw_num_code_suggestions!r}), "
                 f"using {num_code_suggestions}")
 
-        self.ai_handler = ai_handler()
+        self.ai_handler = self._ai_handler_factory()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.prediction = None
-        self.cli_mode = cli_mode
         self.pr_description, self.pr_description_files = (
             self.git_provider.get_pr_description(split_changes_walkthrough=True))
         if (self.pr_description_files and get_settings().get("config.is_auto_command", False) and
@@ -337,6 +349,7 @@ class PRCodeSuggestions:
         # The body actually published above; chunk progress is appended to it in place.
         self._progress_base_body = None
         self._chunk_progress = None
+        self._prepared = True
 
     def _load_suggestion_discussion_context(self) -> str:
         if not _supports_code_suggestion_state(self.git_provider):
@@ -371,6 +384,8 @@ class PRCodeSuggestions:
             self.incremental = IncrementalPR(False)
 
     async def run(self):
+        if not getattr(self, "_prepared", False):
+            self.prepare()
         init_run_details()
         self._output_published = False
         self._progress_base_body = None
@@ -387,7 +402,7 @@ class PRCodeSuggestions:
                     get_logger().warning(f"Failed to reconcile code suggestion threads: {e}")
 
             if getattr(self, "_incremental_empty_scope", False):
-                # Set by `__init__` when incremental anchored cleanly but no files changed
+                # Set by `prepare()` when incremental anchored cleanly but no files changed
                 # since the previous suggestions pass. Skip silently — re-running on the
                 # full MR diff here would just re-post the same inline suggestions.
                 get_logger().info(

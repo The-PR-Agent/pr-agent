@@ -133,7 +133,7 @@ class RateLimitExceeded(Exception):
 
 
 class DefaultDictWithTimeout(defaultdict):
-    """A defaultdict with a time-to-live (TTL)."""
+    """A defaultdict with a time-to-live (TTL) and a cap on the number of entries."""
 
     def __init__(
         self,
@@ -141,6 +141,7 @@ class DefaultDictWithTimeout(defaultdict):
         ttl: int = None,
         refresh_interval: int = 60,
         update_key_time_on_get: bool = True,
+        max_size: int | None = 10_000,
         *args,
         **kwargs,
     ):
@@ -150,12 +151,15 @@ class DefaultDictWithTimeout(defaultdict):
             ttl: The time-to-live (TTL) in seconds.
             refresh_interval: How often to refresh the dict and delete items older than the TTL.
             update_key_time_on_get: Whether to update the access time of a key also on get (or only when set).
+            max_size: The maximum number of entries; inserting beyond it evicts the least recently touched keys.
+                None means unbounded.
         """
         super().__init__(default_factory, *args, **kwargs)
         self.__key_times = dict()
         self.__ttl = ttl
         self.__refresh_interval = refresh_interval
         self.__update_key_time_on_get = update_key_time_on_get
+        self.__max_size = max_size
         self.__last_refresh = self.__time() - self.__refresh_interval
 
     @staticmethod
@@ -173,9 +177,22 @@ class DefaultDictWithTimeout(defaultdict):
             del self[key]
         self.__last_refresh = request_time
 
+    def __touch(self, key):
+        # Re-insert so __key_times stays ordered from least to most recently touched.
+        self.__key_times.pop(key, None)
+        self.__key_times[key] = self.__time()
+
+    def __enforce_max_size(self):
+        self.__refresh()
+        if self.__max_size is None:
+            return
+        while len(self) >= self.__max_size and self.__key_times:
+            oldest_key = next(iter(self.__key_times))
+            del self[oldest_key]
+
     def __getitem__(self, __key):
         if self.__update_key_time_on_get:
-            self.__key_times[__key] = self.__time()
+            self.__touch(__key)
         self.__refresh()
         try:
             return super().__getitem__(__key)
@@ -184,7 +201,11 @@ class DefaultDictWithTimeout(defaultdict):
             raise
 
     def __setitem__(self, __key, __value):
-        self.__key_times[__key] = self.__time()
+        # Also reached from defaultdict.__missing__ and setdefault, so every insert is bounded here.
+        self.__key_times.pop(__key, None)
+        if not super().__contains__(__key):
+            self.__enforce_max_size()
+        self.__touch(__key)
         return super().__setitem__(__key, __value)
 
     def __delitem__(self, __key):
@@ -196,7 +217,7 @@ class DefaultDictWithTimeout(defaultdict):
         self.__refresh()
         if super().__contains__(__key):
             if self.__update_key_time_on_get:
-                self.__key_times[__key] = self.__time()
+                self.__touch(__key)
             return super().__getitem__(__key)
         self[__key] = __default
         return __default

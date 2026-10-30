@@ -308,9 +308,16 @@ class TokenHandler:
         Returns:
             int: The calculated token count.
         """
+        return self._resolve_accurate_count(_await_coroutine(self._acount_tokens(patch)), default_estimate)
+
+    async def _aget_token_count_by_model_type(self, patch: str, default_estimate: int) -> int:
+        """Async ``_get_token_count_by_model_type`` that awaits the provider count on the running loop."""
+        return self._resolve_accurate_count(await self._acount_tokens(patch), default_estimate)
+
+    def _resolve_accurate_count(self, accurate_count: int, default_estimate: int) -> int:
+        """Return the provider count, or the estimate (scaled when needed) if none was produced."""
         model_name = str(getattr(self, "model", None) or get_settings().config.model).lower()
 
-        accurate_count = _await_coroutine(self._acount_tokens(patch))
         if accurate_count > 0:
             return accurate_count
         if ModelTypeValidator.is_openai_model(model_name) and get_settings().get("OPENAI.KEY"):
@@ -337,3 +344,10 @@ class TokenHandler:
             return encoder_estimate
 
         return self._get_token_count_by_model_type(patch, encoder_estimate)
+
+    async def acount_tokens(self, patch: str, force_accurate: bool = False) -> int:
+        """Async ``count_tokens``: awaits the provider count on the running loop instead of a worker thread."""
+        encoder_estimate = len(self.encoder.encode(patch, disallowed_special=()))
+        if not force_accurate:
+            return encoder_estimate
+        return await self._aget_token_count_by_model_type(patch, encoder_estimate)

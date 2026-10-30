@@ -365,8 +365,8 @@ def test_temp_file_is_removed_after_failed_apply(monkeypatch, tmp_path, settings
 
     apply_repo_settings("https://example.com/owner/repo/pull/1")
 
-    assert mkstemp_calls["n"] == 1, "mkstemp must have run before the failure"
-    assert not known_path.exists(), "Temp settings file must be removed even after a failed apply"
+    assert mkstemp_calls["n"] == 0, "In-memory repo settings apply must not create a temp file"
+    assert not known_path.exists(), "Temp settings file must not exist after a failed apply"
 
     # The local-category configuration error path must have been exercised.
     assert captured["errors"] is not None, "handle_configurations_errors should have been called"

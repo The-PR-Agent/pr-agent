@@ -303,7 +303,6 @@ def apply_repo_settings(pr_url):
     git_provider = get_git_provider_with_context(pr_url)
 
     if get_settings().config.use_repo_settings_file:
-        repo_settings_files = []
         try:
             try:
                 repo_settings = context.get("repo_settings", None)
@@ -324,9 +323,8 @@ def apply_repo_settings(pr_url):
                 # misattribute the error to the last source; applying per-scope keeps error reporting
                 # (and redaction) accurate and lets valid sources still take effect.
                 for category, settings_content in _normalize_repo_settings(repo_settings):
-                    repo_settings_file = _write_settings_temp(settings_content, repo_settings_files)
                     try:
-                        _apply_repo_settings_file(repo_settings_file)
+                        apply_repo_settings_bytes(settings_content)
                     except Exception as e:
                         get_logger().warning(f"Failed to apply repo {category} settings, error: {str(e)}")
                         config_errors.append({'error': str(e), 'settings': settings_content, 'category': category})
@@ -336,9 +334,8 @@ def apply_repo_settings(pr_url):
             # overrides a farther one; only non-critical sections are accepted (see
             # REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS).
             for category, settings_content in _get_per_directory_settings(git_provider):
-                repo_settings_file = _write_settings_temp(settings_content, repo_settings_files)
                 try:
-                    _apply_repo_settings_file(repo_settings_file, repo_settings_scope="per_directory")
+                    apply_repo_settings_bytes(settings_content, repo_settings_scope="per_directory")
                 except Exception as e:
                     get_logger().warning(f"Failed to apply per-directory settings {category}, error: {str(e)}")
                     config_errors.append({'error': str(e), 'settings': settings_content, 'category': category})
@@ -347,12 +344,6 @@ def apply_repo_settings(pr_url):
                 handle_configurations_errors(config_errors, git_provider)
         except Exception as e:
             get_logger().exception("Failed to apply repo settings", e)
-        finally:
-            for repo_settings_file in repo_settings_files:
-                try:
-                    os.remove(repo_settings_file)
-                except Exception as e:
-                    get_logger().error(f"Failed to remove temporary settings file {repo_settings_file}: {e}")
 
 
 def _restore_per_directory_settings():
@@ -388,30 +379,42 @@ def _write_settings_temp(settings_content, repo_settings_files: list) -> str:
 
 
 def _apply_repo_settings_file(repo_settings_file, repo_settings_scope="repo"):
-    """Load a single repo settings file and merge its allowed keys into the global settings.
+    """Backward-compatible wrapper: read a settings file and delegate to apply_repo_settings_bytes."""
+    # Check the size before reading so an oversized file is never loaded into memory.
+    if os.path.getsize(repo_settings_file) > MAX_TOML_SIZE_IN_BYTES:
+        get_logger().warning(
+            f"Settings file too large (> {MAX_TOML_SIZE_IN_BYTES} bytes); skipping repo settings file")
+        return
+    with open(repo_settings_file, "rb") as f:
+        apply_repo_settings_bytes(f.read(), repo_settings_scope=repo_settings_scope)
+
+
+def apply_repo_settings_bytes(settings_content: str | bytes, repo_settings_scope: str = "repo",
+                              source_label: str = ".pr_agent.toml") -> None:
+    """Parse a repo settings TOML payload in memory and merge its allowed keys into the global settings.
 
     Enforces the per-repo host-key restrictions and logs only section names (values may contain
     secrets). With ``repo_settings_scope="per_directory"`` the per-directory section allowlist
     (REPO_PER_DIRECTORY_OVERRIDABLE_SECTIONS) is enforced on top, so a nested config committed by
     any contributor cannot touch secrets/identity or deployment-critical settings that the root
-    config may set. Raises on load/parse failure so the caller can attribute the error to the
+    config may set. Raises on parse/security failure so the caller can attribute the error to the
     correct settings scope (e.g. 'global' vs 'local').
     """
-    # Enforce the same size cap as the loader BEFORE parsing, so an oversized file can't be fully
-    # read/parsed in-process (OOM/CPU) by the explicit validation below.
-    if os.path.getsize(repo_settings_file) > MAX_TOML_SIZE_IN_BYTES:
+    raw_bytes = settings_content.encode("utf-8") if isinstance(settings_content, str) else settings_content
+    # Enforce the same size cap as the loader BEFORE parsing, so an oversized payload can't be
+    # parsed in-process (OOM/CPU) by the explicit validation below.
+    if len(raw_bytes) > MAX_TOML_SIZE_IN_BYTES:
         get_logger().warning(
             f"Settings file too large (> {MAX_TOML_SIZE_IN_BYTES} bytes); skipping repo settings file")
         return
 
-    # Validate the file explicitly first: the shared custom_merge_loader runs with silent=True and
-    # would otherwise swallow TOML/security errors, skipping the file without surfacing a scoped
-    # configuration error. Parsing here makes malformed/forbidden config raise so it gets reported.
-    with open(repo_settings_file, "rb") as f:
-        parsed_toml = tomllib.load(f)
-    # Use a generic name (not the temp path) so a SecurityError message can't leak the server's
-    # internal filesystem path into the PR configuration-error comment.
-    validate_file_security(parsed_toml, ".pr_agent.toml")
+    # Validate explicitly: the shared custom_merge_loader runs with silent=True and would otherwise
+    # swallow TOML/security errors, skipping the file without surfacing a scoped configuration error.
+    # Parsing here makes malformed/forbidden config raise so it gets reported.
+    parsed_toml = tomllib.loads(raw_bytes.decode("utf-8"))
+    # Use a generic label (never a filesystem path) so a SecurityError message can't leak the
+    # server's internal paths into the PR configuration-error comment.
+    validate_file_security(parsed_toml, source_label)
 
     # Apply the already-parsed data directly instead of re-reading the file through Dynaconf, which
     # would parse the same TOML a second time. Section names are matched case-insensitively (Dynaconf

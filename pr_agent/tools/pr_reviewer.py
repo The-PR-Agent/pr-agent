@@ -183,9 +183,11 @@ class PRReviewer:
     review_all_issues = None
     review_chunk_hit_limit = None
     partial_files_list = ()
+    # True so instances built without __init__ (e.g. via __new__) never trigger prepare() from run()
+    _prepared = True
 
     def __init__(self, pr_url: str, is_answer: bool = False, is_auto: bool = False, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, *, _defer_prepare: bool = False):
         """
         Initialize the PRReviewer object with the necessary attributes and objects to review a pull request.
 
@@ -195,23 +197,34 @@ class PRReviewer:
             is_auto (bool, optional): Indicates whether the review is being done in automatic mode. Defaults to False.
             ai_handler (BaseAiHandler): The AI handler to be used for the review. Defaults to None.
             args (list, optional): List of arguments passed to the PRReviewer class. Defaults to None.
+            _defer_prepare (bool, optional): Skip the git provider and PR context loading until prepare() or
+                run() is called. Defaults to False.
         """
-        self.git_provider = get_git_provider_with_context(pr_url)
+        self.pr_url = pr_url
         self.args = args
-        self.incremental = self.parse_incremental(args)  # -i command
+        self.is_answer = is_answer
+        self.is_auto = is_auto
+        self._ai_handler_factory = ai_handler
+        self._prepared = False
+        if not _defer_prepare:
+            self.prepare()
+
+    def prepare(self) -> None:
+        """Load the git provider, PR context, prompt vars and TokenHandler. Runs once; later calls are no-ops."""
+        if self._prepared:
+            return
+        self.git_provider = get_git_provider_with_context(self.pr_url)
+        self.incremental = self.parse_incremental(self.args)  # -i command
         if self.incremental and self.incremental.is_incremental:
             self.git_provider.get_incremental_commits(self.incremental)
 
         self.main_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
-        self.pr_url = pr_url
-        self.is_answer = is_answer
-        self.is_auto = is_auto
 
         if self.is_answer and not self.git_provider.is_supported("get_issue_comments"):
             raise Exception(f"Answer mode is not supported for {get_settings().config.git_provider} for now")
-        self.ai_handler = ai_handler()
+        self.ai_handler = self._ai_handler_factory()
         self.ai_handler.main_pr_language = self.main_language
         self.patches_diff = None
         self.remaining_files_list = []
@@ -284,6 +297,7 @@ class PRReviewer:
             get_settings().pr_review_prompt.system,
             get_settings().pr_review_prompt.user
         )
+        self._prepared = True
 
     def parse_incremental(self, args: list[str]):
         is_incremental = False
@@ -295,6 +309,8 @@ class PRReviewer:
         return incremental
 
     async def run(self) -> None:
+        if not getattr(self, "_prepared", False):
+            self.prepare()
         init_run_details()
         self.partial_files_list = []
         for name in ("_chunked_patches_diff_list", "_chunked_remaining_files_list", "_chunked_partial_files_list",

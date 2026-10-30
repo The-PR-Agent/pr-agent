@@ -1,7 +1,10 @@
 import asyncio
+import contextvars
 import copy
+import inspect
 import json
 import shlex
+from dataclasses import dataclass
 from functools import partial
 
 import dynaconf
@@ -237,6 +240,55 @@ def parse_command(command: str) -> list[str]:
     return [action] + args
 
 
+@dataclass(frozen=True)
+class ParsedCommand:
+    """A request command split into its action and normalized, validated arguments."""
+
+    raw: str | list[str]
+    action: str  # leading token as typed, e.g. "/Review"; empty when the command could not be parsed
+    canonical_action: str  # action without the leading slash, lowercased, e.g. "review"
+    args: list[str]
+    is_valid: bool = True
+    # The parse failure message when ``action`` is empty, otherwise the forbidden parameter.
+    error: str | None = None
+
+
+def parse_and_normalize_command(command: str | list[str]) -> ParsedCommand:
+    """Parse a raw request string or pre-tokenized argv the way ``PRAgent`` dispatches it.
+
+    Strings use the request lexer: double quotes only, so apostrophes stay literal, and
+    ``#`` is ordinary text. Quoted setting values keep their string type. Lists are taken
+    as already tokenized. Malformed input never raises; it returns an invalid command with
+    an empty action. Forbidden setting arguments are checked on the values before re-encoding.
+    Unknown actions are not rejected here; callers check ``canonical_action`` in ``command2class``.
+    """
+    if isinstance(command, str):
+        lexer = shlex.shlex(command, posix=True)
+        lexer.whitespace_split = True
+        # Keep apostrophes literal without adding backslashes inside double quotes.
+        lexer.quotes = '"'
+        # Treat "#" as ordinary text. shlex drops it and everything after it as a shell
+        # comment, which silently truncated questions such as "/ask what does #123 do?".
+        # This input is a single already-parsed command, never a shell script.
+        lexer.commenters = ''
+        try:
+            tokens = list(lexer)
+        except ValueError as e:
+            return ParsedCommand(command, "", "", [], is_valid=False, error=str(e))
+    else:
+        tokens = list(command)
+    if not tokens:
+        return ParsedCommand(command, "", "", [], is_valid=False, error="Empty command")
+
+    action, *raw_args = tokens
+    args = _reencode_quoted_setting_args(command, raw_args) if isinstance(command, str) else raw_args
+    canonical_action = action.lstrip("/").lower()
+    is_valid, arg = CliArgs.validate_user_args(_validation_args(raw_args))
+    if not is_valid:
+        return ParsedCommand(command, action, canonical_action, args, is_valid=False, error=arg)
+    return ParsedCommand(command, action, canonical_action, args)
+
+
 def _reencode_quoted_setting_args(command: str, args: list[str]) -> list[str]:
     """Keep quoted setting values as strings in raw command strings.
 
@@ -333,6 +385,25 @@ def _record_token_metrics(action: str, git_provider: str) -> None:
         get_ai_calls_counter().add(details.num_ai_calls, labels)
 
 
+async def _run_in_context_thread(func, *args, **kwargs):
+    """Run blocking ``func`` in a worker thread with this task's context vars (settings, RunDetails)."""
+    ctx = contextvars.copy_context()
+    return await asyncio.to_thread(partial(ctx.run, func, *args, **kwargs))
+
+
+async def _create_tool(tool_class, *args, **kwargs):
+    """Construct a tool, running a deferrable tool's blocking ``prepare()`` off the event loop."""
+    try:
+        deferrable = "_defer_prepare" in inspect.signature(tool_class).parameters
+    except (TypeError, ValueError):
+        deferrable = False
+    if not deferrable:
+        return tool_class(*args, **kwargs)
+    tool = tool_class(*args, _defer_prepare=True, **kwargs)
+    await _run_in_context_thread(tool.prepare)
+    return tool
+
+
 class PRAgent:
     def __init__(self, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
         self.ai_handler = ai_handler  # handler factory passed to each tool when it is instantiated
@@ -382,29 +453,19 @@ class PRAgent:
         self, pr_url, request, notify, span, propagate_tool_errors: bool | None = None
     ) -> bool | RequestOutcome:
         # Evaluate repository policy before command overrides, notifications or tools.
-        apply_repo_settings(pr_url)
+        # Off the event loop: it fetches the repo's settings file over the network.
+        await _run_in_context_thread(apply_repo_settings, pr_url)
         if enforce_request_policy(pr_url) is False:
             span.set_attribute("pr_agent.request.ignored", True)
             return RequestOutcome.SKIPPED
 
-        if isinstance(request, str):
-            lexer = shlex.shlex(request, posix=True)
-            lexer.whitespace_split = True
-            # Keep apostrophes literal without adding backslashes inside double quotes.
-            lexer.quotes = '"'
-            # Treat "#" as ordinary text. shlex drops it and everything after it as a shell
-            # comment, which silently truncated questions such as "/ask what does #123 do?".
-            # This input is a single already-parsed command, never a shell script.
-            lexer.commenters = ''
-            action, *raw_args = list(lexer)
-            args = _reencode_quoted_setting_args(request, raw_args)
-        else:
-            action, *raw_args = request
-            args = raw_args
+        parsed = parse_and_normalize_command(request)
+        if not parsed.action:
+            raise ValueError(parsed.error)
+        action, args = parsed.canonical_action, parsed.args
 
-        # validate args
-        is_valid, arg = CliArgs.validate_user_args(_validation_args(raw_args))
-        if not is_valid:
+        if not parsed.is_valid:
+            arg = parsed.error
             get_logger().error(
                 f"CLI argument for param '{arg}' is forbidden. Use instead a configuration file."
             )
@@ -478,14 +539,17 @@ class PRAgent:
                 if action == "answer":
                     if notify:
                         notify()
-                    await PRReviewer(pr_url, is_answer=True, args=args, ai_handler=self.ai_handler).run()
+                    tool = await _create_tool(PRReviewer, pr_url, is_answer=True, args=args, ai_handler=self.ai_handler)
+                    await tool.run()
                 elif action == "auto_review":
-                    await PRReviewer(pr_url, is_auto=True, args=args, ai_handler=self.ai_handler).run()
+                    tool = await _create_tool(PRReviewer, pr_url, is_auto=True, args=args, ai_handler=self.ai_handler)
+                    await tool.run()
                 else:
                     if notify:
                         notify()
 
-                    result = await command2class[action](pr_url, ai_handler=self.ai_handler, args=args).run()
+                    tool = await _create_tool(command2class[action], pr_url, ai_handler=self.ai_handler, args=args)
+                    result = await tool.run()
                     if action == "add_docs" and result is False:
                         span.set_status(StatusCode.ERROR)
                         span.set_attribute("error.type", "documentation_publication_failed")

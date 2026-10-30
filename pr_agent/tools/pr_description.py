@@ -64,17 +64,32 @@ def _build_unprocessed_files_block(file_list: list, label: str, max_files: int =
 
 
 class PRDescription:
+    # True so instances built without __init__ (e.g. via __new__) never trigger prepare() from run()
+    _prepared = True
+
     def __init__(self, pr_url: str, args: list = None,
-                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
+                 ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler, *, _defer_prepare: bool = False):
         """
         Initialize the PRDescription object with the necessary attributes and objects for generating a PR description
         using an AI model.
         Args:
             pr_url (str): The URL of the pull request.
             args (list, optional): List of arguments passed to the PRDescription class. Defaults to None.
+            _defer_prepare (bool, optional): Skip the git provider and PR context loading until prepare() or
+                run() is called. Defaults to False.
         """
+        self.pr_url = pr_url
+        self._ai_handler_factory = ai_handler
+        self._prepared = False
+        if not _defer_prepare:
+            self.prepare()
+
+    def prepare(self) -> None:
+        """Load the git provider, PR context, prompt vars and TokenHandler. Runs once; later calls are no-ops."""
+        if self._prepared:
+            return
         # Initialize the git provider and main PR language
-        self.git_provider = get_git_provider_with_context(pr_url)
+        self.git_provider = get_git_provider_with_context(self.pr_url)
         self.main_pr_language = get_main_pr_language(
             self.git_provider.get_languages(), self.git_provider.get_files()
         )
@@ -87,7 +102,7 @@ class PRDescription:
             get_settings().pr_description.enable_semantic_files_types = False
 
         # Initialize the AI handler
-        self.ai_handler = ai_handler()
+        self.ai_handler = self._ai_handler_factory()
         self.ai_handler.main_pr_language = self.main_pr_language
 
         # Initialize the variables dictionary
@@ -135,6 +150,7 @@ class PRDescription:
         self.patches_diff = None
         self.prediction = None
         self.file_label_dict = None
+        self._prepared = True
 
     @staticmethod
     def _write_json_output(data: dict) -> None:
@@ -152,6 +168,8 @@ class PRDescription:
         write_review_json_output({**data, "usage": usage})
 
     async def run(self):
+        if not getattr(self, "_prepared", False):
+            self.prepare()
         init_run_details()
         self.progress_response = None
         try:
