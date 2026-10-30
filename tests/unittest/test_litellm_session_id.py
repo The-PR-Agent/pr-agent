@@ -80,7 +80,9 @@ class TestSessionIdHeader:
     @pytest.mark.asyncio
     async def test_enabled_sets_stable_header(self, monkeypatch):
         kwargs = await _run(monkeypatch, True, log_context={"command": "improve", "pr_url": PR_URL})
-        assert kwargs["headers"]["x-litellm-session-id"] == "pr-agent-github-com-owner-repo-pull-123"
+        assert kwargs["headers"]["x-litellm-session-id"] == (
+            "pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721"
+        )
 
     @pytest.mark.asyncio
     async def test_same_pr_shares_session_across_commands(self, monkeypatch):
@@ -106,8 +108,38 @@ class TestSessionIdHeader:
         pr_url = "https://gitlab.example.com/group/project/-/merge_requests/171?foo=bar"
         kwargs = await _run(monkeypatch, True, log_context={"command": "improve", "pr_url": pr_url})
         session_id = kwargs["headers"]["x-litellm-session-id"]
-        assert session_id == "pr-agent-gitlab-example-com-group-project-merge_requests-171"
+        assert session_id == (
+            "pr-agent-gitlab-example-com-group-project-merge_requests-171-4534b7cf8d89d676"
+        )
         assert len(session_id) >= 8
+
+    @pytest.mark.asyncio
+    async def test_punctuation_differences_do_not_collide(self, monkeypatch):
+        first = await _run(monkeypatch, True, log_context={
+            "command": "review", "pr_url": "https://github.com/owner/repo/pull/1",
+        })
+        second = await _run(monkeypatch, True, log_context={
+            "command": "review", "pr_url": "https://github.com/owner/repo/pull-1",
+        })
+        first_id = first["headers"]["x-litellm-session-id"]
+        second_id = second["headers"]["x-litellm-session-id"]
+        assert first_id.rsplit("-", 1)[0] == second_id.rsplit("-", 1)[0]
+        assert first_id != second_id
+
+    @pytest.mark.asyncio
+    async def test_long_paths_do_not_collide(self, monkeypatch):
+        long_path = "https://github.com/" + "a" * 200 + "/pull/"
+        first = await _run(monkeypatch, True, log_context={
+            "command": "review", "pr_url": long_path + "1",
+        })
+        second = await _run(monkeypatch, True, log_context={
+            "command": "review", "pr_url": long_path + "2",
+        })
+        first_id = first["headers"]["x-litellm-session-id"]
+        second_id = second["headers"]["x-litellm-session-id"]
+        assert first_id != second_id
+        assert len(first_id) <= 128
+        assert len(second_id) <= 128
 
     @pytest.mark.asyncio
     async def test_explicit_header_is_preserved(self, monkeypatch):

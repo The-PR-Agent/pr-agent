@@ -275,7 +275,7 @@ add_session_id_to_requests = true
 ```
 
 The value is derived from the PR URL and normalized to the character set LiteLLM accepts,
-for example `pr-agent-github-com-owner-repo-pull-123`. A header set explicitly through
+for example `pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721`. A header set explicitly through
 `LITELLM.EXTRA_HEADERS` takes precedence, and the setting is disabled by default.
 
 ## Integrating with Logging Observability Platforms

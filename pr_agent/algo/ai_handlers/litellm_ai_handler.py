@@ -2710,9 +2710,16 @@ class LiteLLMAIHandler(BaseAiHandler):
         slug = re.sub(r"-{2,}", "-", slug).strip("-_").lower()
         if not slug:
             return ""
-        # LiteLLM only recognizes session ids of at least 8 characters; the
-        # "pr-agent-" prefix guarantees that even for short URLs.
-        return f"pr-agent-{slug}"[:128].rstrip("-_")
+        # Different URLs can normalize to the same slug, and long repository
+        # paths can push the PR number past the cutoff. Append a digest of the
+        # raw URL and reserve room for it before truncating the readable part,
+        # so unrelated PRs never share a session. The "pr-agent-" prefix also
+        # keeps the id above LiteLLM's 8-character minimum.
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        prefix = "pr-agent-"
+        slug_budget = 128 - len(prefix) - len(digest) - 1
+        slug = slug[:slug_budget].rstrip("-_")
+        return f"{prefix}{slug}-{digest}"
 
     @property
     def deployment_id(self):
