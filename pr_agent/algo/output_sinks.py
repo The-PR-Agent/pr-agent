@@ -144,6 +144,7 @@ def _check_output_sinks(cfg: dict) -> tuple[bool, str] | None:
                 parsed = urlparse(url)
                 valid = parsed.scheme == "https" and bool(parsed.hostname)
             except ValueError:
+                # Malformed URLs use the same value-free failure message below.
                 pass
         if not valid:
             return False, f"push_outputs.{key} must be an absolute https:// URL with a host"
