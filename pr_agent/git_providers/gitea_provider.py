@@ -139,7 +139,11 @@ class GiteaProvider(GitProvider):
         self.last_commit = None
         self.last_commit_id = None
 
-        if "pulls" in url:
+        # Classify by the resource segment instead of a substring, so a repository
+        # named like "pulls-helper" keeps its issues on the issue path.
+        path_parts = self._url_path_parts(url) if url else []
+        resource = path_parts[2] if len(path_parts) > 2 else ""
+        if resource == "pulls":
             self.pr_url = url
             self.__set_repo_and_owner_from_pr()
             self.enabled_pr = True
@@ -153,7 +157,7 @@ class GiteaProvider(GitProvider):
             self.last_commit_id = self.last_commit
             self.base_sha = self.pr.base.sha or ""
             self.base_ref = self.pr.base.ref or ""
-        elif "issues" in url:
+        elif resource == "issues":
             self.issue_url = url
             self.__set_repo_and_owner_from_issue()
             self.enabled_issue = True

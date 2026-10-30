@@ -729,17 +729,50 @@ class GitLabProvider(GitProvider):
         return True
 
     def _get_project_path_from_pr_or_issue_url(self, pr_or_issue_url: str) -> str:
-        repo_project_path = None
-        if 'issues' in pr_or_issue_url:
-            #replace 'issues' with 'merge_requests', since gitlab provider does not support issue urls,
-            # just to get the git repo url:
-            pr_or_issue_url = pr_or_issue_url.replace('issues', 'merge_requests')
-        if 'merge_requests' in pr_or_issue_url:
+        """Project path of a merge-request or issue URL.
+
+        The resource is classified by its path segment (the one after ``/-/``), not by
+        a substring of the whole URL, so a project named like ``grp/my-issues`` keeps
+        its name instead of being rewritten into ``grp/my-merge_requests``.
+        """
+        path_parts = [part for part in self._url_path_parts(pr_or_issue_url) if part]
+        resource = ""
+        if "-" in path_parts:
+            dash_index = path_parts.index("-")
+            if len(path_parts) > dash_index + 1:
+                resource = path_parts[dash_index + 1]
+        else:
+            # Legacy URLs without the /-/ delimiter.
+            resource = next(
+                (candidate for candidate in ("merge_requests", "issues") if candidate in path_parts),
+                "",
+            )
+        repo_project_path = ""
+        if resource == "merge_requests":
             repo_project_path, _ = self._parse_merge_request_url(pr_or_issue_url)
+        elif resource == "issues":
+            repo_project_path = self._project_path_from_issue_url(pr_or_issue_url)
         if not repo_project_path:
             get_logger().error(f"url is not a valid merge requests url: {pr_or_issue_url}")
             return ""
         return repo_project_path
+
+    def _project_path_from_issue_url(self, issue_url: str) -> str:
+        """Project path of an issue URL, which the provider only needs for the repo URL."""
+        path_parts = self._url_path_parts(issue_url)
+        if "issues" not in path_parts:
+            return ""
+        project_parts = path_parts[:path_parts.index("issues")]
+        # Numeric-ID alias: /projects/<project-id>/-/issues/<iid>
+        if (
+            len(project_parts) == 3
+            and project_parts[0] == "projects"
+            and project_parts[1].isascii()
+            and project_parts[1].isdigit()
+            and project_parts[-1] == "-"
+        ):
+            return project_parts[1]
+        return "/".join(project_parts).removesuffix("/-")
 
     def get_git_repo_url(self, issues_or_pr_url: str) -> str:
         provider_url = issues_or_pr_url
@@ -2553,21 +2586,28 @@ class GitLabProvider(GitProvider):
             get_logger().warning(f"Failed to remove reaction, error: {e}")
             return False
 
-    def _parse_merge_request_url(self, merge_request_url: str) -> tuple[str, int]:
-        parsed_url = urlparse(merge_request_url)
+    def _url_path_parts(self, url: str) -> list[str]:
+        """Path parts of a GitLab URL, with the instance sub-path prefix removed.
+
+        Strip the deployment sub-path prefix (e.g. '/gitlab') from the URL path
+        so projects hosted on a GitLab instance using a relative URL parse correctly.
+        Only strip when the URL points at the configured GitLab host, so a prefix
+        from another host is never rewritten into a project on this instance.
+        """
+        parsed_url = urlparse(url)
 
         path_parts = parsed_url.path.strip('/').split('/')
 
-        # Strip the deployment sub-path prefix (e.g. '/gitlab') from the URL path
-        # so projects hosted on a GitLab instance using a relative URL parse correctly.
-        # Only strip when the URL points at the configured GitLab host, so a prefix
-        # from another host is never rewritten into a project on this instance.
         gitlab_base = urlparse(self.gitlab_url)
         base_path_parts = [part for part in gitlab_base.path.split("/") if part]
         same_host = (parsed_url.scheme.lower() == gitlab_base.scheme.lower()
                      and parsed_url.netloc.lower() == gitlab_base.netloc.lower())
         if same_host and base_path_parts and path_parts[:len(base_path_parts)] == base_path_parts:
             path_parts = path_parts[len(base_path_parts):]
+        return path_parts
+
+    def _parse_merge_request_url(self, merge_request_url: str) -> tuple[str, int]:
+        path_parts = self._url_path_parts(merge_request_url)
 
         if 'merge_requests' not in path_parts:
             raise ValueError("The provided URL does not appear to be a GitLab merge request URL")

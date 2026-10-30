@@ -480,6 +480,20 @@ class TestGiteaProvider:
 
         assert provider.diff_files is None
 
+    @patch("pr_agent.git_providers.gitea_provider.giteapy.ApiClient")
+    @patch("pr_agent.git_providers.gitea_provider.get_settings")
+    def test_issue_url_in_repository_named_like_pulls_is_an_issue(self, mock_get_settings, _):
+        mock_get_settings.return_value.get.side_effect = lambda key, default=None: {
+            "GITEA.PERSONAL_ACCESS_TOKEN": "token",
+            "GITEA.URL": "https://gitea.example.com",
+        }.get(key, default)
+
+        provider = GiteaProvider("https://gitea.example.com/owner/pulls-helper/issues/3")
+
+        assert provider.enabled_issue is True
+        assert provider.enabled_pr is False
+        assert (provider.owner, provider.repo, provider.issue_number) == ("owner", "pulls-helper", 3)
+
     @patch('pr_agent.git_providers.gitea_provider.get_settings')
     @patch('pr_agent.git_providers.gitea_provider.giteapy.ApiClient')
     def test_gitea_provider_auth_header(self, mock_api_client_cls, mock_get_settings):

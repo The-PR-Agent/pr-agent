@@ -173,3 +173,41 @@ def test_get_line_link_encodes_source_branch(branch, expected):
     assert provider.get_line_link("src/app.py", 42) == (
         f"https://gitlab.example.com/group/project/-/blob/{expected}/src/app.py?ref_type=heads#L42"
     )
+
+
+def test_project_path_classifies_the_resource_by_path_segment():
+    provider = _provider()
+
+    # A project name containing "issues" used to be rewritten into "my-merge_requests".
+    assert provider._get_project_path_from_pr_or_issue_url(
+        "https://gitlab.example.com/grp/my-issues/-/merge_requests/3"
+    ) == "grp/my-issues"
+    assert provider._get_project_path_from_pr_or_issue_url(
+        "https://gitlab.example.com/grp/my-merge_requests/-/issues/4"
+    ) == "grp/my-merge_requests"
+
+
+def test_project_path_from_issue_url_keeps_the_nested_group():
+    assert _provider()._get_project_path_from_pr_or_issue_url(
+        "https://gitlab.example.com/group/subgroup/project/-/issues/9"
+    ) == "group/subgroup/project"
+
+
+def test_project_path_strips_the_instance_sub_path():
+    provider = _provider("https://gitlab.example.com/gitlab")
+
+    assert provider._get_project_path_from_pr_or_issue_url(
+        "https://gitlab.example.com/gitlab/group/project/-/merge_requests/2"
+    ) == "group/project"
+
+
+def test_project_path_from_numeric_issue_alias():
+    assert _provider()._get_project_path_from_pr_or_issue_url(
+        "https://gitlab.example.com/projects/127014/-/issues/5"
+    ) == "127014"
+
+
+def test_get_git_repo_url_keeps_a_project_named_like_a_resource():
+    assert _provider().get_git_repo_url(
+        "https://gitlab.example.com/grp/my-issues/-/merge_requests/3"
+    ) == "https://gitlab.example.com/grp/my-issues.git"
