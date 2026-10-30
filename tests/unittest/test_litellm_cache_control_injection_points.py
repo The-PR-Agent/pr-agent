@@ -401,12 +401,42 @@ def _system_message(mock_call):
 
 async def _run_chat_completion(monkeypatch, points, model, system, skills_context="SKILL"):
     monkeypatch.setattr(litellm_handler, "get_settings", _settings(points))
-    monkeypatch.setattr(litellm_handler, "get_skills_context", lambda: skills_context)
+    monkeypatch.setattr(litellm_handler, "get_skills_context", lambda **_kwargs: skills_context)
     with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
         mock_call.return_value = _mock_response()
         handler = litellm_handler.LiteLLMAIHandler()
         await handler.chat_completion(model=model, system=system, user="usr")
     return mock_call
+
+
+@pytest.mark.asyncio
+async def test_split_uses_the_relevance_hint_the_tools_recorded(monkeypatch):
+    # When the skills budget forces drops, the hinted block the tools embedded differs
+    # from the alphabetical one; the split must re-render with the same hint or its
+    # prefix no longer matches and the Anthropic cache split is silently skipped (#3834).
+    points = [{"location": "message", "role": "system", "control": _SKILLS_CONTROL}]
+    seen_kwargs = {}
+
+    def hinted_get_skills_context(**kwargs):
+        seen_kwargs.update(kwargs)
+        return "SKILL" if kwargs.get("relevance_hint") == "Terraform migration PR" else ""
+
+    monkeypatch.setattr(litellm_handler, "get_settings", _settings(points))
+    monkeypatch.setattr(litellm_handler, "get_skills_context", hinted_get_skills_context)
+    monkeypatch.setattr(litellm_handler, "last_relevance_hint", lambda: "Terraform migration PR")
+    prefix = litellm_handler.render_skills_prefix(skills_context="SKILL")
+    system = prefix + "rest"
+
+    with patch("pr_agent.algo.ai_handlers.litellm_ai_handler.acompletion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = _mock_response()
+        handler = litellm_handler.LiteLLMAIHandler()
+        await handler.chat_completion(model="claude-sonnet-5", system=system, user="usr")
+
+    assert seen_kwargs.get("relevance_hint") == "Terraform migration PR"
+    assert _system_message(mock_call)["content"] == [
+        {"type": "text", "text": prefix, "cache_control": _SKILLS_CONTROL},
+        {"type": "text", "text": "rest", "cache_control": _SKILLS_CONTROL},
+    ]
 
 
 @pytest.mark.asyncio

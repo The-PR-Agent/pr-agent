@@ -107,7 +107,8 @@ class PRDescription:
             "diff": "",  # empty diff for initial calculation
             "extra_instructions": get_settings().pr_description.extra_instructions,
             "artifact_context": get_artifact_context("pr_description"),
-            "skills_context": get_skills_context(),
+            "skills_context": get_skills_context(
+                relevance_hint=f"{self.git_provider.pr.title} {self.main_pr_language}"),
             "repo_context": build_repo_context(self.git_provider),
             "commit_messages_str": self.git_provider.get_commit_messages(),
             "enable_custom_labels": get_settings().config.enable_custom_labels,
