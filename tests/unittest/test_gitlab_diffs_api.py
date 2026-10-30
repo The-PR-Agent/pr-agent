@@ -126,7 +126,7 @@ def test_collects_all_pages_using_the_configured_client(provider_factory):
         "/gitlab/api/v4/projects/group%2Fsub%2Frepo/merge_requests/7/diffs",
         "/gitlab/api/v4/projects/group%2Fsub%2Frepo/merge_requests/7/diffs",
     ]
-    assert urlparse(transport.diff_requests[1].url).query == "page=2"
+    assert urlparse(transport.diff_requests[1].url).query == "page=2&per_page=100"
     assert len(transport.requests) == 4
     assert all(urlparse(transport.requests[index].url).path.endswith("/merge_requests/7") for index in (0, 3))
     assert all(request.headers["PRIVATE-TOKEN"] == "offline-token" for request in transport.requests)
