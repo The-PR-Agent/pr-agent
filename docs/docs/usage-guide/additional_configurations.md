@@ -262,6 +262,22 @@ add_user_to_requests = true
 The setting is disabled by default, since it shares request-attribution data with the model
 provider: enabling it is an explicit operator choice.
 
+## Grouping requests by PR in LiteLLM
+
+When `add_session_id_to_requests` is enabled, PR-Agent sends a stable
+`x-litellm-session-id` header with every request. LiteLLM stores the value in the
+`session_id` column of its spend logs, so all commands run against the same PR can be
+found and grouped together, even when they arrive as separate requests.
+
+```
+[litellm]
+add_session_id_to_requests = true
+```
+
+The value is derived from the PR URL and normalized to the character set LiteLLM accepts,
+for example `pr-agent-github-com-owner-repo-pull-123`. A header set explicitly through
+`LITELLM.EXTRA_HEADERS` takes precedence, and the setting is disabled by default.
+
 ## Integrating with Logging Observability Platforms
 
 Various logging observability tools can be used out-of-the box when using the default LiteLLM AI Handler. Simply configure the LiteLLM callback settings in `configuration.toml` and set environment variables according to the LiteLLM [documentation](https://docs.litellm.ai/docs/).

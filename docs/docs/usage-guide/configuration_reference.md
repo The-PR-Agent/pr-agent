@@ -463,6 +463,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable_callbacks` | false |  |
+| `add_session_id_to_requests` | false | send a stable x-litellm-session-id header derived from the PR URL, so LiteLLM groups every request for the same PR into one session |
 | `success_callback` | [] |  |
 | `failure_callback` | [] |  |
 | `service_callback` | [] |  |

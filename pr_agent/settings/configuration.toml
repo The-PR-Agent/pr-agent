@@ -493,6 +493,7 @@ project_keys = ["*"]
 # use_client = false
 # drop_params = false
 enable_callbacks = false
+add_session_id_to_requests = false # send a stable x-litellm-session-id header derived from the PR URL, so LiteLLM groups every request for the same PR into one session
 success_callback = []
 failure_callback = []
 service_callback = []
