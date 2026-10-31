@@ -108,7 +108,7 @@ def run_comment(monkeypatch):
                            ("reaction_on_success", success),
                            ("reaction_on_failure", failure)):
             if value is not None:
-                monkeypatch.setattr(get_settings().config, key, value, raising=False)
+                monkeypatch.setitem(get_settings().config, key, value)
 
         async def handle_request(api_url, request, log_context, sender_id, notify=None):
             dispatched.append(request)
@@ -119,7 +119,7 @@ def run_comment(monkeypatch):
             return outcome
 
         monkeypatch.setattr(gitlab_webhook, "handle_request", handle_request)
-        response = client.post("/webhook", json=payload if payload else _note_event(body),
+        response = client.post("/webhook", json=payload or _note_event(body),
                                headers={"X-Gitlab-Token": "secret"})
         assert response.status_code == 200, response.text
         return provider
@@ -194,7 +194,7 @@ async def test_outcome_reaction_preserves_settings_without_blocking_the_event_lo
     with request_cycle_context({}):
         await gitlab_webhook.gitlab_webhook(background, request)
         # Override the request-scoped copy installed by the webhook.
-        monkeypatch.setattr(get_settings().config, "reaction_on_success", "hooray", raising=False)
+        monkeypatch.setitem(get_settings().config, "reaction_on_success", "hooray")
         observer = asyncio.create_task(release_reaction())
         try:
             await background()

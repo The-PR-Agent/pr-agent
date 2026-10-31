@@ -12,14 +12,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CURRENT_DOCS_URL = "https://docs.pr-agent.ai"
 RETIRED_DOCS_HOSTS = ("qodo-merge-docs.qodo.ai", "pr-agent-docs.codium.ai")
 
-
-def test_cli_and_bot_help_use_canonical_command_descriptions():
+@pytest.mark.parametrize("description", COMMAND_DESCRIPTIONS.values())
+def test_cli_and_bot_help_use_canonical_command_descriptions(description):
     cli_usage = set_parser().format_usage()
     bot_help = HelpMessage.get_general_commands_text()
 
-    for description in COMMAND_DESCRIPTIONS.values():
-        assert description in cli_usage
-        assert description in bot_help
+    assert description in cli_usage
+    assert description in bot_help
 
 
 @pytest.mark.parametrize(

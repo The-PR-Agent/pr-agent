@@ -12,6 +12,8 @@ It can be invoked manually by commenting on any PR:
 /update_changelog
 ```
 
+Empty or fence-only model responses are retried with the configured fallback models. If no model returns usable content, the command stops without writing to CHANGELOG.md or publishing an update comment.
+
 ## Example usage
 
 <img src="/img/update_changelog_comment.png" alt="update_changelog_comment" width="768" />

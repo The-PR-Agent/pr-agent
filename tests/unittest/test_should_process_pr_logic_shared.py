@@ -190,6 +190,29 @@ def test_ignore_pr_title_given_as_a_plain_string_is_not_iterated_per_character(p
     _assert_all(providers, _fields(title="Add cache"), True, "a string ignore_pr_title that does not match")
 
 
+@pytest.mark.parametrize(
+    "setting, matching, non_matching, labels_only",
+    [
+        ("CONFIG.IGNORE_REPOSITORIES", {"repo_full_name": "org/blocked"}, {"repo_full_name": "org/repo"}, False),
+        ("CONFIG.IGNORE_PR_AUTHORS", {"sender": "blocked"}, {"sender": "alice"}, False),
+        ("CONFIG.IGNORE_PR_LABELS", {"labels": ("blocked",)}, {"labels": ("block",)}, True),
+        ("CONFIG.IGNORE_PR_SOURCE_BRANCHES", {"source_branch": "blocked"},
+         {"source_branch": "feature/cache"}, False),
+        ("CONFIG.IGNORE_PR_TARGET_BRANCHES", {"target_branch": "blocked"}, {"target_branch": "release"}, False),
+    ],
+)
+def test_scalar_ignore_setting_is_one_pattern(providers, ignore_settings, setting, matching, non_matching, labels_only):
+    ignore_settings.set(setting, "blocked")
+    _assert_all(providers, _fields(**matching), False, f"{setting} matches", only_with_labels=labels_only)
+    _assert_all(providers, _fields(**non_matching), True, f"{setting} does not match", only_with_labels=labels_only)
+
+
+@pytest.mark.parametrize("setting", IGNORE_KEYS)
+def test_empty_scalar_ignore_setting_does_not_filter_any_pr(providers, ignore_settings, setting):
+    ignore_settings.set(setting, "")
+    _assert_all(providers, _fields(labels=("ready",)), True, f"{setting} is disabled when empty")
+
+
 def test_an_invalid_pattern_does_not_filter_out_every_pull_request(providers, ignore_settings):
     """Process the PR when a rule cannot be evaluated; the opposite silently disables the agent."""
     ignore_settings.set("CONFIG.IGNORE_PR_TITLE", ["("])

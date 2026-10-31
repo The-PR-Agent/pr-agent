@@ -1,13 +1,14 @@
 import hashlib
 import time
+import uuid
 from enum import StrEnum
+from itertools import batched, islice
 
 import openai
-from pydantic import BaseModel, Field
+import tiktoken
+from pydantic import BaseModel, ConfigDict, Field
 
 from pr_agent.algo import MAX_TOKENS
-from pr_agent.algo.token_budget import get_max_tokens
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import get_git_provider
 from pr_agent.log import get_logger
@@ -17,9 +18,23 @@ PINECONE_UPSERT_READY_TIMEOUT_SECONDS = 30
 PINECONE_UPSERT_READY_POLL_SECONDS = 0.5
 # 32 inputs at 8,192 tokens each stay under the embedding API's 300,000-token request limit.
 EMBEDDING_BATCH_SIZE = 32
+ISSUE_LOOKUP_BATCH_SIZE = 100
+# Reserve one token within the 8,192-token model context (OpenAI Cookbook).
+EMBEDDING_INPUT_TOKEN_LIMIT = MAX_TOKENS[MODEL] - 1
 
 
 _EMBEDDING_CLIENTS = {}
+
+
+def _embedding_token_ids(text: str) -> list[int]:
+    """Use the embedding model's tokenizer, not the configured chat model's."""
+    return tiktoken.encoding_for_model(MODEL).encode(text, disallowed_special=())
+
+
+def _fits_embedding_input(text: str) -> bool:
+    # An ASCII input shorter than the limit cannot exceed that many tokens.
+    return (text.isascii() and len(text) <= EMBEDDING_INPUT_TOKEN_LIMIT) or \
+        len(_embedding_token_ids(text)) <= EMBEDDING_INPUT_TOKEN_LIMIT
 
 
 def _get_embedding_client(api_key: str):
@@ -29,7 +44,7 @@ def _get_embedding_client(api_key: str):
     return _EMBEDDING_CLIENTS[api_key]
 
 
-def _embed(texts: list[str]) -> list[list[float]]:
+def _embed(texts: list[str | list[int]]) -> list[list[float]]:
     """Embed texts with the openai>=1.0 client that requirements.txt pins."""
     client = _get_embedding_client(get_settings().openai.key)
     response = client.embeddings.create(input=texts, model=MODEL)
@@ -43,6 +58,8 @@ def _embed_with_fallback(texts: list[str]) -> list[list[float]]:
         if len(embeddings) != len(texts):
             raise ValueError("Embedding response count does not match input")
         return embeddings
+    except (openai.AuthenticationError, openai.PermissionDeniedError):
+        raise
     except Exception as e:
         original_error = e
         get_logger().error("Failed to embed entire list, retrying in bounded batches...",
@@ -59,12 +76,16 @@ def _embed_with_fallback(texts: list[str]) -> list[list[float]]:
                     raise ValueError("Embedding batch response count does not match input")
                 embeds.extend(batch_embeds)
                 continue
+            except (openai.AuthenticationError, openai.PermissionDeniedError):
+                raise
             except Exception as e:
                 get_logger().warning("Embedding batch failed, retrying its items...",
                                      artifact={"error": str(e)})
         for text in batch:
             try:
                 embeds.append(_embed([text])[0])
+            except (openai.AuthenticationError, openai.PermissionDeniedError):
+                raise
             except Exception:
                 failures += 1
                 embeds.append([0] * 1536)
@@ -100,6 +121,7 @@ def _lancedb_similar_search(table, query_vector, repo_name_for_index, limit=5):
         .distance_type("cosine")
         .limit(limit)
         .where(f"metadata.repo='{repo_name_for_index}'", prefilter=True)
+        .select(["id", "_distance"])
         .to_list()
     )
 
@@ -207,7 +229,6 @@ class PRSimilarIssue:
         repo_name, issue_number = self.git_provider._parse_issue_url(issue_url.split('=')[-1])
         self.git_provider.repo = repo_name
         self.git_provider.repo_obj = self.git_provider.github_client.get_repo(repo_name)
-        self.token_handler = TokenHandler()
         repo_obj = self.git_provider.repo_obj
         repo_name_for_index = self.repo_name_for_index = repo_obj.full_name.lower().replace('/', '-').replace('_/', '-')
         self.pinecone_namespace = _pinecone_namespace(repo_obj.full_name)
@@ -268,16 +289,17 @@ class PRSimilarIssue:
                 self.pinecone_index = self.pc.Index(name=index_name)
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
-                    if scanned >= self.max_issues_to_scan:
-                        break
-                    number = issue.number
-                    issue_key = f"issue_{number}"
-                    id = issue_key + "." + "issue"
-                    res = self.pinecone_index.fetch(ids=[id], namespace=self.pinecone_namespace).to_dict()
-                    if not any(vector['metadata']['repo'] == repo_name_for_index
-                               for vector in res["vectors"].values()):
-                        issues_to_update.append(issue)
+                issues = (issue for issue in issues_paginated_list if not issue.pull_request)
+                for batch in batched(islice(issues, max(0, self.max_issues_to_scan)), ISSUE_LOOKUP_BATCH_SIZE):
+                    issue_ids = [f"issue_{issue.number}.issue" for issue in batch]
+                    res = self.pinecone_index.fetch(ids=issue_ids, namespace=self.pinecone_namespace).to_dict()
+                    indexed_ids = {
+                        point_id for point_id, vector in res["vectors"].items()
+                        if vector['metadata']['repo'] == repo_name_for_index
+                    }
+                    issues_to_update.extend(
+                        issue for issue in batch if f"issue_{issue.number}.issue" not in indexed_ids
+                    )
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -333,9 +355,11 @@ class PRSimilarIssue:
 
                 indexed_ids = set()
                 if issues_to_scan:
+                    issue_ids = ", ".join(f"'issue_{issue.number}.issue'" for issue in issues_to_scan)
+                    # Do not cap rows at the candidate count because duplicate IDs can exist.
                     rows = self.table.search().limit(len(self.table)).where(
-                        f"metadata.repo='{repo_name_for_index}'"
-                    ).select(["id", "metadata"]).to_list()
+                        f"metadata.repo='{repo_name_for_index}' AND id IN ({issue_ids})"
+                    ).select(["id"]).to_list()
                     indexed_ids = {row['id'] for row in rows}
                 issues_to_update = [
                     issue for issue in issues_to_scan if f"issue_{issue.number}.issue" not in indexed_ids
@@ -406,21 +430,28 @@ class PRSimilarIssue:
             else:
                 issues_to_update = []
                 issues_paginated_list = repo_obj.get_issues(state='all')
-                for scanned, issue in enumerate(i for i in issues_paginated_list if not i.pull_request):
-                    if scanned >= self.max_issues_to_scan:
-                        break
-                    number = issue.number
-                    issue_key = f"issue_{number}"
-                    point_id = issue_key + "." + "issue"
-                    response = self.qdrant.count(
+                issues = (issue for issue in issues_paginated_list if not issue.pull_request)
+                for batch in batched(islice(issues, max(0, self.max_issues_to_scan)), ISSUE_LOOKUP_BATCH_SIZE):
+                    point_ids = [
+                        uuid.uuid5(uuid.NAMESPACE_DNS, f"{repo_name_for_index}:issue_{issue.number}.issue").hex
+                        for issue in batch
+                    ]
+                    records = self.qdrant.retrieve(
                         collection_name=self.qdrant_collection_name,
-                        count_filter=Filter(must=[
-                            FieldCondition(key="id", match=MatchValue(value=point_id)),
-                            FieldCondition(key="metadata.repo", match=MatchValue(value=repo_name_for_index)),
-                        ]),
+                        ids=point_ids,
+                        with_payload=["id", "metadata.repo"],
+                        with_vectors=False,
                     )
-                    if response.count == 0:
-                        issues_to_update.append(issue)
+                    indexed_ids = {
+                        record.payload['id'] for record in records
+                        if isinstance(record.payload, dict)
+                        and isinstance(record.payload.get('id'), str)
+                        and isinstance(record.payload.get('metadata'), dict)
+                        and record.payload['metadata'].get('repo') == repo_name_for_index
+                    }
+                    issues_to_update.extend(
+                        issue for issue in batch if f"issue_{issue.number}.issue" not in indexed_ids
+                    )
 
                 if issues_to_update:
                     get_logger().info(f'Updating index with {len(issues_to_update)} new issues...')
@@ -459,6 +490,8 @@ class PRSimilarIssue:
                     comment_number = -1
                 elif parts[1].startswith("comment_"):
                     comment_number = int(parts[1][len("comment_"):])
+                    if comment_number < 0:
+                        continue
                 else:
                     continue
             except (ValueError, TypeError, AttributeError, IndexError):
@@ -488,11 +521,14 @@ class PRSimilarIssue:
         get_logger().info('Getting issue...')
         repo_name, original_issue_number = self.git_provider._parse_issue_url(self.issue_url.split('=')[-1])
         issue_main = self.git_provider.repo_obj.get_issue(original_issue_number)
-        issue_str, comments, number = self._process_issue(issue_main)
+        issue_str, _, _ = self._process_issue(issue_main, include_comments=False)
         get_logger().info('Done')
 
         get_logger().info('Querying...')
-        embeds = _embed([issue_str])
+        query_tokens = _embedding_token_ids(issue_str)
+        query_input = query_tokens[:EMBEDDING_INPUT_TOKEN_LIMIT] if len(query_tokens) > EMBEDDING_INPUT_TOKEN_LIMIT \
+            else issue_str
+        embeds = _embed([query_input])
 
         relevant_issues_number_list = []
         relevant_comment_number_list = []
@@ -509,7 +545,7 @@ class PRSimilarIssue:
                     top_k=limit,
                     filter={"repo": self.repo_name_for_index},
                     namespace=self.pinecone_namespace,
-                    include_metadata=True,
+                    include_metadata=False,
                 ).to_dict()["matches"]
                 hits = ((r["id"], r["score"]) for r in res)
             elif vectordb == "lancedb":
@@ -518,15 +554,15 @@ class PRSimilarIssue:
             elif vectordb == "qdrant":
                 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-                res = self.qdrant.search(
+                res = self.qdrant.query_points(
                     collection_name=self.qdrant_collection_name,
-                    query_vector=embeds[0],
+                    query=embeds[0],
                     limit=limit,
                     query_filter=Filter(
                         must=[FieldCondition(key="metadata.repo", match=MatchValue(value=self.repo_name_for_index))]
                     ),
-                    with_payload=True,
-                )
+                    with_payload=["id"],
+                ).points
                 hits = ((r.payload["id"], r.score) for r in res)
             else:
                 break
@@ -547,21 +583,22 @@ class PRSimilarIssue:
             title = issue.title
             url = issue.html_url
             if relevant_comment_number_list[i] != -1:
-                url = list(issue.get_comments())[relevant_comment_number_list[i]].html_url
+                comment_index = relevant_comment_number_list[i]
+                url = list(islice(issue.get_comments(), comment_index, comment_index + 1))[0].html_url
             similar_issues_str += f"{i + 1}. **[{title}]({url})** (score={score_list[i]})\n\n"
         if get_settings().config.publish_output:
             issue_main.create_comment(similar_issues_str)
         get_logger().info(similar_issues_str)
         get_logger().info("Done")
 
-    def _process_issue(self, issue):
+    def _process_issue(self, issue, *, include_comments=True):
         header = issue.title
         body = issue.body
         number = issue.number
-        if get_settings().pr_similar_issue.skip_comments:
+        if not include_comments or get_settings().pr_similar_issue.skip_comments:
             comments = []
         else:
-            comments = list(issue.get_comments())
+            comments = issue.get_comments()
         issue_str = f"Issue Header: \"{header}\"\n\nIssue Body:\n{body}"
         return issue_str, comments, number
 
@@ -593,8 +630,7 @@ class PRSimilarIssue:
             issue_key = f"issue_{number}"
             username = issue.user.login
             created_at = str(issue.created_at)
-            if len(issue_str) < 8000 or \
-                    self.token_handler.count_tokens(issue_str) < get_max_tokens(MODEL):  # fast reject first
+            if _fits_embedding_input(issue_str):
                 issue_record = Record(
                     id=issue_key + "." + "issue",
                     text=issue_str,
@@ -610,8 +646,7 @@ class PRSimilarIssue:
                         if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
-                        if len(comment_body) < 8000 or \
-                                self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
+                        if _fits_embedding_input(comment_body):
                             comment_record = Record(
                                 id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
@@ -719,8 +754,7 @@ class PRSimilarIssue:
             issue_key = f"issue_{number}"
             username = issue.user.login
             created_at = str(issue.created_at)
-            if len(issue_str) < 8000 or \
-                    self.token_handler.count_tokens(issue_str) < get_max_tokens(MODEL):  # fast reject first
+            if _fits_embedding_input(issue_str):
                 issue_record = Record(
                     id=issue_key + "." + "issue",
                     text=issue_str,
@@ -736,8 +770,7 @@ class PRSimilarIssue:
                         if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
-                        if len(comment_body) < 8000 or \
-                                self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
+                        if _fits_embedding_input(comment_body):
                             comment_record = Record(
                                 id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
@@ -801,8 +834,6 @@ class PRSimilarIssue:
 
     def _update_qdrant_with_issues(self, issues_list, repo_name_for_index, ingest=False):
         try:
-            import uuid
-
             import pandas as pd
             from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
         except Exception:
@@ -833,8 +864,7 @@ class PRSimilarIssue:
             issue_key = f"issue_{number}"
             username = issue.user.login
             created_at = str(issue.created_at)
-            if len(issue_str) < 8000 or \
-                    self.token_handler.count_tokens(issue_str) < get_max_tokens(MODEL):
+            if _fits_embedding_input(issue_str):
                 issue_record = Record(
                     id=issue_key + "." + "issue",
                     text=issue_str,
@@ -850,8 +880,7 @@ class PRSimilarIssue:
                         if not isinstance(comment_body, str) or len(comment_body.split()) < 10:
                             continue
 
-                        if len(comment_body) < 8000 or \
-                                self.token_handler.count_tokens(comment_body) < MAX_TOKENS[MODEL]:
+                        if _fits_embedding_input(comment_body):
                             comment_record = Record(
                                 id=issue_key + ".comment_" + str(j),
                                 text=comment_body,
@@ -935,13 +964,12 @@ class IssueLevel(StrEnum):
 
 
 class Metadata(BaseModel):
+    model_config = ConfigDict(use_enum_values=True)
+
     repo: str
     username: str = Field(default="@codium")
     created_at: str = Field(default="01-01-1970 00:00:00.00000")
     level: IssueLevel = Field(default=IssueLevel.ISSUE)
-
-    class Config:
-        use_enum_values = True
 
 
 class Record(BaseModel):

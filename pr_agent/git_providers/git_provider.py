@@ -6,11 +6,14 @@ import shutil
 import subprocess
 import time
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any
 from urllib.parse import urlsplit
+
+from starlette_context import context
 
 from pr_agent.algo.comment_identity import (
     PRCommandNoticeIdentity,
@@ -160,6 +163,11 @@ _ANTHROPIC_KEY_RE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{32,255}\b")
 _OPENAI_KEY_RE = re.compile(r"\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{32,255}\b|\bsk-[A-Za-z0-9]{40,255}\b")
 _GOOGLE_API_KEY_RE = re.compile(r"\bAIza[A-Za-z0-9_-]{32,42}(?![A-Za-z0-9_-])")
 _SLACK_TOKEN_RE = re.compile(r"\bxox[a-z]-[0-9A-Za-z-]{10,255}\b|\bxapp-[0-9A-Za-z-]{10,255}\b")
+# Consume the full Stripe payload without backtracking when key lengths vary.
+_STRIPE_KEY_RE = re.compile(r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{24,}+(?![A-Za-z0-9_])")
+# Twilio SK values are API key SIDs, not their unprefixed secrets.
+_TWILIO_API_KEY_SID_RE = re.compile(r"\bSK[0-9a-fA-F]{32}(?![A-Za-z0-9_])")
+_SENDGRID_API_KEY_RE = re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
 
 
 # The reaction PR-Agent has always added when it picks a comment command up. Used as the
@@ -196,6 +204,8 @@ def redact_credentials(text, *, redaction_counts: dict[str, int] | None = None) 
         ("url_userinfo", _URL_USERINFO_RE, lambda m: m.group("scheme")),
         ("authorization_header", _AUTH_HEADER_RE, lambda m: m.group(1) + "<redacted>"),
         ("credential_assignment", _CREDENTIAL_ASSIGNMENT_RE, _redact_credential_assignment),
+        # Match the whole SendGrid key before bare-token patterns can match inside it.
+        ("sendgrid_api_key", _SENDGRID_API_KEY_RE, "<redacted>"),
         ("gitlab_token", _GITLAB_TOKEN_RE, "<redacted>"),
         ("aws_access_key", _AWS_ACCESS_KEY_RE, "<redacted>"),
         ("github_token", _GITHUB_TOKEN_RE, "<redacted>"),
@@ -204,6 +214,8 @@ def redact_credentials(text, *, redaction_counts: dict[str, int] | None = None) 
         ("openai_key", _OPENAI_KEY_RE, "<redacted>"),
         ("google_api_key", _GOOGLE_API_KEY_RE, "<redacted>"),
         ("slack_token", _SLACK_TOKEN_RE, "<redacted>"),
+        ("stripe_key", _STRIPE_KEY_RE, "<redacted>"),
+        ("twilio_api_key_sid", _TWILIO_API_KEY_SID_RE, "<redacted>"),
     ):
         count = 0
 
@@ -340,7 +352,16 @@ def get_git_ssl_env() -> dict[str, str]:
     return returned_env
 
 
+def _is_line_number(value) -> bool:
+    # bool is an int subclass; a string or float would fail the comparisons or
+    # break slicing in the providers that apply suggestions themselves.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 class GitProvider(ABC):
+    # Keep manual-tool reuse opt-in because providers can retain PR revision state.
+    reuse_for_manual_tool = False
+
     def get_request_policy_metadata(self, required_fields: set[str]) -> dict:
         """Return policy fields; None means unknown, empty values mean not applicable.
 
@@ -355,9 +376,21 @@ class GitProvider(ABC):
         pass
 
     def reset_diff_cache_for_command(self) -> None:
-        """Reset diff state that should not survive an automatic command boundary."""
-        if getattr(self, "diff_files", None) == []:
-            self.diff_files = None
+        """Reset diff state that should not survive an automatic command boundary.
+
+        A completed diff belongs to the command that computed it: the next command in
+        the loop may run under a different scope (a full run after an incremental one,
+        different ignore rules), so reset unconditionally rather than only when the
+        cached diff is empty. Resets the incremental anchor too, and the request-scoped
+        diff cache some providers keep in the starlette context. #3724 introduced this
+        for GitHub; the semantics live here so every provider inherits them.
+        """
+        self._tool_provider_stale = True
+        self.diff_files = None
+        if getattr(self, "incremental", None) is not None:
+            self.incremental = IncrementalPR(False)
+        if context.exists():
+            context.pop("diff_files", None)
 
     def supports_incremental_kind(self, kind: str) -> bool:
         """Whether `get_incremental_commits()` can scope an incremental run to `kind`
@@ -403,7 +436,9 @@ class GitProvider(ABC):
         budget = _discussion_context_budget()
         if budget <= 0:
             return ""
-        discussions, context = [], ""
+        discussions = []
+        # Reserve two characters for the outer JSON array brackets.
+        context_chars = 2
         for thread in self._iter_code_suggestion_threads():
             if thread.authored_by_agent is False:
                 continue
@@ -418,14 +453,14 @@ class GitProvider(ABC):
                 "replies": [{"author": author or "Unknown", "message": message[:DISCUSSION_CONTEXT_MAX_MESSAGE_CHARS]}
                             for author, message in replies[-DISCUSSION_CONTEXT_MAX_REPLIES:]],
             }
-            candidate = json.dumps(discussions + [discussion], ensure_ascii=False, indent=2)
-            if len(candidate) > budget:
+            discussion_chars = len(json.dumps([discussion], ensure_ascii=False, indent=2)) - 2
+            if context_chars + discussion_chars > budget:
                 break
             discussions.append(discussion)
-            context = candidate
+            context_chars += discussion_chars
             if len(discussions) >= DISCUSSION_CONTEXT_MAX_THREADS:
                 break
-        return context
+        return json.dumps(discussions, ensure_ascii=False, indent=2) if discussions else ""
 
     def _iter_code_suggestion_threads(self) -> Iterator[CodeSuggestionThread]:
         """Yield prior code-suggestion threads, newest first. Providers with suggestion state override this.
@@ -682,14 +717,18 @@ class GitProvider(ABC):
         return suggestion
 
     def _is_valid_code_suggestion(self, suggestion: dict) -> bool:
-        relevant_lines_start = suggestion["relevant_lines_start"]
-        relevant_lines_end = suggestion["relevant_lines_end"]
-        if not relevant_lines_start or relevant_lines_start == -1:
+        # .get(): Gitea and CodeCommit anchor on the start line alone, so their
+        # suggestions may carry no end line.
+        relevant_lines_start = suggestion.get("relevant_lines_start")
+        relevant_lines_end = suggestion.get("relevant_lines_end")
+        if not _is_line_number(relevant_lines_start) or relevant_lines_start < 1:
             self._log_invalid_code_suggestion(
                 f"Failed to publish code suggestion, relevant_lines_start is {relevant_lines_start}"
             )
             return False
-        if relevant_lines_end < relevant_lines_start:
+        if relevant_lines_end is not None and (
+            not _is_line_number(relevant_lines_end) or relevant_lines_end < relevant_lines_start
+        ):
             self._log_invalid_code_suggestion(
                 f"Failed to publish code suggestion, relevant_lines_end is {relevant_lines_end} and "
                 f"relevant_lines_start is {relevant_lines_start}"
@@ -709,6 +748,32 @@ class GitProvider(ABC):
     @abstractmethod
     def get_languages(self):
         pass
+
+    @staticmethod
+    def _language_percentages(paths: Iterable[str]) -> dict[str, float]:
+        """Return {language name: percentage} over the recognised files in `paths`.
+
+        Keys are language NAMES (e.g. "Python"), not raw extensions: the consumer
+        sort_files_by_main_languages() maps each name back to its extensions, so
+        returning extensions ("py") silently drops every file into the "Other"
+        bucket and defeats the hunk prioritisation this exists for. The shared
+        configured filename matcher applies the same full-filename,
+        multipart-extension, and case-sensitive rules for every provider. Empty
+        paths are skipped.
+        """
+        lang_map = get_settings().get("language_extension_map_org", {}) or {}
+        get_language = build_language_file_matcher(lang_map)
+
+        lang_count = Counter()
+        for path in paths:
+            if not path:
+                continue
+            language = get_language(path)
+            if language:
+                lang_count[language] += 1
+
+        total = sum(lang_count.values()) or 1
+        return {lang: count / total * 100 for lang, count in lang_count.items()}
 
     @abstractmethod
     def get_pr_branch(self):
@@ -757,34 +822,22 @@ class GitProvider(ABC):
             self.user_description = description
             return description
 
-        # if the existing description was generated by the pr-agent, but it doesn't contain a user description,
-        # return nothing (empty string) because it means there is no user description
         user_description_header = "### **user description**"
-        if user_description_header not in description_lowercase:
+        headers = iter(self._iter_description_headers(description))
+        start_position = next((end for header, _, end in headers if header == user_description_header), None)
+        if start_position is None:
             get_logger().info("Existing description was generated by the pr-agent, "
                               "but it doesn't contain a user description")
             return ""
 
-        # otherwise, extract the original user description from the existing pr-agent description and return it
-        # user_description_start_position = description_lowercase.find(user_description_header)
-        #     + len(user_description_header)
-        # return description[user_description_start_position:].split("\n", 1)[-1].strip()
-
-        # the 'user description' is in the beginning. extract and return it
-        possible_headers = self._possible_headers()
-        start_position = description_lowercase.find(user_description_header) + len(user_description_header)
-        end_position = len(description)
-        for header in possible_headers: # try to clip at the next header
-            if header != user_description_header and header in description_lowercase:
-                end_position = min(end_position, description_lowercase.find(header))
-        if end_position != len(description) and end_position > start_position:
+        # Ignore quoted headers and sections preceding the selected user description.
+        end_position = next((start for header, start, _ in headers if header != user_description_header), None)
+        if end_position is not None:
             original_user_description = description[start_position:end_position].strip()
             if original_user_description.endswith("___"):
                 original_user_description = original_user_description[:-3].strip()
         else:
-            original_user_description = description.split("___")[0].strip()
-            if original_user_description.lower().startswith(user_description_header):
-                original_user_description = original_user_description[len(user_description_header):].strip()
+            original_user_description = description[start_position:].split("___")[0].strip()
 
         get_logger().info("Extracted user description from existing description",
                           description=original_user_description)
@@ -801,8 +854,34 @@ class GitProvider(ABC):
                 "### **labels**",
                 "### 🤖 generated by pr agent")
 
-    # Headers that are unique to pr-agent output; humans never write these
-    # naturally, so they can safely be matched anywhere in the body.
+    def _iter_description_headers(self, description: str) -> Iterator[tuple[str, int, int]]:
+        """Yield structural headers and original offsets outside bounded Markdown fences."""
+        fence_char = ""
+        fence_length = 0
+        offset = 0
+        for line in description.split("\n"):
+            # Only LF starts a new physical line; preserve CRLF and Unicode offsets.
+            delimiter = line.lstrip(" ")
+            indent = len(line) - len(delimiter)
+            if indent <= 3 and delimiter[:1] in ("`", "~"):
+                char = delimiter[0]
+                length = len(delimiter) - len(delimiter.lstrip(char))
+                if fence_char:
+                    if char == fence_char and length >= fence_length and not delimiter[length:].strip():
+                        fence_char = ""
+                elif length >= 3 and (char != "`" or "`" not in delimiter[length:]):
+                    fence_char, fence_length = char, length
+                offset += len(line) + 1
+                continue
+            if not fence_char:
+                comparison = line.lower()
+                for header in self._possible_headers():
+                    if comparison.startswith(header):
+                        yield header, offset, offset + len(header)
+                        break
+            offset += len(line) + 1
+
+    # Unique headers tolerate leading content in old generated descriptions (#2633).
     _UNIQUE_PR_AGENT_HEADERS = frozenset((
         "### **user description**",
         "### **pr type**",
@@ -812,25 +891,11 @@ class GitProvider(ABC):
     ))
 
     def _is_generated_by_pr_agent(self, description_lowercase: str) -> bool:
-        # Fast path: hidden HTML comment injected at write time.
+        # Keep the hidden marker as an unconditional anywhere fast path.
         if '<!-- pr-agent-generated -->' in description_lowercase:
             return True
-        possible_headers = self._possible_headers()
-        # For headers unique to pr-agent, tolerate leading content (the ratchet
-        # case from #2633: a description like "Fixes #42\n### **PR Type**" should
-        # still be recognized as pr-agent output).
-        for header in possible_headers:
-            # the header must start its own line: a quoted copy, e.g. inside a
-            # blockquote or backticks, is somebody else's text, not ours
-            if header in self._UNIQUE_PR_AGENT_HEADERS and (
-                    description_lowercase.startswith(header)
-                    or ("\n" + header) in description_lowercase):
-                return True
-        # For generic headers (type, description, labels), require startswith
-        # to avoid misclassifying human descriptions that happen to contain
-        # one of these common markdown headings.
-        return any(description_lowercase.startswith(header) for header in possible_headers
-                   if header not in self._UNIQUE_PR_AGENT_HEADERS)
+        return any(header in self._UNIQUE_PR_AGENT_HEADERS or start == 0
+                   for header, start, _ in self._iter_description_headers(description_lowercase))
 
     @abstractmethod
     def get_repo_settings(self):
@@ -898,6 +963,15 @@ class GitProvider(ABC):
 
     def get_repo_file_content(self, file_path: str, from_default_branch: bool = False):
         return ""
+
+    def list_repo_directory(self, dir_path: str, from_default_branch: bool = False) -> list[str] | None:
+        """Return the repository-relative paths of files directly inside ``dir_path``.
+
+        Repo context uses this to expand single-directory glob entries such as ``docs/adr/*.md``.
+        Returns None when the provider cannot list directories, and an empty list for a missing
+        directory. Transient errors propagate so a failed listing is not cached.
+        """
+        return None
 
     def get_issue_content(self, repo_obj, issue_number: int):
         """Fetch issue content within this provider's authorized repository boundary."""
@@ -977,6 +1051,10 @@ class GitProvider(ABC):
     def publish_comment(self, pr_comment: str, is_temporary: bool = False):
         pass
 
+    def publish_tool_failure(self, tool: str, message: str):
+        """Report that `tool` ("describe", "improve") failed. Providers with per-tool outputs override this."""
+        return self.publish_comment(message)
+
     def should_publish_review_as_thread(self) -> bool:
         return False
 
@@ -1031,7 +1109,8 @@ class GitProvider(ABC):
                                    final_update_message=True,
                                    as_thread: bool = False,
                                    identity_marker: str | None = None,
-                                   legacy_initial_header: str | None = None):
+                                   legacy_initial_header: str | None = None,
+                                   require_agent_authorship: bool = False):
         if not self.supports_comment_editing():
             return self.publish_comment(pr_comment, **({'as_thread': True} if as_thread else {}))
         return self.publish_persistent_comment_full(
@@ -1043,6 +1122,7 @@ class GitProvider(ABC):
             as_thread=as_thread,
             identity_marker=identity_marker,
             legacy_initial_header=legacy_initial_header,
+            require_agent_authorship=require_agent_authorship,
         )
 
     @staticmethod
@@ -1181,7 +1261,13 @@ class GitProvider(ABC):
 
     #### labels operations ####
     @abstractmethod
-    def publish_labels(self, labels):
+    def publish_labels(self, labels) -> bool | None:
+        """Acknowledge label publication without guaranteeing remote label equality.
+
+        Return True on normal completion or a provider-specific no-op, and exact False
+        for a known normalized failure. Legacy/custom providers may return None;
+        callers must check ``result is False`` to detect an acknowledged failure.
+        """
         pass
 
     @abstractmethod

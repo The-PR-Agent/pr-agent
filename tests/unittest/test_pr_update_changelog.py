@@ -1,14 +1,17 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from github import GithubException
 from requests.exceptions import HTTPError, Timeout
 
+from pr_agent.algo.pr_processing import FallbackEligibleError
 from pr_agent.git_providers.git_provider import ConcurrentFileUpdateError, FileContentSnapshot
 from pr_agent.git_providers.github_provider import GithubProvider
 from pr_agent.log import get_logger
 from pr_agent.tools.pr_update_changelog import PRUpdateChangelog
+from tests.unittest._run_details_command_helpers import BACKUP, PRIMARY, command_run_settings
 
 
 class _CustomProvider:
@@ -44,7 +47,7 @@ class TestPRUpdateChangelog:
     @pytest.fixture
     def changelog_tool(self, mock_git_provider, mock_ai_handler):
         """Create a PRUpdateChangelog instance with mocked dependencies."""
-        with patch('pr_agent.tools.pr_update_changelog.get_git_provider', return_value=lambda url: mock_git_provider), \
+        with patch('pr_agent.tools.pr_update_changelog.get_git_provider_for_tool', return_value=mock_git_provider), \
              patch('pr_agent.tools.pr_update_changelog.get_main_pr_language', return_value="Python"), \
              patch('pr_agent.tools.pr_update_changelog.get_settings') as mock_settings:
 
@@ -61,6 +64,97 @@ class TestPRUpdateChangelog:
             # Supply the snapshot captured by an enabled push for direct write-helper tests.
             tool.changelog_snapshot = FileContentSnapshot("old", True, "captured-revision")
             return tool
+
+    @pytest.fixture
+    def prediction_tool(self, changelog_tool, mock_git_provider):
+        """Exercise the real response and fallback flow with diff packing stubbed out."""
+        changelog_tool.commit_changelog = True
+        changelog_tool.changelog_file = changelog_tool.changelog_snapshot.contents
+        mock_git_provider.supports_changelog_update_review.return_value = False
+        with (
+            command_run_settings(),
+            patch("pr_agent.tools.pr_update_changelog.get_pr_diff", return_value="diff"),
+            patch("pr_agent.tools.pr_update_changelog.AttemptTokenBudget.for_prompt_attempt") as budget,
+            patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            budget.return_value.fit_prompt_variable.return_value = SimpleNamespace(
+                optional_text="diff", system_prompt="System prompt", user_prompt="User prompt"
+            )
+            yield changelog_tool
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [
+        "", " \t\n", "```markdown\n```", "```markdown\n \t\n```", "```",
+        "```markdown\n```\n```", "```markdown", "````", "````\n````", "````markdown\n````",
+        "~~~markdown\n~~~", "~~~~\n~~~~",
+    ])
+    async def test_empty_response_uses_fallback_before_writing(
+        self, prediction_tool, mock_ai_handler, mock_git_provider, response
+    ):
+        entry = "- Preserve `inline code`"
+        mock_ai_handler.chat_completion.side_effect = [(response, "stop"), (f"```markdown\n{entry}\n```", "stop")]
+
+        await prediction_tool.run()
+
+        assert [call.kwargs["model"] for call in mock_ai_handler.chat_completion.await_args_list] == [PRIMARY, BACKUP]
+        mock_git_provider.create_or_update_pr_file.assert_called_once()
+        assert mock_git_provider.create_or_update_pr_file.call_args.kwargs["contents"] == (
+            f"{entry}\n\n{prediction_tool.changelog_file}"
+        )
+        mock_git_provider.remove_initial_comment.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("commit", [False, True])
+    async def test_all_empty_responses_stop_without_publishing_an_update(
+        self, prediction_tool, mock_ai_handler, mock_git_provider, commit
+    ):
+        prediction_tool.commit_changelog = commit
+        mock_ai_handler.chat_completion.side_effect = [(" \n", "stop"), ("```markdown\n```", "stop")]
+
+        with pytest.raises(Exception, match="Failed to generate prediction with any model") as error:
+            await prediction_tool.run()
+
+        assert isinstance(error.value.__cause__, FallbackEligibleError)
+        assert [call.kwargs["model"] for call in mock_ai_handler.chat_completion.await_args_list] == [PRIMARY, BACKUP]
+        mock_git_provider.create_or_update_pr_file.assert_not_called()
+        mock_git_provider.publish_comment.assert_called_once_with("Preparing changelog updates...", is_temporary=True)
+        mock_git_provider.remove_initial_comment.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_run_skips_when_all_changed_files_are_filtered(
+        self, prediction_tool, mock_ai_handler, mock_git_provider
+    ):
+        # A lockfile-only or asset-only PR has no diff left after file-type filtering.
+        with patch("pr_agent.tools.pr_update_changelog.get_pr_diff", return_value="") as get_pr_diff:
+            await prediction_tool.run()
+
+        get_pr_diff.assert_called_once()
+        mock_ai_handler.chat_completion.assert_not_awaited()
+        mock_git_provider.create_or_update_pr_file.assert_not_called()
+        mock_git_provider.publish_comment.assert_called_once_with("Preparing changelog updates...", is_temporary=True)
+        mock_git_provider.remove_initial_comment.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_strict_read_error_is_reraised_when_all_changed_files_are_filtered(
+        self, prediction_tool, mock_ai_handler, mock_git_provider
+    ):
+        read_error = RuntimeError("read unavailable")
+        prediction_tool.changelog_read_error = read_error
+
+        with patch("pr_agent.tools.pr_update_changelog.get_pr_diff", return_value=""):
+            with pytest.raises(RuntimeError) as exc_info:
+                await prediction_tool.run()
+
+        assert exc_info.value is read_error
+        mock_ai_handler.chat_completion.assert_not_awaited()
+        mock_git_provider.create_or_update_pr_file.assert_not_called()
+        fallback_calls = [
+            call for call in mock_git_provider.publish_comment.call_args_list
+            if "not pushed" in call.args[0]
+        ]
+        assert len(fallback_calls) == 1
+        assert "could not be generated" in fallback_calls[0].args[0]
+        mock_git_provider.remove_initial_comment.assert_called_once_with()
 
     def test_get_changelog_file_with_existing_content(self, changelog_tool, mock_git_provider):
         """Test retrieving existing changelog content."""
@@ -196,7 +290,7 @@ class TestPRUpdateChangelog:
         snapshot = FileContentSnapshot("# Existing changelog", True, "captured-revision")
         provider.get_pr_file_content_snapshot.return_value = snapshot
         with (
-            patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider),
+            patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider),
             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"),
             patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"),
             patch("pr_agent.tools.pr_update_changelog.asyncio.sleep", new_callable=AsyncMock),
@@ -257,7 +351,7 @@ class TestPRUpdateChangelog:
         read_error = RuntimeError("read unavailable")
         provider.get_pr_file_content_snapshot.side_effect = read_error
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models") as retry, \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
@@ -288,7 +382,7 @@ class TestPRUpdateChangelog:
         read_error = RuntimeError("read unavailable")
         provider.get_pr_file_content_snapshot.side_effect = read_error
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"), \
              patch("pr_agent.tools.pr_update_changelog.show_relevant_configurations",
@@ -320,7 +414,7 @@ class TestPRUpdateChangelog:
         provider.get_pr_file_content_snapshot.side_effect = read_error
         handler_factory = MagicMock(side_effect=setup_error)
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.get_logger") as mock_get_logger, \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
@@ -355,7 +449,7 @@ class TestPRUpdateChangelog:
 
         provider.publish_comment.side_effect = publish_comment
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models"), \
              patch("pr_agent.tools.pr_update_changelog.get_logger") as mock_get_logger, \
@@ -387,7 +481,7 @@ class TestPRUpdateChangelog:
 
         provider.publish_comment.side_effect = publish_comment
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models") as retry, \
              patch("pr_agent.tools.pr_update_changelog.get_logger") as mock_get_logger, \
@@ -421,7 +515,7 @@ class TestPRUpdateChangelog:
         generation_error = RuntimeError("generation unavailable")
         provider.get_pr_file_content_snapshot.side_effect = read_error
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models",
                    side_effect=generation_error) as retry, \
@@ -452,7 +546,7 @@ class TestPRUpdateChangelog:
         provider.is_supported.return_value = True
         provider.get_pr_file_content.return_value = "existing content"
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
             self._configure_settings(mock_settings)
@@ -470,7 +564,7 @@ class TestPRUpdateChangelog:
         provider.is_supported.return_value = False
 
         with (
-            patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider),
+            patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider),
             patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"),
             patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings,
         ):
@@ -489,7 +583,7 @@ class TestPRUpdateChangelog:
         provider = self._make_push_provider()
         provider.get_pr_file_content_snapshot.return_value = FileContentSnapshot(content, True, "start")
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
             self._configure_settings(mock_settings)
@@ -506,7 +600,7 @@ class TestPRUpdateChangelog:
         provider = self._make_push_provider()
         provider.get_pr_file_content.side_effect = RuntimeError("read unavailable")
 
-        with patch("pr_agent.tools.pr_update_changelog.get_git_provider", return_value=lambda url: provider), \
+        with patch("pr_agent.tools.pr_update_changelog.get_git_provider_for_tool", return_value=provider), \
              patch("pr_agent.tools.pr_update_changelog.get_main_pr_language", return_value="Python"), \
              patch("pr_agent.tools.pr_update_changelog.retry_with_fallback_models") as retry, \
              patch("pr_agent.tools.pr_update_changelog.get_settings") as mock_settings:
@@ -530,7 +624,7 @@ class TestPRUpdateChangelog:
         provider = self._make_no_push_provider()  # spec omits create_or_update_pr_file
         provider.is_supported.return_value = True
 
-        with patch('pr_agent.tools.pr_update_changelog.get_git_provider', return_value=lambda url: provider), \
+        with patch('pr_agent.tools.pr_update_changelog.get_git_provider_for_tool', return_value=provider), \
              patch('pr_agent.tools.pr_update_changelog.get_main_pr_language', return_value="Python"), \
              patch('pr_agent.tools.pr_update_changelog.retry_with_fallback_models'), \
              patch('pr_agent.tools.pr_update_changelog.get_settings') as mock_settings:
@@ -560,7 +654,7 @@ class TestPRUpdateChangelog:
         provider = self._make_no_push_provider(extra_spec=["create_or_update_pr_file", "get_pr_file_content_snapshot"])
         provider.is_supported.return_value = False  # restricted_mode disables push_code
 
-        with patch('pr_agent.tools.pr_update_changelog.get_git_provider', return_value=lambda url: provider), \
+        with patch('pr_agent.tools.pr_update_changelog.get_git_provider_for_tool', return_value=provider), \
              patch('pr_agent.tools.pr_update_changelog.get_main_pr_language', return_value="Python"), \
              patch('pr_agent.tools.pr_update_changelog.retry_with_fallback_models'), \
              patch('pr_agent.tools.pr_update_changelog.get_settings') as mock_settings:

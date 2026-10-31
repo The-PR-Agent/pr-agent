@@ -15,11 +15,55 @@ model = "..."
 fallback_models = ["..."]
 ```
 
+Keep `fallback_models` different from `model`, or set it to `[]` for no backup model. Listing the
+primary model again only runs a failed call on the same model, so each fallback-eligible failure
+repeats. A request the provider rejects (a 429, a 5xx answer or a connection error) is already
+retried on the same model up to `config.num_retries` times (default 4) before the fallback models
+are tried, waiting for the provider's `Retry-After` (up to 30 seconds) or with exponential backoff
+between attempts. Set it to `0` to move to the fallback models at once.
+
 To see which of these models actually handled a given PR, enable `config.output_run_details` (see [Additional configurations](./additional_configurations.md#showing-the-agent-run-details)).
 To send small pull requests to a cheaper model, see [Routing small pull requests to a cheaper model](#routing-small-pull-requests-to-a-cheaper-model).
 
-For models and environments not from OpenAI, you might need to provide additional keys and other parameters.
-You can give parameters via a configuration file, or from environment variables.
+PR-Agent supports LiteLLM's native model providers and third-party endpoints that implement
+the OpenAI-compatible or Anthropic-compatible API. These compatible endpoints need no
+provider-specific integration in PR-Agent: configure the endpoint and credentials under the
+matching LiteLLM provider, and use that provider's model prefix.
+
+For OpenAI-compatible endpoints, use the `openai/` prefix and set the endpoint URL and key:
+
+```toml
+[config]
+model = "openai/<provider-model-id>"
+fallback_models = []
+custom_model_max_tokens = 32000 # set this when the model is not in PR-Agent's token-limit table
+
+[openai] # in .secrets.toml
+api_base = "https://api.example.com/v1"
+key = "..."
+```
+
+For Anthropic-compatible endpoints, use the `anthropic/` prefix and the `[anthropic]`
+settings instead:
+
+```toml
+[config]
+model = "anthropic/<provider-model-id>"
+fallback_models = []
+custom_model_max_tokens = 32000 # set this when the model is not in PR-Agent's token-limit table
+
+[anthropic] # in .secrets.toml
+key = "..."
+```
+
+The endpoint must support the corresponding API protocol and request features PR-Agent uses.
+The model ID, API base URL, required version/path, and supported parameters are provider-specific;
+check that provider's API documentation. For OpenAI-compatible endpoints, the settings can also
+be supplied as `OPENAI__API_BASE` and `OPENAI__KEY`. For Anthropic-compatible endpoints, set
+`ANTHROPIC_API_BASE` (or `ANTHROPIC_BASE_URL`) for the endpoint and `ANTHROPIC__KEY` for
+authentication.
+For models absent from PR-Agent's token-limit table, set `config.custom_model_max_tokens` to
+the endpoint's supported input limit.
 
 :::note[Model-specific environment variables]
 See [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms) for the environment variables needed per model, as they may vary and change over time. Our documentation per-model may not always be up-to-date with the latest changes.
@@ -31,23 +75,6 @@ PR-Agent captures request settings and supported provider environment values per
 
 Process-wide routing fallbacks such as `litellm.api_base`, `litellm.api_version`, `litellm.organization`, `litellm.vertex_project`, and `litellm.vertex_location` can be rejected even when unchanged. Use the corresponding PR-Agent settings (`OPENAI.API_BASE`, `OPENAI.API_VERSION`, `OPENAI.ORG`, `VERTEXAI.VERTEX_PROJECT`, and `VERTEXAI.VERTEX_LOCATION`) or supported provider environment variables, and clear the corresponding LiteLLM globals even when they match the intended routing. Use `LITELLM.EXTRA_HEADERS` instead of `litellm.headers`.
 :::
-
-### OpenAI like API
-
-To use an OpenAI like API, set the following in your `.secrets.toml` file:
-
-```toml
-[openai]
-api_base = "https://api.openai.com/v1"
-api_key = "sk-..."
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.openai.com/v1
-OPENAI__KEY=sk-...
-```
 
 ### OpenAI Flex Processing
 
@@ -132,7 +159,7 @@ E.g. to use a new model locally via Ollama, set in `.secrets.toml` or in a confi
 ```toml
 [config]
 model = "ollama/qwen2.5-coder:32b"
-fallback_models=["ollama/qwen2.5-coder:32b"]
+fallback_models=[]
 custom_model_max_tokens=128000 # set the maximal input tokens for the model
 duplicate_examples=true # will duplicate the examples in the prompt, to help the model to generate structured output
 
@@ -161,7 +188,7 @@ To use a new model with Hugging Face Inference Endpoints, for example, set:
 ```toml
 [config] # in configuration.toml
 model = "huggingface/meta-llama/Llama-2-7b-chat-hf"
-fallback_models=["huggingface/meta-llama/Llama-2-7b-chat-hf"]
+fallback_models=[]
 custom_model_max_tokens=... # set the maximal input tokens for the model
 
 [huggingface] # in .secrets.toml
@@ -178,7 +205,7 @@ To use Llama 3 with Replicate, for example, set:
 ```toml
 [config] # in configuration.toml
 model = "replicate/meta/meta-llama-3-8b-instruct"
-fallback_models=["replicate/meta/meta-llama-3-8b-instruct"]
+fallback_models=[]
 custom_model_max_tokens=8000 # Set an explicit limit because the locked LiteLLM version has no metadata for this model.
 [replicate] # in .secrets.toml
 key = ...
@@ -223,7 +250,7 @@ To use xAI's models with PR-Agent, set:
 ```toml
 [config] # in configuration.toml
 model = "xai/grok-4.6"
-fallback_models = ["xai/grok-4.6"] # or any other model as fallback
+fallback_models = [] # or any other model as fallback
 
 [xai] # in .secrets.toml
 key = "..." # your xAI API key
@@ -244,8 +271,8 @@ Vertex AI needs the `google` extra (`pip install "pr-agent[google]"`). To use Ge
 ```toml
 [config] # in configuration.toml
 model = "vertex_ai/gemini-3.8-flash"
-fallback_models=["vertex_ai/gemini-3.8-flash"]
-no_temperature_models=["gemini-3.8-flash"] # Omit temperature for this model, including the fallback.
+fallback_models=[]
+no_temperature_models=["gemini-3.8-flash"] # Omit temperature for this model.
 
 [vertexai] # in .secrets.toml
 vertex_project = "my-google-cloud-project"
@@ -269,7 +296,7 @@ To use [Google AI Studio](https://aistudio.google.com/) models, set the relevant
 ```toml
 [config] # in configuration.toml
 model="gemini/gemini-3.8-flash"
-fallback_models=["gemini/gemini-3.8-flash"]
+fallback_models=[]
 
 [google_ai_studio] # in .secrets.toml
 gemini_api_key = "..."
@@ -284,7 +311,7 @@ To use Anthropic models, set the relevant models in the configuration section of
 ```toml
 [config]
 model="anthropic/claude-opus-5"
-fallback_models=["anthropic/claude-opus-5"]
+fallback_models=[]
 ```
 
 And also set the api key in the .secrets.toml file:
@@ -303,7 +330,7 @@ To use Amazon Bedrock and its foundational models, add the below configuration:
 ```toml
 [config] # in configuration.toml
 model="bedrock/us.anthropic.claude-sonnet-4-6"
-fallback_models=["bedrock/us.anthropic.claude-sonnet-4-6"]
+fallback_models=[]
 
 [aws]
 AWS_ACCESS_KEY_ID="..."
@@ -339,7 +366,7 @@ Grok 4.3 is available through Amazon Bedrock Mantle rather than the classic Bedr
 ```toml
 [config] # in configuration.toml
 model="bedrock_mantle/xai.grok-4.3"
-fallback_models=["bedrock_mantle/xai.grok-4.3"]
+fallback_models=[]
 ```
 
 Bedrock Mantle uses the same AWS credential sources, but its IAM permissions differ from the classic runtime. See
@@ -427,7 +454,7 @@ The IAM role must have `bedrock:InvokeModel` permission on the inference profile
 }
 ```
 
-If you also configure static keys in `[aws]`, they serve as an automatic fallback when ambient credentials cannot be resolved or a SigV4 call using the opted-in provider chain raises an API error other than a rate-limit error. This applies to Bedrock, Bedrock Mantle, and SageMaker routes and preserves the existing fallback behavior for IAM authorization and connection failures, using only the static credentials captured by the handler.
+If you also configure static keys in `[aws]`, they serve as an automatic fallback when ambient credentials cannot be resolved or a SigV4 call using the opted-in provider chain raises an authentication or permission error. Transient service errors, timeouts, and rate limits keep the ambient credentials for the normal retry path. This applies to Bedrock, Bedrock Mantle, and SageMaker routes, using only the static credentials captured by the handler.
 
 #### Custom Inference Profiles
 
@@ -436,7 +463,7 @@ To invoke an [application inference profile](https://docs.aws.amazon.com/bedrock
 ```toml
 [config] # in configuration.toml
 model="bedrock/us.anthropic.claude-sonnet-4-6"
-fallback_models=["bedrock/us.anthropic.claude-sonnet-4-6"]
+fallback_models=[]
 
 [aws]
 AWS_ACCESS_KEY_ID="..."
@@ -510,6 +537,19 @@ To route Bedrock traffic through a VPC interface endpoint instead of the public 
 [aws]
 AWS_BEDROCK_RUNTIME_ENDPOINT="https://bedrock-runtime.us-east-1.amazonaws.com"
 ```
+
+#### Guardrails
+
+To apply an [Amazon Bedrock Guardrail](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails-use-converse-api.html) to every request, use a `bedrock/converse/` model and set:
+
+```toml
+[bedrock]
+guardrail_identifier = "your-guardrail-id"
+guardrail_version = "1"
+guardrail_trace = "disabled" # or "enabled" / "enabled_full"
+```
+
+or the equivalent environment variables `BEDROCK__GUARDRAIL_IDENTIFIER` and `BEDROCK__GUARDRAIL_VERSION`. The `[bedrock]` section is host-only and cannot be overridden from a repository's `.pr_agent.toml`. When a guardrail is configured, every Bedrock model (including fallback models) must use the explicit `bedrock/converse/` prefix; other Bedrock routes (`bedrock/invoke/`, unprefixed `bedrock/<model>`, `bedrock_mantle/`) fail instead of running without the guardrail. A fallback model on a non-Bedrock provider runs without the guardrail.
 
 See [litellm](https://docs.litellm.ai/docs/providers/bedrock#usage) documentation for more information about the environment variables required for Amazon Bedrock.
 
@@ -590,7 +630,7 @@ To use GLM models with Z.AI (Zhipu), for example, set:
 ```toml
 [config] # in configuration.toml
 model = "zai/glm-5.2"
-fallback_models=["zai/glm-5.2"]
+fallback_models=[]
 ```
 
 and fill up your key
@@ -609,7 +649,7 @@ To use Kimi models with Moonshot, for example, set:
 ```toml
 [config] # in configuration.toml
 model = "moonshot/kimi-k3"
-fallback_models=["moonshot/kimi-k3"]
+fallback_models=[]
 ```
 
 and fill up your key
@@ -630,7 +670,7 @@ To use Qwen models with Alibaba DashScope, for example, set:
 ```toml
 [config] # in configuration.toml
 model = "dashscope/qwen3.8-max"
-fallback_models=["dashscope/qwen3.8-max"]
+fallback_models=[]
 ```
 
 and fill up your key
@@ -649,7 +689,7 @@ To use Xiaomi MiMo models, for example, set:
 ```toml
 [config] # in configuration.toml
 model = "xiaomi_mimo/mimo-v2.5"
-fallback_models=["xiaomi_mimo/mimo-v2.5"]
+fallback_models=[]
 ```
 
 and fill up your key
@@ -710,7 +750,7 @@ To use a model hosted on Databricks (e.g. an Azure Databricks serving endpoint),
 ```toml
 [config] # in configuration.toml
 model = "databricks/databricks-claude-sonnet-4"
-fallback_models = ["databricks/databricks-claude-sonnet-4"]
+fallback_models = []
 [databricks] # in .secrets.toml
 api_key = "..." # your Databricks personal access token (PAT)
 api_base = "https://adb-xxxx.azuredatabricks.net/serving-endpoints" # your workspace serving-endpoints URL
@@ -768,66 +808,6 @@ For `openrouter/...` models you can optionally restrict which upstream providers
 
 `provider_only` and `reasoning_effort = "none"` are useful to pin a specific provider and to bound the cost of reasoning models. Because Openrouter treats effort and token budgets as mutually exclusive, an explicit Openrouter-specific `"none"` keeps reasoning disabled when the model supports disabling it. Grok 4.5/4.6, Gemini 3.7/3.8 Flash, and the GPT-6 models whose pages omit `"none"` (GPT-6 Astra and GPT-6.1 Sol) clamp it to `"low"` before precedence is applied, so a positive budget wins for those models; explicit Openrouter `"minimal"` remains unchanged for Gemini. Otherwise a positive `reasoning_max_tokens` value takes precedence over the global effort and other Openrouter-specific values. Invalid Openrouter-specific effort values are warned about and treated as unset, so registered reasoning models fall back to `config.reasoning_effort`. Openrouter normalizes `"max"` to `"xhigh"` in this path for LiteLLM/OpenRouter compatibility. Supported effort values vary by model. For models not covered by these clamps, do not assume `"none"` disables reasoning; check the selected model and provider's support. For Anthropic models using a reasoning budget, set the effective output `max_tokens` higher than `reasoning_max_tokens` so the final answer has output headroom. See the Openrouter [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection) and [reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) docs.
 
-### OrcaRouter
-
-[OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible AI gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to OrcaRouter's base URL through litellm's OpenAI-compatible path, the same way the [Neon AI Gateway](#neon-ai-gateway) is handled.
-
-To use a model through OrcaRouter, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/anthropic/claude-fable-5"
-fallback_models = ["openai/auto"]
-custom_model_max_tokens = 20000
-
-[openai] # in .secrets.toml
-api_base = "https://api.orcarouter.ai/v1"
-key = "..." # your OrcaRouter api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.orcarouter.ai/v1
-OPENAI__KEY=...
-```
-
-(you can obtain an OrcaRouter API key from [here](https://www.orcarouter.ai/register))
-
-Keep the `openai/` prefix on the model name, whatever OrcaRouter model ID you use (`openai/anthropic/claude-fable-5`, `openai/auto`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. OrcaRouter governs routing and guardrails itself, but `config.reasoning_effort` still reaches it: PR-Agent probes the suffixed model ID against litellm's bundled reasoning metadata (or `config.additional_reasoning_effort_models`), so an ID such as `openai/google/gemini-2.5-pro` or `openai/o3` sends the configured effort (default `"medium"`) even with nothing set. The example IDs above are not flagged as reasoning-capable and are unaffected.
-
-### Neon AI Gateway
-
-[Neon AI Gateway](https://neon.com/docs/ai-gateway/overview) is an OpenAI-compatible inference gateway. Each Neon branch has its own gateway host, so the base URL points at a single branch and not at an account. Neon publishes that host alongside the credential as `NEON_AI_GATEWAY_BASE_URL`. The value has no path, so append `/v1` to reach chat completions.
-
-To use a model served by a Neon branch, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/gpt-5-mini"
-fallback_models = ["openai/gpt-5-mini"]
-custom_model_max_tokens = 400000 # the context window Neon publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://<your-neon-branch-host>/v1"
-key = "..." # your Neon AI Gateway credential
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://<your-neon-branch-host>/v1
-OPENAI__KEY=...
-```
-
-Keep the `openai/` prefix on the model name, whichever Neon model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Neon's [model catalog](https://neon.com/docs/ai-gateway/models).
-
-Create the credential per branch in the [Neon Console](https://console.neon.tech/) with the `ai_gateway:invoke` scope. The credential also works on branches descended from the one it was created on. The gateway is in beta and requires a paid Neon plan. It runs only in AWS US East (Ohio), `aws-us-east-2`.
-
-:::note[Chat completions only]
-Some model IDs in Neon's catalog are served through the OpenAI Responses API, which Neon exposes under `/openai/v1` instead of `/v1`. The configuration above points at the chat-completions endpoint, so it cannot reach those models. Neon also documents a few models that return `message.content` as an array of typed blocks rather than a string, and PR-Agent reads the reply as a string.
-:::
-
 ### GitHub Copilot
 
 Models under an active GitHub Copilot subscription are available through litellm's `github_copilot` provider, which authenticates as your GitHub identity rather than with a dedicated API key:
@@ -848,202 +828,24 @@ Authentication uses the [GitHub Copilot provider](https://docs.litellm.ai/docs/p
 
 Whether Copilot's terms permit this programmatic use is a question for GitHub rather than a guarantee this project can make, so confirm before relying on the route.
 
-### Cheaper Inference
-
-[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible LLM gateway. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Cheaper Inference's base URL through litellm's OpenAI-compatible path.
-
-To use a model through Cheaper Inference, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/gpt-5.4-mini"
-fallback_models = ["openai/claude-sonnet-5"]
-custom_model_max_tokens = 400000 # the smaller context window Cheaper Inference publishes for the two models
-
-[openai] # in .secrets.toml
-api_base = "https://api.cheaperinference.com/v1"
-key = "..." # your Cheaper Inference api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.cheaperinference.com/v1
-OPENAI__KEY=...
-```
-
-(you can obtain a Cheaper Inference API key from [here](https://cheaperinference.com/signup))
-
-Keep the `openai/` prefix on the model name, whichever Cheaper Inference model ID you use (`openai/gpt-5.4-mini`, `openai/claude-sonnet-5`, `openai/gemini-3.1-pro`, `openai/deepseek-v4-flash`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Cheaper Inference's [model catalog](https://cheaperinference.com/#models).
-
-### API Route
-
-[API Route](https://www.api-route.com) exposes an OpenAI-compatible endpoint. Use
-PR-Agent's existing `openai/` model prefix and `[openai]` settings to configure it:
-
-```toml
-[config] # in configuration.toml
-model = "openai/gpt-6.1-sol"
-fallback_models = ["openai/gpt-6.1-sol"]
-custom_model_max_tokens = 32000 # example input budget; keep within the selected model's context limit
-
-[openai] # in .secrets.toml
-api_base = "https://global.api-route.com/v1"
-key = "..." # your API Route API key
-```
-
-The endpoint and key can also be supplied through environment variables (with double
-underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://global.api-route.com/v1
-OPENAI__KEY=...
-```
-
-Obtain an API key from [API Route](https://www.api-route.com) and choose an available
-model from its [model catalog](https://www.api-route.com/pricing) or the authenticated
-`GET https://global.api-route.com/v1/models` endpoint. Keep the `openai/` prefix in
-PR-Agent's configuration; the endpoint receives the model ID without that prefix.
-
-Set `custom_model_max_tokens` for model IDs absent from PR-Agent's token-limit table.
-The example uses a 32,000-token input budget, rather than claiming the model's maximum
-context window. If you change the model or add fallback models, use a budget supported
-by all of them and keep their requests on the configured API Route endpoint.
-
-### RelaxAI
-
-[RelaxAI](https://relax.ai) offers an OpenAI-compatible API. It needs no provider-specific
-code in PR-Agent: use the `openai/` model prefix and configure RelaxAI's endpoint and key
-through the existing `[openai]` settings.
-
-```toml
-[config] # in configuration.toml
-model = "openai/DeepSeek-V4-Pro"
-custom_model_max_tokens = 1049000 # use the context window published for the selected model
-
-[openai] # in .secrets.toml
-api_base = "https://api.relax.ai/v1/"
-key = "..." # your RelaxAI API key
-```
-
-or use environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.relax.ai/v1/
-OPENAI__KEY=...
-```
-
-Keep the `openai/` prefix on the model name to route through LiteLLM's OpenAI-compatible
-path. The model IDs and context windows can change; see the
-[RelaxAI API documentation](https://relax.ai/docs/getting-started/introduction) for current
-integration details and available models.
-
-### Atlas Cloud
-
-[Atlas Cloud](https://www.atlascloud.ai) is an OpenAI-compatible inference platform. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Atlas's base URL through litellm's OpenAI-compatible path, the same way [OrcaRouter](#orcarouter) and the [Neon AI Gateway](#neon-ai-gateway) are handled.
-
-To use a model served by Atlas Cloud, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/deepseek-ai/deepseek-v4-pro"
-fallback_models = ["openai/deepseek-ai/deepseek-v4-pro"]
-custom_model_max_tokens = 1048000 # the context window Atlas publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://api.atlascloud.ai/v1"
-key = "..." # your Atlas Cloud api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.atlascloud.ai/v1
-OPENAI__KEY=...
-```
-
-(you can obtain an Atlas Cloud API key from the [console](https://www.atlascloud.ai/console))
-
-Keep the `openai/` prefix on the model name, whichever Atlas model ID you use (`openai/deepseek-ai/deepseek-v4-pro`, `openai/zai-org/glm-5`, `openai/moonshotai/kimi-k2.6`, ...): the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`. Take the value from Atlas's [model catalog](https://www.atlascloud.ai/models).
-
-:::note[Reasoning models need output headroom]
-Several Atlas models are reasoning models that spend completion tokens on a hidden chain of thought before writing the answer. `deepseek-ai/deepseek-v4-pro` with `max_tokens = 16` returns `finish_reason = "length"` and an **empty** `message.content` — all 16 completion tokens were reasoning tokens. If a tool comes back blank, raise the output budget rather than assuming the request failed. Non-reasoning IDs such as `deepseek-ai/DeepSeek-V3.1` are unaffected.
-:::
-
-### Heabsy
-
-[Heabsy](https://heabsy.com/platform) is an OpenAI-compatible inference API for open models, operated in the EU. Models in its EEA tier run on dedicated GPUs in EEA data centres with zero data retention. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to Heabsy's base URL through litellm's OpenAI-compatible path, the same way [Atlas Cloud](#atlas-cloud) and [OrcaRouter](#orcarouter) are handled.
-
-To use a model served by Heabsy, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/qwen38"
-fallback_models = ["openai/qwen38"]
-custom_model_max_tokens = 262144 # the context window Heabsy publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://api.heabsy.com/v1"
-key = "..." # your Heabsy api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.heabsy.com/v1
-OPENAI__KEY=...
-```
-
-(API keys are issued in the [Heabsy console](https://platform.heabsy.com); accounts are opened on request at [heabsy.com/contacts](https://heabsy.com/contacts).)
-
-Keep the `openai/` prefix on the model name: a prefixed name is not in the `MAX_TOKENS` table, so you also have to set `custom_model_max_tokens`. Take the value from Heabsy's [model catalog](https://heabsy.com/models).
-
-### DemonRoute
-
-[DemonRoute](https://demonroute.com) is an OpenAI-compatible API for open-weight models, billed prepaid with a hard stop at a $0 balance. It needs no provider-specific code in PR-Agent: the `openai/` prefix routes the request to DemonRoute's base URL through litellm's OpenAI-compatible path, the same way [Atlas Cloud](#atlas-cloud) and [Heabsy](#heabsy) are handled.
-
-To use a model served by DemonRoute, set:
-
-```toml
-[config] # in configuration.toml
-model = "openai/NousResearch/Hermes-3-Llama-3.1-8B"
-fallback_models = ["openai/NousResearch/Hermes-3-Llama-3.1-8B"]
-custom_model_max_tokens = 131072 # the context window DemonRoute publishes for the model
-
-[openai] # in .secrets.toml
-api_base = "https://api.demonroute.com/v1"
-key = "..." # your DemonRoute api key
-```
-
-or use the environment variables (make sure to use double underscores `__`):
-
-```bash
-OPENAI__API_BASE=https://api.demonroute.com/v1
-OPENAI__KEY=...
-```
-
-(you can obtain a DemonRoute API key from [demonroute.com](https://demonroute.com))
-
-Keep the `openai/` prefix on the model name, whichever DemonRoute model ID you use: the prefix routes the request through litellm's OpenAI-compatible path. A prefixed name is not in the `MAX_TOKENS` table [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), so you also have to set `custom_model_max_tokens`.
-
 ### Custom models
 
 If the relevant model doesn't appear [here](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/algo/__init__.py), you can still use it as a custom model:
 
 1. Set the model name in the configuration file:
 
-```toml
-[config]
-model="custom_model_name"
-fallback_models=["custom_model_name"]
-```
+   ```toml
+   [config]
+   model="custom_model_name"
+   fallback_models=[]
+   ```
 
 2. Set the maximal tokens for the model:
 
-```toml
-[config]
-custom_model_max_tokens= ...
-```
+   ```toml
+   [config]
+   custom_model_max_tokens= ...
+   ```
 
 3. Go to [litellm documentation](https://litellm.vercel.app/docs/proxy/quick_start#supported-llms), find the model you want to use, and set the relevant environment variables.
 
@@ -1164,7 +966,7 @@ built-in defaults.
 :::note[Only models that accept a thinking budget are supported]
 PR-Agent enables extended thinking through the manual
 `thinking={"type": "enabled", "budget_tokens": ...}` request. Adaptive-only Claude models
-(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
+(e.g. Opus 4.7/4.8, Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1) reject `budget_tokens`, so they are
 intentionally excluded from the built-in defaults. If you add one to
 `claude_extended_thinking_models_override` anyway, PR-Agent skips the extended-thinking payload
 for it and logs a warning rather than sending a request the provider would reject — use
@@ -1213,6 +1015,7 @@ enable = true
 
 [[model_routing.rules]]
 max_hunks = 3
+max_patch_chars = 10000
 model = "gpt-6-luna"
 
 [[model_routing.rules]]
@@ -1225,6 +1028,18 @@ Rules are checked in order, and the first one whose limits the pull request fits
 the call. A pull request that fits no rule uses `config.model`. Size is measured by the number of diff hunks
 (`max_hunks`) and changed files (`max_files`) left after the `[ignore]` rules. Every git provider reports both,
 and neither depends on a model's tokenizer, so a threshold means the same thing whichever model it selects.
+
+A rule can also set `max_patch_chars`, an inclusive ceiling on the sum of Python character counts in the supplied
+patch strings. All limits named by a rule must match. This can distinguish a long single-line change from a
+short change with the same file and hunk counts. Headers and line endings count too: LF is one character,
+CRLF is two, and a combining character counts separately from its base character.
+
+If any file has a missing or non-string patch, or its content could not be fetched, the character count is
+unknown. Rules with `max_patch_chars` are then skipped; later rules without it can still match. An explicit
+empty patch counts as zero. An incomplete head file alone does not invalidate its supplied patch string.
+The limit measures the text the provider supplies, including any normalization or undetectable clipping;
+it does not measure tokens, complete files, or a guaranteed complete diff. Rules without this field keep
+using their existing file and hunk limits.
 
 The retry chain starts as `[config.model] + config.fallback_models`, with a deployment paired to each model.
 A matched rule replaces the first pair. If the routed `(model, deployment)` pair also appears among the

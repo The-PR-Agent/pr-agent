@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import UTC, datetime
@@ -10,16 +11,16 @@ import yaml
 
 from pr_agent.algo.output_sinks import OUTPUT_SINK_TYPES, create_output_sink
 from pr_agent.algo.run_details import get_run_details
+from pr_agent.algo.setting_utils import _as_bool_setting, normalize_setting_list
 from pr_agent.config_loader import get_settings
+from pr_agent.config_security import should_skip_config_key
 from pr_agent.log import get_logger
 
 
 def github_action_output(output_data: dict, key_name: str):
     try:
         enable_output = get_settings().get("github_action_config.enable_output", False)
-        if isinstance(enable_output, str):
-            enable_output = enable_output.lower().strip() not in ("false", "0", "no", "")
-        if not enable_output:
+        if not _as_bool_setting(enable_output):
             return
 
         key_data = output_data.get(key_name, {})
@@ -68,6 +69,16 @@ def push_outputs(message_type: str, payload: dict | None = None, markdown: str |
         get_logger().warning(f"push_outputs failed: {type(e).__name__}")
 
 
+async def push_outputs_async(message_type: str, payload: dict | None = None, markdown: str | None = None) -> None:
+    """Emit a tool's output to external sinks without blocking the event loop.
+
+    The sinks do blocking HTTP and file I/O, so the delivery runs in a worker thread.
+    Awaiting it keeps the event loop free for other work and still delivers the output
+    before the command returns.
+    """
+    await asyncio.to_thread(push_outputs, message_type, payload=payload, markdown=markdown)
+
+
 def _render_setting_value(value) -> str:
     """Render a settings value as YAML, so nested values do not become Python reprs."""
     if isinstance(value, (str, int, float, bool)) or value is None:
@@ -93,11 +104,7 @@ def show_relevant_configurations(relevant_section: str) -> str:
         "skip_keys", "app_id", "redirect", "trial_prefix_message", "no_eligible_message",
         "identity_provider", "ALLOWED_REPOS", "APP_NAME",
     ]
-    extra_skip_keys = get_settings().config.get("skip_keys", [])
-    if extra_skip_keys:
-        skip_keys.extend(extra_skip_keys)
-    skip_keys_lower = [str(key).lower() for key in skip_keys]
-
+    skip_keys.extend(normalize_setting_list(get_settings().config.get("skip_keys", [])))
     markdown_text = ""
     markdown_text += "\n<hr>\n<details> <summary><strong>🛠️ Relevant configurations:</strong></summary> \n\n"
     markdown_text += (
@@ -107,13 +114,13 @@ def show_relevant_configurations(relevant_section: str) -> str:
     )
     markdown_text += "**[config**]\n```yaml\n\n"
     for key, value in get_settings().config.items():
-        if key.lower() in skip_keys_lower:
+        if should_skip_config_key("config", key, skip_keys):
             continue
         markdown_text += f"{key}: {_render_setting_value(value)}\n"
     markdown_text += "\n```\n"
     markdown_text += f"\n**[{relevant_section}]**\n```yaml\n\n"
     for key, value in get_settings().get(relevant_section, {}).items():
-        if key.lower() in skip_keys_lower:
+        if should_skip_config_key(relevant_section, key, skip_keys):
             continue
         markdown_text += f"{key}: {_render_setting_value(value)}\n"
     markdown_text += "\n```"

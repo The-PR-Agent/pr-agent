@@ -13,6 +13,7 @@ from starlette_context import context
 from pr_agent.agent.request_policy import policy_metadata, policy_value
 
 from ..algo.file_filter import filter_ignored
+from ..algo.git_patch_processing import count_patch_lines
 from ..algo.language_handler import is_valid_file
 from ..algo.types import EDIT_TYPE, FilePatchInfo
 from ..algo.utils import find_line_number_of_relevant_line_in_file, replace_suggestion_blocks
@@ -56,12 +57,77 @@ def _split_raw_diff(raw_diff: str) -> list[str]:
 _DIFF_HEADER_RE = re.compile(r'^diff --git ("(?:\\.|[^"\\])*"|\S+) ("(?:\\.|[^"\\])*"|\S+)$')
 
 
+def _decode_git_path(token: str) -> str | None:
+    """Decode a path taken from a diff header, undoing Git's C-style quoting."""
+    try:
+        path = ast.literal_eval(token) if token.startswith('"') else token
+        if token.startswith('"') and re.search(r"\\[0-7]{3}", token):
+            path = path.encode("latin-1").decode("utf-8")
+    except (SyntaxError, ValueError, UnicodeError):
+        return None
+    return path
+
+
+def _strip_diff_prefix(path: str) -> str:
+    """Drop the ``a/`` or ``b/`` prefix Git puts in front of a path in a file header."""
+    if path.startswith(("a/", "b/")):
+        return path[2:]
+    return path
+
+
+def _paths_from_patch_headers(patch: str) -> tuple[str, str] | None:
+    """Read the old and new paths from the rename and file headers of a patch.
+
+    A ``diff --git`` header is ambiguous when a path contains a space, but the
+    ``rename from``/``rename to`` and ``---``/``+++`` headers are not. Only the
+    lines before the first hunk are inspected, so a removed line that looks like
+    a header is not mistaken for one.
+    """
+    rename_old = rename_new = None
+    file_old = file_new = None
+    for line in patch.split("\n"):
+        if line.startswith("@@"):
+            break
+        if line.startswith("rename from "):
+            rename_old = line[len("rename from "):].strip()
+        elif line.startswith("rename to "):
+            rename_new = line[len("rename to "):].strip()
+        elif line.startswith("--- "):
+            file_old = line[len("--- "):].split("\t", 1)[0]
+        elif line.startswith("+++ "):
+            file_new = line[len("+++ "):].split("\t", 1)[0]
+
+    if rename_old is not None and rename_new is not None:
+        old = _decode_git_path(rename_old)
+        new = _decode_git_path(rename_new)
+        if old is None or new is None:
+            return None
+        return old, new
+
+    if file_old is None or file_new is None:
+        return None
+    old = _decode_git_path(file_old)
+    new = _decode_git_path(file_new)
+    if old is None or new is None:
+        return None
+    if old == "/dev/null":
+        old = new
+    elif new == "/dev/null":
+        new = old
+    return _strip_diff_prefix(old), _strip_diff_prefix(new)
+
+
 def _diff_header_paths(patch: str) -> tuple[str, str] | None:
     """Read the old and new paths from a Git diff header, including quoted paths."""
     header = patch.split("\n", 1)[0].rstrip("\r")
     match = _DIFF_HEADER_RE.fullmatch(header)
     if not match:
-        # Git leaves paths with spaces unquoted; with an unchanged name the header splits at its midpoint.
+        # Git leaves paths with spaces unquoted, so the header cannot be split reliably.
+        # The rename and file headers of the same patch carry the paths unambiguously.
+        paths = _paths_from_patch_headers(patch)
+        if paths is not None:
+            return paths
+        # With an unchanged name the header splits at its midpoint.
         rest = header[len("diff --git "):]
         mid = len(rest) // 2
         if rest.startswith("a/") and rest[mid:mid + 3] == " b/" and rest[2:mid] == rest[mid + 3:]:
@@ -69,13 +135,8 @@ def _diff_header_paths(patch: str) -> tuple[str, str] | None:
         return None
     paths = []
     for token in match.groups():
-        try:
-            path = ast.literal_eval(token) if token.startswith('"') else token
-            if token.startswith('"') and re.search(r"\\[0-7]{3}", token):
-                path = path.encode("latin-1").decode("utf-8")
-        except (SyntaxError, ValueError, UnicodeError):
-            return None
-        if not path.startswith(("a/", "b/")):
+        path = _decode_git_path(token)
+        if path is None or not path.startswith(("a/", "b/")):
             return None
         paths.append(path[2:])
     return paths[0], paths[1]
@@ -98,12 +159,18 @@ def _diffstat_line_count(diff, field: str) -> int | None:
     if value is None:
         return None
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
         get_logger().warning(
             f"Bitbucket diffstat reported a non-numeric {field} for file {_gef_filename(diff)}"
         )
         return None
+    if count < 0 or isinstance(value, bool) or (not isinstance(value, str) and count != value):
+        get_logger().warning(
+            f"Bitbucket diffstat reported an invalid {field} for file {_gef_filename(diff)}"
+        )
+        return None
+    return count
 
 
 class BitbucketProvider(GitProvider):
@@ -165,6 +232,7 @@ class BitbucketProvider(GitProvider):
         self.incremental = incremental
         self.diff_files = None
         self.git_files = None
+        self._pending_diffstat = None
         if pr_url:
             self.set_pr(pr_url)
         self.bitbucket_comment_api_url = self.pr._BitbucketBase__data["links"]["comments"]["href"]
@@ -187,7 +255,7 @@ class BitbucketProvider(GitProvider):
                 get_logger().warning(f"Failed to load local .pr_agent.toml file, status: {response.status_code}")
         except Exception as e:
             get_logger().warning(f"Failed to load local .pr_agent.toml file, error: {e}")
-        return settings_files if settings_files else ""
+        return settings_files or ""
 
     def _get_global_settings_cache_key(self, workspace: str) -> str:
         return f"bitbucket:{workspace}"
@@ -338,24 +406,40 @@ class BitbucketProvider(GitProvider):
         self.workspace_slug, self.repo_slug, self.pr_num = self._parse_pr_url(pr_url)
         self.pr = self._get_pr()
 
+    def _collect_diffstat(self):
+        diffs = []
+        git_files = []
+        for diff in self.pr.diffstat():
+            diffs.append(diff)
+            git_files.append(_gef_filename(diff))
+        return diffs, git_files
+
     def get_files(self):
         try:
             git_files = context.get("git_files", None)
             if git_files:
                 return git_files
-            self.git_files = [_gef_filename(diff) for diff in self.pr.diffstat()]
+            diffs, git_files = self._collect_diffstat()
+            self.git_files = git_files
+            self._pending_diffstat = diffs or None
             context["git_files"] = self.git_files
             return self.git_files
         except Exception:
             if not self.git_files:
-                self.git_files = [_gef_filename(diff) for diff in self.pr.diffstat()]
+                diffs, git_files = self._collect_diffstat()
+                self.git_files = git_files
+                self._pending_diffstat = diffs or None
             return self.git_files
 
     def get_diff_files(self) -> list[FilePatchInfo]:
         if self.diff_files:
+            self._pending_diffstat = None
             return self.diff_files
 
-        diffs_original = list(self.pr.diffstat())
+        diffs_original = getattr(self, "_pending_diffstat", None)
+        self._pending_diffstat = None
+        if diffs_original is None:
+            diffs_original = list(self.pr.diffstat())
         diffs = filter_ignored(diffs_original, 'bitbucket')
         if diffs != diffs_original:
             try:
@@ -465,13 +549,14 @@ class BitbucketProvider(GitProvider):
             # counting the patch, field by field. The raw diff can carry no textual hunk, or a
             # truncated one, even when the diffstat reports real additions and removals, and a
             # partially populated diffstat still carries the side it does report.
-            patch_lines = diff_split[index].splitlines(keepends=True)
             lines_added = _diffstat_line_count(diff, "lines_added")
-            if lines_added is None:
-                lines_added = len([line for line in patch_lines if line.startswith('+')])
             lines_removed = _diffstat_line_count(diff, "lines_removed")
-            if lines_removed is None:
-                lines_removed = len([line for line in patch_lines if line.startswith('-')])
+            if lines_added is None or lines_removed is None:
+                patch_added, patch_removed = count_patch_lines(diff_split[index])
+                if lines_added is None:
+                    lines_added = patch_added
+                if lines_removed is None:
+                    lines_removed = patch_removed
 
             file_patch_canonic_structure = FilePatchInfo(
                 original_file_content_str,

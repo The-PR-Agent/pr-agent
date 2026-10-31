@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from github import GithubException
+from github.PullRequestComment import PullRequestComment
 from requests.exceptions import RequestException
 
 from pr_agent.git_providers import github_provider as gh_module
@@ -63,6 +64,23 @@ def _make_provider(pr=None, max_chars=65000):
     p.diff_files = []
     p.base_url = "https://api.github.com"
     return p
+
+
+@pytest.mark.parametrize(("comment_id", "expected_ids"), [(1, [1, 2]), (2, [1, 2]), (99, [])])
+def test_get_review_thread_comments_uses_list_payload_without_refetching(comment_id, expected_ids):
+    requester = MagicMock()
+    requester.requestJsonAndCheck.side_effect = AssertionError("The list response already contains the thread IDs")
+    payloads = [{"id": 1}, {"id": 3}, {"id": 2, "in_reply_to_id": 1}, {"id": 4, "in_reply_to_id": 3}]
+    # List-built objects remain completable; root payloads deliberately omit in_reply_to_id.
+    comments = [PullRequestComment(requester, {}, {
+        **payload, "url": f"https://api.github.com/repos/owner/repo/pulls/comments/{payload['id']}",
+    }) for payload in payloads]
+    provider = _make_provider(SimpleNamespace(get_comments=lambda: comments))
+
+    thread = provider.get_review_thread_comments(comment_id)
+
+    assert [comment.id for comment in thread] == expected_ids
+    requester.requestJsonAndCheck.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -771,6 +789,8 @@ def _make_graphql_response(data, errors=None):
 class _FakeRequester:
     """Records GraphQL calls and returns canned responses."""
 
+    graphql_url = "https://api.github.com/graphql"
+
     def __init__(self, responses):
         self.calls = []
         self._responses = list(responses)
@@ -787,7 +807,7 @@ class _FakeRequester:
         return self._responses.pop(0)
 
     def graphql_query(self, query, variables):
-        response = self.requestJson("POST", "/graphql", input={"query": query, "variables": variables})
+        response = self.requestJson("POST", self.graphql_url, input={"query": query, "variables": variables})
         if isinstance(response, Exception):
             raise response
         data = json.loads(response[2])

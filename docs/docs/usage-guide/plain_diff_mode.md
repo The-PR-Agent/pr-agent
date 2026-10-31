@@ -68,8 +68,9 @@ the input is a standalone diff.
 4. **Output** — the result is written to stdout. If `--output <path>` is given, it is
    also written to that file (UTF-8, overwritten on each run). For `review` or
    `review_pr`, if `--json-output <path>` is given, the parsed review plus a
-   `usage` object with the run's accumulated token counts is also written to that
-   file as JSON.
+   `usage` object with the run's accumulated token counts and a `coverage` object
+   with the files left out of the review or clipped to fit the token budget is also
+   written to that file as JSON.
 
 No platform token, no PR URL, and no internet access are required for the diff processing
 step itself. An LLM API key is still needed unless you configure a local model.

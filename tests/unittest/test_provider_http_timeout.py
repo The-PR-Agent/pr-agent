@@ -35,7 +35,7 @@ def fresh_global_settings():
 
 
 def _configured(value, monkeypatch):
-    monkeypatch.setattr(global_settings.config, "http_request_timeout", value, raising=False)
+    monkeypatch.setitem(global_settings.config, "http_request_timeout", value)
     return get_http_request_timeout()
 
 
@@ -282,9 +282,8 @@ def test_the_gitea_timeout_is_read_per_call(monkeypatch):
 def test_the_gerrit_patch_upload_is_bounded(monkeypatch):
     from pr_agent.git_providers.gerrit_provider import upload_patch
 
-    monkeypatch.setattr(global_settings.gerrit, "patch_server_endpoint",
-                        "https://gerrit.example/patch", raising=False)
-    monkeypatch.setattr(global_settings.gerrit, "patch_server_token", "offline-token", raising=False)
+    monkeypatch.setitem(global_settings.gerrit, "patch_server_endpoint", "https://gerrit.example/patch")
+    monkeypatch.setitem(global_settings.gerrit, "patch_server_token", "offline-token")
 
     with patch("pr_agent.git_providers.gerrit_provider.requests.post") as post:
         post.return_value = MagicMock(status_code=200)

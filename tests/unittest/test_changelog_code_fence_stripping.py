@@ -144,7 +144,7 @@ def committing_tool(monkeypatch):
         assert seconds == 5
 
     monkeypatch.setattr("pr_agent.tools.pr_update_changelog.asyncio.sleep", no_sleep)
-    monkeypatch.setattr(get_settings().config, "git_provider", "local", raising=False)
+    monkeypatch.setitem(get_settings().config, "git_provider", "local")
     provider = MagicMock()
     provider.get_pr_branch.return_value = "feature/retry"
     tool = PRUpdateChangelog.__new__(PRUpdateChangelog)

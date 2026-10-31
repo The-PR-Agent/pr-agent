@@ -37,6 +37,10 @@ class PRDescriptionHeader(StrEnum):
     FILE_WALKTHROUGH = "File Walkthrough"
 
 
+class PRDescriptionIdentity(StrEnum):
+    PERSISTENT = "<!-- pr-agent:describe:persistent -->"
+
+
 _ALL_COMMENT_IDENTITIES = (
     PRReviewIdentity.REGULAR.value,
     PRReviewIdentity.INCREMENTAL.value,
@@ -44,6 +48,7 @@ _ALL_COMMENT_IDENTITIES = (
     PRCodeSuggestionsIdentity.NO_SUGGESTIONS.value,
     PRCodeSuggestionsIdentity.UNANCHORED.value,
     PRCommandNoticeIdentity.INCOMPLETE_BITBUCKET_FILES.value,
+    PRDescriptionIdentity.PERSISTENT.value,
 )
 _REVIEW_IDENTITY_HEADER_LINES = 5
 _MARKDOWN_PUNCTUATION_ESCAPE_TABLE = str.maketrans(
@@ -160,6 +165,20 @@ def add_comment_identity(pr_comment: str, identity_marker: str | None, git_provi
 
 def add_pr_review_identity(pr_comment: str, identity_marker: str | None, git_provider=None) -> str:
     return add_comment_identity(pr_comment, identity_marker, git_provider)
+
+
+def comment_authorship_available(git_provider) -> bool:
+    """Whether the provider can verify that an issue comment was authored by PR-Agent."""
+    if git_provider is None:
+        return False
+    try:
+        return (
+            git_provider.supports_review_finding_state() is True
+            and git_provider.is_supported("get_issue_comments") is True
+        )
+    except Exception as error:
+        get_logger().warning(f"Comment authorship is not available, error: {error}")
+        return False
 
 
 def as_review_text(value) -> str:

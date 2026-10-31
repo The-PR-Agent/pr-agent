@@ -25,17 +25,23 @@ class RequestOutcome(Enum):
         return False
 
 
-def enforce_request_policy(pr_url) -> bool:
+def enforce_request_policy(pr_url, provider=None) -> bool:
     # Keep the existing matching semantics as the single policy implementation.
     from pr_agent.servers.utils import should_process_pr_logic
 
     required = {field for field, rule in RULE_FIELDS.items() if get_settings().get(f"config.{rule}", [])}
     if not required:
         return True
-    from pr_agent.git_providers import get_git_provider_with_context
+    from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 
     try:
-        provider = get_git_provider_with_context(pr_url)
+        # Reuse the provider only when it is exactly the selected class after repository settings.
+        if provider is None:
+            provider = get_git_provider_with_context(pr_url)
+        else:
+            provider_class = get_git_provider()
+            if type(provider) is not provider_class:
+                provider = provider_class(pr_url)
         metadata = provider.get_request_policy_metadata(required)
         # Missing/None fields leave only their own rules unevaluated. The shared
         # matcher keeps checking the other fields and retains its error fallback.

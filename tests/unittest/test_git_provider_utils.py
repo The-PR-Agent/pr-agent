@@ -400,3 +400,25 @@ def test_malformed_group_settings_does_not_block_global_or_local(monkeypatch):
     finally:
         settings.unset("pr_reviewer")
         settings.set("pr_reviewer", original_config, merge=False)
+
+
+def test_handle_configurations_errors_keeps_local_content_out_of_log_artifact(monkeypatch):
+    """Local config errors include config content in PR comment,
+    but log artifact omits raw config/secrets."""
+    logged = []
+    monkeypatch.setattr(
+        utils.get_logger(),
+        "warning",
+        lambda message, artifact: logged.append(artifact["body"])
+    )
+    provider = FakeMarkdownProvider()
+
+    handle_configurations_errors([{
+        "settings": b'[openai]\nkey = "sk-test-secret"\n[config]\nmodel =\n',
+        "error": "Invalid value",
+        "category": "local",
+    }], provider)
+
+    assert "sk-test-secret" in provider.persistent_comments[0]["body"]
+    assert "Invalid value" in logged[0]
+    assert "sk-test-secret" not in logged[0]

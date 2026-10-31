@@ -62,6 +62,36 @@ def test_publish_code_suggestions_uses_the_provider_error_policy():
     assert str(provider._log_code_suggestion_publish_error.call_args.args[0]) == "network down"
 
 
+@pytest.mark.parametrize(
+    "start, end",
+    [
+        (0, 2), (-1, 2), (-5, -3), (None, 2), (5, 3),
+        ("3", 4), (3, "4"), (2.5, 4), (3, 4.0), (True, 2), (1, True),
+    ],
+)
+def test_invalid_line_ranges_are_rejected(start, end):
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider._log_invalid_code_suggestion = MagicMock()
+
+    assert provider._is_valid_code_suggestion(_suggestion(start, end)) is False
+    provider._log_invalid_code_suggestion.assert_called_once()
+
+
+@pytest.mark.parametrize("start, end", [(1, 1), (3, 7)])
+def test_valid_line_ranges_are_accepted(start, end):
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+
+    assert provider._is_valid_code_suggestion(_suggestion(start, end)) is True
+
+
+def test_a_suggestion_without_an_end_line_is_checked_on_its_start():
+    provider = BitbucketProvider.__new__(BitbucketProvider)
+    provider._log_invalid_code_suggestion = MagicMock()
+
+    assert provider._is_valid_code_suggestion({"relevant_lines_start": 4}) is True
+    assert provider._is_valid_code_suggestion({"relevant_lines_end": 4}) is False
+
+
 @pytest.mark.parametrize("provider_type", [GithubProvider, BitbucketProvider, BitbucketServerProvider])
 def test_target_providers_inherit_publish_code_suggestions(provider_type: type[GitProvider]):
     assert "publish_code_suggestions" not in provider_type.__dict__

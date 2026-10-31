@@ -34,6 +34,11 @@ A record is a JSON object:
 - `payload` — the structured tool result
 - `markdown` — the rendered comment text; present when the tool produces one
 
+For `/describe`, `payload.title` is the selected title, including the original PR title read when the
+command starts if `pr_description.generate_ai_title` is disabled. When the model output contains a
+`labels` field, `payload.labels` contains only labels allowed by the configured vocabulary. This field
+remains present when `pr_description.publish_labels` is disabled.
+
 ## Configuration
 
 The defaults are defined at the end of the
@@ -121,10 +126,14 @@ type or status code, since request error messages can embed the (secret-bearing)
 ## Extending delivery
 
 `push_outputs()` in `pr_agent/algo/run_output.py` builds the record once and isolates failures
-for each selected destination. Delivery strategies live in `pr_agent/algo/output_sinks.py`:
-each implements `OutputSink.send(record, cfg)`, and `create_output_sink()` selects the strategy
-from `OUTPUT_SINK_TYPES`. Registry order determines delivery order, with local writes first;
-duplicate channel entries still result in a single delivery.
+for each selected destination. The tools deliver from an event loop, so they call
+`push_outputs_async()`, which runs the delivery in a worker thread and awaits it: a slow
+destination does not stall the other pull requests the server is handling, and the output
+still reaches the sink before the command returns. Delivery strategies live in
+`pr_agent/algo/output_sinks.py`: each implements `OutputSink.send(record, cfg)`, and
+`create_output_sink()` selects the strategy from `OUTPUT_SINK_TYPES`. Registry order
+determines delivery order, with local writes first; duplicate channel entries still result
+in a single delivery.
 
 To add a destination, implement its strategy and register it, then add any required host-only
 settings, documentation, and provider-specific tests. HTTP strategies must validate destinations

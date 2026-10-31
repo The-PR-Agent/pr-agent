@@ -16,11 +16,13 @@ from starlette_context.middleware import RawContextMiddleware
 
 from pr_agent.agent.pr_agent import PRAgent, prepare_command
 from pr_agent.agent.request_policy import RequestOutcome
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings, global_settings
 from pr_agent.git_providers.utils import apply_repo_settings
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.request_body_limit import create_server_app
 from pr_agent.servers.utils import (
+    auto_feedback_disabled,
     get_pr_commands,
     is_command_comment,
     payload_log_summary,
@@ -59,7 +61,7 @@ def should_process_pr_logic(data) -> bool:
 
     try:
         # Filter by allowed folders if configured
-        allowed_folders = get_settings().config.get("allow_only_specific_folders", [])
+        allowed_folders = normalize_setting_list(get_settings().config.get("allow_only_specific_folders", []))
         if allowed_folders:
             pr_data = data.get("pullRequest", {})
             pr_id = pr_data.get("id", None)
@@ -155,7 +157,7 @@ async def handle_webhook(background_tasks: BackgroundTasks, request: Request):
             return JSONResponse(
                 status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "PR ignored by config"})
             )
-        if get_settings().config.disable_auto_feedback:  # auto commands for PR, and auto feedback is disabled
+        if auto_feedback_disabled():  # auto commands for PR, and auto feedback is disabled
             get_logger().info(f"Auto feedback is disabled, skipping auto commands for PR {pr_url}", **log_context)
             return JSONResponse(
                 status_code=status.HTTP_200_OK,
@@ -217,6 +219,12 @@ async def _run_commands_sequentially(commands: list[str], url: str, log_context:
 
     for command in commands:
         try:
+            # Reset diff state between auto commands, like the gitlab/github loops (#4372).
+            if context.exists():
+                provider = context.get("git_provider", {}).get(url)
+                reset_diff_cache = getattr(provider, "reset_diff_cache_for_command", None)
+                if callable(reset_diff_cache):
+                    reset_diff_cache()
             body = _process_command(command, url)
 
             log_context["action"] = body
@@ -249,7 +257,7 @@ def _to_list(command_string: str) -> list:
 
 def _get_commands_list_from_settings(setting_key: str) -> list:
     try:
-        return get_settings().get(setting_key, [])
+        return normalize_setting_list(get_settings().get(setting_key, []))
     except ValueError as e:
         get_logger().error(f"Failed to get commands list from settings {setting_key}: {e}")
         return []

@@ -38,6 +38,16 @@ _CLAUDE_MODEL_FAMILIES = [
         "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
     },
     {
+        "model_id": "claude-sonnet-5-5",
+        "max_tokens": 1000000,
+        "bedrock_regions": ("global", "us", "eu", "au"),
+    },
+    {
+        "model_id": "claude-haiku-5-5",
+        "max_tokens": 1000000,
+        "bedrock_regions": _DEFAULT_BEDROCK_REGIONS,
+    },
+    {
         "model_id": "claude-opus-4-7",
         "max_tokens": 1000000,
         "bedrock_regions": ("global", "us"),
@@ -247,7 +257,7 @@ GPT6_MAX_INPUT_TOKENS = {"gpt-6-sol": 922000, "gpt-6-luna": 922000, "gpt-6.1-sol
 # because they also drive the extended-thinking registry and their 1M-context
 # handling is a separate, deliberate judgement (issue #3196).
 MAX_TOKENS = {
-    'text-embedding-ada-002': 8000,
+    'text-embedding-ada-002': 8192,
     'gpt-3.5-turbo': 16000,
     'gpt-3.5-turbo-0125': 16000,
     'gpt-4': 8000,
@@ -317,6 +327,11 @@ MAX_TOKENS = {
     'bedrock/converse/moonshotai.kimi-k3': 1000000,
     'bedrock/converse/us.moonshotai.kimi-k3': 1000000,
     'bedrock/converse/global.moonshotai.kimi-k3': 1000000,
+    # -- Kimi K3 / K3.1 Pro (Moonshot / OpenAI-compatible) --
+    'kimi-k3': 1000000,
+    'kimi-k3.1-pro': 1000000,
+    'openai/kimi-k3': 1000000,
+    'openai/kimi-k3.1-pro': 1000000,
     'groq/llama-3.3-70b-versatile': 128000,
     'groq/llama-3.1-8b-instant': 128000,
     'sambanova/MiniMax-M3': 192000,
@@ -381,7 +396,7 @@ GROK_REASONING_EFFORT_LEVELS = {
 # thinking={"type": "enabled", "budget_tokens": ...} request built by
 # LiteLLMAIHandler._configure_claude_extended_thinking(). Only models that
 # accept budget_tokens belong here. Adaptive-only models (Claude Opus 4.7/4.8,
-# Opus 5/5.5, Sonnet 5, Fable 5, Fable 5.1) reject budget_tokens with an HTTP 400 and must not be added
+# Opus 5/5.5, Sonnet 5/5.5, Haiku 5.5, Fable 5, Fable 5.1) reject budget_tokens with an HTTP 400 and must not be added
 # without also adding an adaptive-thinking code path. This list is the built-in
 # default; it can be replaced via the `claude_extended_thinking_models_override`
 # configuration option.

@@ -265,7 +265,7 @@ def main() -> int:
     sections = load_sections(text)
 
     rendered_keys = sum(len(section["keys"]) for section in sections)
-    expected_keys = len(re.findall(r"^[a-zA-Z0-9_]+\s*=", text, re.M))
+    expected_keys = len(re.findall(r"^[a-zA-Z0-9_]+\s*=", text, re.MULTILINE))
     if rendered_keys != expected_keys:
         print(f"ERROR: rendered {rendered_keys} keys, expected {expected_keys}", file=sys.stderr)
         return 1

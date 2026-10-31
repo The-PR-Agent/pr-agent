@@ -63,13 +63,15 @@ to-do list.
 | `http_request_timeout` | 60 | host-only connect/read inactivity seconds for GitLab/Gitea and direct Bitbucket/Gerrit HTTP attempts; capped at 600 |
 | `retry_same_model_on_timeout` | true | when false, a timed-out call is not retried on the same model and moves on to fallback_models |
 | `retry_same_model_on_length` | false | when true, an empty response truncated by the output cap is retried on the same model instead of moving straight to fallback_models |
+| `num_retries` | 4 | same-model retries of a request the provider rejects (429, 5xx, connection error) before fallback_models, waiting for its Retry-After (up to 30 s) or with exponential backoff; 0 falls back at once. Timeouts and empty responses use retry_same_model_on_timeout / retry_same_model_on_length instead |
 | `skip_keys` | [] |  |
 | `custom_reasoning_model` | false | when true, disables system messages and temperature controls for models that don't support chat-style inputs |
 | `response_language` | "en-US" | Language locales code for PR responses in ISO 3166 and ISO 639 format (e.g., "en-US", "it-IT", "zh-CN", ...) |
-| `repo_context_files` | ["AGENTS.md"] | Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable local context. A structured entry {"repo_id" = ..., "file_path" = ...} selects a sibling default-branch file from the same namespace/owner; repo_id must be in the host-issued repo_context_sibling_repos allowlist below. Reads use the sibling default branch and share repo_context_max_lines; repository settings may select entries, comment arguments cannot override this key |
+| `repo_context_files` | ["AGENTS.md"] | Repository-relative files (e.g. AGENTS.md, CLAUDE.md) to include as AI prompt context; set to [] to disable local context. A nested list is a group of alternatives: only the first one that yields content is used, so a repository keeping the same instructions in several conventions (or symlinking them) sends them once; alternatives must be local paths. A local entry may use a single-directory glob in its file name (e.g. "docs/adr/*.md"), expanded to at most repo_context_max_glob_matches sorted matches on providers that can list directories (GitHub, GitLab). A structured entry {"repo_id" = ..., "file_path" = ...} selects a sibling default-branch file from the same namespace/owner; repo_id must be in the host-issued repo_context_sibling_repos allowlist below. Reads use the sibling default branch and share repo_context_max_lines; repository settings may select entries, comment arguments cannot override this key |
 | `repo_context_from_default_branch` | true | Read repo context files from the repository default branch (trusts only default-branch content). Set to false to read from the PR target branch instead. |
 | `repo_context_max_lines` | 500 | Maximum total rendered lines for repo context, including wrapper tags |
-| `repo_context_sibling_repos` | [] | Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. On GitHub, this also approves repositories for linked-issue and sub-issue ticket context. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution |
+| `repo_context_max_glob_matches` | 20 | Maximum number of files one repo_context_files glob entry (e.g. "docs/adr/*.md") expands to, in name order; each match is one file fetch. A repository's .pr_agent.toml may set it, comment arguments cannot. Clamped to 100. Matches still share the repo_context_max_lines budget. |
+| `repo_context_sibling_repos` | [] | Host-only list of approved sibling repository identifiers (GitHub owner/repo, GitLab group/project or numeric ID strings) that repo_context_files sibling entries may select. On GitHub and GitLab, this also approves repositories for cross-repository issue and ticket context. Empty disables sibling reads. Approve only repositories whose content may be disclosed in consuming PRs, because the actor check bounds who triggers a read, not who chose the target or where the output lands. Repository settings and comment arguments cannot change this list. Canonical identities and owning namespaces are checked after resolution |
 | `repo_context_max_sibling_files` | 5 | Maximum number of sibling-repository files fetched per repo-context build. The fetch count is bounded separately from repo_context_max_lines so selected sibling files cannot trigger an unbounded number of cross-repository calls; sibling files still compete for the repo_context_max_lines budget. Host-only (cannot be raised by a repository's .pr_agent.toml or a comment command) and clamped to a hard ceiling of 20 fetches per build. |
 **token limits**
 
@@ -127,7 +129,7 @@ to-do list.
 | `add_user_to_requests` | false | send the current command and PR URL in the OpenAI-compatible "user" request field, for provider-side attribution of requests (e.g. OpenRouter "external_user") |
 | `reasoning_effort` | "medium" | "none", "minimal", "low", "medium", "high", "xhigh", "max" |
 | `additional_reasoning_effort_models` | [] | Optional: additional model IDs that accept config.reasoning_effort. Reasoning support is otherwise decided by litellm's bundled model metadata (and the maintained Grok registry), so add an ID here when litellm does not know the model (custom OpenAI-compatible endpoints), or when another provider hosts a Sol-tier GPT-6 model under the same ID. Model IDs match exactly or through any provider prefix (e.g. "deepseek-v4-flash-0731" matches "openai/deepseek-v4-flash-0731"). LiteLLM whitelists reasoning_effort through allowed_openai_params for OpenAI-compatible models it does not recognize, so the parameter reaches the endpoint. The default "medium" may be rejected by providers that accept a different subset (e.g. "none"/"low"/"high"/"max"); adding a custom model id now surfaces a provider-side error instead of the previous silent drop. |
-| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini", "moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, also match the suffix-free base ID (for example, match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm's metadata still marks them temperature-capable; see the issue for the probe diff. Bedrock rejects temperature for Kimi K3 ("This model doesn't support the temperature field"). |
+| `no_temperature_models` | ["deepseek/deepseek-reasoner", "o1-mini", "o1-mini-2024-09-12", "o1", "o1-2024-12-17", "o3-mini", "o3-mini-2025-01-31", "o3", "o3-2025-04-16", "o4-mini", "o4-mini-2025-04-16", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5-mini", "moonshotai.kimi-k3", "us.moonshotai.kimi-k3", "global.moonshotai.kimi-k3", "kimi-k3", "kimi-k3.1-pro", "zai.glm-5"] | Optional: model IDs that must never receive the temperature parameter, on top of what litellm's parameter metadata reports. Temperature support is otherwise decided by litellm.get_supported_openai_params() (mirroring reasoning_effort), so add an ID here when litellm reports temperature as supported but the provider rejects it, or when an OpenAI-compatible endpoint accepts but you still want it dropped. Adaptive-thinking Claude models (Opus 4.7/4.8 and Opus/Sonnet/Fable 5) never receive temperature. Match model IDs exactly or through any provider prefix. For OpenRouter `:nitro` and `:floor` routing shortcuts, also match the suffix-free base ID (for example, match `future-model` to `openrouter/vendor/future-model:nitro`). Keep other model variants at their full ID. Preserve the former static registry entries below when litellm's metadata still marks them temperature-capable; see the issue for the probe diff. Bedrock rejects temperature for Kimi K3 and GLM-5 ("This model doesn't support the temperature field"); Moonshot/Kimi reasoning endpoints reject custom temperature. |
 **extended thinking for Claude reasoning models**
 
 | Key | Default | Description |
@@ -161,6 +163,7 @@ to-do list.
 | `require_merge_recommendation` | false | ask the model for a merge recommendation: no_concerns_found (no important blockers or risks identified), needs_review (seems acceptable but deserves focused reviewer attention) or changes_required (clear issues to fix before merge) |
 | `require_failure_modes` | false | ask for up to three concrete failure scenarios and their detection/coverage |
 | `require_priority_files` | false | ask the model which files a human should inspect first |
+| `structural_reach_input_file` | "" | JSON reach facts from a build-graph tool; when the file exists, adds a deterministic change-risk row. See docs/docs/tools/review.md |
 **general options**
 
 | Key | Default | Description |
@@ -268,6 +271,7 @@ verify the status-changing actor or historical defaults. Dismissed findings shar
 | `enable_help_text` | false |  |
 | `enable_chat_text` | false |  |
 | `persistent_comment` | true |  |
+| `publish_failure_comment` | true | Set to false to suppress /improve failure comments without changing the command's failure status. |
 | `max_history_len` | 4 |  |
 | `publish_output_no_suggestions` | true |  |
 | `enable_suggestions_coverage_footer` | true | show failed chunks and files omitted by the token or AI-call budget |
@@ -339,11 +343,13 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `deployment_type` | "user" | The type of deployment to create. Valid values are 'app' or 'user'. |
-| `ratelimit_retries` | 5 |  |
+| `agent_login` | "" | Host-only login PR-Agent posts as when its token cannot call `GET /user`, e.g. `<app-slug>[bot]` for a GitHub App installation token in GitHub Actions. Empty falls back to `github-actions[bot]` under Actions. Repository settings and comment arguments cannot change it |
+| `ratelimit_retries` | 5 | Host-only total attempts for retryable GitHub diff collection failures, including rate limits and transient API errors. Integer-valued floats and integer strings are accepted. Zero returns None without collecting a diff. A negative integer attempt limit retries indefinitely. Boolean, non-finite, non-integral float, and unparseable values fall back to 5 with a warning. |
 | `seconds_between_requests` | 0 | seconds between API requests; 0 = no pacing (1.59 behaviour) |
 | `seconds_between_writes` | 0 | seconds between write calls; 0 = no pacing (1.59 behaviour) |
 | `api_retries` | 0 | max retries per request with backoff; 0 = no retries (1.59 behaviour) |
 | `polling_request_timeout` | 10 | total seconds for comment-history fallback; positive values capped at 60 |
+| `polling_repositories` | [] | Host-only allowlist of GitHub repositories ("owner/repo") whose mention notifications polling may process. Empty disables all polling notifications. Repository settings and comment arguments cannot change this list |
 | `base_url` | "https://api.github.com" |  |
 | `try_fix_invalid_inline_comments` | true |  |
 | `ignore_bot_pr` | true |  |
@@ -418,6 +424,8 @@ _This section only documents commented-out examples; see the [TOML source](https
 | --- | --- | --- |
 | `avoid_full_files` | false |  |
 | `request_timeout` | 30 | positive seconds for connection and response-read inactivity timeouts |
+| `handle_push_trigger` | false | run push_commands when new commits are pushed to an open PR |
+| `push_commands` | [] |  |
 
 
 ## `[local]` {#local}
@@ -438,12 +446,15 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `url` | "" | URL to the BitBucket Server instance |
+| `handle_push_trigger` | false | run push_commands when new commits are pushed to an open PR |
+| `push_commands` | [] |  |
 
 
 ## `[jira]` {#jira}
 
 | Key | Default | Description |
 | --- | --- | --- |
+| `cloud_id` | "" | optional UUID for scoped tokens; uses the Atlassian API gateway and is host-only |
 | `jira_requirements_field` | "" | Custom field id holding acceptance criteria / requirements, mapped to the ticket "requirements" section. Instance-specific (e.g. "customfield_10127"); empty disables it. |
 | `project_keys` | ["*"] | Optional allowlist of Jira project keys, e.g. ["PROJ", "OPS"]. When non-empty, key-shaped text with another prefix ("SHA-256", "UTF-8", "ISO-8601") is dropped before any lookup, so it no longer costs an authenticated 404 each. Entries must be plain upper-case keys; a supplied list with no valid entry disables the lookup rather than widening it. Wildcard ["*"] (default) looks up every key found. An empty list ([]) disables Jira ticket lookups. Host-only, like jira_site and jira_api_email: repository settings and comment arguments cannot change them. |
 
@@ -453,6 +464,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable_callbacks` | false |  |
+| `add_session_id_to_requests` | false | send a stable x-litellm-session-id header derived from the PR URL, so LiteLLM groups every request for the same PR into one session |
 | `success_callback` | [] |  |
 | `failure_callback` | [] |  |
 | `service_callback` | [] |  |
@@ -463,6 +475,15 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `callback_timeout_seconds` | 30 | max seconds to wait for pending litellm callbacks to flush before exiting |
 | `base_models` | {} | Optional: map an opaque request model id (for example a Bedrock application inference profile ARN) to a LiteLLM-priced model id, so run cost is reported instead of unavailable. Default empty; named models are priced by LiteLLM directly and need no entry here. |
 | `cache_control_injection_points` | [] | Optional: enable Anthropic prompt caching via LiteLLM, e.g. [{location = "message", role = "system"}] (https://docs.litellm.ai/docs/tutorials/prompt_caching). PR-Agent forwards these points only for models whose name contains "claude" or that are listed in a Claude thinking override; LiteLLM adds the cache_control blocks. LiteLLM's own default injection (litellm.enable_anthropic_prompt_caching, env LITELLM_ENABLE_ANTHROPIC_PROMPT_CACHING, off by default) applies only when no points are configured here, so the two never double-inject. A warning is logged once per process when the points cannot take effect (non-Anthropic model, no prompt-cache support, or a prefix below the model's minimum). |
+
+
+## `[bedrock]` {#bedrock}
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `guardrail_identifier` | "" | guardrail ID or ARN; empty = disabled. When set, Bedrock models must use "bedrock/converse/..."; other Bedrock routes fail instead of running unguarded |
+| `guardrail_version` | "" | e.g. "1" or "DRAFT"; required when guardrail_identifier is set |
+| `guardrail_trace` | "disabled" | "enabled", "enabled_full" or "disabled" |
 
 
 ## `[openrouter]` {#openrouter}
@@ -482,7 +503,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable` | false | Rules are checked in order; the first one whose limits the pull request fits selects the primary model for the call, and config.fallback_models still apply after it. A pull request that fits no rule uses config.model. Size is measured after the [ignore] rules by diff hunks (max_hunks) and changed files (max_files), which every git provider reports and which do not depend on any model's tokenizer. Only calls that ask for the regular model are routed (/review, /improve, /generate_labels, /add_docs); tools that use model_weak are left alone. With Azure (openai.deployment_id set) a rule also needs its own deployment_id, or it is skipped. |
-| `rules` | [] | Example: [{ max_hunks = 3, model = "gpt-6-luna" }, { max_hunks = 15, max_files = 6, model = "gpt-6.1-sol" }] A matched rule replaces the primary (model, deployment) pair. If it matches a configured fallback pair, deduplicate the effective chain and append the displaced primary unless already present. Otherwise the configured fallbacks follow unchanged. Later pairs are attempted only after fallback-eligible failures; distinct deployments remain separate. /improve uses this effective chain for chunk recovery. |
+| `rules` | [] | Each rule may also set max_patch_chars: an inclusive ceiling on the sum of Python character counts in the supplied patch strings, including headers and line endings. All limits named by a rule must match. Missing, non-string, or failed-content patches make this count unknown, so character-limited rules are skipped. An explicit empty patch counts as zero; an incomplete head file alone does not invalidate a supplied patch. This measures supplied text, not tokens or full file/diff size; provider normalization or clipping is not recovered. Example: [{ max_hunks = 3, max_patch_chars = 10000, model = "gpt-6-luna" }, { max_hunks = 15, max_files = 6, model = "gpt-6.1-sol" }] A matched rule replaces the primary (model, deployment) pair. If it matches a configured fallback pair, deduplicate the effective chain and append the displaced primary unless already present. Otherwise the configured fallbacks follow unchanged. Later pairs are attempted only after fallback-eligible failures; distinct deployments remain separate. /improve uses this effective chain for chunk recovery. |
 
 
 ## `[otel]` {#otel}
@@ -533,7 +554,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `enabled` | false | Agent skills (SKILL.md) support: discovers SKILL.md files from the configured filesystem paths and injects their content into review/improve/describe and top-level /ask prompts. Sibling *.md files in the skill directory tree (e.g. references/guide.md) are inlined alongside SKILL.md. PR-Agent supports text-only skills: scripts/ and assets/ subdirectories are skipped because PR-Agent uses a single-shot model call (no tool-use loop) and cannot execute scripts or load binary assets on demand. Skills that depend on script execution will not work here. See https://github.com/The-PR-Agent/pr-agent/issues/2384 |
+| `enabled` | false | Agent skills (SKILL.md) support: discovers SKILL.md files from the configured filesystem paths and injects their content into review/improve/describe and /ask prompts, including questions on a specific line. Sibling *.md files in the skill directory tree (e.g. references/guide.md) are inlined alongside SKILL.md. PR-Agent supports text-only skills: scripts/ and assets/ subdirectories are skipped because PR-Agent uses a single-shot model call (no tool-use loop) and cannot execute scripts or load binary assets on demand. Skills that depend on script execution will not work here. See https://github.com/The-PR-Agent/pr-agent/issues/2384 |
 | `paths` | [] | directories to scan recursively for "*/SKILL.md"; supports ~ and $VAR |
 | `max_skills_tokens` | 8000 | token budget for the combined skills_context block |
 
@@ -543,10 +564,10 @@ _This section only documents commented-out examples; see the [TOML source](https
 | Key | Default | Description |
 | --- | --- | --- |
 | `enable` | false | Enable artifact injection into tool prompts (off by default; auto-enabled when artifact_path input is set) |
-| `artifact_path` | "" | File path to the artifact (relative to GITHUB_WORKSPACE, or absolute) |
+| `artifact_path` | "" | File path or list of paths to artifacts (relative to GITHUB_WORKSPACE, or absolute) |
 | `artifact_instructions` | "" | Analysis guidance rendered separately before the untrusted artifact label and content (leave empty for a sensible default) |
 | `artifact_label` | "" | Label shown to the AI — defaults to the filename when empty. |
-| `target_tools` | ["pr_reviewer", "pr_description", "pr_code_suggestions"] | Which supported tools receive artifact context; unsupported names are skipped with a warning. |
+| `target_tools` | ["pr_reviewer", "pr_description", "pr_code_suggestions", "pr_questions"] | Which supported tools receive artifact context; unsupported names are skipped with a warning. |
 | `max_artifact_size` | 50000 | Max artifact size in characters (content is truncated if exceeded) |
 | `truncate_from` | "start" | Which end of the file to keep when truncating: "start" (default, keeps the beginning) or "end" (keeps the tail, where build logs carry their verdict - failure, plan summary or test result). |
 
@@ -559,6 +580,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 | `routing_scan_max_chars` | 65536 | positive character limit for PR URL and command detection; does not truncate diffs |
 | `health_timeout_seconds` | 10 | finite positive seconds for cooperative health-probe work; excludes synchronous initialization and blocking SDK work |
 | `context_history_max_tasks` | 100 | maximum prior tasks considered for a context follow-up; set from 1 to 1000 |
+| `task_store_max_tasks_per_owner` | 1000 | maximum retained MOSAICO tasks per owner; evicted tasks lose follow-up history |
 
 
 ## `[asana]` {#asana}
@@ -586,7 +608,7 @@ _This section only documents commented-out examples; see the [TOML source](https
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `agent_identity` | "" | empty: discover the identity from earlier agent comments on the PR |
+| `agent_identity` | "" | Host-only identity (email, GUID, or descriptor) PR-Agent posts as on Azure DevOps. Empty discovers the identity from earlier agent comments on the PR. Repository settings and comment arguments cannot change it |
 
 
 ## `[push_outputs]` — push tool outputs to external sinks without calling git-provider APIs (disabled by default) {#push_outputs-push tool outputs to external sinks without calling git-provider APIs (disabled by default)}

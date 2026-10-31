@@ -60,7 +60,7 @@ class CodeCommitClient:
         self.region_name = region_name
 
     def is_supported(self, capability: str) -> bool:
-        if capability in ["gfm_markdown"]:
+        if capability == "gfm_markdown":
             return False
         return True
 

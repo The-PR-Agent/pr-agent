@@ -112,6 +112,7 @@ async def test_ask_line_keeps_final_prompt_within_budget_after_loading_history(
         "resolve_threads": False,
         "is_azure_devops": False,
         "extra_instructions": "",
+        "skills_context": "",
     }
 
     try:
@@ -205,6 +206,7 @@ async def test_ask_line_uses_attempted_model_for_non_gpt_prompt_budget(monkeypat
         "resolve_threads": False,
         "is_azure_devops": False,
         "extra_instructions": "",
+        "skills_context": "",
     }
 
     counter_calls = []

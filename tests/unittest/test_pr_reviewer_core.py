@@ -1,4 +1,6 @@
+import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +14,7 @@ from pr_agent.algo.inline_comment_dedup import (
 )
 from pr_agent.algo.review_json_output import review_json_output_path
 from pr_agent.algo.run_details import command_failed
+from pr_agent.algo.token_budget import FallbackEligibleError
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.algo.utils import convert_to_markdown_v2
 from pr_agent.config_loader import get_settings
@@ -197,6 +200,31 @@ async def test_prepare_prediction_keeps_incremental_review_compatible_with_tuple
 
 
 @pytest.mark.asyncio
+async def test_prepare_prediction_skips_when_all_changed_files_are_filtered():
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("", [])):
+        await reviewer._prepare_prediction("model")
+
+    assert reviewer.patches_diff == ""
+    assert reviewer.prediction is None
+    reviewer._get_prediction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_prepare_prediction_keeps_fallback_when_filtered_files_remain():
+    reviewer = _make_prediction_reviewer()
+    reviewer._get_prediction = AsyncMock(return_value=_VALID_PREDICTION)
+
+    with patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("", ["package-lock.json"])):
+        with pytest.raises(FallbackEligibleError, match="No PR diff fits the /review request"):
+            await reviewer._prepare_prediction("model")
+
+    reviewer._get_prediction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_final_review_fit_rejects_untracked_diff_clipping():
     reviewer = _make_prediction_reviewer()
     reviewer.vars = {"diff": ""}
@@ -204,6 +232,7 @@ async def test_final_review_fit_rejects_untracked_diff_clipping():
 
     class ClippingBudget:
         def fit_prompt_variable(self, _variables, _name, optional_text, **_kwargs):
+            assert _kwargs["require_full_text"] is True
             return SimpleNamespace(
                 optional_text=optional_text[:-1],
                 system_prompt="system",
@@ -384,7 +413,7 @@ def test_review_schema_requires_failure_modes_only_when_enabled(enabled):
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
+async def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
     reviewer = _make_prediction_reviewer()
     reviewer.vars = {"require_failure_modes": enabled}
     mode = {"what": "Partial write", "where": "app.py:save", "trigger": "Write fails",
@@ -399,9 +428,10 @@ def test_failure_modes_reach_output_consumers_only_when_enabled(enabled):
         patch("pr_agent.tools.pr_reviewer.load_yaml", return_value=data),
         patch("pr_agent.tools.pr_reviewer.github_action_output") as action_output,
         patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="review") as render,
-        patch("pr_agent.tools.pr_reviewer.push_outputs") as push,
+        patch("pr_agent.tools.pr_reviewer.push_outputs_async") as push,
     ):
         reviewer._prepare_pr_review()
+        await reviewer._deliver_sink_output()
     assert ("failure_modes" in action_output.call_args.args[0]["review"]) is enabled
     assert ("failure_modes" in reviewer.git_provider.publish_structured_review.call_args.args[0]["review"]) is enabled
     assert ("failure_modes" in render.call_args.args[0]["review"]) is enabled
@@ -878,6 +908,105 @@ def test_should_publish_review_no_suggestions_respects_config():
 
 
 @pytest.mark.asyncio
+async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    started = threading.Event()
+    release = threading.Event()
+    fetch_thread_ids = []
+
+    def fetch_diff():
+        fetch_thread_ids.append(threading.get_ident())
+        started.set()
+        assert release.wait(10)
+        return []
+
+    git_provider = MagicMock()
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.get_diff_files.side_effect = fetch_diff
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", AsyncMock())
+    monkeypatch.setitem(get_settings().config, "publish_output", False)
+
+    run = asyncio.create_task(reviewer.run())
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), 10)
+        assert not run.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(run, 10)
+
+    assert len(fetch_thread_ids) == 1
+    assert fetch_thread_ids[0] != threading.get_ident()
+    git_provider.get_diff_files.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("has_new_files", "valid_anchor"),
+    [(False, True), (True, True), (False, False)],
+    ids=["empty-incremental", "active-incremental", "fallback-full-review"],
+)
+async def test_run_extracts_tickets_only_when_incremental_review_proceeds(monkeypatch, has_new_files, valid_anchor):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    git_provider = MagicMock()
+    # GitHub can return the full PR file list when its incremental file map is empty.
+    git_provider.get_files.return_value = ["app.py"]
+    git_provider.unreviewed_files_map = {"app.py": "patch"} if has_new_files else {}
+    previous_review_url = "https://example/pr/1#previous-review"
+    git_provider.previous_review = SimpleNamespace(html_url=previous_review_url)
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(
+        is_incremental=True, commits_range=[] if valid_anchor else None, last_seen_commit=None,
+    )
+    reviewer.is_auto = False
+    reviewer.vars = {}
+    reviewer.prediction = None
+    reviewer._load_previous_findings_context = MagicMock(return_value="Previous findings")
+
+    async def extract_tickets(provider, variables):
+        variables["related_tickets"] = [{"ticket_url": "https://example/issues/42"}]
+
+    async def predict(*args, **kwargs):
+        extract.assert_awaited_once_with(git_provider, reviewer.vars)
+        assert reviewer._raw_prompt_vars["related_tickets"] == reviewer.vars["related_tickets"]
+        if not valid_anchor:
+            assert reviewer._raw_prompt_vars["previous_findings"] == "Previous findings"
+
+    extract = AsyncMock(side_effect=extract_tickets)
+    retry = AsyncMock(side_effect=predict)
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", extract)
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", retry)
+    settings = get_settings()
+    monkeypatch.setitem(settings.config, "publish_output", True)
+    monkeypatch.setitem(settings.config, "is_auto_command", False)
+    monkeypatch.setitem(settings.config, "propagate_tool_errors", True)
+    monkeypatch.setitem(settings.pr_reviewer, "minimal_commits_for_incremental_review", 0)
+
+    await reviewer.run()
+
+    if has_new_files or not valid_anchor:
+        extract.assert_awaited_once_with(git_provider, reviewer.vars)
+        retry.assert_awaited_once()
+        assert reviewer.incremental.is_incremental is valid_anchor
+        git_provider.get_diff_files.assert_called_once_with()
+    else:
+        extract.assert_not_called()
+        retry.assert_not_called()
+        git_provider.get_diff_files.assert_not_called()
+        git_provider.publish_comment.assert_called_once_with(
+            "Incremental Review Skipped\n"
+            f"No files were changed since the [previous PR Review]({previous_review_url})"
+        )
+
+
+@pytest.mark.asyncio
 async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_review(monkeypatch):
     from pr_agent.tools import pr_reviewer as pr_reviewer_module
 
@@ -917,6 +1046,52 @@ async def test_run_removes_its_progress_comment_when_quiet_output_suppresses_rev
     git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
     git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.remove_initial_comment.assert_not_called()
+    git_provider.publish_persistent_comment.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(monkeypatch):
+    from pr_agent.tools import pr_reviewer as pr_reviewer_module
+
+    progress_comment = MagicMock()
+    git_provider = MagicMock()
+    # The no-files guard reads the unfiltered file list, so a lockfile-only PR still passes it.
+    git_provider.get_files.return_value = ["package-lock.json"]
+    git_provider.publish_comment.return_value = progress_comment
+    reviewer = _make_reviewer(git_provider)
+    reviewer.incremental = SimpleNamespace(is_incremental=False)
+    reviewer.vars = {}
+    reviewer.prediction = None
+
+    async def fake_retry(prepare_fn, model_type=None, git_provider=None):
+        await prepare_fn("primary-model")
+
+    monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
+    monkeypatch.setattr(
+        pr_reviewer_module,
+        "fit_related_tickets_to_prompt_budget",
+        lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (raw_vars, MagicMock()),
+    )
+    monkeypatch.setattr(pr_reviewer_module, "get_pr_diff", MagicMock(return_value=("", [])))
+    monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
+
+    settings = get_settings()
+    original = {
+        "publish_output": settings.config.publish_output,
+        "is_auto_command": settings.config.get("is_auto_command", False),
+    }
+    try:
+        settings.config.publish_output = True
+        settings.config.is_auto_command = False
+
+        await reviewer.run()
+    finally:
+        settings.config.publish_output = original["publish_output"]
+        settings.config.is_auto_command = original["is_auto_command"]
+
+    assert command_failed() is False
+    git_provider.publish_comment.assert_called_once_with("Preparing review...", is_temporary=True)
+    git_provider.remove_comment.assert_called_once_with(progress_comment)
     git_provider.publish_persistent_comment.assert_not_called()
 
 
@@ -1121,9 +1296,9 @@ async def test_run_does_not_publish_an_empty_review(
     monkeypatch.setattr(pr_reviewer_module, "extract_and_cache_pr_tickets", AsyncMock())
     monkeypatch.setattr(pr_reviewer_module, "retry_with_fallback_models", fake_retry)
     action_output = MagicMock()
-    push_output = MagicMock()
+    push_output = AsyncMock()
     monkeypatch.setattr(pr_reviewer_module, "github_action_output", action_output)
-    monkeypatch.setattr(pr_reviewer_module, "push_outputs", push_output)
+    monkeypatch.setattr(pr_reviewer_module, "push_outputs_async", push_output)
 
     settings = get_settings()
     original = {
@@ -1418,6 +1593,7 @@ def test_prepare_review_publishes_provider_neutral_structured_data(monkeypatch):
             "security_concerns": False,
         },
         "usage": {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42},
+        "coverage": {"files_not_reviewed": [], "files_partially_reviewed": []},
     })
     # Assert key order to prove the snapshot is isolated: _prepare_pr_review moves
     # key_issues_to_review to the end of its own dict after the hook fires, so an
@@ -1453,6 +1629,38 @@ def test_prepare_review_captures_json_without_provider_hook(monkeypatch, tmp_pat
     assert reviewer._structured_review_data == {
         "review": {"merge_recommendation": "needs_review", "key_issues_to_review": []},
         "usage": {},
+        "coverage": {"files_not_reviewed": [], "files_partially_reviewed": []},
+    }
+
+
+def test_prepare_review_json_lists_files_left_out_by_the_token_budget(monkeypatch, tmp_path):
+    provider = MagicMock()
+    provider.publish_structured_review = None
+    provider.is_supported.return_value = False
+    provider.get_diff_files.return_value = []
+    reviewer = _make_prediction_reviewer(provider)
+    reviewer.prediction = "review:\n  key_issues_to_review: []\n"
+    reviewer.vars = {}
+    reviewer.set_review_labels = MagicMock()
+    reviewer.remaining_files_list = ["src/large.py", "docs/guide.md"]
+    reviewer.partial_files_list = ("src/clipped.py",)
+    monkeypatch.setattr(
+        "pr_agent.tools.pr_reviewer.convert_to_markdown_v2",
+        lambda *args, **kwargs: "## Review",
+    )
+
+    from pr_agent.algo.run_details import init_run_details
+
+    init_run_details()
+    token = review_json_output_path.set(str(tmp_path / "review.json"))
+    try:
+        reviewer._prepare_pr_review()
+    finally:
+        review_json_output_path.reset(token)
+
+    assert reviewer._structured_review_data["coverage"] == {
+        "files_not_reviewed": ["src/large.py", "docs/guide.md"],
+        "files_partially_reviewed": ["src/clipped.py"],
     }
 
 
@@ -1505,6 +1713,35 @@ def test_set_review_labels_replaces_stale_review_labels_and_keeps_user_labels(re
         "Possible security concern",
         "keep-me",
     ])
+
+
+@pytest.mark.parametrize(
+    "disabled_setting, effort",
+    [
+        ("enable_review_labels_effort", "2"),
+        ("require_estimate_effort_to_review", "2"),
+        (None, None),
+        (None, "unknown"),
+        (None, "4"),
+    ],
+    ids=["labels-disabled", "estimate-disabled", "missing", "invalid", "unchanged"],
+)
+def test_set_review_labels_keeps_effort_label_without_replacement(
+    monkeypatch, review_label_settings, disabled_setting, effort
+):
+    if disabled_setting:
+        monkeypatch.setitem(get_settings().pr_reviewer, disabled_setting, False)
+    git_provider = MagicMock()
+    git_provider.get_pr_labels.return_value = ["Review effort 4/5", "keep-me"]
+    reviewer = _make_reviewer(git_provider)
+    data = {"review": {"security_concerns": "No"}}
+    if effort is not None:
+        data["review"]["estimated_effort_to_review_[1-5]"] = effort
+
+    reviewer.set_review_labels(data)
+
+    git_provider.get_pr_labels.assert_called_once_with(update=True)
+    git_provider.publish_labels.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1561,20 +1798,20 @@ def test_set_review_labels_keeps_existing_security_label_when_verdict_is_missing
     assert "keep-me" in published
 
 
-def test_set_review_labels_still_publishes_when_effort_field_is_missing(review_label_settings):
+@pytest.mark.parametrize("current_labels", [[], ["Review effort 4/5", "keep-me"]])
+def test_set_review_labels_still_publishes_when_effort_field_is_missing(review_label_settings, current_labels):
     # estimated_effort_to_review_[1-5] is optional in the review schema, and a
     # chunked review only carries the keys its chunks emitted, so it can be
     # absent. A missing effort must not abort the whole label update and
     # silently drop the security label along with it.
     git_provider = MagicMock()
-    git_provider.get_pr_labels.return_value = []
+    git_provider.get_pr_labels.return_value = current_labels
     reviewer = _make_reviewer(git_provider)
     data = {"review": {"security_concerns": "SQL injection: the order id is concatenated into the query\n"}}
 
     reviewer.set_review_labels(data)
 
-    published = git_provider.publish_labels.call_args[0][0]
-    assert "Possible security concern" in published
+    git_provider.publish_labels.assert_called_once_with(["Possible security concern", *current_labels])
 
 
 def test_set_review_labels_does_not_label_security_free_localized_review(review_label_settings):
@@ -1803,7 +2040,6 @@ def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
 
     monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
 
     reviewer = PRReviewer(
         "https://example/pr/1",
@@ -1835,7 +2071,6 @@ def _build_answer_mode_reviewer(monkeypatch, issue_comments, *, newest_first=Non
 
     monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
 
     return PRReviewer(
         "https://example/pr/1",
@@ -1956,7 +2191,7 @@ def test_answer_mode_respects_provider_supplied_newest_first_order(monkeypatch):
     assert reviewer.vars["answer_str"] == "/answer Correction: use 60 seconds."
 
 
-def _render_review_capturing_push(reviewer, publish_output):
+async def _render_review_capturing_push(reviewer, publish_output):
     reviewer.prediction = "review: {}"
     reviewer.remaining_files_list = []
     reviewer.git_provider.get_diff_files.return_value = []
@@ -1971,23 +2206,24 @@ def _render_review_capturing_push(reviewer, publish_output):
             patch("pr_agent.tools.pr_reviewer.load_yaml", return_value={"review": {"score": "1"}}),
             patch("pr_agent.tools.pr_reviewer.github_action_output"),
             patch("pr_agent.tools.pr_reviewer.convert_to_markdown_v2", return_value="original review"),
-            patch("pr_agent.tools.pr_reviewer.push_outputs") as push,
+            patch("pr_agent.tools.pr_reviewer.push_outputs_async") as push,
         ):
             reviewer._prepare_pr_review()
+            await reviewer._deliver_sink_output()
         return push
     finally:
         settings.config.publish_output = original_publish_output
 
 
-def test_prepare_pr_review_does_not_push_outputs_on_a_dry_run():
+async def test_prepare_pr_review_does_not_push_outputs_on_a_dry_run():
     # publish_output=false is used by the CLI and by mosaico's dispatch to render a review
     # without touching the PR; it must not reach an external sink either.
-    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=False)
+    push = await _render_review_capturing_push(_make_prediction_reviewer(), publish_output=False)
     push.assert_not_called()
 
 
-def test_prepare_pr_review_pushes_outputs_when_publishing():
-    push = _render_review_capturing_push(_make_prediction_reviewer(), publish_output=True)
+async def test_prepare_pr_review_pushes_outputs_when_publishing():
+    push = await _render_review_capturing_push(_make_prediction_reviewer(), publish_output=True)
     push.assert_called_once()
     assert push.call_args.args[0] == "review"
     assert push.call_args.kwargs["payload"] == {"score": "1"}

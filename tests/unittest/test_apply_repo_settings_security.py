@@ -63,11 +63,13 @@ SNAPSHOT_SECTIONS = (
     "CUSTOM_SECTION_FOR_TEST",
     "OPENAI",
     "AZURE_AD",
+    "AZURE_DEVOPS_SERVER",
     "HUGGINGFACE",
     "OLLAMA",
     "MOONSHOT",
     "DATABRICKS",
     "OPENROUTER",
+    "LITELLM",
     "GITHUB",
     "BITBUCKET",
     "GITLAB",
@@ -195,6 +197,60 @@ def test_repo_settings_cannot_enable_publish_error_details(monkeypatch, settings
 
     pr_reviewer = _section(settings, "pr_reviewer")
     assert pr_reviewer.get("publish_error_details") == publish_error_details_before
+    assert pr_reviewer.get("num_max_findings") == 11
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "host_value", "repo_value"),
+    [
+        ("github", "seconds_between_requests", 0, 10),
+        ("github", "seconds_between_writes", 0, 10),
+        ("github", "api_retries", 0, 10),
+        ("github", "ratelimit_retries", 5, 10),
+    ],
+)
+def test_repo_settings_cannot_override_host_only_pacing_and_call_limits(
+    monkeypatch, settings_snapshot, section, key, host_value, repo_value
+):
+    provider = FakeGitProvider(repo_settings_bytes=f"[{section}]\n{key} = {repo_value}\n".encode())
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set(f"{section}.{key}", host_value)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get(f"{section}.{key}") == host_value
+
+
+def test_repo_settings_can_override_ai_timeout(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b"[config]\nai_timeout = 600\n")
+    captured = _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("config.ai_timeout", 120)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    assert settings.get("config.ai_timeout") == 600
+
+
+def test_repo_settings_cannot_set_structural_reach_input_file(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(
+        repo_settings_bytes=b'[pr_reviewer]\nstructural_reach_input_file = "/etc/secrets.json"\nnum_max_findings = 11\n'
+    )
+    _install_provider(monkeypatch, provider)
+
+    get_settings().set("config.use_repo_settings_file", True)
+    settings = get_settings()
+    input_file_before = _section(settings, "pr_reviewer").get("structural_reach_input_file")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    pr_reviewer = _section(settings, "pr_reviewer")
+    assert pr_reviewer.get("structural_reach_input_file") == input_file_before
     assert pr_reviewer.get("num_max_findings") == 11
 
 
@@ -453,6 +509,7 @@ def test_repo_settings_filter_provider_credentials_but_apply_safe_keys(monkeypat
         ("gerrit", "webhook_username"),
         ("azure_devops", "org"),
         ("azure_devops", "pat"),
+        ("azure_devops_server", "agent_identity"),
         ("aws", "aws_access_key_id"),
         ("aws", "aws_region_name"),
         ("anthropic", "key"),
@@ -483,6 +540,33 @@ def test_repo_settings_cannot_override_gerrit_command_timeout(
 
     assert _section(settings, "gerrit")["command_timeout_seconds"] == 21
     assert is_repo_host_only_key("gerrit", "command_timeout_seconds")
+
+
+@pytest.mark.parametrize("repo_settings_bytes", [
+    b"[azure_devops_server]\nagent_identity = 'attacker'\n",
+    b"[azure_devops_server.agent_identity]\nx = 'attacker'\n",
+    b"[azure_devops_server__agent_identity]\nx = 'attacker'\n",
+])
+def test_repo_settings_cannot_override_azure_devops_server_agent_identity(
+    monkeypatch, settings_snapshot, repo_settings_bytes
+):
+    provider = FakeGitProvider(repo_settings_bytes=repo_settings_bytes)
+    _install_provider(monkeypatch, provider)
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("azure_devops_server.agent_identity", "operator-agent")
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert _section(settings, "azure_devops_server")["agent_identity"] == "operator-agent"
+    assert is_repo_host_only_key("azure_devops_server", "agent_identity")
+    assert CliArgs.validate_user_args(["--azure_devops_server.agent_identity=attacker"])[0] is False
+    assert CliArgs.validate_user_args(["--azure_devops_server__agent_identity=attacker"])[0] is False
+
+
+def test_polling_repositories_is_host_only_for_repo_and_cli():
+    assert is_repo_host_only_key("github", "polling_repositories")
+    assert CliArgs.validate_user_args(["--github.polling_repositories=attacker/repo"])[0] is False
 
 
 @pytest.mark.parametrize(
@@ -516,6 +600,7 @@ def test_repo_settings_cannot_override_provider_authentication_or_tls(
     ("key", "host_value", "repo_toml_value"),
     [
         ("project_keys", ["PROJ"], '["PROJ", "HR"]'),
+        ("cloud_id", "35273b54-3f06-40d2-880f-dd28cf8daafa", '"00000000-0000-0000-0000-000000000000"'),
         ("jira_site", "host-org", '"other-org"'),
         ("jira_api_email", "bot@host.example", '"other@repo.example"'),
     ],
@@ -558,6 +643,51 @@ jira_requirements_field = "customfield_10127"
     assert jira.get("jira_requirements_field") == "customfield_10127"
     assert CliArgs.validate_user_args(["--jira.jira_requirements_field=customfield_1"])[0] is True
     assert CliArgs.validate_user_args(['--jira={project_keys: ["HR"]}'])[0] is False
+
+
+def test_litellm_extra_headers_is_host_only_key():
+    assert is_repo_host_only_key("litellm", "extra_headers")
+    assert is_repo_host_only_key("LITELLM", "EXTRA_HEADERS")
+
+
+def test_comment_args_cannot_set_litellm_extra_headers():
+    assert CliArgs.validate_user_args(['--litellm.extra_headers={"X-Tenant":"attacker"}'])[0] is False
+
+
+def test_repo_settings_cannot_override_litellm_extra_headers(monkeypatch, settings_snapshot):
+    # The headers ride on every model request, so on a shared gateway the reviewed repository
+    # must not choose them.
+    provider = FakeGitProvider(repo_settings_bytes=b"""
+[litellm]
+extra_headers = '{"X-Tenant":"attacker"}'
+""")
+    _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("litellm.extra_headers", '{"X-Tenant":"operator"}')
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    litellm_section = {k.lower(): v for k, v in _section(settings, "litellm").items()}
+    assert litellm_section.get("extra_headers") == '{"X-Tenant":"operator"}'
+
+
+def test_repo_settings_still_apply_other_litellm_keys(monkeypatch, settings_snapshot):
+    provider = FakeGitProvider(repo_settings_bytes=b"[litellm]\ndrop_params = true\n")
+    captured = _install_provider(monkeypatch, provider)
+
+    settings = get_settings()
+    settings.set("config.use_repo_settings_file", True)
+    settings.set("litellm.drop_params", False)
+
+    apply_repo_settings("https://example.com/owner/repo/pull/1")
+
+    assert captured["errors"] is None
+    litellm_section = {k.lower(): v for k, v in _section(settings, "litellm").items()}
+    assert litellm_section.get("drop_params") is True
+    assert not is_repo_host_only_key("litellm", "drop_params")
+    assert CliArgs.validate_user_args(["--litellm.drop_params=true"])[0] is True
 
 
 @pytest.mark.parametrize(

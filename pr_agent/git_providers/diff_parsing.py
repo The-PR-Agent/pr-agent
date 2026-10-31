@@ -1,3 +1,6 @@
+import io
+import re
+
 from unidiff import PatchSet
 from unidiff.errors import UnidiffParseError
 
@@ -21,13 +24,43 @@ def _strip_prefix(path: str | None) -> str | None:
     return path
 
 
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,(?P<source_length>\d+))? \+\d+(?:,(?P<target_length>\d+))? @@")
+
+
+def _normalize_metadata_line_endings(diff_text: str) -> str:
+    """Normalize CRLF metadata lines while preserving hunk payload line endings."""
+    normalized: list[str] = []
+    hunk_lines_remaining = 0
+
+    # Split only on LF, as Git does. Tracking hunk body length prevents a payload
+    # line that begins with "--- " or "+++ " from being mistaken for a file header.
+    for line in io.StringIO(diff_text, newline="\n"):
+        if hunk_lines_remaining == 0 and line.endswith("\r\n"):
+            line = line[:-2] + "\n"
+        normalized.append(line)
+
+        hunk = _HUNK_HEADER.match(line)
+        if hunk:
+            source_length = int(hunk.group("source_length") or 1)
+            target_length = int(hunk.group("target_length") or 1)
+            hunk_lines_remaining = source_length + target_length
+        elif hunk_lines_remaining and not line.startswith("\\"):
+            # A context line counts toward both the source and the target length.
+            hunk_lines_remaining -= 1 if line.startswith(("+", "-")) else 2
+
+    return "".join(normalized)
+
+
 def parse_unified_diff(diff_text: str) -> list[FilePatchInfo]:
     """Parse a unified diff into FilePatchInfo objects (patch + metadata only).
 
     base_file / head_file are left empty here; the provider fills them from the
     working tree and by reverse-applying the patch. Binary files are skipped.
     """
-    patch_set = PatchSet(diff_text)
+    # unidiff leaves CR from CRLF file headers in parsed paths, which can make a
+    # modified file look like a rename. Normalize metadata framing only so hunk data
+    # retains its original line endings.
+    patch_set = PatchSet(_normalize_metadata_line_endings(diff_text))
     files: list[FilePatchInfo] = []
     for pf in patch_set:
         if pf.is_binary_file:

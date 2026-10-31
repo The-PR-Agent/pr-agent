@@ -11,6 +11,17 @@ import pytest
 from pr_agent.servers import github_polling
 
 
+@pytest.fixture(autouse=True)
+def allow_polling_repository(monkeypatch):
+    monkeypatch.setattr(
+        github_polling,
+        "global_settings",
+        SimpleNamespace(
+            get=lambda key, default: ["owner/repo"] if key == "github.polling_repositories" else default
+        ),
+    )
+
+
 @pytest.fixture
 def workers(monkeypatch):
     created = []
@@ -371,6 +382,7 @@ async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out
     notification = {
         "id": 1,
         "reason": "mention",
+        "repository": {"full_name": "owner/repo"},
         "subject": {
             "type": "PullRequest",
             "url": "https://example.test/repos/owner/repo/pulls/1",
@@ -437,9 +449,15 @@ async def test_polling_loop_keeps_notification_unread_when_drift_retry_times_out
     mark_read.assert_not_awaited()
 
 
-@pytest.mark.parametrize("valid_command", [True, False], ids=["valid-command", "invalid-notification"])
+@pytest.mark.parametrize(("comment_body", "expected_request"), [
+    ("@bot /review", "/review"),
+    ("No mention", None),
+    ("@bot /ask Why does @bot appear here?", "/ask Why does @bot appear here?"),
+    ('@bot /ask "Why does @bot appear here?"', '/ask "Why does @bot appear here?"'),
+], ids=["valid-command", "invalid-notification", "repeated-mention", "quoted-repeated-mention"])
 @pytest.mark.asyncio
-async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monkeypatch, valid_command):
+async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monkeypatch, comment_body, expected_request):
+    valid_command = expected_request is not None
     settings = SimpleNamespace(
         github=SimpleNamespace(deployment_type="user", user_token="test-token"), set=MagicMock()
     )
@@ -451,11 +469,24 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
     )
     monkeypatch.setattr(github_polling, "get_logger", MagicMock())
     preexisting_notification = {"id": 42}
-    notification = {"id": 1}
-    comment = {"id": 99}
+    pr_url = "https://api.github.com/repos/owner/repo/pulls/1"
+    latest_url = "https://api.github.com/repos/owner/repo/issues/comments/100"
+    notification = {
+        "id": 1, "reason": "mention",
+        "repository": {"full_name": "owner/repo"},
+        "subject": {"type": "PullRequest", "url": pr_url, "latest_comment_url": latest_url},
+    }
+    comment = {"id": 99, "body": comment_body, "user": {"login": "human"}}
+    latest_comment = {"id": 100, "body": "Other discussion", "user": {"login": "human"}}
+    expected_comment_ids = {99, 100} if valid_command else {100}
     large_preexisting_ids = set(range(10_000, 20_000))
     handled_at_validation = []
     handled_references = []
+    added_at_validation = []
+    real_validate = github_polling.is_valid_notification
+    monkeypatch.setattr(
+        github_polling, "_fetch_comment_history", AsyncMock(return_value=[comment, latest_comment])
+    )
 
     class NonCopyingSet(set):
         def copy(self):
@@ -472,11 +503,10 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         handled_at_validation.append((len(handled_ids), large_preexisting_ids <= handled_ids))
         handled_references.append(handled_ids)
         assert comment["id"] not in handled_ids
-        handled_ids.add(comment["id"])
-        added_handled_ids.add(comment["id"])
-        if valid_command:
-            return True, handled_ids, comment, "@bot /review", "https://example.test/pull/1", "@bot"
-        return False, handled_ids
+        assert latest_comment["id"] not in handled_ids
+        result = await real_validate(_notification, _headers, handled_ids, _session, _user_id, added_handled_ids)
+        added_at_validation.append(set(added_handled_ids))
+        return result
 
     monkeypatch.setattr(github_polling, "is_valid_notification", validate)
     mark_attempts = 0
@@ -515,7 +545,10 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         async def __aexit__(self, *args):
             pass
 
-        def get(self, *args, **kwargs):
+        def get(self, url, **kwargs):
+            if url == latest_url:
+                return Response(latest_comment)
+            assert url == github_polling.NOTIFICATION_URL
             requests.append(kwargs)
             notifications = [preexisting_notification, notification] if len(requests) == 1 else [notification]
             return Response(notifications)
@@ -541,12 +574,14 @@ async def test_polling_loop_rolls_back_validation_ids_when_mark_read_fails(monke
         await asyncio.gather(task, return_exceptions=True)
 
     assert handled_at_validation == [(len(large_preexisting_ids) + 1, True)] * 2
+    assert added_at_validation == [expected_comment_ids] * 2
     assert mark_attempts == 3
     assert len(requests) == 2
     assert "If-Modified-Since" not in requests[1]["headers"]
-    assert len(dispatched) == int(valid_command)
+    expected_dispatch = [(github_polling.process_comment_sync, (pr_url, expected_request, 99))] if valid_command else []
+    assert dispatched == expected_dispatch
     assert large_preexisting_ids <= handled_references[-1]
-    assert {preexisting_notification["id"], notification["id"], comment["id"]} <= handled_references[-1]
+    assert {preexisting_notification["id"], notification["id"]} | expected_comment_ids <= handled_references[-1]
 
 
 @pytest.mark.asyncio

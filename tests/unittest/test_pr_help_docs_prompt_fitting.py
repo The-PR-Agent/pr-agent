@@ -16,12 +16,14 @@ from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_help_docs import (
     PredictionPreparator,
     PRHelpDocs,
+    _clean_markdown_content_preserving_fences,
     aggregate_documentation_files_for_prompt_contents,
     clean_markdown_content,
     map_documentation_files_to_contents,
 )
 
 _FIT_MODEL = "gpt-fit-test"
+_LISTENER_XML = '<listener port="18443" mode="isolated-m7">localhost</listener>'
 
 
 @pytest.fixture
@@ -159,23 +161,100 @@ def test_trim_docs_passes_cleaned_token_count_to_clipper(monkeypatch):
     assert calls == [(cleaned, 10, len(cleaned))]
 
 
+@pytest.mark.parametrize(
+    ("opening", "closing"),
+    [
+        ("```xml\n", "\n```"),
+        ("~~~xml\n", "\n~~~~"),
+        ("   ````xml\n", "\n  ````` \t"),
+        ("````xml\n```\n~~~\n````suffix\n    ````\n> ````\n", "\n````"),
+        ("```xml\n", ""),
+        ("~~~xml `option`\n", "\n~~~"),
+        ("```xml\r\n", "\r\n```\r\n"),
+        ("```xml\nprefix\v```\n", "\n```"),
+    ],
+    ids=["backticks", "tildes", "indented", "false-closers", "unclosed", "tilde-info", "crlf", "literal-line-break"],
+)
+def test_corpus_cleanup_preserves_fenced_content(opening, closing):
+    example = opening + _LISTENER_XML + "\n<!-- example comment -->\n\n\n![example](config.png)" + closing
+    docs = "---\ntitle: Configuration\n---\n<!-- discard this -->\n# Guide\n\n" + example
+
+    cleaned = _clean_markdown_content_preserving_fences(docs)
+
+    assert cleaned == "# Guide\n\n" + example
+
+
+def test_corpus_cleanup_preserves_bom_prefixed_fence():
+    fenced = "\ufeff```xml\n" + _LISTENER_XML + "\n```"
+    cleaned = _clean_markdown_content_preserving_fences(fenced + "\n<!-- discard -->\n# After")
+
+    assert fenced in cleaned
+    assert "discard" not in cleaned
+
+
+@pytest.mark.parametrize("prefix", ["    ", "> ", "- "])
+def test_corpus_cleanup_keeps_container_fences_conservatively(prefix):
+    docs = "<!-- discard only if safe -->\n" + prefix + "```xml\n" + prefix + _LISTENER_XML + "\n" + prefix + "```"
+
+    assert _clean_markdown_content_preserving_fences(docs) == docs
+
+
+def test_corpus_cleanup_preserves_blocks_across_surrounding_markup():
+    example = "```xml\n" + _LISTENER_XML + "\n```"
+    docs = example + "\n---\nKeep this section.\n---\n\n" + example
+    assert _clean_markdown_content_preserving_fences(docs) == docs
+
+    cleaned = _clean_markdown_content_preserving_fences(docs + "\n<!-- discard after -->\n# After")
+    assert docs in cleaned
+    assert "discard after" not in cleaned
+    assert cleaned.endswith("# After")
+
+    wrapped = "<!--\n" + example + "\n-->"
+    assert _clean_markdown_content_preserving_fences(wrapped) == wrapped
+
+
 @pytest.mark.asyncio
-async def test_run_uses_cleaned_full_docs_without_unnecessary_ranking(monkeypatch):
+@pytest.mark.parametrize(
+    ("docs", "limit", "expected_content"),
+    [
+        ({"README.md": "<!--" + "irrelevant " * 100 + "-->\nUseful text."}, 128, "Useful text."),
+        (
+            {
+                "/large.md": "<!--" + "irrelevant " * 80 + "-->\n# Unrelated",
+                "/config.md": "# Listener configuration\n\n```xml\n" + _LISTENER_XML + "\n```",
+            },
+            256,
+            _LISTENER_XML,
+        ),
+        (
+            {
+                "/config.md": "<!--" + "irrelevant " * 80 + "-->\n"
+                "Use `` ``` `` or `~~~` for code fences.\n\n```xml\n" + _LISTENER_XML + "\n```",
+            },
+            256,
+            _LISTENER_XML,
+        ),
+    ],
+    ids=["comments", "fenced-xml", "inline-fence-notation"],
+)
+async def test_run_uses_cleaned_full_docs_without_unnecessary_ranking(monkeypatch, docs, limit, expected_content):
     tool = PRHelpDocs.__new__(PRHelpDocs)
     tool.question = "Where is this documented?"
     tool.return_as_string = True
     tool.vars = {"docs_url": "https://example.test", "question": tool.question, "snippets": ""}
     tool.ai_handler = SimpleNamespace()
     tool.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
-    tool._docs_input_token_limit = lambda: 128
-    docs = "<!--" + "irrelevant " * 100 + "-->\nUseful text."
-    tool._gen_filenames_to_contents_map_from_repo = lambda: {"README.md": docs}
+    tool._docs_input_token_limit = lambda: limit
+    tool._gen_filenames_to_contents_map_from_repo = lambda: docs
     tool._format_model_answer = lambda response, relevant_sections: response
+    model_snippets = []
+    assert len(aggregate_documentation_files_for_prompt_contents(docs)) > limit
 
     async def reject_ranking(*args):
         raise AssertionError("Ranking should not run when cleaned documentation fits")
 
-    async def predict(*args, **kwargs):
+    async def predict(preparator, **kwargs):
+        model_snippets.append(preparator._vars["snippets"])
         return "unused"
 
     tool._rank_docs_and_return_them_as_prompt = reject_ranking
@@ -183,16 +262,19 @@ async def test_run_uses_cleaned_full_docs_without_unnecessary_ranking(monkeypatc
     monkeypatch.setattr("pr_agent.tools.pr_help_docs.load_yaml", lambda response: {"response": "answer"})
 
     assert await tool.run() == "answer"
-    assert "README.md" in tool.vars["snippets"]
-    assert "Useful text." in tool.vars["snippets"]
+    assert model_snippets == [tool.vars["snippets"]]
+    assert all(path in tool.vars["snippets"] for path in docs)
+    assert expected_content in tool.vars["snippets"]
     assert "irrelevant" not in tool.vars["snippets"]
+    assert len(tool.vars["snippets"]) <= limit
 
 
 @pytest.mark.asyncio
-async def test_run_keeps_document_boundaries_with_truncated_comments(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prefix", ["", "```xml\n" + _LISTENER_XML + "\n"], ids=["comment", "fenced-comment"])
+async def test_run_keeps_document_boundaries_with_truncated_comments(tmp_path, monkeypatch, prefix):
     paths = []
     for name, content in (
-        ("010-cut.md", "<!--" + "x" * 5000 + "-->"),
+        ("010-cut.md", prefix + "<!--" + "x" * 5000 + "-->"),
         ("020-guide.md", "# Guide\nmax_jobs = 7\n"),
         ("030-notes.md", "<!-- normal comment -->\n# Notes\n"),
     ):
@@ -251,3 +333,44 @@ async def test_run_keeps_document_boundaries_with_truncated_comments(tmp_path, m
     assert all(path in ranked for path in docs)
     assert "/020-guide.md" in clipping_inputs[-1]
     assert "max_jobs = 7" in clipping_inputs[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "comment", ["", "<!--" + "irrelevant " * 80 + "-->\n"], ids=["already-fits", "cleanup-needed"]
+)
+async def test_ranked_docs_preserve_fitting_xml_example(monkeypatch, comment):
+    xml_example = '```xml\n<listener port="18443" mode="isolated-m7">localhost</listener>\n```'
+    docs = {
+        "/large.md": "Unrelated information. " * 100,
+        "/config.md": comment + "# Listener configuration\n\n" + xml_example,
+    }
+    limit = 256
+    assert len(aggregate_documentation_files_for_prompt_contents(docs)) > limit
+    selected_size = len(aggregate_documentation_files_for_prompt_contents({"/config.md": docs["/config.md"]}))
+    assert (selected_size < limit) == (not comment)
+
+    tool = PRHelpDocs.__new__(PRHelpDocs)
+    tool.question = "How do I configure the listener?"
+    tool.return_as_string = True
+    tool.vars = {"docs_url": "https://example.test", "question": tool.question, "snippets": ""}
+    tool.ai_handler = SimpleNamespace()
+    tool.token_handler = SimpleNamespace(count_tokens=lambda text, force_accurate=False: len(text))
+    tool._docs_input_token_limit = lambda: limit
+    tool._gen_filenames_to_contents_map_from_repo = lambda: docs
+    tool._format_model_answer = lambda response, relevant_sections: response
+
+    responses = iter([{"relevant_files_ranking": [{"idx": 1}]}, {"response": "answer"}])
+    model_calls = []
+
+    async def predict(*args, **kwargs):
+        model_calls.append(True)
+        return "unused"
+
+    monkeypatch.setattr("pr_agent.tools.pr_help_docs.retry_with_fallback_models", predict)
+    monkeypatch.setattr("pr_agent.tools.pr_help_docs.load_yaml", lambda response: next(responses))
+
+    assert await tool.run() == "answer"
+    assert len(model_calls) == 2
+    assert "/config.md" in tool.vars["snippets"]
+    assert xml_example in tool.vars["snippets"]

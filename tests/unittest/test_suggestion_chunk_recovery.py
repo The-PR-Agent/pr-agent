@@ -357,16 +357,70 @@ async def test_empty_prediction_is_a_success_not_a_retry_trigger(configured, mon
     assert len(calls) == 4
 
 
-async def test_invalid_yaml_recovery_preserves_parse_failure_notice(configured, monkeypatch):
+@pytest.mark.parametrize("parallel", [True, False])
+async def test_invalid_suggestion_response_recovers_only_failed_chunk(configured, monkeypatch, parallel):
+    get_settings().set("pr_code_suggestions.parallel_calls", parallel)
     tool, calls = make_tool(monkeypatch, {
-        ("gpt-4o", "b"): TimeoutError("failure"),
+        ("gpt-4o", "b"): "code_suggestions: 5",
         ("gpt-4o-mini", "b"): "not a suggestions mapping",
     })
     result = await retry_with_fallback_models(tool.prepare_prediction_main)
+    assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+    assert tool.failed_chunk_count == 0
+    assert not tool._get_suggestions_coverage_footer()
+    assert [(m, c) for m, c, _, _ in calls] == [
+        ("gpt-4o", "a"), ("gpt-4o", "b"), ("gpt-4o", "c"),
+        ("gpt-4o-mini", "b"), ("gpt-4.1", "b"),
+    ]
+
+
+async def test_invalid_suggestion_response_without_fallback_reports_partial_coverage(configured, monkeypatch):
+    get_settings().set("config.fallback_models", [])
+    tool, calls = make_tool(monkeypatch, {("gpt-4o", "b"): "code_suggestions: null"})
+    result = await retry_with_fallback_models(tool.prepare_prediction_main)
     assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "c.py"]
     assert tool.failed_chunk_count == 1
-    assert tool.parse_failure_count == 1
-    assert len(calls) == 4
+    assert "1 of 3 analysis chunks failed" in tool._get_suggestions_coverage_footer()
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("recover_on_fallback", [True, False])
+async def test_all_invalid_suggestions_use_outer_fallback(configured, monkeypatch, recover_on_fallback):
+    invalid_models = ["gpt-4o"] if recover_on_fallback else ["gpt-4o", "gpt-4o-mini", "gpt-4.1"]
+    tool, calls = make_tool(monkeypatch, {
+        (model, chunk): "code_suggestions: null"
+        for model in invalid_models for chunk in "abc"
+    })
+    if recover_on_fallback:
+        result = await retry_with_fallback_models(tool.prepare_prediction_main)
+        assert [s["relevant_file"] for s in result["code_suggestions"]] == ["a.py", "b.py", "c.py"]
+        assert tool.failed_chunk_count == 0
+        assert len(calls) == 6
+    else:
+        with pytest.raises(Exception, match="Failed to generate prediction with any model"):
+            await retry_with_fallback_models(tool.prepare_prediction_main)
+        assert len(calls) == 9
+
+
+async def test_all_invalid_suggestions_mark_the_command_as_failed(configured, monkeypatch):
+    invalid = {
+        (model, chunk): "code_suggestions: null"
+        for model in ["gpt-4o", "gpt-4o-mini", "gpt-4.1"] for chunk in "abc"
+    }
+    tool, calls = make_tool(monkeypatch, invalid)
+    tool.git_provider.get_files.return_value = [object()]
+    tool.git_provider.is_supported.return_value = False
+    tool.pr_url = "https://example.invalid/pull/1"
+    tool.progress_response = None
+    snapshot = snapshot_settings(("config.publish_output_progress", "config.propagate_tool_errors"))
+    try:
+        get_settings().set("config.publish_output_progress", False)
+        get_settings().set("config.propagate_tool_errors", False)
+        await tool.run()
+        assert get_run_details().command_failed is True
+        assert len(calls) == 9
+    finally:
+        restore_settings(snapshot)
 
 
 @pytest.mark.parametrize("parent_cancel", [True, False])

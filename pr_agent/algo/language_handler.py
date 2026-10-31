@@ -1,6 +1,7 @@
 # Language Selection, source: https://github.com/bigcode-project/bigcode-dataset/blob/main/language_selection/programming-languages-to-file-extensions.json  # noqa E501
 from collections.abc import Callable
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings
 
 AUTO_GENERATED_FILES_EXACT = frozenset({
@@ -11,13 +12,25 @@ AUTO_GENERATED_FILES_EXACT = frozenset({
 
 
 def filter_bad_extensions(files):
+    return partition_files_by_language_filter(files)[0]
+
+
+def partition_files_by_language_filter(files):
+    """Partition files and omitted names using the shared language-filter predicate."""
     # Bad Extensions, source: https://github.com/EleutherAI/github-downloader/blob/345e7c4cbb9e0dc8a0615fd995a08bf9d73b3fe6/download_repo_text.py  # noqa: E501
     settings = get_settings()
-    bad_extensions = list(settings.bad_extensions.default)
+    bad_extensions = normalize_setting_list(settings.bad_extensions.default)
     if settings.config.use_extra_bad_extensions:
-        bad_extensions.extend(settings.bad_extensions.extra)
+        bad_extensions.extend(normalize_setting_list(settings.bad_extensions.extra))
     excluded_extensions = {str(extension).lower() for extension in bad_extensions}
-    return [f for f in files if f.filename is not None and _is_valid_file(f.filename, excluded_extensions)]
+    valid_files = []
+    filtered_names = []
+    for file in files:
+        if file.filename is not None and _is_valid_file(file.filename, excluded_extensions):
+            valid_files.append(file)
+        elif file.filename:
+            filtered_names.append(file.filename)
+    return valid_files, filtered_names
 
 
 def is_valid_file(filename: str, bad_extensions=None) -> bool:
@@ -25,9 +38,9 @@ def is_valid_file(filename: str, bad_extensions=None) -> bool:
         return False
     if not bad_extensions:
         settings = get_settings()
-        bad_extensions = list(settings.bad_extensions.default)
+        bad_extensions = normalize_setting_list(settings.bad_extensions.default)
         if settings.config.use_extra_bad_extensions:
-            bad_extensions.extend(settings.bad_extensions.extra)
+            bad_extensions.extend(normalize_setting_list(settings.bad_extensions.extra))
 
     excluded_extensions = {str(extension).lower() for extension in bad_extensions}
     return _is_valid_file(filename, excluded_extensions)
@@ -51,7 +64,7 @@ def build_language_file_matcher(language_extension_map: dict) -> Callable[[str],
     exact_to_language = {}
     folded_to_languages = {}
     for language, extensions in language_extension_map.items():
-        for extension in extensions:
+        for extension in normalize_setting_list(extensions):
             token = extension.lstrip("*")
             exact_to_language.setdefault(token, language)
             folded_to_languages.setdefault(token.casefold(), set()).add(language)

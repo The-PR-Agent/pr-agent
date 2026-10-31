@@ -556,7 +556,7 @@ def _make_describe_tool(provider, chunk_predictions):
 
     async def fake_get_prediction(model, patches_diff, prompt=""):
         if prompt != "pr_description_only_files_prompts":
-            return "### PR Walker\n\nwalkthrough"
+            return "title: PR Walker\ndescription: walkthrough"
         value = remaining.pop(0) if len(remaining) > 1 else remaining[0]
         if isinstance(value, BaseException):
             raise value
@@ -798,7 +798,7 @@ async def test_suggestion_progress_is_skipped_for_a_single_chunk(published_sugge
 
 @pytest.mark.asyncio
 async def test_suggestion_progress_counts_an_unparseable_chunk(published_suggestions):
-    """The footer counts parse failures, so the progress line has to count them too."""
+    """Malformed prediction output must count as a failed chunk in the progress line."""
     provider, edits = _review_progress_editor()
     tool = _make_suggestion_tool(provider, [_SUGGESTION_CHUNK] * 3)
     tool._progress_base_body = tool.progress
@@ -814,7 +814,6 @@ async def test_suggestion_progress_counts_an_unparseable_chunk(published_suggest
 
     await _run_chunked_suggestions(tool)
 
-    assert tool.parse_failure_count == 1
     assert tool.failed_chunk_count == 1
     assert edits[-1].splitlines()[-1] == "analyzed 3 of 3 chunks, 1 chunk failed"
 

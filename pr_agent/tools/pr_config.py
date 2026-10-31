@@ -1,7 +1,9 @@
 from dynaconf import Dynaconf
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider
+from pr_agent.config_security import should_skip_config_key
+from pr_agent.git_providers import get_git_provider, get_git_provider_with_context
 from pr_agent.log import get_logger
 
 
@@ -18,7 +20,11 @@ class PRConfig:
             args (list, optional): Unused compatibility parameter for the common tool interface. Defaults to None.
             ai_handler: Unused compatibility parameter for the common tool interface. Defaults to None.
         """
-        self.git_provider = get_git_provider()(pr_url)
+        provider_class = get_git_provider()
+        self.git_provider = get_git_provider_with_context(pr_url)
+        # Repository settings can change the provider selected during request setup.
+        if type(self.git_provider) is not provider_class:
+            self.git_provider = provider_class(pr_url)
 
     async def run(self):
         get_logger().info('Getting configuration settings...')
@@ -33,6 +39,7 @@ class PRConfig:
     def _prepare_pr_configs(self) -> str:
         try:
             conf_file = get_settings().find_file("configuration.toml")
+            custom_labels_file = get_settings().find_file("custom_labels.toml")
             dynconf_kwargs = {
                 'core_loaders': [],  # DISABLE default loaders, otherwise will load toml files more than once.
                 'loaders': ['pr_agent.custom_merge_loader'],
@@ -42,7 +49,7 @@ class PRConfig:
                 # Merge multiple TOML files; prevent full section overwrite—only overlapping keys
                 # in sections overwrite prior ones.
             }
-            conf_settings = Dynaconf(settings_files=[conf_file],
+            conf_settings = Dynaconf(settings_files=[conf_file, custom_labels_file],
                                      # Security: Disable all dynamic loading features
                                      load_dotenv=False,  # Don't load .env files
                                      envvar_prefix=False,
@@ -53,6 +60,11 @@ class PRConfig:
                                artifact={"exception": e})
             conf_settings = {}
         configuration_headers = [header.lower() for header in conf_settings.keys()]
+        declared_config_keys = {
+            header.lower(): {key.lower() for key in configs}
+            for header, configs in conf_settings.items()
+            if header.lower().startswith(("pr_", "config"))
+        }
         relevant_configs = {
             header: configs for header, configs in get_settings().to_dict().items()
             if (header.lower().startswith("pr_") or header.lower().startswith("config"))
@@ -67,28 +79,30 @@ class PRConfig:
             'private_key', 'private_key_id', 'client_id', 'client_secret', 'token',
             'bearer_token', 'jira_api_token', 'webhook_secret'
         ]
-        partial_skip_keys = ['key', 'secret', 'token', 'private']
-        extra_skip_keys = get_settings().config.get("skip_keys", [])
-        if extra_skip_keys:
-            skip_keys.extend(extra_skip_keys)
-        skip_keys_lower = [key.lower() for key in skip_keys]
+        skip_keys.extend(normalize_setting_list(get_settings().config.get("skip_keys", [])))
 
 
         markdown_text = "<details> <summary><strong>🛠️ PR-Agent Configurations:</strong></summary> \n\n"
         markdown_text += "\n\n```yaml\n\n"
+        undeclared_config_keys = []
         for header, configs in relevant_configs.items():
             if configs:
                 markdown_text += "\n\n"
                 markdown_text += f"==================== {header} ===================="
             for key, value in configs.items():
-                if key.lower() in skip_keys_lower:
-                    continue
-                if any(skip_key in key.lower() for skip_key in partial_skip_keys):
+                if should_skip_config_key(header, key, skip_keys):
                     continue
                 markdown_text += (
                     f"\n{header.lower()}.{key.lower()} = {repr(value) if isinstance(value, str) else value}"
                 )
                 markdown_text += "  "
+                if key.lower() not in declared_config_keys[header.lower()]:
+                    undeclared_config_keys.append(f"{header.lower()}.{key.lower()}")
+        if undeclared_config_keys:
+            markdown_text += "\n\n# These effective keys are not declared in the shipped configuration:"
+            markdown_text += "\n# They may be legacy aliases or extension settings; check them only if unexpected."
+            for name in sorted(undeclared_config_keys):
+                markdown_text += f"\n# - {name}"
         markdown_text += "\n```"
         markdown_text += "\n</details>\n"
         get_logger().info("Possible Configurations outputted to PR comment", artifact=markdown_text)

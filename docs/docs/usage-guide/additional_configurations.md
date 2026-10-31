@@ -74,6 +74,8 @@ You can ignore files or folders using the following methods:
 
 which you can edit to ignore files or folders based on glob or regex patterns.
 
+Pattern list entries must be strings. A non-string entry in `ignore.regex`, `ignore.glob`, or an enabled generated-code glob list is skipped with a warning; the remaining valid rules still apply.
+
 ### Example usage
 
 Let's look at an example where we want to ignore all files with `.py` extension from the analysis.
@@ -232,6 +234,12 @@ log_level = "DEBUG"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 
 The default log level is "DEBUG", which provides detailed output of all operations. If you prefer less verbose logs, you can set higher log levels like "INFO" or "WARNING".
 
+## Tokenizer files without internet access
+
+PR-Agent counts tokens with [tiktoken](https://github.com/openai/tiktoken), which normally downloads its encoding files from `openaipublic.blob.core.windows.net`. Unless `TIKTOKEN_CACHE_DIR`, `DATA_GYM_CACHE_DIR` or `CUSTOM_TIKTOKEN_CACHE_DIR` is set, PR-Agent points tiktoken at the `o200k_base` and `cl100k_base` files bundled with LiteLLM, so no download is needed.
+
+If you use your own cache directory, set `CUSTOM_TIKTOKEN_CACHE_DIR` (LiteLLM overwrites `TIKTOKEN_CACHE_DIR`) and place the encoding files there yourself; tiktoken names each file after the SHA-1 of its original download URL.
+
 ## Attributing requests to a PR on the provider side
 
 When `add_user_to_requests` is enabled, PR-Agent sends the current command and PR URL in the
@@ -253,6 +261,22 @@ add_user_to_requests = true
 
 The setting is disabled by default, since it shares request-attribution data with the model
 provider: enabling it is an explicit operator choice.
+
+## Grouping requests by PR in LiteLLM
+
+When `add_session_id_to_requests` is enabled, PR-Agent sends a stable
+`x-litellm-session-id` header with every request. LiteLLM stores the value in the
+`session_id` column of its spend logs, so all commands run against the same PR can be
+found and grouped together, even when they arrive as separate requests.
+
+```
+[litellm]
+add_session_id_to_requests = true
+```
+
+The value is derived from the PR URL and normalized to the character set LiteLLM accepts,
+for example `pr-agent-github-com-owner-repo-pull-123-b065a0b1d1c7b721`. A header set explicitly through
+`LITELLM.EXTRA_HEADERS` takes precedence, and the setting is disabled by default.
 
 ## Integrating with Logging Observability Platforms
 
@@ -285,7 +309,7 @@ success_callback = ["langfuse_otel"]
 failure_callback = ["langfuse_otel"]
 ```
 
-> Note: use `langfuse_otel` (the OpenTelemetry-based integration), not the legacy `langfuse` callback — the legacy callback is incompatible with the Langfuse 3.x SDK this project pins.
+> Note: use `langfuse_otel`, the OpenTelemetry-based integration also used by MOSAICO.
 
 Then set the following environment variables:
 
@@ -393,7 +417,7 @@ This is the recommended topology for fleets: point every PR-Agent instance at th
 
 ### Exposing native Prometheus metrics
 
-Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the gunicorn-served apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
+Instead of pushing to a collector, set `exporter_type = "prometheus"` to expose a native `GET /metrics` scrape endpoint on the server apps (`github_app`, `gitlab_webhook`, `azuredevops_server_webhook`, `gitea_app`). The command, token, and AI-call counters are translated into the Prometheus text format, and every gunicorn worker's values are merged at scrape time, so counters stay correct across the process workers:
 
 ```toml
 [otel]
@@ -425,7 +449,7 @@ Notes:
 - PR-Agent keeps its own OpenTelemetry providers and never registers the process-global one, so embedding PR-Agent in an application that already uses OpenTelemetry will not interfere with the host's telemetry. Pending spans and metrics are flushed automatically on process exit.
 - Each OTLP export call is bounded by `otlp_timeout` (default 3 seconds, retries included), so an unreachable collector cannot hang CLI exit or request completion. Raise it for slow collectors at the cost of longer worst-case stalls.
 - If `exporter_type = "otlp"` is set but no endpoint is configured, telemetry is disabled entirely (fail closed) — it never falls back to another exporter, so a missing secret cannot redirect telemetry into process logs.
-- With `exporter_type = "prometheus"`, `prometheus_multiproc_dir` must be a shared directory writable by every worker; it defaults to `/tmp/pr-agent-prometheus`. In non-gunicorn (single-process) deployments the exporter works without it and simply serves the process's own registry.
+- With `exporter_type = "prometheus"`, Gunicorn provisions `prometheus_multiproc_dir` before workers fork. It must be shared and writable by every worker and defaults to `/tmp/pr-agent-prometheus`. Direct single-process Uvicorn deployments use their own registry when no multiprocess environment signal is present; configuring the directory path alone does not activate shared state. Custom multiprocess launchers can set `PROMETHEUS_MULTIPROC_DIR` before `prometheus-client` is imported. When explicitly signaled, PR-Agent validates and uses the configured `prometheus_multiproc_dir` (or its default), which takes precedence over the environment's path.
 - **Serverless deployments** (e.g. the AWS Lambda webhooks) are supported: buffered spans and metrics are force-flushed at the end of every handled request, because frozen execution environments stop background export threads and are reaped without running exit handlers. No extra configuration is needed.
 
 ## Bringing per-repo context files to PR-Agent
@@ -434,18 +458,34 @@ Notes:
 
 To give PR-Agent's tools additional project context, you can have it include repository instruction files — such as [AGENTS.md](https://agents.md/) or [CLAUDE.md](https://www.anthropic.com/engineering/claude-code-best-practices) — in the prompts for the `/review`, `/describe` and `/improve` tools.
 
-By default, PR-Agent looks for an `AGENTS.md` file at the repository root:
+By default, PR-Agent includes the `AGENTS.md` file at the repository root:
 
 ```toml
 [config]
 repo_context_files = ["AGENTS.md"]
 ```
 
+A nested list is a group of alternatives: only the first one that yields content is used. This is opt-in, for repositories that keep the same instructions under several conventions (or symlink them) and want them sent once:
+
+```toml
+[config]
+repo_context_files = [["AGENTS.md", "CLAUDE.md", ".kiro/steering/*.md"]]
+```
+
+A nested list is a group of alternatives: only the first one that yields content is used, so a repository that keeps the same instructions under several conventions (or symlinks one file to another) sends them once. Alternatives must be repository-relative paths.
+
 You can list any repository-relative paths. By default the files are read from the repository's **default branch**, so only trusted, already-merged content is used and a PR cannot influence the guidance used to review it. A file that is missing is silently skipped. Set the option to an empty list to disable the feature entirely:
 
 ```toml
 [config]
 repo_context_files = ["AGENTS.md", "CLAUDE.md", "docs/conventions.md"]
+```
+
+To include architecture decision records (ADRs) or other rule files without listing each one, an entry may use a glob in its file name. On GitHub and GitLab the directory is listed and up to `repo_context_max_glob_matches` matches (default 20, at most 100) are included in name order; other providers skip glob entries with a warning. Wildcards are only allowed in the last path segment, so `docs/**/*.md` is not supported.
+
+```toml
+[config]
+repo_context_files = ["AGENTS.md", "docs/adr/*.md"]
 ```
 
 :::note[Which branch the files are read from]
@@ -519,6 +559,9 @@ comment commands such as `/review` and `/ask`, and to CLI `--pr_url` runs. In th
 `ignore_pr_authors` matches the **PR author**, not the person posting the command. An ignored CLI
 request exits successfully without running the tool. Plain-diff CLI inputs (`--diff-file` and
 `--stdin`) have no PR metadata and are not excluded by these rules.
+
+For GitHub Actions, matching PRs also skip automatic review, description, and improve commands
+on `pull_request`, `pull_request_target`, and `workflow_run` events.
 
 ### Ignoring PRs with specific titles
 
@@ -609,7 +652,7 @@ Where the `ignore_pr_authors` is a regex list of usernames that you want to igno
 There is one specific case where bots will receive an automatic response - when they generated a PR with a _failed test_.
 :::
 
-### Ignoring Generated Files by Language/Framework
+## Ignoring Generated Files by Language/Framework
 
 To automatically exclude files generated by specific languages or frameworks, you can add the following to your `configuration.toml` file:
 
@@ -621,7 +664,7 @@ ignore_language_framework = ['protobuf', ...]
 You can view the list of auto-generated file patterns in [`generated_code_ignore.toml`](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/generated_code_ignore.toml).
 Files matching these glob patterns will be automatically excluded from PR Agent analysis.
 
-### Restricted Mode
+## Restricted Mode
 
 When running PR-Agent with limited GitHub/GitLab permissions, set `restricted_mode` to `true` to gracefully skip operations that require elevated access (e.g., pushing changelog changes):
 

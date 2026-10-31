@@ -334,7 +334,7 @@ class TestA2ARoundTripStubbedLLM:
                 return await super().list(params, context)
 
         store = RecordingTaskStore()
-        monkeypatch.setattr(server, "InMemoryTaskStore", lambda: store)
+        monkeypatch.setattr(server, "MosaicoTaskStore", lambda **kwargs: store)
         original_get_settings = executor_mod.get_settings
 
         def single_history_task_settings():

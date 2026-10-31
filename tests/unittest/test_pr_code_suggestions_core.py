@@ -2821,7 +2821,7 @@ def test_marked_persistent_suggestions_take_precedence_over_legacy_comment():
         f"{PRCodeSuggestionsIdentity.SUMMARY.value}\n\n"
         "<!-- bbb2222 -->\n\n<table>marked</table>"
     )
-    provider = _persistent_provider([legacy, marked])
+    provider = _persistent_provider([marked, legacy])
     custom_header = "## Latest Custom Heading ✨"
 
     result = PRCodeSuggestions.publish_persistent_comment_with_history(

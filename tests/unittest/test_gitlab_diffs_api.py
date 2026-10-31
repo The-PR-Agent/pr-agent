@@ -11,7 +11,7 @@ from requests.adapters import BaseAdapter
 
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import gitlab_provider
-from pr_agent.git_providers.git_provider import IncrementalPR
+from pr_agent.git_providers.git_provider import IncompleteProviderPullRequestFilesError, IncrementalPR
 from pr_agent.git_providers.gitlab_provider import GitLabProvider, IncompleteGitLabDiffError
 
 
@@ -126,12 +126,33 @@ def test_collects_all_pages_using_the_configured_client(provider_factory):
         "/gitlab/api/v4/projects/group%2Fsub%2Frepo/merge_requests/7/diffs",
         "/gitlab/api/v4/projects/group%2Fsub%2Frepo/merge_requests/7/diffs",
     ]
-    assert urlparse(transport.diff_requests[1].url).query == "page=2"
+    assert urlparse(transport.diff_requests[1].url).query == "page=2&per_page=100"
     assert len(transport.requests) == 4
     assert all(urlparse(transport.requests[index].url).path.endswith("/merge_requests/7") for index in (0, 3))
     assert all(request.headers["PRIVATE-TOKEN"] == "offline-token" for request in transport.requests)
     assert provider.get_diff_files() is files
     assert len(transport.requests) == 4
+
+
+@pytest.mark.parametrize("line_ending,trailing_newline", [("\n", True), ("\r\n", True), ("\n", False)])
+def test_diff_line_counts_with_different_line_endings(provider_factory, line_ending, trailing_newline):
+    patch = line_ending.join(["@@ -1 +1 @@", "-old", "+new"])
+    if trailing_newline:
+        patch += line_ending
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
+
+
+def test_diff_line_counts_keep_unicode_separators_in_source_lines(provider_factory):
+    patch = "@@ -1 +1 @@\n-value = 'old'\n+value = 'before\u2028+after\u2029-more'\n"
+    provider, _ = provider_factory([(200, [_change("a.py", diff=patch)], {})], count="1")
+
+    file = provider.get_diff_files()[0]
+
+    assert (file.num_plus_lines, file.num_minus_lines) == (1, 1)
 
 
 @pytest.mark.parametrize("project_id", [123, "123"])
@@ -162,8 +183,9 @@ def test_pruned_patch_on_later_page_is_reconstructed_from_both_blobs(provider_fa
 def test_unready_collection_is_retried_then_raises_and_is_not_cached(provider_factory, count, diff_ready_sleep):
     attempts = len(gitlab_provider._DIFF_READY_RETRY_DELAYS) + 1
     provider, transport = provider_factory([(200, [_change("a.py"), _change("b.py")], {})] * attempts, count)
-    with pytest.raises(IncompleteGitLabDiffError, match="not ready.*re-run the command"):
+    with pytest.raises(IncompleteGitLabDiffError, match="not ready.*re-run the command") as error:
         provider.get_files()
+    assert isinstance(error.value, IncompleteProviderPullRequestFilesError)
     assert provider.git_files is None
     assert len(transport.diff_requests) == attempts
     assert diff_ready_sleep == list(gitlab_provider._DIFF_READY_RETRY_DELAYS)
@@ -172,8 +194,9 @@ def test_unready_collection_is_retried_then_raises_and_is_not_cached(provider_fa
 @pytest.mark.parametrize("count,message", [("3", "but reported"), ("0", "but reported"), ("1000+", "diff limits")])
 def test_inconsistent_counts_fail_immediately_without_retries(provider_factory, count, message, diff_ready_sleep):
     provider, transport = provider_factory([(200, [_change("a.py"), _change("b.py")], {})], count)
-    with pytest.raises(IncompleteGitLabDiffError, match=message):
+    with pytest.raises(IncompleteGitLabDiffError, match=message) as error:
         provider.get_files()
+    assert isinstance(error.value, IncompleteProviderPullRequestFilesError)
     assert provider.git_files is None
     assert len(transport.diff_requests) == 1
     assert diff_ready_sleep == []
@@ -372,6 +395,44 @@ def test_fresh_metadata_supplies_count_and_blob_refs_without_mutating_cached_mr(
     ]
     assert provider._expand_submodule_changes.call_args.args[1] == fresh["diff_refs"]
     assert len(transport.requests) == 3
+
+
+@pytest.mark.parametrize("count", ["1", None], ids=["cached-changes", "uncached-changes"])
+def test_review_head_tracks_loaded_diff_until_scope_reset(provider_factory, count):
+    reviewed = _metadata(count=count, head_sha="reviewed-head")
+    newer = _metadata(count=count, head_sha="newer-head")
+    collections = 1 if count is not None else 2
+    provider, transport = provider_factory(
+        [(200, [_change("a.py")], {})] * (collections + 1),
+        count=count,
+        metadata_responses=_metadata_reads(*([reviewed] * (collections * 2) + [newer] * 3)),
+    )
+
+    assert provider.get_pr_head_sha() == "head"
+    assert provider.get_files() == ["a.py"]
+    assert provider.get_pr_head_sha() == "head"
+    files = provider.get_diff_files()
+
+    assert files[0].head_file == "new\n"
+    provider.get_pr_file_content.assert_any_call("a.py", "reviewed-head")
+    assert provider.get_pr_head_sha() == "reviewed-head"
+    assert len(transport.diff_requests) == collections
+    if count is None:
+        assert getattr(provider, "_merge_request_changes_cache", None) is None
+
+    provider.mr = provider._get_merge_request()
+    assert provider.mr.diff_refs["head_sha"] == "newer-head"
+    assert provider.get_diff_files() is files
+    assert provider.get_pr_head_sha() == "reviewed-head"
+
+    provider.get_incremental_commits(IncrementalPR(False))
+    assert provider.diff_files is None
+    assert provider.get_pr_head_sha() == "newer-head"
+    assert provider.get_diff_files() is not files
+    provider.get_pr_file_content.assert_any_call("a.py", "newer-head")
+    assert provider.get_pr_head_sha() == "newer-head"
+    assert len(transport.diff_requests) == collections + 1
+    assert len(transport.requests) == (collections + 1) * 3 + 1
 
 
 @pytest.mark.parametrize("field", ["sha", "head_sha", "base_sha", "start_sha", "changes_count"])

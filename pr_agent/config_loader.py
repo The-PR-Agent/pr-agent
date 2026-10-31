@@ -54,20 +54,22 @@ global_settings = Dynaconf(
 )
 
 
-def get_settings(use_context=False):
+def get_settings(use_context=True):
     """
     Retrieves the current settings.
 
-    This function attempts to fetch the settings from the starlette_context's context object. If it fails,
-    it defaults to the global settings defined outside of this function.
+    By default, return request-scoped settings when a context exists. Callers that need
+    deployment-global settings can pass ``use_context=False``.
 
     Returns:
-        Dynaconf: The current settings object, either from the context or the global default.
+        Dynaconf: The request-scoped settings or the deployment-global settings.
     """
-    try:
-        return context["settings"]
-    except Exception:
-        return global_settings
+    if use_context:
+        try:
+            return context["settings"]
+        except Exception:
+            pass
+    return global_settings
 
 
 def get_verbosity_level() -> int:

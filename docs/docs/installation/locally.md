@@ -151,40 +151,40 @@ This does not change how interactive PR comments are parsed.
 
 1. Clone this repository:
 
-```bash
-git clone https://github.com/the-pr-agent/pr-agent.git
-```
+   ```bash
+   git clone https://github.com/the-pr-agent/pr-agent.git
+   ```
 
 2. Navigate to the `/pr-agent` folder and install dependencies with [uv](https://docs.astral.sh/uv/) (creates a `.venv` from `uv.lock`):
 
-```bash
-uv sync
-```
+   ```bash
+   uv sync
+   ```
 
-*Note: If you get an error related to Rust in the dependency installation then make sure Rust is installed and in your `PATH`, instructions: https://rustup.rs*
+   *Note: If you get an error related to Rust in the dependency installation then make sure Rust is installed and in your `PATH`, instructions: https://rustup.rs*
 
 3. Copy the secrets template file and fill in your OpenAI key and your GitHub user token:
 
-```bash
-cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
-chmod 600 pr_agent/settings/.secrets.toml
-# Edit .secrets.toml file
-```
+   ```bash
+   cp pr_agent/settings/.secrets_template.toml pr_agent/settings/.secrets.toml
+   chmod 600 pr_agent/settings/.secrets.toml
+   # Edit .secrets.toml file
+   ```
 
 4. Run the cli.py script:
 
-```bash
-uv run pr-agent --pr_url <pr_url> review
-uv run pr-agent --pr_url <pr_url> ask "<your question>"
-uv run pr-agent --pr_url <pr_url> describe
-uv run pr-agent --pr_url <pr_url> improve
-uv run pr-agent --pr_url <pr_url> add_docs
-uv run pr-agent --pr_url <pr_url> generate_labels
-uv run pr-agent --issue_url <issue_url> similar_issue
-...
-```
+   ```bash
+   uv run pr-agent --pr_url <pr_url> review
+   uv run pr-agent --pr_url <pr_url> ask "<your question>"
+   uv run pr-agent --pr_url <pr_url> describe
+   uv run pr-agent --pr_url <pr_url> improve
+   uv run pr-agent --pr_url <pr_url> add_docs
+   uv run pr-agent --pr_url <pr_url> generate_labels
+   uv run pr-agent --issue_url <issue_url> similar_issue
+   ...
+   ```
 
-*Note: the `similar_issue` tool needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
+   *Note: the `similar_issue` tool needs extra dependencies that a bare `uv sync` does not install. Install them with `uv sync --group similar-issue` before running it.*
 
 [Optional] Add the pr_agent folder to your PYTHONPATH
 

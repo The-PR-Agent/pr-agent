@@ -101,6 +101,34 @@ def published_output():
     restore_settings(snapshot)
 
 
+@pytest.mark.asyncio
+async def test_static_help_renders_without_initializing_ai_handler(published_output, monkeypatch):
+    provider = StubProvider(gfm_markdown=True)
+    monkeypatch.setattr(pr_help_message_module, "get_git_provider_with_context", lambda _: provider)
+    handler_factory = MagicMock(side_effect=ValueError("Invalid AI handler settings"))
+
+    tool = PRHelpMessage(provider.pr_url, ai_handler=handler_factory)
+    await tool.run()
+
+    handler_factory.assert_not_called()
+    assert len(provider.published) == 1
+    assert "## PR Agent Walkthrough" in provider.published[0]
+    assert f"{CURRENT_DOCS_URL}/tools/review/" in provider.published[0]
+
+
+def test_help_question_initializes_provided_ai_handler_once(monkeypatch):
+    provider = StubProvider(gfm_markdown=True)
+    monkeypatch.setattr(pr_help_message_module, "get_git_provider_with_context", lambda _: provider)
+    handler = StubAiHandler()
+    handler_factory = MagicMock(return_value=handler)
+
+    tool = PRHelpMessage(provider.pr_url, args=["How", "do", "I", "configure", "reviews?"], ai_handler=handler_factory)
+
+    handler_factory.assert_called_once_with()
+    assert tool.ai_handler is handler
+    assert tool.vars == {"question": "How do I configure reviews?", "snippets": ""}
+
+
 @pytest.fixture
 def non_openai_question_settings():
     keys = [

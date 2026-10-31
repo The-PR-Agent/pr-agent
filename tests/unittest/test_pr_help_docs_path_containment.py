@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace
 
 from pr_agent.tools.pr_help_docs import PRHelpDocs
@@ -23,6 +24,31 @@ def test_docs_path_within_clone_is_read(tmp_path):
     provider = _help_docs_with_clone(tmp_path, "docs")
     result = provider._gen_filenames_to_contents_map_from_repo()
     assert result and "docs content" in next(iter(result.values()))
+
+
+def test_root_readme_scan_skips_unrelated_directories(tmp_path, monkeypatch):
+    provider = _help_docs_with_clone(tmp_path, "docs", include_root_readme_file=True)
+    clone_root = tmp_path / "clone"
+    (clone_root / "README.md").write_text("clone readme", encoding="utf-8")
+    nested_docs = clone_root / "docs" / "nested"
+    nested_docs.mkdir()
+    (nested_docs / "guide.md").write_text("nested docs content", encoding="utf-8")
+    unrelated = clone_root / "src"
+    unrelated.mkdir()
+    (unrelated / "README.md").write_text("unrelated readme", encoding="utf-8")
+    scanned_paths = []
+    original_scandir = os.scandir
+
+    def track_scandir(path):
+        scanned_paths.append(path)
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", track_scandir)
+
+    result = provider._gen_filenames_to_contents_map_from_repo()
+
+    assert set(result.values()) == {"clone readme", "docs content", "nested docs content"}
+    assert str(unrelated) not in scanned_paths
 
 
 def test_absolute_docs_path_escaping_clone_is_rejected(tmp_path):

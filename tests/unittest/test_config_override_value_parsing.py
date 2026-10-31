@@ -52,7 +52,7 @@ def review_tool(monkeypatch):
 @pytest.mark.parametrize("value", UNPARSEABLE_VALUES)
 def test_an_unparseable_value_is_stored_as_the_raw_string(monkeypatch, debug_logging, value):
     settings = get_settings()
-    monkeypatch.setattr(settings.pr_reviewer, "extra_instructions", "")
+    monkeypatch.setitem(settings.pr_reviewer, "extra_instructions", "")
 
     update_settings_from_args([f"--pr_reviewer.extra_instructions={value}"])
 
@@ -61,7 +61,7 @@ def test_an_unparseable_value_is_stored_as_the_raw_string(monkeypatch, debug_log
 
 def test_a_parseable_value_is_still_converted(monkeypatch, debug_logging):
     settings = get_settings()
-    monkeypatch.setattr(settings.pr_reviewer, "num_max_findings", 3)
+    monkeypatch.setitem(settings.pr_reviewer, "num_max_findings", 3)
 
     update_settings_from_args(["--pr_reviewer.num_max_findings=5"])
 
@@ -70,7 +70,7 @@ def test_a_parseable_value_is_still_converted(monkeypatch, debug_logging):
 
 async def test_a_braced_instruction_reaches_the_tool(monkeypatch, debug_logging, review_tool):
     settings = get_settings()
-    monkeypatch.setattr(settings.pr_reviewer, "extra_instructions", "")
+    monkeypatch.setitem(settings.pr_reviewer, "extra_instructions", "")
 
     handled = await agent_module.PRAgent().handle_request(
         PR_URL, '/review --pr_reviewer.extra_instructions="`{}` is preferred over dict()"')
@@ -83,7 +83,7 @@ async def test_a_braced_instruction_reaches_the_tool(monkeypatch, debug_logging,
 async def test_a_plain_instruction_reaches_the_tool(monkeypatch, debug_logging, review_tool):
     """Control: the same request with a value YAML accepts always worked."""
     settings = get_settings()
-    monkeypatch.setattr(settings.pr_reviewer, "extra_instructions", "")
+    monkeypatch.setitem(settings.pr_reviewer, "extra_instructions", "")
 
     handled = await agent_module.PRAgent().handle_request(
         PR_URL, '/review --pr_reviewer.extra_instructions="focus on the retry loop"')

@@ -83,11 +83,21 @@ FORBIDDEN_ARGS = [
     '--config.repo_context_files=[{"repo_id": "group/A/idea", "file_path": "AGENTS.md"}]',
     "--config__repo_context_files=[\"AGENTS.md\"]",
     '--config={"repo_context_files": ["AGENTS.md"]}',
+    # the glob match limit bounds how many files repo_context_files fetches
+    "--config.repo_context_max_glob_matches=100",
     # repo_context_sibling_repos is the host-only allowlist of sibling repositories whose
     # files may be selected; neither repo settings nor comment arguments can change it.
     "--config.repo_context_sibling_repos=[]",
     "--config__repo_context_sibling_repos=[]",
     '--config={"repo_context_sibling_repos": []}',
+    # GitHub client pacing and retries affect host worker occupancy and API load, so they are
+    # operator-controlled for both repository settings and comment arguments.
+    "--github.seconds_between_requests=1",
+    "--github__seconds_between_writes=1",
+    "--github.api_retries=3",
+    '--github={"ratelimit_retries": 3}',
+    "--config.ai_timeout=300",
+    "--pr_code_suggestions.max_number_of_calls=10",
     # description_issue_regex is compiled and run with finditer over the whole pull-request
     # description. An ambiguous pattern backtracks exponentially, so a commenter who can choose
     # it can burn a worker on a short body; it stays an operator choice.
@@ -112,6 +122,11 @@ FORBIDDEN_ARGS = [
     "--gerrit.command_timeout_seconds=600",
     "--gerrit__command_timeout_seconds=600",
     '--gerrit={"command_timeout_seconds": 600}',
+    # agent_identity decides which Azure DevOps comments PR-Agent treats as its own and may edit,
+    # so comment arguments must not be able to choose it.
+    "--azure_devops_server.agent_identity=attacker",
+    "--azure_devops_server__agent_identity=attacker",
+    '--azure_devops_server={"agent_identity": "attacker"}',
     # fail_on_tool_errors decides whether a recorded tool failure fails the GitHub Action, so a
     # commenter must not be able to turn it off for their own command.
     "--github_action_config.fail_on_tool_errors=false",

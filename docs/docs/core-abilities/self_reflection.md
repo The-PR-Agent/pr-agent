@@ -42,6 +42,16 @@ Note that presenting all generated suggestions simultaneously provides the model
 To conclude, the self-reflection process enables PR-Agent to prioritize suggestions based on their importance, eliminate inaccurate or irrelevant proposals, and optionally exclude suggestions that fall below a specified threshold of significance.
 This results in a more refined and valuable set of suggestions for the user, saving time and improving the overall experience.
 
+## Handling Unusable Feedback
+
+For `/improve`, an empty response or unusable feedback advances to the next configured reflection model,
+subject to the existing model order and deployment restrictions. Only reflection is retried; the initial
+suggestions are reused. These retries can add latency and model usage.
+
+Valid zero-score rejections do not cause a retry, and partly usable feedback is handled per suggestion.
+If every attempt fails, `pr_code_suggestions.score_on_reflection_failure` applies. The existing score and
+line-range filters still determine whether a suggestion can be published.
+
 ## Example Results
 
 <img src="/img/self_reflection1.png" alt="self_reflection" width="768" />

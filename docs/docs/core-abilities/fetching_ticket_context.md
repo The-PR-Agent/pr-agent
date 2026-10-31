@@ -63,9 +63,7 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
 
 #### Configuration options
 
--
-
-    By default, the `review` tool will automatically validate if the PR complies with the referenced ticket.
+- By default, the `review` tool will automatically validate if the PR complies with the referenced ticket.
     If you want to disable this feedback, add the following line to your configuration file:
 
     ```toml
@@ -73,9 +71,7 @@ A `PR Code Verified` label indicates the PR code meets ticket requirements, but 
     require_ticket_analysis_review=false
     ```
 
--
-
-    If you set:
+- If you set:
     ```toml
     [pr_reviewer]
     check_pr_additional_content=true
@@ -108,21 +104,27 @@ Branch names can also be used to link issues, for example:
 
 This branch-name detection applies **only when the git provider is GitHub**. Support for other platforms is planned for later.
 
-By default, GitHub ticket context is limited to the PR's own repository. Issues and sub-issues in another
-repository require explicit host approval through `config.repo_context_sibling_repos`:
+By default, GitHub and GitLab ticket context is limited to the PR's or MR's own repository. Issues and
+sub-issues in another repository require explicit host approval through `config.repo_context_sibling_repos`:
 
 ```toml
 [config]
 repo_context_sibling_repos = ["myorg/shared-tickets"]
 ```
 
-Only canonical repositories under the PR repository's resolved owner are accepted. For private or internal
-repositories, the command requester must also have read access; CLI runs use the PR author when no command actor
-is available. Repository settings and comment arguments cannot change this allowlist. An empty list disables
-cross-repository ticket reads, including public repositories. Approve only content that may be included in the
-consuming PR's review or description. Ticket lookup limits are separate from the sibling-file limit.
-PyGithub may follow an issue transfer, but results from a different repository are discarded before prompt use.
-Reference a transferred issue by its current repository and number.
+Only canonical repositories under the PR repository's resolved owner are accepted on GitHub; on GitLab the
+project must share the MR project's top-level namespace. For private or internal repositories, the command
+requester must also have read access; CLI runs use the PR author when no command actor is available. Repository
+settings and comment arguments cannot change this allowlist. An empty list disables cross-repository ticket
+reads, including public repositories. Approve only content that may be included in the consuming PR's review or
+description. Ticket lookup limits are separate from the sibling-file limit. PyGithub may follow an issue transfer,
+but results from a different repository are discarded before prompt use. Reference a transferred issue by its
+current repository and number.
+
+For GitHub, PR-Agent skips sub-issue lookup only when the parent issue's fetched summary explicitly reports zero
+sub-issues; nonzero, missing, or invalid totals use the usual lookup.
+This uses the parent response as a snapshot, so a stale zero count or sub-issues added after that read may leave
+child tickets out of the current run's context.
 
 ## Linear Integration
 
@@ -234,23 +236,33 @@ You can create an API token from your Atlassian account:
 
 4. Click Copy to clipboard.
 
-<img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
+   <img src="https://images.ctfassets.net/zsv3d0ugroxu/1RYvh9lqgeZjjNe5S3Hbfb/155e846a1cb38f30bf17512b6dfd2229/screenshot_NewAPIToken" alt="Jira Cloud API Token" width="384" />
 
 5. In the PR-Agent host configuration (the secrets file or environment variables such as `JIRA__JIRA_SITE`) add the following lines. A repository's `.pr_agent.toml` cannot set them:
 
-```toml
-[jira]
-jira_site = "<JIRA_SITE>"   # the "<site>" in https://<site>.atlassian.net (e.g. "mycompany")
-jira_api_email = "YOUR_EMAIL"
-jira_api_token = "YOUR_API_TOKEN"
-```
+   ```toml
+   [jira]
+   jira_site = "<JIRA_SITE>"   # the "<site>" in https://<site>.atlassian.net (e.g. "mycompany")
+   cloud_id = "<CLOUD_ID>" # optional UUID for scoped or service-account tokens
+   jira_api_email = "YOUR_EMAIL"
+   jira_api_token = "YOUR_API_TOKEN"
+   ```
 
-`jira_site` is your Jira Cloud site name — the part before `.atlassian.net` (for
-`https://mycompany.atlassian.net`, the site is `mycompany`). PR-Agent builds the base URL
-as `https://<jira_site>.atlassian.net`; it does not accept a full URL, so configuration
-cannot redirect the authenticated request to another host. Store `jira_api_email` and
-`jira_api_token` as secrets (environment variables or the secrets file), not in
-repository-committed configuration.
+   `jira_site` is your Jira Cloud site name — the part before `.atlassian.net` (for
+   `https://mycompany.atlassian.net`, the site is `mycompany`). PR-Agent builds the base URL
+   as `https://<jira_site>.atlassian.net`; it does not accept a full URL, so configuration
+   cannot redirect the authenticated request to another host. Store `jira_api_email` and
+   `jira_api_token` as secrets (environment variables or the secrets file), not in
+   repository-committed configuration.
+
+   For scoped or service-account API tokens, set `cloud_id` to the UUID of the Jira Cloud site. Requests then use
+   `https://api.atlassian.com/ex/jira/<cloud_id>` while ticket links continue to use `jira_site`. Leave `cloud_id`
+   empty for classic API tokens and the site-specific URL. The value is host-only and invalid values disable Jira
+   lookup without logging the value.
+
+   To find the cloud ID, open `https://<site>.atlassian.net/_edge/tenant_info` and read the `cloudId` value from the
+   JSON response. It is also the value after `/s/` in the `admin.atlassian.com` URL. Use the cloud ID, not the Jira
+   organization ID, because Atlassian's API gateway expects the site cloud ID.
 
 #### Acceptance criteria / requirements (optional)
 
@@ -271,7 +283,7 @@ returns 404. If your deployment works with a known set of Jira projects, list th
 in the host's `project_keys`; keys with any other prefix are then dropped before any lookup (they are
 named once at debug level in the log). By default, `project_keys = ["*"]` looks up every key found.
 Set `project_keys = []` to disable Jira ticket lookups.
-`project_keys`, `jira_site` and `jira_api_email` are host-only: a repository's `.pr_agent.toml`
+`cloud_id`, `project_keys`, `jira_site` and `jira_api_email` are host-only: a repository's `.pr_agent.toml`
 or a comment command cannot change them.
 
 ```toml

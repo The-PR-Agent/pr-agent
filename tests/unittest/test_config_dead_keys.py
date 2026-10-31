@@ -66,6 +66,12 @@ _ALLOWLIST = {
         "extended_thinking_max_output_tokens",
     ): "settings.config.get(key, default) in the thinking-controls loop in "
     "pr_agent/algo/ai_handlers/litellm_ai_handler.py",
+    # [bitbucket_app] commands_conf is passed in as "push_commands" and read with get_settings().get(commands_conf)
+    (
+        "bitbucket_app",
+        "push_commands",
+    ): "get_settings().get(f'bitbucket_app.{commands_conf}') in _perform_commands_bitbucket, "
+    "pr_agent/servers/bitbucket_app.py",
     # [gerrit] read as gerrit_settings = get_settings().get("gerrit", {})
     (
         "gerrit",
@@ -174,7 +180,7 @@ def _key_is_read(section: str, key: str, sources: str) -> bool:
         return True
     # 2. quoted dotted paths: "SECTION.KEY" or "section.key"
     for dotted in (f"{section.upper()}.{key.upper()}", f"{section}.{key}"):
-        if re.search(re.escape(f"\"{dotted}\"") + r"|" + re.escape(f"'{dotted}'"), sources):
+        if f'"{dotted}"' in sources or f"'{dotted}'" in sources:
             return True
     # 3. settings.<section>.get("KEY")
     if re.search(

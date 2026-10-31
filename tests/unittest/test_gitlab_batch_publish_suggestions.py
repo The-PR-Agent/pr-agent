@@ -65,7 +65,7 @@ def _gl_provider():
         pending_drafts.append(note)
         return note
 
-    def _list(get_all=True):
+    def _list(get_all=True, **kwargs):
         return list(pending_drafts)
 
     def _bulk_publish():
@@ -116,6 +116,37 @@ def test_context_line_suggestion_sends_both_gitlab_line_numbers():
     position = p.mr.discussions.create.call_args.args[0]['position']
     assert position['old_line'] == 2
     assert position['new_line'] == 2
+
+
+@pytest.mark.parametrize("as_review", [False, True])
+@pytest.mark.parametrize("start,old_line", [(1, None), (2, 2)])
+def test_patch_only_suggestion_publishes_at_its_addition_or_context_line(as_review, start, old_line):
+    target = _FakeTargetFile()
+    target.head_file = ""
+    target.patch = "@@ -1,2 +1,2 @@\n-old line1\n+line1\n line2\n\\ No newline at end of file\n"
+    p = _gl_provider()
+    p.get_diff_files.return_value = [target]
+    tool = PRCodeSuggestions.__new__(PRCodeSuggestions)
+    tool.git_provider = p
+    tool.progress_response = None
+    suggestion = _suggestion(relevant_lines_start=start, relevant_lines_end=start, existing_code=f'line{start}')
+    gs = _settings(as_review=as_review)
+    try:
+        asyncio.run(tool.push_inline_code_suggestions({"code_suggestions": [suggestion]},
+                                                     include_coverage_footer=False))
+    finally:
+        gs.stop()
+
+    create = p.mr.draft_notes.create if as_review else p.mr.discussions.create
+    create.assert_called_once()
+    assert '```suggestion:-0+0' in create.call_args.args[0]['note' if as_review else 'body']
+    position = create.call_args.args[0]['position']
+    assert position['new_line'] == start
+    assert position.get('old_line') == old_line
+    p.get_relevant_diff.assert_called_once_with('a.py', f'line{start}')
+    if as_review:
+        p.mr.draft_notes.bulk_publish.assert_called_once()
+        assert p.mr.draft_notes.list(get_all=True) == []
 
 
 @pytest.mark.parametrize("start, expected", [

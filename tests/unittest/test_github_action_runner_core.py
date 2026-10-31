@@ -1,16 +1,27 @@
 import copy
 import json
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 import pr_agent.agent.pr_agent as pr_agent_module
 import pr_agent.servers.github_action_runner as github_action_runner
+from pr_agent import config_loader
+from pr_agent.agent.request_policy import enforce_request_policy
 from pr_agent.algo import artifacts
 from pr_agent.algo.run_details import command_failed, get_run_details, record_command_failure
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import utils as git_utils
-from pr_agent.git_providers.github_provider import IncompletePullRequestFilesError
+from pr_agent.git_providers.github_provider import GithubProvider, IncompletePullRequestFilesError
+
+
+@pytest.fixture(autouse=True)
+def _provider_key_gate_passes(monkeypatch):
+    """Isolate unrelated routing tests from credential/policy I/O.
+    Tests of either gate override the corresponding attribute again."""
+    monkeypatch.setattr(github_action_runner, "missing_provider_key_env_vars", lambda: None)
+    monkeypatch.setattr(github_action_runner, "enforce_request_policy", lambda *_args, **_kwargs: True)
 
 
 def test_is_true_accepts_bool_and_case_insensitive_true_string():
@@ -18,6 +29,9 @@ def test_is_true_accepts_bool_and_case_insensitive_true_string():
     assert github_action_runner.is_true(False) is False
     assert github_action_runner.is_true("TRUE") is True
     assert github_action_runner.is_true("false") is False
+    assert github_action_runner.is_true(" on ") is True
+    assert github_action_runner.is_true(1) is True
+    assert github_action_runner.is_true(0) is False
     assert github_action_runner.is_true(None) is False
 
 
@@ -74,7 +88,7 @@ async def test_direct_auto_tool_publishes_and_preserves_error_when_comment_decod
     provider = Mock()
     provider.get_issue_comments_newest_first.return_value = [object()]
     provider._get_comment_body.side_effect = RuntimeError("comment decoding failed")
-    monkeypatch.setattr(get_settings().config, "publish_output", True, raising=False)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
     monkeypatch.setattr(pr_agent_module, "get_git_provider_with_context", lambda _url: provider)
 
     class IncompleteTool:
@@ -89,7 +103,10 @@ async def test_direct_auto_tool_publishes_and_preserves_error_when_comment_decod
 
 
 @pytest.mark.asyncio
-async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monkeypatch, tmp_path):
+@pytest.mark.parametrize("enable_output,expected_output", [(True, True), ("", False), ("  ", False)])
+async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(
+    monkeypatch, tmp_path, enable_output, expected_output
+):
     settings = get_settings()
     original_is_auto_command = settings.config.get("is_auto_command", False)
     original_final_update_message = settings.pr_description.final_update_message
@@ -117,7 +134,7 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
             "GITHUB_ACTION.AUTO_DESCRIBE": True,
             "GITHUB_ACTION.AUTO_REVIEW": False,
             "GITHUB_ACTION.AUTO_IMPROVE": True,
-            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": True,
+            "GITHUB_ACTION_CONFIG.ENABLE_OUTPUT": enable_output,
         }
         return values.get(key, default)
 
@@ -151,6 +168,7 @@ async def test_run_action_invokes_enabled_auto_tools_for_pull_request_event(monk
 
         await github_action_runner.run_action()
 
+        assert settings.get("GITHUB_ACTION_CONFIG.ENABLE_OUTPUT") is expected_output
         assert runs == [
             ("describe", "https://api.github.com/repos/org/repo/pulls/1"),
             ("improve", "https://api.github.com/repos/org/repo/pulls/1"),
@@ -271,6 +289,10 @@ def _write_review_comment_event_with_body(tmp_path, body):
     event_path = tmp_path / "event.json"
     event_path.write_text(json.dumps({
         "action": "created",
+        "pull_request": {
+            "url": "https://api.github.com/repos/org/repo/pulls/1",
+            "html_url": "https://github.com/org/repo/pull/1",
+        },
         "comment": {
             "body": body,
             "id": 123,
@@ -667,6 +689,71 @@ def _install_action_env(monkeypatch, tmp_path, event_path, event_name="pull_requ
     monkeypatch.setenv("GITHUB_TOKEN", "token")
 
 
+@pytest.mark.parametrize("event_name", ["pull_request", "pull_request_target", "workflow_run"])
+@pytest.mark.parametrize("missing_model_key", [False, True])
+@pytest.mark.parametrize("title,repo_settings,allowed", [
+    ("[Auto] Refresh docs", b"", False),
+    ("Regular change", b"", True),
+    ("[Auto] Refresh docs", b"[config]\nignore_pr_title = []\n", True),
+    ("Regular change", b'[config]\nignore_pr_labels = ["skip-review"]\n', False),
+])
+async def test_auto_actions_apply_policy_after_repo_settings_without_rebuilding_provider(
+    monkeypatch, tmp_path, event_name, missing_model_key, title, repo_settings, allowed,
+):
+    # Keep the Action's real, context-free settings/provider path; mock only SDK I/O and tools.
+    get_settings().get("config")  # Initialize Dynaconf before copying its loaded sections.
+    settings = copy.deepcopy(get_settings())
+    monkeypatch.setenv("AUTO_CAST_FOR_DYNACONF", "false")
+    monkeypatch.setattr(config_loader, "global_settings", settings)
+    monkeypatch.setattr(github_action_runner, "enforce_request_policy", enforce_request_policy)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+    monkeypatch.setattr(
+        github_action_runner, "missing_provider_key_env_vars",
+        lambda: ("openai", ("OPENAI_KEY",)) if missing_model_key else None,
+    )
+    settings.set("config.git_provider", "github")
+    settings.set("config.ignore_pr_title", ["^\\[Auto\\]", "^Auto"])
+    settings.set("github_action_config.pr_actions", ["opened"])
+    pr = SimpleNamespace(
+        title=title, html_url="https://github.com/org/repo/pull/1",
+        user=SimpleNamespace(login="author"), head=SimpleNamespace(ref="feature"),
+        base=SimpleNamespace(ref="main"), labels=[SimpleNamespace(name="skip-review")],
+        get_commits=Mock(return_value=[SimpleNamespace(sha="head")]),
+    )
+    repo = Mock(full_name="org/repo", default_branch="main")
+    repo.get_pull.return_value = pr
+    repo.get_contents.return_value = SimpleNamespace(decoded_content=repo_settings)
+    client = Mock()
+    client.get_repo.return_value = repo
+    monkeypatch.setattr(GithubProvider, "_get_github_client", lambda self: client)
+    tools = [Mock(return_value=SimpleNamespace(run=AsyncMock())) for _ in range(3)]
+    for name, tool in zip(("PRDescription", "PRReviewer", "PRCodeSuggestions"), tools, strict=True):
+        monkeypatch.setattr(github_action_runner, name, tool)
+    event = (_write_workflow_run_event(tmp_path) if event_name == "workflow_run"
+             else _write_pull_request_opened_event(tmp_path))
+    _install_action_env(monkeypatch, tmp_path, event, event_name)
+    _patch_env_settings(monkeypatch, {
+        "GITHUB_ACTION.AUTO_DESCRIBE": True, "GITHUB_ACTION.AUTO_REVIEW": True, "GITHUB_ACTION.AUTO_IMPROVE": True,
+    })
+
+    # Verify that ignored batches succeed without a model key, while allowed ones still require it.
+    if missing_model_key and allowed:
+        with pytest.raises(SystemExit, match="no usable API key"):
+            await github_action_runner._run_action_and_drain()
+    else:
+        await github_action_runner._run_action_and_drain()
+
+    for tool in tools:
+        expected_calls = int(allowed and not missing_model_key)
+        assert tool.call_count == expected_calls
+        assert tool.return_value.run.await_count == expected_calls
+    # The policy reuses the instance that already loaded .pr_agent.toml.
+    client.get_repo.assert_called_once_with("org/repo")
+    repo.get_pull.assert_called_once()
+    pr.get_commits.assert_called_once()
+    repo.get_contents.assert_called_once()
+
+
 def _patch_env_settings(monkeypatch, overrides=None):
     real_get_setting_or_env = github_action_runner.get_setting_or_env
 
@@ -970,7 +1057,8 @@ def test_successful_dispatched_command_stays_green(monkeypatch, tmp_path, restor
     assert captured["status"].failed is False
 
 
-def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_github_settings, github_token):
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
     event_path = tmp_path / "event.json"
@@ -984,6 +1072,7 @@ def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_gi
         "sender": {"type": "User"},
     }))
     _install_action_env(monkeypatch, tmp_path, event_path, event_name="issue_comment")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     captured = _capture_action_status(monkeypatch)
 
@@ -993,12 +1082,14 @@ def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_gi
     assert captured["status"].failed is False
 
 
-def test_bot_comment_event_stays_green(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+def test_bot_comment_event_stays_green(monkeypatch, tmp_path, restore_github_settings, github_token):
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
     _install_action_env(
         monkeypatch, tmp_path, _write_issue_comment_event(tmp_path, "Bot"), event_name="issue_comment"
     )
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     captured = _capture_action_status(monkeypatch)
 
@@ -1278,12 +1369,13 @@ async def test_workflow_run_runs_auto_tools(monkeypatch, tmp_path, restore_githu
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path, restore_github_settings, github_token):
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, originating_event="push")))
-    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     await github_action_runner.run_action()
 
@@ -1291,12 +1383,15 @@ async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_skips_when_pull_requests_empty(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+async def test_workflow_run_skips_when_pull_requests_empty(
+    monkeypatch, tmp_path, restore_github_settings, github_token
+):
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, pull_requests=[])))
-    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     await github_action_runner.run_action()
 
@@ -1365,6 +1460,34 @@ def _write_plain_issue_comment_event(tmp_path):
         "sender": {"type": "User"},
     }))
     return event_path
+
+@pytest.mark.parametrize("github_token", [None, ""], ids=["missing", "empty"])
+@pytest.mark.parametrize("event_name, write_event", [
+    ("pull_request", _write_pull_request_opened_event),
+    ("pull_request_target", _write_pull_request_opened_event),
+    ("workflow_run", _write_workflow_run_event),
+    ("pull_request_review", _write_review_event),
+    ("issue_comment", lambda path: _write_issue_comment_event(path, "User")),
+    ("issue_comment", _write_plain_issue_comment_event),
+    ("pull_request_review_comment", lambda path: _write_review_comment_event_with_body(path, "/review")),
+])
+def test_missing_github_token_fails_before_repository_access(
+    monkeypatch, tmp_path, restore_github_settings, github_token, event_name, write_event,
+):
+    _install_action_env(monkeypatch, tmp_path, write_event(tmp_path), event_name)
+    if github_token is None:
+        monkeypatch.delenv("GITHUB_TOKEN")
+    else:
+        monkeypatch.setenv("GITHUB_TOKEN", github_token)
+    apply_settings = Mock()
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", apply_settings)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+
+    with pytest.raises(SystemExit, match="GITHUB_TOKEN not set.*workflow's env"):
+        github_action_runner.main()
+
+    apply_settings.assert_not_called()
+
 
 @pytest.mark.asyncio
 async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(

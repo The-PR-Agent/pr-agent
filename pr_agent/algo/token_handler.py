@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import importlib.util
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,28 @@ from tiktoken import encoding_for_model, get_encoding
 
 from pr_agent.config_loader import get_settings
 from pr_agent.log import get_logger
+
+
+def _use_bundled_tiktoken_files() -> None:
+    """Point tiktoken at LiteLLM's bundled encoding files unless the host chose a cache directory.
+
+    LiteLLM only does this once its encoding module is imported, so tiktoken could otherwise download.
+    """
+    if "TIKTOKEN_CACHE_DIR" in os.environ or "DATA_GYM_CACHE_DIR" in os.environ:
+        return
+    custom_dir = os.environ.get("CUSTOM_TIKTOKEN_CACHE_DIR")
+    if custom_dir:
+        os.environ["TIKTOKEN_CACHE_DIR"] = custom_dir
+        return
+    spec = importlib.util.find_spec("litellm")
+    if spec is None or not spec.submodule_search_locations:
+        return
+    bundled_dir = os.path.join(spec.submodule_search_locations[0], "litellm_core_utils", "tokenizers")
+    if os.path.isdir(bundled_dir):
+        os.environ["TIKTOKEN_CACHE_DIR"] = bundled_dir
+
+
+_use_bundled_tiktoken_files()
 
 
 def _await_coroutine(coro):
@@ -155,7 +178,7 @@ class TokenHandler:
 
     def _azure_mode(self) -> bool:
         """Return whether the configured OpenAI endpoint is Azure OpenAI."""
-        return get_settings(use_context=False).get("OPENAI.API_TYPE", None) == "azure"
+        return get_settings().get("OPENAI.API_TYPE", None) == "azure"
 
     def _provider_from_model(self) -> str | None:
         """Return the litellm provider key for the configured model, when inferable.
@@ -191,7 +214,7 @@ class TokenHandler:
         provider = self._provider_from_model()
         if provider is None:
             return None, None
-        settings = get_settings(use_context=False)
+        settings = get_settings()
         setting_paths = PROVIDER_SETTING_PATHS.get(provider)
         api_key = settings.get(setting_paths.get("api_key"), None) if setting_paths else None
         api_base = settings.get(setting_paths.get("api_base"), None) if setting_paths else None
@@ -228,7 +251,7 @@ class TokenHandler:
         provider = self.model.split("/", 1)[0].lower() if "/" in self.model else None
         if provider not in (None, "openai", "azure"):
             return self.model
-        deployment_id = get_settings(use_context=False).get("openai.deployment_id", None)
+        deployment_id = get_settings().get("openai.deployment_id", None)
         model_name = self.model.split("/", 1)[1] if "/" in self.model else self.model
         if deployment_id:
             return f"azure/{deployment_id}"
@@ -313,7 +336,7 @@ class TokenHandler:
         accurate_count = _await_coroutine(self._acount_tokens(patch))
         if accurate_count > 0:
             return accurate_count
-        if ModelTypeValidator.is_openai_model(model_name) and get_settings(use_context=False).get("OPENAI.KEY"):
+        if ModelTypeValidator.is_openai_model(model_name) and get_settings().get("OPENAI.KEY"):
             return default_estimate
 
         return self._apply_estimation_factor(model_name, default_estimate)

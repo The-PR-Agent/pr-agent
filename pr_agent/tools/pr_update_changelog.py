@@ -12,14 +12,14 @@ from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
+    run_diff_preparation,
 )
 from pr_agent.algo.run_details import init_run_details
 from pr_agent.algo.run_output import append_run_details, show_relevant_configurations
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import ModelType
 from pr_agent.config_loader import get_settings
-from pr_agent.git_providers import get_git_provider
+from pr_agent.git_providers import get_git_provider_for_tool
 from pr_agent.git_providers.git_provider import FileContentSnapshot, get_main_pr_language
 from pr_agent.log import get_logger
 
@@ -53,7 +53,7 @@ def strip_wrapping_code_fence(text: str) -> str:
 class PRUpdateChangelog:
     def __init__(self, pr_url: str, cli_mode=False, args=None, ai_handler: partial[BaseAiHandler,] = LiteLLMAIHandler):
 
-        self.git_provider = get_git_provider()(pr_url)
+        self.git_provider = get_git_provider_for_tool(pr_url)
 
         # Determine whether pushing the changelog to the repo is both requested and possible.
         # If a push is requested but not possible — the provider has no push support, or
@@ -101,10 +101,6 @@ class PRUpdateChangelog:
                 "extra_instructions": get_settings().pr_update_changelog.extra_instructions,
                 "commit_messages_str": self.git_provider.get_commit_messages(),
             }
-            self.token_handler = TokenHandler(self.git_provider.pr,
-                                              self.vars,
-                                              get_settings().pr_update_changelog_prompt.system,
-                                              get_settings().pr_update_changelog_prompt.user)
         except Exception as setup_error:
             changelog_read_error = self.changelog_read_error
             if changelog_read_error is None:
@@ -153,6 +149,12 @@ class PRUpdateChangelog:
                 )
                 self._publish_changelog_read_error_fallback()
                 raise changelog_read_error  # noqa: B904
+
+            if self.prediction is None:
+                if changelog_read_error is not None:
+                    self._publish_changelog_read_error_fallback()
+                    raise changelog_read_error
+                return
 
             new_file_content, answer = self._prepare_changelog_update()
 
@@ -238,12 +240,20 @@ class PRUpdateChangelog:
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        patches_diff = get_pr_diff(
+        output = await run_diff_preparation(
+            get_pr_diff,
             self.git_provider,
             budget.token_handler,
             model,
+            return_remaining_files=True,
             output_token_reserve=output_token_reserve,
         )
+        patches_diff, remaining_files_list = output if isinstance(output, tuple) else (output, [])
+        if not patches_diff and not remaining_files_list:
+            # Every changed file was filtered out (lockfile, asset, ignore rule), so there is
+            # nothing to add to the changelog. Skip the model chain instead of failing the command.
+            get_logger().info("PR has no analyzable files, skipping update_changelog")
+            return
         if not patches_diff:
             raise FallbackEligibleError(f"No PR diff fits the /update_changelog request for {model}")
 
@@ -254,6 +264,7 @@ class PRUpdateChangelog:
             ai_handler=self.ai_handler,
             default_output_tokens=OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
             preserve_minimum=True,
+            require_full_text=True,
         )
         if fitted.optional_text != patches_diff:
             raise FallbackEligibleError(
@@ -273,9 +284,15 @@ class PRUpdateChangelog:
 
         # post-process the response
         response = response.strip()
-        if not response:
-            return ""
-        return strip_wrapping_code_fence(response)
+        # Check before stripping, which can turn four backticks into a stray single backtick.
+        fence_pattern = r"(?m)^[^\S\n]*(?:`{3,}[^`\n]*|~{3,}[^~\n]*)$"
+        content = re.sub(fence_pattern, "", response)
+        if content.strip():
+            response = strip_wrapping_code_fence(response)
+            content = re.sub(fence_pattern, "", response)
+        if not content.strip():
+            raise FallbackEligibleError(f"Empty changelog response from {model}")
+        return response
 
     def _prepare_changelog_update(self) -> tuple[str, str]:
         answer = strip_wrapping_code_fence(self.prediction.strip()).strip()

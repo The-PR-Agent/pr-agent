@@ -19,10 +19,13 @@
 # prompt_fragments: contains Jinja source rendered by the host before it is inserted into tool
 # prompts. Keep the whole section host-only so repository settings and comment arguments cannot
 # supply executable template expressions.
+#
+# bedrock: guardrail settings are host-only so a repository cannot disable or swap the guardrail.
 REPO_OVERRIDABLE_KEYS_BY_HOST_SECTION = {
     "skills": frozenset({"enabled", "max_skills_tokens"}),
     "push_outputs": frozenset(),
     "prompt_fragments": frozenset(),
+    "bedrock": frozenset(),
 }
 
 _CONNECTION_KEY_SUFFIXES = ("url", "base_url", "endpoint", "org", "key", "token", "secret")
@@ -41,21 +44,34 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
     # Keep api_base, api_type and api_version host-controlled, matching the comment-argument filter.
     "azure_ad": frozenset({"api_base"}),
     "azure_devops": frozenset({"pat"}),
+    # agent_identity decides which Azure DevOps comments PR-Agent treats as its own and may edit,
+    # so the reviewed repository must not choose it.
+    "azure_devops_server": frozenset({"agent_identity"}),
     "bitbucket": frozenset({"auth_type"}),
     "databricks": frozenset({"api_base"}),
     "gerrit": frozenset({"command_timeout_seconds", "webhook_password", "webhook_username"}),
     "gitea": frozenset({"skip_ssl_verification", "ssl_ca_cert"}),
-    "github": frozenset({"deployment_type"}),
+    # agent_login decides which comments PR-Agent treats as its own and may edit, so the
+    # reviewed repository must not choose it.
+    "github": frozenset({
+        "agent_login", "deployment_type", "polling_repositories",
+        "seconds_between_requests", "seconds_between_writes", "api_retries", "ratelimit_retries",
+    }),
     "gitlab": frozenset({"auth_type", "ssl_verify"}),
     "huggingface": frozenset({"api_base"}),
     # Jira lookups use the host's Atlassian credentials, so the reviewed repository must not
     # choose the site or account they authenticate as, or widen the project allowlist they may read.
-    "jira": frozenset({"jira_api_email", "jira_site", "project_keys"}),
+    "jira": frozenset({"cloud_id", "jira_api_email", "jira_site", "project_keys"}),
+    # extra_headers is attached to every model request, so on a shared gateway that routes or
+    # authenticates by header the reviewed repository must not choose the headers the operator sends.
+    "litellm": frozenset({"extra_headers"}),
     "moonshot": frozenset({"api_base"}),
     "ollama": frozenset({"api_base"}),
     "openai": frozenset({"api_base", "api_type", "api_version"}),
     "openrouter": frozenset({"api_base"}),
-    "pr_reviewer": frozenset({"publish_error_details"}),
+    # structural_reach_input_file is read from the host and echoed into the review, and outside
+    # GITHUB_WORKSPACE nothing bounds the path.
+    "pr_reviewer": frozenset({"publish_error_details", "structural_reach_input_file"}),
     # List the sibling repositories whose files and GitHub tickets a consuming repo
     # (or a comment command) may select into model context. A repo's .pr_agent.toml alone must
     # not be able to name an arbitrary same-owner private sibling: the actor check bounds who
@@ -92,6 +108,7 @@ REPO_HOST_ONLY_KEYS_BY_SECTION = {
         "http_request_timeout",
         "repo_context_max_sibling_files",
         "repo_context_sibling_repos",
+        "num_retries",
     }),
 }
 
@@ -109,13 +126,24 @@ def is_repo_host_only_key(section: str, key: str) -> bool:
     )
 
 
+def should_skip_config_key(section: str, key: str, skip_keys=()) -> bool:
+    """Return whether a setting must be omitted from published configuration output."""
+    key_lower = str(key).lower()
+    if is_repo_host_only_key(str(section), key_lower):
+        return True
+    if key_lower in {str(skip_key).lower() for skip_key in skip_keys}:
+        return True
+    return any(part in key_lower for part in ("key", "secret", "token", "private"))
+
+
 # Keys that repositories may still configure from their own default-branch settings but that
 # comment/CLI *arguments* must never override. repo_context_files selects which repository and
 # sibling files are fetched and rendered as the model's instruction context, so an untrusted
 # commenter must not be able to point the bot at arbitrary sibling repo content. Values curated
 # by the repo's maintainers in .pr_agent.toml stay accepted (apply_repo_settings does not consult
 # this map); only CliArgs.validate_user_args enforces it, so repo settings and comment args do
-# not drift.
+# not drift. repo_context_max_glob_matches bounds how many files those entries fetch, so it
+# follows the same rule.
 # github_action_config.fail_on_tool_errors decides whether a tool's recorded failure fails the
 # GitHub Action. The runner reads it after the command has applied its arguments, so a comment
 # such as `/review --github_action_config.fail_on_tool_errors=false` could turn a failed review
@@ -123,16 +151,19 @@ def is_repo_host_only_key(section: str, key: str) -> bool:
 CLI_HOST_ONLY_KEYS_BY_SECTION = {
     "config": frozenset({
         "branch_issue_regex",
+        "ai_timeout",
         "fallback_models",
         "num_retries",
         "output_relevant_configurations",
         "repo_context_files",
+        "repo_context_max_glob_matches",
     }),
     "github_action_config": frozenset({"fail_on_tool_errors"}),
     "ignore": frozenset({"regex"}),
-    "pr_code_suggestions": frozenset({"parallel_calls"}),
+    "pr_code_suggestions": frozenset({"parallel_calls", "max_number_of_calls"}),
     "pr_questions": frozenset({"resolve_threads"}),
-    "pr_reviewer": frozenset({"max_number_of_calls"}),
+    # A commenter must not choose which host file the structural-reach row reads.
+    "pr_reviewer": frozenset({"max_number_of_calls", "structural_reach_input_file"}),
     "pr_similar_issue": frozenset({"force_update_dataset"}),
     "pr_update_changelog": frozenset({"push_changelog_changes"}),
 }
@@ -210,8 +241,8 @@ PER_DIRECTORY_HOST_ONLY_KEYS_BY_SECTION = {
 # review. A catastrophic-backtracking pattern committed in a nested file could
 # stall a worker, so nested files keep the bounded glob form only. The expansion
 # that glob form allows is bounded by the per-glob and per-list variant ceilings
-# in pr_agent/algo/file_filter.py; the number of globs a nested file may list is
-# not.
+# in pr_agent/algo/file_filter.py; each glob is also capped at 1024 characters.
+# The number of globs a nested file may list is not capped here.
 #
 # The `config` section lists model-routing and output knobs but deliberately
 # excludes the repo-context builders: `repo_context_files` fetches every listed

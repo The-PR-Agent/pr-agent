@@ -159,14 +159,13 @@ def get_max_tokens(model, ignore_max_model_tokens=False):
                     break
 
         if max_tokens_model <= 0:
-            get_logger().error(
-                f"Model {model} is not defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
-                f" and no custom_model_max_tokens is set"
+            message = (
+                f"Unable to resolve a positive input-token limit for model '{model}' from PR-Agent's built-in limits"
+                " or LiteLLM metadata. Set config.custom_model_max_tokens to a verified positive input-token limit."
+                " config.max_model_tokens only caps a resolved limit; it cannot supply a missing model limit."
             )
-            raise Exception(
-                f"Ensure {model} is defined in MAX_TOKENS in ./pr_agent/algo/__init__.py"
-                f" or set a positive value for it in config.custom_model_max_tokens"
-            )
+            get_logger().error(message)
+            raise Exception(message)
 
     max_model_tokens = _as_int(settings.config.max_model_tokens) if settings.config.max_model_tokens else 0
     if max_model_tokens > 0 and not ignore_max_model_tokens:
@@ -585,6 +584,7 @@ class AttemptTokenBudget:
         image_path: str | None = None,
         keep: Literal["prefix", "suffix"] = "prefix",
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
+        require_full_text: bool = False,
     ) -> FittedPrompt:
         """Fit one optional prompt field and verify the exact normalized request."""
         if keep not in {"prefix", "suffix"}:
@@ -609,6 +609,9 @@ class AttemptTokenBudget:
         full_prompt = prepare(optional_text)
         if full_prompt.input_tokens <= input_limit:
             return full_prompt
+
+        if require_full_text:
+            raise FallbackEligibleError(f"The required prompt exceeds the token limit for {self.model}")
 
         empty_prompt = prepare("")
         if empty_prompt.input_tokens > input_limit:
@@ -681,6 +684,7 @@ class AttemptTokenBudget:
         image_path: str | None = None,
         keep: Literal["prefix", "suffix"] = "prefix",
         truncation_marker: str = DEFAULT_TRUNCATION_MARKER,
+        require_full_text: bool = False,
     ) -> FittedPrompt:
         """Fit one prompt variable without mutating retry-shared state."""
         environment = SandboxedEnvironment(undefined=StrictUndefined)
@@ -702,6 +706,7 @@ class AttemptTokenBudget:
             image_path=image_path,
             keep=keep,
             truncation_marker=truncation_marker,
+            require_full_text=require_full_text,
         )
 
     def matches(self, model: str, source_token_handler: object) -> bool:

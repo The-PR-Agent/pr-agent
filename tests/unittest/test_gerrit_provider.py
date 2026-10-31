@@ -14,6 +14,7 @@ from pr_agent.algo.types import EDIT_TYPE
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers import gerrit_provider
 from pr_agent.git_providers.gerrit_provider import GerritProvider
+from pr_agent.tools.ticket_pr_compliance_check import add_jira_tickets
 from tests.unittest import _settings_helpers as settings_helpers
 
 
@@ -289,7 +290,6 @@ def test_gerrit_consumers_keep_host_timeout_after_repo_overlay(
                 monkeypatch.setattr(GerritProvider, "get_pr_description", lambda self: "")
                 monkeypatch.setattr(GerritProvider, "get_commit_messages", lambda self: "")
                 monkeypatch.setattr(pr_questions, "get_main_pr_language", lambda *args: "")
-                monkeypatch.setattr(pr_questions, "TokenHandler", lambda *args: None)
                 monkeypatch.setattr(pr_questions.PRQuestions, "_load_conversation_history", lambda self: "")
                 question = pr_questions.PRQuestions(key, args=[], ai_handler=SimpleNamespace)
                 assert isinstance(question.git_provider, GerritProvider)
@@ -317,6 +317,33 @@ def test_get_commit_messages_returns_text(tmp_path):
     provider.repo = _make_repo(tmp_path, ["app.py"])
 
     assert provider.get_commit_messages() == "initial files"
+
+
+def test_detached_gerrit_branch_keeps_commit_message_in_jira_context(tmp_path, monkeypatch):
+    repo_path = tmp_path / "clone"
+    repo = _make_repo(repo_path, ["app.py"])
+    repo.git.checkout("--detach")
+    repo.index.commit("Implement ABC-123 from Gerrit change")
+    provider = object.__new__(GerritProvider)
+    provider.repo, provider.repo_path = repo, str(repo_path)
+    provider.pr = gerrit_provider.PullRequestMimic("Review change", [])
+    contexts = []
+
+    def extract(context, max_characters, remaining):
+        contexts.append(context)
+        return [{"ticket_url": "https://example.atlassian.net/browse/ABC-123"}]
+
+    monkeypatch.setattr("pr_agent.tools.ticket_pr_compliance_check.extract_jira_tickets", extract)
+    try:
+        assert repo.head.is_detached
+        assert provider.get_user_description() == "Implement ABC-123 from Gerrit change"
+        tickets = add_jira_tickets(provider, [])
+        assert contexts == ["Review change\nImplement ABC-123 from Gerrit change"]
+        assert tickets == [{"ticket_url": "https://example.atlassian.net/browse/ABC-123"}]
+        assert provider.get_pr_branch() == ""
+    finally:
+        repo.close()
+        provider.cleanup()
 
 
 def test_get_repo_settings_reads_the_default_branch_not_the_change(tmp_path):
@@ -929,10 +956,11 @@ def test_get_diff_files_walks_the_commit_once(tmp_path, monkeypatch):
 
 def test_get_diff_files_reflects_ignore_rules_merged_after_construction(tmp_path):
     # Read the diff before loading repository settings, then apply the new ignore rules.
-    repo = _make_repo(tmp_path, ["keep.py", "generated.py"])
-    for name in ["keep.py", "generated.py"]:
+    names = ["generated.py", "generated/uv.lock", "keep.py", "yarn.lock"]
+    repo = _make_repo(tmp_path, names)
+    for name in names:
         (tmp_path / name).write_text("changed\n")
-    repo.index.add(["keep.py", "generated.py"])
+    repo.index.add(names)
     repo.index.commit("change files")
 
     provider = object.__new__(GerritProvider)
@@ -944,25 +972,30 @@ def test_get_diff_files_reflects_ignore_rules_merged_after_construction(tmp_path
         # Simulate provider construction before repository settings are loaded.
         get_settings().set("ignore.glob", [])
         get_settings().set("ignore.regex", [])
-
         before_merge = provider.get_diff_files()
-    finally:
-        settings_helpers.restore_settings(settings_snapshot)
+        raw_diffs = provider._commit_diffs
+        assert [file.filename for file in before_merge] == names
+        assert provider.get_filtered_diff_file_names() == ["generated/uv.lock", "yarn.lock"]
 
-    assert {file.filename for file in before_merge} == {"keep.py", "generated.py"}
-
-    settings_snapshot = settings_helpers.snapshot_settings(["ignore.glob", "ignore.regex"])
-    try:
-        get_settings().set("ignore.glob", ["generated.py"])
-        get_settings().set("ignore.regex", [])
-
+        get_settings().set("ignore.glob", ["generated.py", "generated/**"])
         after_merge = provider.get_diff_files()
-        files_after_merge = provider.get_files()
+        assert [file.filename for file in after_merge] == ["keep.py", "yarn.lock"]
+        assert provider.get_files() == ["keep.py", "yarn.lock"]
+        assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+        assert provider.get_diff_files() == after_merge
+        assert provider.get_filtered_diff_file_names() == ["yarn.lock"]
+
+        get_settings().set("ignore.glob", [])
+        get_settings().set("ignore.regex", ["["])
+        assert [file.filename for file in provider.get_diff_files()] == names
+        assert provider.get_filtered_diff_file_names() == []
+        assert provider._commit_diffs is raw_diffs
+        get_settings().set("ignore.regex", [])
+        get_settings().set("ignore.glob", ["*.lock"])
+        assert [file.filename for file in provider.get_diff_files()] == ["generated.py", "keep.py"]
+        assert provider.get_filtered_diff_file_names() == []
     finally:
         settings_helpers.restore_settings(settings_snapshot)
-
-    assert [file.filename for file in after_merge] == ["keep.py"]
-    assert files_after_merge == ["keep.py"]
 
 
 def test_get_files_derives_names_from_the_diff(tmp_path, monkeypatch):
@@ -1138,6 +1171,37 @@ def test_publish_code_suggestions_skips_a_symlink(tmp_path, monkeypatch):
     assert provider.publish_code_suggestions([_suggestion("linked.py")]) is True
     assert applied == []
     assert (tmp_path / ".git" / "config").exists()
+
+
+def test_publish_code_suggestions_skips_an_inverted_line_range(tmp_path, monkeypatch):
+    # add_suggestion writes lines[:start - 1] and then lines[end:], so a 5-to-3 range
+    # would keep every original line and repeat line 4.
+    provider = _provider_for_suggestions(tmp_path)
+    applied = []
+    monkeypatch.setattr(gerrit_provider, "add_suggestion", lambda *args, **kwargs: applied.append(args))
+    suggestion = _suggestion("app.py")
+    suggestion["relevant_lines_start"], suggestion["relevant_lines_end"] = 5, 3
+
+    assert provider.publish_code_suggestions([suggestion]) is True
+    assert applied == []
+    assert (tmp_path / "app.py").read_text() == "print(1)\n"
+
+
+@pytest.mark.parametrize("missing", ["none", "absent"])
+def test_publish_code_suggestions_skips_a_missing_end_line(tmp_path, monkeypatch, missing):
+    # add_suggestion slices lines[end:], so an end of None would repeat the whole file.
+    provider = _provider_for_suggestions(tmp_path)
+    applied = []
+    monkeypatch.setattr(gerrit_provider, "add_suggestion", lambda *args, **kwargs: applied.append(args))
+    suggestion = _suggestion("app.py")
+    if missing == "none":
+        suggestion["relevant_lines_end"] = None
+    else:
+        del suggestion["relevant_lines_end"]
+
+    assert provider.publish_code_suggestions([suggestion]) is True
+    assert applied == []
+    assert (tmp_path / "app.py").read_text() == "print(1)\n"
 
 
 @pytest.mark.parametrize("relevant_file", [".git/config", ".GIT/config"])

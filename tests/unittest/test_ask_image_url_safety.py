@@ -36,8 +36,9 @@ class _Session:
         self._responses = list(responses)
         self.requested = []
 
-    def request(self, method, url, allow_redirects=True):
+    def request(self, method, url, allow_redirects=True, **kwargs):
         self.requested.append((method, url, allow_redirects))
+        self.request_options = kwargs
         return self._responses.pop(0)
 
     async def __aenter__(self):
@@ -89,6 +90,44 @@ async def test_follows_validated_redirect_without_auto_redirects():
     ]
     # Every hop must be requested without automatic redirects so it can be validated first.
     assert all(allow_redirects is False for _, _, allow_redirects in session.requested)
+
+
+@pytest.mark.asyncio
+async def test_rejects_dns_rebinding_before_request(monkeypatch):
+    session = _Session([_Resp(200)])
+
+    monkeypatch.setattr(
+        url_safety.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("10.0.0.9", 0))],
+    )
+
+    result = await with_safe_redirects(session, "https://example.com/start", lambda *_: None)
+
+    assert result is None
+    assert session.requested == []
+
+
+@pytest.mark.asyncio
+async def test_pins_request_to_validated_address(monkeypatch):
+    session = _Session([_Resp(200)])
+
+    async def consumer(response, url):
+        return response.status
+
+    monkeypatch.setattr(
+        url_safety.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(2, 1, 6, "", ("140.82.121.4", 0))],
+    )
+
+    result = await with_safe_redirects(session, "https://example.com/start", consumer)
+
+    assert result == 200
+    assert str(session.requested[0][1]) == "https://140.82.121.4/start"
+    assert session.requested[0][0] == "GET"
+    assert session.requested[0][2] is False
+    assert session.request_options == {"headers": {"Host": "example.com"}, "server_hostname": "example.com"}
 
 
 @pytest.mark.asyncio
@@ -145,7 +184,9 @@ async def test_image_probe_allows_reachable_https_image(monkeypatch):
     error = await LiteLLMAIHandler._image_url_error("https://example.com/a.png")
 
     assert error is None
-    assert session.requested == [("HEAD", "https://example.com/a.png", False)]
+    assert str(session.requested[0][1]) == "https://140.82.121.4/a.png"
+    assert session.requested[0][0] == "HEAD"
+    assert session.requested[0][2] is False
 
 
 @pytest.mark.asyncio

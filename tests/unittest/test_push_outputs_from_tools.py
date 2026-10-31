@@ -30,15 +30,15 @@ SUGGESTION = {
 # --------------------------------------------------------------------------------------
 def test_review_still_emits():
     """Control: the tool that already emitted keeps doing so."""
-    assert "push_outputs" in PRReviewer._prepare_pr_review.__code__.co_names
+    assert "push_outputs_async" in PRReviewer._deliver_sink_output.__code__.co_names
 
 
 def test_describe_emits_from_its_publish_path():
-    assert "push_outputs" in PRDescription.run.__code__.co_names
+    assert "push_outputs_async" in PRDescription.run.__code__.co_names
 
 
 def test_improve_emits_from_its_publish_path():
-    assert "push_outputs" in PRCodeSuggestions.run.__code__.co_names
+    assert "push_outputs_async" in PRCodeSuggestions.run.__code__.co_names
 
 
 # --------------------------------------------------------------------------------------
@@ -126,11 +126,13 @@ def test_a_suggestion_without_a_file_is_still_rendered():
 @pytest.fixture
 def emitted(monkeypatch):
     calls = []
-    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.push_outputs",
-                        lambda *args, **kwargs: calls.append((args, kwargs)))
-    monkeypatch.setattr("pr_agent.tools.pr_description.push_outputs",
-                        lambda *args, **kwargs: calls.append((args, kwargs)))
-    monkeypatch.setattr(get_settings().config, "publish_output", True)
+
+    async def record(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr("pr_agent.tools.pr_code_suggestions.push_outputs_async", record)
+    monkeypatch.setattr("pr_agent.tools.pr_description.push_outputs_async", record)
+    monkeypatch.setitem(get_settings().config, "publish_output", True)
     return calls
 
 

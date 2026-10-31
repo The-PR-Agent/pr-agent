@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from pr_agent.algo.pr_processing import retry_with_fallback_models
+from pr_agent.algo.pr_processing import FallbackEligibleError, retry_with_fallback_models
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -21,6 +21,9 @@ _TRACKED_KEYS = (
 
 _VALID_REVIEW = """review:
   summary: fallback review
+"""
+_TRUNCATED_REVIEW = """review:
+  summary: incomplete primary review
 """
 
 
@@ -166,3 +169,73 @@ async def test_all_malformed_models_publish_one_failure_result(monkeypatch, fall
         call("Failed to review PR"),
     ]
     git_provider.remove_comment.assert_called_once_with(progress_comment)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("finish_reason", "truncated"),
+    [("stop", False), (None, False), ("length", True)],
+)
+async def test_prediction_rejects_truncated_completion_even_with_valid_yaml(finish_reason, truncated):
+    reviewer = _make_reviewer()
+    reviewer.vars = {"diff": ""}
+    reviewer.patches_diff = "diff"
+    reviewer.ai_handler = SimpleNamespace(
+        chat_completion=AsyncMock(return_value=(_VALID_REVIEW, finish_reason))
+    )
+    reviewer._review_attempt_budget = MagicMock(return_value=SimpleNamespace(
+        fit_prompt_variable=MagicMock(return_value=SimpleNamespace(
+            optional_text="diff", system_prompt="system", user_prompt="user",
+        ))
+    ))
+
+    if truncated:
+        with pytest.raises(FallbackEligibleError, match="Review response was truncated"):
+            await reviewer._get_prediction("primary-model")
+    else:
+        assert await reviewer._get_prediction("primary-model") == _VALID_REVIEW
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("finish_reasons", "fallback_succeeds"),
+    [(("length", "stop"), True), (("length", "length"), False)],
+)
+async def test_truncated_review_enters_existing_fallback_chain(fallback_models, finish_reasons, fallback_succeeds):
+    reviewer = _make_reviewer()
+    reviewer.ai_handler = SimpleNamespace(
+        chat_completion=AsyncMock(side_effect=[
+            (_TRUNCATED_REVIEW, finish_reasons[0]),
+            (_VALID_REVIEW, finish_reasons[1]),
+        ])
+    )
+    reviewer._review_attempt_budget = MagicMock(return_value=SimpleNamespace(
+        fit_prompt_variable=MagicMock(return_value=SimpleNamespace(
+            optional_text="diff", system_prompt="system", user_prompt="user",
+        ))
+    ))
+
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value="diff"),
+        patch(
+            "pr_agent.tools.pr_reviewer.fit_related_tickets_to_prompt_budget",
+            side_effect=lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (
+                raw_vars, reviewer.token_handler,
+            ),
+        ),
+    ):
+        if fallback_succeeds:
+            await retry_with_fallback_models(
+                reviewer._prepare_prediction, git_provider=reviewer.git_provider,
+            )
+            assert reviewer.prediction == _VALID_REVIEW
+        else:
+            with pytest.raises(Exception, match="Failed to generate prediction with any model"):
+                await retry_with_fallback_models(
+                    reviewer._prepare_prediction, git_provider=reviewer.git_provider,
+                )
+            assert reviewer.prediction is None
+
+    assert [call.kwargs["model"] for call in reviewer.ai_handler.chat_completion.await_args_list] == [
+        "primary-model", "fallback-model",
+    ]

@@ -69,7 +69,7 @@ Sensitive values should stay in environment variables or the gitignored `.secret
 - Install dependencies (runtime + dev) into a project virtualenv from the lockfile with `uv sync` using a uv version that satisfies `tool.uv.required-version` in `pyproject.toml`; `uv run` auto-syncs before each command.
 - Run a single unit test (verified): `PYTHONPATH=. uv run pytest tests/unittest/test_output_models.py -q`.
 - Run the full unit suite: `PYTHONPATH=. uv run pytest tests/unittest -v`.
-- CI also runs `uv run pytest -q tests/packaging/test_help_docs_package.py`; it is outside `testpaths`, so the unit suite does not cover it. The distribution-contract test asserts the exact uv version given by the lower bound of `tool.uv.required-version` in `pyproject.toml`; newer uv versions can fail that assertion.
+- CI also runs `uv run pytest -q tests/packaging/test_help_docs_package.py`; it is outside `testpaths`, so the unit suite does not cover it. The distribution-contract test checks that the installed uv version satisfies `tool.uv.required-version` in `pyproject.toml`.
 - Execute the CLI locally once dependencies and API keys are available: `uv run pr-agent --pr_url <https://host/org/repo/pull/123> review`.
 - Build the test Docker target mirror of CI when containerizing: `docker build -f docker/Dockerfile --target test .` (loads dev dependencies and copies `tests/`).
 - Build the documentation the same way CI does (Node.js 22): `npm ci` then `npm run build` from `docs/`; `npm start` serves a live preview. After building, run `python3 scripts/check_docs_urls.py` from the repository root to check `docs/build` as CI does. The `docs-ci` workflow publishes `docs/build` to GitHub Pages.
@@ -79,9 +79,9 @@ Sensitive values should stay in environment variables or the gitignored `.secret
 Ruff is the single linting tool: `pyproject.toml` configures it and the pre-commit Ruff hook enforces it (Flake8 and the standalone isort hook have been removed).
 
 - Keep Python lines within the 120-character limit declared in `pyproject.toml`.
-- `pyproject.toml` configures Ruff rules `E`, `F`, `B`, `I` and `UP`; `I001` (import sorting), `F401` (unused imports), `F541` (f-strings without placeholders) and `UP` (pyupgrade) are fixable. Within the files touched by the task, fix lint violations rather than adding ignore entries. Remove corresponding ignore entries only when they are no longer needed, and preserve intentional exceptions.
+- `pyproject.toml` configures Ruff rules `E`, `F`, `B`, `I`, `UP` and `FURB`. Within the files touched by the task, fix lint violations rather than adding ignore entries. Remove corresponding ignore entries only when they are no longer needed, and preserve intentional exceptions.
 - Before committing, run `uv run ruff check --fix <paths>` on the Python files you touched and fix every issue it reports. Keep fixes mechanical (rename, remove unused imports, sort imports); do not alter program logic while cleaning up — if a lint fix would change behavior, surface it instead of applying it silently.
-- `.pre-commit-config.yaml` is the source of truth for enabled pre-commit hooks. Run them on the files you touched with `uv run pre-commit run --files <paths>` and review the automatic edits so unrelated changes are not included. The pre-commit GitHub Actions workflow runs on pull requests, so the hooks are enforced in CI.
+- `.pre-commit-config.yaml` is the source of truth for enabled pre-commit hooks. Run them on the files you touched with `uvx pre-commit run --files <paths>` and review the automatic edits so unrelated changes are not included. The pre-commit GitHub Actions workflow runs on pull requests, so the hooks are enforced in CI.
 - No general-purpose Python formatter is currently enforced (`ruff format` is deliberately not adopted yet). Preserve the surrounding file's formatting and avoid unrelated rewrites or repository-wide formatting.
 - Prefer double quotes for Python strings where consistent with the surrounding file.
 - Match existing docstring and comment style—concise English comments using imperative phrasing only where necessary.
@@ -96,6 +96,13 @@ Ruff is the single linting tool: `pyproject.toml` configures it and the pre-comm
 - Set `PYTHONPATH=.` when invoking pytest from the repository root to avoid import errors.
 - End-to-end suites require provider credentials and may take several minutes; `TOKEN_GITHUB`, `TOKEN_GITLAB`, `BITBUCKET_USERNAME`, and `BITBUCKET_PASSWORD` are CI secret names, not runtime environment variables (see the mappings in `.github/workflows/e2e_tests.yaml`). These tests create remote branches and pull/merge requests and expect deployed apps/webhooks to process them; run them only when credentials and sandboxes are configured.
 - `tests/health_test/main.py` is a manual script for `/describe`, `/review`, and `/improve`; it asserts artifact headers inline, not checked-in artifact files. Update those inline assertions if prompts change meaningfully. CI provider smoke runs `tests/health_test/test_github_smoke.py` instead (`/describe` only, model stubbed, `GITHUB.USER_TOKEN`).
+
+## Review Checklist
+
+- A setting can arrive as a TOML list, a plain string, or an environment value that Dynaconf parses as TOML (`SECTION__KEY=123` arrives as an int). Code that reads it handles each form.
+- A fix in one git provider, AI handler or server usually applies to its siblings. Check the same logic in the others and fix them or name them in the PR.
+- New or changed regexes run in linear time: no nested or adjacent unbounded quantifiers that can match the same characters, and no unbounded leading quantifier in an unanchored search. User-supplied patterns and globs get a length cap before they are compiled or translated.
+- Docs and config comments describe what the branch does. A PR that changes a default or a setting's behavior updates the `configuration.toml` comment and the docs page that state it, and none documents behavior from another PR.
 
 ## Commit and Pull Request Guidelines
 

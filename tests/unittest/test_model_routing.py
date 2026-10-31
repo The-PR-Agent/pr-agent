@@ -3,10 +3,16 @@ Tests for [model_routing]: a small pull request gets a cheaper primary model, th
 fallbacks still follow it, and every other call keeps the model it asked for.
 """
 import asyncio
+import copy
+import threading
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from starlette_context import request_cycle_context
 
-from pr_agent.algo.model_routing import count_hunks, route_primary_model
+from pr_agent.algo.model_routing import count_hunks, count_patch_chars, route_primary_model
 from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
     get_effective_fallback_chain,
@@ -83,19 +89,125 @@ def _models_tried(git_provider, model_type=ModelType.REGULAR, fail=()):
 
 
 class TestCountHunks:
-    def test_counts_hunk_headers_across_files(self):
-        assert count_hunks([_file("a.py", 2), _file("b.py", 3)]) == 5
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    def test_counts_hunk_headers_across_files(self, newline):
+        files = [_file(name, 0, patch=_patch(hunks).replace("\n", newline))
+                 for name, hunks in (("a.py", 2), ("b.py", 3))]
+        assert count_hunks(files) == 5
 
-    def test_patch_without_headers_counts_as_one_hunk(self):
-        assert count_hunks([_file("a.py", 0, patch="+whole file\n"), _file("b.py", 0, patch="")]) == 1
+    @pytest.mark.parametrize("empty_patch", ["", " \t\r\n\u2028"])
+    def test_patch_without_headers_counts_as_one_hunk(self, empty_patch):
+        assert count_hunks([_file("a.py", 0, patch="+whole file\n"), _file("b.py", 0, patch=empty_patch)]) == 1
+
+    @pytest.mark.parametrize("separator", ["\r", "\f", "\x85", "\u2028", "\u2029"])
+    def test_source_separators_do_not_create_hunk_headers(self, separator):
+        patch = f"@@ -1 +1 @@\n-old\n+new{separator}@@ ordinary source text\n"
+        assert count_hunks([_file("a.py", 0, patch=patch)]) == 1
 
     def test_no_files(self):
         assert count_hunks([]) == 0
 
 
+class TestCountPatchChars:
+    @pytest.mark.parametrize("patch,failed,expected", [
+        ("", False, 0), ("@@\n", False, 3), ("é\r\n", False, 3), ("e\u0301", False, 2),
+        ("", True, None), ("placeholder", True, None), (None, False, None), (7, False, None),
+    ])
+    def test_literal_character_count_and_unknown_patches(self, patch, failed, expected):
+        file = _file("a.py", 0)
+        file.patch = patch
+        file.content_fetch_failed = failed
+        assert count_patch_chars([file]) == expected
+
+    def test_sums_supplied_strings_even_with_incomplete_head(self):
+        first = _file("a.py", 0, patch="@@\n")
+        first.head_file_is_complete = False
+        assert count_patch_chars([first, _file("b.py", 0, patch="é\r\n")]) == 6
+        assert count_patch_chars([]) == 0
+
+    def test_one_missing_patch_makes_the_aggregate_unknown(self):
+        assert count_patch_chars([_file("a.py", 1), SimpleNamespace(filename="missing.py")]) is None
+
+
 class TestRouting:
-    def test_small_pr_routes_to_the_first_matching_rule(self, settings):
-        assert _models_tried(_pr(num_files=1, hunks_per_file=2)) == ["tiny-model"]
+    async def test_cold_diff_fetch_keeps_the_loop_responsive_and_request_settings(self, settings, monkeypatch):
+        request_settings = copy.deepcopy(settings)
+        provider = _pr(num_files=1, hunks_per_file=1)
+        original_fetch = provider.get_diff_files
+        started = threading.Event()
+        release = threading.Event()
+        loop_thread = threading.get_ident()
+        models = []
+
+        def fetch_diff():
+            started.set()
+            assert threading.get_ident() != loop_thread
+            assert get_settings() is request_settings
+            assert release.wait(10)
+            return original_fetch()
+
+        async def predict(model):
+            models.append(model)
+            if model == "tiny-model":
+                raise FallbackEligibleError("Try the configured fallback")
+            return model
+
+        monkeypatch.setattr(provider, "get_diff_files", fetch_diff)
+        with request_cycle_context({"settings": request_settings}):
+            run = asyncio.create_task(retry_with_fallback_models(predict, git_provider=provider))
+            try:
+                assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), 10)
+                assert not run.done()
+            finally:
+                release.set()
+                result = await asyncio.wait_for(run, 10)
+
+        assert result == "fallback-1"
+        assert models == ["tiny-model", "fallback-1"]
+        assert provider.calls == 1
+
+    def test_patch_char_ceiling_distinguishes_structural_twins(self, settings):
+        short_patch = _patch(1)
+        long_patch = short_patch.replace("+added", "+added" + "x" * 1000)
+        settings.set("model_routing.rules", [{
+            "max_files": 1, "max_hunks": 1, "max_patch_chars": len(short_patch), "model": "tiny-model",
+        }])
+        short = _Provider([_file("a.py", 0, patch=short_patch)])
+        long = _Provider([_file("a.py", 0, patch=long_patch)])
+
+        assert _models_tried(short) == ["tiny-model"]
+        long_models = _models_tried(long)
+        assert short.calls == long.calls == 1
+        assert long_models == ["primary-model"]
+
+    @pytest.mark.parametrize("limit,other,expected", [
+        (1, {}, "tiny-model"), (0, {}, "primary-model"), (-1, {}, "primary-model"),
+        ("1", {}, "tiny-model"), ("invalid", {"max_files": 1}, "primary-model"),
+        (None, {}, "primary-model"), ("", {}, "primary-model"),
+        (True, {}, "primary-model"), (False, {}, "primary-model"),
+        (True, {"max_files": 1}, "tiny-model"), (False, {"max_files": 1}, "tiny-model"),
+    ])
+    def test_patch_char_limit_parsing_and_inclusive_boundary(self, settings, limit, other, expected):
+        settings.set("model_routing.rules", [{"max_patch_chars": limit, "model": "tiny-model", **other}])
+        file = _file("a.py", 0, patch="é")
+        file.head_file_is_complete = False
+        assert _models_tried(_Provider([file])) == [expected]
+
+    @pytest.mark.parametrize("empty_context", [False, True])
+    def test_small_pr_routes_to_the_first_matching_rule(self, settings, monkeypatch, empty_context):
+        offload = AsyncMock(side_effect=AssertionError("Global settings must not dispatch a routing worker"))
+        monkeypatch.setattr(asyncio, "to_thread", offload)
+        scope = request_cycle_context({}) if empty_context else nullcontext()
+        with scope:
+            assert _models_tried(_pr(num_files=1, hunks_per_file=2)) == ["tiny-model"]
+        offload.assert_not_awaited()
+
+    def test_unicode_source_separator_does_not_change_model_selection(self, settings):
+        settings.set("model_routing.rules", [{"max_hunks": 1, "model": "tiny-model"}])
+        patch = '@@ -1 +1 @@\n-value = "old"\n+value = "new\u2028@@ literal"\n'
+        provider = _Provider([_file("a.py", 0, patch=patch)])
+
+        assert _models_tried(provider) == ["tiny-model"]
 
     def test_medium_pr_skips_to_the_next_rule(self, settings):
         assert _models_tried(_pr(num_files=2, hunks_per_file=3)) == ["small-model"]
@@ -252,16 +364,22 @@ class TestRouting:
         assert get_settings().get("openai.deployment_id") == "primary-deployment"
         assert get_effective_fallback_chain() == previous_chain
 
-    def test_weak_tier_is_not_routed(self, settings):
+    def test_weak_tier_is_not_routed(self, settings, monkeypatch):
+        offload = AsyncMock(side_effect=AssertionError("Weak models must not dispatch a routing worker"))
+        monkeypatch.setattr(asyncio, "to_thread", offload)
         provider = _pr(num_files=1, hunks_per_file=1)
         assert _models_tried(provider, model_type=ModelType.WEAK) == ["weak-model"]
         assert provider.calls == 0
+        offload.assert_not_awaited()
 
-    def test_disabled_routing_does_not_touch_the_provider(self, settings):
+    def test_disabled_routing_does_not_touch_the_provider(self, settings, monkeypatch):
         settings.set("model_routing.enable", False)
+        offload = AsyncMock(side_effect=AssertionError("Disabled routing must not dispatch a worker"))
+        monkeypatch.setattr(asyncio, "to_thread", offload)
         provider = _pr(num_files=1, hunks_per_file=1)
         assert _models_tried(provider) == ["primary-model"]
         assert provider.calls == 0
+        offload.assert_not_awaited()
 
     def test_no_rules_does_not_touch_the_provider(self, settings):
         settings.set("model_routing.rules", [])
@@ -269,8 +387,11 @@ class TestRouting:
         assert _models_tried(provider) == ["primary-model"]
         assert provider.calls == 0
 
-    def test_call_without_a_git_provider_keeps_the_primary(self, settings):
+    def test_call_without_a_git_provider_keeps_the_primary(self, settings, monkeypatch):
+        offload = AsyncMock(side_effect=AssertionError("Routing without a provider must not dispatch a worker"))
+        monkeypatch.setattr(asyncio, "to_thread", offload)
         assert _models_tried(None) == ["primary-model"]
+        offload.assert_not_awaited()
 
     def test_rule_without_a_model_or_a_limit_is_ignored(self, settings):
         settings.set("model_routing.rules", [
@@ -280,6 +401,15 @@ class TestRouting:
             {"max_hunks": 3, "model": "tiny-model"},
         ])
         assert _models_tried(_pr(num_files=1, hunks_per_file=1)) == ["tiny-model"]
+
+    @pytest.mark.parametrize("limit", [True, False])
+    def test_boolean_rule_limits_are_ignored(self, settings, limit):
+        settings.set("model_routing.rules", [
+            {"max_files": limit, "model": "invalid-model"},
+            {"max_files": 4, "model": "small-model"},
+        ])
+
+        assert _models_tried(_pr(num_files=1, hunks_per_file=1)) == ["small-model"]
 
     def test_routed_primary_is_recorded_as_the_model_used(self, settings):
         init_run_details()
@@ -319,7 +449,7 @@ class TestAzureDeployments:
         settings.set("openai.deployment_id", "primary-deployment")
         settings.set("openai.fallback_deployments", ["fallback-deployment"])
         settings.set("model_routing.rules", [
-            {"max_hunks": 3, "model": "tiny-model", "deployment_id": "tiny-deployment"},
+            {"max_hunks": 3, "max_patch_chars": 100, "model": "tiny-model", "deployment_id": "tiny-deployment"},
         ])
         observed = []
 
@@ -336,6 +466,45 @@ class TestAzureDeployments:
 
 class TestLazyHunkCounting:
     @pytest.fixture
+    def counted_patch_chars(self, monkeypatch):
+        from pr_agent.algo import model_routing
+
+        calls = []
+
+        def tracked(files):
+            calls.append(files)
+            return count_patch_chars(files)
+
+        monkeypatch.setattr(model_routing, "count_patch_chars", tracked)
+        return calls
+
+    @pytest.mark.parametrize("patch,expected,hunk_calls,warnings", [
+        ("", "zero-model", 1, 0), ("x", "legacy-model", 0, 0), (None, "legacy-model", 0, 1),
+    ])
+    def test_patch_chars_cached_before_hunks(self, settings, counted_patch_chars, counted_hunks,
+                                            monkeypatch, patch, expected, hunk_calls, warnings):
+        from unittest.mock import MagicMock
+
+        from pr_agent.algo import model_routing
+
+        logger = MagicMock()
+        monkeypatch.setattr(model_routing, "get_logger", lambda: logger)
+        settings.set("model_routing.rules", [
+            {"max_patch_chars": -1, "max_hunks": 0, "model": "not-matching"},
+            {"max_patch_chars": 0, "max_hunks": 0, "model": "zero-model"},
+            {"max_files": 1, "model": "legacy-model"},
+        ])
+        file = _file("a.py", 0)
+        file.patch = patch
+        provider = _Provider([file])
+
+        assert route_primary_model(ModelType.REGULAR, provider) == (expected, None)
+        assert len(counted_patch_chars) == 1
+        assert len(counted_hunks) == hunk_calls
+        assert logger.warning.call_count == warnings
+        assert provider.calls == 1
+
+    @pytest.fixture
     def counted_hunks(self, monkeypatch):
         from pr_agent.algo import model_routing
 
@@ -348,7 +517,7 @@ class TestLazyHunkCounting:
         monkeypatch.setattr(model_routing, "count_hunks", tracked)
         return calls
 
-    def test_file_only_rule_never_counts_hunks(self, settings, counted_hunks):
+    def test_file_only_rule_never_counts_hunks(self, settings, counted_hunks, counted_patch_chars):
         settings.set("model_routing.rules", [
             {"max_files": 2, "model": "file-model"},
         ])
@@ -356,16 +525,18 @@ class TestLazyHunkCounting:
 
         assert route_primary_model(ModelType.REGULAR, provider) == ("file-model", None)
         assert counted_hunks == []
+        assert counted_patch_chars == []
         assert provider.calls == 1
 
-    def test_file_limit_rejects_all_rules_without_scanning_patches(self, settings, counted_hunks):
+    def test_file_limit_rejects_all_rules_without_scanning_patches(self, settings, counted_hunks, counted_patch_chars):
         settings.set("model_routing.rules", [
-            {"max_files": 1, "max_hunks": 100, "model": "tiny-model"},
-            {"max_files": 2, "max_hunks": 100, "model": "small-model"},
+            {"max_files": 1, "max_hunks": 100, "max_patch_chars": 100, "model": "tiny-model"},
+            {"max_files": 2, "max_hunks": 100, "max_patch_chars": 100, "model": "small-model"},
         ])
 
         assert route_primary_model(ModelType.REGULAR, _pr(num_files=3, hunks_per_file=100)) is None
         assert counted_hunks == []
+        assert counted_patch_chars == []
 
     def test_hunks_counted_once_only_after_file_limit_passes(self, settings, counted_hunks):
         settings.set("model_routing.rules", [
@@ -402,7 +573,8 @@ class TestLazyHunkCounting:
         )
         assert counted_hunks == []
 
-    def test_deployment_ineligible_rules_do_not_scan_hunks(self, settings, counted_hunks, monkeypatch):
+    def test_deployment_ineligible_rules_do_not_scan_hunks(self, settings, counted_hunks,
+                                                         counted_patch_chars, monkeypatch):
         from unittest.mock import MagicMock
 
         from pr_agent.algo import model_routing
@@ -411,13 +583,14 @@ class TestLazyHunkCounting:
         monkeypatch.setattr(model_routing, "get_logger", lambda: logger)
         settings.set("openai.deployment_id", "primary-deployment")
         settings.set("model_routing.rules", [
-            {"max_files": 2, "max_hunks": 100, "model": "missing-deployment"},
+            {"max_files": 2, "max_hunks": 100, "max_patch_chars": 100, "model": "missing-deployment"},
         ])
         provider = _pr(num_files=1, hunks_per_file=10)
 
         assert route_primary_model(ModelType.REGULAR, provider) is None
         assert counted_hunks == []
         assert provider.calls == 1
+        assert counted_patch_chars == []
         logger.warning.assert_called_once()
         assert "no deployment_id" in logger.warning.call_args.args[0]
 

@@ -164,7 +164,8 @@ def test_fetch_sub_issues_falls_back_to_an_empty_set_on_a_bad_graphql_payload(pa
     raises ValueError and a valid non-object payload raises AttributeError.
     """
     provider = _make_provider()
-    requester = SimpleNamespace(requestJson=lambda method, url, input=None: (200, {}, payload))
+    requester = SimpleNamespace(graphql_url="https://api.github.com/graphql",
+                                requestJson=lambda method, url, input=None: (200, {}, payload))
     provider.github_client = SimpleNamespace(_Github__requester=requester)
 
     assert provider.fetch_sub_issues("https://github.com/owner/repo/issues/1") == set()

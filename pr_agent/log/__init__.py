@@ -67,10 +67,19 @@ def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE
             format="{message}",
             colorize=False,
             serialize=True,
+            diagnose=False,
+            backtrace=False,
         )
     elif fmt == LoggingFormat.CONSOLE: # does not print the 'extra' fields
         logger.remove(None)
-        logger.add(sys.stdout, level=level, colorize=True, filter=inv_analytics_filter)
+        logger.add(
+            sys.stdout,
+            level=level,
+            colorize=True,
+            filter=inv_analytics_filter,
+            diagnose=False,
+            backtrace=False,
+        )
 
     # Imported lazily so `from pr_agent.log import get_logger` does not pull
     # in config_loader while this package is still initializing. config_loader
@@ -88,6 +97,8 @@ def setup_logger(level: str = "INFO", fmt: LoggingFormat = LoggingFormat.CONSOLE
             format="{message}",
             colorize=False,
             serialize=True,
+            diagnose=False,
+            backtrace=False,
         )
 
     return logger

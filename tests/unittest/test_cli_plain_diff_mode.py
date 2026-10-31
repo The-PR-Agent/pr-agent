@@ -2,10 +2,13 @@ import builtins
 import io
 
 import pytest
+from git import Repo
 
+from pr_agent import git_providers
 from pr_agent.algo.artifacts import get_artifact_context
 from pr_agent.cli import _resolve_output_option, commands, run, set_parser
 from pr_agent.config_loader import get_settings
+from pr_agent.git_providers.local_git_provider import LocalGitProvider
 
 # Keys run() mutates on the process-wide settings singleton, directly or via the
 # diff-mode CLI path. Snapshotted and restored around every test (autouse) so
@@ -188,7 +191,7 @@ def test_missing_diff_file_fails_fast(tmp_path, monkeypatch, capsys):
     assert "Could not read --diff-file" in err
 
 
-@pytest.mark.parametrize("command", ["review", "review_pr"])
+@pytest.mark.parametrize("command", ["review", "review_pr", "improve", "improve_code", "describe", "describe_pr"])
 def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     from pr_agent.algo.review_json_output import review_json_output_path
 
@@ -207,6 +210,18 @@ def test_json_output_accepts_pr_review(command, monkeypatch, tmp_path):
     assert review_json_output_path.get() is None
 
 
+@pytest.mark.parametrize("command", ["improve", "improve_code", "describe", "describe_pr"])
+@pytest.mark.parametrize("input_mode", ["stdin", "file"])
+def test_json_output_rejects_improve_in_plain_diff_mode(command, input_mode, monkeypatch, capsys):
+    input_args = _rejecting_input_args(input_mode, monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        run(inargs=[*input_args, "--json-output", "out.json", command])
+
+    assert exc_info.value.code == 2
+    assert "use --pr_url to write improve suggestions or the description as JSON" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("target_args", [[], ["--issue_url", "https://example/issue/1"]])
 def test_json_output_requires_pr_or_diff(target_args, capsys):
     with pytest.raises(SystemExit, match="2"):
@@ -217,7 +232,7 @@ def test_json_output_requires_pr_or_diff(target_args, capsys):
 def test_json_output_rejects_non_review_pr_command(monkeypatch, capsys):
     _fail_if_agent_constructed(monkeypatch)
     with pytest.raises(SystemExit, match="2"):
-        run(inargs=["--pr_url", "https://example/pr/1", "--json-output", "out.json", "describe"])
+        run(inargs=["--pr_url", "https://example/pr/1", "--json-output", "out.json", "ask"])
     assert "--json-output is only supported for review commands" in capsys.readouterr().err
 
 
@@ -342,6 +357,79 @@ def test_auto_review_writes_markdown_artifact_with_stubbed_model(
     run(inargs=["--stdin", "--output", str(output), "auto_review"])
 
     assert _REVIEW_MARKER in output.read_text(encoding="utf-8")
+
+
+def test_plain_diff_ask_keeps_output_after_command_settings(monkeypatch, tmp_path, capsys):
+    async def answer(self, model, system, user, temperature=0.2, **kwargs):
+        return "The changed line is correct.", "stop"
+
+    monkeypatch.setattr(
+        "pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler.chat_completion", answer,
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(_DIFF))
+    output = tmp_path / "answer.md"
+
+    run(inargs=["--stdin", "--output", str(output), "ask", "Explain.", "--config.publish_output=false"])
+
+    assert "The changed line is correct." in output.read_text(encoding="utf-8")
+    assert "The changed line is correct." in capsys.readouterr().out
+
+
+def test_plain_diff_ask_applies_command_ignore_filter(monkeypatch):
+    diff = (
+        "diff --git a/foo.py b/foo.py\n--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/bar.py b/bar.py\n--- a/bar.py\n+++ b/bar.py\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    seen = []
+
+    async def capture(self):
+        seen.extend(f.filename for f in self.git_provider.get_diff_files())
+
+    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    monkeypatch.setattr("sys.stdin", io.StringIO(diff))
+    run(inargs=["--stdin", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
+
+    assert seen == ["bar.py"]
+
+
+@pytest.mark.parametrize("registered_provider", [False, True])
+def test_local_git_ask_applies_command_ignore_filter(monkeypatch, tmp_path, cfg, registered_provider):
+    repo = Repo.init(tmp_path, initial_branch="main")
+    with repo.config_writer() as config:
+        config.set_value("user", "name", "Test User")
+        config.set_value("user", "email", "test@example.com")
+
+    for filename in ("foo.py", "bar.py"):
+        (tmp_path / filename).write_text("old\n", encoding="utf-8")
+    repo.index.add(["foo.py", "bar.py"])
+    repo.index.commit("base")
+
+    repo.git.checkout("-b", "feature")
+    for filename in ("foo.py", "bar.py"):
+        (tmp_path / filename).write_text("new\n", encoding="utf-8")
+    repo.index.add(["foo.py", "bar.py"])
+    repo.index.commit("change")
+
+    provider_id = "local"
+    if registered_provider:
+        class RegisteredLocalProvider(LocalGitProvider):
+            pass
+
+        provider_id = "registered-local"
+        monkeypatch.setitem(git_providers._GIT_PROVIDERS, provider_id, RegisteredLocalProvider)
+
+    cfg("config.git_provider", provider_id)
+    cfg("plain_diff.content", None)
+    monkeypatch.chdir(tmp_path)
+    seen = []
+
+    async def capture(self):
+        seen.extend(f.filename for f in self.git_provider.get_diff_files())
+
+    monkeypatch.setattr("pr_agent.tools.pr_questions.PRQuestions.run", capture)
+    run(inargs=["--pr_url", "main", "ask", "Explain.", '--ignore.glob=["foo.py"]'])
+
+    assert seen == ["bar.py"]
 
 
 def test_answer_output_is_rejected_without_creating_artifact(monkeypatch, tmp_path, capsys):

@@ -394,3 +394,22 @@ def test_full_issue_url_preserves_ascii_case_insensitive_authority():
     url = f"HTTPS://GHE.EXAMPLE.TEST:8443/{REPO}/issues/12"
 
     assert extract_ticket_links_from_pr_description(url, REPO, base) == [url]
+
+
+def test_reference_style_markdown_link_text_is_not_a_ticket():
+    description = "See [#6211][release]\n\n[release]: https://example.com/changelog"
+
+    assert _links(description) == []
+
+
+def test_html_anchor_text_with_quoted_greater_than_is_not_a_ticket():
+    description = '<a title="a > b" href="https://example.com/changelog">#42</a>'
+
+    assert _links(description) == []
+
+
+def test_custom_pattern_ignores_matches_inside_html_comments(description_regex):
+    description_regex(r"(?i)(?:fixes|closes|resolves)\s+#(\d+)")
+    description = "<!-- Example: Closes #1234 -->\nCloses #42"
+
+    assert _links(description) == [f"{BASE}/{REPO}/issues/42"]

@@ -1,8 +1,10 @@
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
+from pr_agent.algo.comment_identity import PRDescriptionIdentity
 from pr_agent.algo.run_details import command_failed
 from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import (
@@ -79,6 +81,47 @@ async def test_run_removes_progress_comment_when_description_generation_fails(
             "Preparing PR description...", is_temporary=True
         )
         provider.remove_comment.assert_called_once_with(progress_comment)
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_prefetches_diff_off_the_event_loop(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    fetch_thread_ids = []
+
+    def fetch_diff():
+        fetch_thread_ids.append(threading.get_ident())
+        started.set()
+        assert release.wait(10)
+        return [MagicMock(), MagicMock()]
+
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        provider.get_files.return_value = [MagicMock() for _ in range(20)]
+        provider.get_diff_files.side_effect = fetch_diff
+        description = _make_description(provider)
+        description.COLLAPSIBLE_FILE_LIST_THRESHOLD = 8
+
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", AsyncMock())
+        get_settings().config.publish_output = False
+
+        run = asyncio.create_task(description.run())
+        try:
+            assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), 10)
+            assert not run.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(run, 10)
+
+        assert len(fetch_thread_ids) == 1
+        assert fetch_thread_ids[0] != threading.get_ident()
+        provider.get_diff_files.assert_called_once_with()
+        # Ignored files returned by get_files() must not collapse the file summary.
+        assert description.vars["include_file_summary_changes"] is True
     finally:
         restore_settings(settings_snapshot)
 
@@ -265,7 +308,7 @@ async def test_run_reports_description_publication_failure(published_description
 
     provider.publish_description.assert_called_once()
     assert command_failed()
-    assert call("Failed to update PR description") in provider.publish_comment.call_args_list
+    provider.publish_tool_failure.assert_called_once_with("describe", "Failed to update PR description")
     provider.get_latest_commit_url.assert_not_called()
     provider.remove_comment.assert_called_once_with(progress_comment)
 
@@ -289,7 +332,7 @@ async def test_run_keeps_description_success_when_final_feedback_fails(
 
     provider.publish_description.assert_called_once()
     assert not command_failed()
-    assert call("Failed to update PR description") not in provider.publish_comment.call_args_list
+    provider.publish_tool_failure.assert_not_called()
     assert provider.publish_comment.call_count == (2 if failed_step == "publish_comment" else 1)
     provider.edit_comment.assert_called_once_with(progress_comment, "PR description generation finished.")
     provider.remove_comment.assert_called_once_with(progress_comment)
@@ -351,7 +394,11 @@ async def test_run_keeps_description_comment_delivery_failures_strict(published_
     provider.get_latest_commit_url.assert_not_called()
     provider.remove_comment.assert_called_once_with(progress_comment)
     if persistent:
-        assert provider.publish_persistent_comment.call_args.kwargs["final_update_message"] is False
+        kwargs = provider.publish_persistent_comment.call_args.kwargs
+        assert kwargs["final_update_message"] is False
+        assert kwargs["identity_marker"] == PRDescriptionIdentity.PERSISTENT.value
+        assert kwargs["require_agent_authorship"] is True
+        provider.publish_persistent_comment_full.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -387,5 +434,46 @@ async def test_run_always_includes_walkthrough_in_the_description_body(monkeypat
         title, body = provider.publish_description.call_args.args
         assert title == "AI title"
         assert "WALKTHROUGH" in body
+    finally:
+        restore_settings(settings_snapshot)
+
+
+@pytest.mark.asyncio
+async def test_run_skips_without_recording_failure_when_all_changed_files_are_filtered(monkeypatch):
+    settings_snapshot = snapshot_settings(_TRACKED_SETTINGS)
+    try:
+        provider = MagicMock()
+        progress_comment = MagicMock(name="progress_comment")
+        provider.publish_comment.return_value = progress_comment
+        provider.is_supported.return_value = False
+        description = _make_description(provider)
+
+        async def fake_retry(prepare_fn, model_type=None):
+            await prepare_fn("primary-model")
+
+        monkeypatch.setattr(pr_description_module, "extract_and_cache_pr_tickets", AsyncMock())
+        monkeypatch.setattr(pr_description_module, "retry_with_fallback_models", fake_retry)
+        # A lockfile-only or asset-only PR has no diff left after file-type filtering.
+        monkeypatch.setattr(pr_description_module, "get_pr_diff", MagicMock(return_value=("", [])))
+        monkeypatch.setattr(
+            pr_description_module,
+            "get_pr_diff_multiple_patchs",
+            MagicMock(return_value=([], [], [], [], {}, [])),
+        )
+        monkeypatch.setattr(
+            pr_description_module,
+            "fit_related_tickets_to_prompt_budget",
+            lambda _pr, raw_vars, _system, _user, _model, **_kwargs: (raw_vars, MagicMock()),
+        )
+        _configure_published_run()
+
+        await description.run()
+
+        assert not command_failed()
+        provider.publish_comment.assert_called_once_with(
+            "Preparing PR description...", is_temporary=True
+        )
+        provider.remove_comment.assert_called_once_with(progress_comment)
+        provider.publish_description.assert_not_called()
     finally:
         restore_settings(settings_snapshot)

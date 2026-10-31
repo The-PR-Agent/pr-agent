@@ -20,6 +20,7 @@ from pr_agent.algo.run_details import command_failed, init_run_details
 from pr_agent.algo.run_output import get_version
 from pr_agent.command_descriptions import COMMAND_DESCRIPTIONS
 from pr_agent.config_loader import get_settings
+from pr_agent.doctor import DOCTOR_COMMANDS, run_doctor_checks
 from pr_agent.log import get_logger, setup_logger
 
 log_level = os.environ.get("LOG_LEVEL", "INFO")
@@ -33,6 +34,8 @@ _PLAIN_DIFF_MARKDOWN_COMMANDS = frozenset({
     "config", "settings", "help",
 })
 _JSON_REVIEW_COMMANDS = frozenset({"review", "review_pr"})
+_JSON_IMPROVE_COMMANDS = frozenset({"improve", "improve_code"})
+_JSON_DESCRIBE_COMMANDS = frozenset({"describe", "describe_pr"})
 _OUTPUT_OPTIONS = ("--output", "--json-output")
 _CLI_CONTEXT_CACHES = (
     "git_provider", "repo_settings", "git_files", "diff_files", "authenticated_provider_settings",
@@ -99,8 +102,13 @@ def _validate_output_options(parser, args, diff_mode):
             parser.error(f"--output is not supported for plain-diff command '{command}'")
 
     if json_output is not None:
-        if command not in _JSON_REVIEW_COMMANDS:
-            parser.error("--json-output is only supported for review commands (review or review_pr)")
+        pr_tool_commands = _JSON_IMPROVE_COMMANDS | _JSON_DESCRIBE_COMMANDS
+        if command not in _JSON_REVIEW_COMMANDS | pr_tool_commands:
+            parser.error("--json-output is only supported for review commands (review or review_pr), "
+                         "and for improve or describe commands with --pr_url")
+        if diff_mode and command in pr_tool_commands:
+            parser.error("--json-output is only supported for review commands in plain-diff mode; "
+                         "use --pr_url to write improve suggestions or the description as JSON")
         if not diff_mode and (not args.pr_url or args.issue_url):
             parser.error("--json-output requires --pr_url, --stdin, or --diff-file")
 
@@ -118,6 +126,8 @@ def set_parser():
 
     Supported commands:
     - review / review_pr - {COMMAND_DESCRIPTIONS["review"]}
+
+    - doctor - Check the model/key, ping the model, and check basic settings for enabled output sinks without a PR.
 
     - ask / ask_question [question] - Ask a question about the PR.
 
@@ -162,7 +172,7 @@ def set_parser():
     parser.add_argument("--json-output", dest="json_output", type=str, default=None,
                         help=("Write a parsed review and token usage to this JSON file "
                               "(place before the review command)"))
-    parser.add_argument('command', type=str, help='The', choices=commands, default='review')
+    parser.add_argument('command', type=str, help='The', choices=[*commands, *DOCTOR_COMMANDS], default='review')
     parser.add_argument('rest', nargs=argparse.REMAINDER, default=[])
     return parser
 
@@ -184,6 +194,12 @@ def run(inargs=None, args=None):
     if diff_mode and args.stdin and args.diff_file:
         parser.error("--stdin and --diff-file are mutually exclusive")
     _validate_output_options(parser, args, diff_mode)
+    if args.command.lower() in DOCTOR_COMMANDS:
+        # Preflight checks need neither a PR nor a diff; run them in the CLI settings
+        # scope so environment overrides and config files apply as in a real run.
+        with _cli_settings_scope():
+            get_settings().set("CONFIG.CLI_MODE", True)
+            return asyncio.run(run_doctor_checks())
     diff_content = None
     if diff_mode:
         if args.diff_file:
@@ -237,7 +253,7 @@ def run(inargs=None, args=None):
             if args.issue_url:
                 result = await PRAgent().handle_request(args.issue_url, [command] + args.rest)
             else:
-                target = args.pr_url if args.pr_url else "local_diff"
+                target = args.pr_url or "local_diff"
                 result = await PRAgent().handle_request(target, [command] + args.rest)
             if result is RequestOutcome.SKIPPED:
                 # No tool ran, so there are no command callbacks or failures to drain.

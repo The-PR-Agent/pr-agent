@@ -15,6 +15,50 @@ from pr_agent.config_loader import get_settings
 from pr_agent.git_providers.git_provider import GitProvider
 from pr_agent.log import get_logger
 
+# A `#N` that is the whole text of a link (HTML anchor or Markdown), e.g. Dependabot's changelog links.
+_HASH_LINK_TEXT_PATTERN = re.compile(
+    r"""<a\b(?:[^"'<>]|"[^"]*"|'[^']*')*>\s*(#\d+)\s*</a\s*>"""
+    r"|\[\s*(#\d+)\s*\](?:\(|\[[^\]]*\])",
+    re.IGNORECASE,
+)
+
+
+def _html_comment_spans(text):
+    """Spans of closed HTML comments, found in one left-to-right pass."""
+    spans, pos = [], 0
+    while (start := text.find("<!--", pos)) != -1:
+        end = text.find("-->", start + 4)
+        if end == -1:
+            break
+        end += 3
+        spans.append((start, end))
+        pos = end
+    return spans
+
+
+def _non_reference_hash_starts(text, comment_spans):
+    """Offsets of hashes inside comments or forming the whole text of a link."""
+    starts = {i for start, end in comment_spans for i in range(start, end) if text[i] == "#"}
+    for m in _HASH_LINK_TEXT_PATTERN.finditer(text):
+        starts.add(m.start(1) if m.group(1) else m.start(2))
+    return starts
+
+
+def _is_non_reference_hash(text, start, end, non_reference_starts):
+    """True when a bare `#N` at [start, end) is markup, a colour, or glued to a word, not an issue reference."""
+    if start in non_reference_starts:
+        return True
+    # Glued to a word on either side: `issue#12`, `#0a0a0a`. A `owner/repo#N` tail is still a reference.
+    if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+        if not re.search(r"/[A-Za-z0-9._-]+$", text[max(0, start - 200):start]):
+            return True
+    if end < len(text) and (text[end].isalnum() or text[end] == "_"):
+        return True
+    # Tailwind arbitrary value: `bg-[#121212]`, `dark:bg-[#0a0a0a]`.
+    if start >= 2 and text[start - 1] == "[" and (text[start - 2].isalnum() or text[start - 2] in "_-"):
+        return True
+    return False
+
 
 def _github_ticket_pattern(base_url_html):
     """Match full issue URLs only on the provider's configured HTTPS web origin."""
@@ -76,6 +120,10 @@ JIRA_API_VERSION = "2"
 # arbitrary host. The name must be a single DNS label (letters, digits, hyphens) so it
 # cannot contain '.', '/', ':', '@' etc. that would let it escape *.atlassian.net.
 JIRA_SITE_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+JIRA_CLOUD_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 # A Jira project key as configured in jira.project_keys: the "<PROJECT>" in PROJECT-123.
 # Bounded like the prefix in find_jira_tickets (2-10 letters) so an entry can only ever be
@@ -89,21 +137,32 @@ JIRA_PROJECT_KEY_PATTERN = re.compile(r"^[A-Z]{2,10}$")
 
 def _jira_cloud_base_url():
     """
-    Return the Jira Cloud base URL built from the configured site name, or None if the
-    site is missing or invalid. Building the URL from a validated site name (rather than
-    accepting a free-form base URL from settings) ensures the authenticated request can
-    only ever go to https://<site>.atlassian.net, even if settings were overridden by
-    untrusted repo configuration.
+    Return the Jira Cloud gateway URL for a valid cloud ID, or the site URL for classic
+    tokens. A validated site name is used rather than a free-form base URL, ensuring
+    authenticated requests stay on Atlassian-controlled hosts even if settings were
+    overridden by untrusted repository configuration.
     """
     site = get_settings().get("JIRA.JIRA_SITE", None)
+    cloud_id = get_settings().get("JIRA.CLOUD_ID", None)
+    if cloud_id:
+        if not isinstance(cloud_id, str) or not JIRA_CLOUD_ID_PATTERN.fullmatch(cloud_id.strip()):
+            get_logger().warning(
+                "Invalid jira.cloud_id; expected a UUID. Skipping Jira ticket lookup.")
+            return None
+    if cloud_id is not None and not isinstance(cloud_id, str):
+        get_logger().warning(
+            "Invalid jira.cloud_id; expected a UUID. Skipping Jira ticket lookup.")
+        return None
+    site = str(site or "").strip()
     if not site:
         return None
-    site = str(site).strip()
-    if not JIRA_SITE_PATTERN.match(site):
+    if not JIRA_SITE_PATTERN.fullmatch(site):
         get_logger().warning(
             f"Invalid jira_site '{site}'; expected a Jira Cloud site name like 'mycompany' "
             f"(the '<site>' in https://<site>.atlassian.net). Skipping Jira ticket lookup.")
         return None
+    if cloud_id:
+        return f"https://api.atlassian.com/ex/jira/{cloud_id.strip()}"
     return f"https://{site}.atlassian.net"
 
 
@@ -201,11 +260,11 @@ def find_jira_tickets(text):
 def _get_jira_client():
     """
     Build a Jira Cloud client from the [jira] settings. Returns None if Jira is not
-    configured. Only Jira Cloud is supported: the base URL is derived from a validated
-    site name (jira_site) so untrusted repo configuration cannot redirect the
-    authenticated request to an arbitrary host. Cloud authenticates with the account
-    email + API token. The REST API version is pinned via JIRA_API_VERSION (see its
-    definition for why).
+    configured. With a valid cloud ID, scoped or service-account tokens use the Atlassian
+    API gateway; otherwise the base URL is derived from the validated site name so
+    untrusted repository configuration cannot redirect the authenticated request to an
+    arbitrary host. Cloud authenticates with the account email and API token. The REST
+    API version is pinned via JIRA_API_VERSION (see its definition for why).
     """
     site = get_settings().get("JIRA.JIRA_SITE", None)
     api_email = get_settings().get("JIRA.JIRA_API_EMAIL", None)
@@ -291,7 +350,12 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
     if jira_client is None:
         return []
 
-    base_url = _jira_cloud_base_url() or ""
+    site = str(get_settings().get("JIRA.JIRA_SITE", "") or "").strip()
+    ticket_base_url = (
+        f"https://{site}.atlassian.net"
+        if JIRA_SITE_PATTERN.fullmatch(site)
+        else ""
+    )
     # Custom field that holds acceptance criteria / requirements. The field id is
     # instance-specific (e.g. "customfield_10127"), so it must be configured; empty
     # means no requirements are extracted.
@@ -334,7 +398,7 @@ def extract_jira_tickets(text, max_characters=MAX_TICKET_CHARACTERS, max_tickets
         labels = fields.get("labels", []) or []
         tickets_content.append({
             "ticket_id": key,
-            "ticket_url": f"{base_url}/browse/{key}" if base_url else "",
+            "ticket_url": f"{ticket_base_url}/browse/{key}" if ticket_base_url else "",
             "title": fields.get("summary", ""),
             "body": body,
             "requirements": requirements,
@@ -436,13 +500,11 @@ def fit_related_tickets_to_prompt_budget(
 ) -> tuple[dict, TokenHandler]:
     """Fit complete related-ticket records while preserving room for the PR diff."""
     prompt_vars = copy.deepcopy(raw_vars)
-    related_tickets = prompt_vars.get("related_tickets")
-    if not isinstance(related_tickets, list):
-        related_tickets = []
+    raw_tickets = prompt_vars.get("related_tickets")
+    if not isinstance(raw_tickets, list):
+        raw_tickets = prompt_vars["related_tickets"] = []
 
-    raw_tickets = copy.deepcopy(related_tickets)
-    prompt_vars["related_tickets"] = []
-    budget = AttemptTokenBudget.for_prompt_attempt(
+    full_budget = AttemptTokenBudget.for_prompt_attempt(
         model,
         pr,
         prompt_vars,
@@ -451,35 +513,17 @@ def fit_related_tickets_to_prompt_budget(
         ai_handler=ai_handler,
         output_token_reserve=output_token_reserve,
     )
-    if not raw_tickets:
-        budget.require_input_capacity(
-            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
-            preserve_minimum=True,
-        )
-        return prompt_vars, budget.token_handler
-
-    prompt_token_limit = budget.input_token_limit(
+    prompt_token_limit = full_budget.input_token_limit(
         OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
         preserve_minimum=True,
         additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     )
-    full_vars = copy.deepcopy(prompt_vars)
-    full_vars["related_tickets"] = copy.deepcopy(raw_tickets)
-    full_budget = AttemptTokenBudget.for_prompt_attempt(
-        model,
-        pr,
-        full_vars,
-        system_prompt,
-        user_prompt,
-        ai_handler=ai_handler,
-        output_token_reserve=output_token_reserve,
-    )
-    if full_budget.prompt_tokens <= prompt_token_limit:
+    if not raw_tickets or full_budget.prompt_tokens <= prompt_token_limit:
         full_budget.require_input_capacity(
             OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
             preserve_minimum=True,
         )
-        return full_vars, full_budget.token_handler
+        return prompt_vars, full_budget.token_handler
 
     best_vars = None
     best_budget = None
@@ -487,7 +531,11 @@ def fit_related_tickets_to_prompt_budget(
     upper_bound = len(raw_tickets) - 1
     while lower_bound <= upper_bound:
         prefix_size = (lower_bound + upper_bound) // 2
-        candidate_vars = copy.deepcopy(prompt_vars)
+        candidate_vars = {
+            key: copy.deepcopy(value)
+            for key, value in prompt_vars.items()
+            if key != "related_tickets"
+        }
         candidate_vars["related_tickets"] = copy.deepcopy(raw_tickets[:prefix_size])
         candidate_vars["related_tickets_omitted"] = len(raw_tickets) - prefix_size
         candidate_budget = AttemptTokenBudget.for_prompt_attempt(
@@ -900,7 +948,9 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                 custom_pattern = None
 
         candidates = []
-        explicit_spans = []
+        comment_spans = _html_comment_spans(pr_description)
+        explicit_spans = list(comment_spans)
+        non_reference_starts = _non_reference_hash_starts(pr_description, comment_spans)
         for match in _github_ticket_pattern(base_url_html).finditer(pr_description):
             if match[1]:  # Full URL match
                 candidates.append((match.start(), match[1]))
@@ -912,6 +962,8 @@ def extract_ticket_links_from_pr_description(pr_description, repo_path, base_url
                 explicit_spans.append(match.span())
             elif custom_pattern is None:  # Default #123 format
                 issue_number = match[6][1:]
+                if _is_non_reference_hash(pr_description, match.start(), match.end(), non_reference_starts):
+                    continue
                 if (issue_number.isdigit() and repo_path
                         and len(issue_number) <= MAX_SHORTHAND_ISSUE_DIGITS):
                     candidates.append((match.start(),
@@ -1016,7 +1068,7 @@ def _normalize_github_host(url):
         host = urlparse(url or "").hostname or ""
     except (AttributeError, TypeError, ValueError):
         return ""
-    return host[len("api."):] if host.startswith("api.") else host
+    return host.removeprefix("api.")
 
 
 def _get_repo_obj_for_ticket(git_provider, ticket_url, repo_name, repo_obj_cache):
@@ -1136,6 +1188,14 @@ async def extract_tickets(git_provider):
             repo_obj_cache = {}
 
             if tickets:
+                issue_cache = {}
+
+                def get_issue_once(ticket_url, repo_name, repo_obj, issue_number):
+                    # Reuse successful reads shared by direct references and sub-issues.
+                    key = (_normalize_github_host(ticket_url), repo_name.lower(), issue_number)
+                    if key not in issue_cache:
+                        issue_cache[key] = git_provider.get_issue_content(repo_obj, issue_number)
+                    return issue_cache[key]
 
                 for ticket in tickets:
                     if len(tickets_content) >= MAX_GITHUB_TICKETS:
@@ -1146,7 +1206,7 @@ async def extract_tickets(git_provider):
                         repo_obj = _get_repo_obj_for_ticket(git_provider, ticket, repo_name, repo_obj_cache)
                         if repo_obj is None:
                             continue
-                        issue_main = git_provider.get_issue_content(repo_obj, original_issue_number)
+                        issue_main = get_issue_once(ticket, repo_name, repo_obj, original_issue_number)
                     except Exception as e:
                         get_logger().error(f"Error getting main issue {ticket!r}: {e}",
                                            artifact={"traceback": traceback.format_exc()})
@@ -1162,7 +1222,12 @@ async def extract_tickets(git_provider):
                     # Extract sub-issues
                     sub_issues_content = []
                     try:
-                        raw_sub_issues = git_provider.fetch_sub_issues(ticket) or []
+                        # Reuse the completed parent response when it explicitly reports no children.
+                        issue_data = getattr(issue_main, "raw_data", {})
+                        summary = issue_data.get("sub_issues_summary") if isinstance(issue_data, dict) else None
+                        total = summary.get("total") if isinstance(summary, dict) else None
+                        known_empty = isinstance(total, int) and not isinstance(total, bool) and total == 0
+                        raw_sub_issues = [] if known_empty else git_provider.fetch_sub_issues(ticket) or []
                         valid_sub_issues = [
                             url for url in raw_sub_issues
                             if isinstance(url, str) and url.strip()
@@ -1174,7 +1239,7 @@ async def extract_tickets(git_provider):
                                                                         repo_obj_cache)
                                 if sub_repo_obj is None:
                                     continue
-                                sub_issue = git_provider.get_issue_content(sub_repo_obj, sub_issue_number)
+                                sub_issue = get_issue_once(sub_issue_url, sub_repo, sub_repo_obj, sub_issue_number)
 
                                 sub_body = sub_issue.body or ""
                                 if len(sub_body) > MAX_TICKET_CHARACTERS:
@@ -1245,11 +1310,23 @@ async def extract_tickets(git_provider):
                     seen.add(key)
                     references.append((project_path, issue_iid))
             tickets_content = []
+            own_project = str(getattr(git_provider, "id_project", "") or "")
             for project_path, issue_iid in references[:MAX_GITLAB_TICKET_LOOKUPS]:
                 try:
-                    # Only the issue manager is needed; avoid fetching unused project metadata.
-                    project = git_provider.gl.projects.get(project_path, lazy=True)
+                    is_own_project = project_path.casefold() == own_project.casefold()
+                    if is_own_project:
+                        # Only the issue manager is needed; avoid fetching unused project metadata.
+                        project = git_provider.gl.projects.get(project_path, lazy=True)
+                    else:
+                        project = git_provider.get_sibling_repo(project_path)
+                        if project is None:
+                            continue
                     issue = project.issues.get(issue_iid)
+                    if not is_own_project and getattr(issue, "confidential", False):
+                        get_logger().warning(
+                            f"Ignoring confidential cross-project GitLab issue: {project_path}#{issue_iid}"
+                        )
+                        continue
 
                     issue_body = issue.description or ""
                     if len(issue_body) > MAX_TICKET_CHARACTERS:
@@ -1281,7 +1358,11 @@ async def extract_tickets(git_provider):
             return tickets_content
 
         elif _provider_supports(git_provider, "supports_linked_work_item_tickets"):
-            tickets_info = git_provider.get_linked_work_items()
+            try:
+                tickets_info = git_provider.get_linked_work_items()
+            except Exception:
+                get_logger().warning("Failed to get linked work items; continuing without them")
+                tickets_info = []
             tickets_content = []
             for ticket in tickets_info:
                 try:

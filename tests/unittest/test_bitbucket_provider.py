@@ -632,6 +632,25 @@ index 1111111..2222222 100644
             "+diff --git added literal\n"
         )
 
+    _CRLF_DIFF_WITH_PREAMBLE = (
+        "Bitbucket generated diff\r\n"
+        "\r\n"
+        "diff --git a/src/first.py b/src/first.py\r\n"
+        "index 1111111..2222222 100644\r\n"
+        "--- a/src/first.py\r\n"
+        "+++ b/src/first.py\r\n"
+        "@@ -1 +1 @@\r\n"
+        "-old first\r\n"
+        "+new first\r\n"
+        "diff --git a/src/second.py b/src/second.py\r\n"
+        "index 3333333..4444444 100644\r\n"
+        "--- a/src/second.py\r\n"
+        "+++ b/src/second.py\r\n"
+        "@@ -1 +1 @@\r\n"
+        "-old second\r\n"
+        "+new second\r\n"
+    )
+
     def test_get_diff_files_splits_crlf_headers_after_preamble_in_diffstat_order(self):
         provider = BitbucketProvider.__new__(BitbucketProvider)
         provider.diff_files = None
@@ -649,24 +668,7 @@ index 1111111..2222222 100644
 
         diffstats = [first, second]
         provider.pr.diffstat.return_value = diffstats
-        provider.pr.diff.return_value = (
-            "Bitbucket generated diff\r\n"
-            "\r\n"
-            "diff --git a/src/first.py b/src/first.py\r\n"
-            "index 1111111..2222222 100644\r\n"
-            "--- a/src/first.py\r\n"
-            "+++ b/src/first.py\r\n"
-            "@@ -1 +1 @@\r\n"
-            "-old first\r\n"
-            "+new first\r\n"
-            "diff --git a/src/second.py b/src/second.py\r\n"
-            "index 3333333..4444444 100644\r\n"
-            "--- a/src/second.py\r\n"
-            "+++ b/src/second.py\r\n"
-            "@@ -1 +1 @@\r\n"
-            "-old second\r\n"
-            "+new second\r\n"
-        )
+        provider.pr.diff.return_value = self._CRLF_DIFF_WITH_PREAMBLE
 
         settings = MagicMock()
         settings.get.return_value = True
@@ -699,6 +701,153 @@ index 1111111..2222222 100644
             for filename in patch_paths
         )
         return provider, diffstats
+
+    def test_cold_filename_and_diff_pair_share_one_diffstat_acquisition(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        provider.pr.diffstat.side_effect = lambda: iter(diffstats)
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {}):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            files = provider.get_diff_files()
+            assert provider.get_diff_files() is files
+
+        assert [(file.filename, file.edit_type, file.num_plus_lines, file.num_minus_lines) for file in files] == [
+            ("src/first.py", EDIT_TYPE.MODIFIED, 1, 1),
+            ("src/second.py", EDIT_TYPE.MODIFIED, 1, 1),
+        ]
+        assert all(file.patch == "@@ -1 +1 @@\n-old\n+new\n" for file in files)
+        provider.pr.diffstat.assert_called_once_with()
+        provider.pr.diff.assert_called_once_with()
+
+    def test_warm_context_filenames_do_not_supply_a_raw_diffstat(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        shared_names = ["shared.py"]
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {"git_files": shared_names}):
+            assert provider.get_files() is shared_names
+            provider.pr.diffstat.assert_not_called()
+            files = provider.get_diff_files()
+
+        assert [file.filename for file in files] == ["src/first.py", "src/second.py"]
+        provider.pr.diffstat.assert_called_once_with()
+
+    def test_successful_empty_filenames_discard_an_older_raw_handoff(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        provider.pr.diffstat.side_effect = [iter(diffstats), iter([]), iter([diffstats[1]])]
+        provider.pr.diff.return_value = (
+            "diff --git a/src/second.py b/src/second.py\n"
+            "--- a/src/second.py\n+++ b/src/second.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+        request_context = {}
+        with patch("pr_agent.git_providers.bitbucket_provider.context", request_context):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            request_context["git_files"] = []
+            assert provider.get_files() == []
+            assert [file.filename for file in provider.get_diff_files()] == ["src/second.py"]
+
+        assert provider.pr.diffstat.call_count == 3
+
+    def test_filtered_empty_diff_reacquires_after_the_initial_pair(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        with (
+            patch("pr_agent.git_providers.bitbucket_provider.context", {}),
+            patch("pr_agent.git_providers.bitbucket_provider.filter_ignored", return_value=[]),
+        ):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            assert provider.get_diff_files() == []
+            calls_after_first_diff = provider.pr.diffstat.call_count
+            assert calls_after_first_diff == 1
+            assert provider.get_diff_files() == []
+
+        assert provider.pr.diffstat.call_count == calls_after_first_diff + 1
+
+    def test_partial_filename_pagination_falls_back_without_partial_publication(self):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+
+        def partial_page():
+            yield diffstats[0]
+            assert provider.git_files is None
+            assert getattr(provider, "_pending_diffstat", None) is None
+            raise RuntimeError("next page failed")
+
+        provider.pr.diffstat.side_effect = [partial_page(), iter(diffstats), iter(diffstats)]
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {}):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            assert provider.pr.diffstat.call_count == 2
+            assert [file.filename for file in provider.get_diff_files()] == ["src/first.py", "src/second.py"]
+            assert provider.pr.diffstat.call_count == 2
+
+    @pytest.mark.parametrize("recover", [False, True])
+    def test_filename_conversion_stops_iteration_and_reacquires_in_fallback(self, recover):
+        provider, diffstats = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        events = []
+        malformed = SimpleNamespace(new=SimpleNamespace())
+
+        def bad_page():
+            events.append("start")
+            yield malformed
+            events.append("advanced past malformed filename")
+            raise AssertionError("conversion must precede the next page")
+
+        provider.pr.diffstat.side_effect = [bad_page(), iter(diffstats) if recover else bad_page()]
+        request_context = {}
+        with patch("pr_agent.git_providers.bitbucket_provider.context", request_context):
+            if recover:
+                assert provider.get_files() == ["src/first.py", "src/second.py"]
+            else:
+                with pytest.raises(AttributeError, match="path"):
+                    provider.get_files()
+                assert provider.git_files is None
+                assert getattr(provider, "_pending_diffstat", None) is None
+            assert request_context == {}
+
+        assert provider.pr.diffstat.call_count == 2
+        assert events == (["start"] if recover else ["start", "start"])
+
+    def test_context_write_failure_keeps_the_complete_filename_result(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        request_context = MagicMock()
+        request_context.get.return_value = None
+        request_context.__setitem__.side_effect = RuntimeError("context write failed")
+        with patch("pr_agent.git_providers.bitbucket_provider.context", request_context):
+            assert provider.get_files() == ["src/first.py", "src/second.py"]
+            provider.pr.diffstat.assert_called_once_with()
+            assert [file.filename for file in provider.get_diff_files()] == ["src/first.py", "src/second.py"]
+            provider.pr.diffstat.assert_called_once_with()
+
+    def test_downstream_diff_failure_reacquires_after_a_filename_handoff(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        complete_patch = provider.pr.diff.return_value
+        provider.pr.diff.side_effect = ["", complete_patch]
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {}):
+            provider.get_files()
+            with pytest.raises(IncompleteBitbucketPullRequestFilesError, match="changed-file inventory"):
+                provider.get_diff_files()
+            assert provider.diff_files is None
+            calls_after_failure = provider.pr.diffstat.call_count
+            assert calls_after_failure == 1
+            assert [file.filename for file in provider.get_diff_files()] == ["src/first.py", "src/second.py"]
+
+        assert provider.pr.diffstat.call_count == calls_after_failure + 1
+
+    def test_warm_normalized_diff_discards_an_unused_raw_handoff(self):
+        provider, _ = self._aggregate_diff_provider(["src/first.py", "src/second.py"])
+        provider.git_files = None
+        cached = [_added_file()]
+        provider.diff_files = cached
+        with patch("pr_agent.git_providers.bitbucket_provider.context", {}):
+            provider.get_files()
+            assert provider.get_diff_files() is cached
+
+        provider.pr.diffstat.assert_called_once_with()
+        provider.pr.diff.assert_not_called()
+        assert getattr(provider, "_pending_diffstat", None) is None
 
     @pytest.mark.parametrize("patch_paths", [[], ["src/first.py"],
                                              ["src/first.py", "src/second.py", "src/third.py"]])
@@ -734,6 +883,78 @@ index 1111111..2222222 100644
     ])
     def test_diff_header_paths_decode_quoted_git_paths(self, header, paths):
         assert _diff_header_paths(header + "\n") == paths
+
+    @pytest.mark.parametrize("patch,paths", [
+        (
+            "diff --git a/old name.py b/new name.py\n"
+            "similarity index 100%\n"
+            "rename from old name.py\n"
+            "rename to new name.py\n",
+            ("old name.py", "new name.py"),
+        ),
+        (
+            "diff --git a/old name.py b/new name.py\n"
+            "similarity index 85%\n"
+            "rename from old name.py\n"
+            "rename to new name.py\n"
+            "--- a/old name.py\n"
+            "+++ b/new name.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n",
+            ("old name.py", "new name.py"),
+        ),
+        (
+            'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251 renamed.py"\n'
+            "similarity index 100%\n"
+            'rename from "caf\\303\\251.py"\n'
+            'rename to "caf\\303\\251 renamed.py"\n',
+            ("café.py", "café renamed.py"),
+        ),
+        (
+            "diff --git a/old name.py b/new name.py\n"
+            "--- a/old name.py\n"
+            "+++ b/new name.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n",
+            ("old name.py", "new name.py"),
+        ),
+        (
+            "diff --git a/new name.py b/new name.py\n"
+            "--- /dev/null\n"
+            "+++ b/new name.py\n"
+            "@@ -0,0 +1 @@\n"
+            "+new\n",
+            ("new name.py", "new name.py"),
+        ),
+        (
+            "diff --git a/old name.py b/old name.py\n"
+            "--- a/old name.py\n"
+            "+++ /dev/null\n"
+            "@@ -1 +0,0 @@\n"
+            "-old\n",
+            ("old name.py", "old name.py"),
+        ),
+    ])
+    def test_diff_header_paths_read_ambiguous_headers_from_patch_metadata(self, patch, paths):
+        assert _diff_header_paths(patch) == paths
+
+    def test_get_diff_files_keeps_renamed_file_with_space_in_path(self):
+        diff_file = self._get_single_diff_file(
+            "diff --git a/old name.py b/new name.py\n"
+            "similarity index 100%\n"
+            "rename from old name.py\n"
+            "rename to new name.py\n",
+            "renamed",
+            0,
+            0,
+            "new name.py",
+            "old name.py",
+        )
+
+        assert diff_file.filename == "new name.py"
+        assert diff_file.edit_type == EDIT_TYPE.RENAMED
 
     @pytest.mark.parametrize("patch_paths", [
         ["src/first.py", "src/other.py"],
@@ -1336,7 +1557,7 @@ class TestBitbucketServerProvider:
     ):
         provider = self._diff_provider(version, changes)
         if ignored:
-            monkeypatch.setattr(global_settings.ignore, "glob", ["ignored.py"])
+            monkeypatch.setitem(global_settings.ignore, "glob", ["ignored.py"])
 
         files = provider.get_diff_files()
 

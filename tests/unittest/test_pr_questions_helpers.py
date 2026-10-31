@@ -49,6 +49,9 @@ def _make_pr_questions(question_str: str = "", prediction: str = "", git_provide
 def _make_line_questions() -> plq.PR_LineQuestions:
     obj = plq.PR_LineQuestions.__new__(plq.PR_LineQuestions)
     obj.vars = {}
+    obj.ai_handler = None
+    obj._ai_handler_factory = MagicMock(return_value=MagicMock())
+    obj.main_pr_language = ""
     obj.resolve_threads = False
     obj.git_provider = MagicMock()
     obj.git_provider.supports_threaded_pr_questions.return_value = False
@@ -103,9 +106,8 @@ def raw_question_tools(monkeypatch):
 
     monkeypatch.setattr(pr_agent_module, "apply_repo_settings", lambda _url: None)
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
-    monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider", lambda: lambda _url: provider)
+    monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider_for_tool", lambda _url: provider)
     monkeypatch.setattr("pr_agent.tools.pr_questions.get_main_pr_language", lambda *_args: "Python")
-    monkeypatch.setattr("pr_agent.tools.pr_questions.TokenHandler", lambda *_args: None)
     monkeypatch.setattr(PRQuestions, "run", capture_question)
 
     with request_cycle_context({"settings": deepcopy(get_settings())}):
@@ -856,7 +858,10 @@ class TestExtraInstructionsPromptRendering:
             "pr_questions.extra_instructions",
             "Do not answer questions that ask to rate PR quality.",
         )
-        variables = {"extra_instructions": get_settings().pr_questions.extra_instructions}
+        variables = {
+            "extra_instructions": get_settings().pr_questions.extra_instructions,
+            "skills_context": "",
+        }
         system_prompt = _render_jinja_template(get_settings().pr_line_questions_prompt.system, variables)
         assert "Do not answer questions that ask to rate PR quality." in system_prompt
         assert "take precedence over any conflicting guidance" in system_prompt
@@ -1139,6 +1144,9 @@ class TestPRLineQuestionsRunSkipsEmptySelection:
     def _provider(self):
         obj = plq.PR_LineQuestions.__new__(plq.PR_LineQuestions)
         obj.vars = {}
+        obj.ai_handler = None
+        obj._ai_handler_factory = MagicMock(return_value=MagicMock())
+        obj.main_pr_language = ""
         obj.git_provider = MagicMock()
         obj.token_handler = MagicMock()
         obj.git_provider.get_diff_files.return_value = [SimpleNamespace(
@@ -1315,6 +1323,7 @@ async def test_line_question_dry_run_logs_result_without_provider_effects(
     await tool.run()
 
     assert prediction.await_count == int(matched)
+    assert tool._ai_handler_factory.call_count == int(matched)
     tool.git_provider.reply_to_comment_from_comment_id.assert_not_called()
     tool.git_provider.publish_comment.assert_not_called()
     tool.git_provider.resolve_comment_thread.assert_not_called()
@@ -1496,18 +1505,20 @@ async def test_line_question_only_reads_diff_when_hunk_is_missing(
         monkeypatch.setattr(plq, "build_language_file_matcher",
                             MagicMock(side_effect=TypeError("invalid extension map")))
 
-    monkeypatch.setattr(plq, "get_git_provider", lambda: lambda _url: provider)
-    monkeypatch.setattr(plq, "TokenHandler", lambda *_args, **_kwargs: MagicMock())
+    monkeypatch.setattr(plq, "get_git_provider_for_tool", lambda _url: provider)
     extract_hunk = MagicMock(return_value=("@@ -1 +1 @@\n-old\n+new", "new"))
     monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", extract_hunk)
     prediction = AsyncMock(return_value="answer")
     monkeypatch.setattr(plq, "retry_with_fallback_models", prediction)
 
     handler = MagicMock()
-    tool = plq.PR_LineQuestions("https://github.com/org/repo/pull/1", ["why?"], ai_handler=lambda: handler)
+    factory = MagicMock(return_value=handler)
+    tool = plq.PR_LineQuestions("https://github.com/org/repo/pull/1", ["why?"], ai_handler=factory)
     assert tool.main_pr_language == expected_language
-    assert handler.main_pr_language == expected_language
+    factory.assert_not_called()
     await tool.run()
+    factory.assert_called_once_with()
+    assert handler.main_pr_language == expected_language
 
     provider.get_languages.assert_not_called()
     provider.get_files.assert_not_called()
@@ -1516,3 +1527,99 @@ async def test_line_question_only_reads_diff_when_hunk_is_missing(
     else:
         provider.get_diff_files.assert_called_once_with()
     prediction.assert_awaited_once()
+
+
+def _construct_line_question(monkeypatch, factory):
+    provider = MagicMock()
+    provider.pr.title = "Example"
+    provider.get_pr_branch.return_value = "main"
+    provider.supports_thread_resolution.return_value = False
+    provider.supports_line_question_history.return_value = False
+    monkeypatch.setattr(plq, "get_git_provider_for_tool", lambda _url: provider)
+    return plq.PR_LineQuestions("https://github.com/org/repo/pull/1", ["why?"], ai_handler=factory)
+
+
+@pytest.mark.asyncio
+async def test_line_question_no_hunk_does_not_initialize_handler(monkeypatch, line_output_settings):
+    line_output_settings.set("config.publish_output", True)
+    line_output_settings.set("comment_id", "")
+    factory = MagicMock(side_effect=RuntimeError("unused handler setup"))
+    monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", lambda *_args, **_kwargs: ("", ""))
+    retry = AsyncMock()
+    monkeypatch.setattr(plq, "retry_with_fallback_models", retry)
+
+    tool = _construct_line_question(monkeypatch, factory)
+    await tool.run()
+    await tool.run()
+
+    factory.assert_not_called()
+    retry.assert_not_awaited()
+    assert tool.ai_handler is None
+    assert tool.git_provider.publish_comment.call_count == 2
+    assert all("Could not find the requested lines" in call.args[0]
+               for call in tool.git_provider.publish_comment.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_line_question_initializes_once_after_no_hunk(monkeypatch, line_output_settings):
+    line_output_settings.set("config.publish_output", False)
+    handler = MagicMock()
+    factory = MagicMock(return_value=handler)
+    hunk = MagicMock(side_effect=[("", ""), ("@@ -1 +1 @@\n-old\n+new", "new"),
+                                 ("@@ -1 +1 @@\n-old\n+new", "new")])
+    monkeypatch.setattr(plq, "extract_hunk_lines_from_patch", hunk)
+    tool = _construct_line_question(monkeypatch, factory)
+
+    async def predict(*_args, **_kwargs):
+        assert tool.ai_handler is handler
+        assert handler.main_pr_language == tool.main_pr_language
+        return "answer"
+
+    retry = AsyncMock(side_effect=predict)
+    monkeypatch.setattr(plq, "retry_with_fallback_models", retry)
+    factory.assert_not_called()
+    await tool.run()
+    factory.assert_not_called()
+    await tool.run()
+    await tool.run()
+
+    factory.assert_called_once_with()
+    assert retry.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_line_question_handler_assignment_failure_is_retryable(monkeypatch, line_output_settings):
+    line_output_settings.set("config.publish_output", False)
+    error = RuntimeError("language assignment failed")
+
+    class BadHandler:
+        @property
+        def main_pr_language(self):
+            return ""
+
+        @main_pr_language.setter
+        def main_pr_language(self, _value):
+            raise error
+
+    good_handler = MagicMock()
+    factory = MagicMock(side_effect=[BadHandler(), good_handler])
+    monkeypatch.setattr(plq, "extract_hunk_lines_from_patch",
+                        lambda *_args, **_kwargs: ("@@ -1 +1 @@\n-old\n+new", "new"))
+    retry = AsyncMock(return_value="answer")
+    monkeypatch.setattr(plq, "retry_with_fallback_models", retry)
+    tool = _construct_line_question(monkeypatch, factory)
+
+    with pytest.raises(RuntimeError) as caught:
+        await tool.run()
+    assert caught.value is error
+    assert tool.ai_handler is None
+    retry.assert_not_awaited()
+    tool.git_provider.publish_comment.assert_not_called()
+    tool.git_provider.reply_to_comment_from_comment_id.assert_not_called()
+
+    await tool.run()
+
+    assert tool.ai_handler is good_handler
+    assert good_handler.main_pr_language == tool.main_pr_language
+    assert factory.call_count == 2
+    retry.assert_awaited_once()

@@ -202,6 +202,101 @@ def test_under_budget_ticket_payload_is_preserved_without_aliasing_raw_cache(pro
     assert handler.vars is not raw_vars
 
 
+@pytest.mark.parametrize(
+    ("raw_vars", "has_capacity"),
+    [({}, True), ({"related_tickets": []}, True), ({"related_tickets": None}, True),
+     ({"related_tickets": "ticket"}, True), ({"related_tickets": []}, False)],
+)
+def test_empty_ticket_payload_normalizes_and_checks_capacity(monkeypatch, raw_vars, has_capacity):
+    raw_before = copy.deepcopy(raw_vars)
+    budgets = []
+
+    def make_budget(model, pr, variables, system, user, **kwargs):
+        handler = _PromptCountingTokenHandler(pr, variables, system, user, model=model)
+        context_window = OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD + handler.prompt_tokens + int(has_capacity)
+        budget = token_budget_module.AttemptTokenBudget(
+            model, handler, handler, context_window, output_token_reserve=kwargs["output_token_reserve"]
+        )
+        budgets.append(budget)
+        return budget
+
+    monkeypatch.setattr(tickets_module.AttemptTokenBudget, "for_prompt_attempt", make_budget)
+    args = (object(), raw_vars, "system", "{{ related_tickets }}", "model")
+
+    def output_reserve(_model, _default):
+        return OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD
+
+    if has_capacity:
+        prompt_vars, handler = fit_related_tickets_to_prompt_budget(*args, output_token_reserve=output_reserve)
+        assert prompt_vars["related_tickets"] == []
+        assert handler.vars["related_tickets"] == []
+        assert handler.prompt_tokens > budgets[0].input_token_limit(
+            OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            preserve_minimum=True,
+            additional_input_reserve=OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+        )
+        prompt_vars["related_tickets"].append("changed")
+    else:
+        with pytest.raises(tickets_module.FallbackEligibleError):
+            fit_related_tickets_to_prompt_budget(*args, output_token_reserve=output_reserve)
+
+    assert raw_vars == raw_before
+    assert len(budgets) == 1
+
+
+def test_under_budget_tickets_build_prompt_budget_once(monkeypatch):
+    evaluated_vars = []
+
+    def make_budget(model, pr, variables, system, user, **_kwargs):
+        evaluated_vars.append(variables)
+        handler = _PromptCountingTokenHandler(pr, variables, system, user, model=model)
+        return SimpleNamespace(
+            token_handler=handler,
+            prompt_tokens=handler.prompt_tokens,
+            input_token_limit=lambda *_args, **_kwargs: 4000 - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            require_input_capacity=lambda default_output_tokens, **_kw: (
+                4000 - default_output_tokens - handler.prompt_tokens
+            ),
+        )
+
+    monkeypatch.setattr(tickets_module.AttemptTokenBudget, "for_prompt_attempt", make_budget)
+
+    prompt_vars, handler = fit_related_tickets_to_prompt_budget(
+        object(), {"related_tickets": _tickets(3)}, "system", "{{ related_tickets }}", "model"
+    )
+
+    assert [len(v["related_tickets"]) for v in evaluated_vars] == [3]
+    assert len(prompt_vars["related_tickets"]) == 3
+    assert handler.prompt_tokens == 700
+
+
+def test_overflow_tickets_skip_redundant_empty_initial_probe(monkeypatch):
+    evaluated_vars = []
+
+    def make_budget(model, pr, variables, system, user, **_kwargs):
+        evaluated_vars.append(variables)
+        handler = _PromptCountingTokenHandler(pr, variables, system, user, model=model)
+        return SimpleNamespace(
+            token_handler=handler,
+            prompt_tokens=handler.prompt_tokens,
+            input_token_limit=lambda *_args, **_kwargs: 3525 - 2 * OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
+            require_input_capacity=lambda default_output_tokens, **_kw: (
+                3525 - default_output_tokens - handler.prompt_tokens
+            ),
+        )
+
+    monkeypatch.setattr(tickets_module.AttemptTokenBudget, "for_prompt_attempt", make_budget)
+
+    prompt_vars, handler = fit_related_tickets_to_prompt_budget(
+        object(), {"related_tickets": _tickets(3)}, "system", "{{ related_tickets }}", "model"
+    )
+
+    assert [len(v["related_tickets"]) for v in evaluated_vars] == [3, 1, 2]
+    assert [ticket["ticket_id"] for ticket in prompt_vars["related_tickets"]] == [0, 1]
+    assert prompt_vars["related_tickets_omitted"] == 1
+    assert handler.prompt_tokens == 525
+
+
 def test_oversized_ticket_payload_keeps_diff_budget_and_raw_cache(monkeypatch):
     monkeypatch.setattr(token_budget_module, "get_max_tokens", lambda _model, **_kwargs: 32000)
     raw_vars = {"related_tickets": _tickets(33, tokens=10000)}
@@ -341,7 +436,7 @@ async def test_tools_use_the_same_bounded_ticket_vars_for_packing_and_rendering(
         rendered_vars.append(tool.vars)
         if tool_name == "review":
             return "review:\n  summary: prediction"
-        return "prediction"
+        return "description: prediction"
 
     monkeypatch.setattr(module, "fit_related_tickets_to_prompt_budget", fit_payload)
     monkeypatch.setattr(module, "get_pr_diff", get_diff)

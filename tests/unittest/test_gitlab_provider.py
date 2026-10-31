@@ -15,6 +15,7 @@ from gitlab.v4.objects import ProjectFile, ProjectMergeRequest, ProjectMergeRequ
 from requests.exceptions import RequestException
 
 from pr_agent.algo.comment_identity import PRCodeSuggestionsIdentity, PRReviewHeader, PRReviewIdentity
+from pr_agent.algo.types import EDIT_TYPE, FilePatchInfo
 from pr_agent.git_providers.git_provider import (
     DEFAULT_DISCUSSION_CONTEXT_CHARS,
     ConcurrentFileUpdateError,
@@ -137,6 +138,20 @@ class TestGitLabProvider:
         assert client.http_request.call_count == 2
         assert client.http_request.call_args_list[0].kwargs["per_page"] == 100
         assert client.http_request.call_args_list[1].args[1] == next_url
+
+    def test_merge_request_changes_are_cached_after_stable_collection(self, gitlab_provider):
+        refs = {"base_sha": "base", "head_sha": "head"}
+        changes = [{"new_path": "src/app.py", "old_path": "src/app.py"}]
+        gitlab_provider.mr.diff_refs = refs
+        gitlab_provider.gl.http_list.return_value = changes
+
+        first = gitlab_provider._get_merge_request_changes()
+        second = gitlab_provider._get_merge_request_changes()
+
+        assert first == second
+        assert first is not second
+        assert gitlab_provider.gl.http_get.call_count == 2
+        gitlab_provider.gl.http_list.assert_called_once()
 
     def test_filtered_lockfile_name_is_available_without_ignored_paths(self, gitlab_provider):
         def change(name):
@@ -834,20 +849,49 @@ class TestGitLabProvider:
                 "diff": "-Subproject commit aaa1111\n+Subproject commit bbb2222\n",
                 "new_file": False, "deleted_file": False, "renamed_file": False}
 
+    @pytest.mark.parametrize("diff", [
+        "@@ -1 +1 @@\n-old\n+new\n",
+        "+Subproject commit bbb2222\n",
+        "-Subproject commit aaa1111\n",
+    ], ids=["ordinary", "added_submodule", "deleted_submodule"])
+    def test_expand_submodule_changes_skips_mapping_without_sha_pair(self, gitlab_provider, diff):
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        changes = [self._submodule_bump()]
+        changes[0]["diff"] = diff
+
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map") as m_gitmodules:
+            out = gitlab_provider._expand_submodule_changes(changes)
+
+        assert out == changes
+        m_gitmodules.assert_not_called()
+
     def test_expand_submodule_changes_resolves_relative_url(self, gitlab_provider):
         gitlab_provider.id_project = "group/subgroup/nested/repo"
         settings = MagicMock()
         settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
         sub_diffs = [{"old_path": "src/a.c", "new_path": "src/a.c", "diff": "@@ -1 +1 @@\n-x\n+y\n"}]
+        changes = [self._submodule_bump(), self._submodule_bump("src/lib_b")]
+        diff_refs = {"base_sha": "base", "head_sha": "head"}
 
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
              patch.object(gitlab_provider, "_get_gitmodules_map",
-                          return_value={"src/lib_a": "../../../../libs/lib_a.git"}), \
+                          return_value={"src/lib_a": "../../../../libs/lib_a.git",
+                                        "src/lib_b": "../../../../libs/lib_b.git"}) as m_gitmodules, \
              patch.object(gitlab_provider, "_compare_submodule", return_value=sub_diffs) as m_cmp:
-            out = gitlab_provider._expand_submodule_changes([self._submodule_bump()])
+            out = gitlab_provider._expand_submodule_changes(changes, diff_refs)
 
-        m_cmp.assert_called_once_with("libs/lib_a", "aaa1111", "bbb2222")
-        assert [c["new_path"] for c in out] == ["src/lib_a", "src/lib_a/src/a.c"]
+        m_gitmodules.assert_called_once_with(diff_refs)
+        assert m_gitmodules.call_args.args[0] is diff_refs
+        assert [call.args for call in m_cmp.call_args_list] == [
+            ("libs/lib_a", "aaa1111", "bbb2222"),
+            ("libs/lib_b", "aaa1111", "bbb2222"),
+        ]
+        assert out[:2] == changes
+        assert [c["new_path"] for c in out] == [
+            "src/lib_a", "src/lib_b", "src/lib_a/src/a.c", "src/lib_b/src/a.c",
+        ]
 
     def test_expand_submodule_changes_skips_unresolvable_relative_url(self, gitlab_provider):
         gitlab_provider.id_project = "group/repo"
@@ -946,6 +990,108 @@ class TestGitLabProvider:
 
         assert [file.filename for file in files] == ["src/lib_a"]
         child_project.repository_compare.assert_called_once_with("aaa1111", "bbb2222")
+
+    @pytest.fixture
+    def submodule_content_changes(self, gitlab_provider, mock_project):
+        parent = {**self._submodule_bump(), "a_mode": "160000", "b_mode": "160000"}
+        child = {
+            "old_path": "child.py", "new_path": "child.py", "diff": "@@ -1 +1 @@\n-old\n+new\n",
+            "new_file": False, "deleted_file": False, "renamed_file": False,
+        }
+        ordinary = {**child, "old_path": "ordinary.py", "new_path": "ordinary.py"}
+        gitlab_provider.mr.diff_refs = {"base_sha": "base", "head_sha": "head"}
+        gitlab_provider.gl.http_list.return_value = [ordinary, parent]
+        child_project = MagicMock()
+        child_project.repository_compare.return_value = {"diffs": [child]}
+
+        def get_file(path, ref):
+            if path != "ordinary.py":
+                raise GitlabGetError("File not found", response_code=404)
+            file_obj = MagicMock(ProjectFile)
+            file_obj.decode.return_value = b"old\n" if ref == "base" else b"new\n"
+            return file_obj
+
+        mock_project.files.get.side_effect = get_file
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {"GITLAB.EXPAND_SUBMODULE_DIFFS": True}.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map", return_value={"src/lib_a": "group/child.git"}), \
+             patch.object(gitlab_provider, "_project_by_path", return_value=child_project), \
+             patch.object(gitlab_provider, "_submodule_target_allowed", return_value=True):
+            yield parent, child
+
+    @pytest.mark.parametrize("edit_type", [EDIT_TYPE.MODIFIED, EDIT_TYPE.ADDED, EDIT_TYPE.DELETED, EDIT_TYPE.RENAMED])
+    def test_submodule_diffs_skip_parent_content_reads(
+        self, gitlab_provider, mock_project, submodule_content_changes, edit_type
+    ):
+        _, child = submodule_content_changes
+        child.update(new_file=edit_type == EDIT_TYPE.ADDED, deleted_file=edit_type == EDIT_TYPE.DELETED,
+                     renamed_file=edit_type == EDIT_TYPE.RENAMED)
+        if edit_type == EDIT_TYPE.RENAMED:
+            child["old_path"] = "previous.py"
+        child["diff"] = {
+            EDIT_TYPE.ADDED: "@@ -0,0 +1 @@\n+new\n",
+            EDIT_TYPE.DELETED: "@@ -1 +0,0 @@\n-old\n",
+        }.get(edit_type, child["diff"])
+
+        assert gitlab_provider.get_files() == ["ordinary.py", "src/lib_a", "src/lib_a/child.py"]
+        files = gitlab_provider.get_diff_files()
+
+        assert (files[0].base_file, files[0].head_file) == ("old\n", "new\n")
+        assert files[-1] == FilePatchInfo(
+            "", "", child["diff"], "src/lib_a/child.py", edit_type=edit_type,
+            old_filename="src/lib_a/previous.py" if edit_type == EDIT_TYPE.RENAMED else None,
+            num_plus_lines=int(edit_type != EDIT_TYPE.DELETED), num_minus_lines=int(edit_type != EDIT_TYPE.ADDED),
+        )
+        assert [call.args for call in mock_project.files.get.call_args_list] == [
+            ("ordinary.py", "base"), ("ordinary.py", "head"), ("src/lib_a", "base"), ("src/lib_a", "head"),
+        ]
+
+    @pytest.mark.parametrize("parent_changes", [
+        {"a_mode": None, "b_mode": None},
+        {"a_mode": "100644", "b_mode": "100644"},
+        {"a_mode": "100644"},
+        {"b_mode": "100644"},
+        {"old_path": "previous/lib_a", "renamed_file": True},
+    ], ids=["missing_modes", "regular_modes", "new_gitlink", "old_gitlink", "renamed_gitlink"])
+    def test_submodule_diffs_keep_content_reads_without_stable_gitlink(
+        self, gitlab_provider, mock_project, submodule_content_changes, parent_changes
+    ):
+        parent, _ = submodule_content_changes
+        for key, value in parent_changes.items():
+            if value is None:
+                parent.pop(key)
+            else:
+                parent[key] = value
+        file_obj = MagicMock(ProjectFile)
+        file_obj.decode.return_value = b"existing base content\n"
+        original_get = mock_project.files.get.side_effect
+        mock_project.files.get.side_effect = lambda path, ref: (
+            file_obj if (path, ref) == ("src/lib_a/child.py", "base") else original_get(path, ref)
+        )
+
+        gitlab_provider.get_files()
+        child_file = gitlab_provider.get_diff_files()[-1]
+
+        assert child_file.base_file == "existing base content\n"
+        assert child_file.head_file == ""
+        assert [call.args for call in mock_project.files.get.call_args_list][-2:] == [
+            ("src/lib_a/child.py", "base"), ("src/lib_a/child.py", "head"),
+        ]
+
+    def test_submodule_empty_patch_keeps_content_failure(
+        self, gitlab_provider, mock_project, submodule_content_changes
+    ):
+        _, child = submodule_content_changes
+        child["diff"] = ""
+
+        gitlab_provider.get_files()
+        child_file = gitlab_provider.get_diff_files()[-1]
+
+        mock_project.files.get.assert_called_with("src/lib_a/child.py", "base")
+        assert child_file.patch == ""
+        assert child_file.base_file == child_file.head_file == ""
+        assert child_file.content_fetch_failed is True
 
     def test_compare_submodule_cache_hit_skips_project_resolution(self, gitlab_provider):
         cached_diffs = [{"diff": "d"}]
@@ -1053,6 +1199,18 @@ class TestGitLabProvider:
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
             assert gitlab_provider.should_publish_review_as_thread() is False
 
+    @pytest.mark.parametrize(
+        "configured, expected",
+        [(1, True), (0, False), ("true", True), ("false", False), ("FALSE", False)],
+    )
+    def test_should_publish_review_as_thread_parses_string_config(self, gitlab_provider, configured, expected):
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.PUBLISH_REVIEW_AS_THREAD": configured,
+        }.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            assert gitlab_provider.should_publish_review_as_thread() is expected
+
     @pytest.mark.parametrize("configured", [True, False])
     def test_should_reply_to_trigger_comment_reflects_config(self, gitlab_provider, configured):
         settings = MagicMock()
@@ -1061,6 +1219,30 @@ class TestGitLabProvider:
         }.get(key, default)
         with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
             assert gitlab_provider.should_reply_to_trigger_comment() is configured
+
+    @pytest.mark.parametrize(
+        ("method_name", "setting_name"),
+        [
+            ("should_publish_improve_as_thread", "GITLAB.PUBLISH_IMPROVE_AS_THREAD"),
+            ("should_reply_to_trigger_comment", "GITLAB.REPLY_TO_TRIGGER_COMMENT"),
+        ],
+    )
+    def test_string_false_disables_gitlab_flags(self, gitlab_provider, method_name, setting_name):
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {setting_name: "false"}.get(key, default)
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings):
+            assert getattr(gitlab_provider, method_name)() is False
+
+    def test_string_false_does_not_expand_submodule_changes(self, gitlab_provider):
+        settings = MagicMock()
+        settings.get.side_effect = lambda key, default=None: {
+            "GITLAB.EXPAND_SUBMODULE_DIFFS": "false",
+        }.get(key, default)
+        changes = [self._submodule_bump()]
+        with patch("pr_agent.git_providers.gitlab_provider.get_settings", return_value=settings), \
+             patch.object(gitlab_provider, "_get_gitmodules_map") as get_gitmodules:
+            assert gitlab_provider._expand_submodule_changes(changes) == changes
+        get_gitmodules.assert_not_called()
 
     def test_publish_comment_defaults_to_a_note(self, gitlab_provider):
         # Without a trigger discussion, publishing stays a plain note.
@@ -1448,6 +1630,67 @@ class TestGitLabProvider:
         else:
             discussion.save.assert_not_called()
 
+    @pytest.mark.parametrize("reopen", [False, True], ids=["resolve", "reopen"])
+    @pytest.mark.parametrize("target_page", [1, 2, None], ids=["first-page", "second-page", "not-found"])
+    def test_thread_lookup_reads_only_needed_pages(self, gitlab_provider, reopen, target_page):
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        gitlab_provider.mr = client.projects.get("test/repo", lazy=True).mergerequests.get(1, lazy=True)
+        discussions_path = "/projects/test%2Frepo/merge_requests/1/discussions"
+        discussions_url = f"https://gitlab.example.com/api/v4{discussions_path}"
+        responses = []
+        for page in range(1, 4):
+            response = MagicMock()
+            response.json.return_value = [{
+                "id": f"thread-{page}",
+                "notes": [{"id": 42 if page == target_page else page,
+                           "resolvable": True, "resolved": reopen}],
+            }]
+            response.links = {"next": {"url": f"{discussions_url}?page={page + 1}"}} if page < 3 else {}
+            response.headers = {}
+            responses.append(response)
+        client.http_request = MagicMock(side_effect=responses)
+        client.http_put = MagicMock(return_value={})
+
+        if reopen:
+            result = gitlab_provider.unresolve_comment_thread(MagicMock(id=42, resolvable=True, resolved=True))
+        else:
+            result = gitlab_provider.resolve_comment_thread(42)
+
+        assert result is (None if reopen else target_page is not None)
+        assert client.http_request.call_count == (target_page or 3)
+        assert client.http_request.call_args_list[0].kwargs["per_page"] == 100
+        if target_page is None:
+            client.http_put.assert_not_called()
+        else:
+            client.http_put.assert_called_once()
+            assert client.http_put.call_args.args[0] == f"{discussions_path}/thread-{target_page}"
+            assert client.http_put.call_args.kwargs["post_data"] == {"resolved": not reopen}
+
+    @pytest.mark.parametrize("reopen", [False, True], ids=["resolve", "reopen"])
+    @pytest.mark.parametrize("error_type", [GitlabError, RuntimeError], ids=["api-error", "unexpected-error"])
+    def test_thread_lookup_handles_later_page_errors(self, gitlab_provider, reopen, error_type):
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        gitlab_provider.mr = client.projects.get("test/repo", lazy=True).mergerequests.get(1, lazy=True)
+        response = MagicMock()
+        response.json.return_value = [{"id": "other-thread", "notes": [{"id": 7}]}]
+        next_url = (
+            "https://gitlab.example.com/api/v4/projects/test%2Frepo/merge_requests/1/discussions?page=2"
+        )
+        response.links = {"next": {"url": next_url}}
+        response.headers = {}
+        client.http_request = MagicMock(side_effect=[response, error_type("later page failed")])
+        client.http_put = MagicMock()
+        lookup = gitlab_provider.unresolve_comment_thread if reopen else gitlab_provider.resolve_comment_thread
+        target = MagicMock(id=42, resolvable=True, resolved=True) if reopen else 42
+
+        if error_type is RuntimeError:
+            with pytest.raises(RuntimeError, match="later page failed"):
+                lookup(target)
+        else:
+            assert lookup(target) is (None if reopen else False)
+        assert client.http_request.call_count == 2
+        client.http_put.assert_not_called()
+
     def test_get_code_suggestion_thread_context_includes_bot_suggestion_threads(self, gitlab_provider):
         gitlab_provider._own_user_id = _BOT_USER_ID
         open_thread = _thread([
@@ -1813,7 +2056,7 @@ class TestGitLabProvider:
     def test_publish_labels_noop_when_sets_equal(self, gitlab_provider):
         gitlab_provider.mr = self._real_mr(["bug", "review effort 3/5"])
 
-        gitlab_provider.publish_labels(["bug", "review effort 3/5"])
+        assert gitlab_provider.publish_labels(["bug", "review effort 3/5"]) is True
 
         gitlab_provider.mr.manager.update.assert_not_called()
 
@@ -1822,7 +2065,7 @@ class TestGitLabProvider:
             ["bug"], update_result={"iid": 1, "labels": ["bug", "review effort 3/5"]}
         )
 
-        gitlab_provider.publish_labels(["bug", "review effort 3/5"])
+        assert gitlab_provider.publish_labels(["bug", "review effort 3/5"]) is True
 
         payload = self._wire_payload(gitlab_provider.mr)
         assert payload["add_labels"] == "review effort 3/5"
@@ -1875,7 +2118,7 @@ class TestGitLabProvider:
         # publish_description() saves the same object right afterwards.
         gitlab_provider.mr = self._real_mr(["bug"])
 
-        gitlab_provider.publish_labels(["bug"])
+        assert gitlab_provider.publish_labels(["bug"]) is True
 
         assert gitlab_provider.mr._get_updated_data() == {}
 
@@ -1895,13 +2138,14 @@ class TestGitLabProvider:
 
         assert gitlab_provider.get_pr_labels() == ["bug"]
 
-    def test_publish_labels_drops_pending_diff_when_save_fails(self, gitlab_provider):
+    @pytest.mark.parametrize("error", [RequestException("network blip"), GitlabUpdateError("rejected")])
+    def test_publish_labels_drops_pending_diff_when_save_fails(self, gitlab_provider, error):
         # save() clears pending attributes itself, but only when it succeeds. If they
         # survive a failure, the next save() on this MR — publish_description() runs
         # one moments later — resends the label diff.
-        gitlab_provider.mr = self._real_mr(["bug"], update_error=RequestException("network blip"))
+        gitlab_provider.mr = self._real_mr(["bug"], update_error=error)
 
-        gitlab_provider.publish_labels(["review effort 3/5"])
+        assert gitlab_provider.publish_labels(["review effort 3/5"]) is False
 
         assert gitlab_provider.mr.manager.update.call_count == 1
         assert gitlab_provider.mr._get_updated_data() == {}
@@ -2229,7 +2473,7 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.is_incremental is False
         gitlab_provider.mr.commits.assert_not_called()
 
-    def test_get_incremental_commits_picks_commits_after_review(self, gitlab_provider, mock_project):
+    def test_get_incremental_commits_picks_commits_after_review(self, gitlab_provider):
         # Previous review at T=10:00. Commit c0 at 09:00 (before), c1 and c2 at 11:00 (after).
         gitlab_provider.mr.notes.list.return_value = [
             self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
@@ -2241,7 +2485,7 @@ class TestGitLabIncrementalReview:
             self._make_commit("c1", "2024-05-01T11:00:00Z"),
             self._make_commit("c0", "2024-05-01T09:00:00Z"),
         ]
-        mock_project.repository_compare.return_value = {
+        comparison = {
             "diffs": [
                 {"new_path": "a.py", "old_path": "a.py", "diff": "@@ -1 +1 @@\n-old\n+new\n",
                  "new_file": False, "deleted_file": False, "renamed_file": False},
@@ -2251,7 +2495,15 @@ class TestGitLabIncrementalReview:
         }
         # Intersect MR diffs with repository_compare to exclude files merged from the target branch.
         # Include both fixture files in the MR's own changes.
-        gitlab_provider.gl.http_list.return_value = [{"new_path": "a.py"}, {"new_path": "b.py"}]
+        gitlab_provider._get_merge_request_changes = MagicMock(return_value={
+            "changes": [{"new_path": "a.py"}, {"new_path": "b.py"}],
+            "diff_refs": dict(gitlab_provider.mr.diff_refs),
+        })
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        client.http_get = MagicMock(side_effect=lambda path, **kwargs:
+                                   comparison if path.endswith("/repository/compare") else {"id": 1})
+        gitlab_provider.gl = client
+        gitlab_provider._own_user_id = None
 
         gitlab_provider.get_incremental_commits(IncrementalPR(True))
 
@@ -2259,8 +2511,53 @@ class TestGitLabIncrementalReview:
         assert gitlab_provider.incremental.first_new_commit_sha == "c1"
         assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
         assert set(gitlab_provider.unreviewed_files_map.keys()) == {"a.py", "b.py"}
+        client.http_get.assert_called_once_with(
+            "/projects/test%2Frepo/repository/compare", query_data={"from": "c0", "to": "head"}
+        )
+        gitlab_provider.mr.commits.assert_called_once_with(per_page=100)
+
+    def test_get_incremental_commits_reads_all_pages_before_selecting_anchor(self, gitlab_provider, mock_project):
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        mr = client.projects.get("test/repo", lazy=True).mergerequests.get(1, lazy=True)
+        gitlab_provider.mr.commits = mr.commits
+        gitlab_provider.mr.notes.list.return_value = [
+            self._make_note(7, "## PR Reviewer Guide 🔍\nbody", "2024-05-01T10:00:00Z"),
+        ]
+        next_url = (
+            "https://gitlab.example.com/api/v4/projects/test%2Frepo/"
+            "merge_requests/1/commits?page=2&per_page=100"
+        )
+        responses = []
+        # Place the only pre-review commit on page two to exercise cross-page anchor selection.
+        for indexes, next_link in [(range(100, 0, -1), next_url), (range(1), None)]:
+            response = MagicMock()
+            response.json.return_value = [
+                {"id": f"c{index}",
+                 "committed_date": "2024-05-01T11:00:00Z" if index else "2024-05-01T09:00:00Z"}
+                for index in indexes
+            ]
+            response.links = {"next": {"url": next_link}} if next_link else {}
+            response.headers = {}
+            responses.append(response)
+        client.http_request = MagicMock(side_effect=responses)
+        change = {"new_path": "a.py", "old_path": "a.py", "diff": "@@ -1 +1 @@\n-old\n+new\n"}
+        mock_project.repository_compare.return_value = {"diffs": [change]}
+        gitlab_provider.gl.http_list.return_value = [change]
+
+        gitlab_provider.get_incremental_commits(IncrementalPR(True))
+
+        assert client.http_request.call_count == 2
+        assert client.http_request.call_args_list[0].kwargs["per_page"] == 100
+        assert client.http_request.call_args_list[1].args[1] == next_url
+        assert [commit.id for commit in gitlab_provider.mr_commits] == [f"c{index}" for index in range(101)]
+        assert gitlab_provider.incremental.is_incremental is True
+        assert gitlab_provider.incremental.last_seen_commit_sha == "c0"
+        assert gitlab_provider.incremental.first_new_commit_sha == "c1"
+        assert [commit.id for commit in gitlab_provider.incremental.commits_range] == [
+            f"c{index}" for index in range(1, 101)
+        ]
+        assert gitlab_provider.unreviewed_files_map == {"a.py": change}
         mock_project.repository_compare.assert_called_once_with("c0", "head")
-        gitlab_provider.mr.commits.assert_called_once_with()
 
     def test_get_incremental_commits_no_new_commits_yields_empty_set(self, gitlab_provider, mock_project):
         gitlab_provider.mr.notes.list.return_value = [
@@ -2873,6 +3170,30 @@ class TestGitLabCapabilities:
         provider.mr.notes.list.return_value = ["newest", "middle", "oldest"]
 
         assert provider.get_issue_comments() == ["oldest", "middle", "newest"]
+
+    def test_get_issue_comments_reads_all_notes_with_larger_pages(self):
+        provider = self._provider()
+        client = Gitlab("https://gitlab.example.com", private_token="test-token")
+        provider.mr = client.projects.get("test/repo", lazy=True).mergerequests.get(1, lazy=True)
+        next_url = (
+            "https://gitlab.example.com/api/v4/projects/test%2Frepo/"
+            "merge_requests/1/notes?page=2&per_page=100"
+        )
+        responses = []
+        for start, stop, next_link in [(101, 1, next_url), (1, 0, None)]:
+            response = MagicMock()
+            response.json.return_value = [{"id": index} for index in range(start, stop, -1)]
+            response.links = {"next": {"url": next_link}} if next_link else {}
+            response.headers = {}
+            responses.append(response)
+        client.http_request = MagicMock(side_effect=responses)
+
+        comments = provider.get_issue_comments()
+
+        assert [comment.id for comment in comments] == list(range(1, 102))
+        assert client.http_request.call_count == 2
+        assert client.http_request.call_args_list[0].kwargs["per_page"] == 100
+        assert client.http_request.call_args_list[1].args[1] == next_url
 
     def test_persistent_state_ownership_uses_authenticated_user_id(self):
         provider = self._provider()

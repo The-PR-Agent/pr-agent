@@ -44,6 +44,7 @@ import yaml
 from starlette_context import context
 from starlette_context.errors import ContextDoesNotExistError
 
+from pr_agent.algo.setting_utils import normalize_setting_list
 from pr_agent.algo.token_budget import clip_tokens
 from pr_agent.algo.token_handler import TokenEncoder
 from pr_agent.config_loader import get_settings
@@ -81,6 +82,16 @@ def _expand_skill_path(raw_path: object) -> str | None:
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
     return os.path.expanduser(os.path.expandvars(raw_path.strip()))
+
+
+def _normalize_skill_paths(value: object) -> list[str]:
+    """Return the configured ``skills.paths`` value as a list of path strings.
+
+    A plain string is one path. Iterating it would yield single characters, and
+    every character that happens to name an existing directory would be walked,
+    so the root directory would end up in the scan.
+    """
+    return normalize_setting_list(value)
 
 
 def _expanded_skill_paths(paths: list[str]) -> tuple[str, ...]:
@@ -204,7 +215,7 @@ def discover_skills(paths: list[str]) -> list[Skill]:
     skills: list[Skill] = []
     seen: set = set()
 
-    for raw_path in paths or []:
+    for raw_path in _normalize_skill_paths(paths):
         expanded = _expand_skill_path(raw_path)
         if expanded is None:
             continue
@@ -265,6 +276,8 @@ def format_skills_context(skills: list[Skill], max_tokens: int) -> str:
     separator = "\n\n---\n\n"
     sep_tokens = _count_tokens(separator)
     marker_tokens = _count_tokens(truncate_marker)
+    if max_tokens < marker_tokens:
+        return ""
     pieces: list[str] = []
     used = 0
     for skill in skills:
@@ -334,7 +347,13 @@ def get_skills_context() -> str:
     """
     settings = get_settings()
     enabled = bool(settings.skills.enabled)
-    paths = list(settings.skills.paths or [])
+    configured_paths = settings.skills.paths
+    paths = _normalize_skill_paths(configured_paths)
+    if isinstance(configured_paths, str):
+        get_logger().warning(
+            "skills.paths should be a list; treating the configured string as a single path",
+            artifact={"paths": configured_paths},
+        )
     expanded_paths = _expanded_skill_paths(paths)
 
     if not enabled:

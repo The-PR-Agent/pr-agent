@@ -28,6 +28,8 @@ You can run `/ask` on specific lines of code in the PR from the PR's diff view. 
 
 <img src="/img/Ask_line.png" alt="Ask Line" width="512" />
 
+If no matching diff hunk is found for the selected lines, the tool explains this without calling a model.
+
 Note that the tool does not have "memory" of previous questions, and answers each question independently.
 
 ## Ask on images
@@ -47,22 +49,22 @@ where `https://real_link_to_image` is the direct link to the image.
 Note that GitHub has a built-in mechanism of pasting images in comments. However, pasted image does not provide a direct link.
 To get a direct link to an image, we recommend using the following scheme:
 
-1\. First, post a comment that contains **only** the image:
+1. First, post a comment that contains **only** the image:
 
-<img src="/img/ask_images1.png" alt="Ask image1" width="512" />
+   <img src="/img/ask_images1.png" alt="Ask image1" width="512" />
 
-2\. Quote reply to that comment:
+2. Quote reply to that comment:
 
-<img src="/img/ask_images2.png" alt="Ask image2" width="512" />
+   <img src="/img/ask_images2.png" alt="Ask image2" width="512" />
 
-3\. In the screen opened, type the question below the image:
+3. In the screen opened, type the question below the image:
 
-<img src="/img/ask_images3.png" alt="Ask image3" width="512" />
-<img src="/img/ask_images4.png" alt="Ask image4" width="512" />
+   <img src="/img/ask_images3.png" alt="Ask image3" width="512" />
+   <img src="/img/ask_images4.png" alt="Ask image4" width="512" />
 
-4\. Post the comment, and receive the answer:
+4. Post the comment, and receive the answer:
 
-<img src="/img/ask_images5.png" alt="Ask image5" width="512" />
+   <img src="/img/ask_images5.png" alt="Ask image5" width="512" />
 
 See a full video tutorial [here](https://codium.ai/images/pr_agent/ask_image_video.mov)
 

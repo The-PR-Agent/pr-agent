@@ -33,6 +33,29 @@ def test_prefer_the_first_exact_line_when_the_text_repeats():
     assert absolute == 1
 
 
+@pytest.mark.parametrize("source_line", ["counter", "+counter"])
+def test_prefer_exact_source_line_before_fuzzy_matching_rewrites_it(source_line):
+    """Prevent a diff prefix from redirecting the exact source-line match."""
+    lines = ["+" + source_line, source_line]
+
+    result = find_line_number_of_relevant_line_in_file(build(lines), "a.py", source_line)
+
+    assert result == (2, 2)
+
+
+@pytest.mark.parametrize("relevant_line, expected", [("current = 1", (1, 1)), ("added = 2", (2, 2))])
+def test_exact_source_line_skips_fuzzy_matching(monkeypatch, relevant_line, expected):
+    files = [FilePatchInfo(base_file="current = 1", head_file="current = 1\nadded = 2",
+                          patch="@@ -1 +1,2 @@\n current = 1\n+added = 2", filename="a.py")]
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Exact source lines must not require fuzzy matching")
+
+    monkeypatch.setattr("pr_agent.algo.utils.difflib.get_close_matches", fail_if_called)
+
+    assert find_line_number_of_relevant_line_in_file(files, "a.py", relevant_line) == expected
+
+
 def test_fall_back_to_a_containing_line_when_no_exact_match_exists():
     """Keep the substring fallback, which is what makes a truncated model line usable."""
     lines = ["total = calculate(x, y)", "pass"]

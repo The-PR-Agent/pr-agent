@@ -5,10 +5,14 @@ stated rule. The invariant the whole module protects: a merged review is never l
 than its worst chunk.
 """
 
+from unittest.mock import Mock
+
 import pytest
 
 from pr_agent.algo import review_merge
-from pr_agent.algo.review_merge import merge_review_chunks
+from pr_agent.algo.output_models import PRReview
+from pr_agent.algo.review_merge import all_key_issues, chunk_hit_findings_limit, merge_review_chunks
+from pr_agent.algo.utils import convert_to_markdown_v2
 
 
 def _chunk(**review):
@@ -26,7 +30,7 @@ def test_no_chunk_produces_no_review():
 
 
 def test_a_single_chunk_is_passed_through_without_being_aliased():
-    review = {"score": "80", "key_issues_to_review": [_issue()]}
+    review = {"score": "80", "key_issues_to_review": [_issue()], "todo_sections": "Add timeout handling"}
     merged = merge_review_chunks([{"review": review}])
 
     assert merged == {"review": review}
@@ -244,6 +248,69 @@ def test_todo_sections_are_unioned_and_stay_no_when_no_chunk_found_any():
                                 _chunk(todo_sections="No")])["review"]["todo_sections"] == "No"
 
 
+@pytest.mark.parametrize("gfm_supported", [True, False])
+def test_todo_prose_survives_a_chunk_that_found_none(gfm_supported):
+    chunks = [_chunk(key_issues_to_review=[], todo_sections=value)
+              for value in ("No", "Add timeout handling")]
+    for chunk in chunks:
+        PRReview.model_validate(chunk)
+
+    merged = merge_review_chunks(chunks)
+    PRReview.model_validate(merged)
+    provider = Mock()
+    markdown = convert_to_markdown_v2(merged, gfm_supported=gfm_supported, git_provider=provider)
+
+    assert "Add timeout handling" in markdown
+    assert "No TODO sections" not in markdown
+    provider.get_line_link.assert_not_called()
+
+
+@pytest.mark.parametrize("gfm_supported", [True, False])
+def test_todo_prose_and_located_entries_are_unioned_without_repeats(gfm_supported):
+    todo = {"relevant_file": "src/app.py", "line_number": 3, "content": "fix the parser"}
+    chunks = [_chunk(key_issues_to_review=[], todo_sections=value)
+              for value in ([todo], "Add timeout handling", " add  TIMEOUT handling \n", "Handle cancellation")]
+    for chunk in chunks:
+        PRReview.model_validate(chunk)
+
+    merged = merge_review_chunks(chunks)
+    validated = PRReview.model_validate(merged)
+    assert [entry.content for entry in validated.review.todo_sections] == [
+        "fix the parser", "Add timeout handling", "Handle cancellation"]
+    provider = Mock()
+    provider.get_line_link.return_value = "https://example.com/src/app.py#L3"
+    markdown = convert_to_markdown_v2(merged, gfm_supported=gfm_supported, git_provider=provider)
+
+    assert "https://example.com/src/app.py#L3" in markdown
+    assert (markdown.index("fix the parser") < markdown.index("Add timeout handling")
+            < markdown.index("Handle cancellation"))
+    assert markdown.count("Add timeout handling") == 1
+    provider.get_line_link.assert_called_once_with("src/app.py", 3, 3)
+
+
+@pytest.mark.parametrize("values", [
+    (["Add timeout handling"], " add  TIMEOUT handling \n"),
+    ("Add timeout handling", [" add  TIMEOUT handling \n"]),
+])
+def test_list_form_todo_prose_is_deduplicated_with_scalar_prose(values):
+    chunks = [_chunk(key_issues_to_review=[], todo_sections=value) for value in values]
+
+    merged = merge_review_chunks(chunks)
+    provider = Mock()
+    markdown = convert_to_markdown_v2(merged, git_provider=provider)
+
+    assert len(merged["review"]["todo_sections"]) == 1
+    assert "Add timeout handling" in markdown
+    provider.get_line_link.assert_not_called()
+
+
+@pytest.mark.parametrize("value", ["No", "None", "false", None, "", [], "  "], ids=repr)
+def test_empty_or_negative_todo_chunks_keep_the_existing_fallback(value):
+    chunks = [_chunk(todo_sections=value), _chunk(todo_sections=value)]
+
+    assert merge_review_chunks(chunks)["review"]["todo_sections"] == value
+
+
 def test_sub_prs_are_unioned_by_their_files_and_stay_within_the_prompt_limit():
     merged = merge_review_chunks([
         _chunk(can_be_split=[{"relevant_files": ["a.py"], "title": "first"},
@@ -422,3 +489,33 @@ def test_case_distinct_paths_remain_distinct_when_merging_chunks():
     assert [item["relevant_files"] for item in merged["can_be_split"]] == [
         ["src/Foo.py"], ["src/foo.py"]]
     assert merged["review_priority_files"] == ["src/Foo.py", "src/foo.py"]
+
+
+def _chunks_of(*sizes):
+    return [_chunk(key_issues_to_review=[_issue(file=f"{index}_{n}.py", content=f"problem {index}_{n}")
+                                         for n in range(size)])
+            for index, size in enumerate(sizes)]
+
+
+@pytest.mark.parametrize("sizes, limit, hit_limit", [
+    ((2, 1), 3, False),   # reaches the limit, but no chunk was full
+    ((1, 1), 3, False),
+    ((3, 0), 3, True),    # a chunk that reports the limit on its own may have stopped there
+    ((2, 2), 3, False),   # the merge drops one finding, but it is known and so not missing
+    ((), 3, False),
+])
+def test_chunk_hit_findings_limit(sizes, limit, hit_limit):
+    assert chunk_hit_findings_limit(_chunks_of(*sizes), limit) is hit_limit
+
+
+def test_all_key_issues_keeps_what_the_merge_cuts_and_drops_repeats():
+    issue = _issue()
+    chunks = [_chunk(key_issues_to_review=[issue, _issue(file="b.py", content="b")]),
+              _chunk(key_issues_to_review=[issue, _issue(file="c.py", content="c")])]
+
+    assert [i["relevant_file"] for i in all_key_issues(chunks)] == ["app.py", "b.py", "c.py"]
+    assert len(merge_review_chunks(chunks, max_findings=2)["review"]["key_issues_to_review"]) == 2
+
+
+def test_all_key_issues_ignores_chunks_without_a_list():
+    assert all_key_issues([{}, _chunk(key_issues_to_review="none"), _chunk()]) == []

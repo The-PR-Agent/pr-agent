@@ -22,38 +22,52 @@ The commands above assume the `pr_agent` package is importable — use the venv 
 
 1. In addition to editing your local configuration file, you can also change repository-configurable values by adding them to the command line:
 
-```
-python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructions="focus on the file: ..."
-```
+   ```
+   python -m pr_agent.cli --pr_url=<pr_url>  /review --pr_reviewer.extra_instructions="focus on the file: ..."
+   ```
 
-Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See [Configuration Options](./configuration_options.md#local-configuration-file) for details.
+   Host-controlled values, including provider authentication, TLS, and endpoint settings, are rejected in command arguments. See [Configuration Options](./configuration_options.md#local-configuration-file) for details.
 
 2. You can print results locally, without publishing them, by setting in `configuration.toml`:
 
-```
-[config]
-publish_output=false
-verbosity_level=2
-```
+   ```
+   [config]
+   publish_output=false
+   verbosity_level=2
+   ```
 
-This is useful for debugging or experimenting with different tools.
+   This is useful for debugging or experimenting with different tools.
 
 3. **git provider**: The [git_provider](https://github.com/the-pr-agent/pr-agent/blob/main/pr_agent/settings/configuration.toml) field in a configuration file determines the GIT provider that will be used by PR-Agent. Currently, the following providers are supported:
-`github` **(default)**, `gitlab`, `bitbucket`, `azure`, `codecommit`, `local`, and `gitea`.
+   `github` **(default)**, `gitlab`, `bitbucket`, `bitbucket_server`, `azure`, `codecommit`, `local`, `gerrit`, `gitea`, and `plain-diff`.
 
 4. For scripts that need a failed request to return a non-zero process status, enable tool error propagation:
 
-```bash
-python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
-```
+   ```bash
+   python -m pr_agent.cli --pr_url=<pr_url> review --config.propagate_tool_errors=true
+   ```
 
-With `config.propagate_tool_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated tool error makes the request fail or a tool records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
+   With `config.propagate_tool_errors=true`, the installed `pr-agent` command, `python -m pr_agent.cli`, and the customizable pip script exit with status 1 when a propagated tool error makes the request fail or a tool records a failure even though it returns successfully. In the latter case, the CLI logs a warning explaining the non-zero exit.
 
-Tool error propagation is disabled by default, preserving the existing status 0 behavior for these tool failures. Argparse parse and usage errors continue to exit with status 2.
+   Tool error propagation is disabled by default, preserving the existing status 0 behavior for these tool failures. Argparse parse and usage errors continue to exit with status 2.
 
 ### CLI Health Check
 
-To verify that PR-Agent has been configured correctly, you can run this health check command from the repository root:
+For a quick preflight that needs no token and no PR, run:
+
+```bash
+pr-agent doctor
+```
+
+It checks that `config.model` is set, that the active provider has a real API key, and that a one-token completion against the configured model succeeds. The exit code is `0` only when every check passes, so CI setups can gate on it. It ships with the package, unlike the fuller health check below, which exercises real commands on a real PR.
+
+When host-configured `push_outputs` is enabled, `doctor` adds a fourth check for the selected output destinations: registered channel names, a nonempty file path, HTTPS scheme and hostname for webhook/Slack URLs, and a nonempty Telegram token string and a chat ID that is a nonempty string or nonzero integer. An omitted file path uses the normal default. Distinct custom sink names receive recognition-only checks; their private settings are not validated.
+
+`push_outputs.enable` accepts booleans or strings. String values `false`, `0`, `no`, and the empty string disable it (ignoring case and surrounding whitespace); other strings enable it. Disabled output keeps the existing three checks and output unchanged.
+
+The output check reads the active host settings but does not construct sinks, send output, access files, or contact destinations. It checks only the fields listed above; URL ports and other URL components are not validated. Success does not establish delivery, file writability, destination reachability, authentication, or permissions. The existing model ping still contacts the configured model before the output check. No PR URL or git-provider setup is needed.
+
+To verify that PR-Agent has been configured correctly end to end, you can also run this health check command from the repository root:
 
 ```bash
 python -m tests.health_test.main
@@ -400,6 +414,19 @@ To enable BitBucket app to respond to each **push** to the PR, set (for example)
 
 ```toml
 [bitbucket_app]
+handle_push_trigger = true
+push_commands = [
+    "/describe",
+    "/review",
+]
+```
+
+### BitBucket Server webhook
+
+For a BitBucket Server webhook deployment, new commits pushed to an open PR (the `pr:from_ref_updated` and `repo:refs_changed` events) run no tools by default. To run tools on each **push**, set (for example):
+
+```toml
+[bitbucket_server]
 handle_push_trigger = true
 push_commands = [
     "/describe",
