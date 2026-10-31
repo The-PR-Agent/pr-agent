@@ -79,6 +79,14 @@ for the authoritative default values.
     <td>If set to true, the review comment will be persistent, meaning that every new review request will edit the previous one.</td>
   </tr>
   <tr>
+    <td><b>per_commit_review</b></td>
+    <td>If set to true, each commit of the PR is reviewed on its own diff and commit message, and one review comment is published per commit. See <a href="#reviewing-each-commit-separately">Reviewing each commit separately</a>. It can't be turned on from a command argument, only from a configuration file or environment variable. Default is false.</td>
+  </tr>
+  <tr>
+    <td><b>max_commits_per_review</b></td>
+    <td>Maximum number of commits <code>per_commit_review</code> reviews one by one. When more commits are selected for review, they are reviewed together in one review instead, with a notice. It can't be set from a command argument or a per directory configuration file. Default is 0, no limit.</td>
+  </tr>
+  <tr>
     <td><b>publish_review_failure_comment</b></td>
     <td>
       Set to false to suppress the "Failed to review PR" comment, including when a persistent review comment
@@ -319,6 +327,50 @@ In the code feedback section, emphasize the following:
 """
 ```
 Use triple quotes to write multi-line instructions. Use bullet points to make the instructions more readable.
+:::
+
+### Reviewing each commit separately
+
+:::tip
+
+Projects that keep one logical change per commit can ask for a review of every commit instead of the combined PR diff,
+in a configuration file:
+
+```
+[pr_reviewer]
+per_commit_review = true
+```
+
+Each commit is reviewed against its own parent, with its commit message in the prompt, and gets its own
+incremental review comment that names and links the commit. These comments are never the persistent
+review comment, and they do not change the review labels.
+
+Add `-i` (`/review -i`, or `pr_commands = ["/review -i"]` and `push_commands = ["/review -i"]` for automatic runs) to
+review only the commits added since the last review. The commit list is read from the git provider on every run, so
+after a force push the review follows the rewritten history: commits that were rebased, squashed or amended (for
+example with `git rebase --autosquash` folding fixup commits) get new SHAs and newer commit dates and are reviewed
+again, fixup commits that no longer exist are not reviewed, and commits that were left untouched are not repeated.
+The `minimal_commits_for_incremental_review` and `minimal_minutes_for_incremental_review` thresholds apply as for a
+regular incremental review.
+
+Set `publish_output_no_suggestions = false` in the `[pr_reviewer]` section (`--pr_reviewer.publish_output_no_suggestions=false`
+on the command line) to skip the comment of a commit where nothing was found. The setting of the same name in
+`[pr_code_suggestions]` applies to `/improve` only.
+With `inline_key_issues = true`, each finding is published as an inline comment on the commit it was found in,
+anchored to that commit's own diff, so GitHub and GitLab show it as outdated once a later commit changes those lines.
+A finding that cannot be anchored there, for example because the provider rejects its line, stays in that commit's
+review comment.
+
+Merge commits, empty commits and the root commit of a history have no diff of their own and are skipped. A commit that
+fails to review is reported like a failed review and does not stop the remaining commits. Every reviewed commit is a
+separate model call, so a PR with many commits costs accordingly; `-i` keeps repeated runs to the new commits.
+Hosts that want to bound that cost can set `max_commits_per_review` (default 0, no limit): when more commits than that are selected, they are reviewed
+together in one review with a notice. Both settings belong to the operator, so a command argument such as
+`--pr_reviewer.per_commit_review=true` is rejected.
+
+Per commit review is available on GitHub and GitLab. Other git providers fall back to a regular review of the whole PR.
+GitHub lists at most 250 commits of a PR, so a PR with more commits than that is also reviewed as a whole, with a
+notice explaining why.
 :::
 
 ### Reviewing a PR that does not fit in one call
