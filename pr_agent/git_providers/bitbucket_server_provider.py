@@ -630,14 +630,23 @@ class BitbucketServerProvider(GitProvider):
         return True
 
     @staticmethod
+    def _pr_path_index(path_parts: list[str]) -> int | None:
+        # Index of the segment that starts {projects|users}/{owner}/repos/{repo}/pull-requests/{id}, so a context
+        # path, project, user or repository named "projects" or "users" is not taken for it.
+        for index, part in enumerate(path_parts[:-5]):
+            if (part in ("projects", "users") and path_parts[index + 2] == "repos"
+                    and path_parts[index + 4] == "pull-requests"):
+                return index
+        return None
+
+    @staticmethod
     def _parse_bitbucket_server(url: str) -> str:
         # PR URLs use either projects/{project} or users/{user} after the Bitbucket Server base URL.
         parsed_url = urlparse(url)
-        server_path = parsed_url.path.split("/projects/", maxsplit=1)
-        if len(server_path) == 1:
-            server_path = parsed_url.path.split("/users/", maxsplit=1)
-        if len(server_path) > 1:
-            server_path = server_path[0].strip("/")
+        path_parts = parsed_url.path.split("/")
+        pr_path_index = BitbucketServerProvider._pr_path_index(path_parts)
+        if pr_path_index is not None:
+            server_path = "/".join(path_parts[:pr_path_index]).strip("/")
             return f"{parsed_url.scheme}://{parsed_url.netloc}/{server_path}".strip("/")
         return f"{parsed_url.scheme}://{parsed_url.netloc}"
 
@@ -647,32 +656,13 @@ class BitbucketServerProvider(GitProvider):
         parsed_url = urlparse(pr_url)
 
         path_parts = parsed_url.path.strip("/").split("/")
-
-        try:
-            projects_index = path_parts.index("projects")
-        except ValueError:
-            projects_index = -1
-
-        try:
-            users_index = path_parts.index("users")
-        except ValueError:
-            users_index = -1
-
-        if projects_index == -1 and users_index == -1:
+        pr_path_index = BitbucketServerProvider._pr_path_index(path_parts)
+        if pr_path_index is None:
             raise ValueError(f"The provided URL '{pr_url}' does not appear to be a Bitbucket PR URL")
 
-        if projects_index != -1:
-            path_parts = path_parts[projects_index:]
-        else:
-            path_parts = path_parts[users_index:]
-
-        if len(path_parts) < 6 or path_parts[2] != "repos" or path_parts[4] != "pull-requests":
-            raise ValueError(
-                f"The provided URL '{pr_url}' does not appear to be a Bitbucket PR URL"
-            )
-
+        path_parts = path_parts[pr_path_index:]
         workspace_slug = path_parts[1]
-        if users_index != -1:
+        if path_parts[0] == "users":
             workspace_slug = f"~{workspace_slug}"
         repo_slug = path_parts[3]
         try:
