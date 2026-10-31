@@ -40,7 +40,7 @@ dependencies = [
   "GitPython>=3.1.62,<4",
   "starlette>=1.6.0,<2",
   "Jinja2==3.1.6",
-  "litellm==1.105.1",
+  "litellm==1.109.0.dev2",
   "loguru==0.7.3",
   "openai>=1.55.3",
   "PyJWT>=2.15.1,<3",
@@ -104,14 +104,14 @@ azure = [
 codecommit = ["boto3==1.43.118"]
 gitea = ["giteapy==1.0.8"]
 google = [
-  "google-cloud-aiplatform==2.5.0",
+  "google-cloud-aiplatform==2.7.0",
   # google-cloud-aiplatform==1.154.0 requires storage <4,>=1.32.0 on py<3.13 and <4,>=3.10.0 on py>=3.13.
   # Pin per-Python so existing installs are unchanged and py3.13 resolves. See #2480.
   "google-cloud-storage==2.10.0; python_version < '3.13'",
-  "google-cloud-storage==3.12.0; python_version >= '3.13'",
+  "google-cloud-storage==3.17.1; python_version >= '3.13'",
   # Keep protobuf explicit to lock the transitive version resolved with the gRPC dependency stack.
   # Revalidate compatibility when updating grpcio-status or related Google/gRPC dependencies.
-  "protobuf==6.33.6",
+  "protobuf==7.36.2",
 ]
 mosaico = ["a2a-sdk[http-server]==1.2.2"]
 # Preserve the dependency set that the published Docker images shipped before provider SDKs became optional.
@@ -156,9 +156,9 @@ dev = [
   "ruff==0.17.3",
 ]
 
-[tool.uv]
-# Keep the floor aligned with the patched uv release used by Docker and CI.
-required-version = ">=0.13.5"
+#[tool.uv]
+## Keep the floor aligned with the patched uv release used by Docker and CI.
+#required-version = ">=0.13.5"
 
 [tool.ruff]
 line-length = 120
