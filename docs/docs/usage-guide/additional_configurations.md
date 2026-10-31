@@ -556,13 +556,7 @@ To ignore PRs with a specific title such as "[Bump]: ...", you can add the follo
 ignore_pr_title = ["\\[Bump\\]"]
 ```
 
-Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]", "^Auto"]`.
-
-The default `^Auto` pattern also matches ordinary titles such as "Autoscaling fix". Because title
-rules now apply to manual commands too, `/review`, `/ask`, and CLI `--pr_url` commands on such PRs
-are skipped. Set a narrower `ignore_pr_title` pattern or use `ignore_pr_title = []` in your
-configuration if that is not intended. A skipped request is logged without running the tool or
-posting command reactions.
+Where the `ignore_pr_title` is a list of regex patterns to match the PR title you want to ignore. Default is `ignore_pr_title = ["^\\[Auto\\]"]`.
 
 ### Ignoring PRs between specific branches
 

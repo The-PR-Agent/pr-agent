@@ -190,6 +190,15 @@ def test_ignore_pr_title_given_as_a_plain_string_is_not_iterated_per_character(p
     _assert_all(providers, _fields(title="Add cache"), True, "a string ignore_pr_title that does not match")
 
 
+def test_default_auto_title_ignore_only_matches_bracketed_titles(ignore_settings):
+    ignore_settings.set("CONFIG.IGNORE_PR_TITLE", [r"^\[Auto\]"])
+
+    assert shared_should_process_pr_logic(title="Autoscaling fix") is True
+    assert shared_should_process_pr_logic(title="Automate release notes") is True
+    assert shared_should_process_pr_logic(title="AutoMapper upgrade") is True
+    assert shared_should_process_pr_logic(title="[Auto] generated update") is False
+
+
 @pytest.mark.parametrize(
     "setting, matching, non_matching, labels_only",
     [
