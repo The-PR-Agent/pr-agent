@@ -84,7 +84,7 @@ for the authoritative default values.
   </tr>
   <tr>
     <td><b>max_commits_per_review</b></td>
-    <td>Maximum number of commits <code>per_commit_review</code> reviews one by one. When more commits are selected for review, they are reviewed together in one review instead, with a notice. 0 removes the limit. It can't be set from a command argument or a per directory configuration file. Default is 10.</td>
+    <td>Maximum number of commits <code>per_commit_review</code> reviews one by one. When more commits are selected for review, they are reviewed together in one review instead, with a notice. It can't be set from a command argument or a per directory configuration file. Default is 0, no limit.</td>
   </tr>
   <tr>
     <td><b>publish_review_failure_comment</b></td>
@@ -364,7 +364,7 @@ review comment.
 Merge commits, empty commits and the root commit of a history have no diff of their own and are skipped. A commit that
 fails to review is reported like a failed review and does not stop the remaining commits. Every reviewed commit is a
 separate model call, so a PR with many commits costs accordingly; `-i` keeps repeated runs to the new commits.
-`max_commits_per_review` (default 10) caps the cost: when more commits than that are selected, they are reviewed
+Hosts that want to bound that cost can set `max_commits_per_review` (default 0, no limit): when more commits than that are selected, they are reviewed
 together in one review with a notice. Both settings belong to the operator, so a command argument such as
 `--pr_reviewer.per_commit_review=true` is rejected.
 

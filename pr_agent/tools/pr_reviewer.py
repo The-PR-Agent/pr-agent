@@ -334,7 +334,7 @@ class PRReviewer:
         commits = self._commits_to_review(commits)
         if commits is None:
             return
-        max_commits = _as_int(get_settings().pr_reviewer.get("max_commits_per_review", 10), 10)
+        max_commits = _as_int(get_settings().pr_reviewer.get("max_commits_per_review", 0), 0)
         if 0 < max_commits < len(commits):
             await self._review_as_one(
                 f"{len(commits)} commits to review exceed max_commits_per_review={max_commits}",
