@@ -30,10 +30,12 @@ from pr_agent.algo.inline_comment_dedup import (
 )
 from pr_agent.algo.output_models import PRReview, parse_failure_modes
 from pr_agent.algo.pr_processing import (
+    DELETED_FILES_,
     OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD,
     OUTPUT_BUFFER_TOKENS_SOFT_THRESHOLD,
     FallbackEligibleError,
     PreparedPRDiff,
+    _append_metadata_section,
     add_ai_metadata_to_diff_files,
     append_filtered_file_names,
     get_pr_diff,
@@ -956,7 +958,7 @@ class PRReviewer:
 
         # Resume an incomplete chunk plan even when a fallback model can fit the full diff.
         # Otherwise, the single-call path would bypass cached successful chunks.
-        has_incomplete_chunk_plan = hasattr(self, "_chunked_patches_diff_list")
+        has_incomplete_chunk_plan = bool(getattr(self, "_chunked_patches_diff_list", None))
         if chunking_enabled and (self.remaining_files_list or has_incomplete_chunk_plan):
             prepared_diff = output if isinstance(output, PreparedPRDiff) else None
             if await self._prepare_chunked_prediction(model, prepared_diff):
@@ -1038,26 +1040,58 @@ class PRReviewer:
             self._chunked_patches_diff_list = patches_diff_list
             self._chunked_remaining_files_list = coverage.remaining_files_list
             self._chunked_partial_files_list = coverage.partial_files_list
-            self._chunked_primary_model = model
-        if len(patches_diff_list) < 2:
-            get_logger().info("Large-diff chunking produced a single chunk, reviewing the PR in one call")
+            self._chunked_primary_model = getattr(self, "_chunked_primary_model", model)
+        if not patches_diff_list:
+            get_logger().info("Large-diff chunking produced no chunks, retaining the single-call flow")
+            # Rebuild an empty plan for each fallback model; its budget may fit previously skipped files.
+            del self._chunked_patches_diff_list
             return False
 
         get_logger().info(f"Number of PR chunk calls: {len(patches_diff_list)}")
         get_logger().debug("PR diff chunks", artifact=patches_diff_list)
         chunk_results = getattr(self, "_chunked_results", {})
         pending_indices = [index for index in range(len(patches_diff_list)) if index not in chunk_results]
+        prompts = [patches_diff_list[index] for index in pending_indices]
+        deleted_files = prepared_diff.deleted_files_list if prepared_diff and len(patches_diff_list) == 1 else None
         filtered_files = getattr(self.git_provider, "get_filtered_diff_file_names", lambda: [])()
-        if isinstance(filtered_files, (list, tuple)) and filtered_files:
+        has_filtered_files = isinstance(filtered_files, (list, tuple)) and bool(filtered_files)
+        if deleted_files or has_filtered_files:
             attempt_budget = self._review_attempt_budget(model)
             max_tokens = attempt_budget.token_handler.prompt_tokens + attempt_budget.available_tokens(
                 OUTPUT_BUFFER_TOKENS_HARD_THRESHOLD, preserve_minimum=True, clamp=False,
             )
-            prompts = [append_filtered_file_names(
-                patches_diff_list[index], self.git_provider, attempt_budget.token_handler, max_tokens,
-            ) for index in pending_indices]
-        else:
-            prompts = [patches_diff_list[index] for index in pending_indices]
+            if len(patches_diff_list) == 1:
+                source_prompt = prompts[0]
+            if deleted_files:
+                section = DELETED_FILES_ + "\n" + "\n".join(deleted_files)
+                prompts[0] = _append_metadata_section(
+                    prompts[0], attempt_budget.token_handler.prompt_tokens
+                    + attempt_budget.token_handler.count_tokens(prompts[0]),
+                    section, max_tokens, attempt_budget.token_handler, whole_lines=True,
+                )[0]
+            if has_filtered_files:
+                prompts = [append_filtered_file_names(
+                    prompt, self.git_provider, attempt_budget.token_handler, max_tokens,
+                ) for prompt in prompts]
+            if len(patches_diff_list) == 1:
+                def fits_request(candidate: str) -> bool:
+                    system, user = attempt_budget.render_prompt_templates(dict(self.vars, diff=candidate))
+                    return attempt_budget.prepare_request(self.ai_handler, system, user).input_tokens <= max_tokens
+
+                if not fits_request(prompts[0]):
+                    # Drop optional deletion metadata, then retain only fitting filtered filenames.
+                    prompts[0] = append_filtered_file_names(
+                        source_prompt, self.git_provider, attempt_budget.token_handler, max_tokens,
+                        fits_request=fits_request,
+                    )
+        if len(patches_diff_list) == 1:
+            self.patches_diff = prompts[0]
+            self.remaining_files_list = self._chunked_remaining_files_list
+            self.partial_files_list = self._chunked_partial_files_list
+            # Replan any fallback because the single-call path caches no chunk result.
+            del self._chunked_patches_diff_list
+            return False
+
         # A fallback model starts a new batch, so clear the previous attempt's line first.
         # Otherwise it stays on screen at "N of N" and the new attempt's first chunk rewinds
         # it; the chunks an earlier attempt finished are counted through `completed` below.

@@ -5,13 +5,20 @@ covered here is when chunking runs at all, what it does with a chunk that fails,
 the published review says about having been assembled from several calls.
 """
 
+import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from starlette_context import request_cycle_context
 
+from pr_agent.agent.pr_agent import PRAgent
+from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
 from pr_agent.algo.pr_processing import PackedPRDiffs, PreparedPRDiff, _pack_pr_multi_diffs
 from pr_agent.algo.review_finding_state import ParsedReviewState, reconcile_review_findings
+from pr_agent.algo.run_details import init_run_details
+from pr_agent.algo.token_budget import FallbackEligibleError
+from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.config_loader import get_settings
 from pr_agent.tools.pr_reviewer import PRReviewer
 from tests.unittest._settings_helpers import restore_settings, snapshot_settings
@@ -281,24 +288,214 @@ async def test_max_number_of_calls_bounds_the_number_of_chunks(chunking_enabled)
 
 
 @pytest.mark.asyncio
-async def test_a_diff_that_fits_in_one_chunk_is_reviewed_by_the_single_call_flow(chunking_enabled):
+async def test_single_packed_chunk_replaces_the_single_call_diff_and_coverage(chunking_enabled):
     reviewer = _make_reviewer()
+    # Exercise the rendered budget with the same prompt machinery as production.
+    reviewer._raw_prompt_vars = None
+    reviewer.vars = {"diff": ""}
+    reviewer.token_handler = TokenHandler(
+        reviewer.git_provider.pr, reviewer.vars, "Review.", "{{ diff }}", model="gpt-4o",
+    )
+    reviewer.ai_handler = LiteLLMAIHandler()
     reviewer.partial_files_list = ["stale-from-prior-attempt.py"]
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = ["pnpm-lock.yaml"]
+    reviewer._chunk_progress_reporter = MagicMock()
     reviewer._get_prediction = AsyncMock(return_value=CHUNK_A)
 
     with (
         patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
         patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
-              return_value=PackedPRDiffs(["only-chunk"], [], ["unused.py"])),
+              return_value=PackedPRDiffs(["only-chunk"], [], ["b.py"])),
     ):
-        await reviewer._prepare_prediction("model")
+        await reviewer._prepare_prediction("gpt-4o")
 
-    reviewer._get_prediction.assert_awaited_once_with("model")
+    reviewer._get_prediction.assert_awaited_once_with("gpt-4o")
+    reviewer._chunk_progress_reporter.assert_not_called()
+    assert "only-chunk" in reviewer.patches_diff
+    assert "pnpm-lock.yaml" in reviewer.patches_diff
     assert reviewer.prediction == CHUNK_A
     assert reviewer.prediction_data is None
     assert reviewer.review_chunk_count == 1
-    assert reviewer.remaining_files_list == ["b.py"]
-    assert reviewer.partial_files_list == []
+    assert reviewer.remaining_files_list == []
+    assert reviewer.partial_files_list == ["b.py"]
+
+
+@pytest.mark.asyncio
+async def test_empty_chunk_plan_repacks_all_skipped_files_for_larger_fallback(chunking_enabled):
+    reviewer = _make_reviewer()
+    reviewer._get_prediction = AsyncMock(side_effect=[CHUNK_A, CHUNK_B])
+    files = ["a.py", "b.py"]
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff",
+              side_effect=[PreparedPRDiff("", files), PreparedPRDiff("", files)]),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs", side_effect=[
+            PackedPRDiffs([], files, []),
+            PackedPRDiffs(["## File: 'a.py'\n+source a", "## File: 'b.py'\n+source b"], [], []),
+        ]) as pack,
+    ):
+        with pytest.raises(FallbackEligibleError, match="No PR diff fits"):
+            await reviewer._prepare_prediction("primary")
+        assert not hasattr(reviewer, "_chunked_patches_diff_list")
+        await reviewer._prepare_prediction("fallback")
+
+    assert pack.call_count == 2
+    assert [call.args[2] for call in pack.call_args_list] == ["primary", "fallback"]
+    assert [call.args for call in reviewer._get_prediction.await_args_list] == [
+        ("fallback", "## File: 'a.py'\n+source a"),
+        ("fallback", "## File: 'b.py'\n+source b"),
+    ]
+    assert reviewer.remaining_files_list == []
+    assert reviewer.review_chunk_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted_count", [
+    pytest.param(93, id="filtered-section-crosses-limit"),
+    pytest.param(1000, id="deleted-section-crosses-limit"),
+])
+async def test_deleted_metadata_cannot_overflow_a_repeated_diff_prompt(chunking_enabled, deleted_count):
+    reviewer = _make_reviewer()
+    reviewer.vars = {"diff": ""}
+    reviewer.token_handler = TokenHandler(
+        reviewer.git_provider.pr, reviewer.vars, "Review.", "{{ diff }}\n{{ diff }}", model="gpt-4o",
+    )
+    reviewer.ai_handler = LiteLLMAIHandler()
+    reviewer.ai_handler.chat_completion = AsyncMock(return_value=(CHUNK_A, "stop"))
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = ["pnpm-lock.yaml"]
+    source = "source\n" * 2000
+    prepared = PreparedPRDiff("ordinary diff", ["feature.py"],
+                              deleted_files_list=[f"obsolete_{i}.py" for i in range(deleted_count)])
+    with patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs", return_value=PackedPRDiffs([source], [], [])):
+        assert await reviewer._prepare_chunked_prediction("gpt-4o", prepared) is False
+
+    assert await reviewer._get_prediction("gpt-4o") == CHUNK_A
+
+    reviewer.ai_handler.chat_completion.assert_awaited_once()
+    user_prompt = reviewer.ai_handler.chat_completion.await_args.kwargs["user"]
+    assert user_prompt.count("source") == 4000
+    assert "pnpm-lock.yaml" in user_prompt
+    assert "Deleted files:" not in user_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted_files", [
+    pytest.param(["obsolete.py"], id="with-deletions"),
+    pytest.param(None, id="filtered-only"),
+])
+async def test_filtered_metadata_cannot_overflow_repeated_diff(chunking_enabled, deleted_files):
+    reviewer = _make_reviewer()
+    reviewer.vars = {"diff": ""}
+    reviewer.token_handler = TokenHandler(
+        reviewer.git_provider.pr, reviewer.vars, "Review.", "{{ diff }}\n{{ diff }}", model="gpt-4o",
+    )
+    reviewer.ai_handler = LiteLLMAIHandler()
+    reviewer.ai_handler.chat_completion = AsyncMock(return_value=(CHUNK_A, "stop"))
+    reviewer.git_provider.get_filtered_diff_file_names.return_value = [
+        f"generated/filter_{i:03d}_"
+        + "".join(f"{(i * 17 + j * 47) % 251:02x}" for j in range(90)) + ".lock"
+        for i in range(50)
+    ]
+    source = "source\n" * 2000
+    prepared = PreparedPRDiff("", ["feature.py"], deleted_files_list=deleted_files)
+    with patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs",
+               return_value=PackedPRDiffs([source], [], [])):
+        assert await reviewer._prepare_chunked_prediction("gpt-4o", prepared) is False
+
+    assert await reviewer._get_prediction("gpt-4o") == CHUNK_A
+    reviewer.ai_handler.chat_completion.assert_awaited_once()
+    user_prompt = reviewer.ai_handler.chat_completion.await_args.kwargs["user"]
+    assert user_prompt.count("source") == 4000
+    assert "Deleted files:" not in user_prompt
+    assert "Files changed but omitted" in user_prompt
+    assert "filter_000_" in user_prompt
+    assert "filter_049_" not in user_prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model,fallback,line_count,policy,complete", [
+    pytest.param("gpt-4o", None, 3000, "clip", False, id="single-clipped-chunk"),
+    pytest.param("gpt-4", "gpt-4o", 800, "clip", True, id="larger-fallback-fits-full-file"),
+    pytest.param("gpt-4o", "gpt-4", 3000, "clip", False, id="smaller-fallback-reclips"),
+    pytest.param("gpt-4", "gpt-4o", 800, "skip", True, id="empty-plan-fallback-fits-full-file"),
+])
+async def test_single_chunk_reaches_the_model_and_fallback_uses_its_own_budget(
+    tmp_path, monkeypatch, capsys, model, fallback, line_count, policy, complete,
+):
+    monkeypatch.chdir(tmp_path)
+    diff = ("diff --git a/obsolete.py b/obsolete.py\ndeleted file mode 100644\n"
+            "--- a/obsolete.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-OBSOLETE_SOURCE_SENTINEL = 1\n"
+            "diff --git a/feature.py b/feature.py\nnew file mode 100644\n"
+            "--- /dev/null\n+++ b/feature.py\n"
+            f"@@ -0,0 +1,{line_count} @@\n"
+            + "".join(f'+SINGLE_CHUNK_SOURCE_{i} = some_function({i}, "sample source payload")\n'
+                      for i in range(line_count)))
+    prompts = []
+
+    class RecordingAI(LiteLLMAIHandler):
+        async def chat_completion(self, model, system, user, temperature=0.2, img_path=None):
+            prompts.append(user)
+            if fallback and len(prompts) == 1:
+                raise FallbackEligibleError("primary unavailable")
+            return CHUNK_A, "stop"
+
+    # Load lazy defaults before copying request settings.
+    _ = get_settings().config
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": model,
+            "config.max_model_tokens": 32000,
+            "config.fallback_models": [fallback] if fallback else [],
+            "config.repo_context_files": [],
+            "config.large_patch_policy": policy,
+            "config.publish_output_progress": False,
+            "config.output_run_details": False,
+            "plain_diff.content": diff,
+            "plain_diff.output_path": None,
+            "plain_diff.json_output_path": None,
+            "pr_reviewer.enable_large_pr_chunking": True,
+            "pr_reviewer.enable_review_coverage_footer": True,
+        }.items():
+            get_settings().set(key, value)
+        assert await PRAgent(ai_handler=RecordingAI).handle_request("local_diff", ["review"]) is True
+
+    assert len(prompts) == (2 if fallback else 1)
+    assert all("obsolete.py" in prompt for prompt in prompts)
+    source_counts = [prompt.count("SINGLE_CHUNK_SOURCE_") for prompt in prompts]
+    if policy == "skip":
+        assert source_counts[0] == 0
+    else:
+        assert 0 < source_counts[0] < line_count
+    assert (source_counts[-1] == line_count) is complete
+    if fallback and not complete:
+        assert 0 < source_counts[-1] < source_counts[0]
+    assert ("had patches clipped before analysis" in capsys.readouterr().out) is not complete
+
+
+@pytest.mark.asyncio
+async def test_replanned_fallback_partial_review_keeps_the_original_primary_model(chunking_enabled):
+    reviewer = _make_reviewer()
+    details = init_run_details()
+    reviewer._get_prediction = AsyncMock(side_effect=[
+        RuntimeError("primary unavailable"), CHUNK_A, RuntimeError("fallback unavailable"),
+    ])
+    with (
+        patch("pr_agent.tools.pr_reviewer.get_pr_diff", return_value=("diff", ["b.py"])),
+        patch("pr_agent.tools.pr_reviewer.get_pr_multi_diffs", side_effect=[
+            PackedPRDiffs(["primary-chunk"], ["b.py"], []),
+            PackedPRDiffs(["chunk-a", "chunk-b"], [], []),
+        ]),
+    ):
+        with pytest.raises(RuntimeError, match="primary unavailable"):
+            await reviewer._prepare_prediction("primary")
+        with pytest.raises(RuntimeError, match="fallback unavailable"):
+            await reviewer._prepare_prediction("fallback")
+
+    assert reviewer._merge_cached_review_chunks()
+    assert reviewer.review_chunk_count == 2
+    assert reviewer.review_failed_chunk_count == 1
+    assert details.models_used == ["fallback"]
+    assert details.fallback_used is True
 
 
 @pytest.mark.asyncio

@@ -64,6 +64,7 @@ def _append_metadata_section(
     max_tokens: int,
     token_handler: TokenHandler,
     whole_lines: bool = False,
+    fits_request: Callable[[str], bool] | None = None,
 ) -> tuple[str, int, str]:
     """Append metadata within the input budget, optionally keeping every line complete."""
     if not section:
@@ -90,7 +91,7 @@ def _append_metadata_section(
                 candidate_tokens = token_handler.prompt_tokens + _count_raw_and_stripped_tokens(
                     token_handler, candidate
                 )
-                if candidate_tokens <= max_tokens:
+                if candidate_tokens <= max_tokens and (fits_request is None or fits_request(candidate)):
                     result = (candidate, candidate_tokens, clipped_section)
                     return True
                 return False
@@ -113,7 +114,8 @@ def _append_metadata_section(
 
 
 def append_filtered_file_names(diff: str, git_provider: GitProvider,
-                               token_handler: TokenHandler, max_tokens: int) -> str:
+                               token_handler: TokenHandler, max_tokens: int,
+                               *, fits_request: Callable[[str], bool] | None = None) -> str:
     """Include filtered file names in a prompt without exceeding its input budget."""
     filtered_files = getattr(git_provider, "get_filtered_diff_file_names", lambda: [])()
     if not isinstance(filtered_files, (list, tuple)) or not filtered_files:
@@ -121,7 +123,7 @@ def append_filtered_file_names(diff: str, git_provider: GitProvider,
     section = _filtered_file_section(filtered_files)
     result, _, _ = _append_metadata_section(
         diff, token_handler.prompt_tokens + token_handler.count_tokens(diff),
-        section, max_tokens, token_handler, whole_lines=True,
+        section, max_tokens, token_handler, whole_lines=True, fits_request=fits_request,
     )
     return result
 
@@ -188,6 +190,7 @@ class PreparedPRDiff:
     add_line_numbers_to_hunks: bool = False
     token_handler: TokenHandler | None = None
     attempt_budget: AttemptTokenBudget | None = None
+    deleted_files_list: list[str] | None = None
 
 
 def cap_and_log_extra_lines(value, direction) -> int:
@@ -380,6 +383,7 @@ def get_pr_diff(git_provider: GitProvider, token_handler: TokenHandler,
             add_line_numbers_to_hunks=add_line_numbers_to_hunks,
             token_handler=token_handler,
             attempt_budget=budget,
+            deleted_files_list=deleted_files_list,
         )
     if not return_remaining_files:
         return final_diff
