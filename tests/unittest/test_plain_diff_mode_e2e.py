@@ -8,6 +8,7 @@ from starlette_context import request_cycle_context
 from pr_agent.agent.pr_agent import PRAgent
 from pr_agent.algo.ai_handlers.base_ai_handler import BaseAiHandler
 from pr_agent.algo.review_json_output import review_json_output_path
+from pr_agent.algo.run_details import command_failed
 from pr_agent.config_loader import _find_repository_root, get_settings
 from pr_agent.git_providers.plain_diff_provider import PlainDiffGitProvider
 from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
@@ -177,35 +178,22 @@ def test_base_file_reconstructed_when_run_from_subdirectory(cfg, tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_review_command_through_diff_provider_mocked_llm(cfg, monkeypatch):
-    """Integration test: drives PRReviewer with a fake AI handler through the
-    diff provider.  We assert that the AI handler is invoked with a prompt that
-    contains the changed content from the diff, proving end-to-end wiring from
-    diff -> PlainDiffGitProvider -> PRReviewer -> LLM boundary.
-
-    We do NOT attempt to parse back a full schema-valid review YAML from the
-    fake response, because the exact expected schema is prone to breaking with
-    prompt changes.  The 'handler was called with the diff content' assertion is
-    the meaningful claim here.
-    """
-    from pr_agent.tools.pr_reviewer import PRReviewer
-
-    # --- configure provider ---
-    cfg("config.git_provider", "plain-diff")
-    cfg("plain_diff.content", DIFF)
-    cfg("plain_diff.output_path", None)
-    # Disable publish so we don't need a real comment sink
-    cfg("config.publish_output", False)
-
-    # --- fake AI handler ---
-    # PRReviewer calls ai_handler() (a factory/partial), so we pass a class
-    # whose constructor returns the fake instance.
-    calls = []  # records (system, user) for each chat_completion call
+@pytest.mark.parametrize("command,response,expected_output", [
+    ("/ask What changed?", "The second line changed.", "The second line changed."),
+    ("/review", "review:\n  key_issues_to_review: []\n", "No major issues detected"),
+    ("/describe", "title: Update the second line\ndescription: The second line changed.\n"
+                  "type: [Enhancement]\npr_files: []\n", "The second line changed."),
+])
+async def test_commands_through_diff_provider_mocked_llm(
+    tmp_path, monkeypatch, capsys, command, response, expected_output
+):
+    """Exercise command dispatch, prompt budgeting and final output with only the model stubbed."""
+    monkeypatch.chdir(tmp_path)
+    calls = []
 
     class FakeAiHandler(BaseAiHandler):
         def __init__(self):
-            # No super().__init__() — BaseAiHandler is abstract, nothing to call
-            self.main_pr_language = None
+            pass
 
         @property
         def deployment_id(self):
@@ -214,24 +202,33 @@ async def test_review_command_through_diff_provider_mocked_llm(cfg, monkeypatch)
         async def chat_completion(self, model: str, system: str, user: str,
                                   temperature: float = 0.2, img_path: str = None):
             calls.append({"system": system, "user": user})
-            # Return a minimal response; PRReviewer will store this as self.prediction
-            # and then attempt _prepare_pr_review().  If parsing fails the run()
-            # method catches the exception gracefully, so the test won't error out.
-            return ("## Review\nNo major issues detected.", "stop")
+            return response, "stop"
 
-    reviewer = PRReviewer("local_diff", ai_handler=FakeAiHandler, args=[])
-    await reviewer.run()
+    with request_cycle_context({"settings": copy.deepcopy(get_settings())}):
+        for key, value in {
+            "config.git_provider": "plain-diff",
+            "config.model": "gpt-4o-mini",
+            "config.model_weak": "gpt-4o-mini",
+            "config.fallback_models": [],
+            "config.repo_context_files": [],
+            "config.publish_output": True,
+            "config.extra_config_url": "",
+            "plain_diff.content": DIFF,
+            "plain_diff.output_path": None,
+            "plain_diff.json_output_path": None,
+            "pr_reviewer.publish_output_no_suggestions": True,
+            "pr_description.use_description_markers": False,
+            "pr_description.enable_pr_description": True,
+            "push_outputs.enable": False,
+        }.items():
+            get_settings().set(key, value)
 
-    # The AI handler must have been called at least once
-    assert len(calls) >= 1, "FakeAiHandler.chat_completion was never called — end-to-end wiring is broken"
+        assert await PRAgent(ai_handler=FakeAiHandler).handle_request("local_diff", command) is True
+        assert command_failed() is False
 
-    # The prompt sent to the LLM must contain content derived from the diff
-    # (the changed line "line2-changed" appears in the diff hunk)
-    all_prompt_text = " ".join(c["system"] + c["user"] for c in calls)
-    assert "line2" in all_prompt_text, (
-        "The diff content ('line2') was not found in the prompt sent to the AI handler. "
-        "End-to-end wiring from diff -> provider -> reviewer -> LLM is broken."
-    )
+    assert len(calls) == 1
+    assert "line2-changed" in calls[0]["user"]
+    assert expected_output in capsys.readouterr().out
 
 
 @pytest.mark.asyncio

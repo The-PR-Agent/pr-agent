@@ -27,7 +27,6 @@ from pr_agent.algo.run_details import get_run_details, init_run_details, record_
 from pr_agent.algo.run_output import push_outputs_async, show_relevant_configurations, show_run_details
 from pr_agent.algo.skills_loader import get_skills_context
 from pr_agent.algo.token_budget import AttemptTokenBudget
-from pr_agent.algo.token_handler import TokenHandler
 from pr_agent.algo.utils import (
     ModelType,
     filter_generated_labels,
@@ -122,14 +121,6 @@ class PRDescription:
         }
 
         self.user_description = self.git_provider.get_user_description()
-
-        # Initialize the token handler
-        self.token_handler = TokenHandler(
-            self.git_provider.pr,
-            self.vars,
-            get_settings().pr_description_prompt.system,
-            get_settings().pr_description_prompt.user,
-        )
 
         # Initialize patches_diff and prediction attributes
         self.patches_diff = None

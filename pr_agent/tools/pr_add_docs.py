@@ -9,6 +9,7 @@ from pr_agent.algo.pr_processing import (
     FallbackEligibleError,
     get_pr_diff,
     retry_with_fallback_models,
+    run_diff_preparation,
 )
 from pr_agent.algo.prompt_fragments import render_diff_hunk_format
 from pr_agent.algo.run_details import record_command_failure
@@ -127,7 +128,8 @@ class PRAddDocs:
             ai_handler=self.ai_handler,
             output_token_reserve=output_token_reserve,
         )
-        output = get_pr_diff(
+        output = await run_diff_preparation(
+            get_pr_diff,
             self.git_provider,
             budget.token_handler,
             model,

@@ -41,7 +41,9 @@ You can use our pre-built GitHub Action Docker image to run PR-Agent as a GitHub
    Secret = <your key>
    ```
 
-   The GITHUB_TOKEN secret is automatically created by GitHub.
+   The `GITHUB_TOKEN` secret is automatically created by GitHub, but you must pass it to the action through `env` as shown above.
+   If it is missing or empty, events with a PR or issue target fail with a nonzero exit status and a `GITHUB_TOKEN not set` message.
+   Ignored comments and events without a target still skip successfully.
 
 3. Merge this change to your main branch.
    When you open your next PR, you should see a comment from `github-actions` bot with a review of your PR, and instructions on how to use the rest of the tools.

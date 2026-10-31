@@ -41,6 +41,13 @@ def _check_config(model: str) -> tuple[bool, str]:
     return False, "config.model is empty; set it in configuration.toml or CONFIG__MODEL"
 
 
+def _uses_ambient_auth_or_custom_endpoint(provider: str) -> bool:
+    """Ambient auth (Azure AD, the AWS credential chain) or a custom endpoint needs no static key: the run decides."""
+    settings = get_settings()
+    ambient = settings.get("AZURE_AD.CLIENT_ID", None) or provider.startswith(("bedrock", "azure"))
+    return bool(ambient or settings.get(f"{provider}.api_base", None))
+
+
 def _check_provider_key(handler: LiteLLMAIHandler, provider: str) -> tuple[bool, str]:
     """Check the key a real run would use, without ever printing its value."""
     env_vars = PROVIDER_API_KEY_ENV_VARS.get(provider, ())
@@ -49,6 +56,8 @@ def _check_provider_key(handler: LiteLLMAIHandler, provider: str) -> tuple[bool,
         source = next((name for name in env_vars if os.environ.get(name)), None)
         origin = f"env {source}" if source else "settings"
         return True, f"API key for '{provider}' found ({origin})"
+    if _uses_ambient_auth_or_custom_endpoint(provider):
+        return True, f"no static key for '{provider}' (ambient auth or custom endpoint); ping decides"
     if key == DUMMY_LITELLM_API_KEY:
         return False, f"API key for '{provider}' is the placeholder; set a real key"
     if env_vars:
@@ -72,10 +81,7 @@ def missing_provider_key_env_vars() -> tuple[str, tuple[str, ...]] | None:
     model = str(get_settings().config.get("model", "") or "")
     provider = _active_provider(model)
     ok, _detail = _check_provider_key(LiteLLMAIHandler(), provider)
-    # Ambient auth (Azure AD, the AWS credential chain) or a custom endpoint needs no static key: the run decides.
-    settings = get_settings()
-    ambient = settings.get("AZURE_AD.CLIENT_ID", None) or provider.startswith(("bedrock", "azure"))
-    if ok or ambient or settings.get(f"{provider}.api_base", None):
+    if ok:
         return None
     return provider, PROVIDER_API_KEY_ENV_VARS.get(provider, ())
 

@@ -2040,7 +2040,6 @@ def test_init_maps_user_question_and_answer_to_correct_prompt_vars(monkeypatch):
 
     monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
 
     reviewer = PRReviewer(
         "https://example/pr/1",
@@ -2072,7 +2071,6 @@ def _build_answer_mode_reviewer(monkeypatch, issue_comments, *, newest_first=Non
 
     monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
 
     return PRReviewer(
         "https://example/pr/1",

@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 
 import html2text
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from yaml.tokens import (
     BlockEndToken,
     BlockEntryToken,
@@ -37,7 +37,7 @@ from pr_agent.algo.git_patch_processing import (
     to_hunk_only_patch,
 )
 from pr_agent.algo.language_handler import build_language_file_matcher
-from pr_agent.algo.output_models import PRType, parse_failure_modes
+from pr_agent.algo.output_models import PRType, SubPR, parse_failure_modes
 from pr_agent.algo.structural_reach import render_structural_reach
 from pr_agent.algo.types import FilePatchInfo
 from pr_agent.config_loader import get_settings, get_verbosity_level
@@ -425,7 +425,8 @@ def convert_to_markdown_v2(output_data: dict,
         elif 'can be split' in key_nice.lower():
             if gfm_supported:
                 markdown_text += "<tr><td>"
-                markdown_text += process_can_be_split(emoji, value)
+            markdown_text += process_can_be_split(emoji, value, gfm_supported)
+            if gfm_supported:
                 markdown_text += "</td></tr>\n"
         elif 'key issues to review' in key_nice.lower():
             # value is a list of issues
@@ -697,7 +698,7 @@ def ticket_markdown_logic(emoji, markdown_text, value, gfm_supported) -> str:
     return markdown_text
 
 
-def process_can_be_split(emoji, value):
+def process_can_be_split(emoji, value, gfm_supported=True):
     try:
         # key_nice = "Can this PR be split?"
         key_nice = "Multiple PR themes"
@@ -707,18 +708,35 @@ def process_can_be_split(emoji, value):
         if not value or isinstance(value, dict) or isinstance(value, list) and len(value) <= 1:
             # markdown_text += f"<tr><td> {emoji}&nbsp;<strong>{key_nice}</strong></td><td>\n\n{value}\n\n</td></tr>\n"
             # markdown_text += f"### {emoji} No multiple PR themes\n\n"
-            markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
+            if gfm_supported:
+                markdown_text += f"{emoji} <strong>No multiple PR themes</strong>\n\n"
         elif isinstance(value, list):
-            markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
+            if not gfm_supported:
+                if len(value) > 3:
+                    return ""
+                try:
+                    value = [SubPR.model_validate(split).model_dump() for split in value]
+                except ValidationError:
+                    return ""
+            if gfm_supported:
+                markdown_text += f"{emoji} <strong>{key_nice}</strong><br><br>\n\n"
+            else:
+                markdown_text += f"### {emoji} {key_nice}\n\n"
             for split in value:
                 title = split.get('title', '')
                 relevant_files = split.get('relevant_files', [])
-                markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
-                markdown_text += "___\n\nRelevant files:\n\n"
+                if gfm_supported:
+                    markdown_text += f"<details><summary>\nSub-PR theme: <b>{title}</b></summary>\n\n"
+                    markdown_text += "___\n\nRelevant files:\n\n"
+                else:
+                    markdown_text += f"#### Sub-PR theme: {title}\n\nRelevant files:\n\n"
                 for file in relevant_files:
                     markdown_text += f"- {file}\n"
-                markdown_text += "___\n\n"
-                markdown_text += "</details>\n\n"
+                if gfm_supported:
+                    markdown_text += "___\n\n"
+                    markdown_text += "</details>\n\n"
+                else:
+                    markdown_text += "\n"
 
                 # markdown_text += f"#### Sub-PR theme: {title}\n\n"
                 # markdown_text += f"Relevant files:\n\n"

@@ -2,6 +2,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import litellm
 import pytest
 
 import pr_agent.algo.token_budget as token_budget_module
@@ -18,6 +19,25 @@ class FakeTokenHandler:
     def count_tokens(self, text):
         self.counted.append(text)
         return len(text)
+
+
+@pytest.mark.parametrize("custom_limit", [0, 20000, "20000"])
+def test_unresolved_model_attempt_requires_explicit_input_limit(monkeypatch, custom_limit):
+    settings = SimpleNamespace(config=SimpleNamespace(custom_model_max_tokens=custom_limit, max_model_tokens=32000))
+    monkeypatch.setattr(token_budget_module, "get_settings", lambda: settings)
+
+    def unavailable_metadata(*_args):
+        if custom_limit:
+            pytest.fail("Explicit input limit must bypass metadata lookup")
+        raise ValueError("Model metadata unavailable")
+
+    monkeypatch.setattr(litellm, "get_model_info", unavailable_metadata)
+    if not custom_limit:
+        with pytest.raises(Exception, match="custom_model_max_tokens"):
+            token_budget_module.AttemptTokenBudget.for_attempt("openrouter/unmapped-model", FakeTokenHandler())
+    else:
+        budget = token_budget_module.AttemptTokenBudget.for_attempt("openrouter/unmapped-model", FakeTokenHandler())
+        assert budget.context_window == 20000
 
 
 @pytest.fixture

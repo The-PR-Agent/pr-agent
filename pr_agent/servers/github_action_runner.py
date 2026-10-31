@@ -233,9 +233,6 @@ async def run_action():
     if not GITHUB_EVENT_PATH:
         print("GITHUB_EVENT_PATH not set")
         return
-    if not GITHUB_TOKEN:
-        print("GITHUB_TOKEN not set")
-        return
 
     # Set the environment variables in the settings
     if OPENAI_KEY:
@@ -287,6 +284,12 @@ async def run_action():
                 return
 
     pr_url = _settings_pr_url(event_payload, GITHUB_EVENT_NAME)
+    if not GITHUB_TOKEN:
+        issue_url = event_payload.get("issue", {}).get("url") if GITHUB_EVENT_NAME == "issue_comment" else None
+        if pr_url or issue_url:
+            raise SystemExit("GITHUB_TOKEN not set; provide it in this workflow's env before running PR-Agent.")
+        return
+
     settings_provider = None
     try:
         get_logger().info("Applying repo settings")

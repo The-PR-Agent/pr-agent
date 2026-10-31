@@ -290,7 +290,6 @@ def test_gerrit_consumers_keep_host_timeout_after_repo_overlay(
                 monkeypatch.setattr(GerritProvider, "get_pr_description", lambda self: "")
                 monkeypatch.setattr(GerritProvider, "get_commit_messages", lambda self: "")
                 monkeypatch.setattr(pr_questions, "get_main_pr_language", lambda *args: "")
-                monkeypatch.setattr(pr_questions, "TokenHandler", lambda *args: None)
                 monkeypatch.setattr(pr_questions.PRQuestions, "_load_conversation_history", lambda self: "")
                 question = pr_questions.PRQuestions(key, args=[], ai_handler=SimpleNamespace)
                 assert isinstance(question.git_provider, GerritProvider)

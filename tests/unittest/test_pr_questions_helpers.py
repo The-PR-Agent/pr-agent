@@ -108,7 +108,6 @@ def raw_question_tools(monkeypatch):
     monkeypatch.setattr(pr_agent_module, "flush_telemetry", lambda: None)
     monkeypatch.setattr("pr_agent.tools.pr_questions.get_git_provider", lambda: lambda _url: provider)
     monkeypatch.setattr("pr_agent.tools.pr_questions.get_main_pr_language", lambda *_args: "Python")
-    monkeypatch.setattr("pr_agent.tools.pr_questions.TokenHandler", lambda *_args: None)
     monkeypatch.setattr(PRQuestions, "run", capture_question)
 
     with request_cycle_context({"settings": deepcopy(get_settings())}):

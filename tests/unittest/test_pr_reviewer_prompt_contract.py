@@ -36,7 +36,6 @@ def _build_reviewer(monkeypatch):
 
     monkeypatch.setattr(pr_reviewer_module, "get_git_provider_with_context", lambda pr_url: provider)
     monkeypatch.setattr(pr_reviewer_module, "get_main_pr_language", lambda languages, files: "Python")
-    monkeypatch.setattr(pr_reviewer_module, "TokenHandler", MagicMock())
 
     return PRReviewer(
         "https://example/pr/1",

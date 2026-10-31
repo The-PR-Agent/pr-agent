@@ -524,7 +524,7 @@ async def polling_loop():
                             handled_ids.add(notification['id'])
                             if output[0]:
                                 _, handled_ids, comment, comment_body, pr_url, user_tag = output
-                                rest_of_comment = comment_body.split(user_tag)[1].strip()
+                                rest_of_comment = comment_body.split(user_tag, 1)[1].strip()
                                 comment_id = comment['id']
 
                                 # Add to the task queue

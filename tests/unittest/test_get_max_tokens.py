@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import litellm
 import pytest
 
@@ -257,7 +259,7 @@ class TestGetMaxTokens:
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
         monkeypatch.setattr(litellm, "get_model_info", lambda *args, **kwargs: None)
 
-        with pytest.raises(Exception, match="defined in MAX_TOKENS"):
+        with pytest.raises(Exception, match="Unable to resolve a positive input-token limit"):
             get_max_tokens(f"openrouter/openai/{model}_thinking{route}")
 
     @pytest.mark.parametrize("model", ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])
@@ -385,7 +387,7 @@ class TestGetMaxTokens:
             })()
         })()
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
-        with pytest.raises(Exception, match="Ensure .* is defined in MAX_TOKENS"):
+        with pytest.raises(Exception, match="Unable to resolve a positive input-token limit"):
             get_max_tokens("gpt-4o_thinking")
 
     @pytest.mark.parametrize("invalid_limit", ["unknown", None, {}, float("inf"), 0, -1])
@@ -408,7 +410,7 @@ class TestGetMaxTokens:
         if raw_resolves:
             assert get_max_tokens(model) == 32000
         else:
-            with pytest.raises(Exception, match="Ensure .* is defined in MAX_TOKENS"):
+            with pytest.raises(Exception, match="Unable to resolve a positive input-token limit"):
                 get_max_tokens(model)
         assert lookups == ["openai/gpt-5.9", "gpt-5.9", model]
 
@@ -503,17 +505,40 @@ class TestGetMaxTokens:
             ("openrouter/pareto-code", 2000000),
         ],
     )
-    def test_openrouter_router_model_max_tokens(self, monkeypatch, model, expected):
+    @pytest.mark.parametrize("custom_limit", [0, 20000])
+    @pytest.mark.parametrize("cap", [0, 32000])
+    def test_openrouter_router_model_max_tokens(self, monkeypatch, model, expected, custom_limit, cap):
         fake_settings = type("", (), {
             "config": type("", (), {
-                "custom_model_max_tokens": 0,
-                "max_model_tokens": 0,
+                "custom_model_max_tokens": custom_limit,
+                "max_model_tokens": cap,
             })()
         })()
 
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
-        assert get_max_tokens(model) == expected
+        monkeypatch.setattr(litellm, "get_model_info", lambda *_: pytest.fail("Registry limit expected"))
+        assert get_max_tokens(model) == (min(expected, cap) if cap else expected)
+        assert get_max_tokens(model, ignore_max_model_tokens=True) == expected
+
+    @pytest.mark.parametrize("model, input_limit", [
+        ("openrouter/anthropic/claude-sonnet-5", 1000000),
+        ("openrouter/deepseek/deepseek-chat", 163840),
+    ])
+    @pytest.mark.parametrize("cap", [0, 32000, 500000])
+    def test_openrouter_input_budget_regression(self, monkeypatch, model, input_limit, cap):
+        """Guard verified input budgets, including reductions hidden by the default cap.
+
+        These are compatibility baselines from the pinned bundled map, not immutable
+        provider limits. Revalidate intentional changes rather than deriving expected
+        values from the same SDK lookup under test.
+        """
+        assert model not in MAX_TOKENS, "Revalidate SDK fallback coverage if this model gains a built-in limit"
+        settings = SimpleNamespace(config=SimpleNamespace(custom_model_max_tokens=0, max_model_tokens=cap))
+        monkeypatch.setattr(token_budget, "get_settings", lambda: settings)
+
+        assert get_max_tokens(model) == (min(input_limit, cap) if cap else input_limit)
+        assert get_max_tokens(model, ignore_max_model_tokens=True) == input_limit
 
     # Test situations where the model is not registered and exists as a custom model
     def test_model_has_custom(self, monkeypatch):
@@ -562,7 +587,7 @@ class TestGetMaxTokens:
 
         model = "custom-model"
 
-        with pytest.raises(Exception, match="Ensure .* is defined in MAX_TOKENS"):
+        with pytest.raises(Exception, match="Unable to resolve a positive input-token limit"):
             get_max_tokens(model)
 
     def test_model_max_tokens_with__limit(self, monkeypatch):
@@ -1060,8 +1085,11 @@ class TestGetMaxTokens:
 
         assert get_max_tokens("fake-provider/fake-model-xyz") == 32000
 
-    def test_litellm_fallback_failure_preserves_existing_error(self, monkeypatch):
-        """When litellm also cannot resolve, the existing error path fires."""
+    @pytest.mark.parametrize("metadata", [None, {}, {"max_input_tokens": None},
+                                         {"max_input_tokens": 0}, {"max_input_tokens": -1},
+                                         {"max_input_tokens": "invalid"}, ValueError("private endpoint details")])
+    def test_litellm_fallback_failure_explains_input_limit(self, monkeypatch, metadata):
+        """Explain failed resolution without leaking the underlying exception text."""
         fake_settings = type('', (), {
             'config': type('', (), {
                 'custom_model_max_tokens': 0,
@@ -1071,12 +1099,20 @@ class TestGetMaxTokens:
         monkeypatch.setattr(token_budget, "get_settings", lambda: fake_settings)
 
         def raise_for_unknown(model):
-            raise Exception("This model isn't mapped yet")
+            if isinstance(metadata, Exception):
+                raise metadata
+            return metadata
 
         monkeypatch.setattr(litellm, "get_model_info", raise_for_unknown)
 
-        with pytest.raises(Exception, match="Ensure .* is defined in MAX_TOKENS"):
+        with pytest.raises(Exception, match="Unable to resolve a positive input-token limit") as error:
             get_max_tokens("fake-provider/fake-unknown-model")
+        message = str(error.value)
+        assert "fake-provider/fake-unknown-model" in message
+        assert "built-in limits or LiteLLM metadata" in message
+        assert "config.custom_model_max_tokens to a verified positive input-token limit" in message
+        assert "config.max_model_tokens only caps a resolved limit" in message
+        assert "private endpoint details" not in message
 
     def test_litellm_fallback_respects_max_model_tokens_cap(self, monkeypatch):
         """max_model_tokens cap applies to LiteLLM-resolved values."""

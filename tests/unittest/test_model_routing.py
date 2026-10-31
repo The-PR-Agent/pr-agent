@@ -3,9 +3,14 @@ Tests for [model_routing]: a small pull request gets a cheaper primary model, th
 fallbacks still follow it, and every other call keeps the model it asked for.
 """
 import asyncio
+import copy
+import threading
+from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from starlette_context import request_cycle_context
 
 from pr_agent.algo.model_routing import count_hunks, count_patch_chars, route_primary_model
 from pr_agent.algo.pr_processing import (
@@ -125,6 +130,42 @@ class TestCountPatchChars:
 
 
 class TestRouting:
+    async def test_cold_diff_fetch_keeps_the_loop_responsive_and_request_settings(self, settings, monkeypatch):
+        request_settings = copy.deepcopy(settings)
+        provider = _pr(num_files=1, hunks_per_file=1)
+        original_fetch = provider.get_diff_files
+        started = threading.Event()
+        release = threading.Event()
+        loop_thread = threading.get_ident()
+        models = []
+
+        def fetch_diff():
+            started.set()
+            assert threading.get_ident() != loop_thread
+            assert get_settings() is request_settings
+            assert release.wait(10)
+            return original_fetch()
+
+        async def predict(model):
+            models.append(model)
+            if model == "tiny-model":
+                raise FallbackEligibleError("Try the configured fallback")
+            return model
+
+        monkeypatch.setattr(provider, "get_diff_files", fetch_diff)
+        with request_cycle_context({"settings": request_settings}):
+            run = asyncio.create_task(retry_with_fallback_models(predict, git_provider=provider))
+            try:
+                assert await asyncio.wait_for(asyncio.to_thread(started.wait, 5), 10)
+                assert not run.done()
+            finally:
+                release.set()
+                result = await asyncio.wait_for(run, 10)
+
+        assert result == "fallback-1"
+        assert models == ["tiny-model", "fallback-1"]
+        assert provider.calls == 1
+
     def test_patch_char_ceiling_distinguishes_structural_twins(self, settings):
         short_patch = _patch(1)
         long_patch = short_patch.replace("+added", "+added" + "x" * 1000)
@@ -152,8 +193,14 @@ class TestRouting:
         file.head_file_is_complete = False
         assert _models_tried(_Provider([file])) == [expected]
 
-    def test_small_pr_routes_to_the_first_matching_rule(self, settings):
-        assert _models_tried(_pr(num_files=1, hunks_per_file=2)) == ["tiny-model"]
+    @pytest.mark.parametrize("empty_context", [False, True])
+    def test_small_pr_routes_to_the_first_matching_rule(self, settings, monkeypatch, empty_context):
+        offload = AsyncMock(side_effect=AssertionError("Global settings must not dispatch a routing worker"))
+        monkeypatch.setattr(asyncio, "to_thread", offload)
+        scope = request_cycle_context({}) if empty_context else nullcontext()
+        with scope:
+            assert _models_tried(_pr(num_files=1, hunks_per_file=2)) == ["tiny-model"]
+        offload.assert_not_awaited()
 
     def test_unicode_source_separator_does_not_change_model_selection(self, settings):
         settings.set("model_routing.rules", [{"max_hunks": 1, "model": "tiny-model"}])
@@ -317,16 +364,22 @@ class TestRouting:
         assert get_settings().get("openai.deployment_id") == "primary-deployment"
         assert get_effective_fallback_chain() == previous_chain
 
-    def test_weak_tier_is_not_routed(self, settings):
+    def test_weak_tier_is_not_routed(self, settings, monkeypatch):
+        offload = AsyncMock(side_effect=AssertionError("Weak models must not dispatch a routing worker"))
+        monkeypatch.setattr(asyncio, "to_thread", offload)
         provider = _pr(num_files=1, hunks_per_file=1)
         assert _models_tried(provider, model_type=ModelType.WEAK) == ["weak-model"]
         assert provider.calls == 0
+        offload.assert_not_awaited()
 
-    def test_disabled_routing_does_not_touch_the_provider(self, settings):
+    def test_disabled_routing_does_not_touch_the_provider(self, settings, monkeypatch):
         settings.set("model_routing.enable", False)
+        offload = AsyncMock(side_effect=AssertionError("Disabled routing must not dispatch a worker"))
+        monkeypatch.setattr(asyncio, "to_thread", offload)
         provider = _pr(num_files=1, hunks_per_file=1)
         assert _models_tried(provider) == ["primary-model"]
         assert provider.calls == 0
+        offload.assert_not_awaited()
 
     def test_no_rules_does_not_touch_the_provider(self, settings):
         settings.set("model_routing.rules", [])
@@ -334,8 +387,11 @@ class TestRouting:
         assert _models_tried(provider) == ["primary-model"]
         assert provider.calls == 0
 
-    def test_call_without_a_git_provider_keeps_the_primary(self, settings):
+    def test_call_without_a_git_provider_keeps_the_primary(self, settings, monkeypatch):
+        offload = AsyncMock(side_effect=AssertionError("Routing without a provider must not dispatch a worker"))
+        monkeypatch.setattr(asyncio, "to_thread", offload)
         assert _models_tried(None) == ["primary-model"]
+        offload.assert_not_awaited()
 
     def test_rule_without_a_model_or_a_limit_is_ignored(self, settings):
         settings.set("model_routing.rules", [

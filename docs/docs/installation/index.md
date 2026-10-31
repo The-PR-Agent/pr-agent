@@ -36,6 +36,15 @@ default ignores every polling notification and still marks it as read, so
 configure it in the host configuration or through `GITHUB__POLLING_REPOSITORIES`
 before enabling polling or upgrading.
 
+The command after the first mention of the polling account is kept intact,
+including later mentions in plain or double-quoted questions. Replace `@your-bot`
+with the polling account's username:
+
+```text
+@your-bot /ask Why does @your-bot appear in this workflow?
+@your-bot /ask "Why does @your-bot appear in this workflow?"
+```
+
 ## Sizing a self-hosted webhook server
 
 The GitHub, GitLab, Gitea and Bitbucket Server webhook servers (the `github_app`, `gitlab_webhook`, `gitea_app` and `bitbucket_server_webhook` Docker targets) run under gunicorn with multiple worker processes, so that a worker busy handling a request cannot block the health check served by another. The other deployments — Bitbucket Cloud, Azure DevOps, GitHub polling, and the Lambda variants — do not use this gunicorn worker configuration.

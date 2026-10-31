@@ -289,6 +289,10 @@ def _write_review_comment_event_with_body(tmp_path, body):
     event_path = tmp_path / "event.json"
     event_path.write_text(json.dumps({
         "action": "created",
+        "pull_request": {
+            "url": "https://api.github.com/repos/org/repo/pulls/1",
+            "html_url": "https://github.com/org/repo/pull/1",
+        },
         "comment": {
             "body": body,
             "id": 123,
@@ -1053,7 +1057,8 @@ def test_successful_dispatched_command_stays_green(monkeypatch, tmp_path, restor
     assert captured["status"].failed is False
 
 
-def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_github_settings, github_token):
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
     event_path = tmp_path / "event.json"
@@ -1067,6 +1072,7 @@ def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_gi
         "sender": {"type": "User"},
     }))
     _install_action_env(monkeypatch, tmp_path, event_path, event_name="issue_comment")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     captured = _capture_action_status(monkeypatch)
 
@@ -1076,12 +1082,14 @@ def test_plain_non_command_comment_stays_green(monkeypatch, tmp_path, restore_gi
     assert captured["status"].failed is False
 
 
-def test_bot_comment_event_stays_green(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+def test_bot_comment_event_stays_green(monkeypatch, tmp_path, restore_github_settings, github_token):
     handled = []
     _patch_issue_comment_deps(monkeypatch, handled)
     _install_action_env(
         monkeypatch, tmp_path, _write_issue_comment_event(tmp_path, "Bot"), event_name="issue_comment"
     )
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     captured = _capture_action_status(monkeypatch)
 
@@ -1361,12 +1369,13 @@ async def test_workflow_run_runs_auto_tools(monkeypatch, tmp_path, restore_githu
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path, restore_github_settings, github_token):
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, originating_event="push")))
-    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     await github_action_runner.run_action()
 
@@ -1374,12 +1383,15 @@ async def test_workflow_run_skips_non_pull_request_origin(monkeypatch, tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_skips_when_pull_requests_empty(monkeypatch, tmp_path, restore_github_settings):
+@pytest.mark.parametrize("github_token", ["token", ""])
+async def test_workflow_run_skips_when_pull_requests_empty(
+    monkeypatch, tmp_path, restore_github_settings, github_token
+):
     runs = []
     _patch_workflow_run_deps(monkeypatch, runs)
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_run")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_write_workflow_run_event(tmp_path, pull_requests=[])))
-    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
 
     await github_action_runner.run_action()
 
@@ -1448,6 +1460,34 @@ def _write_plain_issue_comment_event(tmp_path):
         "sender": {"type": "User"},
     }))
     return event_path
+
+@pytest.mark.parametrize("github_token", [None, ""], ids=["missing", "empty"])
+@pytest.mark.parametrize("event_name, write_event", [
+    ("pull_request", _write_pull_request_opened_event),
+    ("pull_request_target", _write_pull_request_opened_event),
+    ("workflow_run", _write_workflow_run_event),
+    ("pull_request_review", _write_review_event),
+    ("issue_comment", lambda path: _write_issue_comment_event(path, "User")),
+    ("issue_comment", _write_plain_issue_comment_event),
+    ("pull_request_review_comment", lambda path: _write_review_comment_event_with_body(path, "/review")),
+])
+def test_missing_github_token_fails_before_repository_access(
+    monkeypatch, tmp_path, restore_github_settings, github_token, event_name, write_event,
+):
+    _install_action_env(monkeypatch, tmp_path, write_event(tmp_path), event_name)
+    if github_token is None:
+        monkeypatch.delenv("GITHUB_TOKEN")
+    else:
+        monkeypatch.setenv("GITHUB_TOKEN", github_token)
+    apply_settings = Mock()
+    monkeypatch.setattr(github_action_runner, "apply_repo_settings", apply_settings)
+    monkeypatch.setattr(github_action_runner, "litellm_callbacks_registered", lambda: False)
+
+    with pytest.raises(SystemExit, match="GITHUB_TOKEN not set.*workflow's env"):
+        github_action_runner.main()
+
+    apply_settings.assert_not_called()
+
 
 @pytest.mark.asyncio
 async def test_issue_comment_body_reaches_the_agent_with_its_case_preserved(
