@@ -2466,7 +2466,7 @@ class PRCodeSuggestions:
 
                 # pr_body += "</details>"
                 # pr_body += """</td></tr>"""
-            pr_body += """</tr></tbody></table>"""
+            pr_body += """</tbody></table>"""
             return pr_body
         except Exception as e:
             # Returning "" here is not a safe "no suggestions" answer: the caller appends the

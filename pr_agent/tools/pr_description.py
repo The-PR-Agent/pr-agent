@@ -1145,7 +1145,7 @@ class PRDescription:
                     pr_body += """</table></details></td></tr>"""
                 else:
                     pr_body += """</table></td></tr>"""
-            pr_body += """</tr></tbody></table>"""
+            pr_body += """</tbody></table>"""
 
         except Exception as e:
             get_logger().error(f"Error processing pr files to markdown {self.pr_id}: {str(e)}")
