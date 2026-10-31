@@ -130,10 +130,11 @@ def is_bot_user(data) -> bool:
         # logic to ignore bot users (unlike GitHub, no direct flag for bot users in gitlab)
         user = data.get("user") or {}
         # gitlab.ignore_user_ids may arrive as a list, a single int (GITLAB__IGNORE_USER_IDS=123)
-        # or a single string, so compare every entry as a stripped string.
+        # or a string, including a comma-separated one (GITLAB__IGNORE_USER_IDS=123,456),
+        # so split commas and compare every entry as a stripped string.
         ignored_ids = {
             str(entry).strip()
-            for entry in normalize_setting_list(get_settings().get("gitlab.ignore_user_ids", []))
+            for entry in normalize_setting_list(get_settings().get("gitlab.ignore_user_ids", []), split_commas=True)
             if entry is not None and str(entry).strip()
         }
         sender_id = user.get("id")

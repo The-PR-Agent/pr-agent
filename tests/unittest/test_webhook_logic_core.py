@@ -1278,6 +1278,10 @@ def test_gitlab_is_bot_user_skips_non_string_entries(gitlab_webhook_module):
         ([" 123 "], {"id": 123, "name": "Jane Developer"}, True),
         (123, {"id": 123, "name": "Jane Developer"}, True),
         ("123", {"id": 123, "name": "Jane Developer"}, True),
+        # GITLAB__IGNORE_USER_IDS=123,456 reaches the code as one string.
+        ("123,456", {"id": 123, "name": "Jane Developer"}, True),
+        ("123, 456", {"id": 456, "name": "Jane Developer"}, True),
+        ("123,456", {"id": 789, "name": "Jane Developer"}, False),
         ([123], {"id": 456, "name": "Jane Developer"}, False),
         # An unlisted id falls through to the display-name check.
         ([123], {"id": 456, "name": "release-bot"}, True),
