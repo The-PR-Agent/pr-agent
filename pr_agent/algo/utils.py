@@ -905,6 +905,8 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
     plus DEL. The \\x80-\\x9f C1 range is intentionally preserved because try_fix_yaml's latin-1->utf-8 fallback
     relies on those bytes to repair mojibake; they must survive to reach the repair logic.
 
+    Replace U+2028/U+2029 with spaces so embedded source text does not introduce unindented YAML lines.
+
     Set log=False to suppress the removal warning, e.g. when sanitizing a second, largely-overlapping copy of
     text that was already sanitized and logged once."""
     if not text:
@@ -913,7 +915,7 @@ def sanitize_yaml_control_chars(text: str, log: bool = True) -> str:
     if count and log:
         get_logger().warning(
             f"Removed {count} unambiguous illegal control character(s) from AI prediction before YAML parsing")
-    return sanitized
+    return sanitized.replace("\u2028", " ").replace("\u2029", " ")
 
 
 def _looks_like_more_answer(tail: str) -> bool:

@@ -353,6 +353,26 @@ class TestLoadYaml:
         }]
         assert load_yaml(yaml_str) == expected_output
 
+    @pytest.mark.parametrize("separator", ["\u2028", "\u2029"])
+    def test_load_yaml_with_unicode_separator_in_block_scalar(self, separator):
+        yaml_str = (
+            "review:\n"
+            "  key_issues_to_review:\n"
+            "    - issue_header: |\n"
+            f"        Bad{separator}line\n"
+            "      issue_content: x\n"
+            "    - issue_header: Next issue\n"
+            "      issue_content: y\n"
+        )
+        assert load_yaml(yaml_str) == {
+            "review": {
+                "key_issues_to_review": [
+                    {"issue_header": "Bad line\n", "issue_content": "x"},
+                    {"issue_header": "Next issue", "issue_content": "y"},
+                ]
+            }
+        }
+
     def test_load_yaml_with_illegal_control_character(self):
         # A stray C0 control character (e.g. BACKSPACE, 0x08) can end up in an LLM response - commonly when an
         # upstream diff-pruning step truncates the prompt mid multi-byte character. PyYAML's reader rejects such
