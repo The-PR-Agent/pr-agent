@@ -111,7 +111,7 @@ to-do list.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `ignore_pr_title` | ["^\\[Auto\\]", "^Auto"] | a list of regular expressions to match against the PR title to ignore the PR agent |
+| `ignore_pr_title` | ["^\\[Auto\\]"] | a list of regular expressions to match against the PR title to ignore the PR agent |
 | `ignore_pr_target_branches` | [] | a list of regular expressions of target branches to ignore from PR agent when an PR is created |
 | `ignore_pr_source_branches` | [] | a list of regular expressions of source branches to ignore from PR agent when an PR is created |
 | `ignore_pr_labels` | [] | labels to ignore from PR agent when an PR is created |
