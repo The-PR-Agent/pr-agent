@@ -64,6 +64,12 @@ def test_langfuse_exports_existing_spans_and_preserves_trace_context(monkeypatch
             assert root.parent.span_id == int("8899aabbccddeeff", 16)
             assert root.attributes["session.id"] == "test-session"
             assert root.attributes["langfuse.trace.name"] == "export-test"
+            # The root observation is typed as an agent, and the parsed MOSAICO
+            # metadata is propagated as JSON-encoded trace-level metadata (SDK v5).
+            assert root.attributes["langfuse.observation.type"] == "agent"
+            assert root.attributes["langfuse.trace.metadata.mosaico-root-task-id"] == (
+                '"123e4567-e89b-12d3-a456-426614174000"'
+            )
             for name in ("litellm", "framework", "a2a-python-sdk-child"):
                 assert spans[f"operation-{name}"].context.trace_id == root.context.trace_id
                 assert spans[f"operation-{name}"].parent.span_id == root.context.span_id

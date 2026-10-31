@@ -70,14 +70,16 @@ def mosaico_log_context(meta, context_id):
 
 @contextlib.contextmanager
 def langfuse_span(meta, context_id):
-    """Open a Langfuse span linking this run into the MOSAICO trace.
+    """Open a Langfuse agent observation linking this run into the MOSAICO trace.
 
     Applies the W3C Trace Context transform (spec §observability lines 47-51):
     mosaico-root-task-id with the four UUIDv4 hyphens removed -> trace_id (32 hex),
     last 16 hex digits of the de-hyphenated mosaico-super-task-id -> parent observation
     (parent_span_id, 16 hex), context_id -> session, mosaico-root-task-name -> trace_name.
-    Setup and teardown failures are logged and degrade to untraced without changing
-    the wrapped request result. No-op when meta is empty."""
+    The parsed MOSAICO metadata is also propagated as trace-level metadata so the
+    correlation IDs stay filterable in the Langfuse UI. Setup and teardown failures are
+    logged and degrade to untraced without changing the wrapped request result.
+    No-op when meta is empty."""
     if not meta:
         yield
         return
@@ -94,11 +96,11 @@ def langfuse_span(meta, context_id):
             # W3C parent-id: last 16 hex digits (spec §observability lines 49-51).
             trace_ctx["parent_span_id"] = meta["mosaico-super-task-id"].replace("-", "")[-16:]
         stack.enter_context(
-            propagate_attributes(session_id=context_id, trace_name=meta.get("mosaico-root-task-name"))
+            propagate_attributes(session_id=context_id, trace_name=meta.get("mosaico-root-task-name"), metadata=meta)
         )
         stack.enter_context(
             lf.start_as_current_observation(
-                as_type="span",
+                as_type="agent",
                 name=AGENT_NAME,
                 **({"trace_context": trace_ctx} if trace_ctx else {}),
             )
