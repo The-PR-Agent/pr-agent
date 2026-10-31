@@ -665,9 +665,6 @@ use_conversation_history = true
 
 [pr_code_suggestions]
 committable_code_suggestions = true
-# Deprecated alias of the key above: it must be denied per directory too, otherwise a nested
-# file could flip /improve to inline publishing through the spelling the fallback still reads.
-commitable_code_suggestions = true
 num_code_suggestions_per_chunk = 2
 max_number_of_calls = 99
 parallel_calls = true
