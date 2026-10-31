@@ -229,10 +229,10 @@ PR-Agent allows you to control the verbosity of logging by using the `log_level`
 
 ```
 [config]
-log_level = "DEBUG"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
+log_level = "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 ```
 
-The default log level is "DEBUG", which provides detailed output of all operations. If you prefer less verbose logs, you can set higher log levels like "INFO" or "WARNING".
+The default log level is "INFO". Set it to "DEBUG" when troubleshooting to include detailed operation logs.
 
 ## Tokenizer files without internet access
 

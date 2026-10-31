@@ -1,16 +1,15 @@
 """A `--key=value` override must reach the tool whatever the value looks like.
 
 `update_settings_from_args` tries to read the value as YAML and falls back to the raw string.
-The fallback logs at DEBUG - the level every webhook server runs at, because
-`configuration.toml` ships `log_level="DEBUG"` - so the log call is on the hot path for any
-value YAML rejects.
+The fallback logs at DEBUG, so it is useful when troubleshooting values YAML rejects without
+being emitted at the shipped INFO level.
 """
 import pytest
 
 import pr_agent.agent.pr_agent as agent_module
 from pr_agent.algo.utils import update_settings_from_args
 from pr_agent.config_loader import get_settings
-from pr_agent.log import setup_logger
+from pr_agent.log import get_logger, setup_logger
 
 PR_URL = "https://github.com/org/repo/pull/1"
 
@@ -27,8 +26,8 @@ UNPARSEABLE_VALUES = [
 
 @pytest.fixture
 def debug_logging():
-    """The level every webhook server passes to setup_logger."""
-    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
+    """Use the configured log level while testing raw-string fallback handling."""
+    setup_logger(level=get_settings().get("CONFIG.LOG_LEVEL", "INFO"))
     yield
     setup_logger(level="INFO")
 
@@ -66,6 +65,22 @@ def test_a_parseable_value_is_still_converted(monkeypatch, debug_logging):
     update_settings_from_args(["--pr_reviewer.num_max_findings=5"])
 
     assert settings.pr_reviewer.num_max_findings == 5
+
+
+def test_shipped_log_level_suppresses_debug_until_explicitly_enabled(capsys):
+    settings = get_settings(use_context=False)
+    default_level = settings.get("CONFIG.LOG_LEVEL", "INFO")
+    assert default_level == "INFO"
+
+    setup_logger(level=default_level)
+    get_logger().debug("Prompts")
+    assert "Prompts" not in capsys.readouterr().out
+
+    setup_logger(level="DEBUG")
+    get_logger().debug("Prompts")
+    assert "Prompts" in capsys.readouterr().out
+
+    setup_logger(level="INFO")
 
 
 async def test_a_braced_instruction_reaches_the_tool(monkeypatch, debug_logging, review_tool):

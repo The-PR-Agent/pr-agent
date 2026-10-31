@@ -44,7 +44,7 @@ to-do list.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `log_level` | "DEBUG" |  |
+| `log_level` | "INFO" |  |
 **Configurations**
 
 | Key | Default | Description |

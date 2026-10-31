@@ -19,7 +19,7 @@ progress_gif_width=48 # optional, width (in px) of the progress loading gif.
 verbosity_level=0 # 0,1,2
 use_extra_bad_extensions=false
 # Log
-log_level="DEBUG"
+log_level="INFO"
 # Configurations
 use_repo_settings_file=true
 use_global_settings_file=true
