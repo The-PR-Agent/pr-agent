@@ -43,7 +43,7 @@ def command_timeout_setting():
 def test_direct_gerrit_children_use_safe_per_call_timeout(
     monkeypatch, command_timeout_setting, operation, invoke, tmp_path
 ):
-    url = urllib3.util.parse_url("ssh://secret-user:secret-pass@example.com:29418/project")
+    url = urllib3.util.parse_url("https://secret-user:secret-pass@example.com:29418/project")
     ref = "refs/changes/01/1/1"
     calls = []
 
@@ -68,18 +68,25 @@ def test_direct_gerrit_children_use_safe_per_call_timeout(
     ))
     assert len(calls) == 1
     expected = {
-        "clone": ("git", "clone", "--depth", "1", url, tmp_path),
-        "fetch": ("git", "fetch", "--depth", "2", url, ref),
+        "clone": ("git", "clone", "--depth", "1", "https://example.com:29418/project", tmp_path),
+        "fetch": ("git", "fetch", "--depth", "2", "https://example.com:29418/project", ref),
         "checkout": ("git", "checkout", "FETCH_HEAD"),
         "show": ("git", "show", "HEAD"),
         "diff": ("git", "diff", "HEAD"),
         "reset": ("git", "checkout", "--force"),
-        "query": ("ssh", "-p", "29418", "secret-user:secret-pass@example.com", "gerrit", "query",
+        "query": ("ssh", "-p", "29418", "secret-user@example.com", "gerrit", "query",
                   "--comments", "--current-patch-set", "1", "--format", "JSON"),
-        "review": ("ssh", "-p", "29418", "secret-user:secret-pass@example.com", "gerrit", "review",
+        "review": ("ssh", "-p", "29418", "secret-user@example.com", "gerrit", "review",
                    "--message", "'private comment'", "1,1"),
     }
     assert calls[0][0] == expected[operation]
+    assert "secret-pass" not in repr(calls[0][0])
+    if operation in {"clone", "fetch"}:
+        assert any(value == "http.extraHeader" for key, value in calls[0][1]["env"].items()
+                   if key.startswith("GIT_CONFIG_KEY_"))
+        assert any(value.startswith("Authorization: Basic ")
+                   for key, value in calls[0][1]["env"].items()
+                   if key.startswith("GIT_CONFIG_VALUE_"))
     assert calls[0][1].get("cwd") == (None if operation in {"clone", "query", "review"} else tmp_path)
     assert calls[0][1]["timeout"] == 120
     assert calls[0][1]["capture_output"] is True
